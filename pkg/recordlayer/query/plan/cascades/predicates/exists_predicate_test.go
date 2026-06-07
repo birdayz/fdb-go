@@ -22,7 +22,7 @@ func TestExistsPredicate_EvalIsUnknown(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("x")
 	p := NewExistsPredicate(alias)
-	if got := p.Eval(nil); got != TriUnknown {
+	if got := mustEval(p, nil); got != TriUnknown {
 		t.Fatalf("Eval = %v, want TriUnknown (per-row eval not supported for EXISTS)", got)
 	}
 }

@@ -2713,7 +2713,7 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 		t.Fatalf("expected correlation binding 42, got %v (ok=%v)", v, ok)
 	}
 	qov := values.NewQuantifiedObjectValue(id)
-	result := qov.Evaluate(rc)
+	result := mustEvaluate(qov, rc)
 	if result != int64(42) {
 		t.Fatalf("QOV.Evaluate(RowEvalContext) = %v, want 42", result)
 	}

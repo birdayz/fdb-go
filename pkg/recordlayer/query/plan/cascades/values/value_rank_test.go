@@ -34,7 +34,7 @@ func TestRankValue_NewNilPartition(t *testing.T) {
 func TestRankValue_EvaluateNonMap(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue(nil)
-	if got := r.Evaluate(42); got != nil {
+	if got := mustEvaluate(r, 42); got != nil {
 		t.Fatalf("Evaluate(42) = %v, want nil", got)
 	}
 }
@@ -43,7 +43,7 @@ func TestRankValue_EvaluateEmptyMap(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue(nil)
 	ctx := map[string]any{}
-	if got := r.Evaluate(ctx); got != nil {
+	if got := mustEvaluate(r, ctx); got != nil {
 		t.Fatalf("Evaluate({}) = %v, want nil", got)
 	}
 }
@@ -54,7 +54,7 @@ func TestRankValue_EvaluateStringRankValue(t *testing.T) {
 	// Evaluate should return it verbatim (no type assertion on the value).
 	r := NewRankValue(nil)
 	ctx := map[string]any{"_rank": "not-a-number"}
-	got := r.Evaluate(ctx)
+	got := mustEvaluate(r, ctx)
 	if got != "not-a-number" {
 		t.Fatalf("Evaluate returned %v, want the raw value from _rank", got)
 	}
@@ -320,7 +320,7 @@ func BenchmarkRankValue_Evaluate(b *testing.B) {
 	r := NewRankValue([]Value{LiteralValue("region")})
 	ctx := map[string]any{"_rank": int64(7)}
 	for b.Loop() {
-		r.Evaluate(ctx)
+		mustEvaluate(r, ctx)
 	}
 }
 

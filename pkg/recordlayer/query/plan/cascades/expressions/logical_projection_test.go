@@ -37,7 +37,7 @@ func TestLogicalProjection_DefensiveCopy(t *testing.T) {
 	src := []values.Value{values.NewBooleanValue(true)}
 	p := NewLogicalProjectionExpression(src, q)
 	src[0] = values.NewBooleanValue(false)
-	if v := p.GetProjectedValues()[0].(*values.BooleanValue); v.Evaluate(nil) != true {
+	if v := p.GetProjectedValues()[0].(*values.BooleanValue); mustEvaluate(v, nil) != true {
 		t.Fatal("constructor failed to defensively copy projection list")
 	}
 }

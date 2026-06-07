@@ -218,7 +218,7 @@ func tryCastConstant(cv *ConstantValue, target Type) *ConstantValue {
 	// A failing cast (bad cast / overflow / type mismatch) is NOT foldable —
 	// leave it in place so it raises the SQL error at runtime (RFC-091). A
 	// genuine invariant panic propagates to the db/sql boundary recover.
-	result, err := cast.EvaluateErr(nil)
+	result, err := cast.Evaluate(nil)
 	if err != nil {
 		return nil
 	}

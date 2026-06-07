@@ -46,14 +46,8 @@ func (*DerivedValue) Name() string { return "derived" }
 // Type returns the bound result type.
 func (v *DerivedValue) Type() Type { return v.ResultType }
 
-// Evaluate panics — DerivedValue is non-evaluable. Pattern-match
-// at the planner level instead.
-func (*DerivedValue) Evaluate(any) any {
-	panic("DerivedValue.Evaluate: derived-value placeholder is non-evaluable")
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). DerivedValue is
+// Evaluate is the error-returning twin (RFC-091). DerivedValue is
 // non-evaluable — a genuine invariant violation, so it stays a panic.
-func (*DerivedValue) EvaluateErr(any) (any, error) {
-	panic("DerivedValue.EvaluateErr: derived-value placeholder is non-evaluable")
+func (*DerivedValue) Evaluate(any) (any, error) {
+	panic("DerivedValue.Evaluate: derived-value placeholder is non-evaluable")
 }

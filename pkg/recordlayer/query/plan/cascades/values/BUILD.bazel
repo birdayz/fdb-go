@@ -79,6 +79,7 @@ go_test(
         "coercion_test.go",
         "correlation_test.go",
         "equals_without_children_test.go",
+        "eval_must_test.go",
         "fold_error_test.go",
         "folder_test.go",
         "functional_dependency_test.go",

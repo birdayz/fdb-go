@@ -37,23 +37,12 @@ func (*CardinalityValue) Name() string { return "cardinality" }
 // definite count.
 func (*CardinalityValue) Type() Type { return NotNullLong }
 
-// Evaluate returns the array length (as int64). Returns nil if
-// Child is nil-Value or evaluates to nil. Returns nil if the
-// Child evaluates to a non-slice (type-degraded UNKNOWN).
-func (v *CardinalityValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *CardinalityValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *CardinalityValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil
 	}
-	val, err := v.Child.EvaluateErr(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

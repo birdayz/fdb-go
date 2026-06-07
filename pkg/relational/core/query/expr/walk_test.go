@@ -200,7 +200,7 @@ func TestWalkPredicate_Comparison(t *testing.T) {
 		t.Fatalf("Operand: got %v, want 1", cp.Comparison.Operand)
 	}
 	// Evaluate.
-	if got := pred.Eval(map[string]any{"ID": int64(1)}); got != predicates.TriTrue {
+	if got := mustEval(pred, map[string]any{"ID": int64(1)}); got != predicates.TriTrue {
 		t.Fatalf("1 = 1: got %v", got)
 	}
 }
@@ -343,7 +343,7 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 		{nil, nil, predicates.TriUnknown},
 	}
 	for _, tc := range cases {
-		got := pred.Eval(row{"ACTIVE": tc.active, "ADMIN": tc.admin})
+		got := mustEval(pred, row{"ACTIVE": tc.active, "ADMIN": tc.admin})
 		if got != tc.want {
 			t.Errorf("XOR(%v, %v): got %v, want %v", tc.active, tc.admin, got, tc.want)
 		}
@@ -510,7 +510,7 @@ func TestWalkPredicate_NotParenAnd(t *testing.T) {
 		{map[string]any{"ID": int64(2), "NAME": "bob"}, predicates.TriTrue},
 	}
 	for _, tc := range cases {
-		if got := pred.Eval(tc.row); got != tc.want {
+		if got := mustEval(pred, tc.row); got != tc.want {
 			t.Errorf("row %v: got %v, want %v", tc.row, got, tc.want)
 		}
 	}
@@ -545,7 +545,7 @@ func TestWalkPredicate_Between(t *testing.T) {
 		{11, predicates.TriFalse, "above"},
 		{0, predicates.TriFalse, "below"},
 	} {
-		got := pred.Eval(map[string]any{"ID": tc.id})
+		got := mustEval(pred, map[string]any{"ID": tc.id})
 		if got != tc.want {
 			t.Fatalf("id=%d (%s): got %v, want %v", tc.id, tc.comment, got, tc.want)
 		}
@@ -567,10 +567,10 @@ func TestWalkPredicate_NotBetween(t *testing.T) {
 		t.Fatalf("expected NotPredicate wrapping, got %T", pred)
 	}
 	// Eval: id=5 is in [1,10] so NOT BETWEEN is FALSE.
-	if got := pred.Eval(map[string]any{"ID": int64(5)}); got != predicates.TriFalse {
+	if got := mustEval(pred, map[string]any{"ID": int64(5)}); got != predicates.TriFalse {
 		t.Fatalf("5 NOT BETWEEN 1 AND 10: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ID": int64(15)}); got != predicates.TriTrue {
+	if got := mustEval(pred, map[string]any{"ID": int64(15)}); got != predicates.TriTrue {
 		t.Fatalf("15 NOT BETWEEN 1 AND 10: got %v, want TRUE", got)
 	}
 }
@@ -604,7 +604,7 @@ func TestWalkPredicate_In(t *testing.T) {
 		3: predicates.TriTrue,
 		4: predicates.TriFalse,
 	} {
-		got := pred.Eval(map[string]any{"ID": id})
+		got := mustEval(pred, map[string]any{"ID": id})
 		if got != want {
 			t.Fatalf("id=%d: got %v, want %v", id, got, want)
 		}
@@ -698,7 +698,7 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 		{"a%bb", predicates.TriFalse},
 	}
 	for _, tc := range cases {
-		got := pred.Eval(map[string]any{"NAME": tc.s})
+		got := mustEval(pred, map[string]any{"NAME": tc.s})
 		if got != tc.want {
 			t.Errorf("Eval(%q): got %v, want %v", tc.s, got, tc.want)
 		}
@@ -743,7 +743,7 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 		{"a%bb", predicates.TriTrue},
 	}
 	for _, tc := range cases {
-		if got := pred.Eval(map[string]any{"NAME": tc.s}); got != tc.want {
+		if got := mustEval(pred, map[string]any{"NAME": tc.s}); got != tc.want {
 			t.Errorf("NOT LIKE Eval(%q): got %v, want %v", tc.s, got, tc.want)
 		}
 	}
@@ -803,7 +803,7 @@ func TestWalkPredicate_IsTrue(t *testing.T) {
 		{nil, predicates.TriFalse}, // 2VL: NULL IS TRUE → FALSE
 	}
 	for _, tc := range cases {
-		got := pred.Eval(map[string]any{"ADMIN": tc.in})
+		got := mustEval(pred, map[string]any{"ADMIN": tc.in})
 		if got != tc.want {
 			t.Errorf("(%v) IS TRUE: got %v, want %v", tc.in, got, tc.want)
 		}
@@ -829,7 +829,7 @@ func TestWalkPredicate_IsFalse(t *testing.T) {
 		{nil, predicates.TriFalse}, // 2VL: NULL IS FALSE → FALSE
 	}
 	for _, tc := range cases {
-		got := pred.Eval(map[string]any{"ADMIN": tc.in})
+		got := mustEval(pred, map[string]any{"ADMIN": tc.in})
 		if got != tc.want {
 			t.Errorf("(%v) IS FALSE: got %v, want %v", tc.in, got, tc.want)
 		}
@@ -849,13 +849,13 @@ func TestWalkPredicate_IsTrue_NegatedNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": nil}); got != predicates.TriTrue {
+	if got := mustEval(pred, map[string]any{"ADMIN": nil}); got != predicates.TriTrue {
 		t.Errorf("NOT (NULL IS TRUE): got %v, want TRUE", got)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": true}); got != predicates.TriFalse {
+	if got := mustEval(pred, map[string]any{"ADMIN": true}); got != predicates.TriFalse {
 		t.Errorf("NOT (TRUE IS TRUE): got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ADMIN": false}); got != predicates.TriTrue {
+	if got := mustEval(pred, map[string]any{"ADMIN": false}); got != predicates.TriTrue {
 		t.Errorf("NOT (FALSE IS TRUE): got %v, want TRUE", got)
 	}
 }
@@ -891,13 +891,13 @@ func TestWalkPredicate_XOR_SelfIsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": true}); got != predicates.TriFalse {
+	if got := mustEval(pred, map[string]any{"ACTIVE": true}); got != predicates.TriFalse {
 		t.Errorf("true XOR true: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": false}); got != predicates.TriFalse {
+	if got := mustEval(pred, map[string]any{"ACTIVE": false}); got != predicates.TriFalse {
 		t.Errorf("false XOR false: got %v, want FALSE", got)
 	}
-	if got := pred.Eval(map[string]any{"ACTIVE": nil}); got != predicates.TriUnknown {
+	if got := mustEval(pred, map[string]any{"ACTIVE": nil}); got != predicates.TriUnknown {
 		t.Errorf("NULL XOR NULL: got %v, want UNKNOWN", got)
 	}
 }
@@ -1057,16 +1057,16 @@ func TestWalker_E2E_Integration(t *testing.T) {
 
 	// Evaluate against some rows.
 	row := map[string]any{"ID": int64(5), "NAME": "bob"}
-	if got := pred.Eval(row); got != predicates.TriTrue {
+	if got := mustEval(pred, row); got != predicates.TriTrue {
 		t.Fatalf("id=5, name=bob: got %v, want TRUE", got)
 	}
 	row["NAME"] = nil
-	if got := pred.Eval(row); got != predicates.TriFalse {
+	if got := mustEval(pred, row); got != predicates.TriFalse {
 		t.Fatalf("id=5, name=NULL: got %v, want FALSE", got)
 	}
 	row["NAME"] = "bob"
 	row["ID"] = int64(11)
-	if got := pred.Eval(row); got != predicates.TriFalse {
+	if got := mustEval(pred, row); got != predicates.TriFalse {
 		t.Fatalf("id=11, name=bob: got %v, want FALSE", got)
 	}
 }
@@ -1145,11 +1145,11 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 				t.Fatalf("Op: got %v, want OpDiv", av.Op)
 			}
 			// 23 / 7 → 3 (truncated toward zero).
-			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(3) {
+			if got := mustEvaluate(av, map[string]any{"ID": int64(23)}); got != int64(3) {
 				t.Errorf("23/7: got %v, want 3", got)
 			}
 			// -23 / 7 → -3 (Go truncates toward zero).
-			if got := av.Evaluate(map[string]any{"ID": int64(-23)}); got != int64(-3) {
+			if got := mustEvaluate(av, map[string]any{"ID": int64(-23)}); got != int64(-3) {
 				t.Errorf("-23/7: got %v, want -3", got)
 			}
 			// Divide by zero → panics with ArithmeticDivisionByZeroError
@@ -1169,7 +1169,7 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 						t.Errorf("5/0: expected *ArithmeticDivisionByZeroError, got %T", r)
 					}
 				}()
-				divZero.Evaluate(nil)
+				mustEvaluate(divZero, nil)
 			}()
 		})
 	}
@@ -1199,7 +1199,7 @@ func TestWalkExpression_ModuloOperator(t *testing.T) {
 			if av.Op != values.OpMod {
 				t.Fatalf("Op: got %v, want OpMod", av.Op)
 			}
-			if got := av.Evaluate(map[string]any{"ID": int64(23)}); got != int64(2) {
+			if got := mustEvaluate(av, map[string]any{"ID": int64(23)}); got != int64(2) {
 				t.Errorf("23 %% 7: got %v, want 2", got)
 			}
 		})

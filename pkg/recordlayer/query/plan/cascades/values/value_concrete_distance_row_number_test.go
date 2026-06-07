@@ -32,7 +32,7 @@ func TestCosineDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	v := NewCosineDistanceRowNumberValue(nil, nil)
 	row := map[string]any{"_row_number": int64(3)}
-	if got := v.Evaluate(row); got != int64(3) {
+	if got := mustEvaluate(v, row); got != int64(3) {
 		t.Fatalf("Evaluate = %v, want 3", got)
 	}
 }
@@ -40,7 +40,7 @@ func TestCosineDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestCosineDistanceRowNumberValue_EvaluateNilReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewCosineDistanceRowNumberValue(nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -117,7 +117,7 @@ func TestDotProductDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	v := NewDotProductDistanceRowNumberValue(nil, nil)
 	row := map[string]any{"_row_number": int64(5)}
-	if got := v.Evaluate(row); got != int64(5) {
+	if got := mustEvaluate(v, row); got != int64(5) {
 		t.Fatalf("Evaluate = %v, want 5", got)
 	}
 }
@@ -125,7 +125,7 @@ func TestDotProductDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestDotProductDistanceRowNumberValue_EvaluateNilReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewDotProductDistanceRowNumberValue(nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -187,7 +187,7 @@ func TestEuclideanDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	v := NewEuclideanDistanceRowNumberValue(nil, nil)
 	row := map[string]any{"_row_number": int64(1)}
-	if got := v.Evaluate(row); got != int64(1) {
+	if got := mustEvaluate(v, row); got != int64(1) {
 		t.Fatalf("Evaluate = %v, want 1", got)
 	}
 }
@@ -195,7 +195,7 @@ func TestEuclideanDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestEuclideanDistanceRowNumberValue_EvaluateNilReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewEuclideanDistanceRowNumberValue(nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -258,7 +258,7 @@ func TestEuclideanSquareDistanceRowNumberValue_EvaluateFromHarness(t *testing.T)
 	t.Parallel()
 	v := NewEuclideanSquareDistanceRowNumberValue(nil, nil)
 	row := map[string]any{"_row_number": int64(42)}
-	if got := v.Evaluate(row); got != int64(42) {
+	if got := mustEvaluate(v, row); got != int64(42) {
 		t.Fatalf("Evaluate = %v, want 42", got)
 	}
 }
@@ -266,7 +266,7 @@ func TestEuclideanSquareDistanceRowNumberValue_EvaluateFromHarness(t *testing.T)
 func TestEuclideanSquareDistanceRowNumberValue_EvaluateNilReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewEuclideanSquareDistanceRowNumberValue(nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -310,7 +310,7 @@ func TestConcreteDistanceRowNumber_EvaluateNoKeyReturnsNil(t *testing.T) {
 		NewEuclideanSquareDistanceRowNumberValue(nil, nil),
 	}
 	for _, v := range types {
-		if got := v.Evaluate(row); got != nil {
+		if got := mustEvaluate(v, row); got != nil {
 			t.Fatalf("%s: Evaluate(no _row_number key) = %v, want nil", v.Name(), got)
 		}
 	}
@@ -327,7 +327,7 @@ func TestConcreteDistanceRowNumber_EvaluateWrongCtxType(t *testing.T) {
 		NewEuclideanSquareDistanceRowNumberValue(nil, nil),
 	}
 	for _, v := range types {
-		if got := v.Evaluate("not-a-map"); got != nil {
+		if got := mustEvaluate(v, "not-a-map"); got != nil {
 			t.Fatalf("%s: Evaluate(string ctx) = %v, want nil", v.Name(), got)
 		}
 	}

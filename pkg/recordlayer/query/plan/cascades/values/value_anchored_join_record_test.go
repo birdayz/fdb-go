@@ -66,7 +66,7 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 		{Alias: a, Columns: []Field{{Name: "NAME", FieldType: UnknownType}}},
 	}
 	rc := NewAnchoredJoinRecord(legs)
-	row := rc.Evaluate(staticBinder{a: map[string]any{"NAME": "alice"}})
+	row := mustEvaluate(rc, staticBinder{a: map[string]any{"NAME": "alice"}})
 	m, ok := row.(map[string]any)
 	if !ok {
 		t.Fatalf("anchored RC Evaluate must yield a name-keyed map, got %T", row)

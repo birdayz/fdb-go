@@ -123,18 +123,11 @@ type Value interface {
 	// subsystems can pass their own row shape — seed uses
 	// `map[string]any` in tests.
 	//
-	// Evaluate is the legacy panic-based surface: it is a thin
-	// wrapper over EvaluateErr that re-panics any returned error.
-	// Existing recover()-based call sites keep working unchanged.
-	// New call sites should prefer EvaluateErr and thread the error.
-	Evaluate(evalCtx any) any
-
-	// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
 	// User-reachable evaluation failures (arithmetic overflow,
 	// division by zero, invalid CAST, scalar/comparison type
 	// mismatch) are returned as typed errors instead of panicking;
 	// genuine "can't happen" invariant violations still panic.
-	EvaluateErr(evalCtx any) (any, error)
+	Evaluate(evalCtx any) (any, error)
 }
 
 // --- Concrete values ------------------------------------------------
@@ -153,11 +146,10 @@ type ConstantValue struct {
 
 func (c *ConstantValue) Children() []Value { return []Value{} }
 func (c *ConstantValue) Name() string      { return "constant" }
-func (c *ConstantValue) Evaluate(any) any  { return c.Value }
 
-// EvaluateErr is the error-returning twin (RFC-091). A constant
+// Evaluate is the error-returning twin (RFC-091). A constant
 // literal never fails.
-func (c *ConstantValue) EvaluateErr(any) (any, error) { return c.Value, nil }
+func (c *ConstantValue) Evaluate(any) (any, error) { return c.Value, nil }
 
 // Type returns the constant's rich Type. Nullability is derived
 // from Value: nil Value → nullable (a typed NULL literal); non-nil
@@ -216,21 +208,13 @@ func (f *FieldValue) Type() Type {
 	return f.Typ
 }
 
-func (f *FieldValue) Evaluate(evalCtx any) any {
-	v, err := f.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (f *FieldValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if f.Child != nil {
 		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
 			return f.evaluateCorrelated(qov, evalCtx), nil
 		}
-		child, err := f.Child.EvaluateErr(evalCtx)
+		child, err := f.Child.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -444,7 +428,7 @@ func EvaluateConstant(v Value) (out any, ok bool) {
 	if v == nil || !IsConstantValue(v) {
 		return nil, false
 	}
-	val, err := v.EvaluateErr(nil)
+	val, err := v.Evaluate(nil)
 	if err != nil {
 		return nil, false
 	}
@@ -707,10 +691,9 @@ func NewNullValue(typ Type) *NullValue {
 
 func (*NullValue) Children() []Value { return []Value{} }
 func (*NullValue) Name() string      { return "null" }
-func (*NullValue) Evaluate(any) any  { return nil }
 
-// EvaluateErr is the error-returning twin (RFC-091). NULL never fails.
-func (*NullValue) EvaluateErr(any) (any, error) { return nil, nil }
+// Evaluate is the error-returning twin (RFC-091). NULL never fails.
+func (*NullValue) Evaluate(any) (any, error) { return nil, nil }
 
 // Type returns the typed-NULL annotation (UnknownType when
 // unannotated). SQL NULL is always nullable so the result is forced
@@ -830,16 +813,8 @@ func (p *ParameterValue) Type() Type {
 	return WithNullability(p.Typ, true)
 }
 
-func (p *ParameterValue) Evaluate(evalCtx any) any {
-	v, err := p.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (p *ParameterValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (p *ParameterValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
@@ -912,22 +887,14 @@ func (s *ScalarFunctionValue) Type() Type {
 	return WithNullability(s.Typ, true)
 }
 
-func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
-	v, err := s.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (s *ScalarFunctionValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
 		if a == nil {
 			return nil, nil
 		}
-		av, err := a.EvaluateErr(evalCtx)
+		av, err := a.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -1716,23 +1683,15 @@ func arithOperandCode(v Value) TypeCode {
 	return TypeCodeUnknown
 }
 
-func (a *ArithmeticValue) Evaluate(evalCtx any) any {
-	v, err := a.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Evaluate is the error-returning twin (RFC-091).
 // Arithmetic overflow, division by zero, and type mismatch are
 // returned as typed errors instead of panicking.
-func (a *ArithmeticValue) EvaluateErr(evalCtx any) (any, error) {
-	l, err := a.Left.EvaluateErr(evalCtx)
+func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
+	l, err := a.Left.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
-	r, err := a.Right.EvaluateErr(evalCtx)
+	r, err := a.Right.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -1950,17 +1909,9 @@ func (b *BooleanValue) Type() Type {
 	return NotNullBoolean
 }
 
-func (b *BooleanValue) Evaluate(evalCtx any) any {
-	v, err := b.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). A boolean
+// Evaluate is the error-returning twin (RFC-091). A boolean
 // literal never fails.
-func (b *BooleanValue) EvaluateErr(any) (any, error) {
+func (b *BooleanValue) Evaluate(any) (any, error) {
 	if b.Value == nil {
 		return nil, nil
 	}
@@ -1995,19 +1946,11 @@ func (c *CastValue) Type() Type {
 	return WithNullability(c.Target, true)
 }
 
-func (c *CastValue) Evaluate(evalCtx any) any {
-	v, err := c.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Evaluate is the error-returning twin (RFC-091).
 // Out-of-range / structurally-invalid casts are returned as
 // *InvalidCastError instead of panicking.
-func (c *CastValue) EvaluateErr(evalCtx any) (any, error) {
-	v, err := c.Child.EvaluateErr(evalCtx)
+func (c *CastValue) Evaluate(evalCtx any) (any, error) {
+	v, err := c.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -2277,22 +2220,11 @@ func (r *RecordConstructorValue) Type() Type {
 // Name returns the debug-print kind.
 func (*RecordConstructorValue) Name() string { return "record" }
 
-// Evaluate produces a map[string]any with each field evaluated.
-// Downstream consumers (projections, field-access) index into this
-// map by field name.
-func (r *RecordConstructorValue) Evaluate(evalCtx any) any {
-	v, err := r.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (r *RecordConstructorValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	out := make(map[string]any, len(r.Fields))
 	for _, f := range r.Fields {
-		fv, err := f.Value.EvaluateErr(evalCtx)
+		fv, err := f.Value.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -2355,21 +2287,9 @@ func (p *PromoteValue) Type() Type {
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
-// Evaluate delegates to the child — the seed treats Promote as a
-// no-op at runtime since cmpAny already handles cross-width
-// promotion. Plan-time inspection (explain, rewrite rules) is where
-// Promote earns its keep.
-func (p *PromoteValue) Evaluate(evalCtx any) any {
-	v, err := p.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (p *PromoteValue) EvaluateErr(evalCtx any) (any, error) {
-	return p.Child.EvaluateErr(evalCtx)
+// Evaluate is the error-returning twin (RFC-091).
+func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
+	return p.Child.Evaluate(evalCtx)
 }
 
 // --- QuantifiedObjectValue -----------------------------------------
@@ -2422,36 +2342,8 @@ func (q *QuantifiedObjectValue) Type() Type {
 // Name returns the debug-print kind.
 func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 
-// Evaluate extracts the row bound to this quantifier's correlation.
-// Eval context shapes this impl handles:
-//
-//   - map[CorrelationIdentifier]map[string]any — multi-source shape,
-//     returns the nested map for this correlation (nil if missing).
-//   - map[string]any — single-source compat shim: IGNORES q.Correlation
-//     and returns the whole map. Safe only when there's one
-//     QuantifiedObjectValue in play; multi-source callers MUST use
-//     the per-correlation shape or two quantifiers with different
-//     correlations silently evaluate to the same row.
-//   - anything else — nil.
-//
-// The single-source shim exists so existing single-table tests /
-// callers that feed a bare row map keep working while the eval
-// path migrates. New callers MUST NOT rely on it — thread the
-// per-correlation shape end-to-end. The shim is scheduled for
-// removal once no caller needs it.
-//
-// Downstream FieldValue / nested-field resolvers then index into the
-// returned map to pick a specific column.
-func (q *QuantifiedObjectValue) Evaluate(evalCtx any) any {
-	v, err := q.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (q *QuantifiedObjectValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (q *QuantifiedObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}
@@ -2590,21 +2482,12 @@ func (a *AggregateValue) Type() Type {
 // Name returns the debug-print kind.
 func (*AggregateValue) Name() string { return "agg" }
 
-// Evaluate panics — aggregates are multi-row and don't have a
-// single-row Evaluate semantics. Rule / plan code type-asserts
-// AggregateValue and routes it to an accumulator instead of calling
-// Evaluate. The panic message is loud so nobody silently returns nil
-// and debugs for an hour.
-func (a *AggregateValue) Evaluate(any) any {
-	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). Aggregates have
+// Evaluate is the error-returning twin (RFC-091). Aggregates have
 // no single-row eval — this is a genuine invariant violation, so it
 // stays a panic (bradfitz policy: invariant asserts are not threaded
 // as errors).
-func (a *AggregateValue) EvaluateErr(any) (any, error) {
-	panic("AggregateValue.EvaluateErr: aggregate must be evaluated over rows by the aggregator, not per-row")
+func (a *AggregateValue) Evaluate(any) (any, error) {
+	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
 }
 
 // GetIndexTypeName returns the FDB index-type name that backs this

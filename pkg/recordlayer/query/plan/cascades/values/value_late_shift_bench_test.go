@@ -15,7 +15,7 @@ func BenchmarkConditionSelectorValue_FirstTrueWins(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -28,7 +28,7 @@ func BenchmarkConditionSelectorValue_AllFalse(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -47,7 +47,7 @@ func BenchmarkPickValue_OverConditionSelector(b *testing.B) {
 	pick := NewPickValue(selector, alts, NotNullString)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = pick.Evaluate(nil)
+		_ = mustEvaluate(pick, nil)
 	}
 }
 
@@ -64,7 +64,7 @@ func BenchmarkArrayConstructorValue_8Elements(b *testing.B) {
 	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -72,7 +72,7 @@ func BenchmarkArrayConstructorValue_Empty(b *testing.B) {
 	v := NewArrayConstructorValue(NotNullLong, nil)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -97,7 +97,7 @@ func BenchmarkRankValue_FromHarness(b *testing.B) {
 	row := map[string]any{"_rank": int64(5)}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = r.Evaluate(row)
+		_ = mustEvaluate(r, row)
 	}
 }
 
@@ -106,7 +106,7 @@ func BenchmarkRowNumberValue_FromHarness(b *testing.B) {
 	row := map[string]any{"_row_number": int64(42)}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = r.Evaluate(row)
+		_ = mustEvaluate(r, row)
 	}
 }
 
@@ -120,7 +120,7 @@ func BenchmarkUdfValue_EvalSum2Args(b *testing.B) {
 		sum)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -128,7 +128,7 @@ func BenchmarkPatternForLikeValue_NoEscape(b *testing.B) {
 	v := NewPatternForLikeValue(LiteralValue("a%b_c.d+e"), LiteralValue(nil))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -142,7 +142,7 @@ func BenchmarkDistanceValue_Euclidean_64Dim(b *testing.B) {
 	v := NewDistanceValue(DistanceEuclidean, LiteralValue(a), LiteralValue(c))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }
 
@@ -156,6 +156,6 @@ func BenchmarkDistanceValue_Cosine_64Dim(b *testing.B) {
 	v := NewDistanceValue(DistanceCosine, LiteralValue(a), LiteralValue(c))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvaluate(v, nil)
 	}
 }

@@ -47,23 +47,8 @@ func (*RankValue) Name() string { return "RANK" }
 // Type returns NotNullLong — RANK is always populated, 1-based.
 func (*RankValue) Type() Type { return NotNullLong }
 
-// Evaluate returns the current rank from the row-shape harness
-// pattern. The harness supplies the window-accumulator's current
-// rank via the `_rank` key; in a real execution the rank is
-// computed by the streaming window operator.
-//
-// Returns nil if evalCtx is nil / non-map / has no `_rank` key —
-// matches the placeholder-Value pattern used elsewhere in the seed.
-func (r *RankValue) Evaluate(evalCtx any) any {
-	res, err := r.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (*RankValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (*RankValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}

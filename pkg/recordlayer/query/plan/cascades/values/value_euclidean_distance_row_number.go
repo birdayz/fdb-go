@@ -43,19 +43,8 @@ func (*EuclideanDistanceRowNumberValue) Type() Type { return NotNullLong }
 // HNSW index traversal and cannot be reproduced from base records.
 func (*EuclideanDistanceRowNumberValue) IsIndexOnly() bool { return true }
 
-// Evaluate returns the current row number from the row-shape harness
-// pattern (_row_number key). Real execution wires the HNSW search
-// graph; the harness exposes the per-row counter for testability.
-func (v *EuclideanDistanceRowNumberValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (*EuclideanDistanceRowNumberValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (*EuclideanDistanceRowNumberValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}

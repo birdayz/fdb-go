@@ -216,7 +216,7 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 		WithBinding(c.outerAlias, outerDatum).
 		WithBinding(c.innerAlias, innerDatum)
 
-	computed, err := c.resultValue.EvaluateErr(nestedCtx)
+	computed, err := c.resultValue.Evaluate(nestedCtx)
 	if err != nil {
 		return QueryResult{}, err
 	}

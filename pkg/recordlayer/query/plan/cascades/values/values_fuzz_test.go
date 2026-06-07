@@ -57,7 +57,7 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 		case *ConstantValue, *NullValue:
 			// ok — folded to a literal
 		default:
-			if _, err := out.EvaluateErr(nil); err == nil {
+			if _, err := out.Evaluate(nil); err == nil {
 				t.Fatalf("all-constant tree neither folded to a literal nor errors: got %T with no eval error", out)
 			}
 		}

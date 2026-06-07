@@ -147,7 +147,7 @@ func TestPlaceholder_EvalIsUnknown(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("e")
 	p := NewPlaceholder(alias, &values.FieldValue{Field: "x"})
-	if got := p.Eval(nil); got != TriUnknown {
+	if got := mustEval(p, nil); got != TriUnknown {
 		t.Fatalf("Eval = %v, want TriUnknown", got)
 	}
 }

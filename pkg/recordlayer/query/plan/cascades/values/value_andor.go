@@ -104,25 +104,16 @@ func (v *AndOrValue) Type() Type {
 	return NullableBoolean
 }
 
-// Evaluate computes the Kleene 3VL result with short-circuit.
-func (v *AndOrValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Evaluate is the error-returning twin (RFC-091).
 // Kleene short-circuit error semantics are preserved: a dominant
 // LEFT (FALSE for AND, TRUE for OR) returns before the RIGHT operand
 // is evaluated, so `FALSE AND <err>` → FALSE; `<err> AND FALSE` →
 // error; `UNKNOWN AND <err>` → error.
-func (v *AndOrValue) EvaluateErr(evalCtx any) (any, error) {
+func (v *AndOrValue) Evaluate(evalCtx any) (any, error) {
 	if v.Left == nil || v.Right == nil {
 		return nil, nil
 	}
-	left, err := v.Left.EvaluateErr(evalCtx)
+	left, err := v.Left.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +130,7 @@ func (v *AndOrValue) EvaluateErr(evalCtx any) (any, error) {
 		}
 	}
 
-	right, err := v.Right.EvaluateErr(evalCtx)
+	right, err := v.Right.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

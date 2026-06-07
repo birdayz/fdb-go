@@ -54,7 +54,7 @@ func TestCollateValue_ChildrenWithStrength(t *testing.T) {
 func TestCollateValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewCollateValue(LiteralValue("hello"), nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

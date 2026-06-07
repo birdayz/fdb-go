@@ -48,22 +48,8 @@ func (v *ParameterObjectValue) Type() Type {
 	return WithNullability(v.ResultType, true)
 }
 
-// Evaluate returns the parameter's value from the eval context's
-// ParameterBinder capability. Returns nil when the context doesn't
-// implement ParameterBinder or when no binding exists.
-//
-// Mirrors Java's ParameterObjectValue.eval which calls
-// context.getBinding(parameterName).
-func (v *ParameterObjectValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *ParameterObjectValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *ParameterObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}

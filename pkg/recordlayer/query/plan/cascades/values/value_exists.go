@@ -41,18 +41,11 @@ func (*ExistsValue) Name() string { return "exists" }
 // truth value.
 func (*ExistsValue) Type() Type { return NotNullBoolean }
 
-// Evaluate panics — ExistsValue is non-evaluable at the per-row
-// level. Specialized planner rules / executor handling does the
-// row-level test.
-func (*ExistsValue) Evaluate(any) any {
-	panic("ExistsValue.Evaluate: non-evaluable; specialized planner rule handles EXISTS lowering")
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). ExistsValue is
+// Evaluate is the error-returning twin (RFC-091). ExistsValue is
 // non-evaluable at the per-row level — a genuine invariant violation,
 // so it stays a panic.
-func (*ExistsValue) EvaluateErr(any) (any, error) {
-	panic("ExistsValue.EvaluateErr: non-evaluable; specialized planner rule handles EXISTS lowering")
+func (*ExistsValue) Evaluate(any) (any, error) {
+	panic("ExistsValue.Evaluate: non-evaluable; specialized planner rule handles EXISTS lowering")
 }
 
 // GetCorrelatedTo returns the singleton set containing the

@@ -577,21 +577,13 @@ func (pv *predicateValue) Type() values.Type                        { return val
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
 func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
-func (pv *predicateValue) Evaluate(evalCtx any) any {
-	v, err := pv.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091). The
+// Evaluate is the error-returning twin (RFC-091). The
 // wrapped predicate's evaluation error is threaded.
-func (pv *predicateValue) EvaluateErr(evalCtx any) (any, error) {
+func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	if pv.pred == nil {
 		return nil, nil
 	}
-	res, err := pv.pred.EvalErr(evalCtx)
+	res, err := pv.pred.Eval(evalCtx)
 	if err != nil {
 		return nil, err
 	}

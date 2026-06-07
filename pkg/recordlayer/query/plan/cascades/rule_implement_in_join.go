@@ -466,7 +466,10 @@ func extractInValues(q expressions.Quantifier) []any {
 	if cv == nil {
 		return nil
 	}
-	result := cv.Evaluate(nil)
+	result, err := cv.Evaluate(nil)
+	if err != nil {
+		return nil
+	}
 	if vals, ok := result.([]any); ok {
 		return vals
 	}

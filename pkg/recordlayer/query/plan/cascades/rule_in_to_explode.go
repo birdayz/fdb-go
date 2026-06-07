@@ -93,7 +93,10 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	rhs := inPred.Comparison.Operand.Evaluate(nil)
+	rhs, err := inPred.Comparison.Operand.Evaluate(nil)
+	if err != nil {
+		return
+	}
 	list, ok := rhs.([]any)
 	if !ok || len(list) == 0 {
 		return

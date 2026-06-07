@@ -73,22 +73,8 @@ func (*RowNumberValue) Type() Type { return NotNullLong }
 // available — Java's MatchCandidate-side validation does the same.
 func (*RowNumberValue) IsIndexOnly() bool { return true }
 
-// Evaluate returns the current row number from the row-shape harness
-// pattern. The harness exposes the streaming-window operator's
-// per-row row-number counter via the `_row_number` key.
-//
-// Returns nil if evalCtx is nil / non-map / has no `_row_number`
-// key — matches the placeholder-Value pattern.
-func (r *RowNumberValue) Evaluate(evalCtx any) any {
-	res, err := r.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (*RowNumberValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (*RowNumberValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}

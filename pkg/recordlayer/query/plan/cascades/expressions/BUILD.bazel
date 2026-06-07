@@ -50,6 +50,7 @@ go_test(
         "correlation_test.go",
         "cte_expressions_test.go",
         "dml_test.go",
+        "eval_must_test.go",
         "explode_test.go",
         "expression_test.go",
         "full_unordered_scan_test.go",

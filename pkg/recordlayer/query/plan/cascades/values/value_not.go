@@ -55,20 +55,12 @@ func (n *NotValue) Type() Type {
 	return NullableBoolean
 }
 
-func (n *NotValue) Evaluate(evalCtx any) any {
-	res, err := n.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (n *NotValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (n *NotValue) Evaluate(evalCtx any) (any, error) {
 	if n.Child == nil {
 		return nil, nil
 	}
-	v, err := n.Child.EvaluateErr(evalCtx)
+	v, err := n.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

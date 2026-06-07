@@ -38,31 +38,12 @@ func (*VersionValue) Name() string { return "version" }
 // Type returns NullableVersion.
 func (*VersionValue) Type() Type { return NullableVersion }
 
-// Evaluate extracts the version from the child's evaluated value.
-// The child is expected to produce a map with a "version" key (the
-// seed's row-shape), or a struct with a similar accessor.
-//
-// Returns nil if:
-//   - Child is nil-shaped or evaluates to nil.
-//   - The evaluated record has no version field.
-//   - The version field is itself nil.
-//
-// Returns the version (typically []byte or a 12-byte tuple) on
-// success.
-func (v *VersionValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *VersionValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *VersionValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil
 	}
-	rec, err := v.Child.EvaluateErr(evalCtx)
+	rec, err := v.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

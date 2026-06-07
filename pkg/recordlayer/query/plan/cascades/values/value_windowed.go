@@ -54,16 +54,10 @@ func (w *WindowedValue) Children() []Value {
 	return out
 }
 
-// Evaluate returns nil — windowed aggregates can't eval per-row
-// without a full partition context. Concrete subclasses MAY override
-// to evaluate against a window-frame harness (see RankValue.Evaluate
-// for the rank-tracking eval seed).
-func (*WindowedValue) Evaluate(any) any { return nil }
-
-// EvaluateErr is the error-returning twin (RFC-091). The base windowed
+// Evaluate is the error-returning twin (RFC-091). The base windowed
 // value has no per-row eval; the placeholder never fails. Concrete
-// subclasses that override Evaluate also override EvaluateErr.
-func (*WindowedValue) EvaluateErr(any) (any, error) { return nil, nil }
+// subclasses that override Evaluate also override Evaluate.
+func (*WindowedValue) Evaluate(any) (any, error) { return nil, nil }
 
 // SplitNewChildren splits a flat newChildren slice back into
 // (partition, argument) lists by position — matching Java's

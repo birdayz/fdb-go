@@ -50,47 +50,12 @@ func (*OfTypeValue) Name() string { return "oftype" }
 // Type is always nullable boolean.
 func (*OfTypeValue) Type() Type { return NullableBoolean }
 
-// Evaluate checks the child's runtime value against ExpectedType
-// via TypeCode match. Returns nil if either operand is nil-shaped.
-//
-// The seed compares only TypeCodes — TypeCodeBoolean matches a
-// runtime bool, TypeCodeLong matches a runtime int64, etc. Field-
-// level structural comparison (e.g. RecordType field-set match) is
-// gated on a future extension.
-//
-// CONFORMANCE: matches Java's OfTypeValue.eval semantics:
-//  1. NULL probe → returns ExpectedType.IsNullable().
-//  2. Primitive-to-primitive: STRICT TypeCode match (Java's
-//     `type.nullable().equals(expectedType.nullable())` reduces
-//     to a TypeCode comparison since nullability is normalised
-//     on both sides).
-//
-// Verified against Java's OfTypeValueTest: `OfType(42 (int), LONG)`
-// returns FALSE in Java even though INT is promotable to LONG in
-// other contexts. The seed matches this strict primitive behavior.
-//
-// Two Java branches NOT yet replicated:
-//   - DynamicMessage probe → returns `expectedType.isRecord()`.
-//   - Non-primitive cross-type promotion via PromoteValue.
-//     resolvePhysicalOperator (only triggers for non-primitive
-//     sources — records, arrays).
-//
-// Both gated on proto-record-shape introspection / cross-type
-// promotion machinery — wired-when-execution-lands.
-func (v *OfTypeValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *OfTypeValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *OfTypeValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil || v.ExpectedType == nil {
 		return nil, nil
 	}
-	val, err := v.Child.EvaluateErr(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

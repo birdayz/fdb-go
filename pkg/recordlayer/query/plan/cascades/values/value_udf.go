@@ -82,25 +82,15 @@ func (u *UdfValue) Name() string { return u.FunctionName }
 // Type returns the declared return type.
 func (u *UdfValue) Type() Type { return u.ResultType }
 
-// Evaluate walks each arg's Evaluate and hands the resulting `[]any`
-// to Call. Returns nil if Call is nil (placeholder mode).
-func (u *UdfValue) Evaluate(evalCtx any) any {
-	v, err := u.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (u *UdfValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (u *UdfValue) Evaluate(evalCtx any) (any, error) {
 	if u.Call == nil {
 		return nil, nil
 	}
 	args := make([]any, len(u.Args))
 	for i, a := range u.Args {
 		if a != nil {
-			av, err := a.EvaluateErr(evalCtx)
+			av, err := a.Evaluate(evalCtx)
 			if err != nil {
 				return nil, err
 			}

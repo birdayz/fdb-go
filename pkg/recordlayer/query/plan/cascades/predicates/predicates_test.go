@@ -19,26 +19,26 @@ func TestValuePredicate(t *testing.T) {
 	t.Parallel()
 	// Bare bool literal: TRUE → TriTrue.
 	p := NewValuePredicate(values.NewBooleanValue(true))
-	if got := p.Eval(nil); got != TriTrue {
+	if got := mustEval(p, nil); got != TriTrue {
 		t.Fatalf("bool(true): got %v", got)
 	}
 	// FALSE → TriFalse.
 	p = NewValuePredicate(values.NewBooleanValue(false))
-	if got := p.Eval(nil); got != TriFalse {
+	if got := mustEval(p, nil); got != TriFalse {
 		t.Fatalf("bool(false): got %v", got)
 	}
 	// NULL boolean literal → TriUnknown.
 	p = NewValuePredicate(&values.BooleanValue{Value: nil})
-	if got := p.Eval(nil); got != TriUnknown {
+	if got := mustEval(p, nil); got != TriUnknown {
 		t.Fatalf("NULL bool: got %v", got)
 	}
 	// Non-boolean Value → TriUnknown (safety net against analyzer gaps).
 	p = NewValuePredicate(&values.ConstantValue{Value: int64(1), Typ: values.TypeInt})
-	if got := p.Eval(nil); got != TriUnknown {
+	if got := mustEval(p, nil); got != TriUnknown {
 		t.Fatalf("int literal: got %v", got)
 	}
 	// Nil Value in the predicate itself.
-	if got := (&ValuePredicate{}).Eval(nil); got != TriUnknown {
+	if got := mustEval((&ValuePredicate{}), nil); got != TriUnknown {
 		t.Fatalf("nil-Value predicate: got %v", got)
 	}
 	// Explain renders the Value's per-instance form via ExplainValue
@@ -51,13 +51,13 @@ func TestValuePredicate(t *testing.T) {
 
 func TestConstantPredicate(t *testing.T) {
 	t.Parallel()
-	if v := NewConstantPredicate(TriTrue).Eval(nil); v != TriTrue {
+	if v := mustEval(NewConstantPredicate(TriTrue), nil); v != TriTrue {
 		t.Fatalf("TRUE const: got %v", v)
 	}
-	if v := NewConstantPredicate(TriFalse).Eval(nil); v != TriFalse {
+	if v := mustEval(NewConstantPredicate(TriFalse), nil); v != TriFalse {
 		t.Fatalf("FALSE const: got %v", v)
 	}
-	if v := NewConstantPredicate(TriUnknown).Eval(nil); v != TriUnknown {
+	if v := mustEval(NewConstantPredicate(TriUnknown), nil); v != TriUnknown {
 		t.Fatalf("UNKNOWN const: got %v", v)
 	}
 	if got := NewConstantPredicate(TriTrue).Explain(); got != "TRUE" {
@@ -97,7 +97,7 @@ func TestAnd_Kleene(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := NewAnd(tc.in...).Eval(nil)
+			got := mustEval(NewAnd(tc.in...), nil)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -131,7 +131,7 @@ func TestOr_Kleene(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := NewOr(tc.in...).Eval(nil)
+			got := mustEval(NewOr(tc.in...), nil)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -151,7 +151,7 @@ func TestNot_Kleene(t *testing.T) {
 		{TriUnknown, TriUnknown},
 	}
 	for _, tc := range cases {
-		got := NewNot(NewConstantPredicate(tc.in)).Eval(nil)
+		got := mustEval(NewNot(NewConstantPredicate(tc.in)), nil)
 		if got != tc.want {
 			t.Fatalf("NOT %v: got %v, want %v", tc.in, got, tc.want)
 		}
@@ -166,7 +166,7 @@ func TestPredicate_Composition(t *testing.T) {
 	F := NewConstantPredicate(TriFalse)
 	U := NewConstantPredicate(TriUnknown)
 	tree := NewNot(NewAnd(T, NewOr(F, U)))
-	if got := tree.Eval(nil); got != TriUnknown {
+	if got := mustEval(tree, nil); got != TriUnknown {
 		t.Fatalf("composition: got %v", got)
 	}
 	// Explain output is readable.

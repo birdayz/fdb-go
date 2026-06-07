@@ -348,7 +348,6 @@ func TestSimplifyPredicateValues_DeeplyNested(t *testing.T) {
 type fakePred struct{}
 
 func (*fakePred) Children() []QueryPredicate                          { return nil }
-func (*fakePred) Eval(any) TriBool                                    { return TriUnknown }
-func (*fakePred) EvalErr(any) (TriBool, error)                        { return TriUnknown, nil }
+func (*fakePred) Eval(any) (TriBool, error)                           { return TriUnknown, nil }
 func (*fakePred) Explain() string                                     { return "fakePred" }
 func (*fakePred) GetCorrelatedTo() map[CorrelationIdentifier]struct{} { return nil }

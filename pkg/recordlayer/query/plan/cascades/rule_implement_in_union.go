@@ -92,8 +92,11 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if expl, ok := member.(*expressions.ExplodeExpression); ok {
 					cv := expl.GetCollectionValue()
 					if cv != nil {
-						if arr, ok := cv.Evaluate(nil).([]any); ok {
-							inSources[i] = arr
+						cvVal, err := cv.Evaluate(nil)
+						if err == nil {
+							if arr, ok := cvVal.([]any); ok {
+								inSources[i] = arr
+							}
 						}
 					}
 					break

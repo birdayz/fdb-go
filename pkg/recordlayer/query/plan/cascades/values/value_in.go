@@ -115,41 +115,19 @@ func (*InOpValue) Name() string { return "in" }
 // 3VL forces nullable).
 func (*InOpValue) Type() Type { return NullableBoolean }
 
-// Evaluate computes probe IN list with SQL three-valued semantics.
-//
-// Returns:
-//   - true if probe matches any non-NULL element of the list.
-//   - false if probe doesn't match any list element AND the list
-//     contains no NULLs.
-//   - nil (UNKNOWN) if probe is NULL, OR probe doesn't match a non-
-//     NULL element AND the list contains a NULL (NULL propagation).
-//   - nil if probe or list is nil-Value, or list doesn't evaluate
-//     to a slice.
-//
-// equalsAny performs numeric coercion for mixed int/float
-// comparisons, matching Java's Comparisons.evalComparison(EQUALS).
-// See D-10 in CASCADES_DIVERGENCE.md.
-func (v *InOpValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *InOpValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *InOpValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.List == nil {
 		return nil, nil
 	}
-	probe, err := v.Probe.EvaluateErr(evalCtx)
+	probe, err := v.Probe.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
 	if probe == nil {
 		return nil, nil // NULL IN anything = UNKNOWN
 	}
-	list, err := v.List.EvaluateErr(evalCtx)
+	list, err := v.List.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

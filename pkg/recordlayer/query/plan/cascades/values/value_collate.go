@@ -70,13 +70,9 @@ func (*CollateValue) Name() string { return "collate" }
 // Type returns NotNullBytes.
 func (*CollateValue) Type() Type { return NotNullBytes }
 
-// Evaluate is a placeholder — real eval needs golang.org/x/text/collate
-// wiring. Returns nil per the existing placeholder pattern.
-func (*CollateValue) Evaluate(any) any { return nil }
-
-// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// Evaluate is the error-returning twin (RFC-091). Placeholder eval
 // never fails.
-func (*CollateValue) EvaluateErr(any) (any, error) { return nil, nil }
+func (*CollateValue) Evaluate(any) (any, error) { return nil, nil }
 
 // WithChildren returns a fresh CollateValue with new children.
 // Caller is responsible for passing the right number of children

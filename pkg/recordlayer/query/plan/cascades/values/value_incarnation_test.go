@@ -30,7 +30,7 @@ func TestIncarnationValue_EvaluateFromMap(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
 	row := map[string]any{"incarnation": int64(7)}
-	if got := v.Evaluate(row); got != int64(7) {
+	if got := mustEvaluate(v, row); got != int64(7) {
 		t.Fatalf("Evaluate = %v, want 7", got)
 	}
 }
@@ -39,7 +39,7 @@ func TestIncarnationValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
 	row := map[string]any{"other": int64(7)}
-	if got := v.Evaluate(row); got != nil {
+	if got := mustEvaluate(v, row); got != nil {
 		t.Fatalf("Evaluate(no incarnation) = %v, want nil", got)
 	}
 }
@@ -47,7 +47,7 @@ func TestIncarnationValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 func TestIncarnationValue_EvaluateNilContextReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -55,7 +55,7 @@ func TestIncarnationValue_EvaluateNilContextReturnsNil(t *testing.T) {
 func TestIncarnationValue_EvaluateNonMapContextReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
-	if got := v.Evaluate("not-a-map"); got != nil {
+	if got := mustEvaluate(v, "not-a-map"); got != nil {
 		t.Fatalf("Evaluate(string) = %v, want nil", got)
 	}
 }

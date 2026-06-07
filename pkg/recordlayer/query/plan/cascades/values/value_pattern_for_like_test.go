@@ -29,7 +29,7 @@ func TestPatternForLikeValue_NoEscape(t *testing.T) {
 	}
 	for _, tc := range cases {
 		v := NewPatternForLikeValue(LiteralValue(tc.pat), LiteralValue(nil))
-		if got := v.Evaluate(nil); got != tc.want {
+		if got := mustEvaluate(v, nil); got != tc.want {
 			t.Errorf("Evaluate(%q) = %q, want %q", tc.pat, got, tc.want)
 		}
 	}
@@ -39,21 +39,21 @@ func TestPatternForLikeValue_WithEscape(t *testing.T) {
 	t.Parallel()
 	// `\%` (with `\` as escape char) → literal `%`.
 	v := NewPatternForLikeValue(LiteralValue(`a\%b`), LiteralValue(`\`))
-	got := v.Evaluate(nil)
+	got := mustEvaluate(v, nil)
 	want := `^a%b$`
 	if got != want {
 		t.Fatalf("Evaluate(`a\\%%b`, esc=`\\`) = %q, want %q", got, want)
 	}
 	// `\_` → literal `_`.
 	v2 := NewPatternForLikeValue(LiteralValue(`a\_b`), LiteralValue(`\`))
-	got2 := v2.Evaluate(nil)
+	got2 := mustEvaluate(v2, nil)
 	want2 := `^a_b$`
 	if got2 != want2 {
 		t.Fatalf("Evaluate(`a\\_b`, esc=`\\`) = %q, want %q", got2, want2)
 	}
 	// Bare `_` and `%` after escape rule still expand normally.
 	v3 := NewPatternForLikeValue(LiteralValue("a%b_c"), LiteralValue(`\`))
-	got3 := v3.Evaluate(nil)
+	got3 := mustEvaluate(v3, nil)
 	want3 := `^a.*b.c$`
 	if got3 != want3 {
 		t.Fatalf("Evaluate(`a%%b_c`, esc=`\\`) = %q, want %q", got3, want3)
@@ -63,7 +63,7 @@ func TestPatternForLikeValue_WithEscape(t *testing.T) {
 func TestPatternForLikeValue_NullPattern(t *testing.T) {
 	t.Parallel()
 	v := NewPatternForLikeValue(LiteralValue(nil), LiteralValue(nil))
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(NULL pattern) = %v, want nil", got)
 	}
 }
@@ -72,7 +72,7 @@ func TestPatternForLikeValue_NullEscapeIsNoEscape(t *testing.T) {
 	t.Parallel()
 	// NULL escape → standard transformation (matches Java contract).
 	v := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue(nil))
-	if got := v.Evaluate(nil); got != "^a.*$" {
+	if got := mustEvaluate(v, nil); got != "^a.*$" {
 		t.Fatalf("Evaluate(NULL escape) = %v, want ^a.*$", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestPatternForLikeValue_MultiCharEscapeReturnsNil(t *testing.T) {
 	// Java throws SemanticException for non-single-char escape; Go
 	// surfaces nil from the evaluator (planner is expected to check).
 	v := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue("xx"))
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(2-char escape) = %v, want nil", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestPatternForLikeValue_MultiCharEscapeReturnsNil(t *testing.T) {
 func TestPatternForLikeValue_EmptyEscapeReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue(""))
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(empty escape) = %v, want nil", got)
 	}
 }
@@ -125,7 +125,7 @@ func TestPatternForLikeValue_RegexCompiles(t *testing.T) {
 	}
 	for _, p := range cases {
 		v := NewPatternForLikeValue(LiteralValue(p), LiteralValue(nil))
-		got, ok := v.Evaluate(nil).(string)
+		got, ok := mustEvaluate(v, nil).(string)
 		if !ok {
 			t.Errorf("Evaluate(%q) returned non-string", p)
 			continue

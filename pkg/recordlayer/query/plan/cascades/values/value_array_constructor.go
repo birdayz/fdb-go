@@ -59,28 +59,12 @@ func (v *ArrayConstructorValue) Type() Type {
 	return &ArrayType{Nullable: false, ElementType: v.ElementType}
 }
 
-// Evaluate gathers each child's evaluation into a `[]any`.
-//
-// Empty constructor returns an empty `[]any{}` (NOT nil) so callers
-// can distinguish empty-array from NULL-array via `len(result) ==
-// 0 && result != nil`.
-//
-// Nil child Values are tolerated — produce a nil element. Per Java,
-// this is the same as a child evaluating to NULL.
-func (v *ArrayConstructorValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *ArrayConstructorValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *ArrayConstructorValue) Evaluate(evalCtx any) (any, error) {
 	out := make([]any, len(v.Elements))
 	for i, child := range v.Elements {
 		if child != nil {
-			cv, err := child.EvaluateErr(evalCtx)
+			cv, err := child.Evaluate(evalCtx)
 			if err != nil {
 				return nil, err
 			}

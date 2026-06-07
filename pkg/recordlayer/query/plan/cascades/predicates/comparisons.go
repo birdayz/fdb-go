@@ -309,62 +309,26 @@ func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
 	return Comparison{Type: typ, Operand: values.LiteralValue(lit)}
 }
 
-// Eval compares left against c's (plan-time-evaluated) RHS per c's
-// ComparisonType. The RHS is produced by c.Operand.Evaluate(nil) —
-// i.e. RHS evaluation without a row context. Constant-RHS callers
-// (the common case, and the only shape that can fold at plan time)
-// get their literal back. Non-constant RHS — a FieldValue or an
-// ArithmeticValue over row columns — evaluates to nil here and
-// degrades to UNKNOWN, which is the right answer when no row is in
-// scope. For row-aware evaluation use ComparisonPredicate.Eval,
-// which evaluates both sides against the given eval context.
-//
-// NULL (nil) on either side returns UNKNOWN per SQL 3VL for binary
-// comparators; unary (IS [NOT] NULL) and null-safe
-// (IS [NOT] DISTINCT FROM) types resolve even on NULL. Numeric
-// operands promote via cmpAny so mixed-width int/float pairs don't
-// degrade to UNKNOWN.
-func (c Comparison) Eval(left any) TriBool {
-	v, err := c.EvalErr(left)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvalErr is the error-returning twin of Eval (RFC-091). The RHS
+// Eval is the error-returning twin (RFC-091). The RHS
 // Value's evaluation error is threaded, and type-mismatch is returned
 // as a *TypeMismatchError instead of panicking.
-func (c Comparison) EvalErr(left any) (TriBool, error) {
+func (c Comparison) Eval(left any) (TriBool, error) {
 	var right any
 	if c.Operand != nil && !c.Type.IsUnary() {
-		r, err := c.Operand.EvaluateErr(nil)
+		r, err := c.Operand.Evaluate(nil)
 		if err != nil {
 			return TriUnknown, err
 		}
 		right = r
 	}
-	return c.EvalAgainstErr(left, right)
+	return c.EvalAgainst(left, right)
 }
 
-// EvalAgainst is the pure dispatch: given already-evaluated LHS and
-// RHS Go-natives, return the Kleene truth value. ComparisonPredicate
-// evaluates both sides against the row's eval context and calls
-// EvalAgainst — separating eval from dispatch is what lets a
-// non-constant RHS (`a = b + 1`) work row-by-row.
-func (c Comparison) EvalAgainst(left, right any) TriBool {
-	v, err := c.EvalAgainstErr(left, right)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvalAgainstErr is the error-returning twin of EvalAgainst (RFC-091).
+// EvalAgainst is the error-returning twin (RFC-091).
 // Numeric/string type mismatch is returned as a *TypeMismatchError
 // instead of panicking; the DistanceRank "reached row evaluation"
 // case stays a panic (genuine planner invariant, not user-reachable).
-func (c Comparison) EvalAgainstErr(left, right any) (TriBool, error) {
+func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
 	switch c.Type {
@@ -738,22 +702,14 @@ func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier
 	return out
 }
 
-func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
-	v, err := p.EvalErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
-// EvalErr is the error-returning twin of Eval (RFC-091). The LHS and
+// Eval is the error-returning twin (RFC-091). The LHS and
 // RHS Value evaluation errors are threaded, and type-mismatch is
 // returned as a *TypeMismatchError instead of panicking.
-func (p *ComparisonPredicate) EvalErr(evalCtx any) (TriBool, error) {
+func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {
 	if p.Operand == nil {
 		return TriUnknown, nil
 	}
-	left, err := p.Operand.EvaluateErr(evalCtx)
+	left, err := p.Operand.Evaluate(evalCtx)
 	if err != nil {
 		return TriUnknown, err
 	}
@@ -762,13 +718,13 @@ func (p *ComparisonPredicate) EvalErr(evalCtx any) (TriBool, error) {
 		// Evaluate RHS against the same row context. For constant
 		// RHS this reduces to the literal; for a FieldValue or
 		// arithmetic over row columns this reads the current row.
-		r, err := p.Comparison.Operand.EvaluateErr(evalCtx)
+		r, err := p.Comparison.Operand.Evaluate(evalCtx)
 		if err != nil {
 			return TriUnknown, err
 		}
 		right = r
 	}
-	return p.Comparison.EvalAgainstErr(left, right)
+	return p.Comparison.EvalAgainst(left, right)
 }
 
 func (p *ComparisonPredicate) Explain() string {

@@ -30,7 +30,7 @@ func TestEmptyValue_TypeIsEmptyRecord(t *testing.T) {
 func TestEmptyValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewEmptyValue()
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("EmptyValue.Evaluate = %v, want nil", got)
 	}
 }

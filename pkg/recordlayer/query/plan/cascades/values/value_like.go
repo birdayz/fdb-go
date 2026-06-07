@@ -62,25 +62,16 @@ func (*LikeOperatorValue) Name() string { return "like" }
 // Type is always nullable boolean (NULL propagation).
 func (*LikeOperatorValue) Type() Type { return NullableBoolean }
 
-// Evaluate computes probe LIKE pattern.
-func (v *LikeOperatorValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *LikeOperatorValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *LikeOperatorValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.Pattern == nil {
 		return nil, nil
 	}
-	probe, err := v.Probe.EvaluateErr(evalCtx)
+	probe, err := v.Probe.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
-	pattern, err := v.Pattern.EvaluateErr(evalCtx)
+	pattern, err := v.Pattern.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

@@ -38,7 +38,7 @@ func TestLogicalIntersection_DefensiveCopy(t *testing.T) {
 	if x.GetQuantifiers()[0].GetAlias() != q.GetAlias() {
 		t.Fatal("quantifier list not defensively copied")
 	}
-	if v := x.GetComparisonKeyValues()[0].(*values.BooleanValue); v.Evaluate(nil) != true {
+	if v := x.GetComparisonKeyValues()[0].(*values.BooleanValue); mustEvaluate(v, nil) != true {
 		t.Fatal("comparison key list not defensively copied")
 	}
 }

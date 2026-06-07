@@ -25,7 +25,7 @@ func TestConditionSelectorValue_FirstMatchWins(t *testing.T) {
 		NewBooleanValue(true), // first TRUE — index 1
 		NewBooleanValue(true),
 	})
-	if got := v.Evaluate(nil); got != int64(1) {
+	if got := mustEvaluate(v, nil); got != int64(1) {
 		t.Fatalf("Evaluate = %v, want 1 (first TRUE wins)", got)
 	}
 }
@@ -36,7 +36,7 @@ func TestConditionSelectorValue_AllFalseReturnsNil(t *testing.T) {
 		NewBooleanValue(false),
 		NewBooleanValue(false),
 	})
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(all FALSE) = %v, want nil", got)
 	}
 }
@@ -49,7 +49,7 @@ func TestConditionSelectorValue_NullImplicationReturnsNil(t *testing.T) {
 		LiteralValue(nil),
 		LiteralValue(nil),
 	})
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(all nil) = %v, want nil", got)
 	}
 }
@@ -61,7 +61,7 @@ func TestConditionSelectorValue_NonBoolImplicationDoesNotMatch(t *testing.T) {
 		LiteralValue("not-a-bool"),
 		NewBooleanValue(true), // TRUE — index 1
 	})
-	if got := v.Evaluate(nil); got != int64(1) {
+	if got := mustEvaluate(v, nil); got != int64(1) {
 		t.Fatalf("Evaluate(non-bool, TRUE) = %v, want 1", got)
 	}
 }
@@ -72,7 +72,7 @@ func TestConditionSelectorValue_FalseDoesNotMatch(t *testing.T) {
 	v := NewConditionSelectorValue([]Value{
 		NewBooleanValue(false),
 	})
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(FALSE) = %v, want nil (only TRUE matches)", got)
 	}
 }
@@ -80,7 +80,7 @@ func TestConditionSelectorValue_FalseDoesNotMatch(t *testing.T) {
 func TestConditionSelectorValue_EmptyImplicationsReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewConditionSelectorValue(nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(empty) = %v, want nil", got)
 	}
 }
@@ -93,7 +93,7 @@ func TestConditionSelectorValue_ImplicitElseViaTrailingTrue(t *testing.T) {
 		NewBooleanValue(false), // c2 doesn't match
 		NewBooleanValue(true),  // ELSE — always matches, index 2
 	})
-	if got := v.Evaluate(nil); got != int64(2) {
+	if got := mustEvaluate(v, nil); got != int64(2) {
 		t.Fatalf("Evaluate = %v, want 2 (implicit ELSE)", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestConditionSelectorValue_PickValueIntegration(t *testing.T) {
 	pick := NewPickValue(selector,
 		[]Value{LiteralValue("a"), LiteralValue("b"), LiteralValue("c")},
 		NotNullString)
-	if got := pick.Evaluate(nil); got != "b" {
+	if got := mustEvaluate(pick, nil); got != "b" {
 		t.Fatalf("CASE result = %v, want 'b'", got)
 	}
 }
@@ -134,7 +134,7 @@ func TestConditionSelectorValue_DefensiveCopyOnConstruct(t *testing.T) {
 	impl := []Value{NewBooleanValue(true)}
 	v := NewConditionSelectorValue(impl)
 	impl[0] = NewBooleanValue(false) // mutate caller's slice
-	if got := v.Evaluate(nil); got != int64(0) {
+	if got := mustEvaluate(v, nil); got != int64(0) {
 		t.Fatalf("Evaluate after caller mutation = %v, want 0 (defensive copy)", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestConditionSelectorValue_WithChildren(t *testing.T) {
 	t.Parallel()
 	original := NewConditionSelectorValue([]Value{NewBooleanValue(false)})
 	rebuilt := original.WithChildren([]Value{NewBooleanValue(true)})
-	if got := rebuilt.Evaluate(nil); got != int64(0) {
+	if got := mustEvaluate(rebuilt, nil); got != int64(0) {
 		t.Fatalf("rebuilt.Evaluate = %v, want 0", got)
 	}
 }
@@ -162,7 +162,7 @@ func TestConditionSelectorValue_SimplifyConstantFold(t *testing.T) {
 	if folded == v {
 		t.Fatalf("SimplifyValue did NOT fold all-constant ConditionSelector")
 	}
-	if got := folded.Evaluate(nil); got != int64(1) {
+	if got := mustEvaluate(folded, nil); got != int64(1) {
 		t.Fatalf("folded.Evaluate = %v, want 1", got)
 	}
 }
@@ -185,7 +185,7 @@ func TestPickValue_SimplifyConstantFold(t *testing.T) {
 	if folded == pick {
 		t.Fatalf("SimplifyValue did NOT fold all-constant CASE")
 	}
-	if got := folded.Evaluate(nil); got != "b" {
+	if got := mustEvaluate(folded, nil); got != "b" {
 		t.Fatalf("folded.Evaluate = %v, want 'b'", got)
 	}
 }

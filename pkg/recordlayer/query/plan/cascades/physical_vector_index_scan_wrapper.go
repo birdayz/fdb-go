@@ -93,7 +93,11 @@ func vectorScanCardinality(plan *plans.RecordQueryVectorIndexPlan) float64 {
 	if plan == nil || plan.GetK() == nil {
 		return defaultK
 	}
-	switch n := plan.GetK().Evaluate(nil).(type) {
+	kVal, err := plan.GetK().Evaluate(nil)
+	if err != nil {
+		return defaultK
+	}
+	switch n := kVal.(type) {
 	case int:
 		if n > 0 {
 			return float64(n)

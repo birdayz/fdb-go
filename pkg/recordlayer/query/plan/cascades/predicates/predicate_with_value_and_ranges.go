@@ -118,10 +118,8 @@ func (p *PredicateWithValueAndRanges) IsCompileTime() bool {
 
 func (p *PredicateWithValueAndRanges) Children() []QueryPredicate { return nil }
 
-func (p *PredicateWithValueAndRanges) Eval(_ any) TriBool { return TriUnknown }
-
-// EvalErr is the error-returning twin (RFC-091). Never fails.
-func (p *PredicateWithValueAndRanges) EvalErr(_ any) (TriBool, error) {
+// Eval is the error-returning twin (RFC-091). Never fails.
+func (p *PredicateWithValueAndRanges) Eval(_ any) (TriBool, error) {
 	return TriUnknown, nil
 }
 

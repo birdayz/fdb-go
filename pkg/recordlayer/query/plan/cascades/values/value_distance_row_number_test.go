@@ -70,7 +70,7 @@ func TestDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	v := NewDistanceRowNumberValue(DistanceEuclidean, nil, nil, nil, nil)
 	row := map[string]any{"_row_number": int64(7)}
-	if got := v.Evaluate(row); got != int64(7) {
+	if got := mustEvaluate(v, row); got != int64(7) {
 		t.Fatalf("Evaluate = %v, want 7", got)
 	}
 }
@@ -78,7 +78,7 @@ func TestDistanceRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestDistanceRowNumberValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewDistanceRowNumberValue(DistanceEuclidean, nil, nil, nil, nil)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }

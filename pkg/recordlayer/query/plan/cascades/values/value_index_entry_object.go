@@ -123,23 +123,8 @@ func (*IndexEntryObjectValue) Name() string { return "indexEntryObject" }
 // Type returns the bound result type.
 func (v *IndexEntryObjectValue) Type() Type { return v.ResultType }
 
-// Evaluate walks the ordinal path through the bound IndexEntry's
-// KEY or VALUE tuple. Returns nil if:
-//   - evalCtx is nil.
-//   - evalCtx is not a `map[CorrelationIdentifier]any`.
-//   - The map has no binding for IndexEntryAlias.
-//   - The bound value isn't an IndexEntryReader.
-//   - The ordinal walk runs off the end of the tuple.
-func (v *IndexEntryObjectValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *IndexEntryObjectValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
 		return nil, nil
 	}

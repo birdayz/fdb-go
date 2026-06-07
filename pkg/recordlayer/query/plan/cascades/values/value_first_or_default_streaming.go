@@ -50,18 +50,8 @@ func (v *FirstOrDefaultStreamingValue) Type() Type {
 	return v.ChildValue.Type()
 }
 
-// Evaluate pulls the first element from the streaming child, or
-// returns the default value if the stream is empty.
-func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *FirstOrDefaultStreamingValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) (any, error) {
 	if v.ChildValue == nil {
 		return nil, nil
 	}
@@ -81,7 +71,7 @@ func (v *FirstOrDefaultStreamingValue) EvaluateErr(evalCtx any) (any, error) {
 	if v.OnEmptyResultValue == nil {
 		return nil, nil
 	}
-	return v.OnEmptyResultValue.EvaluateErr(evalCtx)
+	return v.OnEmptyResultValue.Evaluate(evalCtx)
 }
 
 // WithChildren returns a fresh FirstOrDefaultStreamingValue with

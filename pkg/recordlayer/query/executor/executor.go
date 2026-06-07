@@ -332,7 +332,7 @@ func executeVectorIndexScan(
 		if cr == nil || !cr.IsEquality() {
 			break
 		}
-		v, err := cr.GetEqualityComparison().Operand.EvaluateErr(evalCtx)
+		v, err := cr.GetEqualityComparison().Operand.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -385,7 +385,7 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 	if v == nil {
 		return nil, fmt.Errorf("nil query vector")
 	}
-	vec, err := v.EvaluateErr(binder)
+	vec, err := v.Evaluate(binder)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +418,7 @@ func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error)
 	if v == nil {
 		return 0, fmt.Errorf("nil value")
 	}
-	val, err := v.EvaluateErr(binder)
+	val, err := v.Evaluate(binder)
 	if err != nil {
 		return 0, err
 	}
@@ -467,7 +467,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			break
 		}
 		comp := cr.GetEqualityComparison()
-		val, err := comp.Operand.EvaluateErr(binder)
+		val, err := comp.Operand.Evaluate(binder)
 		if err != nil {
 			return recordlayer.TupleRange{}, err
 		}
@@ -510,7 +510,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	for _, ineq := range nextRange.GetInequalityComparisons() {
 		var comparand any
 		if ineq.Operand != nil {
-			c, err := ineq.Operand.EvaluateErr(binder)
+			c, err := ineq.Operand.Evaluate(binder)
 			if err != nil {
 				return recordlayer.TupleRange{}, err
 			}
@@ -749,7 +749,7 @@ func executeFilter(
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (keep bool, err error) {
-			// RFC-091 A2: eval errors now return via pred.EvalErr below; the old
+			// RFC-091 A2: eval errors now return via pred.Eval below; the old
 			// recover (which re-panicked typed errors and silently dropped the row
 			// — keep=false — on any other panic) is gone. A genuine invariant panic
 			// propagates loudly: the db/sql boundary recover catches it during
@@ -768,7 +768,7 @@ func executeFilter(
 				}
 			}
 			for _, pred := range preds {
-				res, perr := pred.EvalErr(rowCtx)
+				res, perr := pred.Eval(rowCtx)
 				if perr != nil {
 					return false, perr
 				}
@@ -935,13 +935,13 @@ func executeProjection(
 		}
 		for i, proj := range projections {
 			func() {
-				// RFC-091 A2: proj.EvaluateErr returns eval errors into evalErr
+				// RFC-091 A2: proj.Evaluate returns eval errors into evalErr
 				// below; the old recover is gone. A genuine invariant panic
 				// propagates loudly (the db/sql boundary recover catches it during
 				// planning / the eager first page; later-page iteration fail-stops,
 				// correct for an invariant violation).
 				key := projectionColumnName(proj)
-				val, err := proj.EvaluateErr(rowCtx)
+				val, err := proj.Evaluate(rowCtx)
 				if err != nil {
 					evalErr = err
 					return
@@ -1404,7 +1404,7 @@ func intersectionCompKeyFunc(keyVals []values.Value, evalErr *error) recordlayer
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				v, err := kv.EvaluateErr(qr.Datum)
+				v, err := kv.Evaluate(qr.Datum)
 				if err != nil {
 					if *evalErr == nil {
 						*evalErr = err
@@ -1678,7 +1678,7 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 		}
 	}
 	for _, pred := range preds {
-		res, err := pred.EvalErr(rowCtx)
+		res, err := pred.Eval(rowCtx)
 		if err != nil {
 			return false, err
 		}
@@ -2055,7 +2055,7 @@ func executeUpdate(
 					rowCtx = evalCtx.RowContext(m)
 				}
 			}
-			newVal, err := t.NewValue.EvaluateErr(rowCtx)
+			newVal, err := t.NewValue.Evaluate(rowCtx)
 			if err != nil {
 				return nil, err
 			}
@@ -2226,7 +2226,7 @@ func executeTableFunction(
 	if sv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result, err := sv.EvaluateErr(evalCtx)
+	result, err := sv.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -2256,7 +2256,7 @@ func executeExplode(
 	if cv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result, err := cv.EvaluateErr(evalCtx)
+	result, err := cv.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -2281,7 +2281,7 @@ func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (
 	cols := p.GetColumns()
 	row := make(map[string]any, len(cols))
 	for _, col := range cols {
-		v, err := col.EvaluateErr(evalCtx)
+		v, err := col.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -2929,12 +2929,12 @@ func executeInMemorySort(
 				var ci, cj any
 				if k.ValueExpr != nil {
 					var err error
-					ci, err = k.ValueExpr.EvaluateErr(results[i].Datum)
+					ci, err = k.ValueExpr.Evaluate(results[i].Datum)
 					if err != nil {
 						sortErr = err
 						return false
 					}
-					cj, err = k.ValueExpr.EvaluateErr(results[j].Datum)
+					cj, err = k.ValueExpr.Evaluate(results[j].Datum)
 					if err != nil {
 						sortErr = err
 						return false

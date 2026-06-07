@@ -378,7 +378,10 @@ func (r *ComparisonConstantSimplifyRule) OnMatch(call *RuleCall) {
 			return
 		}
 	}
-	result := cp.Comparison.Eval(lhs)
+	result, err := cp.Comparison.Eval(lhs)
+	if err != nil {
+		return
+	}
 	call.Yield(predicates.NewConstantPredicate(result))
 }
 

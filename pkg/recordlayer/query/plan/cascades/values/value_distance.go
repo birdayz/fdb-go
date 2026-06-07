@@ -95,26 +95,16 @@ func (v *DistanceValue) Name() string { return v.Operator.String() }
 // real numbers given non-NULL vector operands.
 func (*DistanceValue) Type() Type { return NotNullDouble }
 
-// Evaluate computes the distance metric. Returns nil when either
-// operand is NULL or when the operands aren't compatible vectors.
-func (v *DistanceValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *DistanceValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *DistanceValue) Evaluate(evalCtx any) (any, error) {
 	if v.LeftChild == nil || v.RightChild == nil {
 		return nil, nil
 	}
-	lv, err := v.LeftChild.EvaluateErr(evalCtx)
+	lv, err := v.LeftChild.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
-	rv, err := v.RightChild.EvaluateErr(evalCtx)
+	rv, err := v.RightChild.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

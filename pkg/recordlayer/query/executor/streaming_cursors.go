@@ -218,7 +218,7 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 	keyParts := make([]any, len(c.groupingKeys))
 	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v, err := k.EvaluateErr(row.Datum)
+		v, err := k.Evaluate(row.Datum)
 		if err != nil {
 			return "", nil, err
 		}
@@ -257,7 +257,7 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val, err := agg.Operand.EvaluateErr(row.Datum)
+		val, err := agg.Operand.Evaluate(row.Datum)
 		if err != nil {
 			return err
 		}

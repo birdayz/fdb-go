@@ -36,6 +36,7 @@ go_test(
     srcs = [
         "bench_proto_test.go",
         "equijoin_columns_test.go",
+        "eval_must_test.go",
         "evaluation_context_test.go",
         "executor_integration_test.go",
         "executor_test.go",

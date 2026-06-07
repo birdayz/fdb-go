@@ -49,34 +49,19 @@ func (*SubscriptValue) Name() string { return "subscript" }
 // Type returns the bound element type.
 func (v *SubscriptValue) Type() Type { return v.Typ }
 
-// Evaluate returns Source[Index-1] (1-based per SQL standard).
-//
-// Returns nil (UNKNOWN) if:
-//   - Source or Index is nil-Value or evaluates to nil
-//   - Source doesn't evaluate to a slice ([]any)
-//   - Index isn't an integer kind
-//   - Index is out of bounds
-func (v *SubscriptValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *SubscriptValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *SubscriptValue) Evaluate(evalCtx any) (any, error) {
 	if v.Source == nil || v.Index == nil {
 		return nil, nil
 	}
-	indexVal, err := v.Index.EvaluateErr(evalCtx)
+	indexVal, err := v.Index.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
 	if indexVal == nil {
 		return nil, nil
 	}
-	sourceVal, err := v.Source.EvaluateErr(evalCtx)
+	sourceVal, err := v.Source.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}

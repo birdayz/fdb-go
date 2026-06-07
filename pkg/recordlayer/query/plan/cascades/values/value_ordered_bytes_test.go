@@ -70,7 +70,7 @@ func TestToOrderedBytesValue_NilChildEmptyChildren(t *testing.T) {
 func TestToOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewToOrderedBytesValue(LiteralValue(int64(7)), OrderedBytesAscNullsFirst)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }
@@ -126,7 +126,7 @@ func TestFromOrderedBytesValue_NilTargetTypeFallsBackToUnknown(t *testing.T) {
 func TestFromOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewFromOrderedBytesValue(LiteralValue([]byte{}), OrderedBytesAscNullsFirst, NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

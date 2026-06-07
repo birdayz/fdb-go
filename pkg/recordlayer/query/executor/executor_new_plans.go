@@ -151,7 +151,7 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value, keyErr *error) recordl
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				v, err := kv.EvaluateErr(qr.Datum)
+				v, err := kv.Evaluate(qr.Datum)
 				if err != nil {
 					if *keyErr == nil {
 						*keyErr = err
@@ -210,7 +210,7 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 	var datum any = merged
 	if c.resultValue != nil {
-		datum, err = c.resultValue.EvaluateErr(merged)
+		datum, err = c.resultValue.Evaluate(merged)
 		if err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
 		}
@@ -356,7 +356,7 @@ func executePredicatesFilter(
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (keep bool, err error) {
-			// RFC-091 A2: eval errors return via pred.EvalErr below; the old recover
+			// RFC-091 A2: eval errors return via pred.Eval below; the old recover
 			// (re-panic typed / keep=false-drop others) is gone. A genuine invariant
 			// panic propagates loudly (db/sql boundary recover during planning /
 			// first page; later-page iteration fail-stops — correct for an invariant).
@@ -379,7 +379,7 @@ func executePredicatesFilter(
 				}
 			}
 			for _, pred := range preds {
-				res, perr := pred.EvalErr(rowCtx)
+				res, perr := pred.Eval(rowCtx)
 				if perr != nil {
 					return false, perr
 				}
@@ -424,7 +424,7 @@ func executeMap(
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
 			}
 		}
-		m, err := resultValue.EvaluateErr(rowCtx)
+		m, err := resultValue.Evaluate(rowCtx)
 		if err != nil {
 			evalErr = err
 			return qr
@@ -458,7 +458,7 @@ func executeFirstOrDefault(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		d, err := defaultVal.EvaluateErr(nil)
+		d, err := defaultVal.Evaluate(nil)
 		if err != nil {
 			return nil, err
 		}
@@ -491,7 +491,7 @@ func executeDefaultOnEmpty(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		d, err := defaultVal.EvaluateErr(nil)
+		d, err := defaultVal.Evaluate(nil)
 		if err != nil {
 			return nil, err
 		}
@@ -708,11 +708,11 @@ func (m *mergeSortCursor) fillPeekBuffers(ctx context.Context) error {
 
 func (m *mergeSortCursor) isBetter(a, b QueryResult) (bool, error) {
 	for _, key := range m.compKeys {
-		va, err := key.EvaluateErr(a.Datum)
+		va, err := key.Evaluate(a.Datum)
 		if err != nil {
 			return false, err
 		}
-		vb, err := key.EvaluateErr(b.Datum)
+		vb, err := key.Evaluate(b.Datum)
 		if err != nil {
 			return false, err
 		}
@@ -734,7 +734,7 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) (string, error) {
 	}
 	t := make(tuple.Tuple, len(m.compKeys))
 	for i, key := range m.compKeys {
-		v, err := key.EvaluateErr(qr.Datum)
+		v, err := key.Evaluate(qr.Datum)
 		if err != nil {
 			return "", err
 		}

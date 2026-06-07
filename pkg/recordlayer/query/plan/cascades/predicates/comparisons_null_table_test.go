@@ -42,21 +42,21 @@ func TestComparison_NullPropagation_AllBinaryOps(t *testing.T) {
 		t.Run(op.name+"_NULL_left", func(t *testing.T) {
 			t.Parallel()
 			c := Comparison{Type: op.op}
-			if got := c.EvalAgainst(nil, nonNullR); got != TriUnknown {
+			if got := mustEvalAgainst(c, nil, nonNullR); got != TriUnknown {
 				t.Fatalf("%s NULL <op> %d: got %v, want UNKNOWN", op.name, nonNullR, got)
 			}
 		})
 		t.Run(op.name+"_NULL_right", func(t *testing.T) {
 			t.Parallel()
 			c := Comparison{Type: op.op}
-			if got := c.EvalAgainst(nonNullL, nil); got != TriUnknown {
+			if got := mustEvalAgainst(c, nonNullL, nil); got != TriUnknown {
 				t.Fatalf("%d <op> NULL: got %v, want UNKNOWN", nonNullL, got)
 			}
 		})
 		t.Run(op.name+"_both_NULL", func(t *testing.T) {
 			t.Parallel()
 			c := Comparison{Type: op.op}
-			if got := c.EvalAgainst(nil, nil); got != TriUnknown {
+			if got := mustEvalAgainst(c, nil, nil); got != TriUnknown {
 				t.Fatalf("NULL <op> NULL: got %v, want UNKNOWN", got)
 			}
 		})
@@ -71,35 +71,35 @@ func TestComparison_NullPropagation_AllBinaryOps(t *testing.T) {
 	t.Run("IS_DISTINCT_FROM_NULL_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsDistinctFrom}
-		if got := c.EvalAgainst(nil, nil); got != TriFalse {
+		if got := mustEvalAgainst(c, nil, nil); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_DISTINCT_FROM_NULL_X", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsDistinctFrom}
-		if got := c.EvalAgainst(nil, nonNullR); got != TriTrue {
+		if got := mustEvalAgainst(c, nil, nonNullR); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
 	t.Run("IS_DISTINCT_FROM_X_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nil); got != TriTrue {
+		if got := mustEvalAgainst(c, nonNullL, nil); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
 	t.Run("IS_DISTINCT_FROM_X_X", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nonNullL); got != TriFalse {
+		if got := mustEvalAgainst(c, nonNullL, nonNullL); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_DISTINCT_FROM_X_Y", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nonNullR); got != TriTrue {
+		if got := mustEvalAgainst(c, nonNullL, nonNullR); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
@@ -109,35 +109,35 @@ func TestComparison_NullPropagation_AllBinaryOps(t *testing.T) {
 	t.Run("IS_NOT_DISTINCT_FROM_NULL_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
-		if got := c.EvalAgainst(nil, nil); got != TriTrue {
+		if got := mustEvalAgainst(c, nil, nil); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
 	t.Run("IS_NOT_DISTINCT_FROM_NULL_X", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
-		if got := c.EvalAgainst(nil, nonNullR); got != TriFalse {
+		if got := mustEvalAgainst(c, nil, nonNullR); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_NOT_DISTINCT_FROM_X_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nil); got != TriFalse {
+		if got := mustEvalAgainst(c, nonNullL, nil); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_NOT_DISTINCT_FROM_X_X", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nonNullL); got != TriTrue {
+		if got := mustEvalAgainst(c, nonNullL, nonNullL); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
 	t.Run("IS_NOT_DISTINCT_FROM_X_Y", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonNotDistinctFrom}
-		if got := c.EvalAgainst(nonNullL, nonNullR); got != TriFalse {
+		if got := mustEvalAgainst(c, nonNullL, nonNullR); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
@@ -148,28 +148,28 @@ func TestComparison_NullPropagation_AllBinaryOps(t *testing.T) {
 	t.Run("LIKE_NULL_left", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonLike}
-		if got := c.EvalAgainst(nil, "abc%"); got != TriUnknown {
+		if got := mustEvalAgainst(c, nil, "abc%"); got != TriUnknown {
 			t.Fatalf("got %v, want UNKNOWN", got)
 		}
 	})
 	t.Run("LIKE_NULL_right", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonLike}
-		if got := c.EvalAgainst("abcdef", nil); got != TriUnknown {
+		if got := mustEvalAgainst(c, "abcdef", nil); got != TriUnknown {
 			t.Fatalf("got %v, want UNKNOWN", got)
 		}
 	})
 	t.Run("STARTS_WITH_NULL_left", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonStartsWith}
-		if got := c.EvalAgainst(nil, "abc"); got != TriUnknown {
+		if got := mustEvalAgainst(c, nil, "abc"); got != TriUnknown {
 			t.Fatalf("got %v, want UNKNOWN", got)
 		}
 	})
 	t.Run("STARTS_WITH_NULL_right", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonStartsWith}
-		if got := c.EvalAgainst("abcdef", nil); got != TriUnknown {
+		if got := mustEvalAgainst(c, "abcdef", nil); got != TriUnknown {
 			t.Fatalf("got %v, want UNKNOWN", got)
 		}
 	})
@@ -184,28 +184,28 @@ func TestComparison_NullPropagation_UnaryOps(t *testing.T) {
 	t.Run("IS_NULL_on_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsNull}
-		if got := c.Eval(nil); got != TriTrue {
+		if got := mustEval(c, nil); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})
 	t.Run("IS_NULL_on_value", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsNull}
-		if got := c.Eval(int64(5)); got != TriFalse {
+		if got := mustEval(c, int64(5)); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_NOT_NULL_on_NULL", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsNotNull}
-		if got := c.Eval(nil); got != TriFalse {
+		if got := mustEval(c, nil); got != TriFalse {
 			t.Fatalf("got %v, want FALSE", got)
 		}
 	})
 	t.Run("IS_NOT_NULL_on_value", func(t *testing.T) {
 		t.Parallel()
 		c := Comparison{Type: ComparisonIsNotNull}
-		if got := c.Eval(int64(5)); got != TriTrue {
+		if got := mustEval(c, int64(5)); got != TriTrue {
 			t.Fatalf("got %v, want TRUE", got)
 		}
 	})

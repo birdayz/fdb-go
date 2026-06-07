@@ -33,7 +33,7 @@ func TestObjectValue_NilTypeFallsBackToUnknown(t *testing.T) {
 func TestObjectValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewObjectValue(NamedCorrelationIdentifier("x"), NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvaluate(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

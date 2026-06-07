@@ -64,17 +64,10 @@ func (*RangeValue) Name() string { return "range" }
 // produce the record-shaped row.
 func (*RangeValue) Type() Type { return NotNullLong }
 
-// Evaluate is a placeholder — RangeValue is a streaming Value;
-// per-row eval makes no sense. Java throws IllegalStateException;
-// the Go seed surfaces nil per the existing placeholder pattern.
-//
-// Use EvaluateAsStream for the materialised range expansion.
-func (*RangeValue) Evaluate(any) any { return nil }
-
-// EvaluateErr is the error-returning twin (RFC-091). RangeValue is a
+// Evaluate is the error-returning twin (RFC-091). RangeValue is a
 // streaming Value; per-row eval is a no-op placeholder and never fails.
 // Use EvaluateAsStream for the materialised range expansion.
-func (*RangeValue) EvaluateErr(any) (any, error) { return nil, nil }
+func (*RangeValue) Evaluate(any) (any, error) { return nil, nil }
 
 // EvaluateAsStream materialises the finite range as a slice of
 // int64 elements: [begin, begin+step, begin+2*step, ...) up to but
@@ -87,15 +80,27 @@ func (*RangeValue) EvaluateErr(any) (any, error) { return nil, nil }
 // estimation. Production execution would route through a streaming
 // integration (gated on StreamingValue port).
 func (r *RangeValue) EvaluateAsStream(evalCtx any) []int64 {
-	begin, ok := r.BeginInclusive.Evaluate(evalCtx).(int64)
+	bv, err := r.BeginInclusive.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	begin, ok := bv.(int64)
 	if !ok {
 		return nil
 	}
-	end, ok := r.EndExclusive.Evaluate(evalCtx).(int64)
+	ev, err := r.EndExclusive.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	end, ok := ev.(int64)
 	if !ok {
 		return nil
 	}
-	step, ok := r.Step.Evaluate(evalCtx).(int64)
+	sv, err := r.Step.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	step, ok := sv.(int64)
 	if !ok {
 		return nil
 	}
@@ -122,15 +127,27 @@ func (r *RangeValue) EvaluateAsStream(evalCtx any) []int64 {
 // the planner has a RangeValue table function in scope and wants
 // to size operators above it.
 func (r *RangeValue) Cardinality() (int64, bool) {
-	begin, ok := r.BeginInclusive.Evaluate(nil).(int64)
+	bv, err := r.BeginInclusive.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	begin, ok := bv.(int64)
 	if !ok {
 		return -1, false
 	}
-	end, ok := r.EndExclusive.Evaluate(nil).(int64)
+	ev, err := r.EndExclusive.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	end, ok := ev.(int64)
 	if !ok {
 		return -1, false
 	}
-	step, ok := r.Step.Evaluate(nil).(int64)
+	sv, err := r.Step.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	step, ok := sv.(int64)
 	if !ok || step == 0 {
 		return -1, false
 	}

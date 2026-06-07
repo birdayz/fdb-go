@@ -64,7 +64,7 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got := mustEvaluate(av, map[string]any{"a": tc.l, "b": tc.r})
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
 			}
@@ -107,7 +107,7 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 					t.Fatalf("expected ArithmeticOverflowError, got %T: %v", r, r)
 				}
 			}()
-			av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			mustEvaluate(av, map[string]any{"a": tc.l, "b": tc.r})
 		})
 	}
 }
@@ -137,7 +137,7 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			got := mustEvaluate(av, map[string]any{"a": tc.l, "b": tc.r})
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
 			}
@@ -176,7 +176,7 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := tree.Evaluate(tc.row)
+			got := mustEvaluate(tree, tc.row)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -206,7 +206,7 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 						t.Fatalf("%v by zero: expected *ArithmeticDivisionByZeroError, got %T", op, r)
 					}
 				}()
-				av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+				mustEvaluate(av, map[string]any{"a": int64(5), "b": int64(0)})
 			}()
 		})
 	}
@@ -244,7 +244,7 @@ func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 					}
 				}()
 				av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-				av.Evaluate(tc.row)
+				mustEvaluate(av, tc.row)
 			}()
 		})
 	}
@@ -271,7 +271,7 @@ func TestBooleanValue_KleeneTriBool(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			bv := &BooleanValue{Value: tc.val}
-			if got := bv.Evaluate(nil); got != tc.want {
+			if got := mustEvaluate(bv, nil); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 			if bv.Type().Code() != TypeCodeBoolean {
@@ -290,10 +290,10 @@ func boolPtr(b bool) *bool { return &b }
 // behave identically.
 func TestBooleanValue_NewBooleanValueFactory(t *testing.T) {
 	t.Parallel()
-	if got := NewBooleanValue(true).Evaluate(nil); got != true {
+	if got := mustEvaluate(NewBooleanValue(true), nil); got != true {
 		t.Fatalf("NewBooleanValue(true): got %v", got)
 	}
-	if got := NewBooleanValue(false).Evaluate(nil); got != false {
+	if got := mustEvaluate(NewBooleanValue(false), nil); got != false {
 		t.Fatalf("NewBooleanValue(false): got %v", got)
 	}
 	// Verify factory and direct-struct paths produce equal Evaluate
@@ -301,7 +301,7 @@ func TestBooleanValue_NewBooleanValueFactory(t *testing.T) {
 	// happy path even if internal pointer identities differ.
 	a := NewBooleanValue(true)
 	b := &BooleanValue{Value: boolPtr(true)}
-	if a.Evaluate(nil) != b.Evaluate(nil) {
+	if mustEvaluate(a, nil) != mustEvaluate(b, nil) {
 		t.Fatal("factory and literal produce divergent Evaluate")
 	}
 }
@@ -329,7 +329,7 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 			t.Parallel()
 			lit := &ConstantValue{Value: tc.v, Typ: tc.typ}
 			c := NewCastValue(lit, tc.typ)
-			got := c.Evaluate(nil)
+			got := mustEvaluate(c, nil)
 			if got != tc.v {
 				t.Fatalf("identity cast: got %v, want %v", got, tc.v)
 			}
@@ -348,7 +348,7 @@ func TestCastValue_NullPropagation(t *testing.T) {
 			t.Parallel()
 			null := &NullValue{Typ: TypeUnknown}
 			c := NewCastValue(null, target)
-			if got := c.Evaluate(nil); got != nil {
+			if got := mustEvaluate(c, nil); got != nil {
 				t.Fatalf("CAST(NULL AS %v): got %v, want nil", target, got)
 			}
 			// CastValue.Type() forces nullable; the targets above are

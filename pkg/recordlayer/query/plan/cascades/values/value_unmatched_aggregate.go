@@ -24,13 +24,9 @@ func (*UnmatchedAggregateValue) Children() []Value { return nil }
 func (*UnmatchedAggregateValue) Name() string      { return "unmatched_aggregate" }
 func (*UnmatchedAggregateValue) Type() Type        { return UnknownType }
 
-func (*UnmatchedAggregateValue) Evaluate(_ any) any {
-	panic("UnmatchedAggregateValue is a non-evaluable marker")
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). This marker is
+// Evaluate is the error-returning twin (RFC-091). This marker is
 // non-evaluable — a genuine invariant violation, so it stays a panic.
-func (*UnmatchedAggregateValue) EvaluateErr(_ any) (any, error) {
+func (*UnmatchedAggregateValue) Evaluate(_ any) (any, error) {
 	panic("UnmatchedAggregateValue is a non-evaluable marker")
 }
 

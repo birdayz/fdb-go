@@ -40,15 +40,8 @@ func (*IndexedValue) Name() string { return "indexed" }
 // Type returns the bound result type.
 func (v *IndexedValue) Type() Type { return v.ResultType }
 
-// Evaluate panics — IndexedValue is a placeholder, not a computable
-// expression. The panic message is loud so misuse doesn't silently
-// return nil and confuse downstream evaluators.
-func (*IndexedValue) Evaluate(any) any {
-	panic("IndexedValue.Evaluate: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
-}
-
-// EvaluateErr is the error-returning twin (RFC-091). IndexedValue is
+// Evaluate is the error-returning twin (RFC-091). IndexedValue is
 // non-evaluable — a genuine invariant violation, so it stays a panic.
-func (*IndexedValue) EvaluateErr(any) (any, error) {
-	panic("IndexedValue.EvaluateErr: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
+func (*IndexedValue) Evaluate(any) (any, error) {
+	panic("IndexedValue.Evaluate: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
 }

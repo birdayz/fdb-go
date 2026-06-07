@@ -49,7 +49,7 @@ func TestTransformRowNumberDistanceRank_Euclidean(t *testing.T) {
 	if cmp.QueryVector != queryVec {
 		t.Errorf("query vector = %v, want %v", cmp.QueryVector, queryVec)
 	}
-	if cmp.Operand == nil || cmp.Operand.Evaluate(nil) != 3 {
+	if cmp.Operand == nil || mustEvaluate(cmp.Operand, nil) != 3 {
 		t.Errorf("comparand (k) = %v, want 3", cmp.Operand)
 	}
 	if cmp.EfSearch == nil || *cmp.EfSearch != 100 {
@@ -129,7 +129,7 @@ func TestDistanceRankComparison_EvalPanics(t *testing.T) {
 			t.Error("expected panic when a DistanceRank comparison is evaluated row-by-row")
 		}
 	}()
-	cmp.EvalAgainst(int64(1), int64(3))
+	mustEvalAgainst(cmp, int64(1), int64(3))
 }
 
 // TestTransformRowNumberDistanceRank_EqualsRejected pins Java conformance

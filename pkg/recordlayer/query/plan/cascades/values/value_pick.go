@@ -73,27 +73,12 @@ func (*PickValue) Name() string { return "pick" }
 // Type returns the bound result type.
 func (v *PickValue) Type() Type { return v.Typ }
 
-// Evaluate computes Alternatives[Selector.Evaluate].
-//
-// Returns nil if:
-//   - Selector is nil-Value or evaluates to nil.
-//   - Selector doesn't evaluate to an integer kind.
-//   - The resolved index is out of bounds for Alternatives.
-//   - The chosen alternative is nil-Value.
-func (v *PickValue) Evaluate(evalCtx any) any {
-	res, err := v.EvaluateErr(evalCtx)
-	if err != nil {
-		panic(err)
-	}
-	return res
-}
-
-// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
-func (v *PickValue) EvaluateErr(evalCtx any) (any, error) {
+// Evaluate is the error-returning twin (RFC-091).
+func (v *PickValue) Evaluate(evalCtx any) (any, error) {
 	if v.Selector == nil {
 		return nil, nil
 	}
-	idxVal, err := v.Selector.EvaluateErr(evalCtx)
+	idxVal, err := v.Selector.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -118,5 +103,5 @@ func (v *PickValue) EvaluateErr(evalCtx any) (any, error) {
 	if alt == nil {
 		return nil, nil
 	}
-	return alt.EvaluateErr(evalCtx)
+	return alt.Evaluate(evalCtx)
 }
