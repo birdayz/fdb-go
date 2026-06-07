@@ -128,8 +128,11 @@ accumulator / sumtype alternatives.
 - [x] **P0.3-C — network goroutines: ADD recover→failConnection** (`S`) — DONE (landed with
   P0.2: `recoverLoop` on writeLoop/connectionMonitor, inline recover in readLoop, comment +
   `exitErr` ordering fixed, `conn_recover_test.go`).
-- [ ] **P0.3-D — parser: KEEP the FFI recovers, expand fuzz** (`S`). *(Corrected: collecting
-  listener already exists; recovers guard the ANTLR runtime — do NOT delete.)*
+- [x] **P0.3-D — parser: KEEP the FFI recovers, expand fuzz** (`S`) — DONE. The ANTLR-FFI
+  recovers are kept (they guard the ANTLR Go runtime, which panics by design). Fuzz coverage
+  exists: `parser/fuzz_test.go` has `FuzzParse`, `FuzzParseFunction`, `FuzzParseView`, plus
+  `plangen/plangen_fuzz_test.go`. *(Corrected: collecting listener already exists; recovers
+  guard the ANTLR runtime — do NOT delete.)*
 - [x] **P0.3-E — `Must*`: keep `panicToError`, switch internal callers to `.Get()`** (`S`) — DONE
   (split by parity, not blanket-converted). *(Corrected per FDB C++ — do NOT delete
   `panicToError`; it's the `Must*` boundary.)*
@@ -144,17 +147,36 @@ accumulator / sumtype alternatives.
     + Transact-level recovery throughout (`node.go:63` is even a `bool` method — converting it
     would change the ported signature). Switching here would *diverge* from the Apple Go binding
     (a client-spec violation), so parity wins. `panicToError` is the documented boundary.
-- [ ] **P0.3-F — fuzz net** (`M`). Build executor-package fuzz + an e2e **SQL-string +
-  seed-rows → `QueryContext` → no-panic** target. Honest caveat: e2e fuzz needs a container →
-  shallow — which is exactly why the boundary recover stays. Drop any "proven by fuzz"
-  done-criteria overclaim (Torvalds): fuzz reduces, the recover backstops.
-- [ ] **P0.3-G — resolve `tuple.Pack()` reachability** (`M`). `multiIntersectionCompKeyFunc`
-  (`executor_new_plans.go:144-156`) packs the raw `Evaluate` result with NO coercion (panics →
-  caught only by `merge_cursor.go:24`); `mergeSortCursor.extractKey` coerces. Prove the
-  comparison-key path is scalar-only (then the recover is dead → delete) or make it
-  error-returning; fix the inconsistency. `extractKey`'s `%T:%v` fallback is itself a
-  correctness bug (Go-format ordering ≠ tuple order). Route via Graefe. Resolve before
-  deleting `merge_cursor.go:24`.
+- [~] **P0.3-F — fuzz net** (`M`) — substantially DONE; one acknowledged-shallow gap. The
+  eval/value layer (where panics actually hide) is well-fuzzed: `embedded_test.go` has
+  `FuzzApplyMathOp`, `FuzzApplyBitOp`, `FuzzCompareValues`, `FuzzCastValue`, `FuzzLikePrefixStrinc`,
+  `FuzzLikePatternToPrefix`; `values/` has `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`,
+  `FuzzAndOrValue_Kleene3VL`, `FuzzCaseExpression_FirstMatchWins`, etc. **Gap:** no e2e
+  *SQL-string + seed-rows → `QueryContext` → no-panic* target. Honest caveat (kept): e2e fuzz
+  needs a container → shallow — which is exactly why the boundary recover stays the real backstop.
+  Not "proven by fuzz"; fuzz reduces, the recover backstops.
+- [ ] **P0.3-G — comparison-key type coercion: make the 3 sibling builders consistent**
+  (`M`, query-engine, **Graefe-gated → RFC-092**). *Investigated 2026-06-07; framing corrected.*
+  Findings:
+  - `merge_cursor.go:24`'s recover is **already gone** — the executor `merge_cursor.go` was
+    deleted in the A2 sweep; the real merge cursor is `pkg/recordlayer/merge_cursor.go`, whose
+    `compareKeys` does `bytes.Compare(a.Pack(), b.Pack())` and **recovers** `tuple.Pack` panics
+    into an error (pinned by `bug_bounty_test.go::TestBug2_UnionCursorMixedKeyTypesPanic`). So an
+    unpackable key is an *error, not a crash* today.
+  - The `extractKey` "%T:%v ordering bug" framing is **wrong**: ordering uses
+    `compareValues` (semantic), `extractKey` is only the *dedup* key, and its `%T:%v` is
+    consistent with `compareValues`' own `%v` fallback for any *single typed* sort column (the
+    `%T` prefix can't break within-type equality). Not a live bug.
+  - **The real item:** `intersectionCompKeyFunc` (`executor.go:1402`) and
+    `multiIntersectionCompKeyFunc` (`executor_new_plans.go:149`) store the **raw** `Evaluate`
+    result (`t[i] = v`), unlike `extractKey` and `streaming_cursors.go:233`, which coerce
+    `int32→int64` and exotic→`%T:%v`. `int32` *is* produced by the value layer
+    (`values.go:615,1790`), and `tuple` has no native `int32` — so an `int32`/exotic comparison
+    key in an INTERSECTION currently makes the query **error out** (via `compareKeys`' Pack-recover)
+    instead of returning rows. Narrow (int32-keyed intersection) but a real availability gap, and
+    a 3-way inconsistency. **Fix:** factor `extractKey`'s coercion into a shared helper and use it
+    in all three builders; pin with an int32-keyed intersection regression. Needs Graefe ACK
+    (executor change).
 
 **Done when:** the library never panics to a caller (boundary recovers in place); data-path
 panics are errors; remaining panics are documented internal asserts; conformance + stress +
