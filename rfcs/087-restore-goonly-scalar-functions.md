@@ -1,7 +1,8 @@
 # RFC-087 — Go-only scalar string/math functions (Cascades values path)
 
-**Status:** Design ACK'd (v7) — **Graefe + Torvalds + bradfitz ACK**; implementation
-unblocked (@claude reviews the impl PR). Binding completion gate (Graefe v7): beyond
+**Status:** Implemented — design ACK'd (v7) by **Graefe + Torvalds + bradfitz**;
+impl + audit corrections below; full non-stress suite green (49/49). Awaiting impl
+re-ACK (Graefe/Torvalds) + @claude on the PR. Binding completion gate (Graefe v7): beyond
 green build + green plandiff/sqldriver/cascades/yamsql + ~40 corpus re-points, also
 **(1) audit EVERY residual panic reachable from a per-row `Evaluate`/`Eval` path and
 prove each is truly programmer-invariant (unreachable from user data)** — the compiler
@@ -134,6 +135,31 @@ all **46** panics in `values/` + `predicates/` (per-row `Evaluate`/`Eval`-reacha
 Audit conclusion: **22 convert, 24 stay, 0 unresolved** — the stays-a-panic split is
 fully classified; the implementation can `grep panic\(` the two packages post-change
 and confirm exactly the 24 remain.
+
+### Implementation audit corrections (empirical, found by running all suites)
+
+The static audit above mis-classified one site, caught by the A3 corpus run:
+- **`AggregateValue.Evaluate` — CONVERT, not stay.** Listed as "must go through
+  aggregator → programmer-invariant," but `WHERE COUNT(*) > 0` (A3 corpus
+  `agg_in_where_rejected`) reaches it on the per-row scalar path: it IS reachable
+  from user data (Go's planner doesn't yet reject aggregate-in-scalar-context like
+  Java does at plan time). Converted to a new `AggregateEvalError` → SQLSTATE 42803.
+  Follow-up (separate from RFC-087): reject aggregate-in-WHERE at PLAN time to match
+  Java exactly (TODO).
+- **Executor merge/sort-key panics (5 sites: `intersectionCompKeyFunc`,
+  `multiIntersectionCompKeyFunc`, `mergeSortCursor.isBetter`/`extractKey`,
+  executor.go:1391) — STAY, pre-existing.** These `ComparisonKeyFunc`s have no
+  error channel and NEVER had a recover; before the refactor the inner `Evaluate`
+  would have panicked the same typed error here, so the explicit `panic(err)`
+  preserves prior behavior exactly (no regression). Their keys are index /
+  pre-projected field references (computed sort/merge expressions are projected to
+  a column upstream, where the error propagates). The one reachable computed-key
+  path — the MAIN sort cursor (`executor.go:2893` `sortFn`) — correctly threads the
+  error via `sortErr` (pinned: `ORDER BY <overflow>` → 22003, not a crash).
+  Threading `ComparisonKeyFunc` itself (ripples into wire-adjacent `merge_cursor.go`)
+  is a separate, pre-existing-scope follow-up; flagged for Graefe.
+- **`EXP(1000)` Inf-guard** was dropped for EXP only in the Phase D port (returned
+  +Inf instead of NULL); restored to mirror POWER/SQRT. Pinned.
 
 **Swallow-axis tests (Graefe v7 gate):** pin decline-to-fold for `EvaluateConstant`,
 `tryCastConstant`, AND `rule_simplify` — each must leave the node / not crash on a
