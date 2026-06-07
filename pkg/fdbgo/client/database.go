@@ -535,19 +535,18 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			return nil, ctx.Err()
 		}
 
-		// Fetch the commit-path read version under the *live* ctx, so a cancel that
-		// arrives during the GRV RPC (the sub-RPC window the bare ctx.Err() check
-		// above can't cover) aborts the read rather than running detached. This is
-		// idempotent — for a transaction that already read, ensureReadVersion is a
-		// no-op; for a write-only transaction it is the only commit-path read, and it
-		// must honor ctx. Commit's own ensureReadVersion(WithoutCancel) then no-ops,
-		// so only the actual commit RPC + commit_unknown_result barrier stay detached.
-		if err := tx.ensureReadVersion(ctx); err != nil {
-			if retryErr := tx.OnError(ctx, err); retryErr != nil {
-				return nil, retryErr
-			}
-			continue
-		}
+		// NOTE: a tighter refinement (prefetch the commit read version here under the
+		// live ctx, so a cancel arriving *during* the commit-path GRV aborts) was
+		// tried and reverted: done unconditionally it regresses Commit's read-only/
+		// no-op fast path (which returns without a GRV when there are no mutations or
+		// write-conflicts — transaction.go:1094), forcing an unnecessary GRV RPC that
+		// can block/fail a no-op txn (codex P2). Gating it on "has writes" would have
+		// to peek tx.mutations/writeConflicts under conflictMu from here, duplicating
+		// Commit's gate. The correct home is inside Commit: thread the live ctx to its
+		// own ensureReadVersion for write txns, WithoutCancel only the commit RPC +
+		// barrier. Tracked as a follow-up. The residual window is sub-RPC and
+		// non-hazardous (a stale-but-durable commit, no data hazard — FDB C++ review);
+		// the pre-commit ctx.Err() check above already aborts the common case.
 
 		// RFC-090: run the dispatched commit and its commit_unknown_result
 		// idempotency barrier (commitDummyTransaction) on a context the caller cannot

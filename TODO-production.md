@@ -53,6 +53,23 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   handshake; under contention that serializes connection setup for up to the deadline. Dialing
   outside the lock + inserting under it is a separate concurrency refinement — filed, low priority.
 
+### Client robustness — tracked follow-ups (non-hazardous, found during the review hunt)
+- **[ ] Honor ctx *cancellation* (not just deadline) during the handshake** (bradfitz + FDB C++).
+  `dialWith` bounds the handshake with a deadline, so a cancel-only ctx (no deadline) waits up to
+  `defaultHandshakeTimeout` (10s) instead of aborting immediately. Recipe: `upgradeTLS` →
+  `tlsConn.HandshakeContext(ctx)`; wrap the ConnectPacket exchange in a watcher that closes the
+  conn / `SetDeadline(past)` on `ctx.Done()`. Latency-only; the deadlock is already fixed.
+- **[ ] Thread live ctx to the commit-path GRV for write txns (Commit-internal)** (codex + FDB C++).
+  `Transact`'s pre-commit `ctx.Err()` check aborts a cancel-before-commit; the residual is a cancel
+  arriving *during* Commit's own `ensureReadVersion` GRV (run under `WithoutCancel`). Fixing it in
+  the `Transact` loop regressed the read-only/no-op fast path (codex P2 — reverted). Correct home:
+  inside `Commit`, run `ensureReadVersion` under the live ctx for write txns (after the
+  `len(muts)==0 && nWriteConflicts==0` fast-path return), `WithoutCancel` only the commit RPC +
+  barrier. Sub-RPC window, non-hazardous (stale-but-durable commit, no data hazard).
+- **[ ] `sendWatch` long-poll has no timer/`conn.ctx` escape** (`readpath.go:894`). Safe only because
+  `failAllPending` does a buffered non-blocking send on teardown; a deadline-free watch on a
+  TCP-alive-but-stalled connection waits indefinitely. Lower severity (watches); audit.
+
 ---
 
 ## P0 — Blockers (before any production use)
