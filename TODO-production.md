@@ -203,9 +203,14 @@ export hook; ship a Prometheus/OTel adapter as a separate optional package + exa
 
 ### [ ] P1.4 — ~~retry/ctx bounds~~ → **PROMOTED to P0.4.**
 
-### [ ] P1.5 — `govulncheck` + supply-chain hygiene in CI · S
-No vuln scanning anywhere; no SECURITY.md. Add `govulncheck ./...` (parallel with P0.3,
-Torvalds); add `SECURITY.md` + dep-update policy.
+### [x] P1.5 — `govulncheck` + supply-chain hygiene in CI · S — DONE
+Added a **Vulnerability scan** job to `ci.yml` (`govulncheck` over the shipped `pkg/...`,
+excluding `pkg/testcontainers`), a `SECURITY.md` (private reporting + scope + dep policy).
+The first scan found **7 called vulns**: 5 in `golang.org/x/crypto@v0.48.0` → **bumped to
+v0.52.0** (fixed; transitively pulled x/text v0.37, x/tools v0.44; bazel build green, no
+MODULE.bazel.lock drift), and 2 in `github.com/docker/docker` (test-infra only, **Fixed in:
+N/A** upstream) — excluded from the production scan + documented in SECURITY.md. Post-bump
+scan: production-clean (only the 2 docker N/A remain, test-only).
 
 ### [ ] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M
 Pin/vendor a commit; run conformance (`//conformance`), the libfdb_c differential suite

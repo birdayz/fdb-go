@@ -84,3 +84,25 @@ jobs:
           name: test-report
           path: test-report.html
           retention-days: 30
+
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: [self-hosted, linux, x64, hetzner]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: govulncheck (shipped packages)
+        run: |
+          # Scan the shipped library. pkg/testcontainers is excluded: it wraps the
+          # Docker SDK (TEST infrastructure, not shipped to users) which currently
+          # has open upstream CVEs with no fixed release (GO-2026-4887,
+          # GO-2026-4883). See SECURITY.md. Everything else must be vuln-free.
+          PKGS=$(go list ./pkg/... | grep -v '/testcontainers')
+          go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
