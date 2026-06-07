@@ -99,3 +99,8 @@ tests:
   # panic in the group-key computation, computeGroupKey).
   - query: SELECT COUNT(*) FROM t GROUP BY a / 0
     error_code: "22012"
+  # RFC-091 (keep=false regression): a div-by-zero in a WHERE predicate surfaces
+  # 22012 — the error must propagate, NEVER silently drop the row (the old filter
+  # recover's `keep=false` default arm dropped rows on an unexpected eval panic).
+  - query: SELECT a FROM t WHERE a / 0 > 0
+    error_code: "22012"

@@ -749,15 +749,10 @@ func executeFilter(
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (keep bool, err error) {
-			defer func() {
-				if r := recover(); r != nil {
-					switch r.(type) {
-					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError, *values.InvalidCastError:
-						panic(r)
-					}
-					keep = false
-				}
-			}()
+			// RFC-091 A2: eval errors now return via pred.EvalErr below; the old
+			// recover (which re-panicked typed errors and silently dropped the row
+			// — keep=false — on any other panic) is gone. A genuine invariant panic
+			// propagates to the db/sql boundary recover.
 			var rowCtx any = qr.Datum
 			if m, ok := qr.Datum.(map[string]any); ok {
 				switch {
@@ -937,22 +932,9 @@ func executeProjection(
 		}
 		for i, proj := range projections {
 			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						switch e := r.(type) {
-						case *values.ArithmeticDivisionByZeroError:
-							evalErr = e
-						case *values.ArithmeticOverflowError:
-							evalErr = e
-						case *values.ScalarTypeMismatchError:
-							evalErr = e
-						case *values.InvalidCastError:
-							evalErr = e
-						default:
-							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
-						}
-					}
-				}()
+				// RFC-091 A2: proj.EvaluateErr returns eval errors into evalErr
+				// below; the old recover is gone. A genuine invariant panic
+				// propagates to the db/sql boundary recover.
 				key := projectionColumnName(proj)
 				val, err := proj.EvaluateErr(rowCtx)
 				if err != nil {
@@ -2558,24 +2540,9 @@ type filterResultCursor struct {
 }
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			switch e := r.(type) {
-			case *predicates.TypeMismatchError:
-				err = e
-			case *values.ArithmeticOverflowError:
-				err = e
-			case *values.ArithmeticDivisionByZeroError:
-				err = e
-			case *values.ScalarTypeMismatchError:
-				err = e
-			case *values.InvalidCastError:
-				err = e
-			default:
-				panic(r)
-			}
-		}
-	}()
+	// RFC-091 A2: c.pred returns eval errors (perr) which the loop propagates; the
+	// old recover is gone. A genuine invariant panic propagates to the db/sql
+	// boundary recover.
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
