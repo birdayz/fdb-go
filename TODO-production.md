@@ -130,6 +130,26 @@ accumulator / sumtype alternatives.
 panics are errors; remaining panics are documented internal asserts; conformance + stress +
 `-race` green across the staged commits.
 
+**RFC-091 status (2026-06-07):** Step 1 (twins) + fold-fix + 3 uncovered eval sites + A1
+(executor migration) + A2 (delete all 6 control-flow recovers) **landed, both gates ACK'd**
+(Graefe: "Cascades-correct, safe to merge"; Torvalds: "no NAK, the fix is real"). Eval errors
+now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fixed + pinned.
+**Follow-ups (tracked):**
+- [ ] **Collapse** (Torvalds a/b): delete the dead old `Evaluate`/`Eval` panic-wrappers, rename
+  `EvaluateErr`→`Evaluate` (`EvalErr`→`Eval`), and migrate the remaining old-method callers —
+  5 plan-time rule sites (`rule_implement_in_join.go:469`, `rule_implement_in_union.go:95`,
+  `rule_in_to_explode.go:96`, `rule_simplify.go:381`, `physical_vector_index_scan_wrapper.go:96`)
+  **plus 6 `value_range.go` helpers** (`EvaluateAsStream`/`Cardinality`, :90-133). Dual eval
+  methods must not ossify.
+- [ ] **GATE completion**: hooks covered conformance + FDB; still run `-race` on
+  `//pkg/relational/...` (P1.1) + the 1M stress before declaring the GATE fully met.
+- [ ] **P0.2 gap (found by Torvalds in RFC-091 review):** the db/sql boundary recover wraps
+  planning + the eager first page only — `cascadesRows.Next` (later-page iteration) has **no**
+  recover above the cursor. Invariant panics there fail-stop (policy-acceptable), but a planner
+  *bug* surfacing on page ≥2 crashes the process. Decide whether `Rows.Next` needs its own
+  boundary recover (per-statement, converting to a query error) or whether later-page fail-stop
+  is the intended contract. Tracked against P0.2.
+
 ### [ ] P0.4 — Bound retries + propagate `ctx` (promoted from P1 — availability blocker) · M
 **Why (Torvalds: this is P0 for a control plane, not P1):** `FDBDatabase.Run(ctx,…)`'s ctx
 never reaches the retry loop (`Database.Transact` takes no ctx, runs on `context.Background()`

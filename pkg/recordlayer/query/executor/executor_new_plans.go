@@ -358,7 +358,8 @@ func executePredicatesFilter(
 		pred: func(qr QueryResult) (keep bool, err error) {
 			// RFC-091 A2: eval errors return via pred.EvalErr below; the old recover
 			// (re-panic typed / keep=false-drop others) is gone. A genuine invariant
-			// panic propagates to the db/sql boundary recover.
+			// panic propagates loudly (db/sql boundary recover during planning /
+			// first page; later-page iteration fail-stops — correct for an invariant).
 			var rowCtx any = qr.Datum
 			// RFC-048 W1: a HAVING/filter reference to a name absent from a
 			// complete row (aggregate output) is a bug, not a NULL.

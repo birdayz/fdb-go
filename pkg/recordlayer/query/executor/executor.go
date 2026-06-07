@@ -752,7 +752,10 @@ func executeFilter(
 			// RFC-091 A2: eval errors now return via pred.EvalErr below; the old
 			// recover (which re-panicked typed errors and silently dropped the row
 			// — keep=false — on any other panic) is gone. A genuine invariant panic
-			// propagates to the db/sql boundary recover.
+			// propagates loudly: the db/sql boundary recover catches it during
+			// planning / the eager first page, but later-page iteration (driver
+			// Rows.Next) has no recover above the cursor, so it fail-stops — correct
+			// for an invariant violation (bradfitz policy).
 			var rowCtx any = qr.Datum
 			if m, ok := qr.Datum.(map[string]any); ok {
 				switch {
@@ -934,7 +937,9 @@ func executeProjection(
 			func() {
 				// RFC-091 A2: proj.EvaluateErr returns eval errors into evalErr
 				// below; the old recover is gone. A genuine invariant panic
-				// propagates to the db/sql boundary recover.
+				// propagates loudly (the db/sql boundary recover catches it during
+				// planning / the eager first page; later-page iteration fail-stops,
+				// correct for an invariant violation).
 				key := projectionColumnName(proj)
 				val, err := proj.EvaluateErr(rowCtx)
 				if err != nil {
@@ -2541,8 +2546,9 @@ type filterResultCursor struct {
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
 	// RFC-091 A2: c.pred returns eval errors (perr) which the loop propagates; the
-	// old recover is gone. A genuine invariant panic propagates to the db/sql
-	// boundary recover.
+	// old recover is gone. A genuine invariant panic propagates loudly (db/sql
+	// boundary recover during planning / first page; later-page iteration via
+	// driver Rows.Next fail-stops — correct for an invariant violation).
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
