@@ -34,6 +34,7 @@ use_repo(
     "com_github_planetscale_vtprotobuf",
     "com_github_rivo_uniseg",
     "com_github_spf13_cobra",
+    "com_github_stretchr_testify",
     "com_github_testcontainers_testcontainers_go",
     "com_github_zeebo_xxh3",
     "in_gopkg_yaml_v3",

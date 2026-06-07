@@ -1,8 +1,11 @@
 package values
 
 import (
+	"errors"
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Static interface assertions.
@@ -67,11 +70,15 @@ func TestNullValue(t *testing.T) {
 	if nv.Name() != "null" {
 		t.Fatal("Name should be 'null'")
 	}
-	if got := mustEvalForTest(nv, nil); got != nil {
+	got, errEv0 := nv.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate: expected nil, got %v", got)
 	}
 	// Any context — NULL is context-independent.
-	if got := mustEvalForTest(nv, map[string]any{"x": 1}); got != nil {
+	got, errEv1 := nv.Evaluate(map[string]any{"x": 1})
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("Evaluate w/ ctx: expected nil, got %v", got)
 	}
 	if len(nv.Children()) != 0 {
@@ -82,16 +89,22 @@ func TestNullValue(t *testing.T) {
 func TestConstantValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	c := &ConstantValue{Value: int64(42), Typ: TypeInt}
-	if got := mustEvalForTest(c, nil); got != int64(42) {
+	got, errEv0 := c.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(42) {
 		t.Fatalf("constant int: got %v", got)
 	}
 	// Context is ignored for constants.
-	if got := mustEvalForTest(c, map[string]any{"x": 1}); got != int64(42) {
+	got, errEv1 := c.Evaluate(map[string]any{"x": 1})
+	require.NoError(t, errEv1)
+	if got != int64(42) {
 		t.Fatalf("constant ignores ctx: got %v", got)
 	}
 	// NULL literal.
 	null := &ConstantValue{Value: nil, Typ: TypeInt}
-	if got := mustEvalForTest(null, nil); got != nil {
+	got, errEv2 := null.Evaluate(nil)
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Fatalf("NULL literal: got %v", got)
 	}
 }
@@ -100,20 +113,28 @@ func TestFieldValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	f := &FieldValue{Field: "name", Typ: TypeString}
 	row := map[string]any{"name": "Alice", "age": int64(30)}
-	if got := mustEvalForTest(f, row); got != "Alice" {
+	got, errEv0 := f.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != "Alice" {
 		t.Fatalf("field lookup: got %v", got)
 	}
 	// Missing field: NULL.
 	missing := &FieldValue{Field: "nope", Typ: TypeString}
-	if got := mustEvalForTest(missing, row); got != nil {
+	got, errEv1 := missing.Evaluate(row)
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("missing field: got %v", got)
 	}
 	// nil ctx.
-	if got := mustEvalForTest(f, nil); got != nil {
+	got, errEv2 := f.Evaluate(nil)
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Fatalf("nil ctx: got %v", got)
 	}
 	// Wrong ctx type.
-	if got := mustEvalForTest(f, "not a map"); got != nil {
+	got, errEv3 := f.Evaluate("not a map")
+	require.NoError(t, errEv3)
+	if got != nil {
 		t.Fatalf("wrong ctx type: got %v", got)
 	}
 }
@@ -137,70 +158,74 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-		got := mustEvalForTest(av, map[string]any{"a": tc.a, "b": tc.b})
+		got, errEv0 := av.Evaluate(map[string]any{"a": tc.a, "b": tc.b})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("op %v: got %v, want %v", tc.op, got, tc.want)
 		}
 	}
 
-	// Division by zero panics with ArithmeticDivisionByZeroError
-	// (matches Java's ArithmeticException; executor recovers it).
+	// Division by zero returns ArithmeticDivisionByZeroError on the error
+	// channel (matches Java's ArithmeticException; executor maps it to 22012).
 	divZ := &ArithmeticValue{Op: OpDiv, Left: a, Right: b}
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatalf("div by zero: expected panic")
-			} else if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
-				t.Fatalf("div by zero: expected *ArithmeticDivisionByZeroError, got %T", r)
-			}
-		}()
-		mustEvalForTest(divZ, map[string]any{"a": int64(5), "b": int64(0)})
-	}()
+	if v, err := divZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); v != nil || err == nil {
+		t.Fatalf("div by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", v, err)
+	} else {
+		var divByZero *ArithmeticDivisionByZeroError
+		if !errors.As(err, &divByZero) {
+			t.Fatalf("div by zero: got %T, want *ArithmeticDivisionByZeroError", err)
+		}
+	}
 
-	// MOD by zero same panic contract as Div.
+	// MOD by zero same error contract as Div.
 	modZ := &ArithmeticValue{Op: OpMod, Left: a, Right: b}
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatalf("mod by zero: expected panic")
-			} else if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
-				t.Fatalf("mod by zero: expected *ArithmeticDivisionByZeroError, got %T", r)
-			}
-		}()
-		mustEvalForTest(modZ, map[string]any{"a": int64(5), "b": int64(0)})
-	}()
+	if v, err := modZ.Evaluate(map[string]any{"a": int64(5), "b": int64(0)}); v != nil || err == nil {
+		t.Fatalf("mod by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", v, err)
+	} else {
+		var divByZero *ArithmeticDivisionByZeroError
+		if !errors.As(err, &divByZero) {
+			t.Fatalf("mod by zero: got %T, want *ArithmeticDivisionByZeroError", err)
+		}
+	}
 
 	// NULL propagation.
 	sum := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if got := mustEvalForTest(sum, map[string]any{"a": nil, "b": int64(1)}); got != nil {
+	got, errEv1 := sum.Evaluate(map[string]any{"a": nil, "b": int64(1)})
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("NULL lhs: got %v", got)
 	}
-	if got := mustEvalForTest(sum, map[string]any{"a": int64(1), "b": nil}); got != nil {
+	got, errEv2 := sum.Evaluate(map[string]any{"a": int64(1), "b": nil})
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Fatalf("NULL rhs: got %v", got)
 	}
 
-	// Type mismatch panics with ScalarTypeMismatchError (Java-aligned).
+	// Type mismatch returns ScalarTypeMismatchError on the error channel
+	// (Java-aligned).
 	tm := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatal("type mismatch: expected panic")
-			} else if _, ok := r.(*ScalarTypeMismatchError); !ok {
-				t.Fatalf("type mismatch: expected *ScalarTypeMismatchError, got %T: %v", r, r)
-			}
-		}()
-		mustEvalForTest(tm, map[string]any{"a": "foo", "b": int64(1)})
-	}()
+	if v, err := tm.Evaluate(map[string]any{"a": "foo", "b": int64(1)}); v != nil || err == nil {
+		t.Fatalf("type mismatch: got (%v, %v), want (nil, ScalarTypeMismatchError)", v, err)
+	} else {
+		var mismatch *ScalarTypeMismatchError
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("type mismatch: got %T, want *ScalarTypeMismatchError", err)
+		}
+	}
 
 	// Float arithmetic returns nil per the seed contract — int-only
 	// Evaluate, full coercion waits on the Phase 4.0 Type hierarchy
 	// Float arithmetic: both float or mixed int+float → float promotion.
 	floatOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if got := mustEvalForTest(floatOp, map[string]any{"a": float64(1.5), "b": float64(2.5)}); got != float64(4) {
+	got, errEv3 := floatOp.Evaluate(map[string]any{"a": float64(1.5), "b": float64(2.5)})
+	require.NoError(t, errEv3)
+	if got != float64(4) {
 		t.Fatalf("float arith: got %v, want 4.0", got)
 	}
 	mixedOp := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-	if got := mustEvalForTest(mixedOp, map[string]any{"a": int64(1), "b": float64(2.5)}); got != float64(3.5) {
+	got, errEv4 := mixedOp.Evaluate(map[string]any{"a": int64(1), "b": float64(2.5)})
+	require.NoError(t, errEv4)
+	if got != float64(3.5) {
 		t.Fatalf("mixed int/float arith: got %v, want 3.5", got)
 	}
 }
@@ -208,16 +233,22 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 func TestBooleanValue(t *testing.T) {
 	t.Parallel()
 	tv := NewBooleanValue(true)
-	if got := mustEvalForTest(tv, nil); got != true {
+	got, errEv0 := tv.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != true {
 		t.Fatalf("true literal: got %v", got)
 	}
 	fv := NewBooleanValue(false)
-	if got := mustEvalForTest(fv, nil); got != false {
+	got, errEv1 := fv.Evaluate(nil)
+	require.NoError(t, errEv1)
+	if got != false {
 		t.Fatalf("false literal: got %v", got)
 	}
 	// UNKNOWN literal.
 	uv := &BooleanValue{Value: nil}
-	if got := mustEvalForTest(uv, nil); got != nil {
+	got, errEv2 := uv.Evaluate(nil)
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Fatalf("UNKNOWN literal: got %v", got)
 	}
 	if tv.Type().Code() != TypeCodeBoolean {
@@ -232,80 +263,112 @@ func TestCastValue(t *testing.T) {
 	// signed int64 as the corresponding unsigned, producing
 	// "18446744073709551611" for -5 instead of "-5".
 	strC := NewCastValue(&ConstantValue{Value: int64(42), Typ: TypeInt}, TypeString)
-	if got := mustEvalForTest(strC, nil); got != "42" {
+	got, errEv0 := strC.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != "42" {
 		t.Fatalf("int→string: got %v", got)
 	}
 	negStrC := NewCastValue(&ConstantValue{Value: int64(-5), Typ: TypeInt}, TypeString)
-	if got := mustEvalForTest(negStrC, nil); got != "-5" {
+	got, errEv1 := negStrC.Evaluate(nil)
+	require.NoError(t, errEv1)
+	if got != "-5" {
 		t.Fatalf("negative int→string: got %v, want \"-5\" (regression for uitoa(uint64(int64))) bug", got)
 	}
 	zeroStrC := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeString)
-	if got := mustEvalForTest(zeroStrC, nil); got != "0" {
+	got, errEv2 := zeroStrC.Evaluate(nil)
+	require.NoError(t, errEv2)
+	if got != "0" {
 		t.Fatalf("zero→string: got %v", got)
 	}
 	minStrC := NewCastValue(&ConstantValue{Value: int64(-9223372036854775808), Typ: TypeInt}, TypeString)
-	if got := mustEvalForTest(minStrC, nil); got != "-9223372036854775808" {
+	got, errEv3 := minStrC.Evaluate(nil)
+	require.NoError(t, errEv3)
+	if got != "-9223372036854775808" {
 		t.Fatalf("MIN_INT64→string: got %v", got)
 	}
 
 	// bool → int: true=1, false=0.
 	boolToInt := NewCastValue(NewBooleanValue(true), TypeInt)
-	if got := mustEvalForTest(boolToInt, nil); got != int64(1) {
+	got, errEv4 := boolToInt.Evaluate(nil)
+	require.NoError(t, errEv4)
+	if got != int64(1) {
 		t.Fatalf("true→int: got %v", got)
 	}
 	boolToInt = NewCastValue(NewBooleanValue(false), TypeInt)
-	if got := mustEvalForTest(boolToInt, nil); got != int64(0) {
+	got, errEv5 := boolToInt.Evaluate(nil)
+	require.NoError(t, errEv5)
+	if got != int64(0) {
 		t.Fatalf("false→int: got %v", got)
 	}
 
 	// int → bool: 0=false, non-zero=true.
 	intToBool := NewCastValue(&ConstantValue{Value: int64(0), Typ: TypeInt}, TypeBool)
-	if got := mustEvalForTest(intToBool, nil); got != false {
+	got, errEv6 := intToBool.Evaluate(nil)
+	require.NoError(t, errEv6)
+	if got != false {
 		t.Fatalf("0→bool: got %v", got)
 	}
 	intToBool = NewCastValue(&ConstantValue{Value: int64(7), Typ: TypeInt}, TypeBool)
-	if got := mustEvalForTest(intToBool, nil); got != true {
+	got, errEv7 := intToBool.Evaluate(nil)
+	require.NoError(t, errEv7)
+	if got != true {
 		t.Fatalf("7→bool: got %v", got)
 	}
 
 	// NULL propagates.
 	nullC := NewCastValue(&ConstantValue{Value: nil, Typ: TypeInt}, TypeString)
-	if got := mustEvalForTest(nullC, nil); got != nil {
+	got, errEv8 := nullC.Evaluate(nil)
+	require.NoError(t, errEv8)
+	if got != nil {
 		t.Fatalf("NULL cast: got %v", got)
 	}
 
 	// Float source casts.
 	// int → float
 	intToFloat := NewCastValue(&ConstantValue{Value: int64(5), Typ: TypeInt}, TypeFloat)
-	if got := mustEvalForTest(intToFloat, nil); got != float64(5) {
+	got, errEv9 := intToFloat.Evaluate(nil)
+	require.NoError(t, errEv9)
+	if got != float64(5) {
 		t.Fatalf("int→float: got %v", got)
 	}
 	// float → int (Java Math.round: floor(x+0.5))
 	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: TypeFloat}, TypeInt)
-	if got := mustEvalForTest(floatToInt, nil); got != int64(4) {
+	got, errEv10 := floatToInt.Evaluate(nil)
+	require.NoError(t, errEv10)
+	if got != int64(4) {
 		t.Fatalf("3.9→int: got %v, want 4", got)
 	}
 	floatToIntNeg := NewCastValue(&ConstantValue{Value: float64(-3.9), Typ: TypeFloat}, TypeInt)
-	if got := mustEvalForTest(floatToIntNeg, nil); got != int64(-4) {
+	got, errEv11 := floatToIntNeg.Evaluate(nil)
+	require.NoError(t, errEv11)
+	if got != int64(-4) {
 		t.Fatalf("-3.9→int: got %v, want -4", got)
 	}
 	// float → bool: 0.0 = false, non-zero = true
 	floatToBool0 := NewCastValue(&ConstantValue{Value: float64(0), Typ: TypeFloat}, TypeBool)
-	if got := mustEvalForTest(floatToBool0, nil); got != false {
+	got, errEv12 := floatToBool0.Evaluate(nil)
+	require.NoError(t, errEv12)
+	if got != false {
 		t.Fatalf("0.0→bool: got %v", got)
 	}
 	floatToBoolNZ := NewCastValue(&ConstantValue{Value: float64(0.5), Typ: TypeFloat}, TypeBool)
-	if got := mustEvalForTest(floatToBoolNZ, nil); got != true {
+	got, errEv13 := floatToBoolNZ.Evaluate(nil)
+	require.NoError(t, errEv13)
+	if got != true {
 		t.Fatalf("0.5→bool: got %v", got)
 	}
 	// float → string
 	floatToStr := NewCastValue(&ConstantValue{Value: float64(3.14), Typ: TypeFloat}, TypeString)
-	if got := mustEvalForTest(floatToStr, nil); got != "3.14" {
+	got, errEv14 := floatToStr.Evaluate(nil)
+	require.NoError(t, errEv14)
+	if got != "3.14" {
 		t.Fatalf("3.14→string: got %v", got)
 	}
 	// float → float (verbatim)
 	floatToFloat := NewCastValue(&ConstantValue{Value: float64(2.5), Typ: TypeFloat}, TypeFloat)
-	if got := mustEvalForTest(floatToFloat, nil); got != float64(2.5) {
+	got, errEv15 := floatToFloat.Evaluate(nil)
+	require.NoError(t, errEv15)
+	if got != float64(2.5) {
 		t.Fatalf("float→float: got %v", got)
 	}
 	// NaN / Inf → panic with InvalidCastError for int target.
@@ -317,29 +380,29 @@ func TestCastValue(t *testing.T) {
 		{"+Inf→int", math.Inf(1)},
 		{"-Inf→int", math.Inf(-1)},
 	} {
-		func() {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("%s: expected panic, got nil", tc.name)
-				}
-				if _, ok := r.(*InvalidCastError); !ok {
-					t.Fatalf("%s: expected InvalidCastError, got %T", tc.name, r)
-				}
-			}()
-			cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: TypeFloat}, TypeInt)
-			mustEvalForTest(cv, nil)
-		}()
+		cv := NewCastValue(&ConstantValue{Value: tc.val, Typ: TypeFloat}, TypeInt)
+		if v, err := cv.Evaluate(nil); v != nil || err == nil {
+			t.Fatalf("%s: got (%v, %v), want (nil, InvalidCastError)", tc.name, v, err)
+		} else {
+			var invalidCast *InvalidCastError
+			if !errors.As(err, &invalidCast) {
+				t.Fatalf("%s: got %T, want *InvalidCastError", tc.name, err)
+			}
+		}
 	}
 
 	// Unknown conversion: int → bool via the reverse path is OK,
 	// string → int: trims whitespace, parses decimal.
 	strToInt := NewCastValue(&ConstantValue{Value: "3", Typ: TypeString}, TypeInt)
-	if got := mustEvalForTest(strToInt, nil); got != int64(3) {
+	got, errEv16 := strToInt.Evaluate(nil)
+	require.NoError(t, errEv16)
+	if got != int64(3) {
 		t.Fatalf("string→int: got %v, want 3", got)
 	}
 	strToIntWs := NewCastValue(&ConstantValue{Value: "  42  ", Typ: TypeString}, TypeInt)
-	if got := mustEvalForTest(strToIntWs, nil); got != int64(42) {
+	got, errEv17 := strToIntWs.Evaluate(nil)
+	require.NoError(t, errEv17)
+	if got != int64(42) {
 		t.Fatalf("string(ws)→int: got %v, want 42", got)
 	}
 
@@ -348,21 +411,29 @@ func TestCastValue(t *testing.T) {
 	// returned "true"/"false" — fold-vs-runtime divergence on a
 	// constant input.
 	boolToStrTrue := NewCastValue(NewBooleanValue(true), TypeString)
-	if got := mustEvalForTest(boolToStrTrue, nil); got != "true" {
+	got, errEv18 := boolToStrTrue.Evaluate(nil)
+	require.NoError(t, errEv18)
+	if got != "true" {
 		t.Fatalf("TRUE→string: got %v, want \"true\"", got)
 	}
 	boolToStrFalse := NewCastValue(NewBooleanValue(false), TypeString)
-	if got := mustEvalForTest(boolToStrFalse, nil); got != "false" {
+	got, errEv19 := boolToStrFalse.Evaluate(nil)
+	require.NoError(t, errEv19)
+	if got != "false" {
 		t.Fatalf("FALSE→string: got %v, want \"false\"", got)
 	}
 	// bool → float. Mirrors runtime's CAST(b AS INT) AS FLOAT chain
 	// in one step (TRUE→1.0, FALSE→0.0).
 	boolToFloatT := NewCastValue(NewBooleanValue(true), TypeFloat)
-	if got := mustEvalForTest(boolToFloatT, nil); got != float64(1) {
+	got, errEv20 := boolToFloatT.Evaluate(nil)
+	require.NoError(t, errEv20)
+	if got != float64(1) {
 		t.Fatalf("TRUE→float: got %v, want 1", got)
 	}
 	boolToFloatF := NewCastValue(NewBooleanValue(false), TypeFloat)
-	if got := mustEvalForTest(boolToFloatF, nil); got != float64(0) {
+	got, errEv21 := boolToFloatF.Evaluate(nil)
+	require.NoError(t, errEv21)
+	if got != float64(0) {
 		t.Fatalf("FALSE→float: got %v, want 0", got)
 	}
 
@@ -493,17 +564,21 @@ func TestAggregateValue_MissingOperandPanics(t *testing.T) {
 	_ = NewAggregateValue(AggSum, nil)
 }
 
-// Evaluate panics — aggregates are multi-row. The panic message
-// tells the caller which aggregator they should be using.
+// Evaluate returns AggregateEvalError — aggregates are multi-row and the
+// per-row scalar path is reachable from user data (e.g. WHERE COUNT(*)>0),
+// so RFC-087 routes it through the error channel rather than a panic. The
+// message tells the caller which aggregator they should be using.
 func TestAggregateValue_EvaluatePanics(t *testing.T) {
 	t.Parallel()
 	sum := NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: TypeInt})
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic from AggregateValue.Evaluate")
-		}
-	}()
-	_ = mustEvalForTest(sum, map[string]any{"x": int64(5)})
+	v, err := sum.Evaluate(map[string]any{"x": int64(5)})
+	if v != nil || err == nil {
+		t.Fatalf("AggregateValue.Evaluate: got (%v, %v), want (nil, AggregateEvalError)", v, err)
+	}
+	var aggErr *AggregateEvalError
+	if !errors.As(err, &aggErr) {
+		t.Fatalf("AggregateValue.Evaluate: got %T, want *AggregateEvalError", err)
+	}
 }
 
 // --- QuantifiedObjectValue -----------------------------------------
@@ -554,9 +629,13 @@ func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 		corr:                            {"age": int64(30)},
 		NamedCorrelationIdentifier("u"): {"other": "field"},
 	}
-	row, ok := mustEvalForTest(q, ctx).(map[string]any)
+	tmpEv1, errEv1 := q.Evaluate(ctx)
+	require.NoError(t, errEv1)
+	row, ok := tmpEv1.(map[string]any)
 	if !ok {
-		t.Fatalf("expected map row, got %T", mustEvalForTest(q, ctx))
+		tmpEv0, errEv0 := q.Evaluate(ctx)
+		require.NoError(t, errEv0)
+		t.Fatalf("expected map row, got %T", tmpEv0)
 	}
 	if got, want := row["age"], int64(30); got != want {
 		t.Fatalf("age: got %v, want %v", got, want)
@@ -568,7 +647,9 @@ func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
 	// Single-source: the whole row IS the correlation's row.
 	ctx := map[string]any{"age": int64(42)}
-	if got := mustEvalForTest(q, ctx); got == nil {
+	got, errEv0 := q.Evaluate(ctx)
+	require.NoError(t, errEv0)
+	if got == nil {
 		t.Fatal("single-source Evaluate should return the row")
 	}
 }
@@ -576,7 +657,9 @@ func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 func TestQuantifiedObjectValue_Evaluate_NilContext(t *testing.T) {
 	t.Parallel()
 	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
-	if got := mustEvalForTest(q, nil); got != nil {
+	got, errEv0 := q.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("nil ctx: got %v, want nil", got)
 	}
 }
@@ -585,7 +668,9 @@ func TestQuantifiedObjectValue_Evaluate_ForeignContextIsNil(t *testing.T) {
 	t.Parallel()
 	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
 	// Unfamiliar context shape degrades to nil.
-	if got := mustEvalForTest(q, 42); got != nil {
+	got, errEv0 := q.Evaluate(42)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("unfamiliar ctx: got %v", got)
 	}
 }
@@ -627,8 +712,11 @@ func TestPromoteValue_EvaluateDelegatesToChild(t *testing.T) {
 	t.Parallel()
 	child := &ConstantValue{Value: int64(42), Typ: TypeInt}
 	p := NewPromoteValue(child, TypeString)
-	// Seed: Promote is a runtime no-op — child's evaluation shines through.
-	if got, want := mustEvalForTest(p, nil), int64(42); got != want {
+	tmpEv0,
+		// Seed: Promote is a runtime no-op — child's evaluation shines through.
+		errEv0 := p.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got, want := tmpEv0, int64(42); got != want {
 		t.Fatalf("Evaluate: got %v, want %v", got, want)
 	}
 }
@@ -704,9 +792,13 @@ func TestRecordConstructorValue_Evaluate(t *testing.T) {
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	ctx := map[string]any{"id": int64(7)}
-	out, ok := mustEvalForTest(r, ctx).(map[string]any)
+	tmpEv1, errEv1 := r.Evaluate(ctx)
+	require.NoError(t, errEv1)
+	out, ok := tmpEv1.(map[string]any)
 	if !ok {
-		t.Fatalf("Evaluate: expected map, got %T", mustEvalForTest(r, ctx))
+		tmpEv0, errEv0 := r.Evaluate(ctx)
+		require.NoError(t, errEv0)
+		t.Fatalf("Evaluate: expected map, got %T", tmpEv0)
 	}
 	if got, want := out["a"], int64(7); got != want {
 		t.Fatalf("field a: got %v, want %v", got, want)
@@ -946,7 +1038,9 @@ func TestScalarFunctionValue_Evaluate_NilArg(t *testing.T) {
 		Args:     []Value{nil}, // deliberately malformed
 		Typ:      TypeInt,
 	}
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate with nil arg: got %v, want nil", got)
 	}
 }
@@ -1084,11 +1178,15 @@ func TestParameterValue_Evaluate_NoBinder(t *testing.T) {
 
 	pos := NewParameterValue(1)
 	// Nil context → NULL (UNKNOWN).
-	if got := mustEvalForTest(pos, nil); got != nil {
+	got, errEv0 := pos.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("nil ctx: want nil, got %v", got)
 	}
 	// Row-only context (no binder capability) → NULL.
-	if got := mustEvalForTest(pos, map[string]any{"x": int64(5)}); got != nil {
+	got, errEv1 := pos.Evaluate(map[string]any{"x": int64(5)})
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("row ctx without binder: want nil, got %v", got)
 	}
 }
@@ -1101,24 +1199,36 @@ func TestParameterValue_Evaluate_WithBinder(t *testing.T) {
 		Named: map[string]any{"foo": true, "bar": nil},
 	}
 
-	if got := mustEvalForTest(NewParameterValue(1), binder); got != int64(42) {
+	got, errEv0 := NewParameterValue(1).Evaluate(binder)
+	require.NoError(t, errEv0)
+	if got != int64(42) {
 		t.Fatalf("?1: want 42, got %v", got)
 	}
-	if got := mustEvalForTest(NewParameterValue(2), binder); got != "hello" {
+	got, errEv1 := NewParameterValue(2).Evaluate(binder)
+	require.NoError(t, errEv1)
+	if got != "hello" {
 		t.Fatalf("?2: want 'hello', got %v", got)
 	}
-	if got := mustEvalForTest(NewNamedParameterValue("foo"), binder); got != true {
+	got, errEv2 := NewNamedParameterValue("foo").Evaluate(binder)
+	require.NoError(t, errEv2)
+	if got != true {
 		t.Fatalf(":foo: want true, got %v", got)
 	}
 	// Bound to NULL — binder reports (nil, true). Evaluate surfaces nil.
-	if got := mustEvalForTest(NewNamedParameterValue("bar"), binder); got != nil {
+	got, errEv3 := NewNamedParameterValue("bar").Evaluate(binder)
+	require.NoError(t, errEv3)
+	if got != nil {
 		t.Fatalf(":bar (NULL bound): want nil, got %v", got)
 	}
 	// Unbound → nil.
-	if got := mustEvalForTest(NewParameterValue(99), binder); got != nil {
+	got, errEv4 := NewParameterValue(99).Evaluate(binder)
+	require.NoError(t, errEv4)
+	if got != nil {
 		t.Fatalf("?99 unbound: want nil, got %v", got)
 	}
-	if got := mustEvalForTest(NewNamedParameterValue("missing"), binder); got != nil {
+	got, errEv5 := NewNamedParameterValue("missing").Evaluate(binder)
+	require.NoError(t, errEv5)
+	if got != nil {
 		t.Fatalf(":missing unbound: want nil, got %v", got)
 	}
 }
@@ -1200,7 +1310,8 @@ func TestScalarFunctionValue_Evaluate(t *testing.T) {
 		{"empty string LENGTH", NewScalarFunctionValue("LENGTH", TypeInt, field("BLANK")), row, int64(0)},
 	}
 	for _, tc := range cases {
-		got := mustEvalForTest(tc.v, tc.ctx)
+		got, errEv0 := tc.v.Evaluate(tc.ctx)
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("%s: got %v (%T), want %v (%T)", tc.name, got, got, tc.want, tc.want)
 		}
@@ -1394,7 +1505,8 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 			corrB: map[string]any{"NAME": "Bob", "ID": int64(2)},
 		}},
 	}
-	got := mustEvalForTest(fv, rc)
+	got, errEv0 := fv.Evaluate(rc)
+	require.NoError(t, errEv0)
 	if got != "Alice" {
 		t.Fatalf("expected Alice, got %v", got)
 	}
@@ -1412,7 +1524,8 @@ func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
 			corrB:                           map[string]any{"NAME": "Bob"},
 		}},
 	}
-	got := mustEvalForTest(fv, rc)
+	got, errEv0 := fv.Evaluate(rc)
+	require.NoError(t, errEv0)
 	if got != "Bob" {
 		t.Fatalf("expected Bob, got %v", got)
 	}
@@ -1427,7 +1540,8 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 		"EMP.NAME":  "Alice",
 		"DEPT.NAME": "Engineering",
 	}
-	got := mustEvalForTest(fv, merged)
+	got, errEv0 := fv.Evaluate(merged)
+	require.NoError(t, errEv0)
 	if got != "Alice" {
 		t.Fatalf("expected Alice from EMP.NAME, got %v", got)
 	}
@@ -1454,19 +1568,25 @@ func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 	}
 
 	// map[string]any context (the NLJ passesJoinPredicates path).
-	if got := mustEvalForTest(fv, merged); got != int64(7) {
+	got, errEv0 := fv.Evaluate(merged)
+	require.NoError(t, errEv0)
+	if got != int64(7) {
 		t.Errorf("map ctx: T3.T2_ID via $m = %v, want 7", got)
 	}
 
 	// RowEvalContext.Datum context (the PredicatesFilter path, no binding for $m).
 	rc := &RowEvalContext{Datum: merged}
-	if got := mustEvalForTest(fv, rc); got != int64(7) {
+	got, errEv1 := fv.Evaluate(rc)
+	require.NoError(t, errEv1)
+	if got != int64(7) {
 		t.Errorf("RowEvalContext.Datum ctx: T3.T2_ID via $m = %v, want 7", got)
 	}
 
 	// A qualified field NOT present must still miss (no spurious fallback).
 	missing := NewFieldValue(NewQuantifiedObjectValue(merge), "T9.X", UnknownType)
-	if got := mustEvalForTest(missing, merged); got != nil {
+	got, errEv2 := missing.Evaluate(merged)
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Errorf("absent qualified key must resolve nil, got %v", got)
 	}
 }
@@ -1479,7 +1599,8 @@ func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
 		"K":   int64(99),
 		"B.K": int64(99),
 	}
-	got := mustEvalForTest(fv, merged)
+	got, errEv0 := fv.Evaluate(merged)
+	require.NoError(t, errEv0)
 	if got != nil {
 		t.Fatalf("expected nil (A.K not in map), got %v — bare key fallback must not happen", got)
 	}
@@ -1495,8 +1616,10 @@ func TestFieldValue_QOV_NullKeyDisambiguation(t *testing.T) {
 		"B.K": int64(20),
 		"K":   int64(10),
 	}
-	gotA := mustEvalForTest(fvA, merged)
-	gotB := mustEvalForTest(fvB, merged)
+	gotA, errEv0 := fvA.Evaluate(merged)
+	require.NoError(t, errEv0)
+	gotB, errEv1 := fvB.Evaluate(merged)
+	require.NoError(t, errEv1)
 	if gotA != int64(10) {
 		t.Errorf("A.K: expected 10, got %v", gotA)
 	}
@@ -1514,8 +1637,10 @@ func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
 		"B.K": int64(10),
 		"K":   int64(10),
 	}
-	gotA := mustEvalForTest(fvA, merged)
-	gotB := mustEvalForTest(fvB, merged)
+	gotA, errEv0 := fvA.Evaluate(merged)
+	require.NoError(t, errEv0)
+	gotB, errEv1 := fvB.Evaluate(merged)
+	require.NoError(t, errEv1)
 	if gotA != nil {
 		t.Fatalf("A.K absent from map → must be nil, got %v", gotA)
 	}
@@ -1533,7 +1658,8 @@ func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 		corrE:                              {"SALARY": int64(100), "NAME": "Alice"},
 		NamedCorrelationIdentifier("DEPT"): {"NAME": "Eng"},
 	}
-	got := mustEvalForTest(fv, ctx)
+	got, errEv0 := fv.Evaluate(ctx)
+	require.NoError(t, errEv0)
 	if got != int64(100) {
 		t.Fatalf("expected 100, got %v", got)
 	}
@@ -1549,7 +1675,8 @@ func TestFieldValue_QOV_MissingCorrelation_ReturnsNil(t *testing.T) {
 			NamedCorrelationIdentifier("OTHER"): map[string]any{"COL": "other"},
 		}},
 	}
-	got := mustEvalForTest(fv, rc)
+	got, errEv0 := fv.Evaluate(rc)
+	require.NoError(t, errEv0)
 	if got != nil {
 		t.Fatalf("missing correlation should return nil, got %v", got)
 	}
@@ -1560,7 +1687,8 @@ func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 	fv := &FieldValue{Field: "NAME", Typ: UnknownType}
 
 	row := map[string]any{"NAME": "Alice"}
-	got := mustEvalForTest(fv, row)
+	got, errEv0 := fv.Evaluate(row)
+	require.NoError(t, errEv0)
 	if got != "Alice" {
 		t.Fatalf("backward compat: expected Alice, got %v", got)
 	}
@@ -1571,7 +1699,8 @@ func TestFieldValue_NoChild_QualifiedString_BackwardCompat(t *testing.T) {
 	fv := &FieldValue{Field: "EMP.NAME", Typ: UnknownType}
 
 	row := map[string]any{"EMP.NAME": "Alice", "NAME": "wrong"}
-	got := mustEvalForTest(fv, row)
+	got, errEv0 := fv.Evaluate(row)
+	require.NoError(t, errEv0)
 	if got != "Alice" {
 		t.Fatalf("backward compat qualified: expected Alice, got %v", got)
 	}

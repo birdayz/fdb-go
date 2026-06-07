@@ -3,6 +3,8 @@ package values
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewAnchoredJoinRecord_ComposeResolvesEveryColumn pins RFC-077's name-miss guard: for
@@ -66,7 +68,8 @@ func TestNewAnchoredJoinRecord_EvaluatesNameKeyedRow(t *testing.T) {
 		{Alias: a, Columns: []Field{{Name: "NAME", FieldType: UnknownType}}},
 	}
 	rc := NewAnchoredJoinRecord(legs)
-	row := mustEvalForTest(rc, staticBinder{a: map[string]any{"NAME": "alice"}})
+	row, errEv0 := rc.Evaluate(staticBinder{a: map[string]any{"NAME": "alice"}})
+	require.NoError(t, errEv0)
 	m, ok := row.(map[string]any)
 	if !ok {
 		t.Fatalf("anchored RC Evaluate must yield a name-keyed map, got %T", row)

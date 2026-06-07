@@ -19,8 +19,11 @@ package values
 // the source files; only the import path changes.
 
 import (
+	"errors"
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // ----- ArithmeticValue ---------------------------------------------------
@@ -64,7 +67,8 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got := mustEvalForTest(av, map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
 			}
@@ -72,9 +76,9 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_OverflowPanics pins that integer overflow panics
-// with ArithmeticOverflowError (matching Java's Math.addExact throwing
-// ArithmeticException). The executor catches this and reports 22003.
+// TestArithmeticValue_OverflowPanics pins that integer overflow returns
+// ArithmeticOverflowError on the error channel (matching Java's
+// Math.addExact throwing ArithmeticException). The executor maps it to 22003.
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeInt}
@@ -98,16 +102,14 @@ func TestArithmeticValue_OverflowPanics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("op %v %d %d should panic with ArithmeticOverflowError", tc.op, tc.l, tc.r)
-				}
-				if _, ok := r.(*ArithmeticOverflowError); !ok {
-					t.Fatalf("expected ArithmeticOverflowError, got %T: %v", r, r)
-				}
-			}()
-			mustEvalForTest(av, map[string]any{"a": tc.l, "b": tc.r})
+			v, err := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			if v != nil || err == nil {
+				t.Fatalf("op %v %d %d: got (%v, %v), want (nil, ArithmeticOverflowError)", tc.op, tc.l, tc.r, v, err)
+			}
+			var overflow *ArithmeticOverflowError
+			if !errors.As(err, &overflow) {
+				t.Fatalf("op %v %d %d: got %T, want *ArithmeticOverflowError", tc.op, tc.l, tc.r, err)
+			}
 		})
 	}
 }
@@ -137,7 +139,8 @@ func TestArithmeticValue_OverflowBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: tc.op, Left: a, Right: b}
-			got := mustEvalForTest(av, map[string]any{"a": tc.l, "b": tc.r})
+			got, errEv0 := av.Evaluate(map[string]any{"a": tc.l, "b": tc.r})
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("op %v %d %d: got %v, want %v", tc.op, tc.l, tc.r, got, tc.want)
 			}
@@ -176,7 +179,8 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := mustEvalForTest(tree, tc.row)
+			got, errEv0 := tree.Evaluate(tc.row)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -184,9 +188,9 @@ func TestArithmeticValue_NullPropagation_Deep(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_DivByZero_AllOps pins that / and % by zero panic
-// with ArithmeticDivisionByZeroError (matches Java's ArithmeticException).
-// The executor recovers this panic and surfaces it as a SQL error.
+// TestArithmeticValue_DivByZero_AllOps pins that / and % by zero return
+// ArithmeticDivisionByZeroError on the error channel (matches Java's
+// ArithmeticException). The executor surfaces it as a SQL error.
 func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 	t.Parallel()
 	a := &FieldValue{Field: "a", Typ: TypeInt}
@@ -196,26 +200,22 @@ func TestArithmeticValue_DivByZero_AllOps(t *testing.T) {
 		t.Run(op.Symbol(), func(t *testing.T) {
 			t.Parallel()
 			av := &ArithmeticValue{Op: op, Left: a, Right: b}
-			func() {
-				defer func() {
-					r := recover()
-					if r == nil {
-						t.Fatalf("%v by zero: expected panic", op)
-					}
-					if _, ok := r.(*ArithmeticDivisionByZeroError); !ok {
-						t.Fatalf("%v by zero: expected *ArithmeticDivisionByZeroError, got %T", op, r)
-					}
-				}()
-				mustEvalForTest(av, map[string]any{"a": int64(5), "b": int64(0)})
-			}()
+			v, err := av.Evaluate(map[string]any{"a": int64(5), "b": int64(0)})
+			if v != nil || err == nil {
+				t.Fatalf("%v by zero: got (%v, %v), want (nil, ArithmeticDivisionByZeroError)", op, v, err)
+			}
+			var divByZero *ArithmeticDivisionByZeroError
+			if !errors.As(err, &divByZero) {
+				t.Fatalf("%v by zero: got %T, want *ArithmeticDivisionByZeroError", op, err)
+			}
 		})
 	}
 }
 
 // TestArithmeticValue_TypeMismatch_Panics verifies that ArithmeticValue
-// panics with ScalarTypeMismatchError on type mismatches (string + int,
+// returns ScalarTypeMismatchError on type mismatches (string + int,
 // bool + int). Java-aligned: Java's SemanticAnalyzer catches this at
-// compile time; Go catches it at eval time via panic recovery, mapped
+// compile time; Go catches it at eval time on the error channel, mapped
 // to SQLSTATE 42804 by the executor.
 func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	t.Parallel()
@@ -233,19 +233,15 @@ func TestArithmeticValue_TypeMismatch_Panics(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			func() {
-				defer func() {
-					r := recover()
-					if r == nil {
-						t.Fatalf("type mismatch %v: expected panic", tc.row)
-					}
-					if _, ok := r.(*ScalarTypeMismatchError); !ok {
-						t.Fatalf("type mismatch %v: expected *ScalarTypeMismatchError, got %T: %v", tc.row, r, r)
-					}
-				}()
-				av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
-				mustEvalForTest(av, tc.row)
-			}()
+			av := &ArithmeticValue{Op: OpAdd, Left: a, Right: b}
+			v, err := av.Evaluate(tc.row)
+			if v != nil || err == nil {
+				t.Fatalf("type mismatch %v: got (%v, %v), want (nil, ScalarTypeMismatchError)", tc.row, v, err)
+			}
+			var mismatch *ScalarTypeMismatchError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("type mismatch %v: got %T, want *ScalarTypeMismatchError", tc.row, err)
+			}
 		})
 	}
 }
@@ -271,7 +267,9 @@ func TestBooleanValue_KleeneTriBool(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			bv := &BooleanValue{Value: tc.val}
-			if got := mustEvalForTest(bv, nil); got != tc.want {
+			got, errEv0 := bv.Evaluate(nil)
+			require.NoError(t, errEv0)
+			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 			if bv.Type().Code() != TypeCodeBoolean {
@@ -290,10 +288,14 @@ func boolPtr(b bool) *bool { return &b }
 // behave identically.
 func TestBooleanValue_NewBooleanValueFactory(t *testing.T) {
 	t.Parallel()
-	if got := mustEvalForTest(NewBooleanValue(true), nil); got != true {
+	got, errEv0 := NewBooleanValue(true).Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != true {
 		t.Fatalf("NewBooleanValue(true): got %v", got)
 	}
-	if got := mustEvalForTest(NewBooleanValue(false), nil); got != false {
+	got, errEv1 := NewBooleanValue(false).Evaluate(nil)
+	require.NoError(t, errEv1)
+	if got != false {
 		t.Fatalf("NewBooleanValue(false): got %v", got)
 	}
 	// Verify factory and direct-struct paths produce equal Evaluate
@@ -301,7 +303,11 @@ func TestBooleanValue_NewBooleanValueFactory(t *testing.T) {
 	// happy path even if internal pointer identities differ.
 	a := NewBooleanValue(true)
 	b := &BooleanValue{Value: boolPtr(true)}
-	if mustEvalForTest(a, nil) != mustEvalForTest(b, nil) {
+	tmpEv0, errEv2 := a.Evaluate(nil)
+	require.NoError(t, errEv2)
+	tmpEv1, errEv3 := b.Evaluate(nil)
+	require.NoError(t, errEv3)
+	if tmpEv0 != tmpEv1 {
 		t.Fatal("factory and literal produce divergent Evaluate")
 	}
 }
@@ -329,7 +335,8 @@ func TestCastValue_Identity_Parameterised(t *testing.T) {
 			t.Parallel()
 			lit := &ConstantValue{Value: tc.v, Typ: tc.typ}
 			c := NewCastValue(lit, tc.typ)
-			got := mustEvalForTest(c, nil)
+			got, errEv0 := c.Evaluate(nil)
+			require.NoError(t, errEv0)
 			if got != tc.v {
 				t.Fatalf("identity cast: got %v, want %v", got, tc.v)
 			}
@@ -348,7 +355,9 @@ func TestCastValue_NullPropagation(t *testing.T) {
 			t.Parallel()
 			null := &NullValue{Typ: TypeUnknown}
 			c := NewCastValue(null, target)
-			if got := mustEvalForTest(c, nil); got != nil {
+			got, errEv0 := c.Evaluate(nil)
+			require.NoError(t, errEv0)
+			if got != nil {
 				t.Fatalf("CAST(NULL AS %v): got %v, want nil", target, got)
 			}
 			// CastValue.Type() forces nullable; the targets above are

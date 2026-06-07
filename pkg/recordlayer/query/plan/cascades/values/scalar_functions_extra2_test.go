@@ -17,6 +17,8 @@ import (
 	"errors"
 	"math"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // ----- SIGN -------------------------------------------------------------
@@ -42,7 +44,8 @@ func TestEvalScalarFunction_SIGN(t *testing.T) {
 		{[]any{}, nil},
 	}
 	for _, tc := range cases {
-		got := evalSF("SIGN", tc.args)
+		got, errEv0 := evalScalarFunction("SIGN", tc.args)
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("SIGN(%v): got %v (%T), want %v (%T)", tc.args, got, got, tc.want, tc.want)
 		}
@@ -71,7 +74,8 @@ func TestEvalScalarFunction_MOD(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := evalSF("MOD", tc.args)
+			got, errEv0 := evalScalarFunction("MOD", tc.args)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v (%T), want %v (%T)", got, got, tc.want, tc.want)
 			}
@@ -97,7 +101,8 @@ func TestEvalScalarFunction_IFNULL(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := evalSF("IFNULL", tc.args)
+			got, errEv0 := evalScalarFunction("IFNULL", tc.args)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -128,11 +133,13 @@ func TestEvalScalarFunction_IF(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := evalSF("IF", tc.args)
+			got, errEv0 := evalScalarFunction("IF", tc.args)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("IF: got %v, want %v", got, tc.want)
 			}
-			gotIIF := evalSF("IIF", tc.args)
+			gotIIF, errEv1 := evalScalarFunction("IIF", tc.args)
+			require.NoError(t, errEv1)
 			if gotIIF != tc.want {
 				t.Fatalf("IIF: got %v, want %v", gotIIF, tc.want)
 			}
@@ -162,11 +169,13 @@ func TestEvalScalarFunction_GREATEST_LEAST(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotG := evalSF("GREATEST", tc.args)
+			gotG, errEv0 := evalScalarFunction("GREATEST", tc.args)
+			require.NoError(t, errEv0)
 			if gotG != tc.wantGreatest {
 				t.Errorf("GREATEST(%v): got %v, want %v", tc.args, gotG, tc.wantGreatest)
 			}
-			gotL := evalSF("LEAST", tc.args)
+			gotL, errEv1 := evalScalarFunction("LEAST", tc.args)
+			require.NoError(t, errEv1)
 			if gotL != tc.wantLeast {
 				t.Errorf("LEAST(%v): got %v, want %v", tc.args, gotL, tc.wantLeast)
 			}
@@ -200,11 +209,13 @@ func TestEvalScalarFunction_GREATEST_LEAST_AdditionalTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			gotG := evalSF("GREATEST", tc.args)
+			gotG, errEv0 := evalScalarFunction("GREATEST", tc.args)
+			require.NoError(t, errEv0)
 			if gotG != tc.wantGreatest {
 				t.Errorf("GREATEST(%v): got %v, want %v", tc.args, gotG, tc.wantGreatest)
 			}
-			gotL := evalSF("LEAST", tc.args)
+			gotL, errEv1 := evalScalarFunction("LEAST", tc.args)
+			require.NoError(t, errEv1)
 			if gotL != tc.wantLeast {
 				t.Errorf("LEAST(%v): got %v, want %v", tc.args, gotL, tc.wantLeast)
 			}
@@ -270,7 +281,8 @@ func TestEvalScalarFunction_NULLIF_AdditionalTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := evalSF("NULLIF", []any{tc.a, tc.b})
+			got, errEv0 := evalScalarFunction("NULLIF", []any{tc.a, tc.b})
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Errorf("NULLIF(%v, %v): got %v, want %v", tc.a, tc.b, got, tc.want)
 			}
@@ -285,7 +297,8 @@ func TestEvalScalarFunction_NULLIF_AdditionalTypes(t *testing.T) {
 // by TestScalarFnInt64Arg_RejectsNonIntegerFloat below.
 func TestScalarFnInt64Arg_AcceptsWholeFloat(t *testing.T) {
 	t.Parallel()
-	got := evalSF("SUBSTRING", []any{"hello", float64(2), float64(3)})
+	got, errEv0 := evalScalarFunction("SUBSTRING", []any{"hello", float64(2), float64(3)})
+	require.NoError(t, errEv0)
 	if got != "ell" {
 		t.Fatalf("SUBSTRING with float positions: got %v, want 'ell'", got)
 	}
@@ -297,10 +310,14 @@ func TestScalarFnInt64Arg_AcceptsWholeFloat(t *testing.T) {
 // embedded.functions.ToIntegerArg's strictness.
 func TestScalarFnInt64Arg_RejectsNonIntegerFloat(t *testing.T) {
 	t.Parallel()
-	if got := evalSF("SUBSTRING", []any{"hello", float64(2.5), int64(3)}); got != nil {
+	got, errEv0 := evalScalarFunction("SUBSTRING", []any{"hello", float64(2.5), int64(3)})
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("SUBSTRING(_, 2.5, _) should decline: got %v", got)
 	}
-	if got := evalSF("LEFT", []any{"hello", float64(1.5)}); got != nil {
+	got, errEv1 := evalScalarFunction("LEFT", []any{"hello", float64(1.5)})
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("LEFT(_, 1.5) should decline: got %v", got)
 	}
 }
@@ -309,7 +326,9 @@ func TestScalarFnInt64Arg_RejectsNonIntegerFloat(t *testing.T) {
 // a string argument where an int is expected returns nil.
 func TestScalarFnInt64Arg_RejectsString(t *testing.T) {
 	t.Parallel()
-	if got := evalSF("LEFT", []any{"hello", "two"}); got != nil {
+	got, errEv0 := evalScalarFunction("LEFT", []any{"hello", "two"})
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("LEFT(_, 'two') should decline: got %v", got)
 	}
 }
@@ -319,11 +338,15 @@ func TestScalarFnInt64Arg_RejectsString(t *testing.T) {
 // math.Pi. Wrong arity (1+ args) declines with nil.
 func TestEvalScalarFunction_PI(t *testing.T) {
 	t.Parallel()
-	if got := evalSF("PI", []any{}); got != math.Pi {
+	got, errEv0 := evalScalarFunction("PI", []any{})
+	require.NoError(t, errEv0)
+	if got != math.Pi {
 		t.Fatalf("PI(): got %v, want math.Pi", got)
 	}
 	// Wrong arity declines.
-	if got := evalSF("PI", []any{int64(1)}); got != nil {
+	got, errEv1 := evalScalarFunction("PI", []any{int64(1)})
+	require.NoError(t, errEv1)
+	if got != nil {
 		t.Fatalf("PI(1): expected decline, got %v", got)
 	}
 }
@@ -346,7 +369,8 @@ func TestEvalScalarFunction_LEN(t *testing.T) {
 		{"CHARACTER_LENGTH", "héllo", 5}, // sanity check
 	}
 	for _, tc := range cases {
-		got := evalSF(tc.fn, []any{tc.arg})
+		got, errEv0 := evalScalarFunction(tc.fn, []any{tc.arg})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Fatalf("%s(%q): got %v, want %v", tc.fn, tc.arg, got, tc.want)
 		}
@@ -377,7 +401,8 @@ func TestEvalScalarFunction_CONCAT_WS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := evalSF("CONCAT_WS", tc.args)
+			got, errEv0 := evalScalarFunction("CONCAT_WS", tc.args)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("CONCAT_WS(%v): got %v, want %v", tc.args, got, tc.want)
 			}
@@ -389,38 +414,56 @@ func TestEvalScalarFunction_CONCAT_WS(t *testing.T) {
 
 func TestEvalScalarFunction_EXP(t *testing.T) {
 	t.Parallel()
-	if got := evalSF("EXP", []any{float64(0)}); got != float64(1) {
+	got, errEv0 := evalScalarFunction("EXP", []any{float64(0)})
+	require.NoError(t, errEv0)
+	if got != float64(1) {
 		t.Errorf("EXP(0): got %v, want 1", got)
 	}
-	if got := evalSF("EXP", []any{float64(1)}); got != math.E {
+	got, errEv1 := evalScalarFunction("EXP", []any{float64(1)})
+	require.NoError(t, errEv1)
+	if got != math.E {
 		t.Errorf("EXP(1): got %v, want e", got)
 	}
-	if got := evalSF("EXP", []any{int64(0)}); got != float64(1) {
+	got, errEv2 := evalScalarFunction("EXP", []any{int64(0)})
+	require.NoError(t, errEv2)
+	if got != float64(1) {
 		t.Errorf("EXP(int 0): got %v, want 1", got)
 	}
-	if got := evalSF("EXP", []any{nil}); got != nil {
+	got, errEv3 := evalScalarFunction("EXP", []any{nil})
+	require.NoError(t, errEv3)
+	if got != nil {
 		t.Errorf("EXP(NULL): got %v, want nil", got)
 	}
 	// Overflow (EXP(1000) → +Inf) degrades to SQL NULL, matching the
 	// POWER/SQRT out-of-domain convention and the pre-RFC embedded EXP.
-	if got := evalSF("EXP", []any{float64(1000)}); got != nil {
+	got, errEv4 := evalScalarFunction("EXP", []any{float64(1000)})
+	require.NoError(t, errEv4)
+	if got != nil {
 		t.Errorf("EXP(1000) overflow: got %v, want nil", got)
 	}
 }
 
 func TestEvalScalarFunction_LN(t *testing.T) {
 	t.Parallel()
-	if got := evalSF("LN", []any{float64(1)}); got != float64(0) {
+	got, errEv0 := evalScalarFunction("LN", []any{float64(1)})
+	require.NoError(t, errEv0)
+	if got != float64(0) {
 		t.Errorf("LN(1): got %v, want 0", got)
 	}
-	if got := evalSF("LN", []any{math.E}); math.Abs(got.(float64)-1) > 1e-9 {
+	got, errEv1 := evalScalarFunction("LN", []any{math.E})
+	require.NoError(t, errEv1)
+	if math.Abs(got.(float64)-1) > 1e-9 {
 		t.Errorf("LN(e): got %v, want 1", got)
 	}
 	// Domain: x > 0
-	if got := evalSF("LN", []any{float64(0)}); got != nil {
+	got, errEv2 := evalScalarFunction("LN", []any{float64(0)})
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Errorf("LN(0): got %v, want nil (out of domain)", got)
 	}
-	if got := evalSF("LN", []any{float64(-1)}); got != nil {
+	got, errEv3 := evalScalarFunction("LN", []any{float64(-1)})
+	require.NoError(t, errEv3)
+	if got != nil {
 		t.Errorf("LN(-1): got %v, want nil", got)
 	}
 }
@@ -428,21 +471,31 @@ func TestEvalScalarFunction_LN(t *testing.T) {
 func TestEvalScalarFunction_LOG(t *testing.T) {
 	t.Parallel()
 	// 1-arg LOG is log10
-	if got := evalSF("LOG", []any{float64(100)}); math.Abs(got.(float64)-2) > 1e-9 {
+	got, errEv0 := evalScalarFunction("LOG", []any{float64(100)})
+	require.NoError(t, errEv0)
+	if math.Abs(got.(float64)-2) > 1e-9 {
 		t.Errorf("LOG(100): got %v, want 2", got)
 	}
-	if got := evalSF("LOG", []any{float64(1000)}); math.Abs(got.(float64)-3) > 1e-9 {
+	got, errEv1 := evalScalarFunction("LOG", []any{float64(1000)})
+	require.NoError(t, errEv1)
+	if math.Abs(got.(float64)-3) > 1e-9 {
 		t.Errorf("LOG(1000): got %v, want 3", got)
 	}
 	// 2-arg LOG(base, x) = log_base(x)
-	if got := evalSF("LOG", []any{float64(2), float64(8)}); math.Abs(got.(float64)-3) > 1e-9 {
+	got, errEv2 := evalScalarFunction("LOG", []any{float64(2), float64(8)})
+	require.NoError(t, errEv2)
+	if math.Abs(got.(float64)-3) > 1e-9 {
 		t.Errorf("LOG(2, 8): got %v, want 3", got)
 	}
 	// Domain: base > 0, base != 1, x > 0
-	if got := evalSF("LOG", []any{float64(1), float64(8)}); got != nil {
+	got, errEv3 := evalScalarFunction("LOG", []any{float64(1), float64(8)})
+	require.NoError(t, errEv3)
+	if got != nil {
 		t.Errorf("LOG(1, 8): got %v, want nil (base=1 forbidden)", got)
 	}
-	if got := evalSF("LOG", []any{float64(2), float64(-1)}); got != nil {
+	got, errEv4 := evalScalarFunction("LOG", []any{float64(2), float64(-1)})
+	require.NoError(t, errEv4)
+	if got != nil {
 		t.Errorf("LOG(2, -1): got %v, want nil", got)
 	}
 }
@@ -463,7 +516,8 @@ func TestEvalScalarFunction_REVERSE(t *testing.T) {
 		{nil, nil},
 	}
 	for _, tc := range cases {
-		got := evalSF("REVERSE", []any{tc.in})
+		got, errEv0 := evalScalarFunction("REVERSE", []any{tc.in})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("REVERSE(%v): got %v, want %v", tc.in, got, tc.want)
 		}
@@ -487,7 +541,8 @@ func TestEvalScalarFunction_POSITION(t *testing.T) {
 		{"x", nil, nil},
 	}
 	for _, tc := range cases {
-		got := evalSF("POSITION", []any{tc.needle, tc.haystack})
+		got, errEv0 := evalScalarFunction("POSITION", []any{tc.needle, tc.haystack})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("POSITION(%v, %v): got %v, want %v", tc.needle, tc.haystack, got, tc.want)
 		}
@@ -513,7 +568,8 @@ func TestEvalScalarFunction_LEFT(t *testing.T) {
 		{"x", float64(2.5), nil}, // non-int-valued float declines
 	}
 	for _, tc := range cases {
-		got := evalSF("LEFT", []any{tc.s, tc.n})
+		got, errEv0 := evalScalarFunction("LEFT", []any{tc.s, tc.n})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("LEFT(%v, %v): got %v, want %v", tc.s, tc.n, got, tc.want)
 		}
@@ -536,7 +592,8 @@ func TestEvalScalarFunction_RIGHT(t *testing.T) {
 		{nil, int64(2), nil},
 	}
 	for _, tc := range cases {
-		got := evalSF("RIGHT", []any{tc.s, tc.n})
+		got, errEv0 := evalScalarFunction("RIGHT", []any{tc.s, tc.n})
+		require.NoError(t, errEv0)
 		if got != tc.want {
 			t.Errorf("RIGHT(%v, %v): got %v, want %v", tc.s, tc.n, got, tc.want)
 		}

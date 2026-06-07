@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // Static interface check.
 var _ Value = (*NotValue)(nil)
@@ -25,7 +29,8 @@ func TestNotValue_Evaluate_TruthTable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := mustEvalForTest(NewNotValue(tc.child), nil)
+			got, errEv0 := NewNotValue(tc.child).Evaluate(nil)
+			require.NoError(t, errEv0)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -45,7 +50,8 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 		&ConstantValue{Value: 1.5, Typ: TypeFloat},
 	}
 	for _, child := range cases {
-		got := mustEvalForTest(NewNotValue(child), nil)
+		got, errEv0 := NewNotValue(child).Evaluate(nil)
+		require.NoError(t, errEv0)
 		if got != nil {
 			t.Fatalf("NotValue on %v: got %v, want nil", child.Name(), got)
 		}
@@ -57,14 +63,20 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 	t.Parallel()
 	v := NewNotValue(&FieldValue{Field: "active", Typ: TypeBool})
-	if got := mustEvalForTest(v, map[string]any{"active": true}); got != false {
+	got, errEv0 := v.Evaluate(map[string]any{"active": true})
+	require.NoError(t, errEv0)
+	if got != false {
 		t.Fatalf("active=true: got %v, want false", got)
 	}
-	if got := mustEvalForTest(v, map[string]any{"active": false}); got != true {
+	got, errEv1 := v.Evaluate(map[string]any{"active": false})
+	require.NoError(t, errEv1)
+	if got != true {
 		t.Fatalf("active=false: got %v, want true", got)
 	}
 	// Missing field → NULL → NULL.
-	if got := mustEvalForTest(v, map[string]any{}); got != nil {
+	got, errEv2 := v.Evaluate(map[string]any{})
+	require.NoError(t, errEv2)
+	if got != nil {
 		t.Fatalf("missing field: got %v, want nil", got)
 	}
 }
@@ -138,7 +150,9 @@ func TestNotValue_IsConstantValue(t *testing.T) {
 func TestNotValue_NilChild_Evaluate(t *testing.T) {
 	t.Parallel()
 	v := &NotValue{Child: nil}
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("nil child: got %v, want nil", got)
 	}
 }

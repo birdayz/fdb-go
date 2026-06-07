@@ -84,7 +84,6 @@ go_test(
         "index_entry_semantic_test.go",
         "integration_test.go",
         "like_match_test.go",
-        "must_eval_test.go",
         "pullup_test.go",
         "rebase_fuzz_test.go",
         "rebase_test.go",
@@ -93,6 +92,7 @@ go_test(
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
         "simplifier_value_test.go",
+        "swallow_axis_test.go",
         "type_test.go",
         "value_anchored_join_record_test.go",
         "value_andor_test.go",
@@ -148,5 +148,8 @@ go_test(
         "w1_unresolved_reference_test.go",
     ],
     embed = [":values"],
-    deps = ["//pkg/recordlayer/vectorcodec"],
+    deps = [
+        "//pkg/recordlayer/vectorcodec",
+        "@com_github_stretchr_testify//require",
+    ],
 )

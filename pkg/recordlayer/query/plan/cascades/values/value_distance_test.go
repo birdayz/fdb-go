@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDistanceValue_DecodesStoredVectorBytes pins codex Finding 2: a distance
@@ -19,7 +20,8 @@ func TestDistanceValue_DecodesStoredVectorBytes(t *testing.T) {
 	dv := NewDistanceValue(DistanceEuclidean,
 		&ConstantValue{Value: stored},
 		LiteralValue([]float64{3, 4, 0}))
-	got := mustEvalForTest(dv, nil)
+	got, errEv0 := dv.Evaluate(nil)
+	require.NoError(t, errEv0)
 	d, ok := got.(float64)
 	if !ok {
 		t.Fatalf("distance over stored vector bytes = %#v (%T), want float64 — Finding 2 (silent UNKNOWN)", got, got)
@@ -82,9 +84,13 @@ func TestDistanceValue_EuclideanDistance(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclidean,
 		LiteralValue([]float64{1, 0, 0}),
 		LiteralValue([]float64{0, 1, 0}))
-	got, ok := mustEvalForTest(v, nil).(float64)
+	tmpEv1, errEv1 := v.Evaluate(nil)
+	require.NoError(t, errEv1)
+	got, ok := tmpEv1.(float64)
 	if !ok {
-		t.Fatalf("Evaluate = %T, want float64", mustEvalForTest(v, nil))
+		tmpEv0, errEv0 := v.Evaluate(nil)
+		require.NoError(t, errEv0)
+		t.Fatalf("Evaluate = %T, want float64", tmpEv0)
 	}
 	want := math.Sqrt(2)
 	if math.Abs(got-want) > 1e-9 {
@@ -97,7 +103,9 @@ func TestDistanceValue_EuclideanSquareDistance(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclideanSquare,
 		LiteralValue([]float64{1, 0, 0}),
 		LiteralValue([]float64{0, 1, 0}))
-	got, ok := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, ok := tmpEv0.(float64)
 	if !ok || got != 2.0 {
 		t.Fatalf("Evaluate = %v, want 2.0", got)
 	}
@@ -109,7 +117,9 @@ func TestDistanceValue_CosineDistance_Orthogonal(t *testing.T) {
 	v := NewDistanceValue(DistanceCosine,
 		LiteralValue([]float64{1, 0}),
 		LiteralValue([]float64{0, 1}))
-	got, _ := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, _ := tmpEv0.(float64)
 	if math.Abs(got-1.0) > 1e-9 {
 		t.Fatalf("Evaluate orthogonal = %v, want 1.0", got)
 	}
@@ -121,7 +131,9 @@ func TestDistanceValue_CosineDistance_Identical(t *testing.T) {
 	v := NewDistanceValue(DistanceCosine,
 		LiteralValue([]float64{1, 2, 3}),
 		LiteralValue([]float64{1, 2, 3}))
-	got, _ := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, _ := tmpEv0.(float64)
 	if math.Abs(got) > 1e-9 {
 		t.Fatalf("Evaluate identical = %v, want ~0", got)
 	}
@@ -133,7 +145,9 @@ func TestDistanceValue_CosineDistance_ZeroVector(t *testing.T) {
 	v := NewDistanceValue(DistanceCosine,
 		LiteralValue([]float64{0, 0, 0}),
 		LiteralValue([]float64{1, 2, 3}))
-	got, _ := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, _ := tmpEv0.(float64)
 	if got != 1.0 {
 		t.Fatalf("Evaluate zero vector = %v, want 1.0", got)
 	}
@@ -145,7 +159,9 @@ func TestDistanceValue_DotProductDistance(t *testing.T) {
 	v := NewDistanceValue(DistanceDotProduct,
 		LiteralValue([]float64{1, 2, 3}),
 		LiteralValue([]float64{4, 5, 6}))
-	got, _ := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, _ := tmpEv0.(float64)
 	if got != -32.0 {
 		t.Fatalf("Evaluate = %v, want -32", got)
 	}
@@ -156,7 +172,9 @@ func TestDistanceValue_DimensionMismatch(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclidean,
 		LiteralValue([]float64{1, 2, 3}),
 		LiteralValue([]float64{1, 2}))
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(dim mismatch) = %v, want nil", got)
 	}
 }
@@ -166,7 +184,9 @@ func TestDistanceValue_NilOperandReturnsNil(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclidean,
 		LiteralValue(nil),
 		LiteralValue([]float64{1, 2, 3}))
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil left) = %v, want nil", got)
 	}
 }
@@ -176,7 +196,9 @@ func TestDistanceValue_NonVectorReturnsNil(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclidean,
 		LiteralValue("not-a-vector"),
 		LiteralValue([]float64{1}))
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(non-vector) = %v, want nil", got)
 	}
 }
@@ -189,7 +211,9 @@ func TestDistanceValue_AcceptsFloat32(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclideanSquare,
 		LiteralValue([]float32{1, 0, 0}),
 		LiteralValue([]float32{0, 1, 0}))
-	got, _ := mustEvalForTest(v, nil).(float64)
+	tmpEv0, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	got, _ := tmpEv0.(float64)
 	if got != 2.0 {
 		t.Fatalf("Evaluate(float32) = %v, want 2.0", got)
 	}

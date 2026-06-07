@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestIncarnationValue_Type(t *testing.T) {
 	t.Parallel()
@@ -30,7 +34,9 @@ func TestIncarnationValue_EvaluateFromMap(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
 	row := map[string]any{"incarnation": int64(7)}
-	if got := mustEvalForTest(v, row); got != int64(7) {
+	got, errEv0 := v.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != int64(7) {
 		t.Fatalf("Evaluate = %v, want 7", got)
 	}
 }
@@ -39,7 +45,9 @@ func TestIncarnationValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
 	row := map[string]any{"other": int64(7)}
-	if got := mustEvalForTest(v, row); got != nil {
+	got, errEv0 := v.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(no incarnation) = %v, want nil", got)
 	}
 }
@@ -47,7 +55,9 @@ func TestIncarnationValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 func TestIncarnationValue_EvaluateNilContextReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -55,7 +65,9 @@ func TestIncarnationValue_EvaluateNilContextReturnsNil(t *testing.T) {
 func TestIncarnationValue_EvaluateNonMapContextReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewIncarnationValue()
-	if got := mustEvalForTest(v, "not-a-map"); got != nil {
+	got, errEv0 := v.Evaluate("not-a-map")
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(string) = %v, want nil", got)
 	}
 }

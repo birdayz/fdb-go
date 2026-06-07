@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestDeconstructRecord_FromRecordConstructor(t *testing.T) {
 	t.Parallel()
@@ -74,7 +78,9 @@ func TestSimplifyAll_BatchFolds(t *testing.T) {
 		t.Fatalf("SimplifyAll len = %d, want 3", len(out))
 	}
 	// Element 1 should fold to a constant 7.
-	if got := mustEvalForTest(out[1], nil); got != int64(7) {
+	got, errEv0 := out[1].Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(7) {
 		t.Fatalf("out[1].Evaluate = %v, want 7 (folded)", got)
 	}
 }

@@ -6,17 +6,6 @@ import (
 	"testing"
 )
 
-// evalSF drops evalScalarFunction's error return so the many happy-path
-// value assertions in scalar_functions_extra*_test.go stay terse. Those
-// rows all evaluate to (value, nil) or a genuine (nil, nil) SQL-NULL
-// decline; the data-dependent error edges are pinned explicitly in
-// TestEvalScalarFunction_ErrorEdges below (which calls evalScalarFunction
-// directly and inspects the error via errors.As).
-func evalSF(name string, args []any) any {
-	v, _ := evalScalarFunction(name, args)
-	return v
-}
-
 // TestEvalScalarFunction_HappyAndNull pins the restored scalar-function
 // family on the new (any, error) channel: correct results with a nil
 // error, and a nil-error SQL-NULL result for any NULL argument. RFC-087

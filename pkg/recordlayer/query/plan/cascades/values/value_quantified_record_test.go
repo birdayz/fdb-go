@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestQuantifiedRecordValue_Type(t *testing.T) {
 	t.Parallel()
@@ -43,7 +47,8 @@ func TestQuantifiedRecordValue_EvaluateFromRowMap(t *testing.T) {
 	row := map[string]any{
 		alias.Name(): map[string]any{"id": int64(7), "name": "alice"},
 	}
-	got := mustEvalForTest(v, row)
+	got, errEv0 := v.Evaluate(row)
+	require.NoError(t, errEv0)
 	gotMap, ok := got.(map[string]any)
 	if !ok {
 		t.Fatalf("Evaluate = %v, want map", got)
@@ -58,7 +63,9 @@ func TestQuantifiedRecordValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q")
 	v := NewQuantifiedRecordValue(alias, NotNullLong)
 	row := map[string]any{"other": int64(7)}
-	if got := mustEvalForTest(v, row); got != nil {
+	got, errEv0 := v.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(missing alias) = %v, want nil", got)
 	}
 }
@@ -66,7 +73,9 @@ func TestQuantifiedRecordValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
 func TestQuantifiedRecordValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQuantifiedRecordValue(NamedCorrelationIdentifier("q"), NotNullLong)
-	if got := mustEvalForTest(v, nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -74,7 +83,9 @@ func TestQuantifiedRecordValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 func TestQuantifiedRecordValue_EvaluateNonMapCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQuantifiedRecordValue(NamedCorrelationIdentifier("q"), NotNullLong)
-	if got := mustEvalForTest(v, "not-a-map"); got != nil {
+	got, errEv0 := v.Evaluate("not-a-map")
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(string) = %v, want nil", got)
 	}
 }

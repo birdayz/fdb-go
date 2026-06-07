@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestRowNumberHighOrderValue_Type(t *testing.T) {
 	t.Parallel()
@@ -29,7 +33,9 @@ func TestRowNumberHighOrderValue_NoChildren(t *testing.T) {
 func TestRowNumberHighOrderValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	h := NewRowNumberHighOrderValue(nil, nil)
-	if got := mustEvalForTest(h, nil); got != nil {
+	got, errEv0 := h.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (high-order placeholder)", got)
 	}
 }

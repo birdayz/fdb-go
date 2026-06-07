@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // FuzzCaseExpression_FirstMatchWins fuzzes the SQL CASE lowering
 // (PickValue over ConditionSelectorValue) under random implication
@@ -41,10 +45,13 @@ func FuzzCaseExpression_FirstMatchWins(f *testing.F) {
 		selector := NewConditionSelectorValue(implications)
 		pick := NewPickValue(selector, alternatives, NotNullLong)
 
-		got := mustEvalForTest(pick, nil)
+		got, errEv0 := pick.Evaluate(nil)
+		require.
 
-		// Property check: walk the implications to find the expected
-		// first-TRUE index.
+			// Property check: walk the implications to find the expected
+			// first-TRUE index.
+			NoError(t, errEv0)
+
 		expectedIdx := -1
 		for i := 0; i < N; i++ {
 			if implMask>>i&1 == 1 {
@@ -100,10 +107,14 @@ func FuzzAndOrValue_Kleene3VL(f *testing.F) {
 		right := mkOperand(rightRaw)
 
 		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
-			lr := mustEvalForTest(NewAndOrValue(op, left, right), nil)
-			rl := mustEvalForTest(NewAndOrValue(op, right, left), nil)
+			lr, errEv0 := NewAndOrValue(op, left, right).Evaluate(nil)
+			require.NoError(t, errEv0)
+			rl, errEv1 := NewAndOrValue(op, right, left).Evaluate(nil)
+			require.
 
-			// Property 2: result must be one of {true, false, nil}.
+				// Property 2: result must be one of {true, false, nil}.
+				NoError(t, errEv1)
+
 			switch lr {
 			case true, false, nil:
 			default:
@@ -118,8 +129,10 @@ func FuzzAndOrValue_Kleene3VL(f *testing.F) {
 
 		// Property 5: idempotence (a OP a == a, with NULL exception).
 		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
-			selfEval := mustEvalForTest(NewAndOrValue(op, left, left), nil)
-			leftEval := mustEvalForTest(left, nil)
+			selfEval, errEv2 := NewAndOrValue(op, left, left).Evaluate(nil)
+			require.NoError(t, errEv2)
+			leftEval, errEv3 := left.Evaluate(nil)
+			require.NoError(t, errEv3)
 			if selfEval != leftEval {
 				t.Fatalf("op=%v not idempotent: a OP a=%v, a=%v leftRaw=%d", op, selfEval, leftEval, leftRaw)
 			}
@@ -157,7 +170,8 @@ func FuzzArrayConstructorValue_LengthInvariant(f *testing.F) {
 		}
 		v := NewArrayConstructorValue(NullableLong, elements)
 
-		got := mustEvalForTest(v, nil)
+		got, errEv0 := v.Evaluate(nil)
+		require.NoError(t, errEv0)
 		gotSlice, ok := got.([]any)
 		if !ok {
 			t.Fatalf("Evaluate returned %T, want []any", got)

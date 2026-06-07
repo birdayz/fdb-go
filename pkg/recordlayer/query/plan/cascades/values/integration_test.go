@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // TestIntegration_ComplexCASEWithAndOr exercises ConditionSelectorValue
 // + PickValue + AndOrValue together — the lowering of a SQL CASE
@@ -48,7 +52,8 @@ func TestIntegration_ComplexCASEWithAndOr(t *testing.T) {
 			[]Value{LiteralValue("high"), LiteralValue("mid"), LiteralValue("low")},
 			NotNullString)
 
-		got := mustEvalForTest(pick, nil)
+		got, errEv0 := pick.Evaluate(nil)
+		require.NoError(t, errEv0)
 		if got != c.want {
 			t.Errorf("CASE(a=%v, b=%v) = %v, want %v", c.a, c.b, got, c.want)
 		}
@@ -67,9 +72,13 @@ func TestIntegration_ARRAY_DISTINCTOverArrayConstructor(t *testing.T) {
 		LiteralValue(int64(3)),
 	})
 	distinct := NewArrayDistinctValue(arr)
-	got, ok := mustEvalForTest(distinct, nil).([]any)
+	tmpEv1, errEv1 := distinct.Evaluate(nil)
+	require.NoError(t, errEv1)
+	got, ok := tmpEv1.([]any)
 	if !ok {
-		t.Fatalf("Evaluate = %T, want []any", mustEvalForTest(distinct, nil))
+		tmpEv0, errEv0 := distinct.Evaluate(nil)
+		require.NoError(t, errEv0)
+		t.Fatalf("Evaluate = %T, want []any", tmpEv0)
 	}
 	if len(got) != 3 {
 		t.Fatalf("len(distinct) = %d, want 3 (1, 2, 3)", len(got))

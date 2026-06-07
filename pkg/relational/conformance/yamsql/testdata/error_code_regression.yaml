@@ -54,9 +54,13 @@ tests:
   # 22003 — integer overflow.
   - query: SELECT 9223372036854775807 + 1 FROM t WHERE id = 1
     error_code: "22003"
-  # 42883 — undefined function.
+  # UPPER is a Go-only read-side scalar function (RFC-087): Java rejects
+  # it (42883), Go evaluates it on the Cascades values path.
   - query: SELECT UPPER(s) FROM t
-    error_code: "42883"
+    unordered: true
+    rows:
+      - ['HELLO']
+      - ['WORLD']
   # 0AF00 — LIMIT clause rejected.
   - query: SELECT id FROM t ORDER BY id LIMIT 1
     error_code: "0AF00"

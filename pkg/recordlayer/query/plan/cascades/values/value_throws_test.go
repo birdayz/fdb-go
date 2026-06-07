@@ -26,7 +26,7 @@ func TestThrowsValue_EvaluatePanics(t *testing.T) {
 			t.Fatal("ThrowsValue.Evaluate should panic")
 		}
 	}()
-	mustEvalForTest(v, nil)
+	_, _ = v.Evaluate(nil)
 }
 
 func TestThrowsValue_NilTypeFallsBackToUnknown(t *testing.T) {
