@@ -90,15 +90,31 @@ func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
+// defaultBootstrapTimeout bounds the initial coordinator connection so an
+// unreachable cluster fails fast instead of blocking forever (a control-plane
+// footgun). It applies to bootstrap only — never to ongoing operations.
+const defaultBootstrapTimeout = 60 * time.Second
+
+// bootstrapContext returns the context for the initial coordinator connection. A
+// caller-supplied deadline is respected; a deadline-less context (e.g.
+// context.Background()) is bounded by defaultBootstrapTimeout so bootstrap can
+// never hang forever. The returned cancel must always be called.
+func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultBootstrapTimeout)
+}
+
 // OpenDatabase opens a connection using the specified cluster file path.
 // APIVersion must have been called first. See WithTLSConfig / WithDialFunc.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	// Use a temporary timeout for bootstrap only. The database's long-lived
-	// context must NOT be the bootstrap context (which we cancel after connect).
-	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Bound bootstrap only. The database's long-lived context must NOT be the
+	// bootstrap context (which we cancel after connect).
+	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
 	defer bootstrapCancel()
 	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, opts...)
 	if err != nil {
@@ -121,12 +137,16 @@ func OpenWithConnectionString(connStr string, opts ...Option) (Database, error) 
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
 // The provided ctx is used only for the initial bootstrap (coordinator
-// connection). The Database uses context.Background() for ongoing operations.
+// connection); if it has no deadline, bootstrap is bounded by
+// defaultBootstrapTimeout so an unreachable cluster fails fast instead of
+// hanging forever. The Database uses context.Background() for ongoing operations.
 func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	db, err := client.OpenDatabaseFromConfig(ctx, cf, opts...)
+	bootstrapCtx, cancel := bootstrapContext(ctx)
+	defer cancel()
+	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, cf, opts...)
 	if err != nil {
 		return Database{}, err
 	}
