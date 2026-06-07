@@ -202,10 +202,12 @@ func TestFDB_GroupByOverJoin_UndefinedKeyStillRejects(t *testing.T) {
 // validateGroupByProjection's deliberately qualifier-blind existence check: the
 // check compares only the BARE name against the UNION of all join sources, so
 // `d.salary` (SALARY lives on emp, not the qualified dept) passes that coarse
-// gate — and is SAFE only because the precise semantic resolver runs FIRST at
-// every call site and rejects the wrong qualifier before validateGroupByProjection
-// sees it. Covers BOTH call sites (Graefe: verify the correlated-scalar site is
-// equally resolver-gated; codex: the existence-check dimension the suite missed).
+// gate — and is SAFE only because every call site is BRACKETED by a precise
+// semantic resolver gate that overrides it (top-level: resolver runs BEFORE;
+// correlated-scalar: resolver runs AFTER — see the validateGroupByProjection
+// invariant comment). Covers BOTH call sites (Graefe: verify the correlated-scalar
+// site is equally resolver-gated; codex: the existence-check dimension the suite
+// missed).
 func TestFDB_GroupByWrongQualifierRejected(t *testing.T) {
 	t.Parallel()
 	db, ctx := gojDB(t, "wrongqual")
