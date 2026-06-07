@@ -141,14 +141,14 @@ now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fix
   `rule_in_to_explode.go:96`, `rule_simplify.go:381`, `physical_vector_index_scan_wrapper.go:96`)
   **plus 6 `value_range.go` helpers** (`EvaluateAsStream`/`Cardinality`, :90-133). Dual eval
   methods must not ossify.
-- [ ] **GATE completion**: hooks covered conformance + FDB; still run `-race` on
-  `//pkg/relational/...` (P1.1) + the 1M stress before declaring the GATE fully met.
-- [ ] **P0.2 gap (found by Torvalds in RFC-091 review):** the db/sql boundary recover wraps
-  planning + the eager first page only — `cascadesRows.Next` (later-page iteration) has **no**
-  recover above the cursor. Invariant panics there fail-stop (policy-acceptable), but a planner
-  *bug* surfacing on page ≥2 crashes the process. Decide whether `Rows.Next` needs its own
-  boundary recover (per-statement, converting to a query error) or whether later-page fail-stop
-  is the intended contract. Tracked against P0.2.
+- [x] **GATE completed**: conformance + FDB green at every commit; `-race` on
+  `//pkg/relational/...` run (found + fixed the `hadRead` client race — see P1.1); 1M stress
+  green (all subtests pass, durations consistent with the baseline — no bulk-path regression).
+- [x] **P0.2 gap CLOSED:** `paginatingRows.Next` + `cascadesRows.Next` (cascades_generator.go)
+  now `recover()` → `recoveredPanicError` — the db/sql boundary recover spans the FULL query
+  path (planning + first page via QueryContext/ExecContext, later pages via Rows.Next). A panic
+  during later-page iteration becomes a generic internal error, not a host crash; user eval
+  errors already return cleanly via the sweep. (`-race` job into CI still tracked under P1.1.)
 
 ### [ ] P0.4 — Bound retries + propagate `ctx` (promoted from P1 — availability blocker) · M
 **Why (Torvalds: this is P0 for a control plane, not P1):** `FDBDatabase.Run(ctx,…)`'s ctx
