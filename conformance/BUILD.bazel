@@ -84,6 +84,7 @@ go_test(
         "error_conformance_test.go",
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",
+        "fault_inject_retry_conformance_test.go",
         "index_build_state_conformance_test.go",
         "index_conformance_test.go",
         "index_continuation_conformance_test.go",
