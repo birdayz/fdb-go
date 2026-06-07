@@ -2399,8 +2399,12 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 	t.Parallel()
 	pk := tuple.Tuple{int64(7)}
 	qr := QueryResult{PrimaryKey: pk, Datum: map[string]any{"X": 1}}
-	fn := intersectionCompKeyFunc(nil)
+	var keyErr error
+	fn := intersectionCompKeyFunc(nil, &keyErr)
 	got := fn(qr)
+	if keyErr != nil {
+		t.Fatalf("unexpected key eval error: %v", keyErr)
+	}
 	if len(got) != 1 || got[0] != int64(7) {
 		t.Fatalf("expected PK tuple {7}, got %v", got)
 	}
@@ -2409,8 +2413,12 @@ func TestIntersectionCompKeyFunc_NoKeyVals_WithPK(t *testing.T) {
 func TestIntersectionCompKeyFunc_NoKeyVals_NoPK(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"X": 1}}
-	fn := intersectionCompKeyFunc(nil)
+	var keyErr error
+	fn := intersectionCompKeyFunc(nil, &keyErr)
 	got := fn(qr)
+	if keyErr != nil {
+		t.Fatalf("unexpected key eval error: %v", keyErr)
+	}
 	if len(got) != 1 {
 		t.Fatalf("expected single-element tuple, got %v", got)
 	}
@@ -2426,8 +2434,12 @@ func TestIntersectionCompKeyFunc_WithKeyVals(t *testing.T) {
 		&values.FieldValue{Field: "NAME", Typ: values.TypeString},
 		&values.FieldValue{Field: "AGE", Typ: values.TypeInt},
 	}
-	fn := intersectionCompKeyFunc(keyVals)
+	var keyErr error
+	fn := intersectionCompKeyFunc(keyVals, &keyErr)
 	got := fn(qr)
+	if keyErr != nil {
+		t.Fatalf("unexpected key eval error: %v", keyErr)
+	}
 	if len(got) != 2 || got[0] != "alice" || got[1] != int64(30) {
 		t.Fatalf("expected {alice, 30}, got %v", got)
 	}
@@ -2495,7 +2507,11 @@ func TestCompareValues_Strings(t *testing.T) {
 func TestPassesJoinPredicates_Empty(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"A": 1}}
-	if !passesJoinPredicates(qr, nil, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, nil, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
 		t.Fatal("empty predicates should pass")
 	}
 }
@@ -2507,7 +2523,11 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
-	if !passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
 		t.Fatal("matching predicate should pass")
 	}
 }
@@ -2519,7 +2539,11 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
-	if passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
 		t.Fatal("non-matching predicate should fail")
 	}
 }
@@ -4835,8 +4859,9 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 		qr("N", int64(2)),
 	})
 
-	sortFn := func(buf []QueryResult) {
+	sortFn := func(buf []QueryResult) error {
 		sortByKeys(buf, []string{"N"}, []bool{true})
+		return nil
 	}
 	c := newCustomSortCursor(inner, sortFn)
 	defer c.Close()
@@ -4857,7 +4882,7 @@ func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("n", int64(1))})
-	c := newCustomSortCursor(inner, func([]QueryResult) {})
+	c := newCustomSortCursor(inner, func([]QueryResult) error { return nil })
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -4876,8 +4901,9 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	}
 	inner := recordlayer.FromList(rows)
 
-	c := newCustomSortCursor(inner, func(buf []QueryResult) {
+	c := newCustomSortCursor(inner, func(buf []QueryResult) error {
 		sortByKeys(buf, []string{"n"}, nil)
+		return nil
 	})
 	c.maxBuf = 5 // limit to 5 rows
 	defer c.Close()

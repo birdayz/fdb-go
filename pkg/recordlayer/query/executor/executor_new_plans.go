@@ -125,7 +125,8 @@ func executeMultiIntersection(
 	}
 
 	keyVals := p.GetComparisonKey()
-	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
+	var keyErr error
+	compKeyFunc := multiIntersectionCompKeyFunc(keyVals, &keyErr)
 
 	// IntersectionMulti returns, per matching comparison key, the list of
 	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
@@ -136,16 +137,28 @@ func executeMultiIntersection(
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
+		keyErr:      &keyErr,
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 }
 
-func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+// multiIntersectionCompKeyFunc builds a ComparisonKeyFunc. ComparisonKeyFunc
+// cannot return an error, so a Value eval failure is captured into *keyErr
+// (first error wins); multiIntersectionMergeCursor.OnNext surfaces *keyErr
+// before returning any row.
+func multiIntersectionCompKeyFunc(keyVals []values.Value, keyErr *error) recordlayer.ComparisonKeyFunc[QueryResult] {
 	return func(qr QueryResult) tuple.Tuple {
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				t[i] = kv.Evaluate(qr.Datum)
+				v, err := kv.EvaluateErr(qr.Datum)
+				if err != nil {
+					if *keyErr == nil {
+						*keyErr = err
+					}
+					return t
+				}
+				t[i] = v
 			}
 			return t
 		}
@@ -166,13 +179,20 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
-	closed      bool
+	// keyErr captures a comparison-key Value eval error raised inside the
+	// underlying IntersectionMulti cursor's ComparisonKeyFunc (which cannot
+	// return an error); surfaced here before returning any row.
+	keyErr *error
+	closed bool
 }
 
 func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+	}
+	if c.keyErr != nil && *c.keyErr != nil {
+		return recordlayer.RecordCursorResult[QueryResult]{}, *c.keyErr
 	}
 	if !result.HasNext() {
 		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
@@ -190,7 +210,10 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 	var datum any = merged
 	if c.resultValue != nil {
-		datum = c.resultValue.Evaluate(merged)
+		datum, err = c.resultValue.EvaluateErr(merged)
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
 }
@@ -332,7 +355,7 @@ func executePredicatesFilter(
 	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
 	filtered := &filterResultCursor{
 		inner: inner,
-		pred: func(qr QueryResult) (keep bool) {
+		pred: func(qr QueryResult) (keep bool, err error) {
 			defer func() {
 				if r := recover(); r != nil {
 					switch r.(type) {
@@ -361,11 +384,15 @@ func executePredicatesFilter(
 				}
 			}
 			for _, pred := range preds {
-				if pred.Eval(rowCtx) != predicates.TriTrue {
-					return false
+				res, perr := pred.EvalErr(rowCtx)
+				if perr != nil {
+					return false, perr
+				}
+				if res != predicates.TriTrue {
+					return false, nil
 				}
 			}
-			return true
+			return true, nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -384,7 +411,11 @@ func executeMap(
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
+	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
+		if evalErr != nil {
+			return qr
+		}
 		var rowCtx any = qr.Datum
 		// RFC-048 W1: a projection reading a name absent from a complete row
 		// (aggregate output) is a bug, not a NULL. Production passes the raw
@@ -398,10 +429,15 @@ func executeMap(
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
 			}
 		}
-		m := resultValue.Evaluate(rowCtx)
+		m, err := resultValue.EvaluateErr(rowCtx)
+		if err != nil {
+			evalErr = err
+			return qr
+		}
 		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
-	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
+	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
+	return errCursor, nil
 }
 
 func executeFirstOrDefault(
@@ -427,7 +463,11 @@ func executeFirstOrDefault(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		datum = defaultVal.Evaluate(nil)
+		d, err := defaultVal.EvaluateErr(nil)
+		if err != nil {
+			return nil, err
+		}
+		datum = d
 	}
 	return newSingleResultCursor(QueryResult{Datum: datum}), nil
 }
@@ -456,7 +496,11 @@ func executeDefaultOnEmpty(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		datum = defaultVal.Evaluate(nil)
+		d, err := defaultVal.EvaluateErr(nil)
+		if err != nil {
+			return nil, err
+		}
+		datum = d
 	}
 	return newSingleResultCursor(QueryResult{Datum: datum}), nil
 }
@@ -612,7 +656,15 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			if !m.hasPeeked[i] {
 				continue
 			}
-			if bestIdx < 0 || m.isBetter(m.peeked[i], m.peeked[bestIdx]) {
+			if bestIdx < 0 {
+				bestIdx = i
+				continue
+			}
+			better, err := m.isBetter(m.peeked[i], m.peeked[bestIdx])
+			if err != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, err
+			}
+			if better {
 				bestIdx = i
 			}
 		}
@@ -625,7 +677,10 @@ func (m *mergeSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		m.hasPeeked[bestIdx] = false
 
 		if m.dedup {
-			key := m.extractKey(result)
+			key, err := m.extractKey(result)
+			if err != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, err
+			}
 			if m.hasLast && key == m.lastKey {
 				continue
 			}
@@ -656,29 +711,38 @@ func (m *mergeSortCursor) fillPeekBuffers(ctx context.Context) error {
 	return nil
 }
 
-func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
+func (m *mergeSortCursor) isBetter(a, b QueryResult) (bool, error) {
 	for _, key := range m.compKeys {
-		va := key.Evaluate(a.Datum)
-		vb := key.Evaluate(b.Datum)
+		va, err := key.EvaluateErr(a.Datum)
+		if err != nil {
+			return false, err
+		}
+		vb, err := key.EvaluateErr(b.Datum)
+		if err != nil {
+			return false, err
+		}
 		cmp := compareValues(va, vb)
 		if cmp == 0 {
 			continue
 		}
 		if m.reverse {
-			return cmp > 0
+			return cmp > 0, nil
 		}
-		return cmp < 0
+		return cmp < 0, nil
 	}
-	return false
+	return false, nil
 }
 
-func (m *mergeSortCursor) extractKey(qr QueryResult) string {
+func (m *mergeSortCursor) extractKey(qr QueryResult) (string, error) {
 	if len(m.compKeys) == 0 {
-		return ""
+		return "", nil
 	}
 	t := make(tuple.Tuple, len(m.compKeys))
 	for i, key := range m.compKeys {
-		v := key.Evaluate(qr.Datum)
+		v, err := key.EvaluateErr(qr.Datum)
+		if err != nil {
+			return "", err
+		}
 		switch tv := v.(type) {
 		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
 			t[i] = tv
@@ -688,7 +752,7 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
 	}
-	return string(t.Pack())
+	return string(t.Pack()), nil
 }
 
 func (m *mergeSortCursor) Close() error {

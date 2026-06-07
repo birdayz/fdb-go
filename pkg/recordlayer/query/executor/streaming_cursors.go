@@ -483,7 +483,7 @@ func (c *memorySortCursor) IsClosed() bool { return c.closed }
 
 type customSortCursor struct {
 	inner  recordlayer.RecordCursor[QueryResult]
-	sortFn func([]QueryResult)
+	sortFn func([]QueryResult) error
 
 	buf     []QueryResult
 	loaded  bool
@@ -500,7 +500,7 @@ const DefaultMaxSortBufferRows = 5_000_000
 
 func newCustomSortCursor(
 	inner recordlayer.RecordCursor[QueryResult],
-	sortFn func([]QueryResult),
+	sortFn func([]QueryResult) error,
 ) *customSortCursor {
 	return &customSortCursor{
 		inner:  inner,
@@ -530,7 +530,9 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 		if !result.HasNext() {
 			reason := result.GetNoNextReason()
 			if reason == recordlayer.SourceExhausted {
-				c.sortFn(c.buf)
+				if err := c.sortFn(c.buf); err != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, err
+				}
 				c.loaded = true
 				return c.emitNext()
 			}
@@ -852,7 +854,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
+				pass, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				if perr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, perr
+				}
+				if !pass {
 					continue
 				}
 				if c.matchedInner != nil {
@@ -884,7 +890,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				if !passesJoinPredicates(combined, c.preds, c.evalCtx) {
+				pass, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				if perr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, perr
+				}
+				if !pass {
 					continue
 				}
 				if c.matchedInner != nil {
