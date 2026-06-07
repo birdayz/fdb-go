@@ -84,7 +84,7 @@ func (*Placeholder) Children() []QueryPredicate { return []QueryPredicate{} }
 
 // Eval returns TriUnknown — placeholders are planning-time constructs
 // and are never evaluated at runtime.
-func (*Placeholder) Eval(_ any) TriBool { return TriUnknown }
+func (*Placeholder) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
 
 // Explain renders a textual form: "Placeholder(alias, value)".
 func (p *Placeholder) Explain() string {

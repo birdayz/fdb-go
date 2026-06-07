@@ -72,20 +72,20 @@ type ConstantDeref interface {
 // applies numeric type promotion when the runtime object's type
 // doesn't match the bound ResultType. Relation-typed results are
 // returned as-is (no promotion for structured stream types).
-func (v *ConstantObjectValue) Evaluate(evalCtx any) any {
+func (v *ConstantObjectValue) Evaluate(evalCtx any) (any, error) {
 	deref, ok := evalCtx.(ConstantDeref)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	obj := deref.DereferenceConstant(v.Alias, v.ConstantID)
 	if obj == nil {
-		return nil
+		return nil, nil
 	}
 	// Relation types pass through without promotion, matching Java.
 	if IsRelation(v.ResultType) {
-		return obj
+		return obj, nil
 	}
-	return promoteConstant(obj, v.ResultType)
+	return promoteConstant(obj, v.ResultType), nil
 }
 
 // promoteConstant applies numeric type promotion to obj when its

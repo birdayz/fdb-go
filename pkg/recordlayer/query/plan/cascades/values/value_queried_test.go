@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestQueriedValue_LeafShape(t *testing.T) {
 	t.Parallel()
@@ -30,7 +34,9 @@ func TestQueriedValue_NilTypeFallsBackToUnknown(t *testing.T) {
 func TestQueriedValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQueriedValue([]string{"T"}, UnknownType)
-	if got := v.Evaluate(nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

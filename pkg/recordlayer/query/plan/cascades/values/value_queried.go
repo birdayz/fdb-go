@@ -64,4 +64,4 @@ func (v *QueriedValue) Type() Type { return v.ResultType }
 // Evaluate returns nil — QueriedValue is a placeholder. Specialized
 // planner rewrites resolve it to concrete Field / QuantifiedObject
 // values before any row-level eval.
-func (*QueriedValue) Evaluate(any) any { return nil }
+func (*QueriedValue) Evaluate(any) (any, error) { return nil, nil }

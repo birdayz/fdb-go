@@ -43,6 +43,6 @@ func (v *IndexedValue) Type() Type { return v.ResultType }
 // Evaluate panics — IndexedValue is a placeholder, not a computable
 // expression. The panic message is loud so misuse doesn't silently
 // return nil and confuse downstream evaluators.
-func (*IndexedValue) Evaluate(any) any {
+func (*IndexedValue) Evaluate(any) (any, error) {
 	panic("IndexedValue.Evaluate: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
 }

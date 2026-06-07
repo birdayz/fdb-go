@@ -68,16 +68,16 @@ func (v *QuantifiedRecordValue) Type() Type { return v.ResultType }
 
 // Evaluate looks up the queried record bound to alias in the eval
 // context. Returns nil if evalCtx is nil or not a row-shape map.
-func (v *QuantifiedRecordValue) Evaluate(evalCtx any) any {
+func (v *QuantifiedRecordValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if rec, ok := m[v.Alias.Name()]; ok {
-			return rec
+			return rec, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // GetCorrelatedTo returns the singleton set containing the bound

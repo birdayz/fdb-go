@@ -28,20 +28,20 @@ func (*ScalarSubqueryValue) Type() Type        { return UnknownType }
 // Evaluate retrieves the pre-computed scalar subquery result from
 // the evaluation context. The executor stores scalar subquery results
 // under a dedicated ScalarSubqueryBinding key.
-func (v *ScalarSubqueryValue) Evaluate(evalCtx any) any {
+func (v *ScalarSubqueryValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	switch ctx := evalCtx.(type) {
 	case *RowEvalContext:
 		if ctx.ScalarSubqueries != nil {
-			return ctx.ScalarSubqueries[v.Alias]
+			return ctx.ScalarSubqueries[v.Alias], nil
 		}
 	case map[string]any:
 		// For simple eval contexts, scalar subqueries are not available.
-		return nil
+		return nil, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // GetCorrelatedTo returns the alias so the planner knows this value

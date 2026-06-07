@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestAndOrOp_String(t *testing.T) {
 	t.Parallel()
@@ -89,7 +93,8 @@ func TestAndOrValue_AndTruthTable(t *testing.T) {
 	}
 	for _, c := range cases {
 		v := NewAndOrValue(AndOrAnd, LiteralValue(c.left), LiteralValue(c.right))
-		got := v.Evaluate(nil)
+		got, errEv0 := v.Evaluate(nil)
+		require.NoError(t, errEv0)
 		if got != c.want {
 			t.Errorf("AND(%v, %v) = %v, want %v", c.left, c.right, got, c.want)
 		}
@@ -116,7 +121,8 @@ func TestAndOrValue_OrTruthTable(t *testing.T) {
 	}
 	for _, c := range cases {
 		v := NewAndOrValue(AndOrOr, LiteralValue(c.left), LiteralValue(c.right))
-		got := v.Evaluate(nil)
+		got, errEv0 := v.Evaluate(nil)
+		require.NoError(t, errEv0)
 		if got != c.want {
 			t.Errorf("OR(%v, %v) = %v, want %v", c.left, c.right, got, c.want)
 		}
@@ -126,7 +132,9 @@ func TestAndOrValue_OrTruthTable(t *testing.T) {
 func TestAndOrValue_NonBoolReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewAndOrValue(AndOrAnd, LiteralValue("not-a-bool"), LiteralValue(true))
-	if got := v.Evaluate(nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("AND(string, true) = %v, want nil (type-degraded)", got)
 	}
 }
@@ -134,7 +142,9 @@ func TestAndOrValue_NonBoolReturnsNil(t *testing.T) {
 func TestAndOrValue_NilOperandReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewAndOrValue(AndOrAnd, nil, LiteralValue(true))
-	if got := v.Evaluate(nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("AND(nil, true) = %v, want nil", got)
 	}
 }
@@ -145,7 +155,8 @@ func TestAndOrValue_ShortCircuitAndFalse(t *testing.T) {
 	count := 0
 	rightCounter := &counterValue{onEvaluate: func() { count++ }, val: true}
 	v := NewAndOrValue(AndOrAnd, NewBooleanValue(false), rightCounter)
-	v.Evaluate(nil)
+	_, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	if count != 0 {
 		t.Fatalf("Right operand evaluated %d times, want 0 (FALSE AND ? short-circuit)", count)
 	}
@@ -157,7 +168,8 @@ func TestAndOrValue_ShortCircuitOrTrue(t *testing.T) {
 	count := 0
 	rightCounter := &counterValue{onEvaluate: func() { count++ }, val: false}
 	v := NewAndOrValue(AndOrOr, NewBooleanValue(true), rightCounter)
-	v.Evaluate(nil)
+	_, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
 	if count != 0 {
 		t.Fatalf("Right operand evaluated %d times, want 0 (TRUE OR ? short-circuit)", count)
 	}
@@ -170,7 +182,9 @@ func TestAndOrValue_WithChildren(t *testing.T) {
 	if rebuilt.Op != AndOrAnd {
 		t.Fatalf("rebuilt.Op = %v, want AND (carried through)", rebuilt.Op)
 	}
-	if got := rebuilt.Evaluate(nil); got != false {
+	got, errEv0 := rebuilt.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != false {
 		t.Fatalf("rebuilt.Evaluate = %v, want false", got)
 	}
 }
@@ -187,7 +201,9 @@ func TestAndOrValue_SimplifyConstantFold(t *testing.T) {
 	if folded == v {
 		t.Fatalf("SimplifyValue did NOT fold all-constant AndOrValue (returned same pointer)")
 	}
-	if got := folded.Evaluate(nil); got != false {
+	got, errEv0 := folded.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != false {
 		t.Fatalf("folded.Evaluate = %v, want false", got)
 	}
 }
@@ -200,7 +216,9 @@ func TestAndOrValue_SimplifyChildFold(t *testing.T) {
 	innerNot := NewNotValue(NewBooleanValue(false))
 	outer := NewAndOrValue(AndOrAnd, innerNot, NewBooleanValue(true))
 	folded := SimplifyValue(outer)
-	if got := folded.Evaluate(nil); got != true {
+	got, errEv0 := folded.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != true {
 		t.Fatalf("folded(NOT(false) AND true).Evaluate = %v, want true", got)
 	}
 }

@@ -118,7 +118,7 @@ func (p *PredicateWithValueAndRanges) IsCompileTime() bool {
 
 func (p *PredicateWithValueAndRanges) Children() []QueryPredicate { return nil }
 
-func (p *PredicateWithValueAndRanges) Eval(_ any) TriBool { return TriUnknown }
+func (p *PredicateWithValueAndRanges) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
 
 func (p *PredicateWithValueAndRanges) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()

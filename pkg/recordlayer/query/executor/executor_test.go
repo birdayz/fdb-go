@@ -2495,7 +2495,11 @@ func TestCompareValues_Strings(t *testing.T) {
 func TestPassesJoinPredicates_Empty(t *testing.T) {
 	t.Parallel()
 	qr := QueryResult{Datum: map[string]any{"A": 1}}
-	if !passesJoinPredicates(qr, nil, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, nil, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
 		t.Fatal("empty predicates should pass")
 	}
 }
@@ -2507,7 +2511,11 @@ func TestPassesJoinPredicates_MatchingPredicate(t *testing.T) {
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(100)),
 	)
-	if !passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
 		t.Fatal("matching predicate should pass")
 	}
 }
@@ -2519,7 +2527,11 @@ func TestPassesJoinPredicates_NonMatchingPredicate(t *testing.T) {
 		&values.FieldValue{Field: "PRICE", Typ: values.TypeInt},
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(999)),
 	)
-	if passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext()) {
+	ok, err := passesJoinPredicates(qr, []predicates.QueryPredicate{pred}, EmptyEvaluationContext())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
 		t.Fatal("non-matching predicate should fail")
 	}
 }
@@ -2689,7 +2701,10 @@ func TestEvaluationContext_RowContext_CorrelationBinding(t *testing.T) {
 		t.Fatalf("expected correlation binding 42, got %v (ok=%v)", v, ok)
 	}
 	qov := values.NewQuantifiedObjectValue(id)
-	result := qov.Evaluate(rc)
+	result, err := qov.Evaluate(rc)
+	if err != nil {
+		t.Fatalf("QOV.Evaluate(RowEvalContext) error: %v", err)
+	}
 	if result != int64(42) {
 		t.Fatalf("QOV.Evaluate(RowEvalContext) = %v, want 42", result)
 	}
@@ -4835,8 +4850,9 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 		qr("N", int64(2)),
 	})
 
-	sortFn := func(buf []QueryResult) {
+	sortFn := func(buf []QueryResult) error {
 		sortByKeys(buf, []string{"N"}, []bool{true})
+		return nil
 	}
 	c := newCustomSortCursor(inner, sortFn)
 	defer c.Close()
@@ -4857,7 +4873,7 @@ func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("n", int64(1))})
-	c := newCustomSortCursor(inner, func([]QueryResult) {})
+	c := newCustomSortCursor(inner, func([]QueryResult) error { return nil })
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -4876,8 +4892,9 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	}
 	inner := recordlayer.FromList(rows)
 
-	c := newCustomSortCursor(inner, func(buf []QueryResult) {
+	c := newCustomSortCursor(inner, func(buf []QueryResult) error {
 		sortByKeys(buf, []string{"n"}, nil)
+		return nil
 	})
 	c.maxBuf = 5 // limit to 5 rows
 	defer c.Close()

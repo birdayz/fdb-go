@@ -36,4 +36,4 @@ func (*EmptyValue) Type() Type {
 }
 
 // Evaluate returns nil — empty record has no value to extract.
-func (*EmptyValue) Evaluate(any) any { return nil }
+func (*EmptyValue) Evaluate(any) (any, error) { return nil, nil }

@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
@@ -72,7 +76,9 @@ func TestRowNumberValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	r := NewRowNumberValue(nil, nil, nil, nil)
 	row := map[string]any{"_row_number": int64(42)}
-	if got := r.Evaluate(row); got != int64(42) {
+	got, errEv0 := r.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != int64(42) {
 		t.Fatalf("Evaluate = %v, want 42", got)
 	}
 }
@@ -80,7 +86,9 @@ func TestRowNumberValue_EvaluateFromHarness(t *testing.T) {
 func TestRowNumberValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 	t.Parallel()
 	r := NewRowNumberValue(nil, nil, nil, nil)
-	if got := r.Evaluate(map[string]any{"x": int64(99)}); got != nil {
+	got, errEv0 := r.Evaluate(map[string]any{"x": int64(99)})
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(no _row_number) = %v, want nil", got)
 	}
 }
@@ -88,7 +96,9 @@ func TestRowNumberValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 func TestRowNumberValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	r := NewRowNumberValue(nil, nil, nil, nil)
-	if got := r.Evaluate(nil); got != nil {
+	got, errEv0 := r.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }

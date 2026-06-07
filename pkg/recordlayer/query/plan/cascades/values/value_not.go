@@ -55,17 +55,20 @@ func (n *NotValue) Type() Type {
 	return NullableBoolean
 }
 
-func (n *NotValue) Evaluate(evalCtx any) any {
+func (n *NotValue) Evaluate(evalCtx any) (any, error) {
 	if n.Child == nil {
-		return nil
+		return nil, nil
 	}
-	v := n.Child.Evaluate(evalCtx)
+	v, err := n.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	if b, ok := v.(bool); ok {
-		return !b
+		return !b, nil
 	}
 	// Type mismatch — degrade to UNKNOWN.
-	return nil
+	return nil, nil
 }

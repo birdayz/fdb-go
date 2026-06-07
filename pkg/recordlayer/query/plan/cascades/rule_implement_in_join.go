@@ -466,7 +466,12 @@ func extractInValues(q expressions.Quantifier) []any {
 	if cv == nil {
 		return nil
 	}
-	result := cv.Evaluate(nil)
+	// Plan-time IN-list extraction: an erroring or non-list collection value
+	// declines (returns nil) rather than failing planning.
+	result, err := cv.Evaluate(nil)
+	if err != nil {
+		return nil
+	}
 	if vals, ok := result.([]any); ok {
 		return vals
 	}

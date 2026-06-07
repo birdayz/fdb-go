@@ -227,9 +227,21 @@ func TestFDB_DMLCascades_Update(t *testing.T) {
 		t.Fatal("UPDATE SET id=NULL on NOT NULL column did not error")
 	}
 
-	// Unsupported function in SET → rejected.
-	if _, err := db.ExecContext(ctx, "UPDATE Item SET name = UPPER(name) WHERE id = 2"); err == nil {
-		t.Fatal("UPDATE SET name=UPPER(name) was not rejected")
+	// Go-only scalar function in SET (RFC-087): UPPER(name) computes
+	// through the Cascades DML path. Seed a name first (seedItems leaves
+	// name NULL), then uppercase it and read back.
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET name = 'gizmo' WHERE id = 2"); err != nil {
+		t.Fatalf("UPDATE SET name literal: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE Item SET name = UPPER(name) WHERE id = 2"); err != nil {
+		t.Fatalf("UPDATE SET name=UPPER(name): %v", err)
+	}
+	var nm sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT name FROM Item WHERE id = 2").Scan(&nm); err != nil {
+		t.Fatalf("read name: %v", err)
+	}
+	if !nm.Valid || nm.String != "GIZMO" {
+		t.Fatalf("name after UPPER = %v, want GIZMO", nm)
 	}
 }
 

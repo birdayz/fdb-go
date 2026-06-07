@@ -49,18 +49,21 @@ func (*RecordTypeValue) Type() Type { return NotNullLong }
 //
 // Other row shapes (proto messages, structs) require dedicated
 // extractors per shape — wired when execution lands.
-func (v *RecordTypeValue) Evaluate(evalCtx any) any {
+func (v *RecordTypeValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
-		return nil
+		return nil, nil
 	}
-	rec := v.Child.Evaluate(evalCtx)
+	rec, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if rec == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := rec.(map[string]any); ok {
 		if rt, ok := m["_recordType"]; ok {
-			return rt
+			return rt, nil
 		}
 	}
-	return nil
+	return nil, nil
 }

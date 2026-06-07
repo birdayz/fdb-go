@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestUdfValue_Type(t *testing.T) {
 	t.Parallel()
@@ -53,7 +57,9 @@ func TestUdfValue_EvaluateCallsUserFn(t *testing.T) {
 		NotNullLong,
 		[]Value{LiteralValue(int64(3)), LiteralValue(int64(4))},
 		sumFn)
-	if got := u.Evaluate(nil); got != int64(7) {
+	got, errEv0 := u.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(7) {
 		t.Fatalf("Evaluate = %v, want 7", got)
 	}
 }
@@ -61,7 +67,9 @@ func TestUdfValue_EvaluateCallsUserFn(t *testing.T) {
 func TestUdfValue_NilCallReturnsNil(t *testing.T) {
 	t.Parallel()
 	u := NewUdfValue("MY_FN", NotNullLong, []Value{LiteralValue(int64(1))}, nil)
-	if got := u.Evaluate(nil); got != nil {
+	got, errEv0 := u.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil Call) = %v, want nil (placeholder mode)", got)
 	}
 }
@@ -75,7 +83,9 @@ func TestUdfValue_PassesNilForNilArg(t *testing.T) {
 		NullableLong,
 		[]Value{nil}, // nil child arg
 		identity)
-	if got := u.Evaluate(nil); got != nil {
+	got, errEv0 := u.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil child) = %v, want nil", got)
 	}
 }
@@ -90,7 +100,9 @@ func TestUdfValue_EvaluatesEachChildOncePerCall(t *testing.T) {
 		return int64(len(args))
 	}
 	u := NewUdfValue("CONCAT", NotNullLong, []Value{counter, counter, counter}, concat)
-	if got := u.Evaluate(nil); got != int64(3) {
+	got, errEv0 := u.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(3) {
 		t.Fatalf("Evaluate len = %v, want 3", got)
 	}
 	if count != 3 {
@@ -113,7 +125,9 @@ func TestUdfValue_WithChildrenPreservesMetadata(t *testing.T) {
 	if !rebuilt.Type().Equals(NotNullLong) {
 		t.Fatalf("rebuilt.Type = %v, want NotNullLong", rebuilt.Type())
 	}
-	if got := rebuilt.Evaluate(nil); got != int64(42) {
+	got, errEv0 := rebuilt.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != int64(42) {
 		t.Fatalf("rebuilt.Evaluate = %v, want 42 (Call body carried through)", got)
 	}
 	if !called {
@@ -127,7 +141,9 @@ func TestUdfValue_DefensiveCopyOfArgs(t *testing.T) {
 	u := NewUdfValue("MY_FN", NotNullLong, args, nil)
 	// Mutate caller's slice.
 	args[0] = LiteralValue(int64(999))
-	if v, _ := u.Args[0].Evaluate(nil).(int64); v == 999 {
+	tmpEv0, errEv0 := u.Args[0].Evaluate(nil)
+	require.NoError(t, errEv0)
+	if v, _ := tmpEv0.(int64); v == 999 {
 		t.Fatalf("Args aliased caller's slice — not defensively copied")
 	}
 }
@@ -142,7 +158,7 @@ type counterValue struct {
 func (c *counterValue) Children() []Value { return []Value{} }
 func (*counterValue) Name() string        { return "counter" }
 func (*counterValue) Type() Type          { return NotNullLong }
-func (c *counterValue) Evaluate(any) any {
+func (c *counterValue) Evaluate(any) (any, error) {
 	c.onEvaluate()
-	return c.val
+	return c.val, nil
 }

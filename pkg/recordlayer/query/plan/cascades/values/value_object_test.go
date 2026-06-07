@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestObjectValue_LeafShape(t *testing.T) {
 	t.Parallel()
@@ -33,7 +37,9 @@ func TestObjectValue_NilTypeFallsBackToUnknown(t *testing.T) {
 func TestObjectValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewObjectValue(NamedCorrelationIdentifier("x"), NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

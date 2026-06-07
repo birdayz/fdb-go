@@ -84,17 +84,21 @@ func (u *UdfValue) Type() Type { return u.ResultType }
 
 // Evaluate walks each arg's Evaluate and hands the resulting `[]any`
 // to Call. Returns nil if Call is nil (placeholder mode).
-func (u *UdfValue) Evaluate(evalCtx any) any {
+func (u *UdfValue) Evaluate(evalCtx any) (any, error) {
 	if u.Call == nil {
-		return nil
+		return nil, nil
 	}
 	args := make([]any, len(u.Args))
 	for i, a := range u.Args {
 		if a != nil {
-			args[i] = a.Evaluate(evalCtx)
+			av, err := a.Evaluate(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			args[i] = av
 		}
 	}
-	return u.Call(args)
+	return u.Call(args), nil
 }
 
 // WithChildren returns a new UdfValue with the given children

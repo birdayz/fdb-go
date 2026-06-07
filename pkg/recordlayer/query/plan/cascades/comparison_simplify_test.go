@@ -29,6 +29,25 @@ func TestComparisonConstantSimplify_NonConstantRHS_NoFold(t *testing.T) {
 	}
 }
 
+// Swallow-axis (RFC-087 Graefe gate): `WHERE 5 = 'abc'` is a both-constant
+// comparison whose Eval raises a type-mismatch on the error channel. The
+// rule must DECLINE to fold — yield nothing, leaving the predicate intact —
+// rather than crashing or surfacing the error from the planner. At runtime
+// the predicate then evaluates to its normal three-valued result (no rows),
+// not a crash. Complements the propagate edges pinned in the values package.
+func TestComparisonConstantSimplify_TypeMismatch_DeclinesToFold(t *testing.T) {
+	t.Parallel()
+	rule := NewComparisonConstantSimplifyRule()
+	pred := predicates.NewComparisonPredicate(
+		&values.ConstantValue{Value: int64(5), Typ: values.TypeInt},
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: "abc", Typ: values.TypeString}},
+	)
+	got := FireRule(rule, pred)
+	if len(got) != 0 {
+		t.Fatalf("WHERE 5 = 'abc': expected no yield (type-mismatch declines to fold), got %d: %v", len(got), got)
+	}
+}
+
 // Deeply-nested constant trees fold end-to-end: a values.CastValue
 // wrapping a values.ConstantValue, inside an values.ArithmeticValue, on the RHS
 // of a constant-LHS comparison. Pins that constantLiteral's

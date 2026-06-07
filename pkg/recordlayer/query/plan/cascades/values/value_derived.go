@@ -48,6 +48,6 @@ func (v *DerivedValue) Type() Type { return v.ResultType }
 
 // Evaluate panics — DerivedValue is non-evaluable. Pattern-match
 // at the planner level instead.
-func (*DerivedValue) Evaluate(any) any {
+func (*DerivedValue) Evaluate(any) (any, error) {
 	panic("DerivedValue.Evaluate: derived-value placeholder is non-evaluable")
 }

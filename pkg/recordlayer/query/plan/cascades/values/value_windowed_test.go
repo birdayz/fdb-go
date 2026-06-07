@@ -1,6 +1,10 @@
 package values
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestWindowedValue_Children(t *testing.T) {
 	t.Parallel()
@@ -21,11 +25,11 @@ func TestWindowedValue_Children(t *testing.T) {
 func TestWindowedValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	w := NewWindowedValue([]Value{LiteralValue("x")}, []Value{LiteralValue(int64(1))})
-	if got := w.Evaluate(nil); got != nil {
+	if got, _ := w.Evaluate(nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil", got)
 	}
 	row := map[string]any{"x": int64(7)}
-	if got := w.Evaluate(row); got != nil {
+	if got, _ := w.Evaluate(row); got != nil {
 		t.Fatalf("Evaluate(row) = %v, want nil", got)
 	}
 }
@@ -70,10 +74,14 @@ func TestWindowedValue_DefensiveCopyOnConstruct(t *testing.T) {
 	w := NewWindowedValue(pv, av)
 	pv[0] = LiteralValue("MUTATED")
 	av[0] = LiteralValue(int64(999))
-	if c, _ := w.PartitioningValues[0].Evaluate(nil).(string); c == "MUTATED" {
+	tmpEv0, errEv0 := w.PartitioningValues[0].Evaluate(nil)
+	require.NoError(t, errEv0)
+	if c, _ := tmpEv0.(string); c == "MUTATED" {
 		t.Fatalf("PartitioningValues aliased caller's slice — not defensively copied")
 	}
-	if c, _ := w.ArgumentValues[0].Evaluate(nil).(int64); c == 999 {
+	tmpEv1, errEv1 := w.ArgumentValues[0].Evaluate(nil)
+	require.NoError(t, errEv1)
+	if c, _ := tmpEv1.(int64); c == 999 {
 		t.Fatalf("ArgumentValues aliased caller's slice — not defensively copied")
 	}
 }
@@ -126,7 +134,9 @@ func TestRankValue_EvaluateFromHarness(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue([]Value{LiteralValue("x")})
 	row := map[string]any{"_rank": int64(5)}
-	if got := r.Evaluate(row); got != int64(5) {
+	got, errEv0 := r.Evaluate(row)
+	require.NoError(t, errEv0)
+	if got != int64(5) {
 		t.Fatalf("Evaluate = %v, want 5", got)
 	}
 }
@@ -134,7 +144,9 @@ func TestRankValue_EvaluateFromHarness(t *testing.T) {
 func TestRankValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue(nil)
-	if got := r.Evaluate(map[string]any{"x": int64(99)}); got != nil {
+	got, errEv0 := r.Evaluate(map[string]any{"x": int64(99)})
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(no _rank) = %v, want nil", got)
 	}
 }
@@ -142,7 +154,9 @@ func TestRankValue_EvaluateMissingKeyReturnsNil(t *testing.T) {
 func TestRankValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue(nil)
-	if got := r.Evaluate(nil); got != nil {
+	got, errEv0 := r.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }

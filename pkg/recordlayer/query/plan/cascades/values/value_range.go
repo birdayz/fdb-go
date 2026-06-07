@@ -69,7 +69,7 @@ func (*RangeValue) Type() Type { return NotNullLong }
 // the Go seed surfaces nil per the existing placeholder pattern.
 //
 // Use EvaluateAsStream for the materialised range expansion.
-func (*RangeValue) Evaluate(any) any { return nil }
+func (*RangeValue) Evaluate(any) (any, error) { return nil, nil }
 
 // EvaluateAsStream materialises the finite range as a slice of
 // int64 elements: [begin, begin+step, begin+2*step, ...) up to but
@@ -82,15 +82,29 @@ func (*RangeValue) Evaluate(any) any { return nil }
 // estimation. Production execution would route through a streaming
 // integration (gated on StreamingValue port).
 func (r *RangeValue) EvaluateAsStream(evalCtx any) []int64 {
-	begin, ok := r.BeginInclusive.Evaluate(evalCtx).(int64)
+	// Bounds are constant literals; an evaluation error degrades to the
+	// same "not an int64 → empty stream" path as a non-int64 result.
+	beginV, err := r.BeginInclusive.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	begin, ok := beginV.(int64)
 	if !ok {
 		return nil
 	}
-	end, ok := r.EndExclusive.Evaluate(evalCtx).(int64)
+	endV, err := r.EndExclusive.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	end, ok := endV.(int64)
 	if !ok {
 		return nil
 	}
-	step, ok := r.Step.Evaluate(evalCtx).(int64)
+	stepV, err := r.Step.Evaluate(evalCtx)
+	if err != nil {
+		return nil
+	}
+	step, ok := stepV.(int64)
 	if !ok {
 		return nil
 	}
@@ -117,15 +131,29 @@ func (r *RangeValue) EvaluateAsStream(evalCtx any) []int64 {
 // the planner has a RangeValue table function in scope and wants
 // to size operators above it.
 func (r *RangeValue) Cardinality() (int64, bool) {
-	begin, ok := r.BeginInclusive.Evaluate(nil).(int64)
+	// Bounds are constant literals; an evaluation error degrades to the
+	// same "not constant-foldable" path as a non-int64 result.
+	beginV, err := r.BeginInclusive.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	begin, ok := beginV.(int64)
 	if !ok {
 		return -1, false
 	}
-	end, ok := r.EndExclusive.Evaluate(nil).(int64)
+	endV, err := r.EndExclusive.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	end, ok := endV.(int64)
 	if !ok {
 		return -1, false
 	}
-	step, ok := r.Step.Evaluate(nil).(int64)
+	stepV, err := r.Step.Evaluate(nil)
+	if err != nil {
+		return -1, false
+	}
+	step, ok := stepV.(int64)
 	if !ok || step == 0 {
 		return -1, false
 	}

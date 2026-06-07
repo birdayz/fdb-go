@@ -72,7 +72,7 @@ func (*CollateValue) Type() Type { return NotNullBytes }
 
 // Evaluate is a placeholder — real eval needs golang.org/x/text/collate
 // wiring. Returns nil per the existing placeholder pattern.
-func (*CollateValue) Evaluate(any) any { return nil }
+func (*CollateValue) Evaluate(any) (any, error) { return nil, nil }
 
 // WithChildren returns a fresh CollateValue with new children.
 // Caller is responsible for passing the right number of children

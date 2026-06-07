@@ -63,25 +63,31 @@ func (*LikeOperatorValue) Name() string { return "like" }
 func (*LikeOperatorValue) Type() Type { return NullableBoolean }
 
 // Evaluate computes probe LIKE pattern.
-func (v *LikeOperatorValue) Evaluate(evalCtx any) any {
+func (v *LikeOperatorValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.Pattern == nil {
-		return nil
+		return nil, nil
 	}
-	probe := v.Probe.Evaluate(evalCtx)
-	pattern := v.Pattern.Evaluate(evalCtx)
+	probe, err := v.Probe.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	pattern, err := v.Pattern.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if probe == nil || pattern == nil {
-		return nil
+		return nil, nil
 	}
 	probeStr, ok := probe.(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	patternStr, ok := pattern.(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// Delegate to the conformance-pinned LikeMatch — same matcher
 	// the QueryPredicate-layer ComparisonLike uses, fuzz-tested
 	// against a regex oracle and Java's likeMatcher semantics.
-	return LikeMatch(patternStr, probeStr, 0)
+	return LikeMatch(patternStr, probeStr, 0), nil
 }

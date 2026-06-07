@@ -52,6 +52,7 @@ go_test(
         "quality_probes_test.go",
         "rcte_crossjoin_probe_test.go",
         "recursive_cte_rename_probe_test.go",
+        "rfc087_swallow_sort_fdb_test.go",
         "scalar_subquery_cte_test.go",
         "sql_integration_test.go",
         "statistics_fdb_test.go",

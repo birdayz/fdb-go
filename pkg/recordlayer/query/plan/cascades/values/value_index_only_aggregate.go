@@ -86,7 +86,7 @@ func (v *IndexOnlyAggregateValue) Type() Type {
 // Evaluate is a placeholder — Java throws IllegalStateException
 // since this aggregate is compile-time-only. Go surfaces nil per
 // the placeholder pattern.
-func (*IndexOnlyAggregateValue) Evaluate(any) any { return nil }
+func (*IndexOnlyAggregateValue) Evaluate(any) (any, error) { return nil, nil }
 
 // IsIndexOnly returns true — this aggregate MUST be backed by an
 // index. Planner rules consult this to refuse to optimise without

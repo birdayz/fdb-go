@@ -34,5 +34,6 @@ go_test(
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/semantic",
+        "@com_github_stretchr_testify//require",
     ],
 )

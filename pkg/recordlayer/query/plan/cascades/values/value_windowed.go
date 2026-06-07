@@ -58,7 +58,7 @@ func (w *WindowedValue) Children() []Value {
 // without a full partition context. Concrete subclasses MAY override
 // to evaluate against a window-frame harness (see RankValue.Evaluate
 // for the rank-tracking eval seed).
-func (*WindowedValue) Evaluate(any) any { return nil }
+func (*WindowedValue) Evaluate(any) (any, error) { return nil, nil }
 
 // SplitNewChildren splits a flat newChildren slice back into
 // (partition, argument) lists by position — matching Java's

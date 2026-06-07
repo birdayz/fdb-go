@@ -98,7 +98,7 @@ func (*ToOrderedBytesValue) Type() Type { return NotNullBytes }
 // planner / matcher / serialisation work today; runtime
 // integration lands when index-key-construction port reaches
 // this branch.
-func (*ToOrderedBytesValue) Evaluate(any) any { return nil }
+func (*ToOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }
 
 // CreateInverse returns the FromOrderedBytesValue that decodes the
 // ordered-bytes form back to the original value. Java's
@@ -170,4 +170,4 @@ func (v *FromOrderedBytesValue) Type() Type {
 // Evaluate is currently a placeholder — returns nil. Real eval
 // wires tuple.UnpackOrdered (the Go equivalent of Java's
 // TupleOrdering.unpack). Same gating as ToOrderedBytesValue.
-func (*FromOrderedBytesValue) Evaluate(any) any { return nil }
+func (*FromOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }

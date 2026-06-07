@@ -3,6 +3,8 @@ package values
 import (
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRangeValue_Type(t *testing.T) {
@@ -36,7 +38,9 @@ func TestRangeValue_Children(t *testing.T) {
 func TestRangeValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewRangeValue(LiteralValue(int64(0)), LiteralValue(int64(10)), LiteralValue(int64(1)))
-	if got := v.Evaluate(nil); got != nil {
+	got, errEv0 := v.Evaluate(nil)
+	require.NoError(t, errEv0)
+	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil (streaming Value)", got)
 	}
 }

@@ -18,13 +18,14 @@ import (
 //
 // where op1 / op2 are picked from (Add, Sub, Mul, Div, Mod) by the
 // fuzz bytes, and a / b / c are int64 constants. The tree is fully
-// constant by construction, so SimplifyValue MUST collapse it to a
-// ConstantValue (or NullValue on div-by-zero) — never panic, never
-// leave a non-collapsed composite.
+// constant by construction, so SimplifyValue MUST either collapse it
+// to a ConstantValue (when the arithmetic succeeds) or leave it as a
+// composite that errors at runtime (div-by-zero, mod-by-zero,
+// overflow) — never panic, never leave a non-erroring composite.
 func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 	// Seed with the canonical happy path + a div-by-zero case.
 	f.Add(int64(2), int64(3), int64(4), uint8(0), uint8(2)) // (2+3)*4 = 20
-	f.Add(int64(1), int64(0), int64(2), uint8(3), uint8(0)) // 1/0 → NULL → propagates
+	f.Add(int64(1), int64(0), int64(2), uint8(3), uint8(0)) // 1/0 → declines to fold, errors
 	f.Add(int64(math.MaxInt64), int64(1), int64(1), uint8(1), uint8(1))
 
 	f.Fuzz(func(t *testing.T, a, b, c int64, op1raw, op2raw uint8) {
@@ -47,15 +48,19 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 			t.Fatalf("SimplifyValue returned nil — should always return a Value (got input: a=%d b=%d c=%d op1=%d op2=%d)", a, b, c, op1, op2)
 		}
 
-		// 2. Result must be a ConstantValue (numeric fold) or
-		//    NullValue (div-by-zero etc. — propagated). Should never
-		//    be a non-collapsed composite, since the tree was fully
-		//    constant.
+		// 2. Result must be a ConstantValue/NullValue (numeric fold) or
+		//    a composite that DECLINED to fold because it errors at
+		//    runtime (div-by-zero, mod-by-zero, overflow). A non-erroring
+		//    composite left un-folded would be a simplifier bug — the
+		//    old behaviour silently swallowed those errors to NULL
+		//    (RFC-087 latent wrong-NULL bug), now they surface.
 		switch out.(type) {
 		case *ConstantValue, *NullValue:
-			// ok
+			// ok — folded cleanly.
 		default:
-			t.Fatalf("expected ConstantValue or NullValue after fold of all-constant tree, got %T", out)
+			if _, err := out.Evaluate(nil); err == nil {
+				t.Fatalf("all-constant tree left un-folded but evaluates without error: %T (a=%d b=%d c=%d op1=%d op2=%d)", out, a, b, c, op1, op2)
+			}
 		}
 
 		// 3. Idempotency: simplifying the result must be a no-op (the

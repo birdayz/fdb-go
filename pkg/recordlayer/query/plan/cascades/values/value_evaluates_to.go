@@ -68,29 +68,32 @@ func (*EvaluatesToValue) Type() Type { return NotNullBoolean }
 // Type mismatches (non-bool x with IS TRUE / IS FALSE) return false —
 // the runtime value isn't a boolean true / false, so the predicate
 // is false (not UNKNOWN).
-func (v *EvaluatesToValue) Evaluate(evalCtx any) any {
+func (v *EvaluatesToValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		switch v.Eval {
 		case EvaluatesToNull:
-			return true
+			return true, nil
 		case EvaluatesToNotNull:
-			return false
+			return false, nil
 		default:
-			return false
+			return false, nil
 		}
 	}
-	val := v.Child.Evaluate(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	switch v.Eval {
 	case EvaluatesToTrue:
 		b, ok := val.(bool)
-		return ok && b
+		return ok && b, nil
 	case EvaluatesToFalse:
 		b, ok := val.(bool)
-		return ok && !b
+		return ok && !b, nil
 	case EvaluatesToNull:
-		return val == nil
+		return val == nil, nil
 	case EvaluatesToNotNull:
-		return val != nil
+		return val != nil, nil
 	}
-	return false
+	return false, nil
 }
