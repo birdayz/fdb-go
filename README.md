@@ -7,6 +7,21 @@ Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/f
 Wire-compatible with Java Record Layer 4.11.1.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
+## Status
+
+**Pre-1.0. Not yet declared production-ready — pin a commit and run the suites below
+before relying on it.** Maturity varies by layer:
+
+| Layer | Maturity | Notes |
+|-------|----------|-------|
+| **Record store** (CRUD, indexes, versions, continuations, split records) | **Most mature** | Wire-compatibility is the project's hard line, exercised by the Java conformance + binding-stress suites. This is the part to trust first. |
+| **Cascades SQL engine** | **Usable, evolving** | Wide SQL surface (see below) validated by a cross-engine differential harness, but still has open correctness items — consult the conformance report and `TODO.md` before depending on a given query shape. |
+| **Pure-Go FDB client** (`pkg/fdbgo`) | **Youngest** | Reimplements the FDB wire protocol from scratch (RYW, retries, `commit_unknown_result`). Validated against libfdb_c via the binding tester; there is no drop-in escape hatch to the C client yet. |
+
+Before production use: pin a commit, run the conformance + differential + stress
+suites against your workload, and review `PRODUCTION_READINESS.md` /
+`TODO-production.md` for the current gap list. Report issues per `SECURITY.md`.
+
 ## Target versions
 
 | Component | Version | Notes |
