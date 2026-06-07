@@ -1,6 +1,6 @@
 # TODO — Production Readiness
 
-Derived from `review_2026-06-07.md`. Ordered by criticality so the most important
+Derived from `docs/review_2026-06-07.md`. Ordered by criticality so the most important
 work is done first. Target use case: **SaaS control plane.**
 
 **Review status (2026-06-07):** reviewed by bradfitz (Go idiom — **governing reference
