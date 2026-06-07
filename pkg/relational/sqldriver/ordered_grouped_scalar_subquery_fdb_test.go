@@ -3,8 +3,11 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 // ogsDB sets up customers + orders for the ordered-grouped correlated scalar
@@ -173,18 +176,31 @@ func TestFDB_OrderedGroupedScalarSubquery_Reject(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "rej")
 
-	// ORDER BY a non-grouped, non-aggregated column (amount) → reject.
-	_, err := db.ExecContext(ctx, "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.amount LIMIT 1) FROM customers c WHERE c.id = 1")
-	if err == nil {
-		t.Fatal("ORDER BY a non-grouped/non-aggregated column should be rejected, not silently ignored")
+	// assertGroupingReject confirms the query fails with SQLSTATE 42803 (grouping
+	// error) — not a silent-ignored ORDER BY, and not some unrelated error.
+	assertGroupingReject := func(why, q string) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, q)
+		if err == nil {
+			t.Fatalf("%s should be rejected, not silently ignored", why)
+		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("%s: error is not *api.Error: %T %v", why, err, err)
+		}
+		if apiErr.Code != api.ErrCodeGroupingError {
+			t.Fatalf("%s: error code = %s, want %s (42803)", why, apiErr.Code, api.ErrCodeGroupingError)
+		}
 	}
+
+	// ORDER BY a non-grouped, non-aggregated column (amount) → reject.
+	assertGroupingReject("ORDER BY a non-grouped/non-aggregated column",
+		"SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.amount LIMIT 1) FROM customers c WHERE c.id = 1")
 
 	// ORDER BY an aggregate that is NOT selected (the subquery selects SUM, orders
 	// by COUNT) → reject (harvesting ORDER-BY-only aggregates is a future extension).
-	_, err = db.ExecContext(ctx, "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY COUNT(*) LIMIT 1) FROM customers c WHERE c.id = 1")
-	if err == nil {
-		t.Fatal("ORDER BY an unselected aggregate should be rejected, not silently ignored")
-	}
+	assertGroupingReject("ORDER BY an unselected aggregate",
+		"SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY COUNT(*) LIMIT 1) FROM customers c WHERE c.id = 1")
 }
 
 // TestFDB_OrderedScalarSubquery_NoGroupByUnchanged guards that ORDER BY WITHOUT
