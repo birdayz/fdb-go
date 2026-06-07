@@ -602,6 +602,16 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"setting column ordering for insert with select is not supported")
 	}
 
+	// INSERT … SELECT promotion guard: reject when an aggregate-result column
+	// cannot be promoted to its target column type (e.g. AVG(BIGINT)→DOUBLE into
+	// a BIGINT column), matching Java's plan-time PromoteValue rejection
+	// (SQLSTATE 22000), independent of how many rows the source yields.
+	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source != nil {
+		if err := checkInsertSelectPromotable(insOp, md); err != nil {
+			return nil, err
+		}
+	}
+
 	// INSERT … VALUES: build the literal rows into a Cascades array Value
 	// (resolved table name is now available). translateInsert explodes it
 	// as the InsertExpression inner, so VALUES rides the Cascades path.
@@ -2050,23 +2060,39 @@ func aggOperandName(a expressions.AggregateSpec) string {
 	return values.ExplainValue(a.Operand)
 }
 
+// aggregateResultType derives the SQL type name of an aggregate's result
+// column. It routes through valueTypeName so the function-determined facts
+// (AVG→DOUBLE, COUNT→BIGINT) have a SINGLE source — AggregateValue.Type() —
+// rather than a second hardcoded copy that could silently drift. SUM/MIN/MAX
+// stay operand-derived (resolved against desc inside valueTypeName). Mirrors
+// Java's per-operator resultTypeCode.
 func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageDescriptor) string {
-	switch a.Function {
-	case expressions.AggCount:
-		return "BIGINT"
-	case expressions.AggAvg:
-		return "DOUBLE"
-	case expressions.AggSum, expressions.AggMin, expressions.AggMax:
-		if desc != nil {
-			operandName := values.ExplainValue(a.Operand)
-			if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
-				return t
-			}
-		}
-		return "BIGINT"
-	default:
+	op := valueAggOp(a.Function)
+	if op == values.AggInvalid {
 		return "UNKNOWN"
 	}
+	// Construct the node directly (not NewAggregateValue, which panics on
+	// shape mismatches) purely to derive its result type via valueTypeName.
+	return valueTypeName(&values.AggregateValue{Op: op, Operand: a.Operand}, desc)
+}
+
+// valueAggOp bridges the planner's expressions.AggregateFunction to the
+// values.AggregateOp used by AggregateValue, so aggregate result-type
+// derivation has one home.
+func valueAggOp(f expressions.AggregateFunction) values.AggregateOp {
+	switch f {
+	case expressions.AggCount:
+		return values.AggCount
+	case expressions.AggSum:
+		return values.AggSum
+	case expressions.AggMin:
+		return values.AggMin
+	case expressions.AggMax:
+		return values.AggMax
+	case expressions.AggAvg:
+		return values.AggAvg
+	}
+	return values.AggInvalid
 }
 
 // valueTypeName resolves the SQL type name for a Value. For
@@ -2084,11 +2110,13 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 		}
 	}
 	if av, ok := v.(*values.AggregateValue); ok {
+		// SUM/MIN/MAX inherit the operand type, resolved against the record
+		// descriptor (av.Type() defaults unbound operands to BIGINT, so the
+		// descriptor is the reliable source for these). AVG (→DOUBLE) and
+		// COUNT/COUNT(*) (→BIGINT) are function-determined: fall through to the
+		// v.Type() block below so AggregateValue.Type() is the single source of
+		// truth and the two SQL-name derivations cannot drift.
 		switch av.Op {
-		case values.AggCount, values.AggCountStar:
-			return "BIGINT"
-		case values.AggAvg:
-			return "DOUBLE"
 		case values.AggSum, values.AggMin, values.AggMax:
 			if av.Operand != nil && desc != nil {
 				operandName := values.ExplainValue(av.Operand)
@@ -2097,8 +2125,6 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 				}
 			}
 			return "BIGINT"
-		default:
-			return "UNKNOWN"
 		}
 	}
 	if t := v.Type(); t != nil {

@@ -19,6 +19,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	functions "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 )
 
@@ -1528,6 +1529,60 @@ func TestGoToProtoValue_Int64(t *testing.T) {
 	}
 	if got := v.Int(); got != 123 {
 		t.Errorf("got %d, want 123", got)
+	}
+}
+
+// goToProtoValue must implement the promotable widenings Java's lattice allows
+// (INT/LONG→FLOAT/DOUBLE), matching ConvertToProtoValue — a SUM(BIGINT) into a
+// DOUBLE/FLOAT column flows an int64 and must widen, not error.
+func TestGoToProtoValue_IntToDoubleWidens(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	v, err := goToProtoValue(typed.Fields().ByName("val_double"), int64(60))
+	if err != nil {
+		t.Fatalf("int64 → DOUBLE should widen, got: %v", err)
+	}
+	if got := v.Float(); got != 60.0 {
+		t.Errorf("got %v, want 60.0", got)
+	}
+}
+
+func TestGoToProtoValue_IntToFloatWidens(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	v, err := goToProtoValue(typed.Fields().ByName("val_float"), int64(7))
+	if err != nil {
+		t.Fatalf("int64 → FLOAT should widen, got: %v", err)
+	}
+	if got := v.Float(); got != 7.0 {
+		t.Errorf("got %v, want 7.0", got)
+	}
+}
+
+// A float64 (DOUBLE) into an integer column is NOT promotable (no DOUBLE→LONG
+// edge); goToProtoValue's fallthrough must emit the verbatim 22000
+// SemanticException, matching Java + the sibling ConvertToProtoValue — not a
+// generic Go error.
+func TestGoToProtoValue_DoubleToIntRejects22000(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), float64(20.0))
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("float64 → BIGINT: want 22000 (CannotConvertType), got %v", err)
+	}
+}
+
+// The fallthrough is emergent: any genuinely incompatible assignment (e.g.
+// string → integer) yields the same verbatim 22000, aligning with the sibling
+// converter rather than the old generic fmt.Errorf.
+func TestGoToProtoValue_StringToIntRejects22000(t *testing.T) {
+	t.Parallel()
+	typed := (&gen.TypedRecord{}).ProtoReflect().Descriptor()
+	_, err := goToProtoValue(typed.Fields().ByName("val_int64"), "nope")
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("string → BIGINT: want 22000 (CannotConvertType), got %v", err)
 	}
 }
 

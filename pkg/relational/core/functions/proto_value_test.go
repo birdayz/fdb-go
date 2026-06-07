@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 func typedFD(name string) protoreflect.FieldDescriptor {
@@ -175,15 +177,16 @@ func TestConvertToProtoValue_Int64(t *testing.T) {
 	}
 }
 
+// A whole-valued float64 into a BIGINT column is REJECTED (22000), not coerced:
+// DOUBLE→LONG has no edge in Java's promotion lattice, so Java rejects it at
+// plan time. The former whole-float coercion silently accepted it — a divergence.
 func TestConvertToProtoValue_Int64_FromWholeFloat(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_int64")
-	pv, err := ConvertToProtoValue(fd, float64(42.0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pv.Int() != 42 {
-		t.Fatalf("got %d, want 42", pv.Int())
+	_, err := ConvertToProtoValue(fd, float64(42.0))
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("whole float64 → BIGINT: want 22000 (CannotConvertType), got %v", err)
 	}
 }
 
@@ -726,15 +729,15 @@ func TestConvertToProtoValue_Float_Inf(t *testing.T) {
 	}
 }
 
+// Even a large whole-valued float64 → BIGINT is rejected (22000): the lattice
+// has no DOUBLE→LONG edge regardless of value (whole or fractional, small or large).
 func TestConvertToProtoValue_Int64_FromWholeFloat_Large(t *testing.T) {
 	t.Parallel()
 	fd := typedFD("val_int64")
-	v, err := ConvertToProtoValue(fd, float64(1e15))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v.Int() != int64(1e15) {
-		t.Errorf("got %d, want %d", v.Int(), int64(1e15))
+	_, err := ConvertToProtoValue(fd, float64(1e15))
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCannotConvertType {
+		t.Fatalf("large whole float64 → BIGINT: want 22000 (CannotConvertType), got %v", err)
 	}
 }
 
