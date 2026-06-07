@@ -1,8 +1,10 @@
 package com.birdayz.conformance;
 
+import com.apple.foundationdb.FDBException;
 import com.apple.foundationdb.record.provider.foundationdb.APIVersion;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabaseFactory;
+import com.apple.foundationdb.record.provider.foundationdb.FDBExceptions;
 import com.apple.foundationdb.record.provider.foundationdb.FormatVersion;
 import com.apple.foundationdb.record.provider.foundationdb.keyspace.KeySpace;
 import com.apple.foundationdb.relational.api.EmbeddedRelationalDriver;
@@ -36,7 +38,9 @@ import java.sql.Statement;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Conformance step exposing the Java fdb-relational planner's EXPLAIN output
@@ -232,10 +236,57 @@ class SqlPlanSteps {
         return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
             try (Statement st = conn.createStatement()) {
                 for (String setup : setupSqls) {
-                    st.executeUpdate(setup);
+                    withFdbRetry(() -> st.executeUpdate(setup));
                 }
             }
             return runQuery(conn, querySql);
+        });
+    }
+
+    /**
+     * TEST-ONLY: like {@link #runWithSetup} but injects {@code faultCount}
+     * synthetic {@link FDBException}s (code {@code faultCode}) before the query
+     * actually executes, exercising the {@link #withFdbRetry} path
+     * deterministically — that path is otherwise only reachable under real
+     * CI-load {@code 1007 transaction_too_old} bursts. The injected exception
+     * is a genuine {@code FDBException}, so the production retry predicate
+     * ({@link #isRetryableNotCommitted}, which calls FDB's native classifier)
+     * sees exactly what it would for a live error.
+     *
+     * <p>Isolation: the countdown is a method-local {@link AtomicInteger}
+     * captured by the query lambda — no static/shared state, so concurrent
+     * requests (or a pooled server) can't see each other's injection. The
+     * setup statements run normally (so the table is populated); injection
+     * applies only to the SELECT, the documented primary culprit.
+     *
+     * <p>Behavioural contract this pins (see fault_inject_retry_conformance_test.go):
+     * a retryable-not-committed code (1007/1020/…) under the attempt budget →
+     * the query recovers and returns correct rows; exhausting the budget →
+     * surfaces; a maybe-committed code (1021) or a non-retryable code (1000) →
+     * surfaces immediately with NO retry (proving writes are never replayed).
+     */
+    @ConformanceStep("runWithSetupInjectingFaults")
+    public JsonObject runWithSetupInjectingFaults(String clusterFile, String schemaTemplate,
+                                                  java.util.List<String> setupSqls, String querySql,
+                                                  int faultCount, int faultCode) throws Exception {
+        final AtomicInteger remaining = new AtomicInteger(faultCount);
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            return withFdbRetry(() -> {
+                if (remaining.getAndDecrement() > 0) {
+                    throw new SQLException("injected test fault",
+                        new FDBException("injected_test_fault", faultCode));
+                }
+                try (RelationalPreparedStatement ps = rconn.prepareStatement(querySql);
+                     RelationalResultSet rs = ps.executeQuery()) {
+                    return resultSetToJson(rs);
+                }
+            });
         });
     }
 
@@ -328,11 +379,11 @@ class SqlPlanSteps {
                 // do the same (SchemaTemplateRule#beforeEach).
                 try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS?schema=CATALOG");
                      Statement st = sysConn.createStatement()) {
-                    st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate);
+                    withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate));
                     templateCreated = true;
-                    st.executeUpdate("CREATE DATABASE \"" + dbPath + "\"");
+                    withFdbRetry(() -> st.executeUpdate("CREATE DATABASE \"" + dbPath + "\""));
                     dbCreated = true;
-                    st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\"");
+                    withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\""));
                 }
 
                 // fdb-relational reads the active schema from the
@@ -355,6 +406,9 @@ class SqlPlanSteps {
             if (dbCreated) {
                 try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
                      Statement st = sysConn.createStatement()) {
+                    // Teardown is best-effort and the path is a unique UUID, so a
+                    // transient 1007 here just leaks one ephemeral DB — not worth a
+                    // retry loop holding the cleanup path. catch+ignore as before.
                     st.executeUpdate("DROP DATABASE IF EXISTS \"" + dbPath + "\"");
                 } catch (SQLException ignored) {
                     // teardown best-effort — a stuck DB is preferable to swallowing the
@@ -372,20 +426,114 @@ class SqlPlanSteps {
         }
     }
 
+    /** Max attempts for a single auto-commit statement that hits a
+     *  retryable-and-not-committed FDB error (e.g. 1007 transaction_too_old
+     *  under heavy parallel A3 load). Six tries with jittered backoff (five
+     *  sleeps, base 50→800ms; with full jitter up to ~3s total) ride out a
+     *  transient contention spike; a genuinely wedged box still fails loudly. */
+    private static final int MAX_FDB_RETRIES = 6;
+
+    @FunctionalInterface
+    private interface SqlSupplier<T> {
+        T get() throws SQLException;
+    }
+
+    /**
+     * True iff {@code t}'s cause chain carries an FDB error that is RETRYABLE
+     * and DEFINITELY NOT COMMITTED — the class {@link FDBException#isRetryableNotCommitted()}
+     * defines: 1007 transaction_too_old, 1020 not_committed, 1009 future_version,
+     * 1037 process_behind, … but EXCLUDING 1021 commit_unknown_result.
+     *
+     * <p>The exclusion is load-bearing: a maybe-committed write (1021) must
+     * never be blindly replayed — re-running a setup INSERT / CREATE DDL that
+     * actually committed would duplicate a row (spurious 23505) or silently
+     * double-insert and corrupt the SELECT. Restricting to the not-committed
+     * class keeps the retry idempotent for the write paths as well as reads.
+     */
+    private static boolean isRetryableNotCommitted(Throwable t) {
+        FDBException fdb = FDBExceptions.getFDBCause(t);
+        if (fdb != null) {
+            return fdb.isRetryableNotCommitted();
+        }
+        // No raw FDBException in the chain. isRetriable() still catches the
+        // record layer's RecordCoreRetriableTransactionException wrappers
+        // (conflict / lock-taken) — those are not-committed by construction,
+        // so they're safe to retry.
+        return FDBExceptions.isRetriable(t);
+    }
+
+    /**
+     * Execute a single auto-commit JDBC statement, retrying on a
+     * retryable-and-not-committed FDB error. Under heavy parallel A3 load the
+     * shared JVM thread can be starved long enough that fdb-relational's
+     * (plan-cache-disabled, so always-fresh) Cascades plan + execute overruns
+     * FDB's 5s transaction window, surfacing {@code 1007 transaction_too_old}.
+     * That error is precisely what FDB's {@code FDBDatabase#run()} retry loop
+     * exists to absorb; the conformance server bypasses that loop (raw JDBC
+     * {@code executeQuery}), so we add it here.
+     *
+     * <p>Safe because every conformance connection is auto-commit
+     * ({@code EmbeddedRelationalConnection} defaults {@code autoCommit=true} and
+     * we never disable it), so each statement is its own transaction — and we
+     * retry only the {@link #isRetryableNotCommitted} class, which by
+     * definition did NOT commit. Re-running it on a fresh transaction is
+     * therefore idempotent for both reads and the setup writes.
+     *
+     * <p>This cannot mask a real Go-vs-Java divergence: the predicate is true
+     * ONLY for genuine infra/timing errors. A semantic divergence (wrong plan,
+     * type mismatch, parse error) surfaces as a non-retryable
+     * {@code RelationalException} with a SQLState — the predicate returns false,
+     * it's rethrown immediately, and the spec still fails loudly.
+     */
+    private static <T> T withFdbRetry(SqlSupplier<T> op) throws SQLException {
+        SQLException last = null;
+        for (int attempt = 0; attempt < MAX_FDB_RETRIES; attempt++) {
+            try {
+                return op.get();
+            } catch (SQLException e) {
+                if (!isRetryableNotCommitted(e)) {
+                    throw e;
+                }
+                last = e;
+                if (attempt == MAX_FDB_RETRIES - 1) {
+                    break; // out of budget — don't back off just to give up
+                }
+                // Exponential backoff (base 50ms..800ms) with additive jitter:
+                // sleep in [base, 2*base), so there's always a backoff floor and
+                // the jitter decorrelates the wakeups of pool threads that all
+                // hit 1007 at the same instant, so the retries don't thunder back
+                // in lockstep.
+                long base = Math.min(50L << attempt, 800L);
+                try {
+                    Thread.sleep(base + ThreadLocalRandom.current().nextLong(base));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+        // Unreachable with a positive MAX_FDB_RETRIES: the loop only falls
+        // through here after the final attempt's catch assigned `last` and
+        // broke, so `last` is non-null.
+        throw last;
+    }
+
     private String runExplain(java.sql.Connection conn, String sql) throws SQLException {
         // fdb-relational accepts EXPLAIN as a SQL prefix; the result set has
         // a PLAN column (VARCHAR) carrying the rendered tree. Other columns
         // (PLAN_HASH, PLAN_DOT, PLAN_GML, PLAN_CONTINUATION, PLANNER_METRICS)
         // are diagnostic; the harness only diffs PLAN today.
         RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
-        try (RelationalPreparedStatement ps = rconn.prepareStatement("EXPLAIN " + sql);
-             RelationalResultSet rs = ps.executeQuery()) {
-            if (!rs.next()) {
-                return "";
+        return withFdbRetry(() -> {
+            try (RelationalPreparedStatement ps = rconn.prepareStatement("EXPLAIN " + sql);
+                 RelationalResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return "";
+                }
+                String plan = rs.getString("PLAN");
+                return plan == null ? "" : plan;
             }
-            String plan = rs.getString("PLAN");
-            return plan == null ? "" : plan;
-        }
+        });
     }
 
     /**
@@ -394,10 +542,12 @@ class SqlPlanSteps {
      */
     private JsonObject runQuery(java.sql.Connection conn, String sql) throws SQLException {
         RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
-        try (RelationalPreparedStatement ps = rconn.prepareStatement(sql);
-             RelationalResultSet rs = ps.executeQuery()) {
-            return resultSetToJson(rs);
-        }
+        return withFdbRetry(() -> {
+            try (RelationalPreparedStatement ps = rconn.prepareStatement(sql);
+                 RelationalResultSet rs = ps.executeQuery()) {
+                return resultSetToJson(rs);
+            }
+        });
     }
 
     /**

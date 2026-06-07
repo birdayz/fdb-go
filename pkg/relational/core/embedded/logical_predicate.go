@@ -2203,18 +2203,63 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		}
 	}
 
+	// Collect the field set from EVERY base-table source — the primary
+	// table AND each join source — so a GROUP BY / projection key from a
+	// joined table (`SELECT d.dname ... FROM emp e JOIN dept d ... GROUP BY
+	// d.dname`) passes the existence check instead of falsely 42703-ing
+	// because it isn't a column of the first table. If ANY source is a
+	// derived table / CTE (no record type), its columns are unknowable, so
+	// skip the existence check entirely (tableFields = nil) — conservative,
+	// matching the pre-join behaviour for an unresolvable primary source.
 	var tableFields map[string]bool
-	if md != nil && sq.tableName != "" {
-		rt := md.GetRecordType(sq.tableName)
-		if rt != nil && rt.Descriptor != nil {
+	allResolved := true
+	if md != nil {
+		collect := func(tableName string) {
+			if tableName == "" {
+				allResolved = false
+				return
+			}
+			rt := md.GetRecordType(tableName)
+			if rt == nil || rt.Descriptor == nil {
+				allResolved = false
+				return
+			}
+			if tableFields == nil {
+				tableFields = make(map[string]bool)
+			}
 			fields := rt.Descriptor.Fields()
-			tableFields = make(map[string]bool, fields.Len())
 			for i := 0; i < fields.Len(); i++ {
 				tableFields[strings.ToUpper(string(fields.Get(i).Name()))] = true
 			}
 		}
+		collect(sq.tableName)
+		for _, j := range sq.joins {
+			collect(j.tableName)
+		}
+	}
+	if !allResolved {
+		tableFields = nil
 	}
 
+	// INVARIANT (load-bearing): this existence test compares only the BARE
+	// name against the UNION of all source fields, so it is deliberately
+	// qualifier-blind — `e.dname` (dname on the joined dept, not emp) would
+	// pass here because DNAME is in the union. That coarse check is SAFE only
+	// because EVERY call site is bracketed by a precise semantic resolver gate
+	// that has the final say on a wrong-qualifier / genuinely-undefined key —
+	// the union check never decides alone. The gate runs on DIFFERENT sides at
+	// the two sites:
+	//   - top-level GROUP BY: resolveColumnName(resolver, gb) (this file, ~L1002)
+	//     runs BEFORE validateGroupByProjection (~L1019), so a wrong qualifier is
+	//     rejected before it ever reaches this union check.
+	//   - correlated scalar subquery: validateGroupByProjection (~L4414) runs
+	//     FIRST and may pass a wrong-qualifier key, but resolveCorrelatedGroupKeyValues
+	//     (~L4654, "resolve GROUP BY key: ... not found on table") runs AFTER and
+	//     rejects it — the net protection still holds, via the later gate.
+	// Both orderings are pinned by TestFDB_GroupByWrongQualifierRejected. The real
+	// hazard is a NEW call site with NO resolver gate on either side; converging
+	// the existence check onto resolver.ResolveIdentifier removes the coupling
+	// entirely (TODO.md, RFC-088 follow-up).
 	checkColumn := func(col string) error {
 		upper := strings.ToUpper(col)
 		bare := parseColRef(upper).bare()
