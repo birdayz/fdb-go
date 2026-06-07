@@ -100,26 +100,35 @@ rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK sca
 rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
 ```
 
-Supported SQL:
-- SELECT with WHERE, ORDER BY (ASC/DESC), DISTINCT, GROUP BY, HAVING
+Supported SQL (authoritative, tested surface: the yamsql scenarios under
+`pkg/relational/conformance/yamsql/testdata/` + `DIVERGENCES.md`; this list is a
+summary, accurate as of 2026-06-07):
+- SELECT with WHERE, ORDER BY (ASC/DESC, including mixed directions), DISTINCT,
+  GROUP BY, HAVING, LIMIT / OFFSET
 - Aggregates: COUNT, SUM, MIN, MAX, AVG
-- JOINs: INNER JOIN, comma-join (including self-joins)
-- CTEs: WITH ... AS (SELECT ...) — including chained CTEs
+- JOINs: INNER, comma-join / self-join, and LEFT / RIGHT / FULL OUTER JOIN
+  (outer joins are a Go-only read-side extension — Java's SQL layer has none; wire
+  compat is unaffected)
+- Subqueries in WHERE: EXISTS / NOT EXISTS, IN (SELECT ...), and correlated scalar
+  subqueries (Go-only read-side extensions)
+- CTEs: WITH ... AS (SELECT ...), including chained CTEs
 - UNION ALL
 - INSERT, UPDATE, DELETE
-- CASE, COALESCE, CAST, arithmetic expressions
+- CASE, COALESCE, CAST, arithmetic, scalar functions (e.g. UPPER, LOWER)
 - Computed projections with aliases
 
-ORDER BY requires a supporting index or PK (no physical sort operator, matching Java's Cascades architecture).
-Self-joins and CTE+JOINs correctly resolve alias-qualified column references.
+ORDER BY works without an index via a Go-only bounded in-memory sort
+(`RecordQueryInMemorySortPlan`, beyond Java's index-only Cascades); a supporting
+index/PK avoids the sort, and an unbounded ORDER BY without LIMIT is capped to
+avoid OOM. Self-joins and CTE+JOINs correctly resolve alias-qualified columns.
 
 Not yet supported in the SQL engine:
-- LEFT/RIGHT OUTER JOIN (INNER only)
-- Subqueries in WHERE (EXISTS, IN (SELECT ...))
-- LIMIT/OFFSET (pagination is a future API-level feature)
-- Scalar functions (UPPER, LOWER, SUBSTRING, etc.) — Java's registry doesn't have them either
-- Mixed ASC/DESC in multi-column ORDER BY
-- CTE referenced inside UNION branches
+- A plain CTE referenced inside a UNION branch (recursive CTEs, which use UNION
+  internally, do work)
+- `IN (SELECT ...)` in DML WHERE (rejected; rewrite as a correlated `EXISTS`)
+- General window functions (matching Java — only `ROW_NUMBER() ... QUALIFY` for
+  vector K-NN search exists; see TODO.md)
+- Synthetic record types (JoinedRecordType, UnnestedRecordType)
 
 ## What works
 

@@ -218,9 +218,16 @@ Pin/vendor a commit; run conformance (`//conformance`), the libfdb_c differentia
 required gates (today: stress is in no workflow; differential is nightly-only on 8 of 109 fuzz
 targets). Caveat (Torvalds): this gives *detection*, not *repair* — see the won't-fix note.
 
-### [ ] P1.7 — Reconcile contradictory docs · S
-README "Not yet supported: LEFT/RIGHT OUTER JOIN, subqueries, LIMIT" (README:116-123)
-contradicts TODO.md/DIVERGENCES.md. Fix README; create one dated `FEATURE_MATRIX.md`.
+### [~] P1.7 — Reconcile contradictory docs · S — README done
+README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
+against the yamsql corpus + DIVERGENCES.md): LEFT/RIGHT/FULL OUTER JOIN, LIMIT/OFFSET,
+subqueries-in-WHERE (EXISTS / IN (SELECT) / correlated scalar), mixed ASC/DESC, scalar
+functions (UPPER/LOWER). The "no physical sort operator / ORDER BY needs an index" claim
+was also stale (Go has a Go-only `RecordQueryInMemorySortPlan`). Rewrote the README SQL
+section to the accurate surface + a dated pointer to the authoritative source (yamsql corpus
++ DIVERGENCES.md), keeping only genuine gaps (CTE-in-UNION-branch, DML `IN (SELECT)`, general
+window functions, synthetic record types). **Remaining:** a generated/maintained
+`FEATURE_MATRIX.md` (deferred — the dated README pointer is the interim source of truth).
 
 ### [ ] P1.8 — CI reproducibility / supply chain · M
 CI runs on a **self-hosted personal Hetzner box** (`runs-on: [self-hosted, linux, x64,
