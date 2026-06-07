@@ -1,6 +1,7 @@
 package predicates
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -74,7 +75,7 @@ func TestComparison_Eval_Integers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := tc.cmp.Eval(tc.left)
+			got, _ := tc.cmp.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -85,28 +86,26 @@ func TestComparison_Eval_Integers(t *testing.T) {
 func TestComparison_Eval_NullIsUnknown(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	if got := c.Eval(nil); got != TriUnknown {
+	if got, _ := c.Eval(nil); got != TriUnknown {
 		t.Fatalf("left=NULL: got %v", got)
 	}
 	c2 := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(nil)}
-	if got := c2.Eval(int64(5)); got != TriUnknown {
+	if got, _ := c2.Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("right=NULL: got %v", got)
 	}
 }
 
-func TestComparison_Eval_TypeMismatchPanics(t *testing.T) {
+func TestComparison_Eval_TypeMismatchErrors(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))}
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on type mismatch")
-		}
-		if _, ok := r.(*TypeMismatchError); !ok {
-			t.Fatalf("expected *TypeMismatchError, got %T", r)
-		}
-	}()
-	c.Eval("5")
+	_, err := c.Eval("5")
+	if err == nil {
+		t.Fatal("expected error on type mismatch")
+	}
+	var tmErr *TypeMismatchError
+	if !errors.As(err, &tmErr) {
+		t.Fatalf("expected *TypeMismatchError, got %T", err)
+	}
 }
 
 // Numeric promotion: mixed integer widths compare by int64-promoted
@@ -135,7 +134,7 @@ func TestComparison_Eval_BoolEquality(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -163,7 +162,7 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.r)}.Eval(tc.l)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -173,14 +172,14 @@ func TestComparison_Eval_BytesComparison(t *testing.T) {
 	// IN-list of []byte — membership test through the same cmpAny
 	// path. Verifies the bytes branch also picks up set-membership
 	// semantics, not just pairwise comparators.
-	hit := Comparison{
+	hit, _ := Comparison{
 		Type:    ComparisonIn,
 		Operand: values.LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}, []byte{0x04}}),
 	}.Eval([]byte{0x02, 0x03})
 	if hit != TriTrue {
 		t.Errorf("bytes IN list hit: got %v, want TRUE", hit)
 	}
-	miss := Comparison{
+	miss, _ := Comparison{
 		Type:    ComparisonIn,
 		Operand: values.LiteralValue([]any{[]byte{0x01}, []byte{0x02, 0x03}}),
 	}.Eval([]byte{0x99})
@@ -212,7 +211,7 @@ func TestComparison_Eval_NumericPromotion(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -248,7 +247,7 @@ func TestComparison_Eval_IsDistinctFrom(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			got, _ := Comparison{Type: tc.op, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -280,7 +279,7 @@ func TestComparison_Eval_In(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(tc.list)}.Eval(tc.left)
+			got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(tc.list)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -294,7 +293,7 @@ func TestComparison_Eval_In(t *testing.T) {
 // IN (1,NULL) case but with no non-NULL element at all.
 func TestComparison_Eval_In_OnlyNullList(t *testing.T) {
 	t.Parallel()
-	got := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{nil, nil})}.Eval(int64(5))
+	got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{nil, nil})}.Eval(int64(5))
 	if got != TriUnknown {
 		t.Fatalf("5 IN (NULL,NULL): got %v, want TriUnknown", got)
 	}
@@ -306,27 +305,25 @@ func TestComparison_Eval_In_OnlyNullList(t *testing.T) {
 // mismatch convention.
 func TestComparison_Eval_In_NonSliceRHS(t *testing.T) {
 	t.Parallel()
-	got := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(int64(5))}.Eval(int64(5))
+	got, _ := Comparison{Type: ComparisonIn, Operand: values.LiteralValue(int64(5))}.Eval(int64(5))
 	if got != TriUnknown {
 		t.Fatalf("5 IN <non-slice>: got %v, want TriUnknown", got)
 	}
 }
 
 // TestComparison_Eval_In_CrossTypeLHS verifies that a string LHS
-// against a list of int64 panics with TypeMismatchError — matching
+// against a list of int64 returns a TypeMismatchError — matching
 // Java's CANNOT_CONVERT_TYPE for incompatible IN-list types.
 func TestComparison_Eval_In_CrossTypeLHS(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected TypeMismatchError panic")
-		}
-		if _, ok := r.(*TypeMismatchError); !ok {
-			t.Fatalf("expected *TypeMismatchError, got %T", r)
-		}
-	}()
-	Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
+	_, err := Comparison{Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)})}.Eval("hello")
+	if err == nil {
+		t.Fatal("expected TypeMismatchError")
+	}
+	var tmErr *TypeMismatchError
+	if !errors.As(err, &tmErr) {
+		t.Fatalf("expected *TypeMismatchError, got %T", err)
+	}
 }
 
 // LIKE: SQL pattern matching with `%` / `_`. Anchored both ends.
@@ -356,7 +353,7 @@ func TestComparison_Eval_Like(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonLike, Operand: values.LiteralValue(tc.pattern)}.Eval(tc.s)
+			got, _ := Comparison{Type: ComparisonLike, Operand: values.LiteralValue(tc.pattern)}.Eval(tc.s)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -367,10 +364,10 @@ func TestComparison_Eval_Like(t *testing.T) {
 // LIKE type mismatch degrades to UNKNOWN.
 func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
 	t.Parallel()
-	if got := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue("abc")}).Eval(int64(5)); got != TriUnknown {
+	if got, _ := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue("abc")}).Eval(int64(5)); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
-	if got := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue(int64(5))}).Eval("abc"); got != TriUnknown {
+	if got, _ := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue(int64(5))}).Eval("abc"); got != TriUnknown {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -466,7 +463,7 @@ func TestComparison_Eval_StartsWith(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Comparison{Type: ComparisonStartsWith, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
+			got, _ := Comparison{Type: ComparisonStartsWith, Operand: values.LiteralValue(tc.rhs)}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -497,7 +494,7 @@ func TestComparison_Eval_IsNullIsNotNull(t *testing.T) {
 			t.Parallel()
 			// Operand deliberately nil — unary comparisons must
 			// ignore it (no UNKNOWN degradation).
-			got := Comparison{Type: tc.op}.Eval(tc.left)
+			got, _ := Comparison{Type: tc.op}.Eval(tc.left)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -534,10 +531,10 @@ func TestComparisonPredicate_IsNull_NonConstantLHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := isNull.Eval(tc.row); got != tc.wantNull {
+			if got, _ := isNull.Eval(tc.row); got != tc.wantNull {
 				t.Errorf("IS NULL: got %v, want %v", got, tc.wantNull)
 			}
-			if got := isNotNull.Eval(tc.row); got != tc.wantNotNull {
+			if got, _ := isNotNull.Eval(tc.row); got != tc.wantNotNull {
 				t.Errorf("IS NOT NULL: got %v, want %v", got, tc.wantNotNull)
 			}
 		})
@@ -684,10 +681,10 @@ func TestComparisonType_IsUnary(t *testing.T) {
 func TestComparison_Eval_Strings(t *testing.T) {
 	t.Parallel()
 	c := Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue("b")}
-	if got := c.Eval("a"); got != TriTrue {
+	if got, _ := c.Eval("a"); got != TriTrue {
 		t.Fatalf("a < b: got %v", got)
 	}
-	if got := c.Eval("c"); got != TriFalse {
+	if got, _ := c.Eval("c"); got != TriFalse {
 		t.Fatalf("c < b: got %v", got)
 	}
 }
@@ -702,15 +699,15 @@ func TestComparisonPredicate_EndToEnd(t *testing.T) {
 	pred := NewComparisonPredicate(operand, cmp)
 
 	row := map[string]any{"age": int64(21)}
-	if got := pred.Eval(row); got != TriTrue {
+	if got, _ := pred.Eval(row); got != TriTrue {
 		t.Fatalf("age=21 >= 18: got %v", got)
 	}
 	row["age"] = int64(15)
-	if got := pred.Eval(row); got != TriFalse {
+	if got, _ := pred.Eval(row); got != TriFalse {
 		t.Fatalf("age=15 >= 18: got %v", got)
 	}
 	row["age"] = nil
-	if got := pred.Eval(row); got != TriUnknown {
+	if got, _ := pred.Eval(row); got != TriUnknown {
 		t.Fatalf("age=NULL >= 18: got %v", got)
 	}
 
@@ -725,7 +722,7 @@ func TestComparisonPredicate_NilOperand(t *testing.T) {
 		// No Operand set — Eval degrades to UNKNOWN.
 		Comparison: Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 	}
-	if got := pred.Eval(nil); got != TriUnknown {
+	if got, _ := pred.Eval(nil); got != TriUnknown {
 		t.Fatalf("nil Operand: got %v", got)
 	}
 }
@@ -741,11 +738,11 @@ func TestComparisonPredicate_ComposesWithKleeneConnectives(t *testing.T) {
 		NewComparisonPredicate(&values.FieldValue{Field: "rank", Typ: values.TypeInt},
 			Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))}),
 	)
-	if got := tree.Eval(row); got != TriTrue {
+	if got, _ := tree.Eval(row); got != TriTrue {
 		t.Fatalf("AND: got %v", got)
 	}
 	row["rank"] = int64(7)
-	if got := tree.Eval(row); got != TriFalse {
+	if got, _ := tree.Eval(row); got != TriFalse {
 		t.Fatalf("AND with rank=7: got %v", got)
 	}
 }
@@ -763,14 +760,14 @@ func TestComparisonPredicate_ArithmeticOperand(t *testing.T) {
 	pred := NewComparisonPredicate(sum,
 		Comparison{Type: ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))})
 
-	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
+	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(7)}); got != TriTrue {
 		t.Fatalf("5+7=12 > 10: got %v", got)
 	}
-	if got := pred.Eval(map[string]any{"a": int64(3), "b": int64(4)}); got != TriFalse {
+	if got, _ := pred.Eval(map[string]any{"a": int64(3), "b": int64(4)}); got != TriFalse {
 		t.Fatalf("3+4=7 > 10: got %v", got)
 	}
 	// NULL propagation: a=NULL -> a+b=NULL -> UNKNOWN.
-	if got := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
+	if got, _ := pred.Eval(map[string]any{"a": nil, "b": int64(1)}); got != TriUnknown {
 		t.Fatalf("a=NULL: got %v", got)
 	}
 }
@@ -802,7 +799,7 @@ func TestComparisonPredicate_NonConstantRHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := pred.Eval(tc.row); got != tc.want {
+			if got, _ := pred.Eval(tc.row); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -840,10 +837,10 @@ func TestComparisonPredicate_IsDistinctFrom_NonConstantRHS(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := dist.Eval(tc.row); got != tc.wantDist {
+			if got, _ := dist.Eval(tc.row); got != tc.wantDist {
 				t.Errorf("IS DISTINCT FROM: got %v, want %v", got, tc.wantDist)
 			}
-			if got := notDist.Eval(tc.row); got != tc.wantNotDist {
+			if got, _ := notDist.Eval(tc.row); got != tc.wantNotDist {
 				t.Errorf("IS NOT DISTINCT FROM: got %v, want %v", got, tc.wantNotDist)
 			}
 		})
@@ -865,10 +862,10 @@ func TestComparisonPredicate_NonConstantRHS_Arithmetic(t *testing.T) {
 			},
 		},
 	)
-	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(4)}); got != TriTrue {
+	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(4)}); got != TriTrue {
 		t.Fatalf("5 = 4+1: got %v", got)
 	}
-	if got := pred.Eval(map[string]any{"a": int64(5), "b": int64(5)}); got != TriFalse {
+	if got, _ := pred.Eval(map[string]any{"a": int64(5), "b": int64(5)}); got != TriFalse {
 		t.Fatalf("5 = 5+1: got %v", got)
 	}
 }
@@ -1115,10 +1112,10 @@ func TestComparison_Eval_LikeWithEscape(t *testing.T) {
 		Operand: values.LiteralValue(`a\%b`),
 		Escape:  '\\',
 	}
-	if got := c.Eval("a%b"); got != TriTrue {
+	if got, _ := c.Eval("a%b"); got != TriTrue {
 		t.Errorf("a%%b: got %v, want TRUE", got)
 	}
-	if got := c.Eval("axb"); got != TriFalse {
+	if got, _ := c.Eval("axb"); got != TriFalse {
 		t.Errorf("axb: got %v, want FALSE (escape blocked wildcard)", got)
 	}
 }
@@ -1148,7 +1145,7 @@ func TestComparisonPredicate_FloatComparisons(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := pred.Eval(tc.row); got != tc.want {
+			if got, _ := pred.Eval(tc.row); got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
@@ -1184,7 +1181,7 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 		{map[string]any{"name": "hello", "pattern": int64(5)}, TriUnknown},
 	}
 	for _, tc := range cases {
-		if got := pred.Eval(tc.row); got != tc.want {
+		if got, _ := pred.Eval(tc.row); got != tc.want {
 			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
 		}
 	}

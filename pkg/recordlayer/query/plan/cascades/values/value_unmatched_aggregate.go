@@ -24,7 +24,7 @@ func (*UnmatchedAggregateValue) Children() []Value { return nil }
 func (*UnmatchedAggregateValue) Name() string      { return "unmatched_aggregate" }
 func (*UnmatchedAggregateValue) Type() Type        { return UnknownType }
 
-func (*UnmatchedAggregateValue) Evaluate(_ any) any {
+func (*UnmatchedAggregateValue) Evaluate(_ any) (any, error) {
 	panic("UnmatchedAggregateValue is a non-evaluable marker")
 }
 

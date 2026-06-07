@@ -58,17 +58,20 @@ func (v *ArrayDistinctValue) Type() Type {
 // Element equality uses bytes.Equal for []byte and Go's == for
 // other types (matching values.equalsAny semantics — see
 // value_in.go for the byte-slice-safe contract).
-func (v *ArrayDistinctValue) Evaluate(evalCtx any) any {
+func (v *ArrayDistinctValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
-		return nil
+		return nil, nil
 	}
-	val := v.Child.Evaluate(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
-		return nil
+		return nil, nil
 	}
 	in, ok := val.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	out := make([]any, 0, len(in))
 	for _, elem := range in {
@@ -76,7 +79,7 @@ func (v *ArrayDistinctValue) Evaluate(evalCtx any) any {
 			out = append(out, elem)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // arrayContainsByValue reports whether `arr` contains `target` by

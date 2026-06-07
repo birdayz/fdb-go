@@ -1173,6 +1173,14 @@ func translateExecError(err error) error {
 	if errors.As(err, &castErr) {
 		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
 	}
+	var invalidArg *values.InvalidArgumentError
+	if errors.As(err, &invalidArg) {
+		return api.NewError(api.ErrCodeInvalidParameter, invalidArg.Error())
+	}
+	var aggEval *values.AggregateEvalError
+	if errors.As(err, &aggEval) {
+		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
+	}
 	return err
 }
 

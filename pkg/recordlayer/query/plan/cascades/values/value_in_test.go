@@ -8,7 +8,7 @@ func TestInOpValue_Evaluate_HitFirst(t *testing.T) {
 		LiteralValue(int64(2)),
 		LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("2 IN (1,2,3) = %v, want true", got)
 	}
 }
@@ -19,7 +19,7 @@ func TestInOpValue_Evaluate_Miss(t *testing.T) {
 		LiteralValue(int64(99)),
 		LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	)
-	if got := v.Evaluate(nil); got != false {
+	if got := mustEvalForTest(v, nil); got != false {
 		t.Fatalf("99 IN (1,2,3) = %v, want false", got)
 	}
 }
@@ -30,7 +30,7 @@ func TestInOpValue_Evaluate_NullProbe(t *testing.T) {
 		LiteralValue(nil),
 		LiteralValue([]any{int64(1), int64(2)}),
 	)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("NULL IN (1,2) = %v, want nil (UNKNOWN)", got)
 	}
 }
@@ -43,7 +43,7 @@ func TestInOpValue_Evaluate_NullInListMiss(t *testing.T) {
 		LiteralValue(int64(99)),
 		LiteralValue([]any{int64(1), nil, int64(3)}),
 	)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("99 IN (1,NULL,3) = %v, want nil (UNKNOWN)", got)
 	}
 }
@@ -55,7 +55,7 @@ func TestInOpValue_Evaluate_NullInListHit(t *testing.T) {
 		LiteralValue(int64(1)),
 		LiteralValue([]any{int64(1), nil, int64(3)}),
 	)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("1 IN (1,NULL,3) = %v, want true", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestInOpValue_Evaluate_EmptyListIsFalse(t *testing.T) {
 		LiteralValue(int64(1)),
 		LiteralValue([]any{}),
 	)
-	if got := v.Evaluate(nil); got != false {
+	if got := mustEvalForTest(v, nil); got != false {
 		t.Fatalf("1 IN () = %v, want false", got)
 	}
 }
@@ -109,7 +109,7 @@ func TestInOpValue_Evaluate_ListNotSliceReturnsNil(t *testing.T) {
 		LiteralValue(int64(1)),
 		LiteralValue("not a slice"),
 	)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate with non-slice list = %v, want nil", got)
 	}
 }
@@ -121,7 +121,7 @@ func TestInOpValue_Evaluate_MixedNumericCoercion(t *testing.T) {
 		LiteralValue(int64(2)),
 		LiteralValue([]any{float64(1), float64(2), float64(3)}),
 	)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("int64(2) IN [1.0, 2.0, 3.0] = %v, want true", got)
 	}
 }
@@ -132,7 +132,7 @@ func TestInOpValue_Evaluate_Float64ProbeMatchesInt64(t *testing.T) {
 		LiteralValue(float64(5)),
 		LiteralValue([]any{int64(3), int64(5), int64(7)}),
 	)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("float64(5) IN [3, 5, 7] = %v, want true", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestInOpValue_Evaluate_Int32VsInt64Coercion(t *testing.T) {
 		LiteralValue(int32(5)),
 		LiteralValue([]any{int64(3), int64(5), int64(7)}),
 	)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("int32(5) IN [int64(3), int64(5), int64(7)] = %v, want true", got)
 	}
 }
@@ -154,7 +154,7 @@ func TestInOpValue_Evaluate_MixedNumericMiss(t *testing.T) {
 		LiteralValue(int64(4)),
 		LiteralValue([]any{float64(1), float64(2), float64(3)}),
 	)
-	if got := v.Evaluate(nil); got != false {
+	if got := mustEvalForTest(v, nil); got != false {
 		t.Fatalf("int64(4) IN [1.0, 2.0, 3.0] = %v, want false", got)
 	}
 }

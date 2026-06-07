@@ -757,22 +757,22 @@ func TestFindUnsupportedFunction(t *testing.T) {
 	}{
 		{"nil op", nil, ""},
 		{"plain scan", logical.NewScan("T", ""), ""},
-		{"projection with ABS in Value tree", func() logical.LogicalOperator {
+		{"projection with SIN in Value tree", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("ABS", values.UnknownType,
+				values.NewScalarFunctionValue("SIN", values.UnknownType,
 					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
 			}
 			return p
-		}(), "ABS"},
-		{"projection with SQRT in Value tree", func() logical.LogicalOperator {
+		}(), "SIN"},
+		{"projection with TAN in Value tree", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("SQRT", values.UnknownType,
+				values.NewScalarFunctionValue("TAN", values.UnknownType,
 					&values.FieldValue{Field: "x", Typ: values.UnknownType}),
 			}
 			return p
-		}(), "SQRT"},
+		}(), "TAN"},
 		{"projection with COUNT (allowed)", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"COUNT(*)"}, nil)
 			return p
@@ -821,11 +821,11 @@ func TestFindUnsupportedFunction_ValueTree(t *testing.T) {
 		{"unsafe func in value", func() logical.LogicalOperator {
 			p := logical.NewProject(logical.NewScan("T", ""), []string{"x"}, nil)
 			p.ProjectedValues = []values.Value{
-				values.NewScalarFunctionValue("ABS", values.UnknownType,
+				values.NewScalarFunctionValue("SIN", values.UnknownType,
 					&values.FieldValue{Field: "a", Typ: values.UnknownType}),
 			}
 			return p
-		}(), "ABS"},
+		}(), "SIN"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

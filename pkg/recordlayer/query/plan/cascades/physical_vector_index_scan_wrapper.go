@@ -93,7 +93,13 @@ func vectorScanCardinality(plan *plans.RecordQueryVectorIndexPlan) float64 {
 	if plan == nil || plan.GetK() == nil {
 		return defaultK
 	}
-	switch n := plan.GetK().Evaluate(nil).(type) {
+	// Plan-time cost estimation: a non-constant or erroring K declines to the
+	// default cardinality rather than failing planning.
+	kv, err := plan.GetK().Evaluate(nil)
+	if err != nil {
+		return defaultK
+	}
+	switch n := kv.(type) {
 	case int:
 		if n > 0 {
 			return float64(n)

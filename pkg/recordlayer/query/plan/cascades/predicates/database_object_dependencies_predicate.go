@@ -57,8 +57,8 @@ func (*DatabaseObjectDependenciesPredicate) GetCorrelatedTo() map[CorrelationIde
 
 // Eval returns TriTrue. Plan-cache index validation is not yet
 // ported; this predicate exists for structural conformance.
-func (*DatabaseObjectDependenciesPredicate) Eval(_ any) TriBool {
-	return TriTrue
+func (*DatabaseObjectDependenciesPredicate) Eval(_ any) (TriBool, error) {
+	return TriTrue, nil
 }
 
 // Explain renders the predicate in a human-readable form matching

@@ -74,7 +74,7 @@ func TestSimplifyAll_BatchFolds(t *testing.T) {
 		t.Fatalf("SimplifyAll len = %d, want 3", len(out))
 	}
 	// Element 1 should fold to a constant 7.
-	if got := out[1].Evaluate(nil); got != int64(7) {
+	if got := mustEvalForTest(out[1], nil); got != int64(7) {
 		t.Fatalf("out[1].Evaluate = %v, want 7 (folded)", got)
 	}
 }

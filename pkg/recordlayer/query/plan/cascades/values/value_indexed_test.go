@@ -37,5 +37,5 @@ func TestIndexedValue_EvaluatePanics(t *testing.T) {
 			t.Fatal("IndexedValue.Evaluate should panic")
 		}
 	}()
-	v.Evaluate(nil)
+	mustEvalForTest(v, nil)
 }

@@ -214,18 +214,14 @@ func composeFieldOverConstructor(v Value) Value {
 // model this doesn't apply directly (FieldValue has one Field, not a path).
 // But when Child is another FieldValue accessing the same base, we can flatten.
 func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
-	defer func() {
-		if r := recover(); r != nil {
-			switch r.(type) {
-			case *InvalidCastError, *ArithmeticOverflowError, *ScalarTypeMismatchError:
-				out = nil
-			default:
-				panic(r)
-			}
-		}
-	}()
 	cast := NewCastValue(cv, target)
-	result := cast.Evaluate(nil)
+	result, err := cast.Evaluate(nil)
+	if err != nil {
+		// Cast/arith/type-mismatch errors mean "not foldable" — decline.
+		// The runtime typed-error family now arrives as a return value, so
+		// the prior recover that caught those panics is dead and removed.
+		return nil
+	}
 	if result != nil {
 		return &ConstantValue{Value: result, Typ: target}
 	}

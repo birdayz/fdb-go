@@ -52,9 +52,9 @@ func (v *FirstOrDefaultStreamingValue) Type() Type {
 
 // Evaluate pulls the first element from the streaming child, or
 // returns the default value if the stream is empty.
-func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) any {
+func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) (any, error) {
 	if v.ChildValue == nil {
-		return nil
+		return nil, nil
 	}
 	var stream []any
 	if sv, ok := v.ChildValue.(StreamingValue); ok {
@@ -64,13 +64,13 @@ func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) any {
 			stream = append(stream, val)
 		}
 	} else {
-		return nil
+		return nil, nil
 	}
 	if len(stream) > 0 {
-		return stream[0]
+		return stream[0], nil
 	}
 	if v.OnEmptyResultValue == nil {
-		return nil
+		return nil, nil
 	}
 	return v.OnEmptyResultValue.Evaluate(evalCtx)
 }

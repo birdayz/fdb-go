@@ -48,7 +48,7 @@ func TestIntegration_ComplexCASEWithAndOr(t *testing.T) {
 			[]Value{LiteralValue("high"), LiteralValue("mid"), LiteralValue("low")},
 			NotNullString)
 
-		got := pick.Evaluate(nil)
+		got := mustEvalForTest(pick, nil)
 		if got != c.want {
 			t.Errorf("CASE(a=%v, b=%v) = %v, want %v", c.a, c.b, got, c.want)
 		}
@@ -67,9 +67,9 @@ func TestIntegration_ARRAY_DISTINCTOverArrayConstructor(t *testing.T) {
 		LiteralValue(int64(3)),
 	})
 	distinct := NewArrayDistinctValue(arr)
-	got, ok := distinct.Evaluate(nil).([]any)
+	got, ok := mustEvalForTest(distinct, nil).([]any)
 	if !ok {
-		t.Fatalf("Evaluate = %T, want []any", distinct.Evaluate(nil))
+		t.Fatalf("Evaluate = %T, want []any", mustEvalForTest(distinct, nil))
 	}
 	if len(got) != 3 {
 		t.Fatalf("len(distinct) = %d, want 3 (1, 2, 3)", len(got))

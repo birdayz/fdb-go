@@ -332,7 +332,11 @@ func executeVectorIndexScan(
 		if cr == nil || !cr.IsEquality() {
 			break
 		}
-		prefix = append(prefix, cr.GetEqualityComparison().Operand.Evaluate(evalCtx))
+		op, err := cr.GetEqualityComparison().Operand.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		prefix = append(prefix, op)
 	}
 
 	queryVec, err := evalFloat64Slice(p.GetQueryVector(), evalCtx)
@@ -381,7 +385,11 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 	if v == nil {
 		return nil, fmt.Errorf("nil query vector")
 	}
-	switch s := v.Evaluate(binder).(type) {
+	ev, err := v.Evaluate(binder)
+	if err != nil {
+		return nil, err
+	}
+	switch s := ev.(type) {
 	case []float64:
 		return s, nil
 	case []float32:
@@ -401,7 +409,7 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("query vector is not a numeric slice (%T)", v.Evaluate(binder))
+		return nil, fmt.Errorf("query vector is not a numeric slice (%T)", ev)
 	}
 }
 
@@ -411,7 +419,11 @@ func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error)
 		return 0, fmt.Errorf("nil value")
 	}
 	var k int
-	switch n := v.Evaluate(binder).(type) {
+	ev, err := v.Evaluate(binder)
+	if err != nil {
+		return 0, err
+	}
+	switch n := ev.(type) {
 	case int:
 		k = n
 	case int32:
@@ -419,7 +431,7 @@ func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error)
 	case int64:
 		k = int(n)
 	default:
-		return 0, fmt.Errorf("not an integer (%T)", v.Evaluate(binder))
+		return 0, fmt.Errorf("not an integer (%T)", ev)
 	}
 	if k <= 0 {
 		return 0, fmt.Errorf("must be positive, got %d", k)
@@ -455,7 +467,10 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			break
 		}
 		comp := cr.GetEqualityComparison()
-		val := comp.Operand.Evaluate(binder)
+		val, err := comp.Operand.Evaluate(binder)
+		if err != nil {
+			return recordlayer.TupleRange{}, err
+		}
 		prefix = append(prefix, val)
 	}
 
@@ -495,7 +510,11 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 	for _, ineq := range nextRange.GetInequalityComparisons() {
 		var comparand any
 		if ineq.Operand != nil {
-			comparand = ineq.Operand.Evaluate(binder)
+			var err error
+			comparand, err = ineq.Operand.Evaluate(binder)
+			if err != nil {
+				return recordlayer.TupleRange{}, err
+			}
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
@@ -702,11 +721,11 @@ func executeTypeFilter(
 
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) bool {
+		pred: func(qr QueryResult) (bool, error) {
 			if qr.Record == nil || qr.Record.RecordType == nil {
-				return false
+				return false, nil
 			}
-			return allowed[qr.Record.RecordType.Name]
+			return allowed[qr.Record.RecordType.Name], nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -729,16 +748,7 @@ func executeFilter(
 	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) (keep bool) {
-			defer func() {
-				if r := recover(); r != nil {
-					switch r.(type) {
-					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError, *values.InvalidCastError:
-						panic(r)
-					}
-					keep = false
-				}
-			}()
+		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any = qr.Datum
 			if m, ok := qr.Datum.(map[string]any); ok {
 				switch {
@@ -751,11 +761,15 @@ func executeFilter(
 				}
 			}
 			for _, pred := range preds {
-				if pred.Eval(rowCtx) != predicates.TriTrue {
-					return false
+				res, err := pred.Eval(rowCtx)
+				if err != nil {
+					return false, err
+				}
+				if res != predicates.TriTrue {
+					return false, nil
 				}
 			}
-			return true
+			return true, nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -840,13 +854,13 @@ func executeDistinct(
 	seen := make(map[string]struct{})
 	filtered := &filterResultCursor{
 		inner: innerCursor,
-		pred: func(qr QueryResult) bool {
+		pred: func(qr QueryResult) (bool, error) {
 			key := distinctKey(qr)
 			if _, exists := seen[key]; exists {
-				return false
+				return false, nil
 			}
 			seen[key] = struct{}{}
-			return true
+			return true, nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -913,46 +927,29 @@ func executeProjection(
 			}
 		}
 		for i, proj := range projections {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						switch e := r.(type) {
-						case *values.ArithmeticDivisionByZeroError:
-							evalErr = e
-						case *values.ArithmeticOverflowError:
-							evalErr = e
-						case *values.ScalarTypeMismatchError:
-							evalErr = e
-						case *values.InvalidCastError:
-							evalErr = e
-						default:
-							evalErr = fmt.Errorf("projection evaluation panic: %v", r)
-						}
-					}
-				}()
-				key := projectionColumnName(proj)
-				val := proj.Evaluate(rowCtx)
-				projected[key] = val
-				// Also store under the alias so that outer projections
-				// (e.g. CTE consumers) can resolve the aliased name.
-				if i < len(aliases) && aliases[i] != "" {
-					aliasKey := strings.ToUpper(aliases[i])
-					if aliasKey != key {
-						projected[aliasKey] = val
-					}
-				}
-				// For computed expressions, also store under the
-				// positional key (_0, _1, ...) so Java-compatible
-				// column name lookups work.
-				if _, isField := proj.(*values.FieldValue); !isField {
-					posKey := fmt.Sprintf("_%d", i)
-					if posKey != key {
-						projected[posKey] = val
-					}
-				}
-			}()
-			if evalErr != nil {
+			key := projectionColumnName(proj)
+			val, err := proj.Evaluate(rowCtx)
+			if err != nil {
+				evalErr = err
 				return qr
+			}
+			projected[key] = val
+			// Also store under the alias so that outer projections
+			// (e.g. CTE consumers) can resolve the aliased name.
+			if i < len(aliases) && aliases[i] != "" {
+				aliasKey := strings.ToUpper(aliases[i])
+				if aliasKey != key {
+					projected[aliasKey] = val
+				}
+			}
+			// For computed expressions, also store under the
+			// positional key (_0, _1, ...) so Java-compatible
+			// column name lookups work.
+			if _, isField := proj.(*values.FieldValue); !isField {
+				posKey := fmt.Sprintf("_%d", i)
+				if posKey != key {
+					projected[posKey] = val
+				}
 			}
 		}
 		return QueryResult{
@@ -1384,7 +1381,16 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				t[i] = kv.Evaluate(qr.Datum)
+				// Comparison/merge keys are field extractions over the
+				// datum; the runtime typed-error family is unreachable
+				// here. ComparisonKeyFunc has no error channel, so a
+				// stray error is a planner invariant violation (panic,
+				// matching the prior no-recover behaviour).
+				v, err := kv.Evaluate(qr.Datum)
+				if err != nil {
+					panic(err)
+				}
+				t[i] = v
 			}
 			return t
 		}
@@ -1640,9 +1646,9 @@ func recordTypeName(qr QueryResult) string {
 	return ""
 }
 
-func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) bool {
+func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
 	if len(preds) == 0 {
-		return true
+		return true, nil
 	}
 	var rowCtx any = combined.Datum
 	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
@@ -1651,11 +1657,15 @@ func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicat
 		}
 	}
 	for _, pred := range preds {
-		if pred.Eval(rowCtx) != predicates.TriTrue {
-			return false
+		res, err := pred.Eval(rowCtx)
+		if err != nil {
+			return false, err
+		}
+		if res != predicates.TriTrue {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 func executeAggregation(
@@ -2024,7 +2034,10 @@ func executeUpdate(
 					rowCtx = evalCtx.RowContext(m)
 				}
 			}
-			newVal := t.NewValue.Evaluate(rowCtx)
+			newVal, err := t.NewValue.Evaluate(rowCtx)
+			if err != nil {
+				return nil, err
+			}
 			if newVal == nil {
 				refl.Clear(fd)
 			} else {
@@ -2192,7 +2205,10 @@ func executeTableFunction(
 	if sv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result := sv.Evaluate(evalCtx)
+	result, err := sv.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -2219,7 +2235,10 @@ func executeExplode(
 	if cv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
-	result := cv.Evaluate(evalCtx)
+	result, err := cv.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -2241,7 +2260,11 @@ func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (
 	cols := p.GetColumns()
 	row := make(map[string]any, len(cols))
 	for _, col := range cols {
-		row[col.Name()] = col.Evaluate(evalCtx)
+		v, err := col.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		row[col.Name()] = v
 	}
 	return recordlayer.FromList([]QueryResult{{Datum: row}}), nil
 }
@@ -2496,29 +2519,11 @@ func applySkipLimit(cursor recordlayer.RecordCursor[QueryResult], skip, limit in
 // filterResultCursor filters QueryResult items.
 type filterResultCursor struct {
 	inner  recordlayer.RecordCursor[QueryResult]
-	pred   func(QueryResult) bool
+	pred   func(QueryResult) (bool, error)
 	closed bool
 }
 
 func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.RecordCursorResult[QueryResult], err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			switch e := r.(type) {
-			case *predicates.TypeMismatchError:
-				err = e
-			case *values.ArithmeticOverflowError:
-				err = e
-			case *values.ArithmeticDivisionByZeroError:
-				err = e
-			case *values.ScalarTypeMismatchError:
-				err = e
-			case *values.InvalidCastError:
-				err = e
-			default:
-				panic(r)
-			}
-		}
-	}()
 	for {
 		if err = ctx.Err(); err != nil {
 			return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -2530,7 +2535,11 @@ func (c *filterResultCursor) OnNext(ctx context.Context) (result recordlayer.Rec
 		if !result.HasNext() {
 			return result, nil
 		}
-		if c.pred(result.GetValue()) {
+		keep, perr := c.pred(result.GetValue())
+		if perr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, perr
+		}
+		if keep {
 			return result, nil
 		}
 	}
@@ -2881,17 +2890,28 @@ func executeInMemorySort(
 	}
 
 	keys := p.GetSortKeys()
-	sortFn := func(results []QueryResult) {
+	sortFn := func(results []QueryResult) error {
 		pkDesc := false
 		if len(keys) > 0 {
 			pkDesc = keys[len(keys)-1].Desc
 		}
+		var sortErr error
 		sort.SliceStable(results, func(i, j int) bool {
+			if sortErr != nil {
+				return false
+			}
 			for _, k := range keys {
 				var ci, cj any
 				if k.ValueExpr != nil {
-					ci = k.ValueExpr.Evaluate(results[i].Datum)
-					cj = k.ValueExpr.Evaluate(results[j].Datum)
+					var err error
+					if ci, err = k.ValueExpr.Evaluate(results[i].Datum); err != nil {
+						sortErr = err
+						return false
+					}
+					if cj, err = k.ValueExpr.Evaluate(results[j].Datum); err != nil {
+						sortErr = err
+						return false
+					}
 				} else {
 					ci = compareByField(results[i], k.Field)
 					cj = compareByField(results[j], k.Field)
@@ -2927,6 +2947,7 @@ func executeInMemorySort(
 			}
 			return false
 		})
+		return sortErr
 	}
 
 	cursor := newCustomSortCursor(innerCursor, sortFn)

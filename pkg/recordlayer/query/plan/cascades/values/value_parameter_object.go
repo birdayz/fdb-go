@@ -54,15 +54,15 @@ func (v *ParameterObjectValue) Type() Type {
 //
 // Mirrors Java's ParameterObjectValue.eval which calls
 // context.getBinding(parameterName).
-func (v *ParameterObjectValue) Evaluate(evalCtx any) any {
+func (v *ParameterObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if b, ok := evalCtx.(ParameterBinder); ok {
 		val, _ := b.BindParameter(0, v.ParameterName)
-		return val
+		return val, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // GetCorrelatedTo returns the empty set — parameter names are NOT

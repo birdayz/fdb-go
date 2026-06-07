@@ -46,7 +46,7 @@ func TestIndexEntryObjectValue_EvaluateFromKey(t *testing.T) {
 		value: []any{},
 	}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if got := v.Evaluate(ctx); got != int64(20) {
+	if got := mustEvalForTest(v, ctx); got != int64(20) {
 		t.Fatalf("Evaluate = %v, want 20", got)
 	}
 }
@@ -60,7 +60,7 @@ func TestIndexEntryObjectValue_EvaluateFromValue(t *testing.T) {
 		value: []any{"payload"},
 	}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if got := v.Evaluate(ctx); got != "payload" {
+	if got := mustEvalForTest(v, ctx); got != "payload" {
 		t.Fatalf("Evaluate = %v, want 'payload'", got)
 	}
 }
@@ -76,7 +76,7 @@ func TestIndexEntryObjectValue_EvaluateNestedPath(t *testing.T) {
 		},
 	}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if got := v.Evaluate(ctx); got != int64(200) {
+	if got := mustEvalForTest(v, ctx); got != int64(200) {
 		t.Fatalf("Evaluate(nested) = %v, want 200", got)
 	}
 }
@@ -87,7 +87,7 @@ func TestIndexEntryObjectValue_EvaluateOutOfBoundsReturnsNil(t *testing.T) {
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{99}, NotNullLong)
 	entry := &fakeIndexEntry{key: []any{int64(10)}}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if got := v.Evaluate(ctx); got != nil {
+	if got := mustEvalForTest(v, ctx); got != nil {
 		t.Fatalf("Evaluate(OOB) = %v, want nil", got)
 	}
 }
@@ -98,7 +98,7 @@ func TestIndexEntryObjectValue_EvaluateNegativePathReturnsNil(t *testing.T) {
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{-1}, NotNullLong)
 	entry := &fakeIndexEntry{key: []any{int64(10)}}
 	ctx := map[CorrelationIdentifier]any{alias: entry}
-	if got := v.Evaluate(ctx); got != nil {
+	if got := mustEvalForTest(v, ctx); got != nil {
 		t.Fatalf("Evaluate(-1) = %v, want nil", got)
 	}
 }
@@ -110,7 +110,7 @@ func TestIndexEntryObjectValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
 	entry := &fakeIndexEntry{key: []any{int64(10)}}
 	ctx := map[CorrelationIdentifier]any{other: entry}
-	if got := v.Evaluate(ctx); got != nil {
+	if got := mustEvalForTest(v, ctx); got != nil {
 		t.Fatalf("Evaluate(missing alias) = %v, want nil", got)
 	}
 }
@@ -120,7 +120,7 @@ func TestIndexEntryObjectValue_EvaluateNonReaderReturnsNil(t *testing.T) {
 	alias := NamedCorrelationIdentifier("e")
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
 	ctx := map[CorrelationIdentifier]any{alias: "not-an-entry"}
-	if got := v.Evaluate(ctx); got != nil {
+	if got := mustEvalForTest(v, ctx); got != nil {
 		t.Fatalf("Evaluate(non-reader) = %v, want nil", got)
 	}
 }
@@ -129,7 +129,7 @@ func TestIndexEntryObjectValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("e")
 	v := NewIndexEntryObjectValue(alias, TupleSourceKey, []int{0}, NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }

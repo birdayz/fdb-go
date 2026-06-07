@@ -259,7 +259,10 @@ func TestInExplode_DuplicateElements(t *testing.T) {
 		for _, m := range ref.Members() {
 			if explode, ok := m.(*expressions.ExplodeExpression); ok {
 				cv := explode.GetCollectionValue()
-				vals := cv.Evaluate(nil)
+				vals, err := cv.Evaluate(nil)
+				if err != nil {
+					t.Fatalf("collection value evaluate: %v", err)
+				}
 				list, ok := vals.([]any)
 				if !ok {
 					t.Fatalf("collection value is %T, expected []any", vals)

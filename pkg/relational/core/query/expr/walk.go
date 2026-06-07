@@ -577,17 +577,21 @@ func (pv *predicateValue) Type() values.Type                        { return val
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
 func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
-func (pv *predicateValue) Evaluate(evalCtx any) any {
+func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	if pv.pred == nil {
-		return nil
+		return nil, nil
 	}
-	switch pv.pred.Eval(evalCtx) {
+	res, err := pv.pred.Eval(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	switch res {
 	case predicates.TriTrue:
-		return true
+		return true, nil
 	case predicates.TriFalse:
-		return false
+		return false, nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 

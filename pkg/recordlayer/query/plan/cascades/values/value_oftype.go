@@ -77,22 +77,25 @@ func (*OfTypeValue) Type() Type { return NullableBoolean }
 //
 // Both gated on proto-record-shape introspection / cross-type
 // promotion machinery — wired-when-execution-lands.
-func (v *OfTypeValue) Evaluate(evalCtx any) any {
+func (v *OfTypeValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil || v.ExpectedType == nil {
-		return nil
+		return nil, nil
 	}
-	val := v.Child.Evaluate(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
 		// Java conformance: NULL is "of type T" iff T is nullable.
-		return v.ExpectedType.IsNullable()
+		return v.ExpectedType.IsNullable(), nil
 	}
 	// Strict TypeCode match — matches Java's primitive-to-primitive
 	// behavior. OfType(42 (int), LONG) returns false (NOT promoted)
 	// per OfTypeValueTest.
 	if got, ok := runtimeMatchesTypeCode(val, v.ExpectedType.Code()).(bool); ok {
-		return got
+		return got, nil
 	}
-	return false
+	return false, nil
 }
 
 // runtimeMatchesTypeCode reports whether `val`'s Go runtime type

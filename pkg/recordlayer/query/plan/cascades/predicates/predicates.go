@@ -193,8 +193,11 @@ type QueryPredicate interface {
 
 	// Eval returns the predicate's truth value given an
 	// opaque evaluation context. Concrete eval context is
-	// impl-defined; the seed predicates ignore it.
-	Eval(evalCtx any) TriBool
+	// impl-defined; the seed predicates ignore it. A non-nil
+	// error signals a runtime evaluation failure (e.g. a
+	// type-mismatch comparison or an erroring child Value); the
+	// returned TriBool is TriUnknown in that case.
+	Eval(evalCtx any) (TriBool, error)
 
 	// Explain renders a parenthesised textual form suitable for
 	// debug + plan-diff output.
@@ -240,8 +243,8 @@ func NewConstantPredicate(v TriBool) *ConstantPredicate {
 	return &ConstantPredicate{Value: v}
 }
 
-func (*ConstantPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
-func (p *ConstantPredicate) Eval(any) TriBool         { return p.Value }
+func (*ConstantPredicate) Children() []QueryPredicate  { return []QueryPredicate{} }
+func (p *ConstantPredicate) Eval(any) (TriBool, error) { return p.Value, nil }
 
 // GetCorrelatedTo returns the empty set — constants reference no
 // quantifier aliases.
@@ -287,24 +290,34 @@ func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 	return out
 }
 
-func (p *AndPredicate) Eval(evalCtx any) TriBool {
+func (p *AndPredicate) Eval(evalCtx any) (TriBool, error) {
 	// Kleene AND: TRUE ∧ x = x; FALSE ∧ x = FALSE; UNKNOWN ∧ TRUE
 	// = UNKNOWN; UNKNOWN ∧ UNKNOWN = UNKNOWN; UNKNOWN ∧ FALSE =
 	// FALSE (short-circuit). Scan once, tracking sawUnknown.
+	//
+	// Error handling preserves the existing left-to-right short-circuit
+	// order: a child's error propagates immediately (it would in Java,
+	// where eval throws), exactly as a FALSE short-circuits to FALSE —
+	// whichever the scan reaches first in document order wins. A FALSE
+	// still beats a later UNKNOWN (sawUnknown is only consulted after a
+	// clean full scan), so the three-valued logic is unchanged.
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
-		v := sp.Eval(evalCtx)
+		v, err := sp.Eval(evalCtx)
+		if err != nil {
+			return TriUnknown, err
+		}
 		switch v {
 		case TriFalse:
-			return TriFalse
+			return TriFalse, nil
 		case TriUnknown:
 			sawUnknown = true
 		}
 	}
 	if sawUnknown {
-		return TriUnknown
+		return TriUnknown, nil
 	}
-	return TriTrue
+	return TriTrue, nil
 }
 
 func (p *AndPredicate) Explain() string {
@@ -344,23 +357,31 @@ func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{
 	return out
 }
 
-func (p *OrPredicate) Eval(evalCtx any) TriBool {
+func (p *OrPredicate) Eval(evalCtx any) (TriBool, error) {
 	// Kleene OR: FALSE ∨ x = x; TRUE ∨ x = TRUE; UNKNOWN ∨ FALSE
 	// = UNKNOWN; UNKNOWN ∨ UNKNOWN = UNKNOWN; UNKNOWN ∨ TRUE = TRUE.
+	//
+	// Error handling mirrors AndPredicate: a child error propagates
+	// immediately in document order, just as a TRUE short-circuits to
+	// TRUE; a TRUE still beats a later UNKNOWN (sawUnknown is consulted
+	// only after a clean full scan).
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
-		v := sp.Eval(evalCtx)
+		v, err := sp.Eval(evalCtx)
+		if err != nil {
+			return TriUnknown, err
+		}
 		switch v {
 		case TriTrue:
-			return TriTrue
+			return TriTrue, nil
 		case TriUnknown:
 			sawUnknown = true
 		}
 	}
 	if sawUnknown {
-		return TriUnknown
+		return TriUnknown, nil
 	}
-	return TriFalse
+	return TriFalse, nil
 }
 
 func (p *OrPredicate) Explain() string {
@@ -409,22 +430,25 @@ func (p *ValuePredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]stru
 	return out
 }
 
-func (p *ValuePredicate) Eval(evalCtx any) TriBool {
+func (p *ValuePredicate) Eval(evalCtx any) (TriBool, error) {
 	if p.Value == nil {
-		return TriUnknown
+		return TriUnknown, nil
 	}
-	v := p.Value.Evaluate(evalCtx)
+	v, err := p.Value.Evaluate(evalCtx)
+	if err != nil {
+		return TriUnknown, err
+	}
 	if v == nil {
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	bv, ok := v.(bool)
 	if !ok {
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	if bv {
-		return TriTrue
+		return TriTrue, nil
 	}
-	return TriFalse
+	return TriFalse, nil
 }
 
 func (p *ValuePredicate) Explain() string {
@@ -461,14 +485,18 @@ func (p *NotPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 	return p.Child.GetCorrelatedTo()
 }
 
-func (p *NotPredicate) Eval(evalCtx any) TriBool {
-	switch p.Child.Eval(evalCtx) {
+func (p *NotPredicate) Eval(evalCtx any) (TriBool, error) {
+	v, err := p.Child.Eval(evalCtx)
+	if err != nil {
+		return TriUnknown, err
+	}
+	switch v {
 	case TriTrue:
-		return TriFalse
+		return TriFalse, nil
 	case TriFalse:
-		return TriTrue
+		return TriTrue, nil
 	default:
-		return TriUnknown
+		return TriUnknown, nil
 	}
 }
 

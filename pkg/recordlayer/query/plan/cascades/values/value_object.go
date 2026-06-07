@@ -41,7 +41,7 @@ func (v *ObjectValue) Type() Type { return v.ResultType }
 
 // Evaluate returns nil — ObjectValue is a placeholder. Specialized
 // evaluation paths handle it before reaching per-row Eval.
-func (*ObjectValue) Evaluate(any) any { return nil }
+func (*ObjectValue) Evaluate(any) (any, error) { return nil, nil }
 
 // GetCorrelatedTo returns the singleton set containing the bound
 // alias.

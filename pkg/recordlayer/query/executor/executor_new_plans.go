@@ -145,7 +145,15 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 		if len(keyVals) > 0 {
 			t := make(tuple.Tuple, len(keyVals))
 			for i, kv := range keyVals {
-				t[i] = kv.Evaluate(qr.Datum)
+				// Comparison/merge keys are field extractions; the runtime
+				// typed-error family is unreachable and ComparisonKeyFunc
+				// has no error channel, so a stray error is a planner
+				// invariant violation (panic, matching prior no-recover).
+				v, err := kv.Evaluate(qr.Datum)
+				if err != nil {
+					panic(err)
+				}
+				t[i] = v
 			}
 			return t
 		}
@@ -190,7 +198,10 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 
 	var datum any = merged
 	if c.resultValue != nil {
-		datum = c.resultValue.Evaluate(merged)
+		datum, err = c.resultValue.Evaluate(merged)
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Complete: true}, result.GetContinuation()), nil
 }
@@ -332,16 +343,7 @@ func executePredicatesFilter(
 	needsRowCtx := bindAlias || (evalCtx != nil && (len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0))
 	filtered := &filterResultCursor{
 		inner: inner,
-		pred: func(qr QueryResult) (keep bool) {
-			defer func() {
-				if r := recover(); r != nil {
-					switch r.(type) {
-					case *predicates.TypeMismatchError, *values.ArithmeticOverflowError, *values.ArithmeticDivisionByZeroError, *values.ScalarTypeMismatchError, *values.InvalidCastError:
-						panic(r)
-					}
-					keep = false
-				}
-			}()
+		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any = qr.Datum
 			// RFC-048 W1: a HAVING/filter reference to a name absent from a
 			// complete row (aggregate output) is a bug, not a NULL.
@@ -361,11 +363,15 @@ func executePredicatesFilter(
 				}
 			}
 			for _, pred := range preds {
-				if pred.Eval(rowCtx) != predicates.TriTrue {
-					return false
+				res, err := pred.Eval(rowCtx)
+				if err != nil {
+					return false, err
+				}
+				if res != predicates.TriTrue {
+					return false, nil
 				}
 			}
-			return true
+			return true, nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -384,7 +390,11 @@ func executeMap(
 		return nil, err
 	}
 	resultValue := p.GetResultValue()
+	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
+		if evalErr != nil {
+			return qr
+		}
 		var rowCtx any = qr.Datum
 		// RFC-048 W1: a projection reading a name absent from a complete row
 		// (aggregate output) is a bug, not a NULL. Production passes the raw
@@ -398,10 +408,14 @@ func executeMap(
 				rowCtx = &values.RowEvalContext{Datum: m, Strict: true}
 			}
 		}
-		m := resultValue.Evaluate(rowCtx)
+		m, err := resultValue.Evaluate(rowCtx)
+		if err != nil {
+			evalErr = err
+			return qr
+		}
 		return QueryResult{Datum: m, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
-	return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
+	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
 }
 
 func executeFirstOrDefault(
@@ -427,7 +441,10 @@ func executeFirstOrDefault(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		datum = defaultVal.Evaluate(nil)
+		datum, err = defaultVal.Evaluate(nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return newSingleResultCursor(QueryResult{Datum: datum}), nil
 }
@@ -456,7 +473,10 @@ func executeDefaultOnEmpty(
 	defaultVal := p.GetDefaultValue()
 	var datum any
 	if defaultVal != nil {
-		datum = defaultVal.Evaluate(nil)
+		datum, err = defaultVal.Evaluate(nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return newSingleResultCursor(QueryResult{Datum: datum}), nil
 }
@@ -658,8 +678,18 @@ func (m *mergeSortCursor) fillPeekBuffers(ctx context.Context) error {
 
 func (m *mergeSortCursor) isBetter(a, b QueryResult) bool {
 	for _, key := range m.compKeys {
-		va := key.Evaluate(a.Datum)
-		vb := key.Evaluate(b.Datum)
+		// Merge-order keys are field extractions; the runtime typed-error
+		// family is unreachable and the comparator has no error channel, so
+		// a stray error is a planner invariant violation (panic, matching
+		// the prior no-recover behaviour).
+		va, err := key.Evaluate(a.Datum)
+		if err != nil {
+			panic(err)
+		}
+		vb, err := key.Evaluate(b.Datum)
+		if err != nil {
+			panic(err)
+		}
 		cmp := compareValues(va, vb)
 		if cmp == 0 {
 			continue
@@ -678,7 +708,14 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 	}
 	t := make(tuple.Tuple, len(m.compKeys))
 	for i, key := range m.compKeys {
-		v := key.Evaluate(qr.Datum)
+		// Merge-dedup keys are field extractions; the runtime typed-error
+		// family is unreachable and extractKey has no error channel, so a
+		// stray error is a planner invariant violation (panic, matching the
+		// prior no-recover behaviour).
+		v, err := key.Evaluate(qr.Datum)
+		if err != nil {
+			panic(err)
+		}
 		switch tv := v.(type) {
 		case nil, int64, int, uint, uint64, float32, float64, string, []byte, bool:
 			t[i] = tv

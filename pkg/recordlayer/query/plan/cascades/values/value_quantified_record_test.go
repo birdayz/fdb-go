@@ -43,7 +43,7 @@ func TestQuantifiedRecordValue_EvaluateFromRowMap(t *testing.T) {
 	row := map[string]any{
 		alias.Name(): map[string]any{"id": int64(7), "name": "alice"},
 	}
-	got := v.Evaluate(row)
+	got := mustEvalForTest(v, row)
 	gotMap, ok := got.(map[string]any)
 	if !ok {
 		t.Fatalf("Evaluate = %v, want map", got)
@@ -58,7 +58,7 @@ func TestQuantifiedRecordValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
 	alias := NamedCorrelationIdentifier("q")
 	v := NewQuantifiedRecordValue(alias, NotNullLong)
 	row := map[string]any{"other": int64(7)}
-	if got := v.Evaluate(row); got != nil {
+	if got := mustEvalForTest(v, row); got != nil {
 		t.Fatalf("Evaluate(missing alias) = %v, want nil", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestQuantifiedRecordValue_EvaluateMissingAliasReturnsNil(t *testing.T) {
 func TestQuantifiedRecordValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQuantifiedRecordValue(NamedCorrelationIdentifier("q"), NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate(nil) = %v, want nil", got)
 	}
 }
@@ -74,7 +74,7 @@ func TestQuantifiedRecordValue_EvaluateNilCtxReturnsNil(t *testing.T) {
 func TestQuantifiedRecordValue_EvaluateNonMapCtxReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQuantifiedRecordValue(NamedCorrelationIdentifier("q"), NotNullLong)
-	if got := v.Evaluate("not-a-map"); got != nil {
+	if got := mustEvalForTest(v, "not-a-map"); got != nil {
 		t.Fatalf("Evaluate(string) = %v, want nil", got)
 	}
 }

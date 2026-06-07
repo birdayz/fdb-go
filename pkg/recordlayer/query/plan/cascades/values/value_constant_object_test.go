@@ -50,10 +50,10 @@ func TestConstantObjectValue_NilTypeFallsBackToUnknown(t *testing.T) {
 func TestConstantObjectValue_EvaluateNoDereferReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NotNullLong)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate without ConstantDeref = %v, want nil", got)
 	}
-	if got := v.Evaluate("not a deref"); got != nil {
+	if got := mustEvalForTest(v, "not a deref"); got != nil {
 		t.Fatalf("Evaluate with non-ConstantDeref = %v, want nil", got)
 	}
 }
@@ -65,7 +65,7 @@ func TestConstantObjectValue_EvaluateLooksUpBinding(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int64(42),
 	}}
-	if got := v.Evaluate(stub); got != int64(42) {
+	if got := mustEvalForTest(v, stub); got != int64(42) {
 		t.Fatalf("Evaluate = %v, want int64(42)", got)
 	}
 }
@@ -74,7 +74,7 @@ func TestConstantObjectValue_EvaluateMissingBinding(t *testing.T) {
 	t.Parallel()
 	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NotNullLong)
 	stub := &stubConstantDeref{values: map[constantKey]any{}}
-	if got := v.Evaluate(stub); got != nil {
+	if got := mustEvalForTest(v, stub); got != nil {
 		t.Fatalf("Evaluate missing binding = %v, want nil", got)
 	}
 }
@@ -101,7 +101,7 @@ func TestConstantObjectValue_PromoteInt32ToLong(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int32(7),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != int64(7) {
 		t.Fatalf("Evaluate = %v (%T), want int64(7)", got, got)
 	}
@@ -114,7 +114,7 @@ func TestConstantObjectValue_PromoteInt32ToDouble(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int32(3),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != float64(3) {
 		t.Fatalf("Evaluate = %v (%T), want float64(3)", got, got)
 	}
@@ -127,7 +127,7 @@ func TestConstantObjectValue_PromoteInt64ToDouble(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int64(42),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != float64(42) {
 		t.Fatalf("Evaluate = %v (%T), want float64(42)", got, got)
 	}
@@ -140,7 +140,7 @@ func TestConstantObjectValue_PromoteFloat32ToDouble(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: float32(1.5),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != float64(float32(1.5)) {
 		t.Fatalf("Evaluate = %v (%T), want float64(1.5)", got, got)
 	}
@@ -153,7 +153,7 @@ func TestConstantObjectValue_Int64ToLongNoPromotion(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int64(99),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != int64(99) {
 		t.Fatalf("Evaluate = %v (%T), want int64(99)", got, got)
 	}
@@ -166,7 +166,7 @@ func TestConstantObjectValue_StringNoPromotion(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: "hello",
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != "hello" {
 		t.Fatalf("Evaluate = %v (%T), want \"hello\"", got, got)
 	}
@@ -179,7 +179,7 @@ func TestConstantObjectValue_PromoteNilReturnsNil(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: nil,
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil", got)
 	}
@@ -188,7 +188,7 @@ func TestConstantObjectValue_PromoteNilReturnsNil(t *testing.T) {
 func TestConstantObjectValue_PromoteNoDerefReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NullableLong)
-	got := v.Evaluate("not a deref")
+	got := mustEvalForTest(v, "not a deref")
 	if got != nil {
 		t.Fatalf("Evaluate = %v, want nil", got)
 	}
@@ -201,7 +201,7 @@ func TestConstantObjectValue_PromoteInt32ToFloat(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int32(5),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != float32(5) {
 		t.Fatalf("Evaluate = %v (%T), want float32(5)", got, got)
 	}
@@ -214,7 +214,7 @@ func TestConstantObjectValue_PromoteInt64ToFloat(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int64(10),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != float32(10) {
 		t.Fatalf("Evaluate = %v (%T), want float32(10)", got, got)
 	}
@@ -227,7 +227,7 @@ func TestConstantObjectValue_PromoteGoIntToInt64(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: int(42),
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	i64, ok := got.(int64)
 	if !ok {
 		t.Fatalf("Evaluate = %v (%T), want int64 (not bare int)", got, got)
@@ -246,7 +246,7 @@ func TestConstantObjectValue_RelationTypePassThrough(t *testing.T) {
 	stub := &stubConstantDeref{values: map[constantKey]any{
 		{alias: alias, constantID: "c1"}: sentinel,
 	}}
-	got := v.Evaluate(stub)
+	got := mustEvalForTest(v, stub)
 	if got != sentinel {
 		t.Fatalf("Evaluate = %v, want sentinel (relation pass-through)", got)
 	}

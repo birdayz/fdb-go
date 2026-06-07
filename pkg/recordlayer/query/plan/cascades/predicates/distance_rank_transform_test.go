@@ -49,7 +49,9 @@ func TestTransformRowNumberDistanceRank_Euclidean(t *testing.T) {
 	if cmp.QueryVector != queryVec {
 		t.Errorf("query vector = %v, want %v", cmp.QueryVector, queryVec)
 	}
-	if cmp.Operand == nil || cmp.Operand.Evaluate(nil) != 3 {
+	if cmp.Operand == nil {
+		t.Errorf("comparand (k) = <nil>, want 3")
+	} else if v, _ := cmp.Operand.Evaluate(nil); v != 3 {
 		t.Errorf("comparand (k) = %v, want 3", cmp.Operand)
 	}
 	if cmp.EfSearch == nil || *cmp.EfSearch != 100 {

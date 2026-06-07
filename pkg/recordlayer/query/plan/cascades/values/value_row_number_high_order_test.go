@@ -29,7 +29,7 @@ func TestRowNumberHighOrderValue_NoChildren(t *testing.T) {
 func TestRowNumberHighOrderValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	h := NewRowNumberHighOrderValue(nil, nil)
-	if got := h.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(h, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (high-order placeholder)", got)
 	}
 }

@@ -79,16 +79,16 @@ func (*RowNumberValue) IsIndexOnly() bool { return true }
 //
 // Returns nil if evalCtx is nil / non-map / has no `_row_number`
 // key — matches the placeholder-Value pattern.
-func (*RowNumberValue) Evaluate(evalCtx any) any {
+func (*RowNumberValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if r, ok := m["_row_number"]; ok {
-			return r
+			return r, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a new RowNumberValue with the children

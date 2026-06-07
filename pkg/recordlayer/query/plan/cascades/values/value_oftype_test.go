@@ -5,7 +5,7 @@ import "testing"
 func TestOfTypeValue_BoolMatchesBool(t *testing.T) {
 	t.Parallel()
 	v := NewOfTypeValue(LiteralValue(true), NullableBoolean)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("OfType(true, BOOL) = %v, want true", got)
 	}
 }
@@ -13,7 +13,7 @@ func TestOfTypeValue_BoolMatchesBool(t *testing.T) {
 func TestOfTypeValue_StringMatchesString(t *testing.T) {
 	t.Parallel()
 	v := NewOfTypeValue(LiteralValue("hi"), NullableString)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("OfType('hi', STRING) = %v, want true", got)
 	}
 }
@@ -21,7 +21,7 @@ func TestOfTypeValue_StringMatchesString(t *testing.T) {
 func TestOfTypeValue_StringNotMatchesInt(t *testing.T) {
 	t.Parallel()
 	v := NewOfTypeValue(LiteralValue("hi"), NullableLong)
-	if got := v.Evaluate(nil); got != false {
+	if got := mustEvalForTest(v, nil); got != false {
 		t.Fatalf("OfType('hi', LONG) = %v, want false", got)
 	}
 }
@@ -31,7 +31,7 @@ func TestOfTypeValue_NullChildAgainstNullableType(t *testing.T) {
 	// Java conformance: NULL IS OF TYPE T returns T.isNullable().
 	// NullableBoolean is nullable → expect true.
 	v := NewOfTypeValue(LiteralValue(nil), NullableBoolean)
-	if got := v.Evaluate(nil); got != true {
+	if got := mustEvalForTest(v, nil); got != true {
 		t.Fatalf("OfType(NULL, NullableBoolean) = %v, want true (Java conformance: NULL of nullable type is OK)", got)
 	}
 }
@@ -41,7 +41,7 @@ func TestOfTypeValue_NullChildAgainstNotNullType(t *testing.T) {
 	// Java conformance: NULL IS OF TYPE T returns T.isNullable().
 	// NotNullBoolean is non-nullable → expect false.
 	v := NewOfTypeValue(LiteralValue(nil), NotNullBoolean)
-	if got := v.Evaluate(nil); got != false {
+	if got := mustEvalForTest(v, nil); got != false {
 		t.Fatalf("OfType(NULL, NotNullBoolean) = %v, want false (Java: NULL of non-nullable type rejected)", got)
 	}
 }
@@ -80,7 +80,7 @@ func TestOfTypeValue_PrimitiveStrict_NoPromotion(t *testing.T) {
 	}
 	for _, c := range cases {
 		v := NewOfTypeValue(LiteralValue(c.val), c.typ)
-		if got := v.Evaluate(nil); got != c.want {
+		if got := mustEvalForTest(v, nil); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -101,6 +101,6 @@ func TestOfTypeValue_Children(t *testing.T) {
 func BenchmarkOfTypeValue_Evaluate(b *testing.B) {
 	v := NewOfTypeValue(LiteralValue(int64(42)), NullableLong)
 	for i := 0; i < b.N; i++ {
-		_ = v.Evaluate(nil)
+		_ = mustEvalForTest(v, nil)
 	}
 }

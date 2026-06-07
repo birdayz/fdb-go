@@ -3122,16 +3122,13 @@ func TestFDB_CaseWhen(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]saleRow{{1, "small"}, {2, "medium"}, {3, "large"}}))
 }
 
-// TestFDB_StringFunctionsRejected pins UPPER / LOWER / LENGTH / TRIM
-// rejection. fdb-relational 4.11.1.0 has no entries for these in its
-// function registry, so its planner returns
-// `RelationalException: Unsupported operator <NAME>` (uppercased).
-// Go aligns by NOT having a case in scalar_functions.go's switch —
-// falling through to the default arm emits the byte-equal
-// "Unsupported operator <name>" message via ErrCodeUnsupportedOperation
-// (SQLSTATE 0A000). Per project conformance principle: doesn't work in
-// Java → doesn't work in Go.
-func TestFDB_StringFunctionsRejected(t *testing.T) {
+// TestFDB_StringFunctions pins the Go-only STRING scalar functions
+// (RFC-087): UPPER / LOWER / LENGTH / TRIM compute over a column arg via
+// the Cascades values path. These have no entry in fdb-relational
+// 4.11.1.0's function registry, so they are net-new read-side extensions
+// (zero wire impact). Whitespace is preserved by UPPER/LOWER; LENGTH is a
+// rune count; TRIM strips surrounding whitespace.
+func TestFDB_StringFunctions(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3152,31 +3149,34 @@ func TestFDB_StringFunctionsRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Word (id, label) VALUES (1, '  Hello  ')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
+	// label = '  Hello  ' (2 + 5 + 2 = 9 runes).
 	cases := []struct {
-		query  string
-		opName string // uppercase function name as it appears in the message
+		query string
+		want  string
 	}{
-		{`SELECT UPPER(label) FROM Word WHERE id = 1`, "UPPER"},
-		{`SELECT LOWER(label) FROM Word WHERE id = 1`, "LOWER"},
-		{`SELECT LENGTH(label) FROM Word WHERE id = 1`, "LENGTH"},
-		{`SELECT TRIM(label) FROM Word WHERE id = 1`, "TRIM"},
+		{`SELECT UPPER(label) FROM Word WHERE id = 1`, "  HELLO  "},
+		{`SELECT LOWER(label) FROM Word WHERE id = 1`, "  hello  "},
+		{`SELECT TRIM(label) FROM Word WHERE id = 1`, "Hello"},
 	}
 	for _, tc := range cases {
-		var dummy any
-		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, err, "Unsupported operator "+tc.opName)
+		var got string
+		g.Expect(db.QueryRowContext(ctx, tc.query).Scan(&got)).To(gomega.Succeed(), "query %q", tc.query)
+		g.Expect(got).To(gomega.Equal(tc.want), "query %q", tc.query)
 	}
+
+	// LENGTH returns the rune count as an integer.
+	var n int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT LENGTH(label) FROM Word WHERE id = 1`).Scan(&n)).To(gomega.Succeed())
+	g.Expect(n).To(gomega.Equal(int64(9)))
 }
 
-// TestFDB_ConcatNullIfRejected pins both CONCAT and NULLIF rejection.
-// Both are absent from fdb-relational 4.11.1.0's function registry;
-// Java's planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000)
-// and Go aligns through the default arm of evalScalarFunctionCallCore.
-// Searched-CASE remains the workaround for NULLIF; pinned in
-// TestFDB_CaseWhen (and elsewhere). Per project conformance principle:
-// doesn't work in Java → doesn't work in Go.
-func TestFDB_ConcatNullIfRejected(t *testing.T) {
+// TestFDB_ConcatAndNullIf pins CONCAT working (RFC-087 Go-only scalar
+// extension: NULL args skip rather than poison, MySQL/Postgres semantics)
+// and NULLIF still rejected. NULLIF is absent from both
+// IsCascadesSafeScalarFunction's gate and fdb-relational 4.11.1.0's
+// function registry, so the planner rejects it ("Unsupported operator
+// NULLIF"). Searched-CASE remains the NULLIF workaround.
+func TestFDB_ConcatAndNullIf(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -3197,19 +3197,18 @@ func TestFDB_ConcatNullIfRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Person (id, first, last, score) VALUES (1, 'Alice', 'Smith', 100)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	cases := []struct {
-		query  string
-		opName string
-	}{
-		{`SELECT CONCAT(first, ' ', last) FROM Person WHERE id = 1`, "CONCAT"},
-		{`SELECT NULLIF(score, 0) FROM Person WHERE id = 1`, "NULLIF"},
-	}
-	for _, tc := range cases {
-		var dummy any
-		err := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(err).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, err, "Unsupported operator "+tc.opName)
-	}
+	// CONCAT(first, ' ', last) → 'Alice Smith'.
+	var concat string
+	g.Expect(db.QueryRowContext(ctx,
+		`SELECT CONCAT(first, ' ', last) FROM Person WHERE id = 1`).Scan(&concat)).To(gomega.Succeed())
+	g.Expect(concat).To(gomega.Equal("Alice Smith"))
+
+	// NULLIF is still rejected (not in the gate / registry).
+	var dummy any
+	errNullif := db.QueryRowContext(ctx,
+		`SELECT NULLIF(score, 0) FROM Person WHERE id = 1`).Scan(&dummy)
+	g.Expect(errNullif).To(gomega.HaveOccurred(), "NULLIF must be rejected")
+	expectRejectionOrCascadesError(t, errNullif, "Unsupported operator NULLIF")
 
 	// Searched-CASE — the workaround for NULLIF — must still work.
 	var score any
@@ -3498,24 +3497,19 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g.Expect(rows.Scan(&priceStr)).To(gomega.Succeed())
 	g.Expect(priceStr).To(gomega.Equal("42"))
 
-	// SUBSTRING / REPLACE are STRING-family scalar functions that
-	// fdb-relational 4.11.1.0 has no entry for in its function
-	// registry — Java's planner emits "Unsupported operator <NAME>"
-	// (SQLSTATE 0A000). Go aligns via the default arm of
-	// evalScalarFunctionCallCore. Pinned here so the cast-focused
-	// test still walks the SUBSTRING/REPLACE shapes that pre-cleanup
-	// produced rows.
+	// SUBSTRING / REPLACE are Go-only STRING scalar extensions (RFC-087):
+	// SUBSTRING(s, pos, len) is 1-based; REPLACE does a literal swap.
+	// name = 'Widget' → SUBSTRING(...,1,3) = 'Wid', REPLACE = 'Thing'.
 	for _, tc := range []struct {
-		query  string
-		opName string
+		query string
+		want  string
 	}{
-		{`SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`, "SUBSTRING"},
-		{`SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`, "REPLACE"},
+		{`SELECT SUBSTRING(name, 1, 3) FROM Item WHERE id = 1`, "Wid"},
+		{`SELECT REPLACE(name, 'Widget', 'Thing') FROM Item WHERE id = 1`, "Thing"},
 	} {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
+		var got string
+		g.Expect(db.QueryRowContext(ctx, tc.query).Scan(&got)).To(gomega.Succeed(), "query %q", tc.query)
+		g.Expect(got).To(gomega.Equal(tc.want), "query %q", tc.query)
 	}
 
 	// IF function-form is rejected by Java (not in the function
@@ -3600,20 +3594,16 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	}
 	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
 
-	// ROUND is absent from fdb-relational 4.11.1.0's BuiltInFunction
-	// registry — Java's planner emits
-	// "Unsupported operator ROUND" (0A000) before evaluation, so the
-	// pre-cleanup Go-side decimals-argument validation never runs.
-	// Pin the rejection here for both the NULL-decimals and the
-	// non-integer-decimals shapes that previously walked the evaluator.
+	// ROUND is a Go-only math scalar extension (RFC-087). A non-coercible
+	// decimals arg degrades to SQL NULL rather than erroring: NULL decimals
+	// propagates NULL, and a non-numeric string ('abc') declines to NULL.
 	for _, q := range []string{
 		`SELECT ROUND(1.2345, NULL) FROM Item WHERE id = 1`,
 		`SELECT ROUND(1.2345, 'abc') FROM Item WHERE id = 1`,
 	} {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, q).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", q)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator ROUND")
+		var out sql.NullString
+		g.Expect(db.QueryRowContext(ctx, q).Scan(&out)).To(gomega.Succeed(), "query %q", q)
+		g.Expect(out.Valid).To(gomega.BeFalse(), "query %q must yield NULL", q)
 	}
 }
 
@@ -3638,9 +3628,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Num (id, val) VALUES (1, 7), (2, 3)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// 7 % 3 = 1. Java exposes modulo only via the `%` operator (the
-	// synonym map binds `%` -> "mod"); the function-call form
-	// `MOD(a, b)` is rejected with "Unsupported operator MOD".
+	// 7 % 3 = 1 via the `%` operator.
 	rows, err := db.QueryContext(ctx, `SELECT val % 3 FROM Num WHERE id = 1`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
@@ -3649,30 +3637,27 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g.Expect(rows.Scan(&mod)).To(gomega.Succeed())
 	g.Expect(mod).To(gomega.Equal(int64(1)))
 
-	// MOD as a function call is rejected (function-form is not in
-	// fdb-relational's BuiltInFunction registry; only the `%`
-	// operator maps to Mod). Cascades-only path surfaces as planner failure.
-	var dummyMod int64
-	errMod := db.QueryRowContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`).Scan(&dummyMod)
-	g.Expect(errMod).To(gomega.HaveOccurred(), "MOD function-form must be rejected")
-	expectRejectionOrCascadesError(t, errMod, "Unsupported operator MOD")
+	// MOD function-form is a Go-only math scalar extension (RFC-087):
+	// MOD(7, 3) = 1, agreeing with the `%` operator above.
+	var modFn int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT MOD(val, 3) FROM Num WHERE id = 1`).Scan(&modFn)).To(gomega.Succeed())
+	g.Expect(modFn).To(gomega.Equal(int64(1)))
 
-	// POWER / POW are absent from fdb-relational 4.11.1.0's
-	// ArithmeticValue registry. Cascades-only path: planner failure.
+	// POWER / POW (RFC-087): integral results fold back to int64 — 2^3 = 8.
 	for _, op := range []string{"POWER", "POW"} {
-		var dummy int64
-		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+op)
+		var pow int64
+		g.Expect(db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(2, 3) FROM Num WHERE id = 1`, op)).Scan(&pow)).
+			To(gomega.Succeed(), "%s", op)
+		g.Expect(pow).To(gomega.Equal(int64(8)), "%s(2,3)", op)
 	}
 
-	// ABS / SQRT — same rejection.
-	for _, op := range []string{"ABS", "SQRT"} {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT %s(val) FROM Num WHERE id = 1`, op)).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "%s must be rejected", op)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+op)
-	}
+	// ABS (int64-preserving) and SQRT (float64) over val=7.
+	var abs int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(val) FROM Num WHERE id = 1`).Scan(&abs)).To(gomega.Succeed())
+	g.Expect(abs).To(gomega.Equal(int64(7)))
+	var sqrt float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(val) FROM Num WHERE id = 1`).Scan(&sqrt)).To(gomega.Succeed())
+	g.Expect(sqrt).To(gomega.BeNumerically("~", math.Sqrt(7), 1e-9))
 
 	// swingshift-35: bitwise operators (Java has these as bitand/bitor/bitxor
 	// in SqlFunctionCatalogImpl; Go was missing the BitExpressionAtomContext
@@ -4802,21 +4787,14 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Category (id, label) VALUES (2, 'pricey')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// UPPER in a WHERE on a CTE (map path) — STRING-family scalar
-	// functions are rejected by Java's function registry; map-path
-	// emits the byte-equal "Unsupported operator UPPER" wording the
-	// proto-path uses, so cross-engine ExpectErrorMessage works
-	// regardless of which Go evaluator path the query routes through.
-	// The shape "function in WHERE on a CTE" is otherwise still
-	// exercised below via COALESCE (which IS in the registry on
-	// both sides).
+	// UPPER in a WHERE on a CTE (RFC-087 Go-only scalar extension): the
+	// predicate UPPER(name) = 'WIDGET' matches the 'Widget' row.
 	{
-		var dummy any
-		errRej := db.QueryRowContext(ctx, `
+		var name string
+		g.Expect(db.QueryRowContext(ctx, `
 			WITH products AS (SELECT id, name, price FROM Product)
-			SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "UPPER in WHERE must be rejected")
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator UPPER")
+			SELECT name FROM products WHERE UPPER(name) = 'WIDGET'`).Scan(&name)).To(gomega.Succeed())
+		g.Expect(name).To(gomega.Equal("Widget"))
 	}
 
 	// COALESCE in SELECT projection on a CTE.
@@ -5269,12 +5247,10 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	g.Expect(rows.Next()).To(gomega.BeFalse())
 }
 
-// TestFDB_UpdateSetWithFunctionRejected pins UPDATE SET col = UPPER(...)
-// rejection. Java's function registry has no UPPER entry, so the
-// planner emits ErrCodeUnsupportedOperation before the UPDATE plan
-// runs. The "UPDATE SET col = expr" shape with a non-rejected
-// expression (e.g., arithmetic) is exercised in TestFDB_UpdateSetArithmetic.
-func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
+// TestFDB_UpdateSetWithFunction pins that a Go-only scalar function
+// (RFC-087) computes in an UPDATE … SET expression: UPPER(name) rewrites
+// the stored value through the Cascades DML path.
+func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5296,14 +5272,15 @@ func TestFDB_UpdateSetWithFunctionRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Product (id, name) VALUES (1, 'widget')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	_, errRej := db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
-	g.Expect(errRej).To(gomega.HaveOccurred())
-	expectUnsupportedOperator(g, errRej, "UPPER", "UPDATE SET UPPER")
+	res, err := db.ExecContext(ctx, `UPDATE Product SET name = UPPER(name) WHERE id = 1`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	n, _ := res.RowsAffected()
+	g.Expect(n).To(gomega.Equal(int64(1)))
 
-	// The row must be unchanged after the rejected UPDATE.
-	var n string
-	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 1`).Scan(&n)).To(gomega.Succeed())
-	g.Expect(n).To(gomega.Equal("widget"))
+	// The row must be uppercased after the UPDATE.
+	var name string
+	g.Expect(db.QueryRowContext(ctx, `SELECT name FROM Product WHERE id = 1`).Scan(&name)).To(gomega.Succeed())
+	g.Expect(name).To(gomega.Equal("WIDGET"))
 }
 
 func TestFDB_OrderByExpression(t *testing.T) {
@@ -5422,13 +5399,10 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]joinRow{{"apple", 200}, {"middle", 300}, {"zebra", 100}}))
 }
 
-// TestFDB_LtrimRtrimRejected pins LTRIM / RTRIM / TRIM rejection.
-// Java's fdb-relational 4.11.1.0 function registry has no entries; its
-// planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000) and Go
-// aligns through the default arm of evalScalarFunctionCallCore. Per
-// project conformance principle: doesn't work in Java → doesn't work
-// in Go.
-func TestFDB_LtrimRtrimRejected(t *testing.T) {
+// TestFDB_LtrimRtrim pins the Go-only LTRIM / RTRIM / TRIM scalar
+// extensions (RFC-087): LTRIM strips leading whitespace, RTRIM trailing,
+// TRIM both. Input s = '  hello  '.
+func TestFDB_LtrimRtrim(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -5451,18 +5425,17 @@ func TestFDB_LtrimRtrimRejected(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	cases := []struct {
-		query  string
-		opName string
+		query string
+		want  string
 	}{
-		{`SELECT LTRIM(s) FROM T WHERE id = 1`, "LTRIM"},
-		{`SELECT RTRIM(s) FROM T WHERE id = 1`, "RTRIM"},
-		{`SELECT TRIM(s) FROM T WHERE id = 1`, "TRIM"},
+		{`SELECT LTRIM(s) FROM T WHERE id = 1`, "hello  "},
+		{`SELECT RTRIM(s) FROM T WHERE id = 1`, "  hello"},
+		{`SELECT TRIM(s) FROM T WHERE id = 1`, "hello"},
 	}
 	for _, tc := range cases {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
+		var got string
+		g.Expect(db.QueryRowContext(ctx, tc.query).Scan(&got)).To(gomega.Succeed(), "query %q", tc.query)
+		g.Expect(got).To(gomega.Equal(tc.want), "query %q", tc.query)
 	}
 }
 
@@ -5582,14 +5555,12 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	g.Expect(cnt).To(gomega.Equal(int64(0)))
 }
 
-// TestFDB_NestedStringFunctionsRejected pins that nested STRING-family
-// scalar function calls (LOWER(TRIM(x)), LENGTH(TRIM(x))) — both proto
-// and map (CTE) paths — surface ErrCodeUnsupportedOperation. The outer
-// function call is what falls through the registry; nesting on the
-// inside is irrelevant since the outer dispatch fails first. The
-// CASE-WHEN portion of the original test is exercised independently
-// in TestFDB_CaseWhen.
-func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
+// TestFDB_NestedStringFunctions pins nested Go-only scalar functions
+// (RFC-087) composing correctly through the Cascades values path:
+// LOWER(TRIM(...)) in a projection and LENGTH(TRIM(...)) in a WHERE,
+// on both the base-table and CTE shapes. name = ' alpha ' so
+// TRIM(name) = 'alpha' (len 5).
+func TestFDB_NestedStringFunctions(t *testing.T) {
 	t.Parallel()
 
 	g := gomega.NewWithT(t)
@@ -5612,41 +5583,35 @@ func TestFDB_NestedStringFunctionsRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, qty) VALUES (1, ' alpha ', 3)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Proto path: nested LOWER(TRIM(...)) in projection — outer LOWER
-	// rejected first.
+	// Base-table path: nested LOWER(TRIM(...)) in projection → 'alpha'.
 	{
-		var dummy any
-		errRej := db.QueryRowContext(ctx,
-			`SELECT LOWER(TRIM(name)) FROM T WHERE id = 1`).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred())
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator LOWER")
+		var got string
+		g.Expect(db.QueryRowContext(ctx,
+			`SELECT LOWER(TRIM(name)) FROM T WHERE id = 1`).Scan(&got)).To(gomega.Succeed())
+		g.Expect(got).To(gomega.Equal("alpha"))
 	}
 
-	// Proto path: LENGTH(TRIM(...)) in WHERE — outer LENGTH rejected.
+	// Base-table path: LENGTH(TRIM(...)) in WHERE — 5 > 3 matches id=1.
 	{
-		var dummy any
-		errRej := db.QueryRowContext(ctx,
-			`SELECT id FROM T WHERE LENGTH(TRIM(name)) > 3`).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred())
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator LENGTH")
+		var id int64
+		g.Expect(db.QueryRowContext(ctx,
+			`SELECT id FROM T WHERE LENGTH(TRIM(name)) > 3`).Scan(&id)).To(gomega.Succeed())
+		g.Expect(id).To(gomega.Equal(int64(1)))
 	}
 
-	// Map (CTE) path: same shape, same rejection class.
+	// Map (CTE) path: same shape, same value.
 	{
-		var dummy any
-		errRej := db.QueryRowContext(ctx, `
+		var got string
+		g.Expect(db.QueryRowContext(ctx, `
 			WITH cte AS (SELECT id, name, qty FROM T)
-			SELECT LOWER(TRIM(name)) FROM cte WHERE id = 1`).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred())
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator LOWER")
+			SELECT LOWER(TRIM(name)) FROM cte WHERE id = 1`).Scan(&got)).To(gomega.Succeed())
+		g.Expect(got).To(gomega.Equal("alpha"))
 	}
 }
 
-// TestFDB_FunctionWrappingCase pins that wrapping CASE in a registry-
-// rejected scalar function (UPPER) surfaces ErrCodeUnsupportedOperation
-// — the outer function dispatch fails before CASE evaluation runs.
-// The bare CASE-WHEN expression itself works fine and is exercised in
-// TestFDB_CaseWhen.
+// TestFDB_FunctionWrappingCase pins that a Go-only scalar function
+// (RFC-087: UPPER) wrapping a CASE expression evaluates end-to-end —
+// the inner CASE yields 'yes' (qty=5 > 0), which UPPER lifts to 'YES'.
 func TestFDB_FunctionWrappingCase(t *testing.T) {
 	t.Parallel()
 
@@ -5670,13 +5635,12 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, qty) VALUES (1, 5)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Scalar function (UPPER) wrapping CASE — UPPER is registry-rejected.
-	var dummy any
-	errRej := db.QueryRowContext(ctx,
+	// Scalar function (UPPER) wrapping CASE → UPPER('yes') = 'YES'.
+	var got string
+	g.Expect(db.QueryRowContext(ctx,
 		`SELECT UPPER(CASE WHEN qty > 0 THEN 'yes' ELSE 'no' END) FROM T WHERE id = 1`).
-		Scan(&dummy)
-	g.Expect(errRej).To(gomega.HaveOccurred())
-	expectRejectionOrCascadesError(t, errRej, "Unsupported operator UPPER")
+		Scan(&got)).To(gomega.Succeed())
+	g.Expect(got).To(gomega.Equal("YES"))
 }
 
 func TestFDB_AggregateOrderByStrict(t *testing.T) {
@@ -5865,9 +5829,10 @@ func TestFDB_CaseInWhere(t *testing.T) {
 }
 
 // TestFDB_InsertMultiRowWithExpressions pins INSERT VALUES with row
-// expressions. Arithmetic + CASE work; STRING-family scalar functions
-// (UPPER / LOWER / CONCAT) and ABS / SQRT / POWER are rejected by
-// Java's function registry — each rejected call surfaces
+// expressions. Arithmetic + CASE work. Note the asymmetry: the Go-only
+// scalar functions RFC-087 enabled in the Cascades values path (SELECT /
+// WHERE / UPDATE SET) are NOT reached from the INSERT-VALUES literal-row
+// evaluation path, so UPPER in a VALUES row still surfaces
 // ErrCodeUnsupportedOperation. The "multi-row VALUES with mixed
 // expressions" shape is preserved using arithmetic + CASE only.
 func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
@@ -5889,10 +5854,9 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// Multi-row INSERT VALUES with arithmetic + CASE — both
-	// supported (ABS used to live in slot 3 but is now Java-rejected
-	// at the registry layer; the rejection is asserted in
-	// TestFDB_MathFunctions).
+	// Multi-row INSERT VALUES with arithmetic + CASE — both supported.
+	// Scalar functions in a VALUES literal row remain unsupported (see
+	// the UPPER rejection asserted below).
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, name, doubled) VALUES
 		(1, 'alpha', 5 + 5),
 		(2, 'beta', 20 * 2),
@@ -6030,11 +5994,9 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	g.Expect(got).To(gomega.Equal([]r{{3, 30}, {4, 40}, {5, 50}}))
 }
 
-// TestFDB_LeftRightRejected pins LEFT / RIGHT rejection. Java's
-// fdb-relational 4.11.1.0 function registry has no entries for either,
-// so its planner emits "Unsupported operator <NAME>" (SQLSTATE 0A000).
-// Go aligns through the default arm of evalScalarFunctionCallCore.
-func TestFDB_LeftRightRejected(t *testing.T) {
+// TestFDB_LeftRight pins the Go-only LEFT / RIGHT scalar extensions
+// (RFC-087): LEFT takes the first n runes, RIGHT the last n. name='foobar'.
+func TestFDB_LeftRight(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -6057,25 +6019,24 @@ func TestFDB_LeftRightRejected(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	cases := []struct {
-		query  string
-		opName string
+		query string
+		want  string
 	}{
-		{`SELECT LEFT(name, 3) FROM T WHERE id = 1`, "LEFT"},
-		{`SELECT RIGHT(name, 3) FROM T WHERE id = 1`, "RIGHT"},
+		{`SELECT LEFT(name, 3) FROM T WHERE id = 1`, "foo"},
+		{`SELECT RIGHT(name, 3) FROM T WHERE id = 1`, "bar"},
 	}
 	for _, tc := range cases {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
+		var got string
+		g.Expect(db.QueryRowContext(ctx, tc.query).Scan(&got)).To(gomega.Succeed(), "query %q", tc.query)
+		g.Expect(got).To(gomega.Equal(tc.want), "query %q", tc.query)
 	}
 }
 
-// TestFDB_ReversePositionRejected pins REVERSE / POSITION rejection.
-// Java's fdb-relational 4.11.1.0 function registry has no entries for
-// either, so its planner emits "Unsupported operator <NAME>"
-// (SQLSTATE 0A000). Go aligns through the default arm.
-func TestFDB_ReversePositionRejected(t *testing.T) {
+// TestFDB_ReversePosition pins the Go-only REVERSE / POSITION scalar
+// extensions (RFC-087). REVERSE reverses runes; POSITION(substr, str)
+// returns the 1-based rune index of the first match (0 if absent).
+// s = 'hello' → REVERSE = 'olleh', POSITION('ll', s) = 3.
+func TestFDB_ReversePosition(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -6097,33 +6058,23 @@ func TestFDB_ReversePositionRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, s) VALUES (1, 'hello')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	cases := []struct {
-		query  string
-		opName string
-	}{
-		{`SELECT REVERSE(s) FROM T WHERE id = 1`, "REVERSE"},
-		{`SELECT POSITION('ll', s) FROM T WHERE id = 1`, "POSITION"},
-	}
-	for _, tc := range cases {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
-	}
+	var rev string
+	g.Expect(db.QueryRowContext(ctx, `SELECT REVERSE(s) FROM T WHERE id = 1`).Scan(&rev)).To(gomega.Succeed())
+	g.Expect(rev).To(gomega.Equal("olleh"))
+
+	var pos int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POSITION('ll', s) FROM T WHERE id = 1`).Scan(&pos)).To(gomega.Succeed())
+	g.Expect(pos).To(gomega.Equal(int64(3)))
 }
 
-// TestFDB_MathFunctionsTranscendentalRejected pins the rejection of
-// SQRT / POWER / POW / EXP / LN / LOG. fdb-relational 4.11.1.0's
-// @AutoService(BuiltInFunction.class) ArithmeticValue registry has
-// only Add / Sub / Mul / Div / Mod / bitwise / Bitmap*; none of these
-// transcendental functions are registered. Java's planner emits
-// "Unsupported operator <NAME>" (0A000) before evaluation. Both the
-// proto path and the default arm in scalar_functions.go produce the
-// byte-equal wording. Pre-cleanup Go evaluated EXP (NULL on overflow),
-// LN, LOG (Math.log(x)/Math.log(base)), SQRT (NULL on negative), and
-// POWER (NULL on NaN/Inf, otherwise math.Pow) — those Go-side
-// evaluators have been removed (commits 39bcb4d6, b59e1394).
-func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
+// TestFDB_MathFunctionsTranscendental pins the Go-only transcendental
+// scalar extensions (RFC-087): SQRT / POWER / POW / EXP / LN / LOG. Three
+// behavioural classes are exercised: (1) ordinary values, (2) out-of-domain
+// inputs whose NaN/±Inf result degrades to SQL NULL (POWER(0,-1),
+// POWER(-1,0.5), EXP overflow), and (3) the SQRT-of-negative error edge,
+// which RFC-087 promotes from the old NULL convention to a typed 22023
+// runtime error.
+func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
@@ -6145,25 +6096,50 @@ func TestFDB_MathFunctionsTranscendentalRejected(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, x) VALUES (1, 16)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	for _, tc := range []struct {
-		query  string
-		opName string
-	}{
-		{`SELECT SQRT(x) FROM T WHERE id = 1`, "SQRT"},
-		{`SELECT SQRT(-1) FROM T WHERE id = 1`, "SQRT"},
-		{`SELECT POWER(2, 10) FROM T WHERE id = 1`, "POWER"},
-		{`SELECT POWER(0, -1) FROM T WHERE id = 1`, "POWER"},
-		{`SELECT POWER(-1, 0.5) FROM T WHERE id = 1`, "POWER"},
-		{`SELECT POW(2, 10) FROM T WHERE id = 1`, "POW"},
-		{`SELECT EXP(0) FROM T WHERE id = 1`, "EXP"},
-		{`SELECT EXP(1000) FROM T WHERE id = 1`, "EXP"},
-		{`SELECT LN(1) FROM T WHERE id = 1`, "LN"},
-		{`SELECT LOG(2, 8) FROM T WHERE id = 1`, "LOG"},
+	// Integer-valued results fold back to int64 (2^10 = 1024).
+	for _, q := range []string{
+		`SELECT POWER(2, 10) FROM T WHERE id = 1`,
+		`SELECT POW(2, 10) FROM T WHERE id = 1`,
 	} {
+		var got int64
+		g.Expect(db.QueryRowContext(ctx, q).Scan(&got)).To(gomega.Succeed(), "query %q", q)
+		g.Expect(got).To(gomega.Equal(int64(1024)), "query %q", q)
+	}
+
+	// Float-valued results: SQRT(16)=4, EXP(0)=1, LN(1)=0, LOG(2,8)=3.
+	for _, tc := range []struct {
+		query string
+		want  float64
+	}{
+		{`SELECT SQRT(x) FROM T WHERE id = 1`, 4},
+		{`SELECT EXP(0) FROM T WHERE id = 1`, 1},
+		{`SELECT LN(1) FROM T WHERE id = 1`, 0},
+		{`SELECT LOG(2, 8) FROM T WHERE id = 1`, 3},
+	} {
+		var got float64
+		g.Expect(db.QueryRowContext(ctx, tc.query).Scan(&got)).To(gomega.Succeed(), "query %q", tc.query)
+		g.Expect(got).To(gomega.BeNumerically("~", tc.want, 1e-9), "query %q", tc.query)
+	}
+
+	// Out-of-domain results (NaN / ±Inf) degrade to SQL NULL.
+	for _, q := range []string{
+		`SELECT POWER(0, -1) FROM T WHERE id = 1`,
+		`SELECT POWER(-1, 0.5) FROM T WHERE id = 1`,
+		`SELECT EXP(1000) FROM T WHERE id = 1`,
+	} {
+		var out sql.NullFloat64
+		g.Expect(db.QueryRowContext(ctx, q).Scan(&out)).To(gomega.Succeed(), "query %q", q)
+		g.Expect(out.Valid).To(gomega.BeFalse(), "query %q must yield NULL", q)
+	}
+
+	// SQRT of a negative argument → typed 22023 error.
+	{
 		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectRejectionOrCascadesError(t, errRej, "Unsupported operator "+tc.opName)
+		errSqrt := db.QueryRowContext(ctx, `SELECT SQRT(-1) FROM T WHERE id = 1`).Scan(&dummy)
+		g.Expect(errSqrt).To(gomega.HaveOccurred(), "SQRT(-1) must error")
+		var apiErr *api.Error
+		g.Expect(errors.As(errSqrt, &apiErr)).To(gomega.BeTrue(), "want *api.Error, got %T", errSqrt)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidParameter), "SQRT(-1) → 22023")
 	}
 }
 
@@ -6306,16 +6282,11 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Scalar functions should propagate NULL (return NULL on NULL
-	// input). STRING-family scalar functions (UPPER / LOWER / TRIM)
-	// are absent from Java's function registry — those are pinned
-	// to reject in TestFDB_StringFunctionsRejected and friends, not
-	// here. ABS / SQRT / FLOOR / SIGN are also absent and rejected
-	// at the registry layer. The NULL-
-	// propagation focus here uses the `%` operator — Java exposes
-	// modulo only via `%` (the synonym map binds `%` -> "mod"); the
-	// MOD function-call form is rejected. The Mod evaluator preserves
-	// SQL-standard NULL-in/NULL-out semantics for both operands.
+	// Scalar functions propagate NULL (return NULL on NULL input). The
+	// Go-only scalar family (UPPER / ABS / SQRT / … — RFC-087) is pinned
+	// in TestFDB_StringFunctions / TestFDB_MathFunctions and friends; the
+	// NULL-propagation focus here uses the `%` operator. The Mod evaluator
+	// preserves SQL-standard NULL-in/NULL-out semantics for both operands.
 	var modA, modB sql.NullFloat64
 	g.Expect(db.QueryRowContext(ctx,
 		`SELECT val % 3, 10 % val FROM T WHERE id = 1`).
@@ -6509,28 +6480,21 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			wantCode: api.ErrCodeDivisionByZero,
 		},
 		{
-			// ABS is absent from fdb-relational 4.11.1.0's
-			// ArithmeticValue registry — Java's planner emits
-			// "Unsupported operator ABS" (SQLSTATE 0A000) before any
-			// argument validation runs. Pre-cleanup, Go evaluated ABS
-			// and rejected MinInt64 with 22003 NUMERIC_VALUE_OUT_OF_RANGE;
-			// with the Go-side dispatch removed,
-			// the rejection now fires at the function-registry layer
-			// with 0A000 and the byte-equal Java message. Per project
-			// conformance principle: doesn't work in Java → doesn't
-			// work in Go.
-			//
-			// Wrapped in `FROM T WHERE id = 1` because FROM-less SELECT
-			// is now rejected at parse time (UNSUPPORTED_QUERY 0AF00,
-			// fires before the function-registry layer).
-			name:     "ABS (function rejected before arg check)",
+			// ABS is a Go-only math scalar extension (RFC-087). The
+			// argument-level overflow edge — ABS(MinInt64), whose
+			// two's-complement negation wraps — raises 22003
+			// NUMERIC_VALUE_OUT_OF_RANGE via the runtime error channel.
+			name:     "ABS overflow (MinInt64) → 22003",
 			sql:      "SELECT ABS(-9223372036854775808) FROM T WHERE id = 1",
-			wantCode: api.ErrCodeUndefinedFunction,
+			wantCode: api.ErrCodeNumericValueOutOfRange,
 		},
 		{
-			name:     "SUBSTRING (function rejected before arg check)",
-			sql:      "SELECT SUBSTRING('hello', 1, 2.5) FROM T WHERE id = 1",
-			wantCode: api.ErrCodeUndefinedFunction,
+			// SQRT is a Go-only math scalar extension (RFC-087). The
+			// out-of-domain edge — SQRT of a negative argument — raises
+			// 22023 INVALID_PARAMETER_VALUE via the runtime error channel.
+			name:     "SQRT of negative → 22023",
+			sql:      "SELECT SQRT(-1) FROM T WHERE id = 1",
+			wantCode: api.ErrCodeInvalidParameter,
 		},
 		{
 			// FROM-less SELECT — fdb-relational 4.11.1.0 rejects at
@@ -7185,46 +7149,39 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 		g.Expect(out.Valid).To(gomega.BeFalse(), "CAST(NULL AS %s) must be NULL", cast)
 	}
 
-	// ABS / SQRT / POWER — Java-aligned rejection. The MinInt64
-	// overflow check that lived here previously is unreachable now
-	// that the function-registry rejection fires before any
-	// argument validation.
-	for _, tc := range []struct {
-		query  string
-		opName string
-	}{
-		{`SELECT ABS(n) FROM T WHERE id = 1`, "ABS"},
-		{`SELECT ABS(n) FROM T WHERE id = 2`, "ABS"},
-		{`SELECT SQRT(n) FROM T WHERE id = 2`, "SQRT"},
-		{`SELECT POWER(n, 2) FROM T WHERE id = 2`, "POWER"},
-	} {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
-	}
+	// ABS / SQRT / POWER are Go-only math scalar extensions (RFC-087).
+	// id=1 has n=MinInt64, id=2 has n=5. The ABS(MinInt64) overflow edge
+	// raises 22003 via the runtime error channel; ordinary inputs compute.
+	var dummy any
+	errAbs := db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 1`).Scan(&dummy)
+	g.Expect(errAbs).To(gomega.HaveOccurred(), "ABS(MinInt64) must error")
+	var absErr *api.Error
+	g.Expect(errors.As(errAbs, &absErr)).To(gomega.BeTrue(), "want *api.Error, got %T", errAbs)
+	g.Expect(absErr.Code).To(gomega.Equal(api.ErrCodeNumericValueOutOfRange), "ABS(MinInt64) → 22003")
 
-	// LEFT / RIGHT / SUBSTRING are STRING-family scalar functions that
-	// fdb-relational 4.11.1.0 has no entries for — Java's planner
-	// emits "Unsupported operator <NAME>" before any argument
-	// validation runs. The fractional-float-length argument check
-	// that used to live here is therefore unreachable; the rejection
-	// is itself pinned in string_functions.yaml and the other
-	// dedicated tests (TestFDB_LeftRightRejected, etc.). Re-assert
-	// here that the call-site rejection still fires when wrapped in
-	// otherwise-validating arguments.
-	for _, tc := range []struct {
-		query  string
-		opName string
-	}{
-		{`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`, "LEFT"},
-		{`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`, "RIGHT"},
-		{`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`, "SUBSTRING"},
+	var abs int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT ABS(n) FROM T WHERE id = 2`).Scan(&abs)).To(gomega.Succeed())
+	g.Expect(abs).To(gomega.Equal(int64(5)))
+
+	var sqrt float64
+	g.Expect(db.QueryRowContext(ctx, `SELECT SQRT(n) FROM T WHERE id = 2`).Scan(&sqrt)).To(gomega.Succeed())
+	g.Expect(sqrt).To(gomega.BeNumerically("~", math.Sqrt(5), 1e-9))
+
+	var pow int64
+	g.Expect(db.QueryRowContext(ctx, `SELECT POWER(n, 2) FROM T WHERE id = 2`).Scan(&pow)).To(gomega.Succeed())
+	g.Expect(pow).To(gomega.Equal(int64(25)))
+
+	// LEFT / RIGHT / SUBSTRING are Go-only STRING scalar extensions
+	// (RFC-087). A non-integral length argument (2.5) is non-coercible and
+	// degrades to SQL NULL rather than erroring. s = 'hello world'.
+	for _, q := range []string{
+		`SELECT LEFT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT RIGHT(s, 2.5) FROM T WHERE id = 1`,
+		`SELECT SUBSTRING(s, 1, 2.5) FROM T WHERE id = 1`,
 	} {
-		var dummy any
-		errRej := db.QueryRowContext(ctx, tc.query).Scan(&dummy)
-		g.Expect(errRej).To(gomega.HaveOccurred(), "query %q must be rejected", tc.query)
-		expectUnsupportedOperator(g, errRej, tc.opName, tc.query)
+		var out sql.NullString
+		g.Expect(db.QueryRowContext(ctx, q).Scan(&out)).To(gomega.Succeed(), "query %q", q)
+		g.Expect(out.Valid).To(gomega.BeFalse(), "query %q must yield NULL", q)
 	}
 }
 

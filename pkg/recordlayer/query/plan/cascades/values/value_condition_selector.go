@@ -69,17 +69,20 @@ func (*ConditionSelectorValue) Type() Type { return NotNullInt }
 // Strict-TRUE check: only `bool == true` triggers the index return.
 // Boolean.FALSE, NULL, or non-boolean results don't match. Mirrors
 // Java's `Boolean.TRUE.equals(result)` strict check.
-func (v *ConditionSelectorValue) Evaluate(evalCtx any) any {
+func (v *ConditionSelectorValue) Evaluate(evalCtx any) (any, error) {
 	for i, impl := range v.Implications {
 		if impl == nil {
 			continue
 		}
-		raw := impl.Evaluate(evalCtx)
+		raw, err := impl.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
 		if b, ok := raw.(bool); ok && b {
-			return int64(i)
+			return int64(i), nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a fresh ConditionSelectorValue with the

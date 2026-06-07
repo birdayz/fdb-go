@@ -68,8 +68,8 @@ func (*CompatibleTypeEvolutionPredicate) GetCorrelatedTo() map[CorrelationIdenti
 
 // Eval returns TriTrue. Plan-cache schema validation is not yet
 // ported; this predicate exists for structural conformance.
-func (*CompatibleTypeEvolutionPredicate) Eval(_ any) TriBool {
-	return TriTrue
+func (*CompatibleTypeEvolutionPredicate) Eval(_ any) (TriBool, error) {
+	return TriTrue, nil
 }
 
 // Explain renders the predicate in a human-readable form matching

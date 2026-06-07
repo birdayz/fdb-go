@@ -97,29 +97,37 @@ func (*DistanceValue) Type() Type { return NotNullDouble }
 
 // Evaluate computes the distance metric. Returns nil when either
 // operand is NULL or when the operands aren't compatible vectors.
-func (v *DistanceValue) Evaluate(evalCtx any) any {
+func (v *DistanceValue) Evaluate(evalCtx any) (any, error) {
 	if v.LeftChild == nil || v.RightChild == nil {
-		return nil
+		return nil, nil
 	}
-	left := asFloat64Slice(v.LeftChild.Evaluate(evalCtx))
-	right := asFloat64Slice(v.RightChild.Evaluate(evalCtx))
+	leftRaw, err := v.LeftChild.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	rightRaw, err := v.RightChild.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	left := asFloat64Slice(leftRaw)
+	right := asFloat64Slice(rightRaw)
 	if left == nil || right == nil {
-		return nil
+		return nil, nil
 	}
 	if len(left) != len(right) {
-		return nil // dimension mismatch — type-degraded
+		return nil, nil // dimension mismatch — type-degraded
 	}
 	switch v.Operator {
 	case DistanceEuclidean:
-		return euclideanDistance(left, right)
+		return euclideanDistance(left, right), nil
 	case DistanceEuclideanSquare:
-		return euclideanSquareDistance(left, right)
+		return euclideanSquareDistance(left, right), nil
 	case DistanceCosine:
-		return cosineDistance(left, right)
+		return cosineDistance(left, right), nil
 	case DistanceDotProduct:
-		return dotProductDistance(left, right)
+		return dotProductDistance(left, right), nil
 	}
-	return nil
+	return nil, nil
 }
 
 // asFloat64Slice converts the supported runtime vector

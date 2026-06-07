@@ -23,6 +23,7 @@ go_test(
         "bench_test.go",
         "expr_test.go",
         "fullstack_test.go",
+        "must_eval_test.go",
         "walk_test.go",
         "window_walk_test.go",
     ],

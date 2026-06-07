@@ -44,7 +44,7 @@ func (*ExistsValue) Type() Type { return NotNullBoolean }
 // Evaluate panics — ExistsValue is non-evaluable at the per-row
 // level. Specialized planner rules / executor handling does the
 // row-level test.
-func (*ExistsValue) Evaluate(any) any {
+func (*ExistsValue) Evaluate(any) (any, error) {
 	panic("ExistsValue.Evaluate: non-evaluable; specialized planner rule handles EXISTS lowering")
 }
 

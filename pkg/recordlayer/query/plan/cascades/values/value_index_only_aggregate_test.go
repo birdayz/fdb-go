@@ -67,7 +67,7 @@ func TestIndexOnlyAggregateValue_NilChildEmptyChildren(t *testing.T) {
 func TestIndexOnlyAggregateValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
 	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &FieldValue{Field: "x", Typ: NotNullLong})
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (compile-time-only)", got)
 	}
 }

@@ -46,7 +46,7 @@ func (p *ExistsPredicate) GetExistentialAlias() values.CorrelationIdentifier {
 // Eval returns TriUnknown — EXISTS evaluation isn't done at the
 // per-row predicate level; specialized planner rules / executor
 // handling does the row-level test.
-func (p *ExistsPredicate) Eval(_ any) TriBool { return TriUnknown }
+func (p *ExistsPredicate) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
 
 // Children returns the empty slice — leaf.
 func (*ExistsPredicate) Children() []QueryPredicate { return []QueryPredicate{} }

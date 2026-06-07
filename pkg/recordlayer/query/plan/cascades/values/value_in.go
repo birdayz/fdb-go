@@ -129,18 +129,24 @@ func (*InOpValue) Type() Type { return NullableBoolean }
 // equalsAny performs numeric coercion for mixed int/float
 // comparisons, matching Java's Comparisons.evalComparison(EQUALS).
 // See D-10 in CASCADES_DIVERGENCE.md.
-func (v *InOpValue) Evaluate(evalCtx any) any {
+func (v *InOpValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.List == nil {
-		return nil
+		return nil, nil
 	}
-	probe := v.Probe.Evaluate(evalCtx)
+	probe, err := v.Probe.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if probe == nil {
-		return nil // NULL IN anything = UNKNOWN
+		return nil, nil // NULL IN anything = UNKNOWN
 	}
-	list := v.List.Evaluate(evalCtx)
+	list, err := v.List.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	listAny, ok := list.([]any)
 	if !ok {
-		return nil // type-degraded — list isn't a slice
+		return nil, nil // type-degraded — list isn't a slice
 	}
 	sawNull := false
 	for _, elem := range listAny {
@@ -149,13 +155,13 @@ func (v *InOpValue) Evaluate(evalCtx any) any {
 			continue
 		}
 		if equalsAny(probe, elem) {
-			return true
+			return true, nil
 		}
 	}
 	if sawNull {
 		// Probe didn't match any non-NULL element; an unknown
 		// element might match. Result is UNKNOWN.
-		return nil
+		return nil, nil
 	}
-	return false
+	return false, nil
 }

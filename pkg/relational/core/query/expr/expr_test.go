@@ -453,10 +453,10 @@ func TestResolver_ResolveIsNull(t *testing.T) {
 	}
 
 	// Evaluate.
-	if cp.Eval(map[string]any{"NAME": nil}) != predicates.TriTrue {
+	if mustEvalPred(cp, map[string]any{"NAME": nil}) != predicates.TriTrue {
 		t.Fatal("NULL IS NULL should be TRUE")
 	}
-	if cp.Eval(map[string]any{"NAME": "foo"}) != predicates.TriFalse {
+	if mustEvalPred(cp, map[string]any{"NAME": "foo"}) != predicates.TriFalse {
 		t.Fatal("'foo' IS NULL should be FALSE")
 	}
 }
@@ -556,11 +556,11 @@ func TestResolver_ResolveIn(t *testing.T) {
 
 	// Eval against a row.
 	row := map[string]any{"ID": int64(2)}
-	if cp.Eval(row) != predicates.TriTrue {
+	if mustEvalPred(cp, row) != predicates.TriTrue {
 		t.Fatal("2 IN (1,2,3) should be TRUE")
 	}
 	row["ID"] = int64(9)
-	if cp.Eval(row) != predicates.TriFalse {
+	if mustEvalPred(cp, row) != predicates.TriFalse {
 		t.Fatal("9 IN (1,2,3) should be FALSE")
 	}
 }
@@ -703,12 +703,12 @@ func TestResolver_Integration_AgeGreaterEighteen(t *testing.T) {
 	}
 
 	row := map[string]any{"ID": int64(7)} // id+1 = 8 > 5 → TRUE
-	got := pred.Eval(row)
+	got := mustEvalPred(pred, row)
 	if got != predicates.TriTrue {
 		t.Fatalf("8 > 5: expected TRUE, got %v", got)
 	}
 	row["ID"] = int64(2) // 2+1 = 3 > 5 → FALSE
-	got = pred.Eval(row)
+	got = mustEvalPred(pred, row)
 	if got != predicates.TriFalse {
 		t.Fatalf("3 > 5: expected FALSE, got %v", got)
 	}

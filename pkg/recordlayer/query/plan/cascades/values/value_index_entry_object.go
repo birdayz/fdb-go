@@ -130,21 +130,21 @@ func (v *IndexEntryObjectValue) Type() Type { return v.ResultType }
 //   - The map has no binding for IndexEntryAlias.
 //   - The bound value isn't an IndexEntryReader.
 //   - The ordinal walk runs off the end of the tuple.
-func (v *IndexEntryObjectValue) Evaluate(evalCtx any) any {
+func (v *IndexEntryObjectValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	m, ok := evalCtx.(map[CorrelationIdentifier]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	bound, ok := m[v.IndexEntryAlias]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	reader, ok := bound.(IndexEntryReader)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	var t any
 	switch v.Source {
@@ -153,9 +153,9 @@ func (v *IndexEntryObjectValue) Evaluate(evalCtx any) any {
 	case TupleSourceValue:
 		t = reader.IndexValues()
 	default:
-		return nil
+		return nil, nil
 	}
-	return walkOrdinalPath(t, v.OrdinalPath)
+	return walkOrdinalPath(t, v.OrdinalPath), nil
 }
 
 // walkOrdinalPath descends through `t` along `path`, treating each

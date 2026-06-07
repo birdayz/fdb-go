@@ -430,7 +430,10 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 			if cv == nil {
 				t.Fatal("ExplodeExpression has nil collection value")
 			}
-			vals := cv.Evaluate(nil)
+			vals, err := cv.Evaluate(nil)
+			if err != nil {
+				t.Fatalf("collection value evaluate: %v", err)
+			}
 			list, ok := vals.([]any)
 			if !ok {
 				t.Fatalf("collection value evaluated to %T, expected []any", vals)

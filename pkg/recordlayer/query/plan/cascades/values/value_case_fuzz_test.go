@@ -41,7 +41,7 @@ func FuzzCaseExpression_FirstMatchWins(f *testing.F) {
 		selector := NewConditionSelectorValue(implications)
 		pick := NewPickValue(selector, alternatives, NotNullLong)
 
-		got := pick.Evaluate(nil)
+		got := mustEvalForTest(pick, nil)
 
 		// Property check: walk the implications to find the expected
 		// first-TRUE index.
@@ -100,8 +100,8 @@ func FuzzAndOrValue_Kleene3VL(f *testing.F) {
 		right := mkOperand(rightRaw)
 
 		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
-			lr := NewAndOrValue(op, left, right).Evaluate(nil)
-			rl := NewAndOrValue(op, right, left).Evaluate(nil)
+			lr := mustEvalForTest(NewAndOrValue(op, left, right), nil)
+			rl := mustEvalForTest(NewAndOrValue(op, right, left), nil)
 
 			// Property 2: result must be one of {true, false, nil}.
 			switch lr {
@@ -118,8 +118,8 @@ func FuzzAndOrValue_Kleene3VL(f *testing.F) {
 
 		// Property 5: idempotence (a OP a == a, with NULL exception).
 		for _, op := range []AndOrOp{AndOrAnd, AndOrOr} {
-			selfEval := NewAndOrValue(op, left, left).Evaluate(nil)
-			leftEval := left.Evaluate(nil)
+			selfEval := mustEvalForTest(NewAndOrValue(op, left, left), nil)
+			leftEval := mustEvalForTest(left, nil)
 			if selfEval != leftEval {
 				t.Fatalf("op=%v not idempotent: a OP a=%v, a=%v leftRaw=%d", op, selfEval, leftEval, leftRaw)
 			}
@@ -157,7 +157,7 @@ func FuzzArrayConstructorValue_LengthInvariant(f *testing.F) {
 		}
 		v := NewArrayConstructorValue(NullableLong, elements)
 
-		got := v.Evaluate(nil)
+		got := mustEvalForTest(v, nil)
 		gotSlice, ok := got.([]any)
 		if !ok {
 			t.Fatalf("Evaluate returned %T, want []any", got)

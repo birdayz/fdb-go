@@ -40,17 +40,20 @@ func (*CardinalityValue) Type() Type { return NotNullLong }
 // Evaluate returns the array length (as int64). Returns nil if
 // Child is nil-Value or evaluates to nil. Returns nil if the
 // Child evaluates to a non-slice (type-degraded UNKNOWN).
-func (v *CardinalityValue) Evaluate(evalCtx any) any {
+func (v *CardinalityValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
-		return nil
+		return nil, nil
 	}
-	val := v.Child.Evaluate(evalCtx)
+	val, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
-		return nil
+		return nil, nil
 	}
 	in, ok := val.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	return int64(len(in))
+	return int64(len(in)), nil
 }

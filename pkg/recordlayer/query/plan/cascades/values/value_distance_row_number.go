@@ -78,16 +78,16 @@ func (*DistanceRowNumberValue) IsIndexOnly() bool { return true }
 // pattern (`_row_number` key) — same as base RowNumberValue. Real
 // execution wires the HNSW search graph; the harness exposes the
 // per-row counter for testability.
-func (*DistanceRowNumberValue) Evaluate(evalCtx any) any {
+func (*DistanceRowNumberValue) Evaluate(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if r, ok := m["_row_number"]; ok {
-			return r
+			return r, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a fresh DistanceRowNumberValue with split

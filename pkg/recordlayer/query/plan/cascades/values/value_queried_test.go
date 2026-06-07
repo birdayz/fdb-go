@@ -30,7 +30,7 @@ func TestQueriedValue_NilTypeFallsBackToUnknown(t *testing.T) {
 func TestQueriedValue_EvaluateReturnsNil(t *testing.T) {
 	t.Parallel()
 	v := NewQueriedValue([]string{"T"}, UnknownType)
-	if got := v.Evaluate(nil); got != nil {
+	if got := mustEvalForTest(v, nil); got != nil {
 		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
 	}
 }

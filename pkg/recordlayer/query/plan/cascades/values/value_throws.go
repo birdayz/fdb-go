@@ -36,6 +36,6 @@ func (v *ThrowsValue) Type() Type { return v.ResultType }
 // Evaluate panics — ThrowsValue marks an unreachable branch.
 // Loud panic message ensures planner bugs that route data through
 // the dead branch surface immediately.
-func (*ThrowsValue) Evaluate(any) any {
+func (*ThrowsValue) Evaluate(any) (any, error) {
 	panic("ThrowsValue.Evaluate: unreachable branch executed — planner bug; this Value marks dead code")
 }
