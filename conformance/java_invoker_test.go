@@ -334,15 +334,38 @@ func startJavaServer() (*JavaInvoker, error) {
 	// write since some earlier exception, while subsequent requests
 	// queued up in TCP buffers waiting for a worker. Continuously
 	// reading from stderr keeps the pipe drained so writes never block.
-	// Forward to our stderr so failures still surface visibly during
-	// debugging.
-	go func() { _, _ = io.Copy(os.Stderr, stderr) }()
-	// Continue to drain stdout too — anything beyond CONFORMANCE_SERVER_PORT
-	// is unexpected but we don't want it backing up either.
+	//
+	// We MUST keep draining, but forwarding it all to our stderr is a
+	// DEBUGGABILITY HAZARD: Java prints a full stack trace for every shape
+	// it can't plan (thousands over a full run), so the forwarded flood
+	// bloats the test log. On a CI failure, `--test_output=errors` dumps
+	// that huge log and GitHub TRUNCATES the step output — dropping the
+	// Ginkgo failure summary (which scenario failed, Go-vs-Java mismatch)
+	// that's printed at the END. The result: a red CI that just says
+	// "FAILED TestConformance" with no diagnosable detail. So discard the
+	// Java server's stdout/stderr by default (still drained → no deadlock)
+	// and forward to our stderr only under CONFORMANCE_DEBUG, for
+	// interactive debugging where the Ginkgo failure is read live.
+	debugJava := os.Getenv("CONFORMANCE_DEBUG") != ""
 	go func() {
-		for scanner.Scan() {
-			fmt.Fprintln(os.Stderr, "[java-stdout]", scanner.Text())
+		if debugJava {
+			_, _ = io.Copy(os.Stderr, stderr)
+			return
 		}
+		_, _ = io.Copy(io.Discard, stderr)
+	}()
+	// Continue to drain stdout too — anything beyond CONFORMANCE_SERVER_PORT
+	// is unexpected but we don't want it backing up either. Use io.Copy (not
+	// the bufio.Scanner used to read the port above): bufio.Scanner caps a
+	// token at 64KB and a longer line makes Scan() return false (ErrTooLong),
+	// which would STOP the drain and re-introduce the pipe-fill stall this
+	// block exists to prevent. io.Copy has no line cap.
+	go func() {
+		var dst io.Writer = io.Discard
+		if debugJava {
+			dst = os.Stderr
+		}
+		_, _ = io.Copy(dst, stdout)
 	}()
 
 	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
