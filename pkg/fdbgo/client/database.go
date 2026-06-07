@@ -529,8 +529,10 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 		// cancel. A caller-ctx cancellation must not yank an in-flight commit (already
 		// bounded by the per-RPC timeout) and must not make the barrier no-op on a
 		// cancelled ctx (commitpath.go's `if ctx.Err()!=nil {return}`). The retry
-		// backoff below still honors ctx via OnError. WithoutCancel(Background) is a
-		// no-op, so the existing Background callers are unchanged.
+		// backoff below still honors ctx via OnError. For callers that pass
+		// context.Background() (no cancellation or deadline to strip), WithoutCancel is
+		// observably inert — it wraps the context but removes nothing — so their
+		// behavior is unchanged.
 		if err := tx.Commit(context.WithoutCancel(ctx)); err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr

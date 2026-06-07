@@ -25,6 +25,29 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
 
 ---
 
+## ⚠️ Known deadlock — TOP open bug (P0, root-cause pending a captured dump)
+
+**[ ] Rare load-dependent deadlock in `//pkg/recordlayer/chaos:chaos_test`.** Observed once:
+under the full `bazelisk test //...` run (`--local_test_jobs=4`, 4 concurrent FDB containers)
+`chaos_test` hung at the *last* target and made no progress for 40 min before being killed.
+- **Reproducibility:** could NOT reproduce — 0/6 follow-up runs (5× `--runs_per_test` in
+  isolation + 1× full-suite, all ≤120s). So it is **load/timing-dependent**, surfacing only
+  under heavy concurrent Docker contention, most likely in the pure-Go FDB client wait path
+  (`pkg/fdbgo/client` / `transport`) under slow-FDB conditions.
+- **NOT introduced by this PR:** P1.2's `slog.Default().Error` already shipped (07a037e5) and
+  passed chaos; the slog fast-follow is functionally identical; all 6 follow-up runs carried the
+  working-tree changes and passed.
+- **Why it ate 40 min:** `chaos_test` was `size = "enormous"` (3600s) — a hang is neither killed
+  nor dumped for an hour. **Instrumented:** reduced to `size = "large"` (900s) so a recurrence
+  fails with a **Go `-test.timeout` goroutine dump** (the prerequisite for root-causing). The
+  four `timeout = "eternal"` targets (`pkg/fdbgo/client`, `pkg/recordlayer`, `pkg/recordlayer/bench`,
+  `pkg/relational/sqldriver/stress`) carry the same silent-hang risk — audit/bound next (bench &
+  stress may legitimately need it; `recordlayer` likely does not).
+- **Next step:** root-cause from the next captured dump (static-audit the client for an unbounded
+  channel/WaitGroup/future wait with no ctx/timeout escape). Do **not** dismiss as a flake.
+
+---
+
 ## P0 — Blockers (before any production use)
 
 ### [x] P0.1 — Add a LICENSE (legal blocker) · S — DONE

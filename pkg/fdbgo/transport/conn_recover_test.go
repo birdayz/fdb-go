@@ -16,9 +16,9 @@ import (
 func TestRecoverLoop_ContainsPanicAndFailsConnection(t *testing.T) {
 	t.Parallel()
 	var logged string
-	orig := seriousLogf
-	seriousLogf = func(format string, args ...any) { logged += fmt.Sprintf(format, args...) }
-	t.Cleanup(func() { seriousLogf = orig })
+	orig := seriousLog
+	seriousLog = func(msg string, attrs ...any) { logged += fmt.Sprintf("%s %v", msg, attrs) }
+	t.Cleanup(func() { seriousLog = orig })
 
 	cli, srv := net.Pipe()
 	defer srv.Close()

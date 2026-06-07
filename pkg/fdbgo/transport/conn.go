@@ -549,12 +549,14 @@ func (c *Conn) failConnection(err error) {
 	})
 }
 
-// seriousLogf reports unexpected, must-not-be-silent events (recovered panics in
-// the connection's background goroutines) at ERROR level through log/slog. Routing
-// through slog makes these diagnostics pluggable via the standard Go mechanism
-// (slog.SetDefault) with no fdbgo-specific logging API. A var so tests can capture it.
-var seriousLogf = func(format string, args ...any) {
-	slog.Default().Error(fmt.Sprintf(format, args...))
+// seriousLog reports an unexpected, must-not-be-silent event (a recovered panic in
+// the connection's background goroutines) at ERROR level through log/slog, passing
+// structured attributes rather than a pre-formatted string so a JSON/structured
+// handler gets queryable fields. Routing through slog.Default() makes these
+// diagnostics pluggable via the standard Go mechanism (slog.SetDefault) with no
+// fdbgo-specific logging API. A var so tests can capture it.
+var seriousLog = func(msg string, attrs ...any) {
+	slog.Default().Error(msg, attrs...)
 }
 
 // recoverLoop contains a panic in a long-lived connection goroutine. A malformed
@@ -567,7 +569,8 @@ var seriousLogf = func(format string, args ...any) {
 func (c *Conn) recoverLoop(which string) {
 	if r := recover(); r != nil {
 		err := fmt.Errorf("fdbgo: panic in %s goroutine: %v", which, r)
-		seriousLogf("[fdbgo] SERIOUS: %v\n%s", err, debug.Stack())
+		seriousLog("recovered panic in connection goroutine",
+			"goroutine", which, "err", err, "stack", string(debug.Stack()))
 		c.failConnection(err)
 	}
 }
@@ -621,7 +624,8 @@ func (c *Conn) readLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			exitErr = fmt.Errorf("fdbgo: panic in readLoop goroutine: %v", r)
-			seriousLogf("[fdbgo] SERIOUS: %v\n%s", exitErr, debug.Stack())
+			seriousLog("recovered panic in readLoop goroutine",
+				"err", exitErr, "stack", string(debug.Stack()))
 		}
 		c.failConnection(exitErr)
 	}()
