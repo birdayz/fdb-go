@@ -90,6 +90,7 @@ go_test(
         "rebase_fuzz_test.go",
         "rebase_test.go",
         "replace_test.go",
+        "scalar_function_value_evaluate_test.go",
         "scalar_functions_extra2_test.go",
         "scalar_functions_extra_test.go",
         "simplifier_value_test.go",

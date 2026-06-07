@@ -900,7 +900,51 @@ func (s *ScalarFunctionValue) Evaluate(evalCtx any) (any, error) {
 		}
 		args[i] = av
 	}
-	return evalScalarFunction(s.FuncName, args), nil
+	// GREATEST/LEAST are the only seed functions that can raise a user-facing
+	// error (incompatible argument types). Route them through the error-returning
+	// evalGreatestLeast so the mismatch flows through translateExecError as a typed
+	// SQL error instead of escaping this error-returning method as a panic
+	// (RFC-091; the executor control-flow recovers that used to catch it are gone).
+	// Every other seed function declines to nil and never errors, so
+	// evalScalarFunction's any return is correct for them.
+	switch s.FuncName {
+	case "GREATEST", "LEAST":
+		return evalGreatestLeast(s.FuncName, args)
+	default:
+		return evalScalarFunction(s.FuncName, args), nil
+	}
+}
+
+// evalGreatestLeast evaluates GREATEST/LEAST and returns a typed
+// *ScalarTypeMismatchError on incompatible argument types rather than panicking,
+// so it flows through translateExecError as a user-facing SQL error. Any NULL
+// argument yields NULL (Java conformance: GREATEST/LEAST propagate NULL). Shared
+// by ScalarFunctionValue.Evaluate (error path, production) and evalScalarFunction's
+// legacy any-returning GREATEST/LEAST case (which panics for its direct callers).
+func evalGreatestLeast(name string, args []any) (any, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	isGreatest := name == "GREATEST"
+	best := args[0]
+	if best == nil {
+		return nil, nil
+	}
+	for _, a := range args[1:] {
+		if a == nil {
+			return nil, nil
+		}
+		cmp, ok := compareScalar(best, a)
+		if !ok {
+			return nil, &ScalarTypeMismatchError{
+				Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
+			}
+		}
+		if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
+			best = a
+		}
+	}
+	return best, nil
 }
 
 // evalScalarFunction dispatches the seed scalar function set. NULL
@@ -1289,34 +1333,17 @@ func evalScalarFunction(name string, args []any) any {
 		// Unsupported condition type — decline so runtime can error.
 		return nil
 	case "GREATEST", "LEAST":
-		// GREATEST/LEAST — Java conformance: any NULL arg → NULL result
-		// (Postgres skips, Oracle propagates; Java propagates). Mirror
-		// Java per embedded's behaviour. Cross-type comparisons decline
-		// at the fold path so the runtime can surface 22000
-		// CANNOT_CONVERT_TYPE.
-		if len(args) == 0 {
-			return nil
+		// Shared logic in evalGreatestLeast. Direct callers of this any-returning
+		// function (constant-fold seed + unit tests) keep the legacy contract where
+		// a type mismatch is signalled by panic; the production eval path
+		// (ScalarFunctionValue.Evaluate) calls evalGreatestLeast directly and returns
+		// the *ScalarTypeMismatchError, so this panic is not reached during query
+		// execution. NULL args propagate to NULL (Java conformance).
+		v, err := evalGreatestLeast(name, args)
+		if err != nil {
+			panic(err)
 		}
-		isGreatest := name == "GREATEST"
-		best := args[0]
-		if best == nil {
-			return nil
-		}
-		for _, a := range args[1:] {
-			if a == nil {
-				return nil
-			}
-			cmp, ok := compareScalar(best, a)
-			if !ok {
-				panic(&ScalarTypeMismatchError{
-					Message: fmt.Sprintf("incompatible types for %s: %T vs %T", name, best, a),
-				})
-			}
-			if (isGreatest && cmp < 0) || (!isGreatest && cmp > 0) {
-				best = a
-			}
-		}
-		return best
+		return v
 	case "EXP":
 		if len(args) != 1 || args[0] == nil {
 			return nil
