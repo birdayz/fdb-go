@@ -108,6 +108,27 @@ var _ = Describe("Conformance server FDB retry (RFC-090)", func() {
 		Expect(rs.Rows[0][0].(float64)).To(Equal(float64(2)))
 	})
 
+	It("recovers at the exact budget boundary (5 faults, MAX_FDB_RETRIES=6)", func() {
+		// 5 faults = the most that can be absorbed: attempts 1..5 inject, attempt
+		// 6 (the last) runs the real query. One more would exhaust. Pins the
+		// recoverable edge of the budget.
+		rs, err := invoke(5, fdbTransactionTooOld)
+		Expect(err).NotTo(HaveOccurred(), "5 faults must still recover on the 6th (final) attempt")
+		Expect(rs.Rows).To(HaveLen(1))
+		Expect(rs.Rows[0][0].(float64)).To(Equal(float64(2)))
+	})
+
+	It("surfaces at the exact budget boundary (6 faults = every attempt fails)", func() {
+		// 6 faults = MAX_FDB_RETRIES: all six attempts inject, none reaches the
+		// real query, so it must surface. The minimal exhausting count — one less
+		// recovers (above), so this pins the exhausted edge precisely.
+		_, err := invoke(6, fdbTransactionTooOld)
+		Expect(err).To(HaveOccurred(), "6 faults exhaust the budget and must fail loudly")
+		var je *JavaError
+		Expect(errors.As(err, &je)).To(BeTrue(), "expected a typed Java FDBException, got %v", err)
+		Expect(je.ExceptionClass).To(Equal("FDBException"))
+	})
+
 	It("surfaces the error once the retry budget is exhausted", func() {
 		// 7 > MAX_FDB_RETRIES (6): every attempt is injected, so the last one
 		// throws and the error must surface rather than hang or pass silently.

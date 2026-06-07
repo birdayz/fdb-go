@@ -1,7 +1,8 @@
 # RFC-090 — A3 conformance flake: Java server doesn't retry `transaction_too_old`
 
-**Status:** Draft — Torvalds + bradfitz reviewed; design revised per their NAK
-(retry the *not-committed* class only — see Fix).
+**Status:** Implemented — Torvalds ACK, bradfitz ACK, @claude LGTM, plus
+codex / Graefe / FDB-core / Asmongold ACK on the combined #269 review.
+Design revised per the RFC-round NAK (retry the *not-committed* class only — see Fix).
 
 **Found:** With RFC-089 making conformance CI failures diagnosable, #269's CI
 finally showed the real failure (not the join-enum nondeterminism we assumed):
@@ -77,7 +78,7 @@ type mismatch, parse error) surfaces as a **non-retryable** `RelationalException
 with a SQLState — the predicate returns false, the error is rethrown immediately,
 and the spec still fails loudly. Retry absorbs the CI-load timeout, nothing else.
 
-**Backoff holds a pooled handler thread** for up to ~2.4s; the jitter decorrelates
+**Backoff holds a pooled handler thread** for up to ~3s; the jitter decorrelates
 the wakeups of pool threads that all hit 1007 in the same load spike, and sleeping
 during a spike sheds load rather than hammering a saturated box.
 
@@ -118,3 +119,8 @@ is gone.
   reduce contention but is a perf knob, not a correctness fix — a GC pause or
   scheduler hiccup can still starve a thread >5s. Retry is the correctness fix;
   parallelism tuning is complementary and measured separately.
+- `createSchemaTemplatePersistentJava` / `dropSchemaTemplatePersistentJava` run
+  DDL without `withFdbRetry` (codex note). They belong to the A2 catalog
+  round-trip track, not the A3 ephemeral-schema hot path that surfaced the flake,
+  and run far less concurrently — so they're left unwrapped here. If A2 ever
+  shows the same 1007, wrap them with the same helper.
