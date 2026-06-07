@@ -156,7 +156,10 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 		}
 
 		row := result.GetValue()
-		groupKey, keyVals := c.computeGroupKey(row)
+		groupKey, keyVals, gkErr := c.computeGroupKey(row)
+		if gkErr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, gkErr
+		}
 
 		if c.current == nil {
 			// First row — start the first group.
@@ -208,14 +211,17 @@ func (c *aggregateCursor) emitFinal() (recordlayer.RecordCursorResult[QueryResul
 	return recordlayer.NewResultWithValue(completed, nonEndContinuation), nil
 }
 
-func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any) {
+func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error) {
 	if c.scalarMode {
-		return "", nil
+		return "", nil, nil
 	}
 	keyParts := make([]any, len(c.groupingKeys))
 	t := make(tuple.Tuple, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v := k.Evaluate(row.Datum)
+		v, err := k.EvaluateErr(row.Datum)
+		if err != nil {
+			return "", nil, err
+		}
 		keyParts[i] = v
 		// tuple.Pack handles nil, int64, float64, string, []byte natively.
 		// For types the tuple layer doesn't support, fall back to the
@@ -227,7 +233,7 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any) {
 			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
 	}
-	return string(t.Pack()), keyParts
+	return string(t.Pack()), keyParts, nil
 }
 
 func (c *aggregateCursor) newGroupState() *groupState {
@@ -251,7 +257,10 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val := agg.Operand.Evaluate(row.Datum)
+		val, err := agg.Operand.EvaluateErr(row.Datum)
+		if err != nil {
+			return err
+		}
 		if val == nil {
 			continue
 		}

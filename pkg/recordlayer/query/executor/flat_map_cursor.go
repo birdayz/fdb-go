@@ -112,7 +112,10 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 					continue
 				}
 
-				outputRow := c.computeResult(*c.currentOuter, innerRow)
+				outputRow, crErr := c.computeResult(*c.currentOuter, innerRow)
+				if crErr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, crErr
+				}
 				cont := c.buildContinuation(result.GetContinuation(), false)
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
@@ -139,7 +142,10 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
 			if c.leftOuter && !c.innerHadMatch {
-				outputRow := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
+				outputRow, crErr := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
+				if crErr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, crErr
+				}
 				cont := c.buildContinuation(innerCont, false)
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
@@ -202,7 +208,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 //	nestedContext = fromOuterContext.withBinding(CORRELATION, innerAlias, innerResult)
 //	computed = resultValue.eval(store, nestedContext)
 //	return inheritOuter ? outerResult.withComputed(computed) : QueryResult.ofComputed(computed)
-func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) QueryResult {
+func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResult, error) {
 	// Build evaluation context with both correlations bound.
 	outerDatum, _ := outerRow.Datum.(map[string]any)
 	innerDatum, _ := innerRow.Datum.(map[string]any)
@@ -210,8 +216,11 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) QueryResul
 		WithBinding(c.outerAlias, outerDatum).
 		WithBinding(c.innerAlias, innerDatum)
 
-	computed := c.resultValue.Evaluate(nestedCtx)
-	return QueryResult{Datum: computed}
+	computed, err := c.resultValue.EvaluateErr(nestedCtx)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	return QueryResult{Datum: computed}, nil
 }
 
 // buildContinuation creates a FlatMapContinuation proto. When innerTimeLimited
