@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -427,6 +429,7 @@ func (c *Conn) Flush() error {
 // let senders enqueue, then flushes everything at once.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
+	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
 	var errChans []chan<- error
@@ -546,6 +549,26 @@ func (c *Conn) failConnection(err error) {
 	})
 }
 
+// seriousLogf reports unexpected, must-not-be-silent events (recovered panics in
+// the connection's background goroutines) to stderr. A var so P1.2's pluggable
+// logger can route it and tests can capture it.
+var seriousLogf = log.Printf
+
+// recoverLoop contains a panic in a long-lived connection goroutine. A malformed
+// frame or an internal bug must fail THIS connection — callers recover via retry /
+// wrong-shard reroute, exactly as libfdb_c turns a bad reply into connection_failed
+// — and must never crash the whole host: a recover in a request goroutine cannot
+// catch a panic raised on a different goroutine's stack. debug.Stack here still
+// shows the original panic site (the stack stays live until recover completes the
+// unwind). See TODO-production.md P0.2.
+func (c *Conn) recoverLoop(which string) {
+	if r := recover(); r != nil {
+		err := fmt.Errorf("fdbgo: panic in %s goroutine: %v", which, r)
+		seriousLogf("[fdbgo] SERIOUS: %v\n%s", err, debug.Stack())
+		c.failConnection(err)
+	}
+}
+
 // SetDebug enables frame-level debug tracing to stderr.
 func (c *Conn) SetDebug(enabled bool) {
 	c.debugFrames = enabled
@@ -583,15 +606,21 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 //
 // Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
-	// Teardown on ANY exit — the normal read-error path AND an unexpected panic
-	// in frame parsing. The single failConnection path (cancel + close socket +
-	// fail all pending; C++ disconnect-promise equivalent) is idempotent, so if
-	// Close/monitor already fired this is a no-op, and the first caller's error
-	// wins. exitErr carries the real read error when there is one.
+	// Teardown on ANY exit — the normal read-error path AND an unexpected panic in
+	// frame parsing, which is now actually recovered below. (Previously the defer
+	// ran on panic but did NOT call recover, so a malformed frame propagated and
+	// crashed the whole host.) The single failConnection path (cancel + close
+	// socket + fail all pending; C++ disconnect-promise equivalent) is idempotent,
+	// so if Close/monitor already fired this is a no-op and the first caller's error
+	// wins. exitErr carries the real read error, or the panic, when there is one.
 	exitErr := errConnClosed
+	defer c.loopWG.Done()
 	defer func() {
+		if r := recover(); r != nil {
+			exitErr = fmt.Errorf("fdbgo: panic in readLoop goroutine: %v", r)
+			seriousLogf("[fdbgo] SERIOUS: %v\n%s", exitErr, debug.Stack())
+		}
 		c.failConnection(exitErr)
-		c.loopWG.Done()
 	}()
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
@@ -750,6 +779,7 @@ func buildVoidReply() []byte {
 // resets and we wait another 2s. This tolerates slow-but-alive connections.
 func (c *Conn) connectionMonitor() {
 	defer c.loopWG.Done()
+	defer c.recoverLoop("connectionMonitor")
 
 	for {
 		// Outer loop: sleep, then decide whether to PING.

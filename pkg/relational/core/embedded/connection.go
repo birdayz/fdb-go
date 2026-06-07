@@ -12,6 +12,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -297,12 +299,37 @@ func defaultSlowQueryThresholdMicros() int64 {
 	return 0
 }
 
+// seriousLogf reports unexpected, must-not-be-silent events (recovered panics)
+// to stderr. It is a var so P1.2's pluggable logger can route it and tests can
+// capture it; a recovered panic is always a bug and must never be swallowed
+// silently.
+var seriousLogf = log.Printf
+
+// recoveredPanicError converts a panic that escaped statement planning/execution
+// into a returned error. This is the Go "don't leak panics" API boundary (the
+// encoding/json model): genuine internal-invariant asserts may panic freely below
+// here, but at this boundary they become a generic internal error so a single
+// statement cannot crash a shared, multi-tenant process. The panic value and the
+// stack are logged SERIOUS (debug.Stack here still shows the original panic site —
+// the stack is live until recover completes the unwind); the caller gets a generic
+// message because the panic value may carry schema/row data. It deliberately does
+// NOT re-panic by type — see TODO-production.md P0.3.
+func recoveredPanicError(r any) error {
+	seriousLogf("[fdb-record-layer] SERIOUS: recovered panic in statement execution: %v\n%s", r, debug.Stack())
+	return api.NewError(api.ErrCodeInternalError, "internal error")
+}
+
 // ExecContext executes SQL (DDL/DML/transaction) and returns the row-
 // count result. Routes through cascadesGenerator in exec mode, which
 // dispatches DML/DDL/transaction through execStatement and returns a
 // Plan whose Execute aggregates RowsAffected across a multi-statement
 // batch.
-func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (driver.Result, error) {
+func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (res driver.Result, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			res, err = nil, recoveredPanicError(r)
+		}
+	}()
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -333,7 +360,12 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 // through the query.Generator seam. Rejects multi-statement batches
 // and non-row-returning Plans — behaviour matches the pre-seam
 // QueryContext.
-func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args []driver.NamedValue) (driver.Rows, error) {
+func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args []driver.NamedValue) (rows driver.Rows, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			rows, err = nil, recoveredPanicError(r)
+		}
+	}()
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -342,8 +374,8 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if err != nil {
 		return nil, err
 	}
-	if err := c.ensureCatalogInit(ctx); err != nil {
-		return nil, err
+	if cerr := c.ensureCatalogInit(ctx); cerr != nil {
+		return nil, cerr
 	}
 	gen := newCascadesGenerator(c)
 	plan, err := gen.Plan(ctx, substituted)

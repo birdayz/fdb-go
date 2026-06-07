@@ -22,6 +22,7 @@ go_test(
     name = "transport_test",
     srcs = [
         "conn_lifecycle_test.go",
+        "conn_recover_test.go",
         "conn_unit_test.go",
         "ping_test.go",
         "reply_pool_test.go",
