@@ -1,6 +1,8 @@
 # RFC-088 — `GROUP BY` over a join with a joined-table key falsely 42703s
 
-**Status:** Draft — awaiting Graefe + Torvalds ACK.
+**Status:** Implemented — Graefe ACK (conditional: resolver-convergence follow-up
+filed in TODO.md + ordering-invariant comment added), Torvalds ACK, codex ACK,
+FDB-core ACK, @claude LGTM. Shipped on PR #269.
 **Found:** while triaging the un-skip-yamsql epic (the `join_optimization_probes`
 `D.DNAME` failure). A real correctness bug, independent of that scenario.
 

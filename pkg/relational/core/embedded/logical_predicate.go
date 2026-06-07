@@ -2241,6 +2241,20 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		tableFields = nil
 	}
 
+	// INVARIANT (load-bearing): this existence test compares only the BARE
+	// name against the UNION of all source fields, so it is deliberately
+	// qualifier-blind — `e.dname` (dname on the joined dept, not emp) would
+	// pass here because DNAME is in the union. That coarse check is SAFE only
+	// because the precise semantic resolver runs FIRST at every call site and
+	// rejects a wrong-qualifier / genuinely-undefined key before we get here:
+	//   - top-level GROUP BY: resolveColumnName(resolver, gb) (this file, ~L1002)
+	//     and plan_visitor's resolve steps;
+	//   - correlated scalar subquery: the GROUP-BY-key resolution in
+	//     buildCorrelatedScalar ("resolve GROUP BY key: ... not found on table").
+	// Both are pinned by TestFDB_GroupByWrongQualifierRejected. If any future
+	// change runs validateGroupByProjection BEFORE the resolver, this becomes a
+	// cross-table false-accept — converge the existence check onto
+	// resolver.ResolveIdentifier instead (TODO.md, RFC-088 follow-up).
 	checkColumn := func(col string) error {
 		upper := strings.ToUpper(col)
 		bare := parseColRef(upper).bare()

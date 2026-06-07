@@ -196,3 +196,42 @@ func TestFDB_GroupByOverJoin_UndefinedKeyStillRejects(t *testing.T) {
 		t.Fatalf("undefined GROUP BY column over join: code = %s, want %s (42703)", apiErr.Code, api.ErrCodeUndefinedColumn)
 	}
 }
+
+// TestFDB_GroupByWrongQualifierRejected pins the load-bearing invariant behind
+// validateGroupByProjection's deliberately qualifier-blind existence check: the
+// check compares only the BARE name against the UNION of all join sources, so
+// `d.salary` (SALARY lives on emp, not the qualified dept) passes that coarse
+// gate — and is SAFE only because the precise semantic resolver runs FIRST at
+// every call site and rejects the wrong qualifier before validateGroupByProjection
+// sees it. Covers BOTH call sites (Graefe: verify the correlated-scalar site is
+// equally resolver-gated; codex: the existence-check dimension the suite missed).
+func TestFDB_GroupByWrongQualifierRejected(t *testing.T) {
+	t.Parallel()
+	db, ctx := gojDB(t, "wrongqual")
+
+	// (1) Top-level GROUP BY path. d.salary: bare SALARY is in union(emp,dept),
+	// so the bare-name check passes; the resolver (resolveColumnName, ~L1002)
+	// must reject the wrong qualifier with 42703.
+	_, err := db.ExecContext(ctx,
+		"SELECT d.salary, COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.salary")
+	if err == nil {
+		t.Fatal("top-level: GROUP BY d.salary (salary is on emp, not dept) must be rejected, not silently bound to emp.salary")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("top-level: error is not *api.Error: %T %v", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUndefinedColumn {
+		t.Fatalf("top-level wrong-qualifier GROUP BY: code = %s, want %s (42703)", apiErr.Code, api.ErrCodeUndefinedColumn)
+	}
+
+	// (2) Correlated-scalar-subquery path (validateGroupByProjection call site at
+	// buildCorrelatedScalar). The inner GROUP BY key d2.salary is wrong-qualified
+	// the same way; the correlated path's own GROUP-BY-key resolution must reject
+	// it rather than fall through to the qualifier-blind bare-name check.
+	_, err2 := db.ExecContext(ctx,
+		"SELECT e.eid, (SELECT COUNT(*) FROM dept AS d2 WHERE d2.did = e.did GROUP BY d2.salary) FROM emp AS e")
+	if err2 == nil {
+		t.Fatal("correlated: inner GROUP BY d2.salary (salary not on dept) must be rejected")
+	}
+}
