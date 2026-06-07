@@ -3926,6 +3926,53 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	return nil
 }
 
+// groupedScalarSortKeys builds the ORDER BY sort keys for a correlated scalar
+// subquery's grouped output (RFC-085). Each key's .Value is a FieldValue keyed by
+// the EXACT datum key the aggregate cursor emits — a group key as
+// strings.ToUpper(bare(col)) (the same derivation scalarCol uses, :4317), or a
+// visible aggregate via aggDatumKey (its materialised name, not a recomputed
+// canonical). The executor's sort does an exact-case datum lookup (values.go), so a
+// mismatched key returns nil and sorts every row equal (nondeterministic — the bug
+// this fixes). Hence any ORDER BY ref resolving to neither a group key nor a visible
+// aggregate — including an ORDER-BY-only (not selected) aggregate or an expression
+// key — is REJECTED loudly (SQL grouping semantics), never silently dropped. Setting
+// .Value (which translateSort prefers over .Expr) bypasses the raw-text lookup.
+func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]logical.SortKey, error) {
+	keys := make([]logical.SortKey, 0, len(sq.orderBy))
+	for _, ob := range sq.orderBy {
+		bare := strings.ToUpper(parseColRef(ob.colName).bare())
+		dk := ""
+		for _, k := range sq.groupBy {
+			if gkdk := strings.ToUpper(parseColRef(k).bare()); gkdk == bare && bare != "" {
+				dk = gkdk
+				break
+			}
+		}
+		if dk == "" {
+			if v, ok := aggDatumKey[strings.ToUpper(ob.colName)]; ok {
+				dk = v
+			} else if v, ok := aggDatumKey[bare]; ok {
+				dk = v
+			}
+		}
+		if dk == "" {
+			return nil, &CorrelatedExistsError{
+				Message: fmt.Sprintf("correlated scalar subquery: ORDER BY %q must reference a grouping column or a selected aggregate", ob.colName),
+			}
+		}
+		dir := logical.SortAsc
+		if !ob.ascending {
+			dir = logical.SortDesc
+		}
+		sk := logical.SortKey{Value: &values.FieldValue{Field: dk}, Expr: dk, Dir: dir}
+		if ob.nullsFirst != nil {
+			sk.NullsFirst = *ob.nullsFirst
+		}
+		keys = append(keys, sk)
+	}
+	return keys, nil
+}
+
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
@@ -4050,17 +4097,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: fmt.Sprintf("correlated scalar subquery: %v", vErr), Cause: vErr,
 			}
 		}
-		// ORDER BY over grouped output (ordering the groups themselves) is not
-		// supported here: the sort would have to resolve its keys against the
-		// post-aggregation row, which this builder does not wire. Reject rather
-		// than silently drop the ORDER BY (which would leave the FirstOrDefault
-		// group choice nondeterministic with no signal). ORDER BY without
-		// GROUP BY (ordering rows before the LIMIT 1) is still supported.
-		if len(sq.orderBy) > 0 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: ORDER BY combined with GROUP BY is not supported",
-			}
-		}
+		// ORDER BY over grouped output (ordering the groups so the LIMIT-1
+		// FirstOrDefault picks a deterministic group) is wired below — a sort over
+		// the post-aggregate row whose keys are canonicalised to the exact datum
+		// keys the aggregate cursor emits (see groupedScalarSortKeys). RFC-085.
 	}
 
 	// A real aggregate function (COUNT/SUM/MIN/MAX/AVG) is present iff
@@ -4129,6 +4169,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
+		// Match-name (uppercased: SELECT alias, source FN(bareArg), canonical) →
+		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
+		// for resolving an ORDER BY ref over the grouped output (RFC-085).
+		aggDatumKey := make(map[string]string)
 		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
@@ -4243,12 +4287,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			if ac.visible {
 				scalarCol = name
+				// Record the datum key under every form an ORDER BY might name it:
+				// its SELECT alias, its source FN(bareArg) form, and the materialised
+				// canonical name itself.
+				aggDatumKey[strings.ToUpper(name)] = name
+				if ac.outName != "" {
+					aggDatumKey[strings.ToUpper(ac.outName)] = name
+				}
+				if bareArg := parseColRef(ac.aggArg).bare(); bareArg != "" {
+					aggDatumKey[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = name
+				}
 			}
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
 			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
 			scalarCol = name
+			aggDatumKey[strings.ToUpper(name)] = name
+			if sq.countStarAlias != "" {
+				aggDatumKey[strings.ToUpper(sq.countStarAlias)] = name
+			}
 		}
 		// If the single visible output is a bare group-key projection (e.g.
 		// `SELECT status ... GROUP BY status HAVING COUNT(*) > 1`), the scalar
@@ -4289,6 +4347,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
 		}
 		innerOp = aggOp
+		// ORDER BY over the grouped output: sort the groups BEFORE the LIMIT 1 so
+		// FirstOrDefault picks the ordered-first group deterministically. Keys are
+		// canonicalised to the exact post-aggregate datum keys (RFC-085).
+		if len(sq.orderBy) > 0 {
+			sortKeys, skErr := groupedScalarSortKeys(sq, aggDatumKey)
+			if skErr != nil {
+				return values.CorrelationIdentifier{}, skErr
+			}
+			innerOp = logical.NewSort(innerOp, sortKeys)
+		}
 		// GROUP BY may yield many groups; HAVING may filter the single group
 		// to none. Cap at the first group (FirstOrDefault) for the scalar
 		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
@@ -4302,7 +4370,19 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
 		switch {
 		case len(sq.projCols) == 1:
-			scalarCol = strings.ToUpper(sq.projCols[0])
+			// A qualified projection (`SELECT o.amount`) must resolve to the
+			// bare datum key the inner row carries. For a single inner table the
+			// row is keyed bare (`AMOUNT`) and replaceScalarSubqueryRef
+			// re-qualifies under the inner alias (`O.AMOUNT`) at read time — a
+			// scalarCol that kept the `o.` qualifier would double-prefix to
+			// `O.O.AMOUNT` and resolve to NULL (same failure mode the bare
+			// group-key case below guards). For a join the row is keyed
+			// qualified (see :910), so keep the qualifier there.
+			if len(sq.joins) > 0 {
+				scalarCol = strings.ToUpper(sq.projCols[0])
+			} else {
+				scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+			}
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
 			// The output is the bare group-key projection (stored as a visible
 			// aggCol with groupCol set). Use the grouping column (qualifier
@@ -4346,18 +4426,40 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 
 		// Add ORDER BY if present.
 		if len(sq.orderBy) > 0 {
-			keys := make([]logical.SortKey, len(sq.orderBy))
-			for i, ob := range sq.orderBy {
-				dir := logical.SortAsc
-				if !ob.ascending {
-					dir = logical.SortDesc
+			if len(sq.groupBy) > 0 {
+				// GROUP BY (group keys only): the sort runs over the POST-aggregate
+				// row, whose keys are bare-uppercased — raw ob.colName (original case,
+				// possibly qualified) would miss and sort every row equal. Canonicalise
+				// to the exact group-key datum keys (RFC-085). No aggregates here.
+				sortKeys, skErr := groupedScalarSortKeys(sq, nil)
+				if skErr != nil {
+					return values.CorrelationIdentifier{}, skErr
 				}
-				keys[i] = logical.SortKey{Expr: ob.colName, Dir: dir}
-				if ob.nullsFirst != nil {
-					keys[i].NullsFirst = *ob.nullsFirst
+				innerOp = logical.NewSort(innerOp, sortKeys)
+			} else {
+				// No GROUP BY: the sort runs over the raw scan rows before LIMIT 1.
+				// For a single inner table that row is keyed by the bare column
+				// name, so a qualified ORDER BY key (`ORDER BY o.amount`) would
+				// miss and sort every row equal — strip the qualifier to the bare
+				// key (preserving the written case, which reproduces the working
+				// unqualified form). A join row is keyed qualified, so leave it.
+				keys := make([]logical.SortKey, len(sq.orderBy))
+				for i, ob := range sq.orderBy {
+					dir := logical.SortAsc
+					if !ob.ascending {
+						dir = logical.SortDesc
+					}
+					keyExpr := ob.colName
+					if len(sq.joins) == 0 {
+						keyExpr = parseColRef(ob.colName).bare()
+					}
+					keys[i] = logical.SortKey{Expr: keyExpr, Dir: dir}
+					if ob.nullsFirst != nil {
+						keys[i].NullsFirst = *ob.nullsFirst
+					}
 				}
+				innerOp = logical.NewSort(innerOp, keys)
 			}
-			innerOp = logical.NewSort(innerOp, keys)
 		}
 
 		// SQL standard: scalar subquery must return at most 1 row.

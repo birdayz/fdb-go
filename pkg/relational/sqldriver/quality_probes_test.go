@@ -874,19 +874,41 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("order_by_with_group_by_rejected", func(t *testing.T) {
-		// ORDER BY combined with GROUP BY (ordering the groups) is rejected
-		// rather than silently dropped — the FirstOrDefault group choice would
-		// otherwise be nondeterministic with no signal.
-		err := expectError(t, db, `SELECT name,
-			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status)
-			FROM customers c`)
-		if err == nil {
-			t.Fatal("expected error for ORDER BY combined with GROUP BY")
+	t.Run("order_by_with_group_by_deterministic", func(t *testing.T) {
+		// RFC-085: ORDER BY combined with GROUP BY (ordering the groups before
+		// the FirstOrDefault LIMIT 1) is now SUPPORTED — it makes the multi-group
+		// scalar choice deterministic instead of arbitrary. ORDER BY status ASC
+		// picks the alphabetically-first group's SUM(amount); DESC picks the last.
+		// Per-customer groups (status → SUM amount):
+		//   Alice:  pending=200.00, shipped=100.50
+		//   Bob:    cancelled=75.00, shipped=50.25
+		//   Charlie: shipped=300.00
+		//   Diana:  pending=NULL (amount null)
+		check := func(dir string, want []any) {
+			t.Helper()
+			rows := collectRows(t, db, fmt.Sprintf(`SELECT name,
+				(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status %s LIMIT 1)
+				FROM customers c ORDER BY name`, dir))
+			if len(rows) != 4 {
+				t.Fatalf("%s: want 4 rows, got %d", dir, len(rows))
+			}
+			for i, w := range want {
+				if w == nil {
+					if rows[i][1] != nil {
+						t.Errorf("%s row %d: want NULL, got %v", dir, i, rows[i][1])
+					}
+					continue
+				}
+				got, ok := rows[i][1].(float64)
+				if !ok || got != w.(float64) {
+					t.Errorf("%s row %d: want %v, got %v (%T)", dir, i, w, rows[i][1], rows[i][1])
+				}
+			}
 		}
-		if !strings.Contains(err.Error(), "ORDER BY") {
-			t.Errorf("error should mention ORDER BY, got: %v", err)
-		}
+		// ASC: Alice→pending(200), Bob→cancelled(75), Charlie→shipped(300), Diana→NULL.
+		check("ASC", []any{200.00, 75.00, 300.00, nil})
+		// DESC: Alice→shipped(100.50), Bob→shipped(50.25), Charlie→shipped(300), Diana→NULL.
+		check("DESC", []any{100.50, 50.25, 300.00, nil})
 	})
 
 	t.Run("group_by_unqualified_key_in_join", func(t *testing.T) {
