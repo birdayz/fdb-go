@@ -170,7 +170,7 @@ every Open path; tests for both.
 
 ## P1 — High (before relying on it at scale)
 
-### [ ] P1.1 — `-race` on the SQL layer in CI (+ fix what it finds) · M
+### [x] P1.1 — `-race` on the SQL layer in CI (+ fix what it finds) · M — DONE
 Main CI runs `//...` with no race detector (`ci.yml:41`); nightly covers 5 targets and
 **excludes all of `//pkg/relational/...`** (plan cache, driver, planner). Add a required
 `-race` job on `//pkg/relational/...`; fix `ReportUnresolvedReference` (`values.go:777`, in the
@@ -186,9 +186,12 @@ separate goroutines, both setting the shared `bool`. 266 race instances across s
 plandiff, all the same field. Unrelated to RFC-091 (the eval sweep touches none of the client
 read path) — exactly the class the audit predicted behind the no-`-race`-on-relational gap. Fix:
 `hadRead` → `atomic.Bool` (build + copylocks-vet clean; re-ran `-race` on both targets → green).
-**Still to do for P1.1:** wire the `-race` job into CI (not just this one-off run); the
-`ReportUnresolvedReference` global (`values.go:777`) did NOT surface in this run but remains a
-latent landmine to convert to `atomic.Pointer`/set-once.
+**[x] CI job added:** `ci.yml` now has a gating **Race detector (SQL layer)** job —
+`bazelisk test //pkg/relational/... --@rules_go//go/config:race --test_tag_filters=-stress`.
+Confirmed green across the FULL layer post-`hadRead`-fix (18/18, 0 races).
+**Residual (minor, tracked):** the `ReportUnresolvedReference` global (`values.go:777`) did NOT
+surface under `-race` (tests set it only in `TestMain`/serially), but it's still a process-global
+func pointer read on the eval hot path — convert to `atomic.Pointer`/set-once when convenient.
 
 ### [ ] P1.2 — Observability: pluggable logger · M
 Zero logging surface (no slog, no logger interface). Add a pluggable `*slog.Logger` (nil =
