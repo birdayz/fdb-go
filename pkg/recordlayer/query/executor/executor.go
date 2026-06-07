@@ -2106,6 +2106,10 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		// INT/LONG→FLOAT are promotable in Java's lattice; widen rather than
 		// falling through to the 22000 reject (e.g. SUM(BIGINT) into a FLOAT
 		// column). Matches ConvertToProtoValue's VALUES path.
+		// TODO(RFC-083 follow-up): int64→float32 silently produces ±Inf for
+		// |n| > MaxFloat32 (~3.4e38); the float64→FLOAT arm above range-checks but
+		// these do not. Verify Java's CastValue.LONG_TO_FLOAT behaviour and mirror it
+		// (the same gap pre-exists in ConvertToProtoValue's FloatKind branch).
 		case int64:
 			return protoreflect.ValueOfFloat32(float32(n)), nil
 		case int:

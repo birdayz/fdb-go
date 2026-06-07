@@ -2680,7 +2680,9 @@ func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlaye
 // is present. AVG→DOUBLE and COUNT→LONG are function-determined; SUM/MIN/MAX
 // inherit the operand type. The function prefix is read off the *internal*
 // canonical name (the contract the executor's aggResultName also relies on), not
-// user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode.
+// user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
+// — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
+// function (it exists only for the nil-ProjectedValue bare-aggregate path).
 func aggResultTypeFromName(name string, operand values.Value) values.Type {
 	sym := name
 	if idx := strings.IndexByte(name, '('); idx >= 0 {
