@@ -28,7 +28,7 @@ suites against your workload, and review `PRODUCTION_READINESS.md` /
 |-----------|---------|-------|
 | **FoundationDB** | **7.3.75** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
 | **Java Record Layer** | **4.11.1.0** | Wire compatibility target. Conformance tests run against this version. |
-| **Go** | **1.26.1** | Minimum Go version. |
+| **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
 FDB 8.0 is not yet released. When it ships, the Go bindings and client library should be upgraded together.

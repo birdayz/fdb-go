@@ -1,6 +1,6 @@
 module github.com/birdayz/fdb-record-layer-go
 
-go 1.26.1
+go 1.26.4
 
 require (
 	buf.build/go/protoyaml v0.6.0
