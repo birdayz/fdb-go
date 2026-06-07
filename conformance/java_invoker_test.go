@@ -361,7 +361,7 @@ func startJavaServer() (*JavaInvoker, error) {
 	// which would STOP the drain and re-introduce the pipe-fill stall this
 	// block exists to prevent. io.Copy has no line cap.
 	go func() {
-		dst := io.Writer(io.Discard)
+		var dst io.Writer = io.Discard
 		if debugJava {
 			dst = os.Stderr
 		}
