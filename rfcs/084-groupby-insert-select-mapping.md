@@ -1,6 +1,6 @@
 # RFC-084 — `INSERT … SELECT … GROUP BY` writes the wrong columns (spurious 23505)
 
-**Status:** Draft — awaiting Graefe + Torvalds ACK.
+**Status:** Implemented — Graefe + Torvalds ACK.
 **Found:** during RFC-083 (the AVG follow-up at TODO line 71). A real Java-parity
 correctness bug, independent of AVG.
 

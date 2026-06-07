@@ -92,7 +92,9 @@ func TestFDB_GroupByInsertSelect_MultiAggregate(t *testing.T) {
 	var got [][3]int64
 	for rows.Next() {
 		var a, b, c int64
-		rows.Scan(&a, &b, &c)
+		if err := rows.Scan(&a, &b, &c); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
 		got = append(got, [3]int64{a, b, c})
 	}
 	if len(got) != 2 || got[0] != [3]int64{1, 30, 2} || got[1] != [3]int64{2, 30, 1} {
@@ -105,12 +107,14 @@ func TestFDB_GroupByInsertSelect_MultiAggregate(t *testing.T) {
 func TestFDB_GroupByInsertSelect_Variants(t *testing.T) {
 	t.Parallel()
 
-	// Lowercase aggregate arg `SUM(v)` — pins canonical upper-casing agreeing
-	// end-to-end (the FieldValue key must match the runtime datum key).
-	t.Run("lowercase_arg", func(t *testing.T) {
-		db, ctx := gbInsertDB(t, "lc")
-		if _, err := db.ExecContext(ctx, "INSERT INTO dst SELECT g, SUM(v) FROM src GROUP BY g"); err != nil {
-			t.Fatalf("lowercase arg: %v", err)
+	// Uppercase aggregate arg `SUM(V)` referencing the lowercase column `v` —
+	// pins case-INSENSITIVE operand resolution agreeing end-to-end (the canonical
+	// FieldValue key must match the runtime datum key regardless of the written
+	// case). A distinct axis from the core test's `SUM(v)`.
+	t.Run("uppercase_arg", func(t *testing.T) {
+		db, ctx := gbInsertDB(t, "uc")
+		if _, err := db.ExecContext(ctx, "INSERT INTO dst SELECT g, SUM(V) FROM src GROUP BY g"); err != nil {
+			t.Fatalf("uppercase arg: %v", err)
 		}
 		if got := readDst(t, ctx, db, "SELECT id, s FROM dst ORDER BY id"); len(got) != 2 || got[0] != [2]int64{1, 30} {
 			t.Fatalf("got %v", got)
@@ -144,7 +148,9 @@ func TestFDB_GroupByInsertSelect_Variants(t *testing.T) {
 		}
 		// groups: g1 SUM30, g2 SUM30, g3 SUM5 — g1/g2 still collide on SUM→id.
 		// Use a fresh src per-group-unique sum: delete and reseed uniquely.
-		db.ExecContext(ctx, "DELETE FROM src WHERE id >= 0")
+		if _, err := db.ExecContext(ctx, "DELETE FROM src WHERE id >= 0"); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
 		if _, err := db.ExecContext(ctx, "INSERT INTO src VALUES (1,1,10),(2,2,20),(3,3,30)"); err != nil {
 			t.Fatalf("reseed: %v", err)
 		}
