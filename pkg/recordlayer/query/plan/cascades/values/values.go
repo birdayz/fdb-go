@@ -1622,6 +1622,16 @@ func compareScalar(a, b any) (int, bool) {
 // evaluator (which can surface 22018 INVALID_CHARACTER_VALUE) handles
 // the conversion error. Mirrors the strictness of
 // embedded.functions.ToIntegerArg.
+func scalarFnInt64Arg(v any) (int64, bool) {
+	if i, ok := ToInt64(v); ok {
+		return i, true
+	}
+	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) && float64FitsInt64(f) {
+		return int64(f), true
+	}
+	return 0, false
+}
+
 // twoPow63 is 2^63 — the smallest float64 strictly greater than math.MaxInt64.
 // math.MaxInt64 (2^63-1) has no exact float64 representation and rounds UP to
 // this value, so it cannot be used as an inclusive upper bound in a float guard.
@@ -1634,16 +1644,6 @@ const twoPow63 = 9223372036854775808.0
 // math.MinInt64 (-2^63) IS exactly representable as float64, so it is inclusive.
 func float64FitsInt64(f float64) bool {
 	return f >= math.MinInt64 && f < twoPow63
-}
-
-func scalarFnInt64Arg(v any) (int64, bool) {
-	if i, ok := ToInt64(v); ok {
-		return i, true
-	}
-	if f, _, ok := ToFloat64(v); ok && f == math.Trunc(f) && float64FitsInt64(f) {
-		return int64(f), true
-	}
-	return 0, false
 }
 
 // nullifEqual is the equality test used by NULLIF's plan-time fold.
