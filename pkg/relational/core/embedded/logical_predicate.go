@@ -2203,16 +2203,42 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 		}
 	}
 
+	// Collect the field set from EVERY base-table source — the primary
+	// table AND each join source — so a GROUP BY / projection key from a
+	// joined table (`SELECT d.dname ... FROM emp e JOIN dept d ... GROUP BY
+	// d.dname`) passes the existence check instead of falsely 42703-ing
+	// because it isn't a column of the first table. If ANY source is a
+	// derived table / CTE (no record type), its columns are unknowable, so
+	// skip the existence check entirely (tableFields = nil) — conservative,
+	// matching the pre-join behaviour for an unresolvable primary source.
 	var tableFields map[string]bool
-	if md != nil && sq.tableName != "" {
-		rt := md.GetRecordType(sq.tableName)
-		if rt != nil && rt.Descriptor != nil {
+	allResolved := true
+	if md != nil {
+		collect := func(tableName string) {
+			if tableName == "" {
+				allResolved = false
+				return
+			}
+			rt := md.GetRecordType(tableName)
+			if rt == nil || rt.Descriptor == nil {
+				allResolved = false
+				return
+			}
+			if tableFields == nil {
+				tableFields = make(map[string]bool)
+			}
 			fields := rt.Descriptor.Fields()
-			tableFields = make(map[string]bool, fields.Len())
 			for i := 0; i < fields.Len(); i++ {
 				tableFields[strings.ToUpper(string(fields.Get(i).Name()))] = true
 			}
 		}
+		collect(sq.tableName)
+		for _, j := range sq.joins {
+			collect(j.tableName)
+		}
+	}
+	if !allResolved {
+		tableFields = nil
 	}
 
 	checkColumn := func(col string) error {
