@@ -535,6 +535,20 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 			return nil, ctx.Err()
 		}
 
+		// Fetch the commit-path read version under the *live* ctx, so a cancel that
+		// arrives during the GRV RPC (the sub-RPC window the bare ctx.Err() check
+		// above can't cover) aborts the read rather than running detached. This is
+		// idempotent — for a transaction that already read, ensureReadVersion is a
+		// no-op; for a write-only transaction it is the only commit-path read, and it
+		// must honor ctx. Commit's own ensureReadVersion(WithoutCancel) then no-ops,
+		// so only the actual commit RPC + commit_unknown_result barrier stay detached.
+		if err := tx.ensureReadVersion(ctx); err != nil {
+			if retryErr := tx.OnError(ctx, err); retryErr != nil {
+				return nil, retryErr
+			}
+			continue
+		}
+
 		// RFC-090: run the dispatched commit and its commit_unknown_result
 		// idempotency barrier (commitDummyTransaction) on a context the caller cannot
 		// cancel. A caller-ctx cancellation must not yank an in-flight commit (already
