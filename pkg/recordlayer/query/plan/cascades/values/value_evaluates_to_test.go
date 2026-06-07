@@ -114,10 +114,13 @@ func TestEvaluatesToValue_SimplifyConstantFold(t *testing.T) {
 	}
 }
 
-func TestEvaluatesToValue_SimplifyChildFold(t *testing.T) {
+func TestEvaluatesToValue_SimplifyDoesNotFoldDivByZeroToNull(t *testing.T) {
 	t.Parallel()
-	// EvaluatesTo over an arithmetic expression that folds to nil
-	// (div by zero) → IS NULL becomes TRUE.
+	// RFC-091: a child 1/0 must NOT fold to NULL at plan time, so `(1/0) IS NULL`
+	// does NOT collapse to TRUE. The division raises division-by-zero (22012) at
+	// runtime, matching Java — IS NULL does not swallow the error. (Previously the
+	// constant fold swallowed 1/0→NULL and this returned TRUE — the bug Graefe
+	// flagged.)
 	div := &ArithmeticValue{
 		Op:    OpDiv,
 		Left:  &ConstantValue{Value: int64(1), Typ: NotNullLong},
@@ -125,7 +128,7 @@ func TestEvaluatesToValue_SimplifyChildFold(t *testing.T) {
 	}
 	v := NewEvaluatesToValue(div, EvaluatesToNull)
 	folded := SimplifyValue(v)
-	if got := folded.Evaluate(nil); got != true {
-		t.Fatalf("(1/0) IS NULL = %v, want true", got)
+	if _, err := folded.EvaluateErr(nil); err == nil {
+		t.Fatal("(1/0) IS NULL must raise division-by-zero, not fold to TRUE")
 	}
 }

@@ -213,19 +213,15 @@ func composeFieldOverConstructor(v Value) Value {
 // field(field(v, path1), path2) is a nested field access. In Go's single-step
 // model this doesn't apply directly (FieldValue has one Field, not a path).
 // But when Child is another FieldValue accessing the same base, we can flatten.
-func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
-	defer func() {
-		if r := recover(); r != nil {
-			switch r.(type) {
-			case *InvalidCastError, *ArithmeticOverflowError, *ScalarTypeMismatchError:
-				out = nil
-			default:
-				panic(r)
-			}
-		}
-	}()
+func tryCastConstant(cv *ConstantValue, target Type) *ConstantValue {
 	cast := NewCastValue(cv, target)
-	result := cast.Evaluate(nil)
+	// A failing cast (bad cast / overflow / type mismatch) is NOT foldable —
+	// leave it in place so it raises the SQL error at runtime (RFC-091). A
+	// genuine invariant panic propagates to the db/sql boundary recover.
+	result, err := cast.EvaluateErr(nil)
+	if err != nil {
+		return nil
+	}
 	if result != nil {
 		return &ConstantValue{Value: result, Typ: target}
 	}

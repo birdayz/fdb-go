@@ -1003,22 +1003,22 @@ func TestAggregateValue_Type_SumWithoutOperandFallsBackToLong(t *testing.T) {
 	}
 }
 
-// TestEvaluateConstant_PanicRecovers pins the defence-in-depth
-// recover() in EvaluateConstant. A Value whose IsConstantValue says
-// "yes" (composite with all-constant children) but whose Evaluate
-// panics must produce (nil, false), not an uncaught panic. Today
-// IsConstantValue rules out the panicky shapes (Aggregate inside Cast
-// is excluded), but the recover stays — this test makes sure
-// removing it would surface as a failure.
-func TestEvaluateConstant_PanicRecovers(t *testing.T) {
+// TestEvaluateConstant_InvariantPanicPropagates pins the RFC-091 contract: the old
+// defence-in-depth recover() in EvaluateConstant is GONE. A genuine invariant panic
+// during plan-time folding (a constant-looking Value whose EvaluateErr panics — an
+// "impossible" shape IsConstantValue is meant to exclude) must PROPAGATE, not be
+// silently swallowed. Plan-time folding runs under gen.Plan, so the db/sql boundary
+// recover catches it (→ internal error) and the process stays safe without a second
+// net here. User-reachable eval ERRORS, by contrast, decline-to-fold (so the error
+// surfaces at runtime with the right SQLSTATE) — see fold_error_test.go.
+func TestEvaluateConstant_InvariantPanicPropagates(t *testing.T) {
 	t.Parallel()
-	v := &panicValue{
-		child: &ConstantValue{Value: int64(1), Typ: TypeInt},
-	}
-	got, ok := EvaluateConstant(v)
-	if ok || got != nil {
-		t.Fatalf("EvaluateConstant on panicking value: got (%v, %v), want (nil, false)", got, ok)
-	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("EvaluateConstant must propagate an invariant panic (the db/sql boundary recover handles it), not swallow it")
+		}
+	}()
+	EvaluateConstant(&panicValue{child: &ConstantValue{Value: int64(1), Typ: TypeInt}})
 }
 
 // panicValue is a test-only Value that looks constant (has a single

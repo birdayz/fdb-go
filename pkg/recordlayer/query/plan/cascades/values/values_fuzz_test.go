@@ -47,15 +47,19 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 			t.Fatalf("SimplifyValue returned nil — should always return a Value (got input: a=%d b=%d c=%d op1=%d op2=%d)", a, b, c, op1, op2)
 		}
 
-		// 2. Result must be a ConstantValue (numeric fold) or
-		//    NullValue (div-by-zero etc. — propagated). Should never
-		//    be a non-collapsed composite, since the tree was fully
-		//    constant.
+		// 2. Result must be a ConstantValue (numeric fold) or NullValue (a
+		//    constant NULL). An all-constant tree that ERRORS on evaluation
+		//    (div-by-zero / overflow) is NOT folded — RFC-091: erroring
+		//    constants decline to fold so the error surfaces at runtime
+		//    (22012 / 22003) instead of silently folding to NULL. So a
+		//    non-collapsed composite is acceptable iff it genuinely errors.
 		switch out.(type) {
 		case *ConstantValue, *NullValue:
-			// ok
+			// ok — folded to a literal
 		default:
-			t.Fatalf("expected ConstantValue or NullValue after fold of all-constant tree, got %T", out)
+			if _, err := out.EvaluateErr(nil); err == nil {
+				t.Fatalf("all-constant tree neither folded to a literal nor errors: got %T with no eval error", out)
+			}
 		}
 
 		// 3. Idempotency: simplifying the result must be a no-op (the

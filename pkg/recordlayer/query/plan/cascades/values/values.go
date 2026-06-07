@@ -432,28 +432,23 @@ func IsConstantValue(v Value) bool {
 // constant sub-expression without writing an `if isConstant { eval
 // and wrap }` dance every time.
 //
-// Panics during Evaluate are caught and translated to (nil, false)
-// — a constant-looking tree that panics (e.g. an AggregateValue
-// buried inside a Cast — IsConstantValue should exclude it, but
-// defence-in-depth) is better reported as "not foldable" than
-// bubbling up.
+// A constant that ERRORS on evaluation (div0, overflow, bad CAST, type
+// mismatch) is reported as NOT foldable — folding it to NULL would diverge from
+// the runtime path, which raises the SQL error (e.g. 22012). Declining to fold
+// leaves the expression in place so the error surfaces at execution with the
+// correct SQLSTATE (RFC-091; previously these folded to NULL — a silent-wrong
+// plan-time divergence). A genuine invariant panic during folding (should never
+// happen — IsConstantValue gates it) propagates to the db/sql boundary recover
+// (folding runs under gen.Plan); it is not silently swallowed.
 func EvaluateConstant(v Value) (out any, ok bool) {
 	if v == nil || !IsConstantValue(v) {
 		return nil, false
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			switch r.(type) {
-			case *ArithmeticDivisionByZeroError, *ArithmeticOverflowError, *ScalarTypeMismatchError, *InvalidCastError:
-				out = nil
-				ok = true
-			default:
-				out = nil
-				ok = false
-			}
-		}
-	}()
-	return v.Evaluate(nil), true
+	val, err := v.EvaluateErr(nil)
+	if err != nil {
+		return nil, false
+	}
+	return val, true
 }
 
 // ContainsAggregate reports whether v has any AggregateValue in its
