@@ -24,6 +24,7 @@ go_test(
     name = "sqldriver_test",
     srcs = [
         "ambiguous_column_star_test.go",
+        "avg_double_insert_fdb_test.go",
         "cascades_fdb_test.go",
         "case_null_branch_type_test.go",
         "correlated_exists_crossjoin_test.go",
@@ -43,6 +44,7 @@ go_test(
         "multiway_join_order_nway_test.go",
         "multiway_join_order_probe_test.go",
         "noncorrelated_exists_fdb_test.go",
+        "ordered_grouped_scalar_subquery_fdb_test.go",
         "plan_cache_bench_test.go",
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",

@@ -161,33 +161,13 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 		if v, ok := val.(int64); ok {
 			return protoreflect.ValueOfInt64(v), nil
 		}
-		// INSERT ... SELECT with an aggregate (SUM/AVG) produces a float64
-		// value even for integer inputs because the accumulator stores
-		// float64 state. Accept a whole-valued float64 and coerce, matching
-		// Postgres/MySQL semantics where `INSERT INTO t(n) SELECT SUM(v)`
-		// is well-defined. Rejects non-integer floats with a clear error.
-		if v, ok := val.(float64); ok {
-			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v {
-				// Java aligns a fractional float → integer column at
-				// assignment-time with 22000 (cannot_convert_type) —
-				// see case-when.yamsql. Pre-dayshift-40 Go used 22023
-				// (INVALID_PARAMETER), same class but wrong specific
-				// code. Whole-valued floats still coerce (supports
-				// INSERT ... SELECT SUM(v) and CASE branches where
-				// the double result is a whole integer).
-				// Java verbatim — same SemanticException as plain INSERT
-				// type-mismatch. fdb-relational doesn't distinguish a
-				// fractional-float-into-int column from a string-into-int
-				// column at the message level.
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-					"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
-			}
-			if v < -9.2233720368547758e18 || v > 9.2233720368547748e18 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"value %g out of range for %s column %q", v, fd.Kind(), fd.Name())
-			}
-			return protoreflect.ValueOfInt64(int64(v)), nil
-		}
+		// A float64 (an AVG result, or a DOUBLE literal/expression) into a
+		// BIGINT column is NOT coerced: DOUBLE→LONG has no edge in Java's
+		// promotion lattice, so it falls through to the verbatim 22000
+		// SemanticException below, matching Java's plan-time PromoteValue
+		// rejection. (The former whole-valued-float→int64 coercion silently
+		// accepted DOUBLE→BIGINT, a divergence; aggregate INSERT…SELECT now
+		// rejects at plan time — see checkInsertSelectPromotable.)
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		if v, ok := val.(int64); ok {
 			if v < 0 || v > math.MaxUint32 {

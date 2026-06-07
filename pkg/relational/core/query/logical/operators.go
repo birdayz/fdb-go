@@ -126,11 +126,20 @@ func (f *LogicalFilter) Explain(indent string) string {
 // returns nil for the whole query. Non-nil slots are used directly
 // as projection Values in the Cascades plan.
 type LogicalProject struct {
-	Input                      LogicalOperator
-	Projections                []string
-	Aliases                    []string                   // parallel to Projections; "" means no alias
-	ProjectedValues            []values.Value             // parallel to Projections; nil slot = walker declined
-	IsComputed                 []bool                     // parallel to Projections; true = expression, not plain column ref
+	Input           LogicalOperator
+	Projections     []string
+	Aliases         []string       // parallel to Projections; "" means no alias
+	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
+	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// AggregateSlots is parallel to Projections; true = the slot's value tree
+	// CONTAINS an aggregate. Captured pre-rewrite, where the *AggregateValue
+	// node is still present (rewriteAggregateValuesInTree destructively replaces
+	// it with a typed FieldValue). Read once by the INSERT…SELECT promotion guard
+	// to identify reliably-typed aggregate-result columns — plain columns are
+	// concrete-typed too (ResolveIdentifier), so type-presence cannot
+	// discriminate. A bridge until the Java end-state (PromoteValue projection
+	// nodes), which dissolves this marker.
+	AggregateSlots             []bool
 	ScalarSubqueries           []ScalarSubquery           // uncorrelated scalar subquery plans (pre-evaluated)
 	CorrelatedScalarSubqueries []CorrelatedScalarSubquery // correlated scalar subquery plans (re-evaluated per outer row via FlatMap)
 }

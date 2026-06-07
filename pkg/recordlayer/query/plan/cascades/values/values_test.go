@@ -456,6 +456,19 @@ func TestAggregateValue_Shape(t *testing.T) {
 	if minAge.Type().Code() != TypeCodeLong {
 		t.Fatal("MIN should inherit operand type")
 	}
+
+	// AVG is ALWAYS DOUBLE, independent of operand type (Java AVG_*→DOUBLE).
+	// AVG(BIGINT) is DOUBLE, not LONG — this is the load-bearing fix: it
+	// makes DOUBLE→LONG assignability checks reject AVG into a BIGINT column.
+	for _, opType := range []Type{TypeInt, NullableLong, NotNullLong, NullableFloat, NullableDouble} {
+		avg := NewAggregateValue(AggAvg, &FieldValue{Field: "v", Typ: opType})
+		if got := avg.Type().Code(); got != TypeCodeDouble {
+			t.Fatalf("AVG(%v) Type code: got %v, want DOUBLE", opType.Code(), got)
+		}
+		if !avg.Type().IsNullable() {
+			t.Fatalf("AVG(%v) Type should be nullable (NULL on empty group)", opType.Code())
+		}
+	}
 }
 
 // COUNT(*) + explicit operand is a programmer error.

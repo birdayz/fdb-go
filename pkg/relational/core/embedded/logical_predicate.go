@@ -1831,6 +1831,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				}
 			}
 		}
+		aggSlots := make([]bool, len(proj.Projections))
 		for i, e := range sq.postAggExprs {
 			if i >= len(vals) || e == nil {
 				continue
@@ -1853,10 +1854,12 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 				}
 				continue
 			}
+			aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
 			v = rewriteAggregateValuesInTree(v)
 			vals[i] = v
 		}
 		proj.ProjectedValues = vals
+		proj.AggregateSlots = aggSlots
 		return nil
 	}
 
@@ -1877,6 +1880,7 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	}
 	vals := make([]values.Value, len(proj.Projections))
 	copy(vals, proj.ProjectedValues)
+	aggSlots := make([]bool, len(proj.Projections))
 	for i, e := range exprs {
 		if i >= len(vals) {
 			break
@@ -1899,10 +1903,12 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		if !isCascadesSafeValue(v) {
 			continue
 		}
+		aggSlots[i] = containsAggregate(v) // pre-rewrite: aggregate nodes still present
 		v = rewriteAggregateValuesInTree(v)
 		vals[i] = v
 	}
 	proj.ProjectedValues = vals
+	proj.AggregateSlots = aggSlots
 	return nil
 }
 
@@ -2051,6 +2057,25 @@ func rewriteAggregateRefsInPredicate(pred predicates.QueryPredicate) predicates.
 	return pred
 }
 
+// containsAggregate reports whether v's value tree contains any
+// *values.AggregateValue. Called PRE-rewrite (before
+// rewriteAggregateValuesInTree replaces aggregates with typed FieldValue
+// references) so the INSERT…SELECT promotion guard can mark which projection
+// slots are aggregate-derived. Tree-walk, not a top-level type assert:
+// `AVG(x)+1` is a top-level ArithmeticValue that still resolves to DOUBLE and
+// must be guarded.
+func containsAggregate(v values.Value) bool {
+	found := false
+	values.WalkValue(v, func(n values.Value) bool {
+		if _, ok := n.(*values.AggregateValue); ok {
+			found = true
+			return false // stop descending
+		}
+		return !found
+	})
+	return found
+}
+
 func rewriteAggregateValuesInTree(v values.Value) values.Value {
 	if v == nil {
 		return nil
@@ -2130,9 +2155,13 @@ func rewriteAggregateValue(v values.Value) values.Value {
 	if !ok {
 		return v
 	}
+	// Preserve the aggregate's result type on the reference — a reference must
+	// report the type of its referent. (Previously discarded as UnknownType,
+	// which left every downstream type query on a rewritten projection blind;
+	// the INSERT…SELECT promotion guard relies on this carrying e.g. AVG→DOUBLE.)
 	return &values.FieldValue{
 		Field: canonicalAggName(av.Op.Symbol(), av.Operand),
-		Typ:   values.UnknownType,
+		Typ:   av.Type(),
 	}
 }
 
@@ -2622,6 +2651,134 @@ func alignInsertSelectColumns(insertOp *logical.LogicalInsert, md *recordlayer.R
 	for i := 0; i < len(proj.Projections) && i < len(targetCols); i++ {
 		proj.Aliases[i] = targetCols[i]
 	}
+}
+
+// protoKindToValueType maps a proto field kind to the cascades values.Type used
+// for INSERT promotion checks. Nullability is irrelevant to IsPromotable, so the
+// nullable singletons are returned. Returns nil for kinds outside the numeric
+// promotion core; the caller skips those (the runtime converter handles them).
+func protoKindToValueType(k protoreflect.Kind) values.Type {
+	switch k {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return values.NullableInt
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return values.NullableLong
+	case protoreflect.FloatKind:
+		return values.NullableFloat
+	case protoreflect.DoubleKind:
+		return values.NullableDouble
+	}
+	return nil
+}
+
+// checkInsertSelectPromotable rejects an INSERT … SELECT whose projected
+// AGGREGATE-result column cannot be promoted to its target column type — the
+// plan-time, lattice-driven analogue of Java's PromoteValue assignability check.
+// AVG(BIGINT) types DOUBLE (AggregateValue.Type()); DOUBLE→BIGINT has no edge in
+// the promotion lattice, so the INSERT is rejected with SQLSTATE 22000 exactly
+// like Java — and, because the verdict is purely IsPromotable over the
+// structurally-derived type, independent of whether the source produces any rows
+// (the empty-source axis).
+//
+// A projected aggregate appears in one of two shapes:
+//   - a COMPUTED expression that CONTAINS an aggregate (e.g. AVG(v)+1) —
+//     flagged by LogicalProject.AggregateSlots (provenance, captured pre-rewrite)
+//     and reliably typed via the value's Type() (the aggregate reference carries
+//     its result type, B′; ArithmeticValue propagates it). Provenance, NOT
+//     type-presence: plain columns are concrete-typed too (ResolveIdentifier).
+//   - a BARE aggregate (e.g. SELECT AVG(v)) — the projection slot carries a nil
+//     ProjectedValue (the executor resolves it from the aggregate's output by
+//     name), so its type comes from the producing LogicalAggregate, looked up by
+//     the slot's canonical name.
+//
+// Plain-column narrowing (LONG→INT, DOUBLE-col→INT) is NOT checked here — it
+// stays deferred to the runtime converter, pending the Java end-state
+// (PromoteValue projection nodes) that dissolves this guard. INSERT … SELECT
+// with an explicit column list is rejected upstream, so the projection maps
+// positionally onto the target record's fields.
+//
+// Scope: covers sources with a LogicalProject (scalar aggregates, expressions
+// over aggregates, plain projections). A bare GROUP BY whose Source is a
+// LogicalAggregate DIRECTLY (no Project, e.g. INSERT … SELECT g, AVG(v) … GROUP
+// BY g) has no projection to read column order from, so it is deferred to the
+// PromoteValue follow-up (tracked in TODO.md) — its runtime converter still
+// rejects the non-empty case.
+func checkInsertSelectPromotable(insertOp *logical.LogicalInsert, md *recordlayer.RecordMetaData) error {
+	proj := findProjection(insertOp.Source)
+	if proj == nil {
+		return nil
+	}
+	rt := md.GetRecordType(bareTableName(insertOp.Table))
+	if rt == nil {
+		return nil
+	}
+	// Canonical aggregate output name → reliable result type, for the bare-
+	// aggregate case (nil ProjectedValue). Names match the projection text
+	// verbatim (both produced by the same canonicaliser, e.g. "AVG(V)").
+	aggTypes := map[string]values.Type{}
+	if agg := findAggregate(insertOp.Source); agg != nil {
+		for j, name := range agg.Aggregates {
+			var operand values.Value
+			if j < len(agg.AggregateOperands) {
+				operand = agg.AggregateOperands[j]
+			}
+			if t := aggResultTypeFromName(name, operand); t != nil {
+				aggTypes[strings.ToUpper(name)] = t
+			}
+		}
+	}
+	fields := rt.Descriptor.Fields()
+	for i := 0; i < len(proj.Projections) && i < fields.Len(); i++ {
+		var srcType values.Type
+		if i < len(proj.AggregateSlots) && proj.AggregateSlots[i] &&
+			i < len(proj.ProjectedValues) && proj.ProjectedValues[i] != nil {
+			srcType = proj.ProjectedValues[i].Type()
+		} else if t, ok := aggTypes[strings.ToUpper(proj.Projections[i])]; ok {
+			srcType = t
+		}
+		if srcType == nil || srcType.Code() == values.TypeCodeUnknown {
+			continue
+		}
+		targetType := protoKindToValueType(fields.Get(i).Kind())
+		if targetType == nil {
+			continue
+		}
+		if !values.IsPromotable(srcType, targetType) {
+			return api.NewErrorf(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+	}
+	return nil
+}
+
+// aggResultTypeFromName derives an aggregate's result type from its canonical
+// output name (e.g. "AVG(V)", "SUM(PRICE)") and its resolved operand — the
+// single source for the bare-aggregate projection case, where no ProjectedValue
+// is present. AVG→DOUBLE and COUNT→LONG are function-determined; SUM/MIN/MAX
+// inherit the operand type. The function prefix is read off the *internal*
+// canonical name (the contract the executor's aggResultName also relies on), not
+// user SQL text. Mirrors AggregateValue.Type() / Java's per-operator resultTypeCode
+// — keep the two in sync until the PromoteValue follow-up (RFC-083) dissolves this
+// function (it exists only for the nil-ProjectedValue bare-aggregate path).
+func aggResultTypeFromName(name string, operand values.Value) values.Type {
+	sym := name
+	if idx := strings.IndexByte(name, '('); idx >= 0 {
+		sym = name[:idx]
+	}
+	switch strings.ToUpper(strings.TrimSpace(sym)) {
+	case "AVG":
+		return values.NullableDouble
+	case "COUNT":
+		return values.NotNullLong
+	case "SUM", "MIN", "MAX":
+		if operand != nil {
+			if t := operand.Type(); t != nil && t.Code() != values.TypeCodeUnknown {
+				return t
+			}
+		}
+		return values.NullableLong
+	}
+	return nil
 }
 
 // buildLogicalPlanForQueryWithCTECatalog is like
@@ -4003,6 +4160,98 @@ func resolveCorrelatedGroupKeyValues(agg *logical.LogicalAggregate, sq *selectQu
 	return nil
 }
 
+// aggColRefFromExpr inspects an ORDER BY expression for a column-argument
+// aggregate function — `SUM(o.amount)` → ("SUM", "o.amount", true),
+// `COUNT(*)` → ("COUNT", "", true) — by walking the parse tree (NOT text
+// matching). Returns isAgg=false for non-aggregate refs and for
+// expression-argument aggregates (`SUM(a*b)`), which have no bare column name
+// to form the producer's stable FN(BAREARG) key.
+func aggColRefFromExpr(expr antlrgen.IExpressionContext) (fn, argCol string, isAgg bool) {
+	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return "", "", false
+	}
+	atom, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
+	if !ok {
+		return "", "", false
+	}
+	agg, ok := atom.FunctionCall().(*antlrgen.AggregateFunctionCallContext)
+	if !ok {
+		return "", "", false
+	}
+	awf, ok := agg.AggregateWindowedFunction().(*antlrgen.AggregateWindowedFunctionContext)
+	if !ok {
+		return "", "", false
+	}
+	f, a, aExpr, _, _, ok := extractAwfFields(awf)
+	if !ok || aExpr != nil {
+		return "", "", false
+	}
+	return f, a, true
+}
+
+// groupedScalarSortKeys builds the ORDER BY sort keys for a correlated scalar
+// subquery's grouped output (RFC-085). Each key's .Value is a FieldValue keyed by
+// the EXACT datum key the aggregate cursor emits — a group key as
+// strings.ToUpper(bare(col)) (the same derivation scalarCol uses, :4317), or a
+// visible aggregate via aggDatumKey (its materialised name, not a recomputed
+// canonical). The executor's sort does an exact-case datum lookup (values.go), so a
+// mismatched key returns nil and sorts every row equal (nondeterministic — the bug
+// this fixes). Hence any ORDER BY ref resolving to neither a group key nor a visible
+// aggregate — including an ORDER-BY-only (not selected) aggregate or an expression
+// key — is REJECTED loudly (SQL grouping semantics), never silently dropped. Setting
+// .Value (which translateSort prefers over .Expr) bypasses the raw-text lookup.
+func groupedScalarSortKeys(sq *selectQuery, aggDatumKey map[string]string) ([]logical.SortKey, error) {
+	keys := make([]logical.SortKey, 0, len(sq.orderBy))
+	for _, ob := range sq.orderBy {
+		bare := strings.ToUpper(parseColRef(ob.colName).bare())
+		dk := ""
+		for _, k := range sq.groupBy {
+			if gkdk := strings.ToUpper(parseColRef(k).bare()); gkdk == bare && bare != "" {
+				dk = gkdk
+				break
+			}
+		}
+		if dk == "" {
+			if v, ok := aggDatumKey[strings.ToUpper(ob.colName)]; ok {
+				dk = v
+			} else if v, ok := aggDatumKey[bare]; ok {
+				dk = v
+			}
+		}
+		// A selected aggregate spelled differently in ORDER BY than in SELECT
+		// (`SELECT SUM(amount) … ORDER BY SUM(o.amount)`): the raw-text forms
+		// above miss (parseColRef on `SUM(o.amount)` splits at the inner dot).
+		// Recover the producer's stable FN(BAREARG) key from the parse tree so a
+		// genuinely-selected aggregate resolves regardless of operand qualifier.
+		if dk == "" && ob.rawExpr != nil {
+			if fn, argCol, isAgg := aggColRefFromExpr(ob.rawExpr); isAgg {
+				canonKey := strings.ToUpper(fn) + "(*)"
+				if b := strings.ToUpper(parseColRef(argCol).bare()); b != "" {
+					canonKey = strings.ToUpper(fn) + "(" + b + ")"
+				}
+				if v, ok := aggDatumKey[canonKey]; ok {
+					dk = v
+				}
+			}
+		}
+		if dk == "" {
+			return nil, api.NewErrorf(api.ErrCodeGroupingError,
+				"ORDER BY %q must reference a grouping column or a selected aggregate in a grouped correlated scalar subquery", ob.colName)
+		}
+		dir := logical.SortAsc
+		if !ob.ascending {
+			dir = logical.SortDesc
+		}
+		sk := logical.SortKey{Value: &values.FieldValue{Field: dk}, Expr: dk, Dir: dir}
+		if ob.nullsFirst != nil {
+			sk.NullsFirst = *ob.nullsFirst
+		}
+		keys = append(keys, sk)
+	}
+	return keys, nil
+}
+
 func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) (values.CorrelationIdentifier, error) {
 	if q == nil {
 		return values.CorrelationIdentifier{}, &CorrelatedExistsError{Message: "correlated scalar subquery: nil query"}
@@ -4127,17 +4376,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 				Message: fmt.Sprintf("correlated scalar subquery: %v", vErr), Cause: vErr,
 			}
 		}
-		// ORDER BY over grouped output (ordering the groups themselves) is not
-		// supported here: the sort would have to resolve its keys against the
-		// post-aggregation row, which this builder does not wire. Reject rather
-		// than silently drop the ORDER BY (which would leave the FirstOrDefault
-		// group choice nondeterministic with no signal). ORDER BY without
-		// GROUP BY (ordering rows before the LIMIT 1) is still supported.
-		if len(sq.orderBy) > 0 {
-			return values.CorrelationIdentifier{}, &CorrelatedExistsError{
-				Message: "correlated scalar subquery: ORDER BY combined with GROUP BY is not supported",
-			}
-		}
+		// ORDER BY over grouped output (ordering the groups so the LIMIT-1
+		// FirstOrDefault picks a deterministic group) is wired below — a sort over
+		// the post-aggregate row whose keys are canonicalised to the exact datum
+		// keys the aggregate cursor emits (see groupedScalarSortKeys). RFC-085.
 	}
 
 	// A real aggregate function (COUNT/SUM/MIN/MAX/AVG) is present iff
@@ -4206,6 +4448,10 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		var aggOperands []values.Value
 		aggSeen := make(map[string]struct{})
 		exprAggNames := make(map[string]struct{}) // join-path collision tracking only
+		// Match-name (uppercased: SELECT alias, source FN(bareArg), canonical) →
+		// the EXACT datum key the aggregate cursor emits (addAgg's returned name),
+		// for resolving an ORDER BY ref over the grouped output (RFC-085).
+		aggDatumKey := make(map[string]string)
 		addAgg := func(fn, arg string, e antlrgen.IExpressionContext, distinct bool) (string, error) {
 			// An expression argument has no bare column name, so it collapses to
 			// FN(*). Two DISTINCT expression aggregates (e.g. SUM(a+b) projected
@@ -4320,12 +4566,26 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			if ac.visible {
 				scalarCol = name
+				// Record the datum key under every form an ORDER BY might name it:
+				// its SELECT alias, its source FN(bareArg) form, and the materialised
+				// canonical name itself.
+				aggDatumKey[strings.ToUpper(name)] = name
+				if ac.outName != "" {
+					aggDatumKey[strings.ToUpper(ac.outName)] = name
+				}
+				if bareArg := parseColRef(ac.aggArg).bare(); bareArg != "" {
+					aggDatumKey[strings.ToUpper(ac.aggFunc+"("+bareArg+")")] = name
+				}
 			}
 		}
 		// A sole COUNT(*) the parser flagged via countStar (no aggCol entry).
 		if sq.countStar {
 			name, _ := addAgg("COUNT", "", nil, false) // -> COUNT(*)
 			scalarCol = name
+			aggDatumKey[strings.ToUpper(name)] = name
+			if sq.countStarAlias != "" {
+				aggDatumKey[strings.ToUpper(sq.countStarAlias)] = name
+			}
 		}
 		// If the single visible output is a bare group-key projection (e.g.
 		// `SELECT status ... GROUP BY status HAVING COUNT(*) > 1`), the scalar
@@ -4366,6 +4626,16 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			aggOp.HavingPredicate = rewriteAggregateRefsInPredicate(havingPred)
 		}
 		innerOp = aggOp
+		// ORDER BY over the grouped output: sort the groups BEFORE the LIMIT 1 so
+		// FirstOrDefault picks the ordered-first group deterministically. Keys are
+		// canonicalised to the exact post-aggregate datum keys (RFC-085).
+		if len(sq.orderBy) > 0 {
+			sortKeys, skErr := groupedScalarSortKeys(sq, aggDatumKey)
+			if skErr != nil {
+				return values.CorrelationIdentifier{}, skErr
+			}
+			innerOp = logical.NewSort(innerOp, sortKeys)
+		}
 		// GROUP BY may yield many groups; HAVING may filter the single group
 		// to none. Cap at the first group (FirstOrDefault) for the scalar
 		// contract. The plain scalar aggregate (no GROUP BY, no HAVING) already
@@ -4379,7 +4649,19 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 		// group-key projection stored as a visible aggCol (DISTINCT-of-key).
 		switch {
 		case len(sq.projCols) == 1:
-			scalarCol = strings.ToUpper(sq.projCols[0])
+			// A qualified projection (`SELECT o.amount`) must resolve to the
+			// bare datum key the inner row carries. For a single inner table the
+			// row is keyed bare (`AMOUNT`) and replaceScalarSubqueryRef
+			// re-qualifies under the inner alias (`O.AMOUNT`) at read time — a
+			// scalarCol that kept the `o.` qualifier would double-prefix to
+			// `O.O.AMOUNT` and resolve to NULL (same failure mode the bare
+			// group-key case below guards). For a join the row is keyed
+			// qualified (see :910), so keep the qualifier there.
+			if len(sq.joins) > 0 {
+				scalarCol = strings.ToUpper(sq.projCols[0])
+			} else {
+				scalarCol = strings.ToUpper(parseColRef(sq.projCols[0]).bare())
+			}
 		case len(sq.projCols) == 0 && len(sq.groupBy) > 0:
 			// The output is the bare group-key projection (stored as a visible
 			// aggCol with groupCol set). Use the grouping column (qualifier
@@ -4423,18 +4705,40 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 
 		// Add ORDER BY if present.
 		if len(sq.orderBy) > 0 {
-			keys := make([]logical.SortKey, len(sq.orderBy))
-			for i, ob := range sq.orderBy {
-				dir := logical.SortAsc
-				if !ob.ascending {
-					dir = logical.SortDesc
+			if len(sq.groupBy) > 0 {
+				// GROUP BY (group keys only): the sort runs over the POST-aggregate
+				// row, whose keys are bare-uppercased — raw ob.colName (original case,
+				// possibly qualified) would miss and sort every row equal. Canonicalise
+				// to the exact group-key datum keys (RFC-085). No aggregates here.
+				sortKeys, skErr := groupedScalarSortKeys(sq, nil)
+				if skErr != nil {
+					return values.CorrelationIdentifier{}, skErr
 				}
-				keys[i] = logical.SortKey{Expr: ob.colName, Dir: dir}
-				if ob.nullsFirst != nil {
-					keys[i].NullsFirst = *ob.nullsFirst
+				innerOp = logical.NewSort(innerOp, sortKeys)
+			} else {
+				// No GROUP BY: the sort runs over the raw scan rows before LIMIT 1.
+				// For a single inner table that row is keyed by the bare column
+				// name, so a qualified ORDER BY key (`ORDER BY o.amount`) would
+				// miss and sort every row equal — strip the qualifier to the bare
+				// key (preserving the written case, which reproduces the working
+				// unqualified form). A join row is keyed qualified, so leave it.
+				keys := make([]logical.SortKey, len(sq.orderBy))
+				for i, ob := range sq.orderBy {
+					dir := logical.SortAsc
+					if !ob.ascending {
+						dir = logical.SortDesc
+					}
+					keyExpr := ob.colName
+					if len(sq.joins) == 0 {
+						keyExpr = parseColRef(ob.colName).bare()
+					}
+					keys[i] = logical.SortKey{Expr: keyExpr, Dir: dir}
+					if ob.nullsFirst != nil {
+						keys[i].NullsFirst = *ob.nullsFirst
+					}
 				}
+				innerOp = logical.NewSort(innerOp, keys)
 			}
-			innerOp = logical.NewSort(innerOp, keys)
 		}
 
 		// SQL standard: scalar subquery must return at most 1 row.

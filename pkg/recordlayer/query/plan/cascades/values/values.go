@@ -2439,15 +2439,21 @@ func (a *AggregateValue) Children() []Value {
 	return []Value{a.Operand}
 }
 
-// Type returns the rich Type the aggregate produces:
+// Type returns the rich Type the aggregate produces, matching Java's
+// per-operator resultTypeCode (NumericAggregationValue.PhysicalOperator):
 //   - COUNT / COUNT(*): NotNullLong (zero on empty groups).
-//   - SUM / MIN / MAX / AVG: nullable; Type derived from the
-//     operand when available, else NullableLong.
+//   - AVG: NullableDouble — AVG is real division, always DOUBLE
+//     regardless of operand type (Java AVG_{I,L,F,D} → DOUBLE). NOT
+//     operand-derived: AVG(BIGINT) is DOUBLE, not LONG.
+//   - SUM / MIN / MAX: nullable; Type derived from the operand when
+//     available, else NullableLong (Java SUM_L→LONG, MIN/MAX→operand).
 func (a *AggregateValue) Type() Type {
 	switch a.Op {
 	case AggCount, AggCountStar:
 		return NotNullLong
-	case AggSum, AggMin, AggMax, AggAvg:
+	case AggAvg:
+		return NullableDouble
+	case AggSum, AggMin, AggMax:
 		if a.Operand != nil {
 			ot := a.Operand.Type()
 			if ot == nil {
