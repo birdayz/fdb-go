@@ -236,7 +236,7 @@ Ginkgo specs against real FDB via testcontainers. **8000+ total test entry point
 
 ```sh
 # 1. Start FoundationDB (Docker)
-docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.63
+docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.75
 
 # 2. Get the cluster file
 docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster

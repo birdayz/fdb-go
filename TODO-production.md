@@ -365,9 +365,14 @@ INSERT…SELECT (74), divergent-named aggregate union NULL (79), `GetIndexTypeNa
 ~101 of 109 fuzz targets run in no workflow; nightly fuzzes 8. Rotate the full corpus nightly;
 publish crash corpus.
 
-### [ ] P2.5 — Pin FDB image version in tests · S
-README targets 7.3.75 but the snippet uses 7.3.63; no single pinned version in CI. Pin one;
-reconcile.
+### [x] P2.5 — Pin FDB image version in tests · S — DONE
+The test infra was already pinned to a single specific version, never `:latest`:
+`foundationdb.Run`/`RunCluster` build `foundationdb/foundationdb:%s` from
+`defaultOptions().version = fdbVersion()` = **7.3.75** (overridable via the `FDB_VERSION` env
+that `.bazelrc:30` sets to `7.3.75` for every Bazel test). That matches `MODULE.bazel`
+(7.3.75) and the README target table. The only drift was the README quickstart docker snippet
+(`README.md:239`), which used `7.3.63` — **fixed to 7.3.75**. All FDB version references now
+reconcile on 7.3.75.
 
 ---
 
