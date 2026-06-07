@@ -21,6 +21,7 @@ go_library(
 go_test(
     name = "transport_test",
     srcs = [
+        "conn_handshake_timeout_test.go",
         "conn_lifecycle_test.go",
         "conn_recover_test.go",
         "conn_unit_test.go",

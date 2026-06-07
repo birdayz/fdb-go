@@ -172,6 +172,11 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 }
 
 // dialWith is the implementation behind Dial, plus test-only connOptions.
+// defaultHandshakeTimeout bounds the TLS upgrade + ConnectPacket exchange when the
+// caller's ctx carries no deadline. The handshake is normally sub-second; this is a
+// generous ceiling so a stalled peer can't wedge the dial forever.
+const defaultHandshakeTimeout = 10 * time.Second
+
 func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
@@ -200,6 +205,24 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		tc.SetKeepAlive(true)
 		tc.SetKeepAlivePeriod(10 * time.Second)
 	}
+
+	// Bound the handshake (TLS upgrade + ConnectPacket exchange) with a deadline.
+	// A peer that accepts the TCP socket but never completes the handshake — an
+	// overloaded fdbserver, or a Docker/socat proxy that half-opens the connection
+	// under load — would otherwise block ReadConnectPacket's io.ReadFull forever:
+	// ctx cancellation cannot interrupt a blocking socket read, and this dial runs
+	// under the database's global connection lock, so a single wedged handshake
+	// freezes every connection acquisition (the load-dependent chaos-test deadlock).
+	// Derive the deadline from ctx so an explicit dial timeout finally bounds the
+	// handshake too; fall back to defaultHandshakeTimeout. Cleared before the I/O
+	// loops start — liveness past that point is the connectionMonitor's job. The
+	// deadline is set on the raw TCP conn and cleared on the (possibly TLS-wrapped)
+	// conn; tls.Conn.SetDeadline delegates to the same underlying socket.
+	handshakeDeadline := time.Now().Add(defaultHandshakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(handshakeDeadline) {
+		handshakeDeadline = d
+	}
+	_ = netConn.SetDeadline(handshakeDeadline)
 
 	// Wrap in TLS iff a config was supplied. The non-nil config is the only
 	// "use TLS" signal — there is no bool to disagree with it, so plaintext can
@@ -261,6 +284,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		c.debugFrames = true
 		c.debugWriter = os.Stderr
 	}
+
+	// Handshake complete — clear the deadline so the long-lived I/O loops run
+	// without one (connectionMonitor + TCP keepalive handle liveness from here).
+	_ = netConn.SetDeadline(time.Time{})
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)

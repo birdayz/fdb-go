@@ -25,26 +25,33 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
 
 ---
 
-## ⚠️ Known deadlock — TOP open bug (P0, root-cause pending a captured dump)
+## ✅ Known deadlock — ROOT-CAUSED + FIXED (was TOP open bug)
 
-**[ ] Rare load-dependent deadlock in `//pkg/recordlayer/chaos:chaos_test`.** Observed once:
-under the full `bazelisk test //...` run (`--local_test_jobs=4`, 4 concurrent FDB containers)
-`chaos_test` hung at the *last* target and made no progress for 40 min before being killed.
-- **Reproducibility:** could NOT reproduce — 0/6 follow-up runs (5× `--runs_per_test` in
-  isolation + 1× full-suite, all ≤120s). So it is **load/timing-dependent**, surfacing only
-  under heavy concurrent Docker contention, most likely in the pure-Go FDB client wait path
-  (`pkg/fdbgo/client` / `transport`) under slow-FDB conditions.
-- **NOT introduced by this PR:** P1.2's `slog.Default().Error` already shipped (07a037e5) and
-  passed chaos; the slog fast-follow is functionally identical; all 6 follow-up runs carried the
-  working-tree changes and passed.
-- **Why it ate 40 min:** `chaos_test` was `size = "enormous"` (3600s) — a hang is neither killed
-  nor dumped for an hour. **Instrumented:** reduced to `size = "large"` (900s) so a recurrence
-  fails with a **Go `-test.timeout` goroutine dump** (the prerequisite for root-causing). The
-  four `timeout = "eternal"` targets (`pkg/fdbgo/client`, `pkg/recordlayer`, `pkg/recordlayer/bench`,
-  `pkg/relational/sqldriver/stress`) carry the same silent-hang risk — audit/bound next (bench &
-  stress may legitimately need it; `recordlayer` likely does not).
-- **Next step:** root-cause from the next captured dump (static-audit the client for an unbounded
-  channel/WaitGroup/future wait with no ctx/timeout escape). Do **not** dismiss as a flake.
+**[x] Load-dependent connection deadlock — FIXED.** Originally seen once: under the full
+`bazelisk test //...` run (`--local_test_jobs=4`, 4 concurrent FDB containers) `chaos_test` hung
+40 min with no progress, no dump; could not reproduce in isolation (0/6).
+- **Root cause (found by static audit, then PROVEN):** the pure-Go client's connection handshake
+  had **no deadline**. `dialWith` (`pkg/fdbgo/transport/conn.go`) honored ctx only for the TCP
+  connect; the TLS upgrade + `WriteConnectPacket`/`ReadConnectPacket` ran with no read/write
+  deadline, so `ReadConnectPacket`'s `io.ReadFull` (`handshake.go:126`) blocks **forever** if a
+  peer accepts the socket but never sends its ConnectPacket (overloaded fdbserver / Docker-socat
+  half-open under load — hence load-dependent + unreproducible solo). ctx cancellation cannot
+  interrupt a blocking socket read. And the dial runs under the database's **global `connMu`
+  lock**, so one wedged handshake froze *every* connection acquisition → total client wedge.
+- **Fix:** bound the handshake with a deadline in `dialWith` (derived from ctx, falling back to
+  `defaultHandshakeTimeout = 10s`), cleared before the I/O loops start. A stalled peer now fails
+  the dial promptly; the lock is released; the client recovers/retries.
+- **Pinned:** `conn_handshake_timeout_test.go` (`TestDial_HandshakeStallTimesOut` +
+  `_DeadlineFromCtx`). **Proven:** with the deadline reverted the stall test hangs with
+  `panic: test timed out ... handshake.go:126` (the exact `io.ReadFull`); with the fix it returns
+  in ~0.4s.
+- **Defense-in-depth kept:** `chaos_test` stays `size = "large"` (was `"enormous"`) so any future
+  hang auto-dumps goroutines at 900s instead of running an hour. The four `timeout = "eternal"`
+  targets still warrant an audit (bench/stress may legitimately need it; `recordlayer` likely
+  does not).
+- **Follow-up (latency, not deadlock):** the dial still holds `connMu` for the (now-bounded)
+  handshake; under contention that serializes connection setup for up to the deadline. Dialing
+  outside the lock + inserting under it is a separate concurrency refinement — filed, low priority.
 
 ---
 
