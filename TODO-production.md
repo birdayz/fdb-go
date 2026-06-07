@@ -36,17 +36,25 @@ Authors") + `NOTICE` attributing the FoundationDB Record Layer port (Apache-2.0,
 resolves. **Remaining (owner's call):** confirm the copyright holder name (currently "The
 fdb-record-layer-go Authors") + obtain internal legal sign-off — the file is in place.
 
-### [ ] P0.2 — Boundary recover + network-goroutine teardown (the hours-not-weeks crash fix) · S
+### [x] P0.2 — Boundary recover + network-goroutine teardown (the hours-not-weeks crash fix) · S — DONE
 **Do FIRST, before the P0.3 sweep** (Torvalds): don't run a multi-tenant process that
 crashes on `SELECT 1/0` for the weeks the sweep takes. Build the net, then refactor behind
 it. This is the minimal realization of the P0.3 policy:
-- db/sql boundary recover at `connection.go:305,336` (catch-all → `debug.Stack()` → log
-  SERIOUS w/ tenant context → generic internal error → keep serving).
-- recover→`failConnection` in `readLoop`/`writeLoop`/`connectionMonitor` (`conn.go:265-267`)
-  — a panic there is otherwise an uncatchable whole-host crash. Fix the false `conn.go:586`
-  comment + the `exitErr` first-error-wins ordering.
+- [x] db/sql boundary recover spanning the FULL query path — `ExecContext`/`QueryContext`
+  (`connection.go`) **and** `paginatingRows.Next`/`cascadesRows.Next` (`cascades_generator.go`):
+  catch-all → `debug.Stack()` (first) → log SERIOUS server-side → generic internal error
+  (panic value never leaked to the caller) → keep serving.
+- [x] recover→`failConnection` in `readLoop` (inline, `conn.go:619`), `writeLoop` +
+  `connectionMonitor` (`recoverLoop`, `conn.go:432,782`) — a panic there is otherwise an
+  uncatchable whole-host crash. The false `conn.go` comment is corrected (`:612-615`) and the
+  `exitErr` ordering is right (a real read error is preserved; the deferred recover overwrites
+  only on an actual panic).
 **Done when:** a panicking query returns an error (process survives); a panic in a network
-goroutine fails only that connection; tests for both.
+goroutine fails only that connection; tests for both. — **MET:** `connection_recover_test.go`
+(`TestRecoveredPanicError`: generic `ErrCodeInternalError` out, panic value logged SERIOUS but
+NOT in the caller-visible message) + `conn_recover_test.go`
+(`TestRecoverLoop_ContainsPanicAndFailsConnection`: containment proven, ctx cancelled, pending
+replies carry the failure error, logged SERIOUS with loop + cause).
 
 ### [~] P0.3 — Panic/error discipline: errors on the data path, assert internally, recover at every goroutine boundary
 **Governing policy (bradfitz — Go's "don't *leak* panics" convention, à la `encoding/json`):**
@@ -90,7 +98,7 @@ accumulator / sumtype alternatives.
 
 **Phased worklist (STAGED — mechanical first, gate, then net-removal):**
 - [x] **P0.3-CLASSIFY** — `docs/panic-audit.md`.
-- [ ] **P0.3-A1 — eval signature + plumbing, mechanical** (query-engine, **Graefe ACK**, `M`).
+- [x] **P0.3-A1 — eval signature + plumbing, mechanical** (query-engine, **Graefe ACK**, `M`) — DONE (RFC-091).
   `Value.Evaluate → (any, error)` + `QueryPredicate.Eval(ctx) TriBool → (TriBool, error)`.
   **Split per-package** (`values/` → `predicates/` → `executor/`), not one 500-site commit
   (Torvalds). Typed errors + SQLSTATE map already exist (`translateExecError`). Do the
@@ -98,18 +106,16 @@ accumulator / sumtype alternatives.
   touch values.go twice. **Verify Kleene short-circuit semantics** (`FALSE AND 1/0`→FALSE;
   `1/0 AND FALSE`→error): check `err` per-child before the TriBool switch; pin both orderings
   (Graefe).
-- [ ] **GATE** — conformance + 1M stress + **`-race`**, **per-query/seeded** diff (an
-  aggregate row-count diff is poisoned by the known nondeterminism, P1.x/TODO.md:54 —
-  Graefe+Torvalds). **Pin the `executor.go:739`/`executor_new_plans.go:337` `keep=false`
-  silent-row-drop bug BEFORE the gate** (it corrupts the baseline; real correctness bug).
-- [ ] **P0.3-A2 — delete the 6 eval/cursor control-flow recovers** (separate commit).
+- [x] **GATE** — conformance + 1M stress + **`-race`**, **per-query/seeded** diff — DONE
+  (RFC-091; the `keep=false` silent-row-drop bug was pinned + fixed before the gate; `-race`
+  surfaced + fixed the `hadRead` client race, see P1.1).
+- [x] **P0.3-A2 — delete the 6 eval/cursor control-flow recovers** (separate commit) — DONE (RFC-091).
 - [ ] **P0.3-B — record/metadata/key-expr panics → errors** (`M`). `metadata.go:476`
   (unknown record type — real bug: DDL builder caller already expects nil), `key_expression.go:
   1133`. Audit `catalog/metadata.go:48/56/63` non-nil assumptions.
-- [ ] **P0.3-C — network goroutines: ADD recover→failConnection** (`S`). *(Reversed per FDB
-  C++ + Torvalds — was "no goroutine recover needed".)* Keep decode error-clean too (verified
-  panic-free on bad bytes — belt + suspenders); fix the `conn.go:586` comment + `exitErr`
-  ordering. (Lands with P0.2.)
+- [x] **P0.3-C — network goroutines: ADD recover→failConnection** (`S`) — DONE (landed with
+  P0.2: `recoverLoop` on writeLoop/connectionMonitor, inline recover in readLoop, comment +
+  `exitErr` ordering fixed, `conn_recover_test.go`).
 - [ ] **P0.3-D — parser: KEEP the FFI recovers, expand fuzz** (`S`). *(Corrected: collecting
   listener already exists; recovers guard the ANTLR runtime — do NOT delete.)*
 - [ ] **P0.3-E — `Must*`: keep `panicToError`, switch internal callers to `.Get()`** (`S`).
@@ -137,12 +143,15 @@ panics are errors; remaining panics are documented internal asserts; conformance
 (Graefe: "Cascades-correct, safe to merge"; Torvalds: "no NAK, the fix is real"). Eval errors
 now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fixed + pinned.
 **Follow-ups (tracked):**
-- [ ] **Collapse** (Torvalds a/b): delete the dead old `Evaluate`/`Eval` panic-wrappers, rename
-  `EvaluateErr`→`Evaluate` (`EvalErr`→`Eval`), and migrate the remaining old-method callers —
-  5 plan-time rule sites (`rule_implement_in_join.go:469`, `rule_implement_in_union.go:95`,
+- [x] **Collapse** (Torvalds a/b) **DONE** — verified: **0** `EvaluateErr`/`EvalErr` twins and
+  **0** dead non-error `Evaluate(...) any` wrappers remain in `pkg/`. The interfaces are the
+  single error-returning forms (`values.go:130` `Evaluate(any) (any, error)`; `predicates.go:202`
+  `Eval(any) (TriBool, error)`). All flagged callers migrated and thread the error: the 5
+  plan-time rule sites (`rule_implement_in_join.go:469`, `rule_implement_in_union.go:95`,
   `rule_in_to_explode.go:96`, `rule_simplify.go:381`, `physical_vector_index_scan_wrapper.go:96`)
-  **plus 6 `value_range.go` helpers** (`EvaluateAsStream`/`Cardinality`, :90-133). Dual eval
-  methods must not ossify.
+  all use `, err :=`; the `value_range.go` helpers (`EvaluateAsStream`/`Cardinality`) correctly
+  degrade on error (`nil` / `(-1,false)` — the documented non-foldable / unknown-cardinality
+  cost-model path, not a swallowed correctness bug). No dual eval methods left to ossify.
 - [x] **GATE completed**: conformance + FDB green at every commit; `-race` on
   `//pkg/relational/...` run (found + fixed the `hadRead` client race — see P1.1); 1M stress
   green (all subtests pass, durations consistent with the baseline — no bulk-path regression).
@@ -152,19 +161,38 @@ now return everywhere (div0→22012 etc.); the keep=false silent-row-drop is fix
   during later-page iteration becomes a generic internal error, not a host crash; user eval
   errors already return cleanly via the sweep. (`-race` job into CI still tracked under P1.1.)
 
-### [ ] P0.4 — Bound retries + propagate `ctx` (promoted from P1 — availability blocker) · M
+### [x] P0.4 — Bound retries + propagate `ctx` (promoted from P1 — availability blocker) · M — DONE
 **Why (Torvalds: this is P0 for a control plane, not P1):** `FDBDatabase.Run(ctx,…)`'s ctx
 never reaches the retry loop (`Database.Transact` takes no ctx, runs on `context.Background()`
 — `database.go:108,197`); default retry limit unlimited → a hot 1020 retries forever and the
 caller **cannot cancel it**. `OpenWithConnectionString`/`OpenDatabaseFromConfig` block forever
 on an unavailable cluster (`database.go:119,133`) vs `OpenDatabase`'s 60s cap.
-**Do (FDB C++):** route `Run`/friends through the already-correct `client.Database.Transact(ctx,
-…)`, collapsing the 3 retry paths to one; keep unlimited-retry default (libfdb_c parity:
-`RETRY_LIMIT=-1`) **but ship a sane default transaction timeout** for the control-plane target
-— don't ship ctx-severed *and* timeout-off *and* retry-unlimited together; make all `Open*`
-bootstrap bounded/consistent.
+**Done (RFC-090, FDB C++ ACK):**
+- [x] ctx routed into the retry loop — `FDBDatabase.Run` → `runTransactCtx(ctx)` → the
+  low-level `client.Database.Transact(ctx,…)`, which now checks ctx at every retry point
+  (`database.go:347` backoff-select, `:515`/`:550` pre-attempt `ctx.Err()` returns). The loop
+  that used to run on `context.Background()` now observes the caller's ctx.
+- [x] commit-detach (Option B): commit + the `commit_unknown_result` barrier run under
+  `context.WithoutCancel(ctx)` (`client/database.go:527`) so a late ctx cancel can't tear a
+  commit in half (ambiguous-write hazard).
+- [x] all `Open*` bootstrap bounded/consistent via `bootstrapContext` +
+  `defaultBootstrapTimeout = 60s` (`fdb/database.go:96,102,117,147`).
+- [x] **unlimited-retry default kept** (libfdb_c parity, `RETRY_LIMIT=-1`); the caller's ctx
+  deadline is the bound.
+- **Default transaction timeout — deliberately NOT shipped (parity decision, not a punt):**
+  `d.timeout` stays `0 = disabled`, matching libfdb_c's default. Per the project's hard rule
+  ("C++ is the spec for the FDB client — Go divergence is a bug in Go"), shipping a non-zero
+  default would be a self-inflicted client divergence. The dangerous combination the item
+  warned against (ctx-severed **and** timeout-off **and** retry-unlimited) is broken because
+  ctx is no longer severed — ctx is now the cancellation mechanism. Callers wanting a hard
+  per-tx cap set `DatabaseOptions.SetTransactionTimeout` / a ctx deadline (both honored).
 **Done when:** a cancelled ctx aborts retries promptly; unavailable cluster fails bounded on
-every Open path; tests for both.
+every Open path; tests for both. — **MET:** `transact_ctx_fdb_test.go`
+(`TestFDB_TransactCtx_RetryLoopBoundedByCtxDeadline`: a permanently-retryable 1020 under a ctx
+deadline surfaces an error after retrying, not an infinite loop;
+`TestFDB_TransactCtx_CommitNotCancelledByCtx`: commit survives mid-tx cancel) +
+`database_bootstrap_test.go` (`TestBootstrapContext`: bootstrap deadline bounded by
+`defaultBootstrapTimeout`).
 
 ---
 
