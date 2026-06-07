@@ -1333,11 +1333,11 @@ func evalScalarFunction(name string, args []any) any {
 		// Unsupported condition type — decline so runtime can error.
 		return nil
 	case "GREATEST", "LEAST":
-		// Shared logic in evalGreatestLeast. Direct callers of this any-returning
-		// function (constant-fold seed + unit tests) keep the legacy contract where
-		// a type mismatch is signalled by panic; the production eval path
+		// Shared logic in evalGreatestLeast. The only callers that reach this
+		// any-returning case are unit tests, which assert the legacy contract where a
+		// type mismatch is signalled by panic; the production eval path
 		// (ScalarFunctionValue.Evaluate) calls evalGreatestLeast directly and returns
-		// the *ScalarTypeMismatchError, so this panic is not reached during query
+		// the *ScalarTypeMismatchError, so this panic is never reached during query
 		// execution. NULL args propagate to NULL (Java conformance).
 		v, err := evalGreatestLeast(name, args)
 		if err != nil {
