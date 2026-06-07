@@ -39,3 +39,10 @@ func (v *ThrowsValue) Type() Type { return v.ResultType }
 func (*ThrowsValue) Evaluate(any) any {
 	panic("ThrowsValue.Evaluate: unreachable branch executed — planner bug; this Value marks dead code")
 }
+
+// EvaluateErr is the error-returning twin (RFC-091). ThrowsValue marks
+// an unreachable branch — a genuine invariant violation, so it stays a
+// panic.
+func (*ThrowsValue) EvaluateErr(any) (any, error) {
+	panic("ThrowsValue.EvaluateErr: unreachable branch executed — planner bug; this Value marks dead code")
+}

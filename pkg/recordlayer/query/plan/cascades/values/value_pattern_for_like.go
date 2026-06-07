@@ -66,29 +66,45 @@ func (*PatternForLikeValue) Type() Type { return NotNullString }
 // Evaluate produces the regex-form string with `^...$` anchors.
 // Returns nil if the pattern is NULL or the escape is malformed.
 func (v *PatternForLikeValue) Evaluate(evalCtx any) any {
-	if v.PatternChild == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	pat, ok := v.PatternChild.Evaluate(evalCtx).(string)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *PatternForLikeValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.PatternChild == nil {
+		return nil, nil
+	}
+	patVal, err := v.PatternChild.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	pat, ok := patVal.(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	var esc string
 	hasEscape := false
 	if v.EscapeChild != nil {
-		raw := v.EscapeChild.Evaluate(evalCtx)
+		raw, err := v.EscapeChild.EvaluateErr(evalCtx)
+		if err != nil {
+			return nil, err
+		}
 		if raw != nil {
 			s, ok := raw.(string)
 			if !ok || len(s) != 1 {
 				// Java throws SemanticException.ESCAPE_CHAR_OF_LIKE_OPERATOR_IS_NOT_SINGLE_CHAR;
 				// the seed surfaces this as nil to the eval contract.
-				return nil
+				return nil, nil
 			}
 			esc = s
 			hasEscape = true
 		}
 	}
-	return "^" + sqlPatternToRegex(pat, esc, hasEscape) + "$"
+	return "^" + sqlPatternToRegex(pat, esc, hasEscape) + "$", nil
 }
 
 // sqlPatternToRegex converts a SQL LIKE pattern to a regex pattern.

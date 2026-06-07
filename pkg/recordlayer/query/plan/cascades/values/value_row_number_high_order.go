@@ -58,6 +58,10 @@ func (*RowNumberHighOrderValue) Type() Type { return UnknownType }
 // resolution machinery wires in.
 func (*RowNumberHighOrderValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). High-order values
+// have no per-row eval; the placeholder never fails.
+func (*RowNumberHighOrderValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // Apply produces a fully-configured RowNumberValue from this
 // curried form by attaching the partition + argument values.
 //

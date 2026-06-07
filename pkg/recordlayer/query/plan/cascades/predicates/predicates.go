@@ -194,7 +194,18 @@ type QueryPredicate interface {
 	// Eval returns the predicate's truth value given an
 	// opaque evaluation context. Concrete eval context is
 	// impl-defined; the seed predicates ignore it.
+	//
+	// Eval is the legacy panic-based surface: it is a thin wrapper
+	// over EvalErr that re-panics any returned error. Existing
+	// recover()-based call sites keep working unchanged.
 	Eval(evalCtx any) TriBool
+
+	// EvalErr is the error-returning twin of Eval (RFC-091).
+	// User-reachable evaluation failures from underlying Values
+	// (arithmetic overflow, division by zero, invalid CAST, type
+	// mismatch) are returned as typed errors instead of panicking,
+	// preserving Kleene short-circuit semantics.
+	EvalErr(evalCtx any) (TriBool, error)
 
 	// Explain renders a parenthesised textual form suitable for
 	// debug + plan-diff output.
@@ -243,6 +254,10 @@ func NewConstantPredicate(v TriBool) *ConstantPredicate {
 func (*ConstantPredicate) Children() []QueryPredicate { return []QueryPredicate{} }
 func (p *ConstantPredicate) Eval(any) TriBool         { return p.Value }
 
+// EvalErr is the error-returning twin (RFC-091). A constant predicate
+// never fails.
+func (p *ConstantPredicate) EvalErr(any) (TriBool, error) { return p.Value, nil }
+
 // GetCorrelatedTo returns the empty set — constants reference no
 // quantifier aliases.
 func (*ConstantPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
@@ -288,23 +303,40 @@ func (p *AndPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 }
 
 func (p *AndPredicate) Eval(evalCtx any) TriBool {
+	v, err := p.EvalErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). Kleene
+// short-circuit error semantics are preserved by checking each child's
+// error in source order BEFORE the TriBool decision: `FALSE AND <err>`
+// short-circuits to FALSE (the erroring child is never reached);
+// `<err> AND FALSE` returns the error; `UNKNOWN AND <err>` returns the
+// error. Matches Java's AndOrPredicate.
+func (p *AndPredicate) EvalErr(evalCtx any) (TriBool, error) {
 	// Kleene AND: TRUE ∧ x = x; FALSE ∧ x = FALSE; UNKNOWN ∧ TRUE
 	// = UNKNOWN; UNKNOWN ∧ UNKNOWN = UNKNOWN; UNKNOWN ∧ FALSE =
 	// FALSE (short-circuit). Scan once, tracking sawUnknown.
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
-		v := sp.Eval(evalCtx)
+		v, err := sp.EvalErr(evalCtx)
+		if err != nil {
+			return TriUnknown, err
+		}
 		switch v {
 		case TriFalse:
-			return TriFalse
+			return TriFalse, nil
 		case TriUnknown:
 			sawUnknown = true
 		}
 	}
 	if sawUnknown {
-		return TriUnknown
+		return TriUnknown, nil
 	}
-	return TriTrue
+	return TriTrue, nil
 }
 
 func (p *AndPredicate) Explain() string {
@@ -345,22 +377,37 @@ func (p *OrPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{
 }
 
 func (p *OrPredicate) Eval(evalCtx any) TriBool {
+	v, err := p.EvalErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). Kleene
+// short-circuit error semantics are preserved: `TRUE OR <err>`
+// short-circuits to TRUE; `<err> OR TRUE` returns the error;
+// `UNKNOWN OR <err>` returns the error. Matches Java's AndOrPredicate.
+func (p *OrPredicate) EvalErr(evalCtx any) (TriBool, error) {
 	// Kleene OR: FALSE ∨ x = x; TRUE ∨ x = TRUE; UNKNOWN ∨ FALSE
 	// = UNKNOWN; UNKNOWN ∨ UNKNOWN = UNKNOWN; UNKNOWN ∨ TRUE = TRUE.
 	sawUnknown := false
 	for _, sp := range p.SubPredicates {
-		v := sp.Eval(evalCtx)
+		v, err := sp.EvalErr(evalCtx)
+		if err != nil {
+			return TriUnknown, err
+		}
 		switch v {
 		case TriTrue:
-			return TriTrue
+			return TriTrue, nil
 		case TriUnknown:
 			sawUnknown = true
 		}
 	}
 	if sawUnknown {
-		return TriUnknown
+		return TriUnknown, nil
 	}
-	return TriFalse
+	return TriFalse, nil
 }
 
 func (p *OrPredicate) Explain() string {
@@ -410,21 +457,34 @@ func (p *ValuePredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]stru
 }
 
 func (p *ValuePredicate) Eval(evalCtx any) TriBool {
-	if p.Value == nil {
-		return TriUnknown
+	v, err := p.EvalErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	v := p.Value.Evaluate(evalCtx)
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). The carried
+// Value's evaluation error is threaded instead of panicking.
+func (p *ValuePredicate) EvalErr(evalCtx any) (TriBool, error) {
+	if p.Value == nil {
+		return TriUnknown, nil
+	}
+	v, err := p.Value.EvaluateErr(evalCtx)
+	if err != nil {
+		return TriUnknown, err
+	}
 	if v == nil {
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	bv, ok := v.(bool)
 	if !ok {
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	if bv {
-		return TriTrue
+		return TriTrue, nil
 	}
-	return TriFalse
+	return TriFalse, nil
 }
 
 func (p *ValuePredicate) Explain() string {
@@ -462,13 +522,27 @@ func (p *NotPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct
 }
 
 func (p *NotPredicate) Eval(evalCtx any) TriBool {
-	switch p.Child.Eval(evalCtx) {
+	v, err := p.EvalErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). The child's
+// evaluation error is threaded before the Kleene NOT is applied.
+func (p *NotPredicate) EvalErr(evalCtx any) (TriBool, error) {
+	v, err := p.Child.EvalErr(evalCtx)
+	if err != nil {
+		return TriUnknown, err
+	}
+	switch v {
 	case TriTrue:
-		return TriFalse
+		return TriFalse, nil
 	case TriFalse:
-		return TriTrue
+		return TriTrue, nil
 	default:
-		return TriUnknown
+		return TriUnknown, nil
 	}
 }
 

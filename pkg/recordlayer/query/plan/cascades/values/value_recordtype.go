@@ -50,17 +50,29 @@ func (*RecordTypeValue) Type() Type { return NotNullLong }
 // Other row shapes (proto messages, structs) require dedicated
 // extractors per shape — wired when execution lands.
 func (v *RecordTypeValue) Evaluate(evalCtx any) any {
-	if v.Child == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	rec := v.Child.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *RecordTypeValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Child == nil {
+		return nil, nil
+	}
+	rec, err := v.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if rec == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := rec.(map[string]any); ok {
 		if rt, ok := m["_recordType"]; ok {
-			return rt
+			return rt, nil
 		}
 	}
-	return nil
+	return nil, nil
 }

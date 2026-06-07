@@ -61,6 +61,11 @@ func (*DatabaseObjectDependenciesPredicate) Eval(_ any) TriBool {
 	return TriTrue
 }
 
+// EvalErr is the error-returning twin (RFC-091). Never fails.
+func (*DatabaseObjectDependenciesPredicate) EvalErr(_ any) (TriBool, error) {
+	return TriTrue, nil
+}
+
 // Explain renders the predicate in a human-readable form matching
 // Java's explain output: databaseObjectDependencies(<index names>).
 func (p *DatabaseObjectDependenciesPredicate) Explain() string {

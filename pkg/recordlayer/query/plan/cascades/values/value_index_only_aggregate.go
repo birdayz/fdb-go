@@ -88,6 +88,10 @@ func (v *IndexOnlyAggregateValue) Type() Type {
 // the placeholder pattern.
 func (*IndexOnlyAggregateValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*IndexOnlyAggregateValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // IsIndexOnly returns true — this aggregate MUST be backed by an
 // index. Planner rules consult this to refuse to optimise without
 // a matching index.

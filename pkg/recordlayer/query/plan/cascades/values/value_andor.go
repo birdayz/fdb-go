@@ -106,24 +106,43 @@ func (v *AndOrValue) Type() Type {
 
 // Evaluate computes the Kleene 3VL result with short-circuit.
 func (v *AndOrValue) Evaluate(evalCtx any) any {
-	if v.Left == nil || v.Right == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	left := v.Left.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Kleene short-circuit error semantics are preserved: a dominant
+// LEFT (FALSE for AND, TRUE for OR) returns before the RIGHT operand
+// is evaluated, so `FALSE AND <err>` → FALSE; `<err> AND FALSE` →
+// error; `UNKNOWN AND <err>` → error.
+func (v *AndOrValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Left == nil || v.Right == nil {
+		return nil, nil
+	}
+	left, err := v.Left.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Short-circuit on dominant left.
 	switch v.Op {
 	case AndOrAnd:
 		if lb, ok := left.(bool); ok && !lb {
-			return false // FALSE AND ? = FALSE
+			return false, nil // FALSE AND ? = FALSE
 		}
 	case AndOrOr:
 		if lb, ok := left.(bool); ok && lb {
-			return true // TRUE OR ? = TRUE
+			return true, nil // TRUE OR ? = TRUE
 		}
 	}
 
-	right := v.Right.Evaluate(evalCtx)
+	right, err := v.Right.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 
 	switch v.Op {
 	case AndOrAnd:
@@ -135,17 +154,17 @@ func (v *AndOrValue) Evaluate(evalCtx any) any {
 		//   NULL AND FALSE = FALSE  (handled below)
 		//   NULL AND NULL = NULL
 		if rb, ok := right.(bool); ok && !rb {
-			return false // ? AND FALSE = FALSE
+			return false, nil // ? AND FALSE = FALSE
 		}
 		if left == nil || right == nil {
-			return nil
+			return nil, nil
 		}
 		if lb, lok := left.(bool); lok {
 			if rb, rok := right.(bool); rok {
-				return lb && rb
+				return lb && rb, nil
 			}
 		}
-		return nil
+		return nil, nil
 	case AndOrOr:
 		// OR truth table for the non-short-circuit cases:
 		//   FALSE OR TRUE = TRUE
@@ -155,19 +174,19 @@ func (v *AndOrValue) Evaluate(evalCtx any) any {
 		//   NULL OR FALSE = NULL
 		//   NULL OR NULL = NULL
 		if rb, ok := right.(bool); ok && rb {
-			return true // ? OR TRUE = TRUE
+			return true, nil // ? OR TRUE = TRUE
 		}
 		if left == nil || right == nil {
-			return nil
+			return nil, nil
 		}
 		if lb, lok := left.(bool); lok {
 			if rb, rok := right.(bool); rok {
-				return lb || rb
+				return lb || rb, nil
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a fresh AndOrValue with the given children.

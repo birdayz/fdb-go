@@ -71,6 +71,11 @@ func (*RangeValue) Type() Type { return NotNullLong }
 // Use EvaluateAsStream for the materialised range expansion.
 func (*RangeValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). RangeValue is a
+// streaming Value; per-row eval is a no-op placeholder and never fails.
+// Use EvaluateAsStream for the materialised range expansion.
+func (*RangeValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // EvaluateAsStream materialises the finite range as a slice of
 // int64 elements: [begin, begin+step, begin+2*step, ...) up to but
 // excluding `end`. Returns nil if any of the children evaluate to

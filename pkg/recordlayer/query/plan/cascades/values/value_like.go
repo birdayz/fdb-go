@@ -64,24 +64,39 @@ func (*LikeOperatorValue) Type() Type { return NullableBoolean }
 
 // Evaluate computes probe LIKE pattern.
 func (v *LikeOperatorValue) Evaluate(evalCtx any) any {
-	if v.Probe == nil || v.Pattern == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	probe := v.Probe.Evaluate(evalCtx)
-	pattern := v.Pattern.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *LikeOperatorValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Probe == nil || v.Pattern == nil {
+		return nil, nil
+	}
+	probe, err := v.Probe.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	pattern, err := v.Pattern.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if probe == nil || pattern == nil {
-		return nil
+		return nil, nil
 	}
 	probeStr, ok := probe.(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	patternStr, ok := pattern.(string)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// Delegate to the conformance-pinned LikeMatch — same matcher
 	// the QueryPredicate-layer ComparisonLike uses, fuzz-tested
 	// against a regex oracle and Java's likeMatcher semantics.
-	return LikeMatch(patternStr, probeStr, 0)
+	return LikeMatch(patternStr, probeStr, 0), nil
 }

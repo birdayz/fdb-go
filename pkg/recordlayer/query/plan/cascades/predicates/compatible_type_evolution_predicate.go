@@ -72,6 +72,11 @@ func (*CompatibleTypeEvolutionPredicate) Eval(_ any) TriBool {
 	return TriTrue
 }
 
+// EvalErr is the error-returning twin (RFC-091). Never fails.
+func (*CompatibleTypeEvolutionPredicate) EvalErr(_ any) (TriBool, error) {
+	return TriTrue, nil
+}
+
 // Explain renders the predicate in a human-readable form matching
 // Java's explain output: compatibleTypeEvolution(<record types>).
 func (p *CompatibleTypeEvolutionPredicate) Explain() string {

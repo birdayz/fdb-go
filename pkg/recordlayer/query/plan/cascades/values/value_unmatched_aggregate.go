@@ -28,6 +28,12 @@ func (*UnmatchedAggregateValue) Evaluate(_ any) any {
 	panic("UnmatchedAggregateValue is a non-evaluable marker")
 }
 
+// EvaluateErr is the error-returning twin (RFC-091). This marker is
+// non-evaluable — a genuine invariant violation, so it stays a panic.
+func (*UnmatchedAggregateValue) EvaluateErr(_ any) (any, error) {
+	panic("UnmatchedAggregateValue is a non-evaluable marker")
+}
+
 func (*UnmatchedAggregateValue) IsNonEvaluable() bool { return true }
 
 func (v *UnmatchedAggregateValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {

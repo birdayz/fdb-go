@@ -46,3 +46,9 @@ func (v *IndexedValue) Type() Type { return v.ResultType }
 func (*IndexedValue) Evaluate(any) any {
 	panic("IndexedValue.Evaluate: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
 }
+
+// EvaluateErr is the error-returning twin (RFC-091). IndexedValue is
+// non-evaluable — a genuine invariant violation, so it stays a panic.
+func (*IndexedValue) EvaluateErr(any) (any, error) {
+	panic("IndexedValue.EvaluateErr: indexed-value placeholder is non-evaluable; pattern-match against it instead of evaluating")
+}

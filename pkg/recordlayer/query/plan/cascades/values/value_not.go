@@ -56,16 +56,28 @@ func (n *NotValue) Type() Type {
 }
 
 func (n *NotValue) Evaluate(evalCtx any) any {
-	if n.Child == nil {
-		return nil
+	res, err := n.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	v := n.Child.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (n *NotValue) EvaluateErr(evalCtx any) (any, error) {
+	if n.Child == nil {
+		return nil, nil
+	}
+	v, err := n.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	if b, ok := v.(bool); ok {
-		return !b
+		return !b, nil
 	}
 	// Type mismatch — degrade to UNKNOWN.
-	return nil
+	return nil, nil
 }

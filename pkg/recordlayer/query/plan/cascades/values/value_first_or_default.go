@@ -59,22 +59,34 @@ func (v *FirstOrDefaultValue) Type() Type { return v.Typ }
 //   - Array is nil-Value or evaluates to nil.
 //   - Array doesn't evaluate to a slice.
 func (v *FirstOrDefaultValue) Evaluate(evalCtx any) any {
-	if v.Array == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	val := v.Array.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *FirstOrDefaultValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Array == nil {
+		return nil, nil
+	}
+	val, err := v.Array.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
-		return nil
+		return nil, nil
 	}
 	in, ok := val.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	if len(in) == 0 {
 		if v.Default == nil {
-			return nil
+			return nil, nil
 		}
-		return v.Default.Evaluate(evalCtx)
+		return v.Default.EvaluateErr(evalCtx)
 	}
-	return in[0]
+	return in[0], nil
 }

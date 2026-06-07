@@ -74,6 +74,10 @@ func (*CollateValue) Type() Type { return NotNullBytes }
 // wiring. Returns nil per the existing placeholder pattern.
 func (*CollateValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*CollateValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // WithChildren returns a fresh CollateValue with new children.
 // Caller is responsible for passing the right number of children
 // (1 / 2 / 3); the constructor reflects the count back into the

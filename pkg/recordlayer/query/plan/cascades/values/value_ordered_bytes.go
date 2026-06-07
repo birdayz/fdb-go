@@ -100,6 +100,10 @@ func (*ToOrderedBytesValue) Type() Type { return NotNullBytes }
 // this branch.
 func (*ToOrderedBytesValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*ToOrderedBytesValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // CreateInverse returns the FromOrderedBytesValue that decodes the
 // ordered-bytes form back to the original value. Java's
 // createInverseValueMaybe always returns Optional.of — the encoding
@@ -171,3 +175,7 @@ func (v *FromOrderedBytesValue) Type() Type {
 // wires tuple.UnpackOrdered (the Go equivalent of Java's
 // TupleOrdering.unpack). Same gating as ToOrderedBytesValue.
 func (*FromOrderedBytesValue) Evaluate(any) any { return nil }
+
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*FromOrderedBytesValue) EvaluateErr(any) (any, error) { return nil, nil }

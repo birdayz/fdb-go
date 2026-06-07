@@ -54,16 +54,25 @@ func (*RankValue) Type() Type { return NotNullLong }
 //
 // Returns nil if evalCtx is nil / non-map / has no `_rank` key —
 // matches the placeholder-Value pattern used elsewhere in the seed.
-func (*RankValue) Evaluate(evalCtx any) any {
+func (r *RankValue) Evaluate(evalCtx any) any {
+	res, err := r.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (*RankValue) EvaluateErr(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if r, ok := m["_rank"]; ok {
-			return r
+			return r, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a new RankValue with the given children

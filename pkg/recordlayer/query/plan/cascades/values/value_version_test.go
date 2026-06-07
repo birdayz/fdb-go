@@ -63,7 +63,8 @@ type constMapValue struct {
 	m map[string]any
 }
 
-func (c *constMapValue) Children() []Value { return nil }
-func (*constMapValue) Name() string        { return "constmap" }
-func (*constMapValue) Type() Type          { return UnknownType }
-func (c *constMapValue) Evaluate(any) any  { return c.m }
+func (c *constMapValue) Children() []Value            { return nil }
+func (*constMapValue) Name() string                   { return "constmap" }
+func (*constMapValue) Type() Type                     { return UnknownType }
+func (c *constMapValue) Evaluate(any) any             { return c.m }
+func (c *constMapValue) EvaluateErr(any) (any, error) { return c.m, nil }

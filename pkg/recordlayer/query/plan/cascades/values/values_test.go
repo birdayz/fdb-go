@@ -1030,8 +1030,11 @@ type panicValue struct {
 
 func (p *panicValue) Children() []Value { return []Value{p.child} }
 func (p *panicValue) Evaluate(any) any  { panic("test-only: Evaluate must not run") }
-func (p *panicValue) Type() Type        { return TypeUnknown }
-func (p *panicValue) Name() string      { return "panic-value" }
+func (p *panicValue) EvaluateErr(any) (any, error) {
+	panic("test-only: EvaluateErr must not run")
+}
+func (p *panicValue) Type() Type   { return TypeUnknown }
+func (p *panicValue) Name() string { return "panic-value" }
 
 // --- ParameterValue -----------------------------------------------
 

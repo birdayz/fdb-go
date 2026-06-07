@@ -61,14 +61,23 @@ func (*IncarnationValue) Type() Type { return NotNullInt }
 //
 // Real store-bound evaluation lands when execution integration
 // surfaces FDBRecordStore.GetIncarnation() through the eval context.
-func (*IncarnationValue) Evaluate(evalCtx any) any {
+func (v *IncarnationValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (*IncarnationValue) EvaluateErr(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if v, ok := m["incarnation"]; ok {
-			return v
+			return v, nil
 		}
 	}
-	return nil
+	return nil, nil
 }

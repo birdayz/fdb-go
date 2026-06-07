@@ -48,6 +48,13 @@ func (*ExistsValue) Evaluate(any) any {
 	panic("ExistsValue.Evaluate: non-evaluable; specialized planner rule handles EXISTS lowering")
 }
 
+// EvaluateErr is the error-returning twin (RFC-091). ExistsValue is
+// non-evaluable at the per-row level — a genuine invariant violation,
+// so it stays a panic.
+func (*ExistsValue) EvaluateErr(any) (any, error) {
+	panic("ExistsValue.EvaluateErr: non-evaluable; specialized planner rule handles EXISTS lowering")
+}
+
 // GetCorrelatedTo returns the singleton set containing the
 // existential alias.
 func (v *ExistsValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {

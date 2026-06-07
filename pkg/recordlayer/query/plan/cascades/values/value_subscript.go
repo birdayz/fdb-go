@@ -57,20 +57,35 @@ func (v *SubscriptValue) Type() Type { return v.Typ }
 //   - Index isn't an integer kind
 //   - Index is out of bounds
 func (v *SubscriptValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *SubscriptValue) EvaluateErr(evalCtx any) (any, error) {
 	if v.Source == nil || v.Index == nil {
-		return nil
+		return nil, nil
 	}
-	indexVal := v.Index.Evaluate(evalCtx)
+	indexVal, err := v.Index.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if indexVal == nil {
-		return nil
+		return nil, nil
 	}
-	sourceVal := v.Source.Evaluate(evalCtx)
+	sourceVal, err := v.Source.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if sourceVal == nil {
-		return nil
+		return nil, nil
 	}
 	sourceList, ok := sourceVal.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// Index must be an integer-kind. SQL standard: 1-based.
 	var idx int
@@ -82,12 +97,12 @@ func (v *SubscriptValue) Evaluate(evalCtx any) any {
 	case int64:
 		idx = int(i)
 	default:
-		return nil
+		return nil, nil
 	}
 	adjusted := idx - 1
 	if adjusted < 0 || adjusted >= len(sourceList) {
 		// Java conformance: out-of-bounds returns NULL, doesn't error.
-		return nil
+		return nil, nil
 	}
-	return sourceList[adjusted]
+	return sourceList[adjusted], nil
 }

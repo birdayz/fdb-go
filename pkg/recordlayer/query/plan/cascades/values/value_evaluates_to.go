@@ -69,28 +69,40 @@ func (*EvaluatesToValue) Type() Type { return NotNullBoolean }
 // the runtime value isn't a boolean true / false, so the predicate
 // is false (not UNKNOWN).
 func (v *EvaluatesToValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *EvaluatesToValue) EvaluateErr(evalCtx any) (any, error) {
 	if v.Child == nil {
 		switch v.Eval {
 		case EvaluatesToNull:
-			return true
+			return true, nil
 		case EvaluatesToNotNull:
-			return false
+			return false, nil
 		default:
-			return false
+			return false, nil
 		}
 	}
-	val := v.Child.Evaluate(evalCtx)
+	val, err := v.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	switch v.Eval {
 	case EvaluatesToTrue:
 		b, ok := val.(bool)
-		return ok && b
+		return ok && b, nil
 	case EvaluatesToFalse:
 		b, ok := val.(bool)
-		return ok && !b
+		return ok && !b, nil
 	case EvaluatesToNull:
-		return val == nil
+		return val == nil, nil
 	case EvaluatesToNotNull:
-		return val != nil
+		return val != nil, nil
 	}
-	return false
+	return false, nil
 }

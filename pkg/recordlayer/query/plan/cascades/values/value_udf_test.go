@@ -146,3 +146,8 @@ func (c *counterValue) Evaluate(any) any {
 	c.onEvaluate()
 	return c.val
 }
+
+func (c *counterValue) EvaluateErr(any) (any, error) {
+	c.onEvaluate()
+	return c.val, nil
+}

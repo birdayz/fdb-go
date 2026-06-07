@@ -122,7 +122,19 @@ type Value interface {
 	// recurses. The context is opaque (`any`) so different
 	// subsystems can pass their own row shape — seed uses
 	// `map[string]any` in tests.
+	//
+	// Evaluate is the legacy panic-based surface: it is a thin
+	// wrapper over EvaluateErr that re-panics any returned error.
+	// Existing recover()-based call sites keep working unchanged.
+	// New call sites should prefer EvaluateErr and thread the error.
 	Evaluate(evalCtx any) any
+
+	// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+	// User-reachable evaluation failures (arithmetic overflow,
+	// division by zero, invalid CAST, scalar/comparison type
+	// mismatch) are returned as typed errors instead of panicking;
+	// genuine "can't happen" invariant violations still panic.
+	EvaluateErr(evalCtx any) (any, error)
 }
 
 // --- Concrete values ------------------------------------------------
@@ -142,6 +154,10 @@ type ConstantValue struct {
 func (c *ConstantValue) Children() []Value { return []Value{} }
 func (c *ConstantValue) Name() string      { return "constant" }
 func (c *ConstantValue) Evaluate(any) any  { return c.Value }
+
+// EvaluateErr is the error-returning twin (RFC-091). A constant
+// literal never fails.
+func (c *ConstantValue) EvaluateErr(any) (any, error) { return c.Value, nil }
 
 // Type returns the constant's rich Type. Nullability is derived
 // from Value: nil Value → nullable (a typed NULL literal); non-nil
@@ -201,26 +217,39 @@ func (f *FieldValue) Type() Type {
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) any {
+	v, err := f.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (f *FieldValue) EvaluateErr(evalCtx any) (any, error) {
 	if f.Child != nil {
 		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
-			return f.evaluateCorrelated(qov, evalCtx)
+			return f.evaluateCorrelated(qov, evalCtx), nil
 		}
-		evalCtx = f.Child.Evaluate(evalCtx)
+		child, err := f.Child.EvaluateErr(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		evalCtx = child
 	}
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if row, ok := evalCtx.(map[string]any); ok {
-		return row[f.Field]
+		return row[f.Field], nil
 	}
 	if rc, ok := evalCtx.(*RowEvalContext); ok && rc.Datum != nil {
 		v, present := rc.Datum[f.Field]
 		if !present && rc.Strict && ReportUnresolvedReference != nil {
 			ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
 		}
-		return v
+		return v, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // mapKeys returns the keys of a datum map, for unresolved-reference
@@ -685,6 +714,9 @@ func (*NullValue) Children() []Value { return []Value{} }
 func (*NullValue) Name() string      { return "null" }
 func (*NullValue) Evaluate(any) any  { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). NULL never fails.
+func (*NullValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // Type returns the typed-NULL annotation (UnknownType when
 // unannotated). SQL NULL is always nullable so the result is forced
 // to nullable regardless of how the caller stored Typ.
@@ -804,14 +836,23 @@ func (p *ParameterValue) Type() Type {
 }
 
 func (p *ParameterValue) Evaluate(evalCtx any) any {
+	v, err := p.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (p *ParameterValue) EvaluateErr(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if b, ok := evalCtx.(ParameterBinder); ok {
 		v, _ := b.BindParameter(p.Ordinal, p.ParamName)
-		return v
+		return v, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // ScalarFunctionValue is a row-scalar function call — `UPPER(name)`,
@@ -877,14 +918,27 @@ func (s *ScalarFunctionValue) Type() Type {
 }
 
 func (s *ScalarFunctionValue) Evaluate(evalCtx any) any {
+	v, err := s.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (s *ScalarFunctionValue) EvaluateErr(evalCtx any) (any, error) {
 	args := make([]any, len(s.Args))
 	for i, a := range s.Args {
 		if a == nil {
-			return nil
+			return nil, nil
 		}
-		args[i] = a.Evaluate(evalCtx)
+		av, err := a.EvaluateErr(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		args[i] = av
 	}
-	return evalScalarFunction(s.FuncName, args)
+	return evalScalarFunction(s.FuncName, args), nil
 }
 
 // evalScalarFunction dispatches the seed scalar function set. NULL
@@ -1668,10 +1722,27 @@ func arithOperandCode(v Value) TypeCode {
 }
 
 func (a *ArithmeticValue) Evaluate(evalCtx any) any {
-	l := a.Left.Evaluate(evalCtx)
-	r := a.Right.Evaluate(evalCtx)
+	v, err := a.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Arithmetic overflow, division by zero, and type mismatch are
+// returned as typed errors instead of panicking.
+func (a *ArithmeticValue) EvaluateErr(evalCtx any) (any, error) {
+	l, err := a.Left.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	r, err := a.Right.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if l == nil || r == nil {
-		return nil
+		return nil, nil
 	}
 	// Float promotion: if either operand is float64 AND the other is numeric, use float arithmetic.
 	_, lf := l.(float64)
@@ -1680,56 +1751,56 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) any {
 		_, _, lNum := ToFloat64(l)
 		_, _, rNum := ToFloat64(r)
 		if lNum && rNum {
-			return a.evalFloat(l, r)
+			return a.evalFloat(l, r), nil
 		}
-		panic(&ScalarTypeMismatchError{
+		return nil, &ScalarTypeMismatchError{
 			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
-		})
+		}
 	}
 	li, lok := toInt64ForArith(l)
 	ri, rok := toInt64ForArith(r)
 	if !lok || !rok {
-		panic(&ScalarTypeMismatchError{
+		return nil, &ScalarTypeMismatchError{
 			Message: fmt.Sprintf("arithmetic type mismatch: %T %s %T", l, a.Op.Symbol(), r),
-		})
+		}
 	}
 	switch a.Op {
 	case OpAdd:
 		out, ok := addInt64Checked(li, ri)
 		if !ok {
-			panic(&ArithmeticOverflowError{})
+			return nil, &ArithmeticOverflowError{}
 		}
-		return out
+		return out, nil
 	case OpSub:
 		out, ok := subInt64Checked(li, ri)
 		if !ok {
-			panic(&ArithmeticOverflowError{})
+			return nil, &ArithmeticOverflowError{}
 		}
-		return out
+		return out, nil
 	case OpMul:
 		out, ok := mulInt64Checked(li, ri)
 		if !ok {
-			panic(&ArithmeticOverflowError{})
+			return nil, &ArithmeticOverflowError{}
 		}
-		return out
+		return out, nil
 	case OpDiv:
 		if ri == 0 {
-			panic(&ArithmeticDivisionByZeroError{})
+			return nil, &ArithmeticDivisionByZeroError{}
 		}
 		if li == math.MinInt64 && ri == -1 {
-			panic(&ArithmeticOverflowError{})
+			return nil, &ArithmeticOverflowError{}
 		}
-		return li / ri
+		return li / ri, nil
 	case OpMod:
 		if ri == 0 {
-			panic(&ArithmeticDivisionByZeroError{})
+			return nil, &ArithmeticDivisionByZeroError{}
 		}
 		if li == math.MinInt64 && ri == -1 {
-			return int64(0)
+			return int64(0), nil
 		}
-		return li % ri
+		return li % ri, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (a *ArithmeticValue) evalFloat(l, r any) any {
@@ -1884,11 +1955,21 @@ func (b *BooleanValue) Type() Type {
 	return NotNullBoolean
 }
 
-func (b *BooleanValue) Evaluate(any) any {
-	if b.Value == nil {
-		return nil
+func (b *BooleanValue) Evaluate(evalCtx any) any {
+	v, err := b.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	return *b.Value
+	return v
+}
+
+// EvaluateErr is the error-returning twin (RFC-091). A boolean
+// literal never fails.
+func (b *BooleanValue) EvaluateErr(any) (any, error) {
+	if b.Value == nil {
+		return nil, nil
+	}
+	return *b.Value, nil
 }
 
 // CastValue converts a child Value's result to a target Type.
@@ -1920,101 +2001,115 @@ func (c *CastValue) Type() Type {
 }
 
 func (c *CastValue) Evaluate(evalCtx any) any {
-	v := c.Child.Evaluate(evalCtx)
+	v, err := c.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+// Out-of-range / structurally-invalid casts are returned as
+// *InvalidCastError instead of panicking.
+func (c *CastValue) EvaluateErr(evalCtx any) (any, error) {
+	v, err := c.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if v == nil {
-		return nil
+		return nil, nil
 	}
 	if c.Target == nil {
-		return nil
+		return nil, nil
 	}
 	switch c.Target.Code() {
 	case TypeCodeInt:
 		switch val := v.(type) {
 		case int64:
 			if val < math.MinInt32 || val > math.MaxInt32 {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Value out of range for INT: %d", val)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Value out of range for INT: %d", val)}
 			}
-			return val
+			return val, nil
 		case bool:
 			if val {
-				return int64(1)
+				return int64(1), nil
 			}
-			return int64(0)
+			return int64(0), nil
 		case float64:
 			if val != val || math.IsInf(val, 0) {
-				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"})
+				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"}
 			}
 			rounded := math.Floor(val + 0.5)
 			if rounded > math.MaxInt32 || rounded < math.MinInt32 {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)}
 			}
-			return int64(int32(rounded))
+			return int64(int32(rounded)), nil
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 32)
 			if err != nil {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to INT: %s", val, err)}
 			}
-			return n
+			return n, nil
 		}
 	case TypeCodeLong:
 		switch val := v.(type) {
 		case int64:
-			return val
+			return val, nil
 		case bool:
 			if val {
-				return int64(1)
+				return int64(1), nil
 			}
-			return int64(0)
+			return int64(0), nil
 		case float64:
 			if val != val || math.IsInf(val, 0) {
-				panic(&InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"})
+				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"}
 			}
 			rounded := math.Floor(val + 0.5)
 			if rounded > float64(math.MaxInt64) || rounded < float64(math.MinInt64) {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)}
 			}
-			return int64(rounded)
+			return int64(rounded), nil
 		case string:
 			n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
 			if err != nil {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to LONG: %s", val, err)}
 			}
-			return n
+			return n, nil
 		}
 	case TypeCodeBoolean:
 		switch val := v.(type) {
 		case bool:
-			return val
+			return val, nil
 		case int64:
-			return val != 0
+			return val != 0, nil
 		case float64:
-			return val != 0
+			return val != 0, nil
 		case string:
 			switch strings.ToLower(strings.TrimSpace(val)) {
 			case "true", "1":
-				return true
+				return true, nil
 			case "false", "0":
-				return false
+				return false, nil
 			}
-			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to BOOLEAN", val)})
+			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to BOOLEAN", val)}
 		}
 	case TypeCodeString:
 		if s, ok := v.(string); ok {
-			return s
+			return s, nil
 		}
 		if i, ok := v.(int64); ok {
 			// strconv.FormatInt handles signed values correctly —
 			// uitoa(uint64(i)) would reinterpret negative int64 as
 			// the corresponding huge positive number (CAST(-5 AS
 			// STRING) → "18446744073709551611").
-			return strconv.FormatInt(i, 10)
+			return strconv.FormatInt(i, 10), nil
 		}
 		if f, ok := v.(float64); ok {
 			s := strconv.FormatFloat(f, 'g', -1, 64)
 			if !strings.ContainsAny(s, ".eE") && s != "NaN" && s != "+Inf" && s != "-Inf" {
 				s += ".0"
 			}
-			return s
+			return s, nil
 		}
 		if b, ok := v.(bool); ok {
 			// Match runtime functions.CastValue: lowercase
@@ -2023,39 +2118,39 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 			// returned nil while the runtime returned "true" — fold
 			// vs runtime mismatch on a constant input.
 			if b {
-				return "true"
+				return "true", nil
 			}
-			return "false"
+			return "false", nil
 		}
 	case TypeCodeDate:
 		switch val := v.(type) {
 		case time.Time:
-			return val.UTC().Format(dateLayout)
+			return val.UTC().Format(dateLayout), nil
 		case string:
 			s := strings.TrimSpace(val)
 			t, err := time.Parse(dateLayout, s)
 			if err != nil {
 				if t2, err2 := time.Parse(timestampLayout, s); err2 == nil {
-					return t2.UTC().Format(dateLayout)
+					return t2.UTC().Format(dateLayout), nil
 				}
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DATE: %s", val, err)}
 			}
-			return t.UTC().Format(dateLayout)
+			return t.UTC().Format(dateLayout), nil
 		}
 	case TypeCodeTimestamp:
 		switch val := v.(type) {
 		case time.Time:
-			return val.UTC().Format(timestampLayout)
+			return val.UTC().Format(timestampLayout), nil
 		case string:
 			s := strings.TrimSpace(val)
 			for _, layout := range []string{timestampLayout, "2006-01-02T15:04:05Z07:00", "2006-01-02T15:04:05", dateLayout} {
 				if t, err := time.Parse(layout, s); err == nil {
-					return t.UTC().Format(timestampLayout)
+					return t.UTC().Format(timestampLayout), nil
 				}
 			}
-			panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)})
+			return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to TIMESTAMP", val)}
 		case int64:
-			return time.UnixMilli(val).UTC().Format(timestampLayout)
+			return time.UnixMilli(val).UTC().Format(timestampLayout), nil
 		}
 	case TypeCodeFloat, TypeCodeDouble:
 		// CAST … AS FLOAT — accept float64/float32 verbatim; promote
@@ -2065,25 +2160,25 @@ func (c *CastValue) Evaluate(evalCtx any) any {
 		// gets UNKNOWN instead of FALSE.
 		switch val := v.(type) {
 		case float64:
-			return val
+			return val, nil
 		case float32:
-			return float64(val)
+			return float64(val), nil
 		case int64:
-			return float64(val)
+			return float64(val), nil
 		case string:
 			f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
 			if err != nil {
-				panic(&InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)})
+				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)}
 			}
-			return f
+			return f, nil
 		case bool:
 			if val {
-				return float64(1)
+				return float64(1), nil
 			}
-			return float64(0)
+			return float64(0), nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // --- RecordConstructorValue ----------------------------------------
@@ -2191,11 +2286,24 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // Downstream consumers (projections, field-access) index into this
 // map by field name.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) any {
+	v, err := r.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (r *RecordConstructorValue) EvaluateErr(evalCtx any) (any, error) {
 	out := make(map[string]any, len(r.Fields))
 	for _, f := range r.Fields {
-		out[f.Name] = f.Value.Evaluate(evalCtx)
+		fv, err := f.Value.EvaluateErr(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		out[f.Name] = fv
 	}
-	return out
+	return out, nil
 }
 
 // --- PromoteValue --------------------------------------------------
@@ -2257,7 +2365,16 @@ func (*PromoteValue) Name() string { return "promote" }
 // promotion. Plan-time inspection (explain, rewrite rules) is where
 // Promote earns its keep.
 func (p *PromoteValue) Evaluate(evalCtx any) any {
-	return p.Child.Evaluate(evalCtx)
+	v, err := p.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (p *PromoteValue) EvaluateErr(evalCtx any) (any, error) {
+	return p.Child.EvaluateErr(evalCtx)
 }
 
 // --- QuantifiedObjectValue -----------------------------------------
@@ -2331,29 +2448,38 @@ func (*QuantifiedObjectValue) Name() string { return "quantifier" }
 // Downstream FieldValue / nested-field resolvers then index into the
 // returned map to pick a specific column.
 func (q *QuantifiedObjectValue) Evaluate(evalCtx any) any {
+	v, err := q.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (q *QuantifiedObjectValue) EvaluateErr(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	switch ctx := evalCtx.(type) {
 	case map[CorrelationIdentifier]map[string]any:
-		return ctx[q.Correlation]
+		return ctx[q.Correlation], nil
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if val, ok := ctx.Correlations.GetCorrelationBinding(q.Correlation); ok {
-				return val
+				return val, nil
 			}
 		}
-		return ctx.Datum
+		return ctx.Datum, nil
 	case map[string]any:
-		return ctx
+		return ctx, nil
 	case CorrelationBinder:
 		val, ok := ctx.GetCorrelationBinding(q.Correlation)
 		if !ok {
-			return nil
+			return nil, nil
 		}
-		return val
+		return val, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // GetCorrelatedTo implements the Correlated interface — returns
@@ -2476,6 +2602,14 @@ func (*AggregateValue) Name() string { return "agg" }
 // and debugs for an hour.
 func (a *AggregateValue) Evaluate(any) any {
 	panic("AggregateValue.Evaluate: aggregate must be evaluated over rows by the aggregator, not per-row")
+}
+
+// EvaluateErr is the error-returning twin (RFC-091). Aggregates have
+// no single-row eval — this is a genuine invariant violation, so it
+// stays a panic (bradfitz policy: invariant asserts are not threaded
+// as errors).
+func (a *AggregateValue) EvaluateErr(any) (any, error) {
+	panic("AggregateValue.EvaluateErr: aggregate must be evaluated over rows by the aggregator, not per-row")
 }
 
 // GetIndexTypeName returns the FDB index-type name that backs this

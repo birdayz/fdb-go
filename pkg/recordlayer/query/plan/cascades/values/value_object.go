@@ -43,6 +43,10 @@ func (v *ObjectValue) Type() Type { return v.ResultType }
 // evaluation paths handle it before reaching per-row Eval.
 func (*ObjectValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*ObjectValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // GetCorrelatedTo returns the singleton set containing the bound
 // alias.
 func (v *ObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {

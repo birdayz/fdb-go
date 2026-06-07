@@ -50,16 +50,25 @@ func (*EuclideanSquareDistanceRowNumberValue) IsIndexOnly() bool { return true }
 // Evaluate returns the current row number from the row-shape harness
 // pattern (_row_number key). Real execution wires the HNSW search
 // graph; the harness exposes the per-row counter for testability.
-func (*EuclideanSquareDistanceRowNumberValue) Evaluate(evalCtx any) any {
+func (v *EuclideanSquareDistanceRowNumberValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (*EuclideanSquareDistanceRowNumberValue) EvaluateErr(evalCtx any) (any, error) {
 	if evalCtx == nil {
-		return nil
+		return nil, nil
 	}
 	if m, ok := evalCtx.(map[string]any); ok {
 		if r, ok := m["_row_number"]; ok {
-			return r
+			return r, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a fresh EuclideanSquareDistanceRowNumberValue

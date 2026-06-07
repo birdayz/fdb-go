@@ -51,3 +51,9 @@ func (v *DerivedValue) Type() Type { return v.ResultType }
 func (*DerivedValue) Evaluate(any) any {
 	panic("DerivedValue.Evaluate: derived-value placeholder is non-evaluable")
 }
+
+// EvaluateErr is the error-returning twin (RFC-091). DerivedValue is
+// non-evaluable — a genuine invariant violation, so it stays a panic.
+func (*DerivedValue) EvaluateErr(any) (any, error) {
+	panic("DerivedValue.EvaluateErr: derived-value placeholder is non-evaluable")
+}

@@ -50,22 +50,34 @@ func (*VersionValue) Type() Type { return NullableVersion }
 // Returns the version (typically []byte or a 12-byte tuple) on
 // success.
 func (v *VersionValue) Evaluate(evalCtx any) any {
-	if v.Child == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	rec := v.Child.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *VersionValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Child == nil {
+		return nil, nil
+	}
+	rec, err := v.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if rec == nil {
-		return nil
+		return nil, nil
 	}
 	// The seed's row-shape is map[string]any with field name keys.
 	// Map lookup for "version" lifts the version bytes / tuple.
 	if m, ok := rec.(map[string]any); ok {
 		if ver, ok := m["version"]; ok {
-			return ver
+			return ver, nil
 		}
-		return nil
+		return nil, nil
 	}
 	// Other row shapes (proto messages, structs) require dedicated
 	// extractors per shape — wired in when execution lands.
-	return nil
+	return nil, nil
 }

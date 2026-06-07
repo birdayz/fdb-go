@@ -325,11 +325,26 @@ func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
 // operands promote via cmpAny so mixed-width int/float pairs don't
 // degrade to UNKNOWN.
 func (c Comparison) Eval(left any) TriBool {
+	v, err := c.EvalErr(left)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). The RHS
+// Value's evaluation error is threaded, and type-mismatch is returned
+// as a *TypeMismatchError instead of panicking.
+func (c Comparison) EvalErr(left any) (TriBool, error) {
 	var right any
 	if c.Operand != nil && !c.Type.IsUnary() {
-		right = c.Operand.Evaluate(nil)
+		r, err := c.Operand.EvaluateErr(nil)
+		if err != nil {
+			return TriUnknown, err
+		}
+		right = r
 	}
-	return c.EvalAgainst(left, right)
+	return c.EvalAgainstErr(left, right)
 }
 
 // EvalAgainst is the pure dispatch: given already-evaluated LHS and
@@ -338,19 +353,31 @@ func (c Comparison) Eval(left any) TriBool {
 // EvalAgainst — separating eval from dispatch is what lets a
 // non-constant RHS (`a = b + 1`) work row-by-row.
 func (c Comparison) EvalAgainst(left, right any) TriBool {
+	v, err := c.EvalAgainstErr(left, right)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// EvalAgainstErr is the error-returning twin of EvalAgainst (RFC-091).
+// Numeric/string type mismatch is returned as a *TypeMismatchError
+// instead of panicking; the DistanceRank "reached row evaluation"
+// case stays a panic (genuine planner invariant, not user-reachable).
+func (c Comparison) EvalAgainstErr(left, right any) (TriBool, error) {
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
 	switch c.Type {
 	case ComparisonIsNull:
 		if left == nil {
-			return TriTrue
+			return TriTrue, nil
 		}
-		return TriFalse
+		return TriFalse, nil
 	case ComparisonIsNotNull:
 		if left == nil {
-			return TriFalse
+			return TriFalse, nil
 		}
-		return TriTrue
+		return TriTrue, nil
 	}
 	// IS [NOT] DISTINCT FROM: SQL null-safe (in)equality — always
 	// resolves to TRUE/FALSE, even with NULL on either side. Two
@@ -370,14 +397,14 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 		}
 		if c.Type == ComparisonIsDistinctFrom {
 			if distinct {
-				return TriTrue
+				return TriTrue, nil
 			}
-			return TriFalse
+			return TriFalse, nil
 		}
 		if distinct {
-			return TriFalse
+			return TriFalse, nil
 		}
-		return TriTrue
+		return TriTrue, nil
 	}
 	// IN accepts a list RHS; NULL LHS still degrades to UNKNOWN per
 	// SQL 3VL. Empty list never matches. One NULL element + no other
@@ -386,11 +413,11 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 	// possibly-NULL-containing set" case.
 	if c.Type == ComparisonIn {
 		if left == nil {
-			return TriUnknown
+			return TriUnknown, nil
 		}
 		list, ok := right.([]any)
 		if !ok {
-			return TriUnknown
+			return TriUnknown, nil
 		}
 		sawNull := false
 		for _, elem := range list {
@@ -401,18 +428,18 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 			cmp, ok := cmpAny(left, elem)
 			if !ok {
 				if isNumericStringMismatch(left, elem) {
-					panic(&TypeMismatchError{Left: left, Right: elem})
+					return TriUnknown, &TypeMismatchError{Left: left, Right: elem}
 				}
 				continue
 			}
 			if cmp == 0 {
-				return TriTrue
+				return TriTrue, nil
 			}
 		}
 		if sawNull {
-			return TriUnknown
+			return TriUnknown, nil
 		}
-		return TriFalse
+		return TriFalse, nil
 	}
 	// DistanceRank comparisons are vector K-NN index predicates: they MUST be
 	// lowered to a vector index scan during planning (RowNumberValue
@@ -426,7 +453,7 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 			"vector K-NN predicate was not lowered to a vector index scan during planning", c.Type))
 	}
 	if left == nil || right == nil {
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	// STARTS_WITH needs string LHS + string RHS; typed-mismatch
 	// degrades to UNKNOWN per SQL 3VL like the numeric comparators.
@@ -434,12 +461,12 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 		ls, lok := left.(string)
 		rs, rok := right.(string)
 		if !lok || !rok {
-			return TriUnknown
+			return TriUnknown, nil
 		}
 		if strings.HasPrefix(ls, rs) {
-			return TriTrue
+			return TriTrue, nil
 		}
-		return TriFalse
+		return TriFalse, nil
 	}
 	// LIKE: SQL pattern with `%` (zero-or-more chars) and `_` (exactly
 	// one char). When c.Escape is non-zero, the rune preceding `%`
@@ -449,19 +476,19 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 		ls, lok := left.(string)
 		ps, rok := right.(string)
 		if !lok || !rok {
-			return TriUnknown
+			return TriUnknown, nil
 		}
 		if likeMatch(ps, ls, c.Escape) {
-			return TriTrue
+			return TriTrue, nil
 		}
-		return TriFalse
+		return TriFalse, nil
 	}
 	cmp, ok := cmpAny(left, right)
 	if !ok {
 		if isNumericStringMismatch(left, right) {
-			panic(&TypeMismatchError{Left: left, Right: right})
+			return TriUnknown, &TypeMismatchError{Left: left, Right: right}
 		}
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	var matches bool
 	switch c.Type {
@@ -478,12 +505,12 @@ func (c Comparison) EvalAgainst(left, right any) TriBool {
 	case ComparisonGreaterThanEq:
 		matches = cmp >= 0
 	default:
-		return TriUnknown
+		return TriUnknown, nil
 	}
 	if matches {
-		return TriTrue
+		return TriTrue, nil
 	}
-	return TriFalse
+	return TriFalse, nil
 }
 
 // likeMatch implements SQL LIKE pattern matching against `s`:
@@ -712,18 +739,36 @@ func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier
 }
 
 func (p *ComparisonPredicate) Eval(evalCtx any) TriBool {
-	if p.Operand == nil {
-		return TriUnknown
+	v, err := p.EvalErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	left := p.Operand.Evaluate(evalCtx)
+	return v
+}
+
+// EvalErr is the error-returning twin of Eval (RFC-091). The LHS and
+// RHS Value evaluation errors are threaded, and type-mismatch is
+// returned as a *TypeMismatchError instead of panicking.
+func (p *ComparisonPredicate) EvalErr(evalCtx any) (TriBool, error) {
+	if p.Operand == nil {
+		return TriUnknown, nil
+	}
+	left, err := p.Operand.EvaluateErr(evalCtx)
+	if err != nil {
+		return TriUnknown, err
+	}
 	var right any
 	if p.Comparison.Operand != nil && !p.Comparison.Type.IsUnary() {
 		// Evaluate RHS against the same row context. For constant
 		// RHS this reduces to the literal; for a FieldValue or
 		// arithmetic over row columns this reads the current row.
-		right = p.Comparison.Operand.Evaluate(evalCtx)
+		r, err := p.Comparison.Operand.EvaluateErr(evalCtx)
+		if err != nil {
+			return TriUnknown, err
+		}
+		right = r
 	}
-	return p.Comparison.EvalAgainst(left, right)
+	return p.Comparison.EvalAgainstErr(left, right)
 }
 
 func (p *ComparisonPredicate) Explain() string {

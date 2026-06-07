@@ -60,6 +60,11 @@ func (w *WindowedValue) Children() []Value {
 // for the rank-tracking eval seed).
 func (*WindowedValue) Evaluate(any) any { return nil }
 
+// EvaluateErr is the error-returning twin (RFC-091). The base windowed
+// value has no per-row eval; the placeholder never fails. Concrete
+// subclasses that override Evaluate also override EvaluateErr.
+func (*WindowedValue) EvaluateErr(any) (any, error) { return nil, nil }
+
 // SplitNewChildren splits a flat newChildren slice back into
 // (partition, argument) lists by position — matching Java's
 // `splitNewChildren` helper that subclass `withChildren`

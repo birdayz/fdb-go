@@ -41,16 +41,28 @@ func (*CardinalityValue) Type() Type { return NotNullLong }
 // Child is nil-Value or evaluates to nil. Returns nil if the
 // Child evaluates to a non-slice (type-degraded UNKNOWN).
 func (v *CardinalityValue) Evaluate(evalCtx any) any {
-	if v.Child == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	val := v.Child.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *CardinalityValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Child == nil {
+		return nil, nil
+	}
+	val, err := v.Child.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if val == nil {
-		return nil
+		return nil, nil
 	}
 	in, ok := val.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
-	return int64(len(in))
+	return int64(len(in)), nil
 }

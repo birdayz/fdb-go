@@ -81,12 +81,24 @@ func (v *PickValue) Type() Type { return v.Typ }
 //   - The resolved index is out of bounds for Alternatives.
 //   - The chosen alternative is nil-Value.
 func (v *PickValue) Evaluate(evalCtx any) any {
-	if v.Selector == nil {
-		return nil
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
 	}
-	idxVal := v.Selector.Evaluate(evalCtx)
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *PickValue) EvaluateErr(evalCtx any) (any, error) {
+	if v.Selector == nil {
+		return nil, nil
+	}
+	idxVal, err := v.Selector.EvaluateErr(evalCtx)
+	if err != nil {
+		return nil, err
+	}
 	if idxVal == nil {
-		return nil
+		return nil, nil
 	}
 	var idx int
 	switch i := idxVal.(type) {
@@ -97,14 +109,14 @@ func (v *PickValue) Evaluate(evalCtx any) any {
 	case int64:
 		idx = int(i)
 	default:
-		return nil
+		return nil, nil
 	}
 	if idx < 0 || idx >= len(v.Alternatives) {
-		return nil
+		return nil, nil
 	}
 	alt := v.Alternatives[idx]
 	if alt == nil {
-		return nil
+		return nil, nil
 	}
-	return alt.Evaluate(evalCtx)
+	return alt.EvaluateErr(evalCtx)
 }

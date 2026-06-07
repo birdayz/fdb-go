@@ -68,13 +68,26 @@ func (v *ArrayConstructorValue) Type() Type {
 // Nil child Values are tolerated — produce a nil element. Per Java,
 // this is the same as a child evaluating to NULL.
 func (v *ArrayConstructorValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *ArrayConstructorValue) EvaluateErr(evalCtx any) (any, error) {
 	out := make([]any, len(v.Elements))
 	for i, child := range v.Elements {
 		if child != nil {
-			out[i] = child.Evaluate(evalCtx)
+			cv, err := child.EvaluateErr(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = cv
 		}
 	}
-	return out
+	return out, nil
 }
 
 // WithChildren returns a fresh ArrayConstructorValue with new

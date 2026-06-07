@@ -65,3 +65,7 @@ func (v *QueriedValue) Type() Type { return v.ResultType }
 // planner rewrites resolve it to concrete Field / QuantifiedObject
 // values before any row-level eval.
 func (*QueriedValue) Evaluate(any) any { return nil }
+
+// EvaluateErr is the error-returning twin (RFC-091). Placeholder eval
+// never fails.
+func (*QueriedValue) EvaluateErr(any) (any, error) { return nil, nil }

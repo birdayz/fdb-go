@@ -70,16 +70,28 @@ func (*ConditionSelectorValue) Type() Type { return NotNullInt }
 // Boolean.FALSE, NULL, or non-boolean results don't match. Mirrors
 // Java's `Boolean.TRUE.equals(result)` strict check.
 func (v *ConditionSelectorValue) Evaluate(evalCtx any) any {
+	res, err := v.EvaluateErr(evalCtx)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+// EvaluateErr is the error-returning twin of Evaluate (RFC-091).
+func (v *ConditionSelectorValue) EvaluateErr(evalCtx any) (any, error) {
 	for i, impl := range v.Implications {
 		if impl == nil {
 			continue
 		}
-		raw := impl.Evaluate(evalCtx)
+		raw, err := impl.EvaluateErr(evalCtx)
+		if err != nil {
+			return nil, err
+		}
 		if b, ok := raw.(bool); ok && b {
-			return int64(i)
+			return int64(i), nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // WithChildren returns a fresh ConditionSelectorValue with the
