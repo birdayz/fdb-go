@@ -21,7 +21,7 @@ type recordKeyCursor struct {
 	scanProperties ScanProperties
 
 	// Internal state
-	iterator      *fdb.RangeIterator
+	iterator      rangeIterator
 	closed        bool
 	keysReturned  int
 	keysScanned   int
@@ -49,6 +49,13 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 	if ep.ReturnedRowLimit > 0 && c.keysReturned >= ep.ReturnedRowLimit {
 		if c.hasMore() {
 			return NewResultNoNext[tuple.Tuple](ReturnLimitReached, &BytesContinuation{bytes: c.continuation}), nil
+		}
+		// hasMore()'s Advance() returns false on exhaustion OR error — check Get()
+		// for the stored error so a transient transaction_too_old (1007) / timeout at
+		// the row-limit boundary surfaces instead of being read as end-of-data (which
+		// would silently drop the remaining keys).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: advance at row-limit boundary: %w", err)
 		}
 		return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
 	}
@@ -82,6 +89,12 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 			hasNext = c.iterator.Advance()
 		}
 		if !hasNext {
+			// Advance() returns false on exhaustion OR error (also via a peeked
+			// hasMore()); Get() returns the stored error in the error case. Surface it
+			// rather than reporting SourceExhausted, which would silently lose keys.
+			if _, err := c.iterator.Get(); err != nil {
+				return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("record key cursor: advance: %w", err)
+			}
 			return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
 		}
 

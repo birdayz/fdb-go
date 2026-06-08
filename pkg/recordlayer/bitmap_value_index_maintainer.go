@@ -444,7 +444,7 @@ type bitmapKVCursor struct {
 	scanProps     ScanProperties
 	entrySize     int64
 
-	iterator     *fdb.RangeIterator
+	iterator     rangeIterator
 	closed       bool
 	recordsRead  int
 	bytesScanned int64
@@ -535,6 +535,12 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 				&BytesContinuation{bytes: c.lastCont},
 			), nil
 		}
+		// Advance() returns false on exhaustion OR error — check Get() for the stored
+		// error so a transient transaction_too_old (1007) / timeout at the row-limit
+		// boundary surfaces instead of being read as end-of-data (silent row loss).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("bitmap index scan at row-limit boundary: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
 			&EndContinuation{},
@@ -558,6 +564,11 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 	}
 
 	if !c.iterator.Advance() {
+		// Advance() returns false on exhaustion OR error — surface the stored Get()
+		// error rather than reporting SourceExhausted (silent row loss).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("bitmap index scan: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 	}
 

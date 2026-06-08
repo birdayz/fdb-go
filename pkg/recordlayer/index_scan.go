@@ -402,7 +402,7 @@ type indexCursor struct {
 	continuation  []byte
 	scanProps     ScanProperties
 
-	iterator     *fdb.RangeIterator
+	iterator     rangeIterator
 	closed       bool
 	recordsRead  int
 	bytesScanned int64
@@ -453,6 +453,12 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 				&BytesContinuation{bytes: c.lastCont},
 			), nil
 		}
+		// Advance() returns false on exhaustion OR error — check Get() for the stored
+		// error so a transient transaction_too_old (1007) / timeout at the row-limit
+		// boundary surfaces instead of being read as end-of-data (silent row loss).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("index scan at row-limit boundary: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
 			&EndContinuation{},
@@ -485,6 +491,12 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 	}
 
 	if !c.iterator.Advance() {
+		// Advance() returns false on exhaustion OR error — Get() returns the stored
+		// error in the error case. Surface it instead of reporting SourceExhausted,
+		// which would silently truncate the index scan.
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("index scan: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
 			&EndContinuation{},
