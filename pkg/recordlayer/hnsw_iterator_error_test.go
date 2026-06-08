@@ -182,3 +182,45 @@ func TestHNSW_RepairNeighbor_SkipsAbsentNeighbor(t *testing.T) {
 		t.Fatalf("repairNeighbor must skip a genuinely-absent neighbor (nil), got %v", err)
 	}
 }
+
+// TestHNSW_Delete_PropagatesAccessInfoReadError pins the point-read swallow class
+// Torvalds caught beyond the dispatch sites: Delete's first read (access info), its
+// pipelined per-layer reads, and the layer-0 existence probe used to read EVERY error as
+// "empty graph / already deleted" and return nil — so a transient transaction_too_old
+// (1007) made Delete commit a silent no-op instead of retrying. The `get` seam injects
+// the point-read failure (Delete's first read is access info, so this gates it).
+func TestHNSW_Delete_PropagatesAccessInfoReadError(t *testing.T) {
+	t.Parallel()
+	injErr := errors.New("injected transaction_too_old (1007)")
+	s := &hnswStorage{
+		dataSubspace:   subspace.Sub("hnsw_test").Sub(int64(0)),
+		accessSubspace: subspace.Sub("hnsw_test").Sub(int64(1)),
+		cache:          make(map[string]*parsedNode),
+		get: func(_ fdb.ReadTransaction, _ fdb.Key) ([]byte, error) {
+			return nil, injErr
+		},
+	}
+	g := &hnswGraph{storage: s, config: s.config}
+	err := g.Delete(fdb.Transaction{}, tuple.Tuple{int64(1)})
+	if !errors.Is(err, injErr) {
+		t.Fatalf("Delete must propagate a transient access-info read error (not commit a no-op), got %v", err)
+	}
+}
+
+// TestHNSW_Delete_SkipsEmptyGraph is the companion: a genuinely empty graph (no access
+// info → errHNSWNotPresent) is still a clean no-op delete (nil), not a spurious failure.
+func TestHNSW_Delete_SkipsEmptyGraph(t *testing.T) {
+	t.Parallel()
+	s := &hnswStorage{
+		dataSubspace:   subspace.Sub("hnsw_test").Sub(int64(0)),
+		accessSubspace: subspace.Sub("hnsw_test").Sub(int64(1)),
+		cache:          make(map[string]*parsedNode),
+		get: func(_ fdb.ReadTransaction, _ fdb.Key) ([]byte, error) {
+			return nil, nil // no access info written → empty graph
+		},
+	}
+	g := &hnswGraph{storage: s, config: s.config}
+	if err := g.Delete(fdb.Transaction{}, tuple.Tuple{int64(1)}); err != nil {
+		t.Fatalf("Delete on a genuinely empty graph must be a clean no-op (nil), got %v", err)
+	}
+}

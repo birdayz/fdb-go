@@ -410,7 +410,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	// changed or the node was inserted with a different M).
 	accessInfo, accessErr := g.storage.loadAccessInfo(tx)
 	if accessErr != nil {
-		return nil // empty graph, nothing to delete
+		if e := hnswFatal(accessErr); e != nil {
+			return e // transient read — abort/retry, don't treat as an empty graph
+		}
+		return nil // genuinely empty graph, nothing to delete
 	}
 	epLayer := accessInfo.layer
 
@@ -443,7 +446,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	for _, f := range futures {
 		data, err := f.future.Get()
 		if err != nil {
-			continue
+			// A future error is a real I/O failure (a missing key surfaces as data==nil
+			// below, not an error) — propagate so the tx retries rather than silently
+			// skipping the layer and committing an incomplete delete.
+			return fmt.Errorf("hnsw delete: read layer %d: %w", f.layer, err)
 		}
 		if data == nil {
 			g.storage.cache[f.key] = nil // negative cache
@@ -459,6 +465,9 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	// Check existence at layer 0 (always compact, now served from cache).
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
 	if err != nil {
+		if e := hnswFatal(err); e != nil {
+			return e // transient read — abort/retry, don't treat as already-deleted
+		}
 		return nil // already deleted or doesn't exist
 	}
 
@@ -525,7 +534,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch int) ([]hnswSearchResult, error) {
 	accessInfo, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
-		return nil, nil // empty graph
+		if e := hnswFatal(err); e != nil {
+			return nil, e // transient read — propagate so the caller retries
+		}
+		return nil, nil // genuinely empty graph
 	}
 
 	// Apply transform to query vector so it's in the same coordinate system
@@ -1070,6 +1082,12 @@ type hnswStorage struct {
 	// a live FDB transaction. The local *fdb.RangeIterator and a test fake both satisfy
 	// the rangeIterator seam (Advance/Get).
 	scan func(tx fdb.ReadTransaction, r fdb.Range, opts fdb.RangeOptions) rangeIterator
+
+	// get reads a single key. nil in production (uses the real tx.Get().Get() via
+	// getKey); tests set it to inject a point-read failure or a not-found so the
+	// transient-vs-absent handling of the single-key reads (access info, layer-0
+	// existence probe) is deterministically reachable without a live FDB transaction.
+	get func(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error)
 }
 
 // scanIter opens a range iterator, honoring the test seam (s.scan) when set and
@@ -1079,6 +1097,14 @@ func (s *hnswStorage) scanIter(tx fdb.ReadTransaction, r fdb.Range, opts fdb.Ran
 		return s.scan(tx, r, opts)
 	}
 	return tx.GetRange(r, opts).Iterator()
+}
+
+// getKey reads a single key, honoring the test seam (s.get) when set.
+func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error) {
+	if s.get != nil {
+		return s.get(tx, key)
+	}
+	return tx.Get(key).Get()
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -1168,7 +1194,7 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	}
 
 	hnswStatGet(s.stats)
-	data, err := tx.Get(fdb.Key(key)).Get()
+	data, err := s.getKey(tx, fdb.Key(key))
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
 	}
@@ -1394,7 +1420,10 @@ type hnswAccessInfo struct {
 // Wire format: Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
 func (s *hnswStorage) parseAccessInfo(data []byte) (*hnswAccessInfo, error) {
 	if data == nil {
-		return nil, fmt.Errorf("hnsw: no entry point")
+		// No access info written yet — a genuinely empty graph. Mark it absent (not
+		// fatal) so Delete/Search skip cleanly; a transient get error (handled by the
+		// caller before this) stays unwrapped and propagates. Corruption below is fatal.
+		return nil, fmt.Errorf("hnsw: no entry point: %w", errHNSWNotPresent)
 	}
 
 	t, unpackErr := fastUnpack(data)
@@ -1462,7 +1491,7 @@ func (a *hnswAccessInfo) hasTransform() bool {
 func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (*hnswAccessInfo, error) {
 	hnswStatGet(s.stats)
 	key := s.accessSubspace.Pack(tuple.Tuple{})
-	data, getErr := tx.Get(fdb.Key(key)).Get()
+	data, getErr := s.getKey(tx, fdb.Key(key))
 	if getErr != nil {
 		return nil, fmt.Errorf("hnsw: get access info: %w", getErr)
 	}
