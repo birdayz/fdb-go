@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -80,6 +81,11 @@ func TestDial_HandshakeHonorsCancellation(t *testing.T) {
 	// Pre-fix this waits the full 10s default (a cancel-only ctx sets no shorter bound).
 	if elapsed > 3*time.Second {
 		t.Fatalf("handshake did not honor ctx cancellation: took %v (expected ~200ms)", elapsed)
+	}
+	// The error must reflect the cancellation, not the i/o-timeout shape the past
+	// deadline produces — a caller checking errors.Is(err, context.Canceled) must match.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
 

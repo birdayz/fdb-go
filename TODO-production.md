@@ -70,9 +70,16 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   inside `Commit`, run `ensureReadVersion` under the live ctx for write txns (after the
   `len(muts)==0 && nWriteConflicts==0` fast-path return), `WithoutCancel` only the commit RPC +
   barrier. Sub-RPC window, non-hazardous (stale-but-durable commit, no data hazard).
-- **[ ] `sendWatch` long-poll has no timer/`conn.ctx` escape** (`readpath.go:894`). Safe only because
-  `failAllPending` does a buffered non-blocking send on teardown; a deadline-free watch on a
-  TCP-alive-but-stalled connection waits indefinitely. Lower severity (watches); audit.
+- **[x] `sendWatch` long-poll escape — AUDITED, safe (matches Java).** `sendWatch` (`readpath.go:855`)
+  blocks in a `select` with TWO escapes: the watch reply on `replyCh`, and `ctx.Done()`
+  (`readpath.go:905`). On connection teardown, `failAllPending` (`conn.go:744`) does a non-blocking
+  send of the error — safe because `replyCh` is **buffered cap-1** (`replyChanPool`, `conn.go:32`), so
+  the signal lands in the buffer even before `sendWatch` reaches the `select` (no dropped wake). The
+  connectionMonitor (ping/pong 750ms / 2s timeout) tears down a stalled conn → `failAllPending` →
+  retry next server. The only residual is a server that answers monitor pings yet silently drops the
+  watch registration: the watch then waits on the caller's ctx — which is correct, because FDB
+  watches are long-poll with no internal timeout *by design* (Java behaves identically; a watch with
+  no caller deadline is meant to be long-lived). No divergence, no fix.
 
 ### Write-path / index-maintainer — hunt findings (verified against Java by FDB C++ review)
 The Concatenate-index panic (the CRITICAL one) is FIXED above. The rest were all run by FDB C++

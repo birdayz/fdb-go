@@ -252,6 +252,18 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// called explicitly before the deadline is cleared (see below).
 	defer stopWatcher()
 
+	// handshakeErr prefers the ctx error for a handshake I/O failure: when the
+	// watcher above aborts the handshake on cancellation, the read/write returns an
+	// i/o-timeout-shaped error (from the past deadline), but the caller actually
+	// cancelled — so surface ctx.Err() (wrapped, so errors.Is(context.Canceled /
+	// DeadlineExceeded) holds). A genuine timeout with a live ctx keeps the i/o error.
+	handshakeErr := func(stage string, ioErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%s: %w", stage, ctxErr)
+		}
+		return fmt.Errorf("%s: %w", stage, ioErr)
+	}
+
 	// Wrap in TLS iff a config was supplied. The non-nil config is the only
 	// "use TLS" signal — there is no bool to disagree with it, so plaintext can
 	// never be sent on a connection the caller wanted encrypted. An empty config
@@ -260,7 +272,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		tlsConn, tlsErr := upgradeTLS(netConn, addr, tlsConfig)
 		if tlsErr != nil {
 			netConn.Close()
-			return nil, fmt.Errorf("TLS handshake %s: %w", addr, tlsErr)
+			return nil, handshakeErr(fmt.Sprintf("TLS handshake %s", addr), tlsErr)
 		}
 		netConn = tlsConn
 	}
@@ -288,14 +300,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	if err := WriteConnectPacket(netConn, netConn.LocalAddr(), connID); err != nil {
 		cancel()
 		netConn.Close()
-		return nil, fmt.Errorf("write connect packet: %w", err)
+		return nil, handshakeErr("write connect packet", err)
 	}
 
 	peerPkt, err := ReadConnectPacket(netConn)
 	if err != nil {
 		cancel()
 		netConn.Close()
-		return nil, fmt.Errorf("read connect packet: %w", err)
+		return nil, handshakeErr("read connect packet", err)
 	}
 
 	if !peerPkt.IsCompatible(ProtocolVersion73) {
