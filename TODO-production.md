@@ -93,6 +93,33 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   (`atomic_index_helpers.go:209` `toInt64`). A SUM index on a DOUBLE field drops the fractional
   part rather than erroring. Lower severity (uncommon config) — verify vs Java, then guard/document.
 
+### Continuation / pagination — hunt findings
+- **[x] `hasMoreKVs` swallowed FDB iterator errors at the row-limit boundary — FIXED.** At the
+  `ReturnedRowLimit` boundary, `hasMoreKVs` returned `iterator.Advance()` without checking
+  `iterator.Get()` for the stored error — so a transient `transaction_too_old` (1007) / timeout
+  landing exactly there was read as end-of-data → `SourceExhausted` → silent loss of all remaining
+  rows. Fixed: `hasMoreKVs` now returns `(bool, error)` and the caller surfaces it (mirrors
+  `nextKV`'s post-Advance error check). Additive (no happy-path change).
+- **[ ] Continuation serialization may be `TO_OLD` (raw) vs Java 4.11.1.0 `TO_NEW` (proto+magic)**
+  — **WIRE; FDB C++ verification in progress.** `wrapContinuation` (`key_value_cursor.go:25`) may
+  emit the raw key suffix while Java defaults `serializationMode=TO_NEW` (proto wrapping
+  `inner_continuation` + magic `6773487359078157740`). Currently read-tolerant both ways (no rows
+  lost yet), but byte-divergent + a time-bomb (Java's raw-fallback is slated to throw). The hard
+  line — do NOT change the format until FDB C++ confirms Java's actual 4.11.1.0 default + the exact
+  bytes.
+- **[ ] `executeLimit` skip/limit state not in the continuation** (`executor.go:816`,
+  query-engine/Graefe-gated). A `RecordQueryLimitPlan` spanning a page boundary would re-skip
+  `offset` (lose rows) + re-apply `limit` (over-return). Latent — currently shielded (top-level
+  LIMIT goes through `paginatingRows`; nested LIMIT only in eager scalar subqueries). Encode
+  skip/limit-remaining in the plan continuation.
+- **[ ] limit-before-first-row → `StartContinuation` read as "exhausted"** (`key_value_cursor.go`
+  `limitContinuation` + `cascades_generator.go` `paginatingRows.fetchPage`). A zero-byte non-end
+  continuation is mapped to `exhausted` → truncation. Degenerate-limit reachable. Don't map a
+  non-end zero-byte continuation to exhaustion.
+- **[ ] `autoContinuingCursor` retry-after-limit-stop uses stale `lastResult`**
+  (`cursor_combinators.go:794`) → possible DUPLICATE rows across a retry. LOW-MEDIUM. Record the
+  limit-stop continuation as the retry anchor.
+
 ---
 
 ## P0 — Blockers (before any production use)

@@ -107,7 +107,13 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// When we've returned the requested number of records, check if more exist
 	// to distinguish ReturnLimitReached from SourceExhausted.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
-		if c.hasMoreKVs() {
+		more, err := c.hasMoreKVs()
+		if err != nil {
+			// A transient error here must surface (and be retried) — not be silently
+			// collapsed into SourceExhausted, which would truncate the scan.
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		if more {
 			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 				ReturnLimitReached,
 				&BytesContinuation{bytes: c.continuation},
@@ -589,11 +595,22 @@ func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
 // Used for the limit-reached vs source-exhausted check. Best-effort: FDB errors
 // during the probe are treated as "no more" since we're just distinguishing
 // ReturnLimitReached from SourceExhausted.
-func (c *keyValueCursor) hasMoreKVs() bool {
+func (c *keyValueCursor) hasMoreKVs() (bool, error) {
 	if c.bufferedKV != nil {
-		return true
+		return true, nil
 	}
-	return c.iterator.Advance()
+	if c.iterator.Advance() {
+		return true, nil
+	}
+	// Advance returns false on exhaustion OR error. Check Get() for the stored
+	// error (transaction_too_old 1007, timeout) — otherwise a transient error
+	// landing exactly on the row-limit boundary is silently read as end-of-data,
+	// permanently ending the scan with SourceExhausted and LOSING the remaining
+	// rows. Mirrors nextKV's post-Advance error check.
+	if _, err := c.iterator.Get(); err != nil {
+		return false, fmt.Errorf("key-value cursor: iterator advance at row-limit boundary: %w", err)
+	}
+	return false, nil
 }
 
 // limitContinuation returns the appropriate continuation when a limit is hit.
