@@ -557,8 +557,8 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(gotVecBytes).To(Equal(vecBytes))
 			Expect(gotNeighbors).To(HaveLen(2))
-			Expect(tupleEqual(gotNeighbors[0], tuple.Tuple{int64(1)})).To(BeTrue())
-			Expect(tupleEqual(gotNeighbors[1], tuple.Tuple{int64(2)})).To(BeTrue())
+			Expect(spanPKInt(gotNeighbors[0])).To(Equal(int64(1)))
+			Expect(spanPKInt(gotNeighbors[1])).To(Equal(int64(2)))
 
 			// Delete and verify.
 			storage.deleteNodeLayer(tx, 0, pk)
@@ -711,7 +711,9 @@ var _ = Describe("HNSW Graph Direct", func() {
 				if loadErr != nil {
 					continue // node might not exist at layer 0 (shouldn't happen for layer 0)
 				}
-				for _, neighbor := range neighbors {
+				for _, neighborSpan := range neighbors {
+					neighbor, derr := decodeNestedPK(neighborSpan)
+					Expect(derr).NotTo(HaveOccurred())
 					if !visited[string(neighbor.Pack())] {
 						visited[string(neighbor.Pack())] = true
 						queue = append(queue, neighbor)
@@ -2880,22 +2882,22 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// D = (0, 2.1) -> dist = 4.41 (close to C)
 		// E = (3, 3)  -> dist = 18   (far away)
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 1.21},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 4.0},
-			{pk: tuple.Tuple{int64(4)}, vec: []float64{0, 2.1}, dist: 4.41},
-			{pk: tuple.Tuple{int64(5)}, vec: []float64{3, 3}, dist: 18.0},
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{1.1, 0}, 1.21),
+			candSpan(3, []float64{0, 2}, 4.0),
+			candSpan(4, []float64{0, 2.1}, 4.41),
+			candSpan(5, []float64{3, 3}, 18.0),
 		}
 
 		selected := graph.selectNeighbors(candidates, 2)
 		Expect(selected).To(HaveLen(2))
 
 		// First should be A (closest).
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
 		// Second should be C (diverse direction), not B (clustered with A).
 		// dist(B, A) = (0.1)^2 = 0.01 < B.dist=1.21 -> B is pruned
 		// dist(C, A) = 1 + 4 = 5 > C.dist=4 -> C is selected
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(3)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(3)))
 	})
 
 	It("keepPrunedConnections fills up to maxConn", func() {
@@ -2916,20 +2918,20 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// Heuristic will pick only the closest, prune the rest.
 		// With keepPrunedConnections, pruned ones fill up to maxConn.
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{2, 0}, dist: 4.0},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{3, 0}, dist: 9.0},
-			{pk: tuple.Tuple{int64(4)}, vec: []float64{4, 0}, dist: 16.0},
-			{pk: tuple.Tuple{int64(5)}, vec: []float64{5, 0}, dist: 25.0},
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{2, 0}, 4.0),
+			candSpan(3, []float64{3, 0}, 9.0),
+			candSpan(4, []float64{4, 0}, 16.0),
+			candSpan(5, []float64{5, 0}, 25.0),
 		}
 
 		// maxConn=3: heuristic selects only id=1 (closest), then prunes 2,3,4,5.
 		// keepPrunedConnections adds back 2, 3 to fill up to 3.
 		selected := graph.selectNeighbors(candidates, 3)
 		Expect(selected).To(HaveLen(3))
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
-		Expect(selected[2].pk[0].(int64)).To(Equal(int64(3)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
+		Expect(candPKInt(selected[2])).To(Equal(int64(3)))
 	})
 
 	It("heuristic is skipped for cosine metric (no triangle inequality)", func() {
@@ -2948,16 +2950,16 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// With cosine metric, selectNeighbors should do simple sort-and-truncate,
 		// NOT the diversity heuristic.
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 0.1},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 0.2},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 0.5},
+			candSpan(1, []float64{1, 0}, 0.1),
+			candSpan(2, []float64{1.1, 0}, 0.2),
+			candSpan(3, []float64{0, 2}, 0.5),
 		}
 
 		selected := graph.selectNeighbors(candidates, 2)
 		Expect(selected).To(HaveLen(2))
 		// Simple sort: takes the two closest by dist.
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
 	})
 
 	It("extendCandidates explores 2nd-degree neighbors during insert", func() {
@@ -3651,3 +3653,28 @@ var _ = Describe("HNSW Pipelined Multi-Layer Deletion", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// --- span-representation test helpers (HNSW carries neighbor PKs as nested spans) ---
+
+// candSpan builds an hnswCandidate whose PK is the int64 id, in span form.
+func candSpan(id int64, vec []float64, dist float64) hnswCandidate {
+	return hnswCandidate{pkSpan: nestPK(tuple.Tuple{id}), vec: vec, dist: dist}
+}
+
+// candPKInt decodes a candidate's span PK and returns its first int64 element.
+func candPKInt(c hnswCandidate) int64 {
+	pk, err := decodeNestedPK(c.pkSpan)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}
+
+// spanPKInt decodes a neighbor span and returns its first int64 element.
+func spanPKInt(span []byte) int64 {
+	pk, err := decodeNestedPK(span)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}

@@ -113,28 +113,55 @@ func tupleSkip(b []byte) int {
 		}
 		return 1 + versionstampLen
 	case b[0] == tcNested:
+		// A nested tuple is 0x05, the encoding of each child element, then a
+		// terminating 0x00. Element *values* escape interior 0x00 as 0x00 0xFF,
+		// but element *terminators* (e.g. a bytes element's trailing 0x00) are
+		// left bare — so a naive 0x00 scan stops at the first inner terminator.
+		// The only correct skip is to parse element by element: a NIL child is
+		// 0x00 0xFF, the bare 0x00 is the nested terminator, and every other
+		// child is consumed by a recursive tupleSkip (which knows how bytes,
+		// strings, ints, and deeper nested tuples are framed).
 		i := 1
 		for i < len(b) {
 			if b[i] == 0x00 {
 				if i+1 < len(b) && b[i+1] == 0xff {
-					i += 2 // escaped null
+					i += 2 // nil child element (escaped 0x00)
 					continue
 				}
 				return i + 1 // end-of-nested marker
 			}
-			if b[i] == tcNested {
-				size := tupleSkip(b[i:])
-				if size < 0 {
-					return -1
-				}
-				i += size
-				continue
+			sz := tupleSkip(b[i:])
+			if sz <= 0 {
+				return -1
 			}
-			i++
+			i += sz
 		}
 		return len(b)
 	}
 	return -1 // unknown type code
+}
+
+// nestedPKSpans splits the content of a neighbor-list tuple (the bytes between
+// the 0x05 marker and its terminating 0x00) into one byte-span per element,
+// WITHOUT decoding/boxing the elements. Children are stored verbatim, so each
+// returned span is exactly the bytes Tuple{pk}.Pack() produces — which is both
+// the fetch-key suffix (after the per-layer prefix) and a stable visited-set
+// key. Spans are sub-slices of content.
+func nestedPKSpans(content []byte) ([][]byte, error) {
+	if len(content) == 0 {
+		return nil, nil
+	}
+	spans := make([][]byte, 0, 16)
+	i := 0
+	for i < len(content) {
+		n := tupleSkip(content[i:])
+		if n < 0 {
+			return nil, fmt.Errorf("hnsw: truncated neighbor PK span at offset %d (len=%d)", i, len(content))
+		}
+		spans = append(spans, content[i:i+n])
+		i += n
+	}
+	return spans, nil
 }
 
 // findTerminator returns the offset of the unescaped 0x00 terminator in b.

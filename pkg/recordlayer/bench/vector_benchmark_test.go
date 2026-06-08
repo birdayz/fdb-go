@@ -7,10 +7,13 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -189,9 +192,12 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 		vectors[i] = vecRandomVector(rng, dims)
 	}
 
-	// Batch insert to stay under FDB transaction limits.
-	// HNSW inserts are expensive (graph traversal), so keep batches small.
-	batchSize := 50
+	// Batch insert to stay under FDB transaction limits. HNSW inserts are
+	// expensive (graph traversal) AND high-dimensional vectors + the neighbor-list
+	// writes scale the per-transaction byte size — at 1536D a batch of 50 overflows
+	// the 10MB tx limit (transaction_too_large 2101) once the graph densifies. Scale
+	// the batch down with dimensionality (≈ const bytes/tx), overridable via env.
+	batchSize := vecEnvInt("VECTOR_BENCH_BATCH", max(1, 50*128/dims))
 	for batch := 0; batch*batchSize < n; batch++ {
 		batchStart := batch * batchSize
 		batchEnd := batchStart + batchSize
@@ -884,4 +890,227 @@ func euclideanDistance(a, b []float64) float64 {
 		sum += d * d
 	}
 	return sum
+}
+
+// TestVectorConcurrencyScaling measures how vector-search throughput scales
+// with the number of concurrent readers. Each reader runs independent K-NN
+// queries on independent transactions, so throughput SHOULD climb near-linearly
+// with readers until the FDB server (or a client-side serialization point)
+// saturates. A flat/sub-linear curve localizes the bottleneck; the optional
+// profiles say whether it's CPU (distance math), network wait, or lock contention.
+//
+//	VECTOR_SCALING=1 [VECTOR_PROFILE=1] [VECTOR_BENCH_SIZE/DIMS/...] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorConcurrencyScaling -v -timeout 20m
+//
+// VECTOR_PROFILE=1 dumps cpu/block/mutex profiles for the peak concurrency
+// level to /tmp/vecprof_{cpu,block,mutex}.prof.
+func TestVectorConcurrencyScaling(t *testing.T) {
+	if os.Getenv("VECTOR_SCALING") != "1" {
+		t.Skip("set VECTOR_SCALING=1 to run")
+	}
+	ensureVectorBenchDB(t)
+
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	k := vecEnvInt("VECTOR_BENCH_K", 10)
+	efSearch := vecEnvInt("VECTOR_BENCH_EF_SEARCH", 64)
+	parallelism := vecEnvInt("VECTOR_BENCH_PARALLELISM", 8)
+	perLevel := time.Duration(vecEnvInt("VECTOR_BENCH_SECS", 6)) * time.Second
+
+	md, vecIdx := vecBuildMetaData(dims, false)
+	ss := vecBenchSubspace(t.Name())
+	rng := rand.New(rand.NewSource(42))
+
+	t.Logf("Scaling test: size=%d dims=%d k=%d ef=%d perLevel=%v cores=%d",
+		size, dims, k, efSearch, perLevel, runtime.NumCPU())
+	insertStart := time.Now()
+	vecInsertVectorsParallel(t, vectorBenchDB, md, ss, size, dims, parallelism, rng)
+	t.Logf("  Inserted %d vectors in %v", size, time.Since(insertStart))
+
+	profile := os.Getenv("VECTOR_PROFILE") == "1"
+	if profile {
+		runtime.SetBlockProfileRate(1)     // sample every blocking event
+		runtime.SetMutexProfileFraction(1) // sample every mutex contention
+	}
+
+	levels := []int{1, 2, 4, 8, 16, 24}
+	peak := levels[len(levels)-1]
+	t.Logf("%-9s %-8s %-10s %-11s %-11s %-7s %-8s %-9s %-7s %-8s",
+		"wall", "readers", "ops/sec", "p50", "p99", "scale", "cliCPU", "alloc/op", "nGC", "gcPause")
+	var baseOpsPerSec float64
+	for _, n := range levels {
+		var stopCPU func()
+		if profile && n == peak {
+			f, err := os.Create("/tmp/vecprof_cpu.prof")
+			if err == nil {
+				_ = pprof.StartCPUProfile(f)
+				stopCPU = func() { pprof.StopCPUProfile(); f.Close() }
+			}
+		}
+		var ms0, ms1 runtime.MemStats
+		runtime.ReadMemStats(&ms0)
+		cpu0 := cpuSecondsSelf()
+		t0 := time.Now()
+		res := vecRunConcurrentSearch(t, vectorBenchDB, md, vecIdx, ss, dims, k, efSearch, n, perLevel)
+		wall := time.Since(t0)
+		cliCPU := (cpuSecondsSelf() - cpu0) / wall.Seconds()
+		runtime.ReadMemStats(&ms1)
+		if stopCPU != nil {
+			stopCPU()
+			vecWriteProfile("/tmp/vecprof_block.prof", "block")
+			vecWriteProfile("/tmp/vecprof_mutex.prof", "mutex")
+			vecWriteProfile("/tmp/vecprof_allocs.prof", "allocs")
+		}
+		if n == 1 {
+			baseOpsPerSec = res.opsPerSec
+		}
+		scale := 0.0
+		if baseOpsPerSec > 0 {
+			scale = res.opsPerSec / baseOpsPerSec
+		}
+		allocPerOp := uint64(0)
+		if res.ops > 0 {
+			allocPerOp = (ms1.TotalAlloc - ms0.TotalAlloc) / uint64(res.ops)
+		}
+		gcPause := time.Duration(ms1.PauseTotalNs - ms0.PauseTotalNs)
+		// wall window [start..end] printed so a parallel `docker stats` sampler can
+		// be aligned to each concurrency level (server CPU vs client cores).
+		t.Logf("%-9s %-8d %-10.1f %-11v %-11v %-6.2fx %-7.1f %-9s %-9d %v",
+			t0.Format("15:04:05"), n, res.opsPerSec, res.p50, res.p99, scale,
+			cliCPU, vecHumanBytes(allocPerOp), ms1.NumGC-ms0.NumGC, gcPause)
+	}
+}
+
+// cpuSecondsSelf returns cumulative user+system CPU seconds consumed by this
+// process (the client). Diffing it across a timed window and dividing by wall
+// time yields "cores busy" — the client-side CPU cost of the workload.
+func cpuSecondsSelf() float64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	u := time.Duration(ru.Utime.Sec)*time.Second + time.Duration(ru.Utime.Usec)*time.Microsecond
+	s := time.Duration(ru.Stime.Sec)*time.Second + time.Duration(ru.Stime.Usec)*time.Microsecond
+	return (u + s).Seconds()
+}
+
+func vecHumanBytes(b uint64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
+// TestRawReadScaling measures the raw point-read throughput ceiling of the
+// FDB testcontainer, bypassing HNSW and tuple-decode entirely. Each op is one
+// transaction issuing RAW_BATCH pipelined Gets. If raw reads plateau at the
+// same per-op ceiling as the HNSW search, the bottleneck is the single-node
+// server's read throughput; if raw reads scale far higher, the HNSW/decode
+// path is the client-side cap. Gated on RAW_SCALING=1.
+func TestRawReadScaling(t *testing.T) {
+	if os.Getenv("RAW_SCALING") != "1" {
+		t.Skip("set RAW_SCALING=1 to run")
+	}
+	ensureVectorBenchDB(t)
+	ctx := context.Background()
+	ss := vecBenchSubspace(t.Name())
+	batch := vecEnvInt("RAW_BATCH", 50)
+	perLevel := time.Duration(vecEnvInt("VECTOR_BENCH_SECS", 4)) * time.Second
+
+	const nKeys = 2000
+	keys := make([][]byte, nKeys)
+	for i := range keys {
+		keys[i] = ss.Pack(tuple.Tuple{int64(i)})
+	}
+	// Seed keys (chunked to stay under the 10MB tx limit; values are tiny here).
+	for off := 0; off < nKeys; off += 500 {
+		end := off + 500
+		if end > nKeys {
+			end = nKeys
+		}
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := off; i < end; i++ {
+				tx.Set(fdb.Key(keys[i]), []byte{byte(i), byte(i >> 8)})
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed keys: %v", err)
+		}
+	}
+
+	levels := []int{1, 2, 4, 8, 16, 24, 48, 96}
+	t.Logf("Raw point-read scaling: batch=%d reads/tx, cores=%d", batch, runtime.NumCPU())
+	t.Logf("%-9s %-8s %-13s %-11s %-7s %-8s", "wall", "readers", "reads/sec", "p50/tx", "scale", "cliCPU")
+	var base float64
+	for _, nr := range levels {
+		var ops atomic.Int64 // reads
+		var mu sync.Mutex
+		var lats []time.Duration
+		var wg sync.WaitGroup
+		t0 := time.Now()
+		deadline := t0.Add(perLevel)
+		cpu0 := cpuSecondsSelf()
+		for r := 0; r < nr; r++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				rng := rand.New(rand.NewSource(int64(id*131 + 1)))
+				var local []time.Duration
+				for time.Now().Before(deadline) {
+					op := time.Now()
+					_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						tx := rtx.Transaction()
+						futs := make([]fdb.FutureByteSlice, batch)
+						for b := 0; b < batch; b++ {
+							futs[b] = tx.Get(fdb.Key(keys[rng.Intn(nKeys)]))
+						}
+						for b := 0; b < batch; b++ {
+							if _, e := futs[b].Get(); e != nil {
+								return nil, e
+							}
+						}
+						return nil, nil
+					})
+					if err == nil {
+						ops.Add(int64(batch))
+						local = append(local, time.Since(op))
+					}
+				}
+				mu.Lock()
+				lats = append(lats, local...)
+				mu.Unlock()
+			}(r)
+		}
+		wg.Wait()
+		el := time.Since(t0)
+		cores := (cpuSecondsSelf() - cpu0) / el.Seconds()
+		sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
+		readsPerSec := float64(ops.Load()) / el.Seconds()
+		if nr == 1 {
+			base = readsPerSec
+		}
+		scale := 0.0
+		if base > 0 {
+			scale = readsPerSec / base
+		}
+		t.Logf("%-9s %-8d %-13.0f %-11v %-6.2fx %-7.1f",
+			t0.Format("15:04:05"), nr, readsPerSec, vecLatencyPercentile(lats, 0.5), scale, cores)
+	}
+}
+
+func vecWriteProfile(path, name string) {
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if p := pprof.Lookup(name); p != nil {
+		_ = p.WriteTo(f, 0)
+	}
 }
