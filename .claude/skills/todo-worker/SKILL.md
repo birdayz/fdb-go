@@ -20,15 +20,26 @@ Pick the next unchecked item from TODO.md and drive it from RFC through implemen
 
    Example: `/goal P1.2: QOV-based FieldValue migration — RFC written, Graefe+Torvalds ACK, all stripAlias calls eliminated, tests green, PR merged with @claude LGTM`
 
-## Step 1: Load the query-engine skill
+## Step 1: Load the domain-review skill (sets the reviewer gate)
 
-If the item touches the planner, optimizer, executor, or plan cache:
+The two domains with their own architectural reviewer (substituting for the generic
+Graefe+Torvalds RFC review) are the query engine and the pure-Go FDB client. Load the
+matching skill — it sets the correct reviewer gate, key-file map, and spec anchor for the
+RFC/implementation reviews in Steps 5 and 7.
 
-```
-Skill(skill: "query-engine")
-```
+- **Query engine** (planner, optimizer, executor, plan cache): `Skill(skill: "query-engine")`
+  — loads the Graefe (Cascades) + Torvalds protocols and Java-as-spec.
+- **Pure-Go FDB client** (anything under `pkg/fdbgo/` — transport, transaction, commit path,
+  RYW, retry/ctx, wire encoding — or a `TODO-production.md` "client robustness" item):
+  `Skill(skill: "fdb-client-review")` — loads the **FDB C++ client developer** (substitute
+  for Graefe; validates Go against the 7.3.75 C++ source at `/tmp/fdbsrc`) + Torvalds
+  protocols and C++-as-spec. For a *divergence* found via differential/fuzz, also load
+  `hunt-divergences`.
 
-This loads the Graefe/Torvalds reviewer protocols, key file map, and lessons learned. If the item is purely record-layer or infra, skip this.
+When this skill sets a domain reviewer, use it in place of Graefe in Steps 5 and 7 (e.g.
+client items → **FDB C++ dev + Torvalds**, not Graefe + Torvalds). If the item is purely
+record-layer or generic infra with no client/wire or planner contract, skip — the generic
+Graefe+Torvalds RFC review applies.
 
 ## Step 2: Research
 
