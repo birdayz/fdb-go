@@ -45,6 +45,23 @@ var _ = Describe("Helper function coverage", func() {
 			Expect(v).To(Equal(int64(42))) // truncates
 		})
 
+		// WIRE PARITY: a SUM/MAX_EVER/MIN_EVER atomic index over a DOUBLE field truncates
+		// the value toward zero, matching Java's Number.longValue() (AtomicMutation.java
+		// SUM_LONG :187 / *_EVER_LONG :199 call numVal.longValue(); Java has no float SUM
+		// variant and its factory.validate never rejects a double field). The summand is
+		// encoded little-endian for MutationType.ADD, so a floor-based conversion
+		// (-42.9 → -43) would write DIFFERENT index bytes than Java for the same record.
+		// Pin truncation-toward-zero so a future "fix" can't silently diverge the wire.
+		It("truncates negative floats toward zero (Java longValue parity, not floor)", func() {
+			v, err := toInt64(float64(-42.9))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(Equal(int64(-42))) // toward zero, NOT -43 (floor)
+
+			v32, err := toInt64(float32(-42.9))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v32).To(Equal(int64(-42)))
+		})
+
 		It("returns error for unsupported type", func() {
 			_, err := toInt64("not a number")
 			Expect(err).To(HaveOccurred())

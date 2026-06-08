@@ -116,9 +116,17 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   `VectorIndexMaintainer`/`HNSW` validates `len(vector)==NumDimensions` on insert (only `Config`
   checks `numDimensions>=1`); both surface a mismatch later via distance `Preconditions`. Go matches
   Java on this axis. (Separate from the silent-skip above, which IS fixed.)
-- **[ ] SUM/MIN/MAX_EVER over a floating-point field silently truncates to int64**
-  (`atomic_index_helpers.go:209` `toInt64`). A SUM index on a DOUBLE field drops the fractional
-  part rather than erroring. Lower severity (uncommon config) — verify vs Java, then guard/document.
+- **[~] SUM/MIN/MAX_EVER float→int64 truncation — VERIFIED matches Java; do NOT change (wire).**
+  Checked against Java 4.11.1.0. Java's atomic mutations are LONG-only: the enum has `SUM_LONG`,
+  `MAX_EVER_LONG`, `MIN_EVER_LONG` — no double/float variant (`AtomicMutation.java:123-135`). At write
+  time `getMutationParam` casts the grouped key value to `Number` and calls `numVal.longValue()`
+  (SUM_LONG `:187`, MAX/MIN_EVER_LONG `:199`) — `Double.longValue()` truncates toward zero, exactly
+  like Go's `toInt64` (`atomic_index_helpers.go:203`, whose comment already says "matching Java's
+  Number.longValue()"). And `AtomicMutationIndexMaintainerFactory.validate` (`:93-120`) checks only
+  the GROUPING structure + version, never the field type — so Java *accepts* a SUM index on a DOUBLE
+  field and truncates it; it does not reject it. Therefore Go matches Java 1:1: preserving the
+  fraction (or erroring) would write different index bytes than Java for the same record — a wire
+  divergence. Same verdict family as the float32-leaderboard-negate item above: not a bug, leave it.
 
 ### Continuation / pagination — hunt findings
 - **[x] `hasMoreKVs` swallowed FDB iterator errors at the row-limit boundary — FIXED.** At the
