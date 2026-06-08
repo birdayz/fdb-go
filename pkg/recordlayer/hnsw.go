@@ -81,6 +81,12 @@ type HNSWConfig struct {
 	MaxNumConcurrentNodeFetches         int // (0, 64], default 16 — node fetch parallelism in Java
 	MaxNumConcurrentNeighborhoodFetches int // (0, 20], default 10 — neighborhood fetch parallelism in Java
 	MaxNumConcurrentDeleteFromLayer     int // (0, 10], default 2  — layer deletion parallelism in Java
+
+	// SharedCacheMaxNodes enables a process-wide, cross-transaction node cache
+	// (see sharedNodeCache) bounded to this many nodes. 0 (default) disables it.
+	// Go-only extension: keeps insert throughput from collapsing as the graph
+	// grows. Intended for single-writer indexing + read-only search.
+	SharedCacheMaxNodes int
 }
 
 // ValidateHNSWConfig validates the HNSW configuration.
@@ -1155,6 +1161,7 @@ type hnswStorage struct {
 	accessSubspace subspace.Subspace
 	config         HNSWConfig
 	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
+	shared         *sharedNodeCache       // optional cross-tx cache (nil = disabled)
 	stats          *HNSWStats             // optional I/O counters (nil = no tracking)
 
 	// scan opens a range iterator for a layer scan. nil in production (uses the real
@@ -1189,11 +1196,55 @@ func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
-	return &hnswStorage{
+	s := &hnswStorage{
 		dataSubspace:   ss.Sub(int64(0)),
 		accessSubspace: ss.Sub(int64(1)),
 		config:         config,
 		cache:          make(map[string]*parsedNode),
+	}
+	maxNodes := config.SharedCacheMaxNodes
+	if maxNodes == 0 {
+		maxNodes = defaultSharedCacheNodes
+	}
+	if maxNodes > 0 {
+		s.shared = getSharedNodeCache(string(ss.Bytes()), maxNodes)
+	}
+	return s
+}
+
+// cacheLookup checks the per-transaction cache, then the optional shared cross-
+// transaction cache. A shared hit is mirrored into the per-tx cache so repeat
+// intra-tx reads stay local.
+func (s *hnswStorage) cacheLookup(key string) (*parsedNode, bool) {
+	if n, ok := s.cache[key]; ok {
+		return n, true
+	}
+	if s.shared != nil {
+		if n, ok := s.shared.get(key); ok {
+			s.cache[key] = n
+			return n, true
+		}
+	}
+	return nil, false
+}
+
+// cacheStore records a node read from committed FDB data in both caches.
+// Negative results (node == nil) are kept per-tx only — "absent" is transient
+// during a build and must not be shared across transactions.
+func (s *hnswStorage) cacheStore(key string, node *parsedNode) {
+	s.cache[key] = node
+	if s.shared != nil && node != nil {
+		s.shared.put(key, node)
+	}
+}
+
+// cacheInvalidate drops a key from the shared cache on write. The per-tx cache
+// keeps this transaction's own write for read-your-writes; the shared entry is
+// dropped so other transactions re-read the committed value from FDB (and, if
+// this tx aborts, the still-committed value).
+func (s *hnswStorage) cacheInvalidate(key string) {
+	if s.shared != nil {
+		s.shared.invalidate(key)
 	}
 }
 
@@ -1223,6 +1274,7 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 		cacheNeighbors[i] = nestPK(pk)
 	}
 	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: cacheNeighbors}
+	s.cacheInvalidate(string(key))
 }
 
 // parseNodeValue parses the raw FDB value bytes for a node into vector bytes
@@ -1325,7 +1377,7 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	cacheKey := string(key)
 
 	// Check cache first — returns pre-parsed data, no tuple.Unpack needed.
-	if cached, ok := s.cache[cacheKey]; ok {
+	if cached, ok := s.cacheLookup(cacheKey); ok {
 		hnswStatCacheHit(s.stats)
 		if cached == nil {
 			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
@@ -1348,7 +1400,7 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	if err != nil {
 		return nil, nil, err
 	}
-	s.cache[cacheKey] = &parsedNode{vecBytes: vectorBytes, neighbors: neighbors}
+	s.cacheStore(cacheKey, &parsedNode{vecBytes: vectorBytes, neighbors: neighbors})
 	return vectorBytes, neighbors, nil
 }
 
@@ -1387,7 +1439,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 		cacheKey := string(key)
 		results[i].spanStr = string(span)
 
-		if cached, ok := s.cache[cacheKey]; ok {
+		if cached, ok := s.cacheLookup(cacheKey); ok {
 			hnswStatCacheHit(s.stats)
 			if cached == nil {
 				results[i].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
@@ -1424,7 +1476,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cache[p.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		s.cacheStore(p.key, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
 		results[p.idx].vecBytes = vecBytes
 		results[p.idx].neighbors = neighbors
 	}
@@ -1476,7 +1528,7 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 		key = append(key, span...)
 		cacheKey := string(key)
 
-		if cached, ok := s.cache[cacheKey]; ok {
+		if cached, ok := s.cacheLookup(cacheKey); ok {
 			hnswStatCacheHit(s.stats)
 			if cached == nil {
 				results[i].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
@@ -1511,7 +1563,7 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = parseErr
 			continue
 		}
-		s.cache[p.cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		s.cacheStore(p.cacheKey, &parsedNode{vecBytes: vecBytes, neighbors: neighbors})
 		results[p.idx].neighbors = neighbors
 	}
 
@@ -1562,6 +1614,7 @@ func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey 
 
 	// Mark as deleted in cache (nil *parsedNode = negative cache entry).
 	s.cache[string(key)] = nil
+	s.cacheInvalidate(string(key))
 }
 
 // hnswAccessInfo holds the parsed entry point metadata and transform state.
@@ -1746,6 +1799,12 @@ func (s *hnswStorage) clearAll(tx fdb.Transaction) {
 		}
 		tx.ClearRange(r)
 	}
+	// The whole index was cleared — drop every cached node so post-clear reads
+	// don't resurrect deleted data.
+	s.cache = make(map[string]*parsedNode)
+	if s.shared != nil {
+		s.shared.clear()
+	}
 }
 
 // --- Inlining storage format ---
@@ -1809,6 +1868,7 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 		cachedNeighbors[i] = nestPK(pk)
 	}
 	s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: cachedNeighbors}
+	s.cacheInvalidate(string(compactKey))
 }
 
 // getVectorBytesFromCache looks up a node's vector bytes from the cache at a given layer.
@@ -1843,7 +1903,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	// or a prior loadNodeLayerInlining call).
 	compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	cacheKey := string(compactKey)
-	if cached, ok := s.cache[cacheKey]; ok {
+	if cached, ok := s.cacheLookup(cacheKey); ok {
 		hnswStatCacheHit(s.stats)
 		if cached == nil {
 			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
@@ -1945,6 +2005,7 @@ func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.Transaction, layer int, pri
 
 	// Mark as deleted in cache.
 	s.cache[string(prefix)] = nil
+	s.cacheInvalidate(string(prefix))
 }
 
 // preloadLayerInlining reads ALL nodes at the given inlining layer in a single GetRange,

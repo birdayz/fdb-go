@@ -160,6 +160,9 @@ func vecBuildMetaData(dims int, useRaBitQ bool) (*recordlayer.RecordMetaData, *r
 	if useRaBitQ {
 		vecIdx.Options["hnswUseRaBitQ"] = "true"
 	}
+	if n := vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 0); n > 0 {
+		vecIdx.Options["hnswSharedCacheMaxNodes"] = strconv.Itoa(n)
+	}
 
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
