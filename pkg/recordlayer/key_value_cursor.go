@@ -13,17 +13,42 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// continuationMagicNumber is the magic number used by newer Java KeyValueCursorBase
-// versions (post-4.2.6.0) to distinguish protobuf-wrapped continuations from raw
-// byte continuations. We support reading this format but produce raw bytes for
-// compatibility with Java Record Layer 4.2.6.0 which only supports raw format.
+// continuationMagicNumber is the magic number Java's KeyValueCursorBase writes into
+// the protobuf-wrapped continuation (SerializationMode.TO_NEW) so the reader can
+// distinguish a wrapped token from a legacy raw-byte token.
 const continuationMagicNumber int64 = 6_773_487_359_078_157_740
 
-// wrapContinuation returns raw continuation bytes (TO_OLD format).
-// This matches Java Record Layer 4.2.6.0's serialization format.
-// The raw bytes are the FDB key suffix relative to the scan subspace.
+// wrapContinuation produces a protobuf-wrapped continuation token (TO_NEW format),
+// matching Java Record Layer 4.11.1.0: KeyValueCursorBase.Builder defaults
+// SerializationMode to TO_NEW and no production path selects TO_OLD, so Java emits
+// KeyValueCursorContinuation{inner_continuation, magic_number} — never raw bytes.
+// Go previously emitted raw bytes, a wire divergence (a Go-written continuation read
+// back by Java, or compared against Java's, would not round-trip identically).
+//
+// innerBytes is the FDB key suffix relative to the scan subspace and is always a
+// real (non-end) position — the end-of-scan case uses EndContinuation, never this.
+// An empty-but-present suffix still yields a proto carrying the magic number, which
+// is wire-distinguishable from an end/start token (nil), matching Java and avoiding
+// the old raw format's ambiguity where an empty suffix produced an empty, end-looking
+// token. The dual-read unwrapContinuation still accepts legacy raw tokens.
 func wrapContinuation(innerBytes []byte) ([]byte, error) {
-	return innerBytes, nil
+	// A nil suffix is an end position; Java returns the end marker, not a wrapped
+	// token. The cursor already represents end via EndContinuation, so this is
+	// defensive — never fabricate a proto for nil. (An empty-but-non-nil suffix
+	// IS a real position and is wrapped below.)
+	if innerBytes == nil {
+		return nil, nil
+	}
+	magic := continuationMagicNumber
+	msg := &gen.KeyValueCursorContinuation{
+		InnerContinuation: innerBytes,
+		MagicNumber:       &magic,
+	}
+	out, err := msg.MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("marshal key-value cursor continuation: %w", err)
+	}
+	return out, nil
 }
 
 // unwrapContinuation extracts the inner continuation bytes from a

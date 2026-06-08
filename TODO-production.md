@@ -100,13 +100,19 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   landing exactly there was read as end-of-data → `SourceExhausted` → silent loss of all remaining
   rows. Fixed: `hasMoreKVs` now returns `(bool, error)` and the caller surfaces it (mirrors
   `nextKV`'s post-Advance error check). Additive (no happy-path change).
-- **[ ] Continuation serialization may be `TO_OLD` (raw) vs Java 4.11.1.0 `TO_NEW` (proto+magic)**
-  — **WIRE; FDB C++ verification in progress.** `wrapContinuation` (`key_value_cursor.go:25`) may
-  emit the raw key suffix while Java defaults `serializationMode=TO_NEW` (proto wrapping
-  `inner_continuation` + magic `6773487359078157740`). Currently read-tolerant both ways (no rows
-  lost yet), but byte-divergent + a time-bomb (Java's raw-fallback is slated to throw). The hard
-  line — do NOT change the format until FDB C++ confirms Java's actual 4.11.1.0 default + the exact
-  bytes.
+- **[x] Continuation serialization was `TO_OLD` (raw) vs Java 4.11.1.0 `TO_NEW` (proto+magic)**
+  — **WIRE; FIXED.** FDB C++ verified (tag 4.11.1.0): `KeyValueCursorBase.Builder` defaults
+  `serializationMode=TO_NEW` (line 284); no production path selects `TO_OLD`. So Java emits a
+  proto-wrapped `KeyValueCursorContinuation{inner_continuation, magic_number=6773487359078157740}`,
+  never raw. Go emitted the raw key suffix — byte-divergent (both engines were merely read-tolerant
+  of each other) + a time-bomb (Java's raw-fallback is slated to throw). Fixed: `wrapContinuation`
+  (`key_value_cursor.go:25`) now `MarshalVT`s the proto (nil suffix → nil, never wrap an end
+  position; empty-but-present suffix → proto carrying the magic, wire-distinguishable from
+  start/end). Same raw→proto fix applied to the second emitter, `record_key_cursor.go:114`. The
+  dual-read `unwrapContinuation` still accepts legacy raw tokens, and index/bitmap/count scans
+  already routed through `wrapContinuation`. Pinned by a cross-engine conformance regression
+  asserting Go's continuation bytes are **byte-identical** to Java's for the same scan position
+  (`continuation_conformance_test.go`), plus unit tests for the empty-suffix + round-trip cases.
 - **[ ] `executeLimit` skip/limit state not in the continuation** (`executor.go:816`,
   query-engine/Graefe-gated). A `RecordQueryLimitPlan` spanning a page boundary would re-skip
   `offset` (lose rows) + re-apply `limit` (over-return). Latent — currently shielded (top-level
