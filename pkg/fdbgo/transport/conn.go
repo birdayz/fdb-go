@@ -224,6 +224,34 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	}
 	_ = netConn.SetDeadline(handshakeDeadline)
 
+	// Honor ctx *cancellation*, not just its deadline, for the whole handshake.
+	// A cancel-only ctx (no deadline) would otherwise block on the socket I/O up
+	// to handshakeDeadline, since a blocking Read/Write cannot observe ctx itself.
+	// The watcher pushes the deadline into the past on cancellation, unblocking
+	// the in-flight TLS handshake AND ConnectPacket exchange immediately. It targets
+	// the raw TCP conn (a stable handle the TLS wrapper delegates SetDeadline to),
+	// so it stays race-free after netConn is reassigned to the TLS conn below.
+	rawConn := netConn
+	handshakeDone := make(chan struct{})
+	var watcherWG sync.WaitGroup
+	watcherWG.Add(1)
+	go func() {
+		defer watcherWG.Done()
+		select {
+		case <-ctx.Done():
+			_ = rawConn.SetDeadline(time.Now())
+		case <-handshakeDone:
+		}
+	}()
+	var stopOnce sync.Once
+	stopWatcher := func() {
+		stopOnce.Do(func() { close(handshakeDone) })
+		watcherWG.Wait()
+	}
+	// Idempotent; covers every error return below. On the success path it is also
+	// called explicitly before the deadline is cleared (see below).
+	defer stopWatcher()
+
 	// Wrap in TLS iff a config was supplied. The non-nil config is the only
 	// "use TLS" signal — there is no bool to disagree with it, so plaintext can
 	// never be sent on a connection the caller wanted encrypted. An empty config
@@ -285,8 +313,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		c.debugWriter = os.Stderr
 	}
 
-	// Handshake complete — clear the deadline so the long-lived I/O loops run
-	// without one (connectionMonitor + TCP keepalive handle liveness from here).
+	// Handshake complete. Stop the cancellation watcher and wait for it to exit
+	// BEFORE clearing the deadline: from here the conn's lifetime is governed by
+	// connCtx, so a late dial-ctx cancellation must not push a past deadline onto
+	// the now-live socket. (stopWatcher is idempotent; the deferred call no-ops.)
+	stopWatcher()
+
+	// Clear the deadline so the long-lived I/O loops run without one
+	// (connectionMonitor + TCP keepalive handle liveness from here).
 	_ = netConn.SetDeadline(time.Time{})
 
 	// Start read, write, and connection monitor loops.

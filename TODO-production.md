@@ -54,11 +54,15 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   outside the lock + inserting under it is a separate concurrency refinement — filed, low priority.
 
 ### Client robustness — tracked follow-ups (non-hazardous, found during the review hunt)
-- **[ ] Honor ctx *cancellation* (not just deadline) during the handshake** (bradfitz + FDB C++).
-  `dialWith` bounds the handshake with a deadline, so a cancel-only ctx (no deadline) waits up to
-  `defaultHandshakeTimeout` (10s) instead of aborting immediately. Recipe: `upgradeTLS` →
-  `tlsConn.HandshakeContext(ctx)`; wrap the ConnectPacket exchange in a watcher that closes the
-  conn / `SetDeadline(past)` on `ctx.Done()`. Latency-only; the deadlock is already fixed.
+- **[x] Honor ctx *cancellation* (not just deadline) during the handshake** (bradfitz + FDB C++) —
+  **FIXED.** `dialWith` bounded the handshake with a deadline only, so a cancel-only ctx (no
+  deadline) waited up to `defaultHandshakeTimeout` (10s) before aborting. Fixed with a cancellation
+  watcher started before the TLS upgrade (`conn.go`): on `ctx.Done()` it pushes a past deadline onto
+  the raw TCP conn (a stable handle the TLS wrapper delegates `SetDeadline` to), unblocking the
+  in-flight TLS handshake AND ConnectPacket read immediately. The watcher is stopped+joined before
+  the handshake deadline is cleared, so a late post-handshake dial-ctx cancellation can't disturb the
+  now-live conn (its lifetime is `connCtx` from there). Pinned by
+  `TestDial_HandshakeHonorsCancellation` (cancel-only ctx aborts in ~200ms vs the 10s default).
 - **[ ] Thread live ctx to the commit-path GRV for write txns (Commit-internal)** (codex + FDB C++).
   `Transact`'s pre-commit `ctx.Err()` check aborts a cancel-before-commit; the residual is a cancel
   arriving *during* Commit's own `ensureReadVersion` GRV (run under `WithoutCancel`). Fixing it in

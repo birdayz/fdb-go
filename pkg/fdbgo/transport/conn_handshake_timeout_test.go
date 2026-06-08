@@ -46,6 +46,43 @@ func TestDial_HandshakeStallTimesOut(t *testing.T) {
 	}
 }
 
+// TestDial_HandshakeHonorsCancellation pins that ctx *cancellation* (not just a
+// deadline) aborts the handshake promptly. A cancel-only ctx (no deadline) against an
+// accept-but-stall peer must fail as soon as cancel() fires. Pre-this-fix the handshake
+// was bounded only by a deadline, so a cancel-only ctx derived no deadline from ctx and
+// waited the full defaultHandshakeTimeout (10s) before the fallback deadline fired —
+// cancel() did nothing. The cancellation watcher now pushes a past deadline onto the
+// socket on ctx.Done(), unblocking the in-flight ConnectPacket read immediately.
+func TestDial_HandshakeHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	cli, srv := net.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, srv) }()
+	t.Cleanup(func() { srv.Close() })
+	dialFn := func(_ context.Context, _, _ string) (net.Conn, error) { return cli, nil }
+
+	// Cancel-only ctx: NO deadline. Cancel shortly after the dial enters the handshake.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	c, err := dialWith(ctx, "stall", dialFn, nil, withMonitorCadence(time.Hour, time.Hour))
+	elapsed := time.Since(start)
+	if err == nil {
+		c.Close()
+		t.Fatal("handshake must fail when ctx is cancelled mid-handshake")
+	}
+	// Must abort on cancellation (~200ms), far below defaultHandshakeTimeout (10s).
+	// Pre-fix this waits the full 10s default (a cancel-only ctx sets no shorter bound).
+	if elapsed > 3*time.Second {
+		t.Fatalf("handshake did not honor ctx cancellation: took %v (expected ~200ms)", elapsed)
+	}
+}
+
 // TestDial_HandshakeDeadlineFromCtx confirms the handshake bound tracks the caller's
 // ctx deadline (so an explicit, tight dial timeout shortens the handshake too) rather
 // than always waiting the full defaultHandshakeTimeout.
