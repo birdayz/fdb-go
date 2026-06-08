@@ -33,7 +33,12 @@ go_library(
 
 go_test(
     name = "chaos_test",
-    size = "enormous",
+    # "large" = 900s. The suite normally finishes in ~50-120s even under full-suite
+    # Docker contention; the bound exists so a rare load-dependent deadlock (see
+    # TODO-production.md "Known deadlock") fails with a Go -test.timeout goroutine
+    # dump at 900s instead of silently hanging to "enormous" (3600s) and beyond.
+    # A captured dump is the prerequisite for root-causing it.
+    size = "large",
     srcs = [
         "chaos_bitmap_test.go",
         "chaos_covering_test.go",

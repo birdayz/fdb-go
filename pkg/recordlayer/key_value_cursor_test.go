@@ -1370,11 +1370,30 @@ var _ = Describe("KeyValueCursor", func() {
 			Expect(result).To(Equal(data))
 		})
 
-		It("wrapContinuation returns raw bytes (TO_OLD format)", func() {
-			raw := []byte{0x01, 0x02}
-			result, wrapErr := wrapContinuation(raw)
+		It("wrapContinuation emits the proto-wrapped TO_NEW format (Java 4.11.1.0 default)", func() {
+			inner := []byte{0x01, 0x02}
+			result, wrapErr := wrapContinuation(inner)
 			Expect(wrapErr).NotTo(HaveOccurred())
-			Expect(result).To(Equal(raw))
+			// Not raw: the token is a KeyValueCursorContinuation{inner, magic}.
+			Expect(result).NotTo(Equal(inner))
+			msg := &gen.KeyValueCursorContinuation{}
+			Expect(proto.Unmarshal(result, msg)).To(Succeed())
+			Expect(msg.GetMagicNumber()).To(Equal(continuationMagicNumber))
+			Expect(msg.GetInnerContinuation()).To(Equal(inner))
+			// Round-trips back to the raw suffix via the dual-reader.
+			Expect(unwrapContinuation(result)).To(Equal(inner))
+		})
+
+		It("wrapContinuation keeps an empty-but-present suffix wire-distinguishable from end", func() {
+			// prefixLength == len(lastKey): Java emits a proto carrying the magic, NOT an
+			// empty raw token (which would be indistinguishable from start/end).
+			result, wrapErr := wrapContinuation([]byte{})
+			Expect(wrapErr).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeEmpty()) // carries the magic number
+			Expect((&BytesContinuation{bytes: result}).IsEnd()).To(BeFalse())
+			msg := &gen.KeyValueCursorContinuation{}
+			Expect(proto.Unmarshal(result, msg)).To(Succeed())
+			Expect(msg.GetMagicNumber()).To(Equal(continuationMagicNumber))
 		})
 	})
 })

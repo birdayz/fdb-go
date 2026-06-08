@@ -144,7 +144,7 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			transactionID: nextTransactionID.Add(1),
@@ -179,19 +179,37 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	return result, nil
 }
 
+// runTransactCtx threads ctx into the transactor's retry loop + backoff + reads when
+// the transactor supports it (Database/Tenant via fdb.CtxTransactor), else falls back
+// to the ctx-less Transact (RFC-090). The dispatched commit + commit_unknown barrier
+// run detached regardless, so ctx never cancels an in-flight commit.
+func runTransactCtx(t fdb.Transactor, ctx context.Context, fn func(fdb.Transaction) (any, error)) (any, error) {
+	if ct, ok := t.(fdb.CtxTransactor); ok {
+		return ct.TransactCtx(ctx, fn)
+	}
+	return t.Transact(fn)
+}
+
+// runReadTransactCtx is the read-side analog of runTransactCtx.
+func runReadTransactCtx(t fdb.ReadTransactor, ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	if ct, ok := t.(fdb.CtxReadTransactor); ok {
+		return ct.ReadTransactCtx(ctx, fn)
+	}
+	return t.ReadTransact(fn)
+}
+
 // RunRead executes a read-only function with automatic retry but no commit.
 // Uses ReadTransact under the hood — no write conflict ranges, no commit
 // round-trip. Suitable for statistics, metadata reads, or any read-only
 // operation where a full read-write transaction would waste a commit.
 //
-// ctx is accepted for API consistency with Run and for caller-side
-// cancellation checks; the underlying FDB ReadTransact uses the
-// database-level context for the transaction itself.
+// ctx bounds the read-retry loop + backoff when the transactor supports it
+// (fdb.CtxReadTransactor); the entry check also returns early if already cancelled.
 func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return d.transactor.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+	return runReadTransactCtx(d.transactor, ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		rtx.Options().SetReadSystemKeys()
 		return fn(rtx)
 	})
@@ -202,7 +220,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		if weak.IsCausalReadRisky {
 			tx.Options().SetCausalReadRisky()
@@ -242,7 +260,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	var hasVersionMutations bool
 	var lastCtx *FDBRecordContext
 
-	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
 		// Reset on retry — previous attempt's future is stale
 		vsFuture = nil
 		hasVersionMutations = false

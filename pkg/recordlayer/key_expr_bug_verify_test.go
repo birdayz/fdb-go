@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -53,15 +54,16 @@ var _ = Describe("KeyExprBugVerify", func() {
 			Expect(result).To(BeEmpty())
 		})
 
-		It("FanType.Concatenate on nil returns [[emptyList]]", func() {
+		It("FanType.Concatenate on nil returns [[empty nested tuple]]", func() {
 			expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result[0]).To(HaveLen(1))
-			emptySlice, ok := result[0][0].([]any)
-			Expect(ok).To(BeTrue(), "Concatenate on nil should return an empty list")
-			Expect(emptySlice).To(BeEmpty())
+			// Empty nested tuple.Tuple (packable), not a bare []any (Pack panics on []any).
+			emptyTuple, ok := result[0][0].(tuple.Tuple)
+			Expect(ok).To(BeTrue(), "Concatenate on nil should return an empty nested tuple")
+			Expect(emptyTuple).To(BeEmpty())
 		})
 	})
 

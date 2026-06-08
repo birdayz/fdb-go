@@ -30,6 +30,7 @@ go_test(
     name = "fdb_test",
     timeout = "long",
     srcs = [
+        "database_bootstrap_test.go",
         "directory_test.go",
         "error_benchmark_test.go",
         "error_test.go",
@@ -42,6 +43,7 @@ go_test(
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",
+        "transact_ctx_fdb_test.go",
     ],
     embed = [":fdb"],
     deps = [

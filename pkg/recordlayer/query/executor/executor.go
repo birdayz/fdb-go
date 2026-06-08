@@ -1376,6 +1376,24 @@ func buildIntersectionChildCursors(
 // tuple-encoded comparison key from a QueryResult. Uses the plan's
 // comparison-key values when available, falls back to PrimaryKey, then
 // to a string representation of the datum.
+// widenInt32 normalizes an intersection/union merge comparison-key element so the
+// FDB tuple layer can Pack it. The tuple layer has no int32 case — Pack panics on
+// it — and the index key encoding already widens int32 columns to int64
+// (key_expression_compiled.go), so widening here keeps the in-memory merge key
+// byte-identical to the children's sort order (int32->int64 sign-extension is
+// value-preserving and tuple integer encoding is monotonic). Matches Java, whose
+// Tuple stores Long and never sees a 32-bit key element. Only int32 is handled:
+// it's the unique order-preserving widening and the only confirmed-reachable
+// unpackable comparison-key type (field reads pre-widen at query_result.go); a
+// genuinely exotic type stays raw so compareKeys' Pack-error path catches it rather
+// than risk a non-monotonic coercion. See RFC-092.
+func widenInt32(v any) any {
+	if i32, ok := v.(int32); ok {
+		return int64(i32)
+	}
+	return v
+}
+
 func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
 	return func(qr QueryResult) tuple.Tuple {
 		if len(keyVals) > 0 {
@@ -1390,7 +1408,7 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				if err != nil {
 					panic(err)
 				}
-				t[i] = v
+				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092)
 			}
 			return t
 		}

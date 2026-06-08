@@ -7,13 +7,28 @@ Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/f
 Wire-compatible with Java Record Layer 4.11.1.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
+## Status
+
+**Pre-1.0. Not yet declared production-ready — pin a commit and run the suites below
+before relying on it.** Maturity varies by layer:
+
+| Layer | Maturity | Notes |
+|-------|----------|-------|
+| **Record store** (CRUD, indexes, versions, continuations, split records) | **Most mature** | Wire-compatibility is the project's hard line, exercised by the Java conformance + binding-stress suites. This is the part to trust first. |
+| **Cascades SQL engine** | **Usable, evolving** | Wide SQL surface (see below) validated by a cross-engine differential harness, but still has open correctness items — consult the conformance report and `TODO.md` before depending on a given query shape. |
+| **Pure-Go FDB client** (`pkg/fdbgo`) | **Youngest** | Reimplements the FDB wire protocol from scratch (RYW, retries, `commit_unknown_result`). Validated against libfdb_c via the binding tester; there is no drop-in escape hatch to the C client yet. |
+
+Before production use: pin a commit, run the conformance + differential + stress
+suites against your workload, and review `PRODUCTION_READINESS.md` /
+`TODO-production.md` for the current gap list. Report issues per `SECURITY.md`.
+
 ## Target versions
 
 | Component | Version | Notes |
 |-----------|---------|-------|
 | **FoundationDB** | **7.3.75** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
 | **Java Record Layer** | **4.11.1.0** | Wire compatibility target. Conformance tests run against this version. |
-| **Go** | **1.26.1** | Minimum Go version. |
+| **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
 FDB 8.0 is not yet released. When it ships, the Go bindings and client library should be upgraded together.
@@ -100,26 +115,35 @@ rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK sca
 rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
 ```
 
-Supported SQL:
-- SELECT with WHERE, ORDER BY (ASC/DESC), DISTINCT, GROUP BY, HAVING
+Supported SQL (authoritative, tested surface: the yamsql scenarios under
+`pkg/relational/conformance/yamsql/testdata/` + `DIVERGENCES.md`; this list is a
+summary, accurate as of 2026-06-07):
+- SELECT with WHERE, ORDER BY (ASC/DESC, including mixed directions), DISTINCT,
+  GROUP BY, HAVING, LIMIT / OFFSET
 - Aggregates: COUNT, SUM, MIN, MAX, AVG
-- JOINs: INNER JOIN, comma-join (including self-joins)
-- CTEs: WITH ... AS (SELECT ...) — including chained CTEs
+- JOINs: INNER, comma-join / self-join, and LEFT / RIGHT / FULL OUTER JOIN
+  (outer joins are a Go-only read-side extension — Java's SQL layer has none; wire
+  compat is unaffected)
+- Subqueries in WHERE: EXISTS / NOT EXISTS, IN (SELECT ...), and correlated scalar
+  subqueries (Go-only read-side extensions)
+- CTEs: WITH ... AS (SELECT ...), including chained CTEs
 - UNION ALL
 - INSERT, UPDATE, DELETE
-- CASE, COALESCE, CAST, arithmetic expressions
+- CASE, COALESCE, CAST, arithmetic, scalar functions (e.g. UPPER, LOWER)
 - Computed projections with aliases
 
-ORDER BY requires a supporting index or PK (no physical sort operator, matching Java's Cascades architecture).
-Self-joins and CTE+JOINs correctly resolve alias-qualified column references.
+ORDER BY works without an index via a Go-only bounded in-memory sort
+(`RecordQueryInMemorySortPlan`, beyond Java's index-only Cascades); a supporting
+index/PK avoids the sort, and an unbounded ORDER BY without LIMIT is capped to
+avoid OOM. Self-joins and CTE+JOINs correctly resolve alias-qualified columns.
 
 Not yet supported in the SQL engine:
-- LEFT/RIGHT OUTER JOIN (INNER only)
-- Subqueries in WHERE (EXISTS, IN (SELECT ...))
-- LIMIT/OFFSET (pagination is a future API-level feature)
-- Scalar functions (UPPER, LOWER, SUBSTRING, etc.) — Java's registry doesn't have them either
-- Mixed ASC/DESC in multi-column ORDER BY
-- CTE referenced inside UNION branches
+- A plain CTE referenced inside a UNION branch (recursive CTEs, which use UNION
+  internally, do work)
+- `IN (SELECT ...)` in DML WHERE (rejected; rewrite as a correlated `EXISTS`)
+- General window functions (matching Java — only `ROW_NUMBER() ... QUALIFY` for
+  vector K-NN search exists; see TODO.md)
+- Synthetic record types (JoinedRecordType, UnnestedRecordType)
 
 ## What works
 
@@ -212,7 +236,7 @@ Ginkgo specs against real FDB via testcontainers. **8000+ total test entry point
 
 ```sh
 # 1. Start FoundationDB (Docker)
-docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.63
+docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.75
 
 # 2. Get the cluster file
 docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster

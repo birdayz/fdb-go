@@ -109,9 +109,15 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		c.keysScanned++
 		c.lastPK = pk
 
-		// Update continuation: raw key suffix after the records subspace prefix
+		// Update continuation: proto-wrap the key suffix (TO_NEW format) to match
+		// Java's KeyValueCursorBase, which defaults SerializationMode to TO_NEW.
+		// (initIterator's dual-reader accepts both this and legacy raw tokens.)
 		if len(kv.Key) > c.prefixLength {
-			c.continuation = kv.Key[c.prefixLength:]
+			cont, werr := wrapContinuation(kv.Key[c.prefixLength:])
+			if werr != nil {
+				return RecordCursorResult[tuple.Tuple]{}, fmt.Errorf("wrap record-key continuation: %w", werr)
+			}
+			c.continuation = cont
 		}
 
 		c.keysReturned++

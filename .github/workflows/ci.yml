@@ -84,3 +84,41 @@ jobs:
           name: test-report
           path: test-report.html
           retention-days: 30
+
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: [self-hosted, linux, x64, hetzner]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: govulncheck (shipped packages)
+        run: |
+          # Scan the shipped library. pkg/testcontainers is excluded: it wraps the
+          # Docker SDK (TEST infrastructure, not shipped to users) which currently
+          # has open upstream CVEs with no fixed release (GO-2026-4887,
+          # GO-2026-4883). See SECURITY.md. Everything else must be vuln-free.
+          PKGS=$(go list ./pkg/... | grep -v '/testcontainers')
+          go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
+
+  race:
+    name: Race detector (SQL layer)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: -race tests for //pkg/relational/...
+        # The relational/SQL layer is driven concurrently via database/sql and was
+        # previously NOT covered by the race detector (nightly only ran -race on 5
+        # fdbgo/recordlayer targets). The first run here caught a real pre-existing
+        # client race (tx.hadRead, fixed -> atomic.Bool). Keep it gating: a data
+        # race in the plan cache / driver / planner is silent corruption, worse
+        # than a loud panic. (stress-tagged targets excluded — heavy/manual.)
+        run: bazelisk test //pkg/relational/... --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors

@@ -90,15 +90,31 @@ func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
+// defaultBootstrapTimeout bounds the initial coordinator connection so an
+// unreachable cluster fails fast instead of blocking forever (a control-plane
+// footgun). It applies to bootstrap only — never to ongoing operations.
+const defaultBootstrapTimeout = 60 * time.Second
+
+// bootstrapContext returns the context for the initial coordinator connection. A
+// caller-supplied deadline is respected; a deadline-less context (e.g.
+// context.Background()) is bounded by defaultBootstrapTimeout so bootstrap can
+// never hang forever. The returned cancel must always be called.
+func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultBootstrapTimeout)
+}
+
 // OpenDatabase opens a connection using the specified cluster file path.
 // APIVersion must have been called first. See WithTLSConfig / WithDialFunc.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	// Use a temporary timeout for bootstrap only. The database's long-lived
-	// context must NOT be the bootstrap context (which we cancel after connect).
-	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Bound bootstrap only. The database's long-lived context must NOT be the
+	// bootstrap context (which we cancel after connect).
+	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
 	defer bootstrapCancel()
 	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, opts...)
 	if err != nil {
@@ -121,12 +137,16 @@ func OpenWithConnectionString(connStr string, opts ...Option) (Database, error) 
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
 // The provided ctx is used only for the initial bootstrap (coordinator
-// connection). The Database uses context.Background() for ongoing operations.
+// connection); if it has no deadline, bootstrap is bounded by
+// defaultBootstrapTimeout so an unreachable cluster fails fast instead of
+// hanging forever. The Database uses context.Background() for ongoing operations.
 func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	db, err := client.OpenDatabaseFromConfig(ctx, cf, opts...)
+	bootstrapCtx, cancel := bootstrapContext(ctx)
+	defer cancel()
+	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, cf, opts...)
 	if err != nil {
 		return Database{}, err
 	}
@@ -193,13 +213,22 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+	return db.TransactCtx(db.d.ctx, f)
+}
+
+// TransactCtx is Transact bounded by ctx (RFC-090 / fdb.CtxTransactor): ctx bounds the
+// retry loop, backoff, and reads. The dispatched commit and its commit_unknown_result
+// idempotency barrier run on a detached context (in client.Database.Transact), so the
+// caller's ctx never cancels an in-flight commit — which is already bounded by the
+// per-RPC timeout.
+func (db Database) TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error) {
 	var lastTx *transaction // capture for commitDone signaling
-	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
 		t := &transaction{
 			inner:      tx,
 			db:         db,
-			ctx:        db.d.ctx,
+			ctx:        ctx,
 			commitDone: make(chan struct{}),
 		}
 		db.applyTxDefaults(t)
@@ -228,16 +257,22 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 
 // ReadTransact runs a read-only transactional function with automatic retry.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
+	return db.ReadTransactCtx(db.d.ctx, f)
+}
+
+// ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor):
+// ctx bounds the read-retry loop and backoff.
+func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
 	// Use a reusable transaction wrapper to avoid per-call allocation.
 	// The transaction struct is stack-allocated (doesn't escape because
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
-	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
 		t := transaction{
 			inner: tx,
 			db:    db,
-			ctx:   db.d.ctx,
+			ctx:   ctx,
 		}
 		db.applyTxDefaults(&t)
 		r, e = f(Transaction{t: &t})

@@ -970,7 +970,16 @@ func (r *paginatingRows) ColumnTypePrecisionScale(index int) (precision, scale i
 	return 0, 0, false
 }
 
-func (r *paginatingRows) Next(dest []driver.Value) error {
+func (r *paginatingRows) Next(dest []driver.Value) (err error) {
+	// RFC-091 / P0.2: pages iterate AFTER QueryContext/ExecContext have returned, so
+	// this sits OUTSIDE their boundary recover. A panic during later-page planning or
+	// execution (an invariant trip, or any residual eval panic) must become an error
+	// here, not crash the shared multi-tenant process.
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = recoveredPanicError(rec)
+		}
+	}()
 	if r.closed {
 		return io.EOF
 	}
@@ -2335,7 +2344,15 @@ func (r *cascadesRows) ColumnTypePrecisionScale(index int) (precision, scale int
 	return 0, 0, false
 }
 
-func (r *cascadesRows) Next(dest []driver.Value) error {
+func (r *cascadesRows) Next(dest []driver.Value) (err error) {
+	// RFC-091 / P0.2: iterates AFTER QueryContext/ExecContext have returned, OUTSIDE
+	// their boundary recover — a panic here must become an error, not crash the
+	// shared multi-tenant process.
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = recoveredPanicError(rec)
+		}
+	}()
 	if !r.rs.Next() {
 		if err := r.rs.Err(); err != nil {
 			return translateExecError(err)

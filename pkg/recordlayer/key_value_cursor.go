@@ -13,17 +13,42 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// continuationMagicNumber is the magic number used by newer Java KeyValueCursorBase
-// versions (post-4.2.6.0) to distinguish protobuf-wrapped continuations from raw
-// byte continuations. We support reading this format but produce raw bytes for
-// compatibility with Java Record Layer 4.2.6.0 which only supports raw format.
+// continuationMagicNumber is the magic number Java's KeyValueCursorBase writes into
+// the protobuf-wrapped continuation (SerializationMode.TO_NEW) so the reader can
+// distinguish a wrapped token from a legacy raw-byte token.
 const continuationMagicNumber int64 = 6_773_487_359_078_157_740
 
-// wrapContinuation returns raw continuation bytes (TO_OLD format).
-// This matches Java Record Layer 4.2.6.0's serialization format.
-// The raw bytes are the FDB key suffix relative to the scan subspace.
+// wrapContinuation produces a protobuf-wrapped continuation token (TO_NEW format),
+// matching Java Record Layer 4.11.1.0: KeyValueCursorBase.Builder defaults
+// SerializationMode to TO_NEW and no production path selects TO_OLD, so Java emits
+// KeyValueCursorContinuation{inner_continuation, magic_number} — never raw bytes.
+// Go previously emitted raw bytes, a wire divergence (a Go-written continuation read
+// back by Java, or compared against Java's, would not round-trip identically).
+//
+// innerBytes is the FDB key suffix relative to the scan subspace and is always a
+// real (non-end) position — the end-of-scan case uses EndContinuation, never this.
+// An empty-but-present suffix still yields a proto carrying the magic number, which
+// is wire-distinguishable from an end/start token (nil), matching Java and avoiding
+// the old raw format's ambiguity where an empty suffix produced an empty, end-looking
+// token. The dual-read unwrapContinuation still accepts legacy raw tokens.
 func wrapContinuation(innerBytes []byte) ([]byte, error) {
-	return innerBytes, nil
+	// A nil suffix is an end position; Java returns the end marker, not a wrapped
+	// token. The cursor already represents end via EndContinuation, so this is
+	// defensive — never fabricate a proto for nil. (An empty-but-non-nil suffix
+	// IS a real position and is wrapped below.)
+	if innerBytes == nil {
+		return nil, nil
+	}
+	magic := continuationMagicNumber
+	msg := &gen.KeyValueCursorContinuation{
+		InnerContinuation: innerBytes,
+		MagicNumber:       &magic,
+	}
+	out, err := msg.MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("marshal key-value cursor continuation: %w", err)
+	}
+	return out, nil
 }
 
 // unwrapContinuation extracts the inner continuation bytes from a
@@ -47,6 +72,15 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	return msg.InnerContinuation
 }
 
+// rangeIterator is the minimal FDB range-scan iterator the cursor depends on.
+// *fdb.RangeIterator satisfies it; the interface exists so tests can inject a fake
+// that returns an error at a chosen position (the row-limit boundary), which a
+// concrete *fdb.RangeIterator can't be made to do deterministically.
+type rangeIterator interface {
+	Advance() bool
+	Get() (fdb.KeyValue, error)
+}
+
 // keyValueCursor implements RecordCursor for scanning key-value pairs from FDB.
 // Handles both unsplit records (single KV at suffix 0) and split records
 // (multiple KVs at suffixes 1, 2, 3, ...), acting as both the raw KV scanner
@@ -61,7 +95,7 @@ type keyValueCursor struct {
 	scanProperties ScanProperties
 
 	// Internal state
-	iterator       *fdb.RangeIterator
+	iterator       rangeIterator
 	closed         bool
 	recordsRead    int // Records returned to the caller
 	recordsScanned int // Records scanned (including skipped ones)
@@ -107,7 +141,13 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// When we've returned the requested number of records, check if more exist
 	// to distinguish ReturnLimitReached from SourceExhausted.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
-		if c.hasMoreKVs() {
+		more, err := c.hasMoreKVs()
+		if err != nil {
+			// A transient error here must surface (and be retried) — not be silently
+			// collapsed into SourceExhausted, which would truncate the scan.
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		if more {
 			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 				ReturnLimitReached,
 				&BytesContinuation{bytes: c.continuation},
@@ -220,6 +260,18 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 		}
 		if !ok {
 			return nil, nil, nil // exhausted
+		}
+
+		// A record key is always prefix + PK-tuple + suffix, i.e. strictly longer than
+		// the records-subspace prefix. A key at or under the prefix is a stray or
+		// malformed key (corruption, a foreign client, or a scan range whose begin
+		// included the bare prefix) — return a typed error rather than slice-panicking
+		// on kv.Key[prefixLen:] (key shorter than the prefix) or index-panicking inside
+		// splitKeySuffix on the empty suffix. The other splitKeySuffix callers
+		// (peekVersionKey, the chunk-reassembly loop) already guard this length; this is
+		// the primary record-scan path's matching guard.
+		if len(kv.Key) <= prefixLen {
+			return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), prefixLen)
 		}
 
 		// Fast path: extract suffix via zero-alloc tuple scan.
@@ -573,15 +625,27 @@ func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
 	return cont, nil
 }
 
-// hasMoreKVs checks if there are more KV pairs available (from buffer or iterator).
-// Used for the limit-reached vs source-exhausted check. Best-effort: FDB errors
-// during the probe are treated as "no more" since we're just distinguishing
-// ReturnLimitReached from SourceExhausted.
-func (c *keyValueCursor) hasMoreKVs() bool {
+// hasMoreKVs reports whether more KV pairs are available (from the buffer or the
+// iterator), used to distinguish ReturnLimitReached from SourceExhausted. It
+// surfaces any FDB error encountered probing the iterator (transaction_too_old,
+// timeout) rather than treating it as "no more" — swallowing it would silently end
+// the scan at the row-limit boundary and lose the remaining rows.
+func (c *keyValueCursor) hasMoreKVs() (bool, error) {
 	if c.bufferedKV != nil {
-		return true
+		return true, nil
 	}
-	return c.iterator.Advance()
+	if c.iterator.Advance() {
+		return true, nil
+	}
+	// Advance returns false on exhaustion OR error. Check Get() for the stored
+	// error (transaction_too_old 1007, timeout) — otherwise a transient error
+	// landing exactly on the row-limit boundary is silently read as end-of-data,
+	// permanently ending the scan with SourceExhausted and LOSING the remaining
+	// rows. Mirrors nextKV's post-Advance error check.
+	if _, err := c.iterator.Get(); err != nil {
+		return false, fmt.Errorf("key-value cursor: iterator advance at row-limit boundary: %w", err)
+	}
+	return false, nil
 }
 
 // limitContinuation returns the appropriate continuation when a limit is hit.

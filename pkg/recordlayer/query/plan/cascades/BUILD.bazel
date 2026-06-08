@@ -235,6 +235,7 @@ go_test(
         "data_access_types_test.go",
         "default_rules_test.go",
         "edge_case_test.go",
+        "eval_must_test.go",
         "expression_matcher_test.go",
         "expression_partition_test.go",
         "expression_rule_call_test.go",

@@ -267,11 +267,18 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	}
 
 	for _, tbl := range b.tables {
-		rt := mdBuilder.GetRecordType(tbl.name)
-		if rt == nil {
+		// buildFileDescriptor() derives the proto message types from b.tables, so
+		// every tbl.name should be present after SetRecords. Check existence via the
+		// nil-returning GetRecordTypes() map rather than GetRecordType(), which
+		// panics on a missing type: a name mismatch here is a descriptor-build bug,
+		// and Build() (which already returns an error) must surface it as a typed
+		// error — not a panic that the db/sql boundary recover turns into a generic
+		// "internal error" with no context.
+		if mdBuilder.GetRecordTypes()[tbl.name] == nil {
 			return nil, api.NewErrorf(api.ErrCodeInternalError,
 				"record type %q not found after SetRecords", tbl.name)
 		}
+		rt := mdBuilder.GetRecordType(tbl.name)
 		pkExpr, err := buildPrimaryKeyExpression(tbl, b.intermingleTbls)
 		if err != nil {
 			return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,

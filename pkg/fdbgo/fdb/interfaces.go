@@ -1,5 +1,7 @@
 package fdb
 
+import "context"
+
 // Transactor can execute a function that requires a Transaction.
 // Both Database and Transaction implement Transactor.
 type Transactor interface {
@@ -11,6 +13,24 @@ type Transactor interface {
 // Database, Transaction, and Snapshot implement ReadTransactor.
 type ReadTransactor interface {
 	ReadTransact(func(ReadTransaction) (any, error)) (any, error)
+}
+
+// CtxTransactor is an OPTIONAL capability: a Transactor whose retry loop, backoff,
+// and reads are bounded by a caller context. Database and Tenant implement it;
+// recordlayer.Run type-asserts for it and falls back to Transact otherwise (so the
+// Transactor interface stays unwidened and Transaction — which has no retry loop —
+// needs no meaningless TransactCtx). Per RFC-090 the dispatched commit and its
+// commit_unknown_result barrier deliberately run on a DETACHED context, so the
+// caller's ctx never cancels an in-flight commit (which is already bounded by the
+// per-RPC timeout).
+type CtxTransactor interface {
+	TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error)
+}
+
+// CtxReadTransactor is the read-side analog of CtxTransactor (bounds the read-retry
+// loop + backoff by the caller context).
+type CtxReadTransactor interface {
+	ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error)
 }
 
 // ReadTransaction can asynchronously read from a FoundationDB database.

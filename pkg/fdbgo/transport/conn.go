@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,6 +172,11 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 }
 
 // dialWith is the implementation behind Dial, plus test-only connOptions.
+// defaultHandshakeTimeout bounds the TLS upgrade + ConnectPacket exchange when the
+// caller's ctx carries no deadline. The handshake is normally sub-second; this is a
+// generous ceiling so a stalled peer can't wedge the dial forever.
+const defaultHandshakeTimeout = 10 * time.Second
+
 func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
@@ -199,6 +206,64 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		tc.SetKeepAlivePeriod(10 * time.Second)
 	}
 
+	// Bound the handshake (TLS upgrade + ConnectPacket exchange) with a deadline.
+	// A peer that accepts the TCP socket but never completes the handshake — an
+	// overloaded fdbserver, or a Docker/socat proxy that half-opens the connection
+	// under load — would otherwise block ReadConnectPacket's io.ReadFull forever:
+	// ctx cancellation cannot interrupt a blocking socket read, and this dial runs
+	// under the database's global connection lock, so a single wedged handshake
+	// freezes every connection acquisition (the load-dependent chaos-test deadlock).
+	// Derive the deadline from ctx so an explicit dial timeout finally bounds the
+	// handshake too; fall back to defaultHandshakeTimeout. Cleared before the I/O
+	// loops start — liveness past that point is the connectionMonitor's job. The
+	// deadline is set on the raw TCP conn and cleared on the (possibly TLS-wrapped)
+	// conn; tls.Conn.SetDeadline delegates to the same underlying socket.
+	handshakeDeadline := time.Now().Add(defaultHandshakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(handshakeDeadline) {
+		handshakeDeadline = d
+	}
+	_ = netConn.SetDeadline(handshakeDeadline)
+
+	// Honor ctx *cancellation*, not just its deadline, for the whole handshake.
+	// A cancel-only ctx (no deadline) would otherwise block on the socket I/O up
+	// to handshakeDeadline, since a blocking Read/Write cannot observe ctx itself.
+	// The watcher pushes the deadline into the past on cancellation, unblocking
+	// the in-flight TLS handshake AND ConnectPacket exchange immediately. It targets
+	// the raw TCP conn (a stable handle the TLS wrapper delegates SetDeadline to),
+	// so it stays race-free after netConn is reassigned to the TLS conn below.
+	rawConn := netConn
+	handshakeDone := make(chan struct{})
+	var watcherWG sync.WaitGroup
+	watcherWG.Add(1)
+	go func() {
+		defer watcherWG.Done()
+		select {
+		case <-ctx.Done():
+			_ = rawConn.SetDeadline(time.Now())
+		case <-handshakeDone:
+		}
+	}()
+	var stopOnce sync.Once
+	stopWatcher := func() {
+		stopOnce.Do(func() { close(handshakeDone) })
+		watcherWG.Wait()
+	}
+	// Idempotent; covers every error return below. On the success path it is also
+	// called explicitly before the deadline is cleared (see below).
+	defer stopWatcher()
+
+	// handshakeErr prefers the ctx error for a handshake I/O failure: when the
+	// watcher above aborts the handshake on cancellation, the read/write returns an
+	// i/o-timeout-shaped error (from the past deadline), but the caller actually
+	// cancelled — so surface ctx.Err() (wrapped, so errors.Is(context.Canceled /
+	// DeadlineExceeded) holds). A genuine timeout with a live ctx keeps the i/o error.
+	handshakeErr := func(stage string, ioErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%s: %w", stage, ctxErr)
+		}
+		return fmt.Errorf("%s: %w", stage, ioErr)
+	}
+
 	// Wrap in TLS iff a config was supplied. The non-nil config is the only
 	// "use TLS" signal — there is no bool to disagree with it, so plaintext can
 	// never be sent on a connection the caller wanted encrypted. An empty config
@@ -207,7 +272,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		tlsConn, tlsErr := upgradeTLS(netConn, addr, tlsConfig)
 		if tlsErr != nil {
 			netConn.Close()
-			return nil, fmt.Errorf("TLS handshake %s: %w", addr, tlsErr)
+			return nil, handshakeErr(fmt.Sprintf("TLS handshake %s", addr), tlsErr)
 		}
 		netConn = tlsConn
 	}
@@ -235,14 +300,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	if err := WriteConnectPacket(netConn, netConn.LocalAddr(), connID); err != nil {
 		cancel()
 		netConn.Close()
-		return nil, fmt.Errorf("write connect packet: %w", err)
+		return nil, handshakeErr("write connect packet", err)
 	}
 
 	peerPkt, err := ReadConnectPacket(netConn)
 	if err != nil {
 		cancel()
 		netConn.Close()
-		return nil, fmt.Errorf("read connect packet: %w", err)
+		return nil, handshakeErr("read connect packet", err)
 	}
 
 	if !peerPkt.IsCompatible(ProtocolVersion73) {
@@ -259,6 +324,16 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		c.debugFrames = true
 		c.debugWriter = os.Stderr
 	}
+
+	// Handshake complete. Stop the cancellation watcher and wait for it to exit
+	// BEFORE clearing the deadline: from here the conn's lifetime is governed by
+	// connCtx, so a late dial-ctx cancellation must not push a past deadline onto
+	// the now-live socket. (stopWatcher is idempotent; the deferred call no-ops.)
+	stopWatcher()
+
+	// Clear the deadline so the long-lived I/O loops run without one
+	// (connectionMonitor + TCP keepalive handle liveness from here).
+	_ = netConn.SetDeadline(time.Time{})
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
@@ -427,6 +502,7 @@ func (c *Conn) Flush() error {
 // let senders enqueue, then flushes everything at once.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
+	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
 	var errChans []chan<- error
@@ -546,6 +622,32 @@ func (c *Conn) failConnection(err error) {
 	})
 }
 
+// seriousLog reports an unexpected, must-not-be-silent event (a recovered panic in
+// the connection's background goroutines) at ERROR level through log/slog, passing
+// structured attributes rather than a pre-formatted string so a JSON/structured
+// handler gets queryable fields. Routing through slog.Default() makes these
+// diagnostics pluggable via the standard Go mechanism (slog.SetDefault) with no
+// fdbgo-specific logging API. A var so tests can capture it.
+var seriousLog = func(msg string, attrs ...any) {
+	slog.Default().Error(msg, attrs...)
+}
+
+// recoverLoop contains a panic in a long-lived connection goroutine. A malformed
+// frame or an internal bug must fail THIS connection — callers recover via retry /
+// wrong-shard reroute, exactly as libfdb_c turns a bad reply into connection_failed
+// — and must never crash the whole host: a recover in a request goroutine cannot
+// catch a panic raised on a different goroutine's stack. debug.Stack here still
+// shows the original panic site (the stack stays live until recover completes the
+// unwind). See TODO-production.md P0.2.
+func (c *Conn) recoverLoop(which string) {
+	if r := recover(); r != nil {
+		err := fmt.Errorf("fdbgo: panic in %s goroutine: %v", which, r)
+		seriousLog("recovered panic in connection goroutine",
+			"goroutine", which, "err", err, "stack", string(debug.Stack()))
+		c.failConnection(err)
+	}
+}
+
 // SetDebug enables frame-level debug tracing to stderr.
 func (c *Conn) SetDebug(enabled bool) {
 	c.debugFrames = enabled
@@ -583,15 +685,22 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 //
 // Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
-	// Teardown on ANY exit — the normal read-error path AND an unexpected panic
-	// in frame parsing. The single failConnection path (cancel + close socket +
-	// fail all pending; C++ disconnect-promise equivalent) is idempotent, so if
-	// Close/monitor already fired this is a no-op, and the first caller's error
-	// wins. exitErr carries the real read error when there is one.
+	// Teardown on ANY exit — the normal read-error path AND an unexpected panic in
+	// frame parsing, which is now actually recovered below. (Previously the defer
+	// ran on panic but did NOT call recover, so a malformed frame propagated and
+	// crashed the whole host.) The single failConnection path (cancel + close
+	// socket + fail all pending; C++ disconnect-promise equivalent) is idempotent,
+	// so if Close/monitor already fired this is a no-op and the first caller's error
+	// wins. exitErr carries the real read error, or the panic, when there is one.
 	exitErr := errConnClosed
+	defer c.loopWG.Done()
 	defer func() {
+		if r := recover(); r != nil {
+			exitErr = fmt.Errorf("fdbgo: panic in readLoop goroutine: %v", r)
+			seriousLog("recovered panic in readLoop goroutine",
+				"err", exitErr, "stack", string(debug.Stack()))
+		}
 		c.failConnection(exitErr)
-		c.loopWG.Done()
 	}()
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
@@ -750,6 +859,7 @@ func buildVoidReply() []byte {
 // resets and we wait another 2s. This tolerates slow-but-alive connections.
 func (c *Conn) connectionMonitor() {
 	defer c.loopWG.Done()
+	defer c.recoverLoop("connectionMonitor")
 
 	for {
 		// Outer loop: sleep, then decide whether to PING.

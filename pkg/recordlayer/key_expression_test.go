@@ -99,11 +99,12 @@ var _ = Describe("KeyExpression unit tests", func() {
 				Expect(result).To(BeNil())
 			})
 
-			It("FanTypeConcatenate on nil message returns [[empty list]]", func() {
+			It("FanTypeConcatenate on nil message returns [[empty nested tuple]]", func() {
 				expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 				result, err := expr.Evaluate(nil, nil)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result).To(Equal([][]any{{[]any{}}}))
+				// Empty nested tuple.Tuple (packable), not a bare []any (which panics in Pack).
+				Expect(result).To(Equal([][]any{{tuple.Tuple{}}}))
 			})
 		})
 
@@ -128,23 +129,25 @@ var _ = Describe("KeyExpression unit tests", func() {
 				Expect(result).To(BeNil())
 			})
 
-			It("Concatenate packs all values into one tuple element", func() {
+			It("Concatenate packs all values into one nested-tuple element", func() {
 				expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 				order := newOrder(1, 10, "a", "b", "c")
 				result, err := expr.Evaluate(asStored(order), order)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(HaveLen(1))
-				packed, ok := result[0][0].([]any)
+				// A nested tuple.Tuple (Java's Tuple.addObject(List)), packable — not a
+				// bare []any, which the FDB tuple packer panics on.
+				packed, ok := result[0][0].(tuple.Tuple)
 				Expect(ok).To(BeTrue())
-				Expect(packed).To(Equal([]any{"a", "b", "c"}))
+				Expect(packed).To(Equal(tuple.Tuple{"a", "b", "c"}))
 			})
 
-			It("Concatenate on empty repeated returns [[empty list]]", func() {
+			It("Concatenate on empty repeated returns [[empty nested tuple]]", func() {
 				expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 				order := newOrder(1, 10) // no tags
 				result, err := expr.Evaluate(asStored(order), order)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result).To(Equal([][]any{{[]any{}}}))
+				Expect(result).To(Equal([][]any{{tuple.Tuple{}}}))
 			})
 
 			It("FanTypeNone on repeated field returns KeyExpressionError", func() {

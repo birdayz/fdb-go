@@ -36,6 +36,7 @@ go_test(
         "comparisons_null_table_test.go",
         "comparisons_test.go",
         "distance_rank_transform_test.go",
+        "eval_must_test.go",
         "exists_predicate_test.go",
         "fuzz_test.go",
         "leaf_query_predicate_test.go",

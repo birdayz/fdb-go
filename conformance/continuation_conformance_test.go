@@ -219,6 +219,33 @@ var _ = Describe("Continuation Token Conformance", func() {
 		})
 	})
 
+	Describe("Go and Java emit byte-identical continuation tokens", func() {
+		It("Go's continuation matches Java's for the same scan position (TO_NEW wire parity)", func() {
+			// Both engines scan the first 3 records from the start with the same limit.
+			_, goCont, goExhausted := scanWithGo(3, nil)
+			Expect(goExhausted).To(BeFalse())
+			Expect(goCont).NotTo(BeNil())
+
+			javaResult := scanWithJava(3, "")
+			Expect(javaResult.Continuation).NotTo(BeEmpty())
+			javaCont, err := base64.StdEncoding.DecodeString(javaResult.Continuation)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pre-fix Go emitted a raw key suffix while Java emits a proto-wrapped
+			// KeyValueCursorContinuation{inner_continuation, magic_number}
+			// (KeyValueCursorBase defaults SerializationMode to TO_NEW). The engines
+			// were merely read-tolerant of each other; the EMITTED bytes diverged.
+			// They must now be byte-identical — a token written by one engine must be
+			// indistinguishable from the other's, the actual wire-compat contract.
+			Expect(goCont).To(Equal(javaCont))
+
+			// And the bytes are the TO_NEW proto form (magic present), not raw.
+			msg := &gen.KeyValueCursorContinuation{}
+			Expect(msg.UnmarshalVT(goCont)).To(Succeed())
+			Expect(msg.GetMagicNumber()).To(Equal(int64(6_773_487_359_078_157_740)))
+		})
+	})
+
 	Describe("Alternating Go and Java with continuations", func() {
 		It("should maintain correct position when alternating implementations", func() {
 			// Go scans 2

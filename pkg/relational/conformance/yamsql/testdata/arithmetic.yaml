@@ -87,3 +87,20 @@ tests:
   - query: SELECT NULL / 0 FROM t WHERE id = 1
     rows:
       - [~]
+  # RFC-091: div-by-zero inside an AGGREGATE OPERAND surfaces 22012. This was an
+  # uncovered eval panic in the aggregate cursor (accumulateRow had no recover →
+  # generic 500); it now returns the proper SQL error. Scalar aggregate.
+  - query: SELECT SUM(a / 0) FROM t
+    error_code: "22012"
+  # Same, in the GROUPED aggregate path (operand div-by-zero per row).
+  - query: SELECT b, SUM(a / 0) FROM t GROUP BY b
+    error_code: "22012"
+  # RFC-091: div-by-zero in a GROUP BY KEY surfaces 22012 (was an uncovered eval
+  # panic in the group-key computation, computeGroupKey).
+  - query: SELECT COUNT(*) FROM t GROUP BY a / 0
+    error_code: "22012"
+  # RFC-091 (keep=false regression): a div-by-zero in a WHERE predicate surfaces
+  # 22012 — the error must propagate, NEVER silently drop the row (the old filter
+  # recover's `keep=false` default arm dropped rows on an unexpected eval panic).
+  - query: SELECT a FROM t WHERE a / 0 > 0
+    error_code: "22012"

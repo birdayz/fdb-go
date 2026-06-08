@@ -339,7 +339,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 	})
 
 	Describe("wrapContinuation and unwrapContinuation", func() {
-		It("round-trips raw bytes (TO_OLD format)", func() {
+		It("round-trips a suffix through the TO_NEW proto wrapper", func() {
 			inner := []byte{0x01, 0x02, 0x03, 0x04}
 			wrapped, err := wrapContinuation(inner)
 			Expect(err).NotTo(HaveOccurred())
@@ -435,9 +435,10 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			fullKey := ss.Pack(tuple.Tuple{int64(42)})
 			cont, err := c.makeContinuation(fullKey)
 			Expect(err).NotTo(HaveOccurred())
-			// The continuation should be the packed tuple suffix (without subspace prefix).
+			// TO_NEW proto-wrapped (Java 4.11.1.0 default): the packed tuple suffix
+			// (without subspace prefix) round-trips back through the dual-reader.
 			suffix := []byte(fullKey[len(ss.FDBKey()):])
-			Expect(cont).To(Equal(suffix))
+			Expect(unwrapContinuation(cont)).To(Equal(suffix))
 		})
 
 		It("uses full key when key is shorter than prefix", func() {
@@ -449,7 +450,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			shortKey := fdb.Key{0x01}
 			cont, err := c.makeContinuation(shortKey)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(cont).To(Equal([]byte(shortKey)))
+			Expect(unwrapContinuation(cont)).To(Equal([]byte(shortKey)))
 		})
 	})
 
