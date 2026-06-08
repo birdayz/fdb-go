@@ -443,13 +443,20 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	// Resolve all compact-layer futures — FDB pipelines these reads into ~1 round-trip.
+	// A future error is a real I/O failure (a missing key surfaces as data==nil below,
+	// not an error) and must propagate so the tx retries rather than silently skipping a
+	// layer and committing an incomplete delete. Record the first error but keep draining
+	// the REMAINING futures before returning: leaving futures unresolved when the retry
+	// loop resets/reuses the transaction violates the FDB tx contract and leaks the
+	// pure-Go reply handles/timers.
+	var futureErr error
 	for _, f := range futures {
 		data, err := f.future.Get()
 		if err != nil {
-			// A future error is a real I/O failure (a missing key surfaces as data==nil
-			// below, not an error) — propagate so the tx retries rather than silently
-			// skipping the layer and committing an incomplete delete.
-			return fmt.Errorf("hnsw delete: read layer %d: %w", f.layer, err)
+			if futureErr == nil {
+				futureErr = fmt.Errorf("hnsw delete: read layer %d: %w", f.layer, err)
+			}
+			continue
 		}
 		if data == nil {
 			g.storage.cache[f.key] = nil // negative cache
@@ -460,6 +467,9 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 			continue
 		}
 		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+	}
+	if futureErr != nil {
+		return futureErr
 	}
 
 	// Check existence at layer 0 (always compact, now served from cache).
