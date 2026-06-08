@@ -153,13 +153,31 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   `offset` (lose rows) + re-apply `limit` (over-return). Latent — currently shielded (top-level
   LIMIT goes through `paginatingRows`; nested LIMIT only in eager scalar subqueries). Encode
   skip/limit-remaining in the plan continuation.
-- **[ ] limit-before-first-row → `StartContinuation` read as "exhausted"** (`key_value_cursor.go`
-  `limitContinuation` + `cascades_generator.go` `paginatingRows.fetchPage`). A zero-byte non-end
-  continuation is mapped to `exhausted` → truncation. Degenerate-limit reachable. Don't map a
-  non-end zero-byte continuation to exhaustion.
-- **[ ] `autoContinuingCursor` retry-after-limit-stop uses stale `lastResult`**
-  (`cursor_combinators.go:794`) → possible DUPLICATE rows across a retry. LOW-MEDIUM. Record the
-  limit-stop continuation as the retry anchor.
+- **[ ] limit-before-first-row → `StartContinuation` read as "exhausted"** (query-engine,
+  Graefe-gated). Bug site located this round: `cascades_generator.go:1129` — `fetchPage` does
+  `if contBytes == nil { r.exhausted = true }`, but `StartContinuation` has `IsEnd()==false`
+  (`cursor.go:100`) and `ToBytes()==nil` (`:95`). So a *non-end* "limit reached, made no progress this
+  page" result is silently mapped to exhausted → result-set TRUNCATION.
+  - **Reachability:** the leaf `keyValueCursor` is SAFE — the time/scan-limit checks guard on
+    `recordsScanned > 0` (the "free initial pass", `key_value_cursor.go:139/149`), guaranteeing ≥1
+    record (hence a non-nil `continuation`) before any limit fires, so its `limitContinuation` returns
+    `BytesContinuation`, never `StartContinuation`. The risk is a plan that consumes many inputs per
+    output — an aggregate / GROUP BY hitting `txPageTimeLimit` before producing its first output row —
+    if that operator returns a `StartContinuation` instead of carrying the inner scan position.
+  - **Fix is NOT naive:** you can't just "resume on nil bytes" — `StartContinuation` resumes from the
+    START, so re-running the page re-scans from the beginning, hits the same limit, and loops forever.
+    Correct fix: cursors must carry a forward-progress scan position in their limit continuation even
+    when no output row was produced (so the next page resumes *after* the consumed input), OR
+    `fetchPage` must distinguish no-progress (error/raise budget) from end. Needs an RFC + Graefe ACK.
+- **[~] `autoContinuingCursor` retry-after-limit-stop — ANALYZED, no duplicate rows (perf-only).**
+  Re-read `onNextWithRetry`/`OnNext` (`cursor_combinators.go:780-847`) this round. On a retryable
+  error the retry resumes from `lastContinuation()` = `c.lastResult` (the last RETURNED value's
+  continuation, set only at `:813`). That is the CORRECT dedup-to-caller anchor: the caller has seen
+  everything ≤ `lastResult`, so resuming after it can never re-emit a returned row — even when a
+  limit-stop opened a new cursor from a position *ahead* of `lastResult` (e.g. a filtered scan that
+  consumed but didn't return), since those skipped records were never returned. The only cost is
+  re-scanning the `[lastResult, limit-stop]` gap on a retry — redundant work, not a correctness bug.
+  Downgraded from "possible DUPLICATE rows" to perf-nit; no fix.
 
 ---
 
