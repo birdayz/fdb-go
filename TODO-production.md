@@ -138,16 +138,15 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   iterators (`BunchedMapMultiIterator.nextKV` — backs the live text-index scan via `textCursor.Err()`
   — and `BunchedMapIterator.advance`). Each switched to the `rangeIterator` seam + white-box tests
   (both sites). Additive; no happy-path change.
-- **[ ] hnsw scan loops swallow a mid-scan iterator error (follow-up).** `hnsw.go` has the same class
-  but in local (non-field) iterators: the `for iter.Advance() {}` loops (`:1267` preload, `:1590`/
-  `:1683` inline) don't check `Get()` after the loop-exit `Advance()==false`, so a mid-scan 1007/
-  timeout yields a silent PARTIAL result (incomplete cache / neighbor list → corrupt graph op that
-  still commits); the `if ri.Advance()` probes (`:1422`/`:1753`) fall through to a misleading
-  "no nodes at layer" error instead of the real one (Torvalds: "wrong error, not silent — note").
-  Fix is mechanical (post-loop / else `if _,err:=iter.Get();err!=nil {return err}`) but deterministic
-  testing needs an hnsw iterator seam (the iterators are locals, not struct fields) — refactor +
-  regression is a focused follow-up, not bundled with the cursor sweep to avoid untested changes to
-  the HNSW code.
+- **[x] hnsw scan loops swallowed a mid-scan iterator error — FIXED.** `hnsw.go` had the same class in
+  local iterators: the `for iter.Advance() {}` loops (`preloadLayer`, `loadNodeLayerInlining`,
+  `preloadLayerInlining`) checked `Get()` only INSIDE the loop, so a mid-scan 1007/timeout that ended
+  the loop was swallowed → a silently PARTIAL layer cache / neighbor list (corrupt-graph hazard that
+  still commits); the `if ri.Advance()` probes (`findAnyNodeAtLayer`/`…Inlining`) reported the
+  misleading "no nodes at layer" on a transient error. Added a post-loop / else `Get()` error check at
+  all five sites. For deterministic testing without a live FDB, introduced an `hnswStorage.scan` seam
+  (nil in production → real `tx.GetRange().Iterator()` via `scanIter`; tests inject a fake iterator);
+  five white-box regressions pin each site, and the `preloadLayer` test was verified to fail pre-fix.
 - **[x] `hasMoreKVs` swallowed FDB iterator errors at the row-limit boundary — FIXED.** At the
   `ReturnedRowLimit` boundary, `hasMoreKVs` returned `iterator.Advance()` without checking
   `iterator.Get()` for the stored error — so a transient `transaction_too_old` (1007) / timeout

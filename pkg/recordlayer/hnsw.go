@@ -997,6 +997,22 @@ type hnswStorage struct {
 	config         HNSWConfig
 	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
 	stats          *HNSWStats             // optional I/O counters (nil = no tracking)
+
+	// scan opens a range iterator for a layer scan. nil in production (uses the real
+	// tx.GetRange().Iterator() via scanIter); tests set it to inject a fake iterator so
+	// the Advance()/Get() error-surfacing paths are deterministically reachable without
+	// a live FDB transaction. The local *fdb.RangeIterator and a test fake both satisfy
+	// the rangeIterator seam (Advance/Get).
+	scan func(tx fdb.ReadTransaction, r fdb.Range, opts fdb.RangeOptions) rangeIterator
+}
+
+// scanIter opens a range iterator, honoring the test seam (s.scan) when set and
+// otherwise using the real range read.
+func (s *hnswStorage) scanIter(tx fdb.ReadTransaction, r fdb.Range, opts fdb.RangeOptions) rangeIterator {
+	if s.scan != nil {
+		return s.scan(tx, r, opts)
+	}
+	return tx.GetRange(r, opts).Iterator()
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -1263,7 +1279,7 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 	if err != nil {
 		return fmt.Errorf("hnsw: preload layer %d prefix range: %w", layer, err)
 	}
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
@@ -1278,6 +1294,12 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 			continue // skip unparseable entries
 		}
 		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+	}
+	// Advance()==false ends the loop on exhaustion OR a transient FDB error; check
+	// Get() for the stored error so a mid-scan 1007/timeout surfaces instead of
+	// silently leaving the layer cache PARTIALLY populated (a corrupt-graph hazard).
+	if _, err := iter.Get(); err != nil {
+		return fmt.Errorf("hnsw: preload layer %d scan: %w", layer, err)
 	}
 	return nil
 }
@@ -1418,7 +1440,7 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		return nil, nil, rangeErr
 	}
 
-	ri := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
 	if ri.Advance() {
 		kv, getErr := ri.Get()
 		if getErr != nil {
@@ -1454,6 +1476,11 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		return pk, vectorBytes, nil
 	}
 
+	// Advance()==false: distinguish a transient FDB error from a genuinely empty
+	// layer, so a 1007/timeout isn't reported as the misleading "no nodes at layer".
+	if _, getErr := ri.Get(); getErr != nil {
+		return nil, nil, fmt.Errorf("hnsw: find any node at layer %d: %w", layer, getErr)
+	}
 	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d", layer)
 }
 
@@ -1583,7 +1610,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		return nil, nil, fmt.Errorf("hnsw: inlining prefix range layer %d: %w", layer, err)
 	}
 
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	var neighbors []tuple.Tuple
 	foundAnyKV := false
 
@@ -1628,6 +1655,11 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 			// This is enough for loadNodeLayerBatch to return vecBytes.
 			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
 		}
+	}
+	// Surface a transient FDB error that ended the scan via Advance()==false, so an
+	// incomplete neighbor list isn't returned as a complete one (silent corruption).
+	if _, err := iter.Get(); err != nil {
+		return nil, nil, fmt.Errorf("hnsw: inlining scan layer %d: %w", layer, err)
 	}
 
 	if !foundAnyKV {
@@ -1679,7 +1711,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 	nodeEdges := make(map[string][]edgeInfo) // source PK packed bytes → edges
 	nodePKs := make(map[string]tuple.Tuple)  // source PK packed bytes → source PK
 
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
@@ -1712,6 +1744,11 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 		sourceKey := string(sourcePK.Pack())
 		nodeEdges[sourceKey] = append(nodeEdges[sourceKey], edgeInfo{neighborPK: nbPK, vecBytes: nbVecBytes})
 		nodePKs[sourceKey] = sourcePK
+	}
+	// Surface a transient FDB error that ended the scan before populating the cache
+	// from the (otherwise partial) edge map — a silent partial cache corrupts the graph.
+	if _, err := iter.Get(); err != nil {
+		return fmt.Errorf("hnsw: preload inlining layer %d scan: %w", layer, err)
 	}
 
 	// Populate cache: one entry per source node with its neighbor list.
@@ -1749,7 +1786,7 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 	}
 
 	// Read just 1 KV to find any node.
-	ri := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
 	if ri.Advance() {
 		kv, getErr := ri.Get()
 		if getErr != nil {
@@ -1769,6 +1806,11 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 		}
 	}
 
+	// Advance()==false: surface a transient FDB error rather than the misleading
+	// "no nodes at layer".
+	if _, getErr := ri.Get(); getErr != nil {
+		return nil, nil, fmt.Errorf("hnsw: find any node (inlining) at layer %d: %w", layer, getErr)
+	}
 	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d", layer)
 }
 
