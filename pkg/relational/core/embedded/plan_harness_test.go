@@ -403,6 +403,18 @@ CREATE INDEX sum_amount_by_status AS SELECT SUM(amount) FROM ORDERS GROUP BY sta
 		t.Fatal(err)
 	}
 	t.Logf("combined COUNT+SUM plan: %s", plan)
+	// A multi-aggregate GROUP BY with a per-aggregate index for each aggregate
+	// (count_by_status + sum_amount_by_status, both grouped by status) must merge
+	// the two co-grouped aggregate indexes — NOT full-scan + InMemorySort the
+	// whole table. This was the 5.6s/1M perf bug: the MultiIntersection plan was
+	// generated but lost winner-selection, and THIS test only logged the plan
+	// instead of asserting it (a fake checkbox that hid the gap from day one).
+	if !strings.Contains(plan, "MultiIntersection") {
+		t.Errorf("expected MultiIntersection of the two aggregate indexes for COUNT(*)+SUM(amount) GROUP BY status, got: %s", plan)
+	}
+	if strings.Contains(plan, "InMemorySort") || strings.Contains(plan, "Scan(ORDERS)") {
+		t.Errorf("multi-aggregate GROUP BY must not full-scan + sort when per-aggregate indexes exist, got: %s", plan)
+	}
 
 	sumOnly, err := PlanQueryForTest(
 		"SELECT status, SUM(amount) FROM orders GROUP BY status ORDER BY status",
