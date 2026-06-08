@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -119,5 +120,65 @@ func TestHNSW_FindAnyNodeAtLayerInlining_SurfacesIteratorError(t *testing.T) {
 	_, _, err := s.findAnyNodeAtLayerInlining(nil, 0)
 	if !errors.Is(err, injErr) {
 		t.Fatalf("findAnyNodeAtLayerInlining must surface the error, not 'no nodes at layer', got %v", err)
+	}
+}
+
+// TestHNSWFatal pins the not-found-vs-fatal classification that the graph callers use:
+// only a genuine errHNSWNotPresent "absent" result is skippable; any other (transient)
+// error must propagate so the transaction aborts and retries.
+func TestHNSWFatal(t *testing.T) {
+	t.Parallel()
+	if hnswFatal(nil) != nil {
+		t.Fatal("nil is not fatal")
+	}
+	notFound := fmt.Errorf("hnsw: node not found at layer %d: %w", 3, errHNSWNotPresent)
+	if hnswFatal(notFound) != nil {
+		t.Fatal("a genuine absent node (errHNSWNotPresent) must be skippable, not fatal")
+	}
+	transient := errors.New("transaction_too_old (1007)")
+	if got := hnswFatal(transient); got != transient {
+		t.Fatalf("a transient error must be returned as fatal, got %v", got)
+	}
+}
+
+// TestHNSW_RepairNeighbor_PropagatesScanError is the operation-level proof of codex's
+// P1: a transient scan error reaching a graph caller must ABORT the operation (so the
+// tx retries), NOT be read as "neighbor doesn't exist" and skipped (which would commit a
+// partially-repaired graph). repairNeighbor's first load goes through loadNodeLayerInlining
+// (inlining layer), whose scan we fail.
+func TestHNSW_RepairNeighbor_PropagatesScanError(t *testing.T) {
+	t.Parallel()
+	injErr := errors.New("injected transaction_too_old (1007)")
+	s := &hnswStorage{
+		dataSubspace: subspace.Sub("hnsw_test").Sub(int64(0)),
+		cache:        make(map[string]*parsedNode),
+		config:       HNSWConfig{UseInlining: true},
+		scan: func(_ fdb.ReadTransaction, _ fdb.Range, _ fdb.RangeOptions) rangeIterator {
+			return &fakeRangeIterator{getErr: injErr}
+		},
+	}
+	g := &hnswGraph{storage: s, config: s.config}
+	err := g.repairNeighbor(fdb.Transaction{}, 1, tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)})
+	if !errors.Is(err, injErr) {
+		t.Fatalf("repairNeighbor must propagate a transient scan error (not skip as absent), got %v", err)
+	}
+}
+
+// TestHNSW_RepairNeighbor_SkipsAbsentNeighbor is the companion: a genuinely-absent
+// neighbor (clean empty scan → errHNSWNotPresent) is still skipped (returns nil), so the
+// fix doesn't turn a normal "neighbor already gone" into a spurious failure.
+func TestHNSW_RepairNeighbor_SkipsAbsentNeighbor(t *testing.T) {
+	t.Parallel()
+	s := &hnswStorage{
+		dataSubspace: subspace.Sub("hnsw_test").Sub(int64(0)),
+		cache:        make(map[string]*parsedNode),
+		config:       HNSWConfig{UseInlining: true},
+		scan: func(_ fdb.ReadTransaction, _ fdb.Range, _ fdb.RangeOptions) rangeIterator {
+			return &fakeRangeIterator{} // Advance()==false, Get()==(zero, nil): clean empty
+		},
+	}
+	g := &hnswGraph{storage: s, config: s.config}
+	if err := g.repairNeighbor(fdb.Transaction{}, 1, tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}); err != nil {
+		t.Fatalf("repairNeighbor must skip a genuinely-absent neighbor (nil), got %v", err)
 	}
 }

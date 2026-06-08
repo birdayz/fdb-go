@@ -147,6 +147,15 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   all five sites. For deterministic testing without a live FDB, introduced an `hnswStorage.scan` seam
   (nil in production → real `tx.GetRange().Iterator()` via `scanIter`; tests inject a fake iterator);
   five white-box regressions pin each site, and the `preloadLayer` test was verified to fail pre-fix.
+  **Caller propagation (codex P1):** surfacing the error at the leaf is necessary but not sufficient —
+  the graph callers (`Delete` all-layers + entry-point, `searchLayerGreedy`, `searchLayerMulti`,
+  `selectNeighborsHeuristic`, `pruneNeighbors`, `repairNeighbor`) treated EVERY load error as "node
+  absent" and skipped it, so a transient error still produced a partial insert/delete/search that
+  committed. Fixed with an `errHNSWNotPresent` sentinel: genuine not-found returns are wrapped with it,
+  and each caller now does `if e := hnswFatal(err); e != nil { return e }` before the absent-case skip —
+  propagating transient errors (tx aborts/retries) while still skipping genuinely-absent nodes. Pinned
+  by an operation-level regression (`repairNeighbor` propagates a scan error vs skips an absent
+  neighbor), verified to fail pre-fix.
 - **[x] `hasMoreKVs` swallowed FDB iterator errors at the row-limit boundary — FIXED.** At the
   `ReturnedRowLimit` boundary, `hasMoreKVs` returned `iterator.Advance()` without checking
   `iterator.Get()` for the stored error — so a transient `transaction_too_old` (1007) / timeout
