@@ -47,6 +47,15 @@ func unwrapContinuation(rawBytes []byte) []byte {
 	return msg.InnerContinuation
 }
 
+// rangeIterator is the minimal FDB range-scan iterator the cursor depends on.
+// *fdb.RangeIterator satisfies it; the interface exists so tests can inject a fake
+// that returns an error at a chosen position (the row-limit boundary), which a
+// concrete *fdb.RangeIterator can't be made to do deterministically.
+type rangeIterator interface {
+	Advance() bool
+	Get() (fdb.KeyValue, error)
+}
+
 // keyValueCursor implements RecordCursor for scanning key-value pairs from FDB.
 // Handles both unsplit records (single KV at suffix 0) and split records
 // (multiple KVs at suffixes 1, 2, 3, ...), acting as both the raw KV scanner
@@ -61,7 +70,7 @@ type keyValueCursor struct {
 	scanProperties ScanProperties
 
 	// Internal state
-	iterator       *fdb.RangeIterator
+	iterator       rangeIterator
 	closed         bool
 	recordsRead    int // Records returned to the caller
 	recordsScanned int // Records scanned (including skipped ones)
@@ -591,10 +600,11 @@ func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
 	return cont, nil
 }
 
-// hasMoreKVs checks if there are more KV pairs available (from buffer or iterator).
-// Used for the limit-reached vs source-exhausted check. Best-effort: FDB errors
-// during the probe are treated as "no more" since we're just distinguishing
-// ReturnLimitReached from SourceExhausted.
+// hasMoreKVs reports whether more KV pairs are available (from the buffer or the
+// iterator), used to distinguish ReturnLimitReached from SourceExhausted. It
+// surfaces any FDB error encountered probing the iterator (transaction_too_old,
+// timeout) rather than treating it as "no more" — swallowing it would silently end
+// the scan at the row-limit boundary and lose the remaining rows.
 func (c *keyValueCursor) hasMoreKVs() (bool, error) {
 	if c.bufferedKV != nil {
 		return true, nil
