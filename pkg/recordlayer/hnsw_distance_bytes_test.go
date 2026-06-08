@@ -50,7 +50,11 @@ func TestVectorDistanceFromBytes_MatchesDeserialize(t *testing.T) {
 				if !ok {
 					t.Fatalf("dims=%d type=%d metric=%d: fast path declined", dims, stored[0], m)
 				}
-				if got != want {
+				// Both paths compute the same distance; they may differ only by
+				// floating-point reassociation (the byte-direct and []float64
+				// euclidean loops unroll into independent accumulators). Require
+				// agreement to a tight relative tolerance, not bit-identity.
+				if !approxEqual(got, want, 1e-9) {
 					t.Errorf("dims=%d type=%d metric=%d: got %v want %v (delta %g)",
 						dims, stored[0], m, got, want, got-want)
 				}
@@ -83,6 +87,21 @@ func TestVectorDistanceFromBytes_ZeroAlloc(t *testing.T) {
 			t.Errorf("metric=%d: vectorDistanceFromBytes allocated %v/op, want 0", m, allocs)
 		}
 	}
+}
+
+func approxEqual(a, b, relTol float64) bool {
+	if a == b {
+		return true
+	}
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	scale := b
+	if scale < 0 {
+		scale = -scale
+	}
+	return d <= relTol*(1+scale)
 }
 
 // float32ToHalf is the inverse of vectorcodec.HalfToFloat32, for building test

@@ -46,9 +46,21 @@ func vectorDistanceFromBytes(query []float64, stored []byte, metric VectorMetric
 				dot += query[j] * math.Float64frombits(binary.BigEndian.Uint64(payload[j*8:]))
 			}
 			return -dot, true
-		default: // squared L2
-			var sum float64
-			for j := 0; j < n; j++ {
+		default: // squared L2 — four independent lanes (see euclideanDistance).
+			var s0, s1, s2, s3 float64
+			j := 0
+			for ; j+4 <= n; j += 4 {
+				d0 := query[j] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8:]))
+				d1 := query[j+1] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8+8:]))
+				d2 := query[j+2] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8+16:]))
+				d3 := query[j+3] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8+24:]))
+				s0 += d0 * d0
+				s1 += d1 * d1
+				s2 += d2 * d2
+				s3 += d3 * d3
+			}
+			sum := s0 + s1 + s2 + s3
+			for ; j < n; j++ {
 				d := query[j] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8:]))
 				sum += d * d
 			}

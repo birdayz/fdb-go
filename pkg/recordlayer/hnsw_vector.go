@@ -59,14 +59,30 @@ func vectorDistance(a, b []float64, metric VectorMetric) float64 {
 	}
 }
 
-// euclideanDistance computes squared L2 distance.
+// euclideanDistance computes squared L2 distance. The accumulation is unrolled
+// into four independent sums to break the serial dependency of `sum += d*d` —
+// modern CPUs have several FP units that otherwise sit idle waiting on the
+// previous add. Distance is ~half of all HNSW CPU (search and insert), so this
+// is load-bearing.
 func euclideanDistance(a, b []float64) float64 {
-	sum := 0.0
 	n := len(a)
 	if len(b) < n {
 		n = len(b)
 	}
-	for i := 0; i < n; i++ {
+	var s0, s1, s2, s3 float64
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		s0 += d0 * d0
+		s1 += d1 * d1
+		s2 += d2 * d2
+		s3 += d3 * d3
+	}
+	sum := s0 + s1 + s2 + s3
+	for ; i < n; i++ {
 		d := a[i] - b[i]
 		sum += d * d
 	}
