@@ -70,6 +70,22 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   inside `Commit`, run `ensureReadVersion` under the live ctx for write txns (after the
   `len(muts)==0 && nWriteConflicts==0` fast-path return), `WithoutCancel` only the commit RPC +
   barrier. Sub-RPC window, non-hazardous (stale-but-durable commit, no data hazard).
+  - **Executable spec (verified this round, ready to implement):** exactly two lines —
+    (1) `database.go:560` `tx.Commit(context.WithoutCancel(ctx))` → `tx.Commit(ctx)`;
+    (2) `transaction.go:1115` `tx.commit(ctx, muts)` → `tx.commit(context.WithoutCancel(ctx), muts)`.
+    Commit has exactly two ctx-uses after the fast-path return: `ensureReadVersion(ctx)` (:1106, now
+    live) and `tx.commit(ctx, muts)` (:1115, stays detached). `tx.commit` (`commitpath.go:28`) is the
+    "commit + barrier" — it owns `commitDummyTransaction` — so `WithoutCancel`ing it preserves RFC-090
+    idempotency. **Safe on every path:** no-op/read-only txns return at :1094 before any GRV (no
+    forced-GRV regression — that was the prior bug); a cancel-during-GRV returns `ctx.Err()` →
+    `OnError` non-FDBError branch (:1243) → non-retryable, and even if the GRV surfaced a retryable
+    error, `OnError`'s `backoffSleep(ctx)` honors the cancel — no loop; the deadline now also bounds
+    the commit-path GRV (correct: a GRV is a read), while the commit RPC stays deadline-free.
+  - **Why not done now:** the e2e test (project rule: no fake checkboxes) needs a frame-level
+    GRV-reply-blocking dialer (extend `fault_test.go`'s `wrongShardConn` to *delay* the GetReadVersion
+    reply on a `releaseCh`, arm after the GRV request, cancel ctx while blocked; assert pre-fix commits
+    and post-fix returns `context.Canceled` with the key absent). Commit-hot-path change + new fault
+    infra = focused effort, not a tail-of-session rush — gated on that test, not on analysis.
 - **[x] `sendWatch` long-poll escape — AUDITED, safe (matches Java).** `sendWatch` (`readpath.go:855`)
   blocks in a `select` with TWO escapes: the watch reply on `replyCh`, and `ctx.Done()`
   (`readpath.go:905`). On connection teardown, `failAllPending` (`conn.go:744`) does a non-blocking
