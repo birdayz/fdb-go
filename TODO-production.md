@@ -63,29 +63,26 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   the handshake deadline is cleared, so a late post-handshake dial-ctx cancellation can't disturb the
   now-live conn (its lifetime is `connCtx` from there). Pinned by
   `TestDial_HandshakeHonorsCancellation` (cancel-only ctx aborts in ~200ms vs the 10s default).
-- **[ ] Thread live ctx to the commit-path GRV for write txns (Commit-internal)** (codex + FDB C++).
-  `Transact`'s pre-commit `ctx.Err()` check aborts a cancel-before-commit; the residual is a cancel
-  arriving *during* Commit's own `ensureReadVersion` GRV (run under `WithoutCancel`). Fixing it in
-  the `Transact` loop regressed the read-only/no-op fast path (codex P2 — reverted). Correct home:
-  inside `Commit`, run `ensureReadVersion` under the live ctx for write txns (after the
-  `len(muts)==0 && nWriteConflicts==0` fast-path return), `WithoutCancel` only the commit RPC +
-  barrier. Sub-RPC window, non-hazardous (stale-but-durable commit, no data hazard).
-  - **Executable spec (verified this round, ready to implement):** exactly two lines —
-    (1) `database.go:560` `tx.Commit(context.WithoutCancel(ctx))` → `tx.Commit(ctx)`;
-    (2) `transaction.go:1115` `tx.commit(ctx, muts)` → `tx.commit(context.WithoutCancel(ctx), muts)`.
-    Commit has exactly two ctx-uses after the fast-path return: `ensureReadVersion(ctx)` (:1106, now
-    live) and `tx.commit(ctx, muts)` (:1115, stays detached). `tx.commit` (`commitpath.go:28`) is the
-    "commit + barrier" — it owns `commitDummyTransaction` — so `WithoutCancel`ing it preserves RFC-090
-    idempotency. **Safe on every path:** no-op/read-only txns return at :1094 before any GRV (no
-    forced-GRV regression — that was the prior bug); a cancel-during-GRV returns `ctx.Err()` →
-    `OnError` non-FDBError branch (:1243) → non-retryable, and even if the GRV surfaced a retryable
-    error, `OnError`'s `backoffSleep(ctx)` honors the cancel — no loop; the deadline now also bounds
-    the commit-path GRV (correct: a GRV is a read), while the commit RPC stays deadline-free.
-  - **Why not done now:** the e2e test (project rule: no fake checkboxes) needs a frame-level
-    GRV-reply-blocking dialer (extend `fault_test.go`'s `wrongShardConn` to *delay* the GetReadVersion
-    reply on a `releaseCh`, arm after the GRV request, cancel ctx while blocked; assert pre-fix commits
-    and post-fix returns `context.Canceled` with the key absent). Commit-hot-path change + new fault
-    infra = focused effort, not a tail-of-session rush — gated on that test, not on analysis.
+- **[x] Thread live ctx to the commit-path GRV for write txns (Commit-internal)** (codex + FDB C++).
+  **DONE — RFC-093** (FDB C++ + Torvalds ACK on RFC + impl). The two-line split landed exactly as the
+  executable spec called for: `database.go:548` passes the live ctx into `Commit` (was
+  `context.WithoutCancel(ctx)`), and `transaction.go:1126` re-applies `WithoutCancel` to ONLY the
+  commit RPC + `commit_unknown_result` barrier (`tx.commit`). Net: the commit-path GRV
+  (`ensureReadVersion`, :1106) now honors the caller ctx (a cancel mid-GRV returns via
+  `getReadVersion`'s `<-ctx.Done()` select, `grv.go:216` → non-`*wire.FDBError` → `OnError`:1243
+  non-retryable), while the commit RPC + `commitDummyTransaction` stay detached (RFC-090 idempotency
+  intact). The reverted-P2 forced-GRV regression is structurally avoided — the read-only/no-op fast
+  path returns at :1100 before any GRV. **FDB C++ verified against 7.3.75** (`NativeAPI.actor.cpp:6578`
+  GRV is a cancellable read; `:6750`/`:6306` `commitDummyTransaction` is the only no-abandon path — the
+  Go split matches where C++ draws the line). Three stale comments at the old call site
+  (`database.go:527-536` "also detaches the GRV", the `:538-549` "tracked as a follow-up" NOTE, and the
+  RFC-090 rationale) were rewritten/relocated so none lie post-change. **Pinned** by
+  `commit_path_grv_ctx_test.go` (`TestFDB_CommitPathGRV_HonorsCtxCancel` — a frame-level
+  GRV-reply-blocking dialer holds the GRV reply, cancels mid-flight, asserts `context.Canceled` +
+  key-absent; revert-proven to FAIL on the two-line revert — "GRV ignored the cancel"; and
+  `TestFDB_CommitReadOnlyNoForcedGRV` — guards the fast path against a forced GRV). `-race` green;
+  deterministic. Reviewer gate: the new **`fdb-client-review`** skill (FDB C++ dev + Torvalds), now
+  the standing gate for `pkg/fdbgo` client/wire work and wired into `todo-worker` Step 1.
 - **[x] `sendWatch` long-poll escape — AUDITED, safe (matches Java).** `sendWatch` (`readpath.go:855`)
   blocks in a `select` with TWO escapes: the watch reply on `replyCh`, and `ctx.Done()`
   (`readpath.go:905`). On connection teardown, `failAllPending` (`conn.go:744`) does a non-blocking
