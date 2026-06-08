@@ -129,6 +129,25 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   divergence. Same verdict family as the float32-leaderboard-negate item above: not a bug, leave it.
 
 ### Continuation / pagination — hunt findings
+- **[x] Iterator-error swallowing was a BUG CLASS, swept across all scan cursors — FIXED (PR after #272).**
+  The `hasMoreKVs` fix generalized: every cursor that reported `SourceExhausted` on
+  `iterator.Advance()==false` without checking `iterator.Get()` swallowed a transient FDB error
+  (`*fdb.RangeIterator.Advance()` returns false on both clean exhaustion AND a fetch error; `Get()`
+  then returns the stored error or nil). Fixed at both the row-limit boundary and the scan-termination
+  site in `indexCursor`, `countKVCursor`, `bitmapKVCursor`, `recordKeyCursor`, plus the two BunchedMap
+  iterators (`BunchedMapMultiIterator.nextKV` — backs the live text-index scan via `textCursor.Err()`
+  — and `BunchedMapIterator.advance`). Each switched to the `rangeIterator` seam + white-box tests
+  (both sites). Additive; no happy-path change.
+- **[ ] hnsw scan loops swallow a mid-scan iterator error (follow-up).** `hnsw.go` has the same class
+  but in local (non-field) iterators: the `for iter.Advance() {}` loops (`:1267` preload, `:1590`/
+  `:1683` inline) don't check `Get()` after the loop-exit `Advance()==false`, so a mid-scan 1007/
+  timeout yields a silent PARTIAL result (incomplete cache / neighbor list → corrupt graph op that
+  still commits); the `if ri.Advance()` probes (`:1422`/`:1753`) fall through to a misleading
+  "no nodes at layer" error instead of the real one (Torvalds: "wrong error, not silent — note").
+  Fix is mechanical (post-loop / else `if _,err:=iter.Get();err!=nil {return err}`) but deterministic
+  testing needs an hnsw iterator seam (the iterators are locals, not struct fields) — refactor +
+  regression is a focused follow-up, not bundled with the cursor sweep to avoid untested changes to
+  the HNSW code.
 - **[x] `hasMoreKVs` swallowed FDB iterator errors at the row-limit boundary — FIXED.** At the
   `ReturnedRowLimit` boundary, `hasMoreKVs` returned `iterator.Advance()` without checking
   `iterator.Get()` for the stored error — so a transient `transaction_too_old` (1007) / timeout
