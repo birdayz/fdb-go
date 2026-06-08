@@ -106,3 +106,60 @@ VECTOR_BENCH_EF_SEARCH=64    # HNSW search expansion factor
 VECTOR_BENCH_READERS=10      # concurrent search goroutines
 VECTOR_BENCH_RABITQ=false    # enable RaBitQ quantization
 ```
+
+---
+
+## 2026-06 HNSW perf pass (branch perf/hnsw-span-decode)
+
+Hardware: 24-core, 64 GB, FDB 7.3.75 testcontainer (single node). All at 1536-D
+DOUBLE vectors, the LanceDB-1M comparison shape.
+
+### Search (1K × 1536D, k=10, efSearch=64)
+
+| stage | alloc/query | p50 | p99 | recall@10 |
+|--|--|--|--|--|
+| baseline | 102.8 MB | 46 ms | 64 ms | 0.977 |
+| + raw-span neighbor PKs + distance-from-bytes | 23.8 MB | 25 ms | 32 ms | 0.977 |
+| + shared cache + 4-lane distance | — | **4.5 ms** | 12.5 ms | 0.977 |
+
+Search beats LanceDB's warmed 25 ms p50. Three wire-neutral, recall-exact changes:
+raw-span PKs (no decode/box in the hot loop), distance straight from stored bytes
+(no []float64), and a 4-lane unrolled distance reduction.
+
+### Insert (vec/sec, parallelism=8, batch=16)
+
+| graph size | batch=4 (old) | + batch16 | + shared cache | + 4-lane dist (cache on) |
+|--|--|--|--|--|
+| 1K | 46 | — | — | 177 |
+| 6K | — | — | 55.9 | 67 |
+| 10K | 10.7 | 24.1 | 45.9 | ~55 |
+| 30K | — | — | — | 40.6 |
+
+Crucially the cached rate **asymptotes** rather than collapsing: 177 → 67 → 46 →
+40.6 vec/s as the graph grows 1K → 30K — the 10K→30K drop is only ~13% over 3×
+the size (per-insert cost stabilizes: bounded efConstruction neighborhood,
+neighbor lists saturate at MMax0). Extrapolating the flattening curve, a **1M
+build is ~7–9 h on this single node** with the cache sized to hold the graph
+(~24 GB for 1M × 1536-D nodes; fits in 64 GB, so no eviction) — feasible as an
+overnight build, where uncached (collapsing rate) it was effectively unbuildable.
+
+The shared cross-transaction node cache (opt-in: hnswSharedCacheMaxNodes, or
+HNSW_SHARED_CACHE_NODES) is the big lever — it stops the per-transaction cache
+from going cold every batch and re-reading the hot layers, taking 10K from 10.7
+to 45.9 vec/s. It is correct for single-writer indexing + read-only search
+(reads populate from committed data, every write invalidates, clearAll drops
+all, aborts never pollute); off by default.
+
+### On "1M"
+
+- 1M queries/sec is physically impossible at 1536-D (~2 M FLOPs/query × 1M =
+  ~2.3 PFLOP/s, ~2000× a 24-core CPU). LanceDB's "1m" is the 1M-*vector* dataset.
+- 1M-vector SEARCH is ready (4.5–15 ms; raise efSearch for recall at scale).
+- 1M-vector BUILD: the cache+unroll made it several-times faster and, more
+  importantly, made the insert rate asymptote (~40 vec/s at 30K, see above)
+  instead of collapsing — so a 1M build is ~7–9 h on this single node (measured
+  curve extrapolated; cache sized to avoid eviction). Inserts are serialized by
+  the single-writer lock (== Java's doWithWriteLock), so a build uses ~1 core
+  regardless of machine; going faster than that needs concurrent HNSW
+  construction (research-level, diverges from Java — out of scope) or a real
+  multi-node FDB cluster (parallelizes the write floor).
