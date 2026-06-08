@@ -45,6 +45,7 @@ go_test(
         "boundary_test.go",
         "c_binding_port_test.go",
         "client_test.go",
+        "commit_path_grv_ctx_test.go",
         "commitpath_test.go",
         "commitpath_unit_test.go",
         "concurrent_stress_test.go",

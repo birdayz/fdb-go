@@ -525,39 +525,27 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 		}
 
 		// Honor a cancellation/deadline that arrived *during* fn before starting the
-		// commit. The commit + barrier below run under WithoutCancel (see next
-		// comment), which also detaches the commit path's pre-commit GRV
-		// (ensureReadVersion) — so once we call Commit, a new read version can be
-		// fetched and a commit issued even on an already-expired ctx. ctx bounds
-		// reads/GRV, so the correct place to abort is here, before any commit-path
-		// read or RPC is issued; an in-flight commit (past this point) is protected.
+		// commit: skip creating the commit at all on an already-dead ctx. This is a
+		// fast-abort, NOT the only GRV-abort point — the commit-path GRV inside Commit
+		// (ensureReadVersion, transaction.go:1106) is itself ctx-bounded (RFC-093);
+		// only the commit RPC + commit_unknown_result barrier are detached, inside
+		// Commit (transaction.go:1126).
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		// NOTE: a tighter refinement (prefetch the commit read version here under the
-		// live ctx, so a cancel arriving *during* the commit-path GRV aborts) was
-		// tried and reverted: done unconditionally it regresses Commit's read-only/
-		// no-op fast path (which returns without a GRV when there are no mutations or
-		// write-conflicts — transaction.go:1094), forcing an unnecessary GRV RPC that
-		// can block/fail a no-op txn (codex P2). Gating it on "has writes" would have
-		// to peek tx.mutations/writeConflicts under conflictMu from here, duplicating
-		// Commit's gate. The correct home is inside Commit: thread the live ctx to its
-		// own ensureReadVersion for write txns, WithoutCancel only the commit RPC +
-		// barrier. Tracked as a follow-up. The residual window is sub-RPC and
-		// non-hazardous (a stale-but-durable commit, no data hazard — FDB C++ review);
-		// the pre-commit ctx.Err() check above already aborts the common case.
-
-		// RFC-090: run the dispatched commit and its commit_unknown_result
-		// idempotency barrier (commitDummyTransaction) on a context the caller cannot
-		// cancel. A caller-ctx cancellation must not yank an in-flight commit (already
-		// bounded by the per-RPC timeout) and must not make the barrier no-op on a
-		// cancelled ctx (commitpath.go's `if ctx.Err()!=nil {return}`). The retry
-		// backoff below still honors ctx via OnError. For callers that pass
-		// context.Background() (no cancellation or deadline to strip), WithoutCancel is
-		// observably inert — it wraps the context but removes nothing — so their
-		// behavior is unchanged.
-		if err := tx.Commit(context.WithoutCancel(ctx)); err != nil {
+		// RFC-093: pass the LIVE ctx — the cancel/detach split lives inside Commit, not
+		// here. A prior attempt that prefetched the commit read version in this loop
+		// under the live ctx was reverted: done unconditionally it regresses Commit's
+		// read-only/no-op fast path (which returns without a GRV when there are no
+		// mutations or write-conflicts — transaction.go:1094), forcing an unnecessary
+		// GRV RPC that can block/fail a no-op txn (codex P2); gating it on "has writes"
+		// would duplicate Commit's gate under conflictMu. So Commit owns the split: it
+		// threads this live ctx to its own ensureReadVersion (GRV cancellable, so a
+		// cancel during the commit-path read version aborts promptly) and re-applies
+		// WithoutCancel to ONLY the commit RPC + commit_unknown_result barrier
+		// (transaction.go:1126). The retry backoff below still honors ctx via OnError.
+		if err := tx.Commit(ctx); err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}

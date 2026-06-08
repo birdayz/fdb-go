@@ -1112,7 +1112,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// marshal re-reads tx.mutations independently, and a Set landing on another
 	// goroutine between validation and marshal (allowed by the concurrent-use
 	// contract) would ship an UNVALIDATED mutation to the commit proxy.
-	if err := tx.commit(ctx, muts); err != nil {
+	//
+	// RFC-090/093: detach ONLY the commit RPC + its commit_unknown_result
+	// idempotency barrier (commitDummyTransaction) from the caller ctx. The GRV
+	// above (ensureReadVersion, :1106) is deliberately left on the LIVE ctx
+	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
+	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
+	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
+	// caller-ctx cancel can neither yank an in-flight commit (already bounded by the
+	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
+	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
+	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
 		return err
 	}
 
