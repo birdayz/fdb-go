@@ -296,12 +296,15 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
+			// Java's remove branch never decodes the vector — it removes by primary key
+			// (graph.Delete keys on the PK) and only skips a null vectorBytes. So on
+			// delete: skip a truly absent/null vector, but for a PRESENT vector —
+			// decodable OR not — proceed to remove by PK. Decode-and-error belongs to
+			// the insert path alone; erroring here would make a record saved-unindexed
+			// by an older binary un-deletable, a Go-only divergence.
 			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr != nil {
-				return fmt.Errorf("vector index %q: decode vector for old record: %w", m.index.Name, verr)
-			}
-			if vector == nil {
-				continue
+			if verr == nil && vector == nil {
+				continue // absent/null vector — nothing was indexed, nothing to remove
 			}
 			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
 			if err != nil {
