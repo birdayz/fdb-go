@@ -21,7 +21,7 @@ type countKVCursor struct {
 	continuation  []byte
 	scanProps     ScanProperties
 
-	iterator     *fdb.RangeIterator
+	iterator     rangeIterator
 	closed       bool
 	returned     int
 	prefixLength int
@@ -147,6 +147,12 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 				&BytesContinuation{bytes: c.lastCont},
 			), nil
 		}
+		// Advance() returns false on exhaustion OR error — check Get() for the stored
+		// error so a transient transaction_too_old (1007) / timeout at the row-limit
+		// boundary surfaces instead of being read as end-of-data (silent row loss).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan at row-limit boundary: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
 			&EndContinuation{},
@@ -154,6 +160,11 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 	}
 
 	if !c.iterator.Advance() {
+		// Advance() returns false on exhaustion OR error — surface the stored Get()
+		// error rather than reporting SourceExhausted (silent row loss).
+		if _, err := c.iterator.Get(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan: %w", err)
+		}
 		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 	}
 

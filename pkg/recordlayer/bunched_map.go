@@ -732,7 +732,7 @@ func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit 
 type BunchedMapIterator struct {
 	serializer   *TextIndexBunchedSerializer
 	subspaceKey  []byte
-	rangeIter    *fdb.RangeIterator
+	rangeIter    rangeIterator
 	reverse      bool
 	limit        int
 	continuation []byte
@@ -831,6 +831,12 @@ func (it *BunchedMapIterator) advance() {
 
 		// Stream next KV from FDB.
 		if !it.rangeIter.Advance() {
+			// Advance()==false on exhaustion OR a transient FDB error (1007, timeout);
+			// capture the stored Get() error so Err() surfaces it instead of looking
+			// like clean end-of-data (silent scan truncation).
+			if _, err := it.rangeIter.Get(); err != nil {
+				it.iterErr = err
+			}
 			it.done = true
 			return
 		}

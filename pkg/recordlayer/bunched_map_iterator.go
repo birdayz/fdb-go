@@ -104,7 +104,7 @@ type BunchedMapMultiIterator struct {
 	callback   KVCallback // per-KV callback for byte tracking
 
 	// FDB streaming iterator
-	rangeIter *fdb.RangeIterator
+	rangeIter rangeIterator
 	iterErr   error // sticky error from Advance/Get
 
 	// Continuation state
@@ -235,10 +235,18 @@ func (it *BunchedMapMultiIterator) Next() *BunchedMapScanEntry {
 }
 
 // nextKV reads the next key-value from the FDB range iterator.
-// Returns (kv, true) on success, (zero, false) when exhausted or on error.
+// Returns (kv, true) on success, (zero, false) when exhausted or on error
+// (the error is recorded in iterErr and surfaced via Err()).
 // Fires the KV callback if set.
 func (it *BunchedMapMultiIterator) nextKV() (fdb.KeyValue, bool) {
 	if !it.rangeIter.Advance() {
+		// Advance()==false on exhaustion OR a transient FDB error (1007, timeout);
+		// capture the stored Get() error so Err() surfaces it instead of looking like
+		// clean end-of-data. This backs the live text-index scan (textCursor.Err()),
+		// where swallowing it would silently truncate the result set.
+		if _, err := it.rangeIter.Get(); err != nil {
+			it.iterErr = err
+		}
 		return fdb.KeyValue{}, false
 	}
 	kv, err := it.rangeIter.Get()
