@@ -39,6 +39,50 @@ func TestHNSW_PreloadLayer_SurfacesIteratorError(t *testing.T) {
 	}
 }
 
+// fakeRangeIteratorSeq returns nValid empty KVs (Advance()==true, Get()==nil) and
+// THEN Advance()==false with Get()==getErr — modeling a transient error landing
+// PART-WAY through a scan (rows already processed), so the post-loop Get() check must
+// still surface it. (The position-0 fake only proves the check fires on an empty scan.)
+type fakeRangeIteratorSeq struct {
+	remaining int
+	getErr    error
+	onValid   bool
+}
+
+func (f *fakeRangeIteratorSeq) Advance() bool {
+	if f.remaining > 0 {
+		f.remaining--
+		f.onValid = true
+		return true
+	}
+	f.onValid = false
+	return false
+}
+
+func (f *fakeRangeIteratorSeq) Get() (fdb.KeyValue, error) {
+	if f.onValid {
+		return fdb.KeyValue{}, nil
+	}
+	return fdb.KeyValue{}, f.getErr
+}
+
+func TestHNSW_PreloadLayer_SurfacesIteratorErrorAfterRows(t *testing.T) {
+	t.Parallel()
+	injErr := errors.New("injected transaction_too_old (1007) mid-scan")
+	s := &hnswStorage{
+		dataSubspace: subspace.Sub("hnsw_test").Sub(int64(0)),
+		cache:        make(map[string]*parsedNode),
+		scan: func(_ fdb.ReadTransaction, _ fdb.Range, _ fdb.RangeOptions) rangeIterator {
+			return &fakeRangeIteratorSeq{remaining: 2, getErr: injErr}
+		},
+	}
+	// The loop runs 2 iterations (empty KVs → skipped on parse), then Advance()==false
+	// with a stored error; the post-loop check must surface it, not return nil.
+	if err := s.preloadLayer(nil, 0); !errors.Is(err, injErr) {
+		t.Fatalf("preloadLayer must surface an error that lands AFTER some rows, got %v", err)
+	}
+}
+
 func TestHNSW_PreloadLayerInlining_SurfacesIteratorError(t *testing.T) {
 	t.Parallel()
 	injErr := errors.New("injected transaction_too_old (1007)")
