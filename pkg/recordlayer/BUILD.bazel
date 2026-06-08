@@ -175,6 +175,7 @@ go_test(
         "function_key_expression_test.go",
         "fuzz_test.go",
         "helpers_coverage_test.go",
+        "hnsw_iterator_error_test.go",
         "hnsw_stats_test.go",
         "index_bug_verify_test.go",
         "index_edge_cases_test.go",

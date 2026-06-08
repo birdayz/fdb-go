@@ -23,6 +23,7 @@ package recordlayer
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -409,7 +410,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	// changed or the node was inserted with a different M).
 	accessInfo, accessErr := g.storage.loadAccessInfo(tx)
 	if accessErr != nil {
-		return nil // empty graph, nothing to delete
+		if e := hnswFatal(accessErr); e != nil {
+			return e // transient read — abort/retry, don't treat as an empty graph
+		}
+		return nil // genuinely empty graph, nothing to delete
 	}
 	epLayer := accessInfo.layer
 
@@ -439,9 +443,19 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	// Resolve all compact-layer futures — FDB pipelines these reads into ~1 round-trip.
+	// A future error is a real I/O failure (a missing key surfaces as data==nil below,
+	// not an error) and must propagate so the tx retries rather than silently skipping a
+	// layer and committing an incomplete delete. Record the first error but keep draining
+	// the REMAINING futures before returning: leaving futures unresolved when the retry
+	// loop resets/reuses the transaction violates the FDB tx contract and leaks the
+	// pure-Go reply handles/timers.
+	var futureErr error
 	for _, f := range futures {
 		data, err := f.future.Get()
 		if err != nil {
+			if futureErr == nil {
+				futureErr = fmt.Errorf("hnsw delete: read layer %d: %w", f.layer, err)
+			}
 			continue
 		}
 		if data == nil {
@@ -454,10 +468,16 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		}
 		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
 	}
+	if futureErr != nil {
+		return futureErr
+	}
 
 	// Check existence at layer 0 (always compact, now served from cache).
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
 	if err != nil {
+		if e := hnswFatal(err); e != nil {
+			return e // transient read — abort/retry, don't treat as already-deleted
+		}
 		return nil // already deleted or doesn't exist
 	}
 
@@ -465,6 +485,9 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	for layer := 0; layer <= epLayer; layer++ {
 		_, neighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, primaryKey)
 		if loadErr != nil {
+			if e := hnswFatal(loadErr); e != nil {
+				return e // transient read error — abort and retry, don't skip the layer
+			}
 			continue // not present at this layer
 		}
 
@@ -489,7 +512,13 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		for layer := accessInfo.layer; layer >= 0 && newEntryPK == nil; layer-- {
 			// Find any node at this layer.
 			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayerDispatch(tx, layer)
-			if scanErr == nil && foundPK != nil {
+			// A transient scan error must abort the delete (so it retries) rather than
+			// be read as "layer empty" — otherwise we'd pick a wrong/no entry point and
+			// commit. A genuine empty layer (errHNSWNotPresent) is skipped to the next.
+			if e := hnswFatal(scanErr); e != nil {
+				return e
+			}
+			if foundPK != nil {
 				newEntryPK = foundPK
 				newEntryVecBytes = foundVec
 				newEntryLayer = layer
@@ -515,7 +544,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch int) ([]hnswSearchResult, error) {
 	accessInfo, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
-		return nil, nil // empty graph
+		if e := hnswFatal(err); e != nil {
+			return nil, e // transient read — propagate so the caller retries
+		}
+		return nil, nil // genuinely empty graph
 	}
 
 	// Apply transform to query vector so it's in the same coordinate system
@@ -577,6 +609,9 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 		changed = false
 		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, bestPK)
 		if err != nil {
+			if e := hnswFatal(err); e != nil {
+				return nil, nil, e
+			}
 			break // no data at this layer
 		}
 
@@ -585,6 +620,9 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 		batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, neighbors)
 		for _, r := range batchResults {
 			if r.err != nil {
+				if e := hnswFatal(r.err); e != nil {
+					return nil, nil, e
+				}
 				continue
 			}
 			dist := g.computeDistance(query, r.vecBytes)
@@ -668,6 +706,9 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		toFetch = toFetch[:0]
 		for _, el := range edgeLists {
 			if el.err != nil {
+				if e := hnswFatal(el.err); e != nil {
+					return nil, e
+				}
 				continue
 			}
 			for _, nbPK := range el.neighbors {
@@ -685,6 +726,9 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, toFetch)
 		for _, r := range batchResults {
 			if r.err != nil {
+				if e := hnswFatal(r.err); e != nil {
+					return nil, e
+				}
 				continue
 			}
 			dist := g.computeDistance(query, r.vecBytes)
@@ -805,6 +849,9 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	for _, c := range candidates {
 		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, c.pk)
 		if err != nil {
+			if e := hnswFatal(err); e != nil {
+				return nil, e
+			}
 			continue
 		}
 		for _, nbPK := range neighbors {
@@ -821,6 +868,9 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, toFetch)
 	for _, r := range batchResults {
 		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return nil, e
+			}
 			continue
 		}
 		dist := g.computeDistance(query, r.vecBytes)
@@ -837,6 +887,9 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 	batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, neighborPKs)
 	for _, r := range batchResults {
 		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return nil, e
+			}
 			continue
 		}
 		dist := g.computeDistance(nodeVec, r.vecBytes)
@@ -865,6 +918,9 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, deletedPK tuple.Tuple) error {
 	nbVecBytes, nbNeighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, neighborPK)
 	if err != nil {
+		if e := hnswFatal(err); e != nil {
+			return e // transient read error — abort/retry, don't treat as absent
+		}
 		return nil // neighbor doesn't exist
 	}
 
@@ -883,6 +939,9 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	candidateMap := make(map[string]tuple.Tuple)
 	for _, r := range filteredBatch {
 		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return e
+			}
 			continue
 		}
 		for _, candidate := range r.neighbors {
@@ -906,6 +965,9 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	var allCandidates []hnswCandidate
 	for _, r := range filteredBatch {
 		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return e
+			}
 			continue
 		}
 		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
@@ -940,6 +1002,9 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	newBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, newCandidatePKs)
 	for _, r := range newBatch {
 		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return e
+			}
 			continue
 		}
 		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
@@ -991,12 +1056,65 @@ type parsedNode struct {
 //
 //	Sub(0) — data: compact or inlining KVs
 //	Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
+//
+// errHNSWNotPresent marks a genuine "this node/layer is absent" result, as opposed
+// to a transient FDB failure (transaction_too_old, timeout) encountered while reading.
+// Graph callers MUST distinguish the two: an absent node is skipped (the graph simply
+// has no such edge), but a transient read error must propagate so the surrounding
+// transaction retries — treating it as "absent" would commit a partial/corrupt graph.
+// Wrap genuine not-found returns with this sentinel; leave real I/O errors unwrapped.
+var errHNSWNotPresent = errors.New("hnsw: node not present")
+
+// hnswFatal reports a load/scan error that the caller must NOT treat as a benign
+// absent node: it returns the error for a real I/O failure (transaction_too_old,
+// timeout, etc.) that must abort and retry the transaction, and nil when err is nil
+// or a genuine errHNSWNotPresent "absent" result (safe to skip). Callers use:
+//
+//	if e := hnswFatal(err); e != nil { return <zero...>, e }
+//	// ... then fall through to the existing skip/continue for the absent case.
+func hnswFatal(err error) error {
+	if err == nil || errors.Is(err, errHNSWNotPresent) {
+		return nil
+	}
+	return err
+}
+
 type hnswStorage struct {
 	dataSubspace   subspace.Subspace
 	accessSubspace subspace.Subspace
 	config         HNSWConfig
 	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
 	stats          *HNSWStats             // optional I/O counters (nil = no tracking)
+
+	// scan opens a range iterator for a layer scan. nil in production (uses the real
+	// tx.GetRange().Iterator() via scanIter); tests set it to inject a fake iterator so
+	// the Advance()/Get() error-surfacing paths are deterministically reachable without
+	// a live FDB transaction. The local *fdb.RangeIterator and a test fake both satisfy
+	// the rangeIterator seam (Advance/Get).
+	scan func(tx fdb.ReadTransaction, r fdb.Range, opts fdb.RangeOptions) rangeIterator
+
+	// get reads a single key. nil in production (uses the real tx.Get().Get() via
+	// getKey); tests set it to inject a point-read failure or a not-found so the
+	// transient-vs-absent handling of the single-key reads (access info, layer-0
+	// existence probe) is deterministically reachable without a live FDB transaction.
+	get func(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error)
+}
+
+// scanIter opens a range iterator, honoring the test seam (s.scan) when set and
+// otherwise using the real range read.
+func (s *hnswStorage) scanIter(tx fdb.ReadTransaction, r fdb.Range, opts fdb.RangeOptions) rangeIterator {
+	if s.scan != nil {
+		return s.scan(tx, r, opts)
+	}
+	return tx.GetRange(r, opts).Iterator()
+}
+
+// getKey reads a single key, honoring the test seam (s.get) when set.
+func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error) {
+	if s.get != nil {
+		return s.get(tx, key)
+	}
+	return tx.Get(key).Get()
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -1080,19 +1198,19 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	if cached, ok := s.cache[cacheKey]; ok {
 		hnswStatCacheHit(s.stats)
 		if cached == nil {
-			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
+			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 		}
 		return cached.vecBytes, cached.neighbors, nil
 	}
 
 	hnswStatGet(s.stats)
-	data, err := tx.Get(fdb.Key(key)).Get()
+	data, err := s.getKey(tx, fdb.Key(key))
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
 	}
 	if data == nil {
 		s.cache[cacheKey] = nil // cache negative result
-		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
+		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 	}
 
 	// Parse and cache the result.
@@ -1134,7 +1252,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 		if cached, ok := s.cache[cacheKey]; ok {
 			hnswStatCacheHit(s.stats)
 			if cached == nil {
-				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			} else {
 				results[i].vecBytes = cached.vecBytes
 				results[i].neighbors = cached.neighbors
@@ -1160,7 +1278,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 		}
 		if data == nil {
 			s.cache[p.key] = nil // cache negative result
-			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
 		vecBytes, neighbors, parseErr := parseNodeValue(data)
@@ -1213,7 +1331,7 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 		if cached, ok := s.cache[cacheKey]; ok {
 			hnswStatCacheHit(s.stats)
 			if cached == nil {
-				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			} else {
 				results[i].neighbors = cached.neighbors
 			}
@@ -1237,7 +1355,7 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 		}
 		if data == nil {
 			s.cache[p.cacheKey] = nil
-			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
 		vecBytes, neighbors, parseErr := parseNodeValue(data)
@@ -1263,7 +1381,7 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 	if err != nil {
 		return fmt.Errorf("hnsw: preload layer %d prefix range: %w", layer, err)
 	}
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
@@ -1278,6 +1396,12 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 			continue // skip unparseable entries
 		}
 		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+	}
+	// Advance()==false ends the loop on exhaustion OR a transient FDB error; check
+	// Get() for the stored error so a mid-scan 1007/timeout surfaces instead of
+	// silently leaving the layer cache PARTIALLY populated (a corrupt-graph hazard).
+	if _, err := iter.Get(); err != nil {
+		return fmt.Errorf("hnsw: preload layer %d scan: %w", layer, err)
 	}
 	return nil
 }
@@ -1306,7 +1430,10 @@ type hnswAccessInfo struct {
 // Wire format: Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
 func (s *hnswStorage) parseAccessInfo(data []byte) (*hnswAccessInfo, error) {
 	if data == nil {
-		return nil, fmt.Errorf("hnsw: no entry point")
+		// No access info written yet — a genuinely empty graph. Mark it absent (not
+		// fatal) so Delete/Search skip cleanly; a transient get error (handled by the
+		// caller before this) stays unwrapped and propagates. Corruption below is fatal.
+		return nil, fmt.Errorf("hnsw: no entry point: %w", errHNSWNotPresent)
 	}
 
 	t, unpackErr := fastUnpack(data)
@@ -1374,7 +1501,7 @@ func (a *hnswAccessInfo) hasTransform() bool {
 func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (*hnswAccessInfo, error) {
 	hnswStatGet(s.stats)
 	key := s.accessSubspace.Pack(tuple.Tuple{})
-	data, getErr := tx.Get(fdb.Key(key)).Get()
+	data, getErr := s.getKey(tx, fdb.Key(key))
 	if getErr != nil {
 		return nil, fmt.Errorf("hnsw: get access info: %w", getErr)
 	}
@@ -1418,7 +1545,7 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		return nil, nil, rangeErr
 	}
 
-	ri := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
 	if ri.Advance() {
 		kv, getErr := ri.Get()
 		if getErr != nil {
@@ -1454,7 +1581,12 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		return pk, vectorBytes, nil
 	}
 
-	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d", layer)
+	// Advance()==false: distinguish a transient FDB error from a genuinely empty
+	// layer, so a 1007/timeout isn't reported as the misleading "no nodes at layer".
+	if _, getErr := ri.Get(); getErr != nil {
+		return nil, nil, fmt.Errorf("hnsw: find any node at layer %d: %w", layer, getErr)
+	}
+	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d: %w", layer, errHNSWNotPresent)
 }
 
 // clearAll removes all HNSW graph data (data + access info).
@@ -1565,7 +1697,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	if cached, ok := s.cache[cacheKey]; ok {
 		hnswStatCacheHit(s.stats)
 		if cached == nil {
-			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
 		}
 		// If we have neighbors, return immediately. If neighbors is nil, this was
 		// a vector-only cache entry from an edge read — we need to fetch the actual
@@ -1583,7 +1715,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		return nil, nil, fmt.Errorf("hnsw: inlining prefix range layer %d: %w", layer, err)
 	}
 
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	var neighbors []tuple.Tuple
 	foundAnyKV := false
 
@@ -1629,11 +1761,16 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
 		}
 	}
+	// Surface a transient FDB error that ended the scan via Advance()==false, so an
+	// incomplete neighbor list isn't returned as a complete one (silent corruption).
+	if _, err := iter.Get(); err != nil {
+		return nil, nil, fmt.Errorf("hnsw: inlining scan layer %d: %w", layer, err)
+	}
 
 	if !foundAnyKV {
 		// No KVs at all — node truly doesn't exist at this layer.
 		s.cache[cacheKey] = nil
-		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
 	}
 
 	// Cache the full node. Preserve any existing vecBytes from a prior
@@ -1679,7 +1816,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 	nodeEdges := make(map[string][]edgeInfo) // source PK packed bytes → edges
 	nodePKs := make(map[string]tuple.Tuple)  // source PK packed bytes → source PK
 
-	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	iter := s.scanIter(tx, r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
@@ -1712,6 +1849,11 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 		sourceKey := string(sourcePK.Pack())
 		nodeEdges[sourceKey] = append(nodeEdges[sourceKey], edgeInfo{neighborPK: nbPK, vecBytes: nbVecBytes})
 		nodePKs[sourceKey] = sourcePK
+	}
+	// Surface a transient FDB error that ended the scan before populating the cache
+	// from the (otherwise partial) edge map — a silent partial cache corrupts the graph.
+	if _, err := iter.Get(); err != nil {
+		return fmt.Errorf("hnsw: preload inlining layer %d scan: %w", layer, err)
 	}
 
 	// Populate cache: one entry per source node with its neighbor list.
@@ -1749,7 +1891,7 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 	}
 
 	// Read just 1 KV to find any node.
-	ri := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
 	if ri.Advance() {
 		kv, getErr := ri.Get()
 		if getErr != nil {
@@ -1769,7 +1911,12 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 		}
 	}
 
-	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d", layer)
+	// Advance()==false: surface a transient FDB error rather than the misleading
+	// "no nodes at layer".
+	if _, getErr := ri.Get(); getErr != nil {
+		return nil, nil, fmt.Errorf("hnsw: find any node (inlining) at layer %d: %w", layer, getErr)
+	}
+	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d: %w", layer, errHNSWNotPresent)
 }
 
 // --- Dispatch methods ---
@@ -1810,7 +1957,7 @@ func (s *hnswStorage) loadNodeLayerBatchDispatch(tx fdb.ReadTransaction, layer i
 		compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
 		if cached, ok := s.cache[string(compactKey)]; ok {
 			if cached == nil {
-				results[i].err = fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
 			} else {
 				results[i].vecBytes = cached.vecBytes
 				results[i].neighbors = cached.neighbors
