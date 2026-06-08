@@ -70,6 +70,29 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
   `failAllPending` does a buffered non-blocking send on teardown; a deadline-free watch on a
   TCP-alive-but-stalled connection waits indefinitely. Lower severity (watches); audit.
 
+### Write-path / index-maintainer — hunt findings (verified against Java by FDB C++ review)
+The Concatenate-index panic (the CRITICAL one) is FIXED above. The rest were all run by FDB C++
+against Java — wire-compat is the hard line, so nothing was changed on unverified reasoning:
+- **[x] VECTOR insert: silent-skip of an undecodable non-null vector — FIXED.** A non-null but
+  undecodable vector (bad serialized bytes / non-numeric element) was saved UNINDEXED and silently
+  (`tupleToVector` returned nil → `if vector == nil { continue }`), so a vector search missed the
+  row. Java's `RealVector.fromBytes` throws and fails the write (FDB C++ confirmed). Fix:
+  `tupleToVector` now returns `([]float64, error)` — `(nil,nil)` for an absent/null vector (still
+  skipped, matches Java), an error for an undecodable non-null one (Update fails the write). Dead
+  `extractVector` removed. Pinned by `TestTupleToVector` (proven: pre-fix the undecodable case
+  returns `([], nil)` → unindexed; post-fix it errors).
+- **[~] float32 leaderboard negate — VERIFIED NOT A DIVERGENCE; do not change.** `negateScore`'s
+  `-float64(v)` matches Java exactly: `TupleHelpers.negate` Float/Double arm returns
+  `-number.doubleValue()` (always a `Double` → 0x21). Changing Go to `-v` (float32 → 0x20) would
+  *create* a cross-engine divergence. Closed.
+- **[~] VECTOR `hnsw.Insert` no dimension check — NOT a Java-parity gap; closed.** Neither Java's
+  `VectorIndexMaintainer`/`HNSW` validates `len(vector)==NumDimensions` on insert (only `Config`
+  checks `numDimensions>=1`); both surface a mismatch later via distance `Preconditions`. Go matches
+  Java on this axis. (Separate from the silent-skip above, which IS fixed.)
+- **[ ] SUM/MIN/MAX_EVER over a floating-point field silently truncates to int64**
+  (`atomic_index_helpers.go:209` `toInt64`). A SUM index on a DOUBLE field drops the fractional
+  part rather than erroring. Lower severity (uncommon config) — verify vs Java, then guard/document.
+
 ---
 
 ## P0 — Blockers (before any production use)

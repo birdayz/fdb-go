@@ -272,6 +272,7 @@ go_test(
         "unique_index_concurrent_test.go",
         "vec_math_test.go",
         "vector_index_test.go",
+        "vector_index_tuple_test.go",
         "version_bug_verify_test.go",
         "version_index_test.go",
         "version_range_test.go",

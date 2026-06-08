@@ -265,13 +265,15 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 // We accept non-KWV expressions for backwards compatibility with existing tests
 // that use Concat/Field directly as the root expression. This is more permissive
 // than Java but functionally equivalent for non-grouped vector indexes.
-func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix tuple.Tuple, vector []float64) {
+func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix tuple.Tuple, vector []float64, err error) {
 	if len(entry.value) > 0 {
 		// KeyWithValue index: key is prefix, value is vector.
-		return entry.key, tupleToVector(entry.value)
+		vec, verr := tupleToVector(entry.value)
+		return entry.key, vec, verr
 	}
 	// Non-KWV index: no prefix, entire key is the vector.
-	return nil, tupleToVector(entry.key)
+	vec, verr := tupleToVector(entry.key)
+	return nil, vec, verr
 }
 
 // Update handles insert/delete/update for the VECTOR index.
@@ -294,7 +296,10 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			prefix, vector := m.splitPrefixAndVector(entry)
+			prefix, vector, verr := m.splitPrefixAndVector(entry)
+			if verr != nil {
+				return fmt.Errorf("vector index %q: decode vector for old record: %w", m.index.Name, verr)
+			}
 			if vector == nil {
 				continue
 			}
@@ -316,7 +321,10 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			prefix, vector := m.splitPrefixAndVector(entry)
+			prefix, vector, verr := m.splitPrefixAndVector(entry)
+			if verr != nil {
+				return fmt.Errorf("vector index %q: decode vector for new record: %w", m.index.Name, verr)
+			}
 			if vector == nil {
 				continue
 			}
@@ -335,44 +343,45 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 	return nil
 }
 
-// extractVector extracts float64 vector from an index entry.
-// The vector is expected to be stored as the value portion of a KeyWithValue expression,
-// or as sequential float64/int64 elements in the entry key.
-func extractVector(entry indexEntry) []float64 {
-	// Try entry value first (KeyWithValue covering index).
-	if len(entry.value) > 0 {
-		return tupleToVector(entry.value)
-	}
-	// Fall back to entry key.
-	return tupleToVector(entry.key)
-}
-
-// tupleToVector converts tuple elements to a float64 vector.
-// Handles both raw bytes (from KeyWithValueExpression on a bytes field) and
-// numeric tuple elements (from expressions on int/float fields).
-func tupleToVector(t tuple.Tuple) []float64 {
+// tupleToVector converts tuple elements to a float64 vector. Returns:
+//   - (nil, nil)   for an absent/null vector — an empty tuple or a null component —
+//     which the caller skips (matches Java, which skips a null vector field);
+//   - (nil, error) for a NON-null but UNDECODABLE vector (bad serialized bytes,
+//     non-numeric element). Java's RealVector.fromBytes throws here and fails the
+//     write; Go previously returned nil → the maintainer silently skipped it,
+//     saving the record UNINDEXED (a vector search would miss the row). Surfacing
+//     the error makes the write fail, matching Java and avoiding silent index
+//     incompleteness.
+//   - (vec, nil)   for a valid vector.
+//
+// Handles both raw bytes (KeyWithValueExpression on a bytes field) and numeric
+// tuple elements (expressions on int/float fields).
+func tupleToVector(t tuple.Tuple) ([]float64, error) {
 	if len(t) == 0 {
-		return nil
+		return nil, nil // absent vector — skip
 	}
-	// If the tuple contains a single bytes element, treat it as a serialized vector.
-	// This is the common case for KeyWithValueExpression(field("vector_data"), 0)
-	// where vector_data is a bytes proto field.
+	// Single bytes element: a serialized vector (KeyWithValueExpression(field, 0)
+	// on a bytes proto field). A non-null but undecodable payload is an error.
 	if len(t) == 1 {
 		if b, ok := t[0].([]byte); ok {
 			vec, err := deserializeVector(b)
-			if err == nil {
-				return vec
+			if err != nil {
+				return nil, fmt.Errorf("vector index: undecodable serialized vector: %w", err)
 			}
+			return vec, nil
 		}
 	}
 	vec := make([]float64, 0, len(t))
 	for _, elem := range t {
 		switch v := elem.(type) {
+		case nil:
+			// A null component → treat the whole vector as absent (skip), not a
+			// partial/undefined vector. Matches Java's null-vector handling.
+			return nil, nil
 		case []byte:
-			// Deserialize bytes as a vector.
 			deserialized, err := deserializeVector(v)
 			if err != nil {
-				return nil
+				return nil, fmt.Errorf("vector index: undecodable serialized vector element: %w", err)
 			}
 			vec = append(vec, deserialized...)
 		case float64:
@@ -384,10 +393,10 @@ func tupleToVector(t tuple.Tuple) []float64 {
 		case int:
 			vec = append(vec, float64(v))
 		default:
-			return nil // non-numeric element
+			return nil, fmt.Errorf("vector index: non-numeric element %T in vector key", elem)
 		}
 	}
-	return vec
+	return vec, nil
 }
 
 // UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
