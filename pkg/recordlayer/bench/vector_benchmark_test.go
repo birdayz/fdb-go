@@ -11,6 +11,7 @@ import (
 	"runtime/pprof"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1256,6 +1257,158 @@ func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
 	dbConn, err := fdb.OpenDatabase(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("open disk-backed FDB: %v", err)
+	}
+	return recordlayer.NewFDBDatabase(dbConn)
+}
+
+// TestVectorIngestScaling measures whether ingestion scales horizontally across
+// independent shard graphs. Each shard is its own subspace (its own HNSW graph,
+// per-tx per-prefix write lock, own shared cache), so concurrent shard builders
+// run on separate transactions that don't contend or FDB-conflict. It builds the
+// same shards sequentially then concurrently and reports the speedup — the answer
+// to "the single-writer lock serializes one graph; shard to use all cores."
+//
+//	VECTOR_INGEST=1 [VECTOR_BENCH_SHARDS=8 VECTOR_BENCH_SIZE=3000] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorIngestScaling -v -timeout 30m
+//
+// TestVectorIngestSweep measures how ingestion throughput scales with the number
+// of concurrent shard builders. Each shard is an independent HNSW graph (its own
+// subspace, per-tx per-prefix write lock, own shared cache), so concurrent
+// builders run on separate transactions that don't contend or FDB-conflict. It
+// sweeps the builder count and reports aggregate vec/sec — the ceiling is where
+// the single-node FDB or the client cores saturate.
+//
+//	VECTOR_INGEST=1 [VECTOR_BENCH_SIZE=4000 VECTOR_BENCH_LEVELS=1,2,4,8,16,24] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorIngestSweep -v -timeout 60m
+func TestVectorIngestSweep(t *testing.T) {
+	if os.Getenv("VECTOR_INGEST") != "1" {
+		t.Skip("set VECTOR_INGEST=1 to run")
+	}
+	db := vectorBenchDB
+	procs := vecEnvInt("VECTOR_BENCH_PROCS", 1)
+	if procs > 1 {
+		db = vecMultiProcDB(t, procs)
+	} else {
+		ensureVectorBenchDB(t)
+		db = vectorBenchDB
+	}
+	perShard := vecEnvInt("VECTOR_BENCH_SIZE", 4000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	batch := vecEnvInt("VECTOR_BENCH_BATCH", 16)
+	cache := vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 200000)
+	t.Logf("FDB processes: %d", procs)
+	levels := []int{1, 2, 4, 8, 16, 24}
+	if v := os.Getenv("VECTOR_BENCH_LEVELS"); v != "" {
+		levels = nil
+		for _, s := range strings.Split(v, ",") {
+			if n, err := strconv.Atoi(s); err == nil {
+				levels = append(levels, n)
+			}
+		}
+	}
+	md, _ := vecBuildMetaData(dims, false)
+	ctx := context.Background()
+	t.Logf("Ingest sweep: %d vec/shard (%dD), batch=%d, cache=%d, cores=%d", perShard, dims, batch, cache, runtime.NumCPU())
+
+	buildShard := func(tag string) error {
+		ss := vecBenchSubspace(tag)
+		rng := rand.New(rand.NewSource(int64(len(tag)*7919 + 1)))
+		buf := make([][]float64, batch)
+		for start := 0; start < perShard; start += batch {
+			end := start + batch
+			if end > perShard {
+				end = perShard
+			}
+			for i := start; i < end; i++ {
+				buf[i-start] = vecRandomVector(rng, dims)
+			}
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := start; i < end; i++ {
+					if _, err := store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i % 1000)),
+						VectorData: serializeVector(buf[i-start]),
+					}); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	t.Logf("%-8s %-14s %-14s %-8s %-8s", "builders", "aggregate v/s", "per-shard v/s", "scale", "cliCPU")
+	var base float64
+	runID := 0
+	for _, c := range levels {
+		cpu0 := cpuSecondsSelf()
+		t0 := time.Now()
+		var wg sync.WaitGroup
+		errs := make(chan error, c)
+		for s := 0; s < c; s++ {
+			wg.Add(1)
+			runID++
+			go func(id int) {
+				defer wg.Done()
+				if err := buildShard(fmt.Sprintf("%s-r%d", t.Name(), id)); err != nil {
+					errs <- err
+				}
+			}(runID)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("builder error: %v", err)
+		}
+		el := time.Since(t0)
+		cores := (cpuSecondsSelf() - cpu0) / el.Seconds()
+		agg := float64(c*perShard) / el.Seconds()
+		if c == levels[0] {
+			base = agg / float64(c) // per-shard baseline
+		}
+		t.Logf("%-8d %-14.1f %-14.1f %-7.2fx %-7.1f", c, agg, agg/float64(c), (agg/float64(c))/base, cores)
+	}
+}
+
+// vecMultiProcDB spins a dedicated FDB container with N fdbserver processes, to
+// test whether more FDB commit/storage capacity lifts the concurrent-ingest
+// ceiling that one process imposes. Memory engine (fast, in-RAM). Terminated at
+// test end.
+func vecMultiProcDB(t *testing.T, procs int) *recordlayer.FDBDatabase {
+	t.Helper()
+	setupCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	container, err := foundationdbtc.Run(setupCtx, "",
+		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithProcessCount(procs),
+	)
+	if err != nil {
+		t.Fatalf("start %d-proc FDB: %v", procs, err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	clusterFile, err := container.ClusterFile(setupCtx)
+	if err != nil {
+		t.Fatalf("cluster file: %v", err)
+	}
+	tmpFile, err := os.CreateTemp("", "fdb_mproc_*.txt")
+	if err != nil {
+		t.Fatalf("temp file: %v", err)
+	}
+	if _, err := tmpFile.WriteString(clusterFile); err != nil {
+		t.Fatalf("write cluster file: %v", err)
+	}
+	tmpFile.Close()
+	fdb.MustAPIVersion(720)
+	dbConn, err := fdb.OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("open %d-proc FDB: %v", procs, err)
 	}
 	return recordlayer.NewFDBDatabase(dbConn)
 }

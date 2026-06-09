@@ -290,12 +290,13 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Acquire write lock on HNSW subspace — serialize graph mutations.
-	// Matches Java's VectorIndexMaintainer.updateIndexKeys() which acquires
-	// a write lock via context.doWithWriteLock(LockIdentifier).
-	lockKey := string(m.hnswSubspace.Bytes())
-	m.store.AcquireWriteLock(lockKey)
-	defer m.store.ReleaseWriteLock(lockKey)
+	// Each entry mutates exactly one per-prefix HNSW graph; serialize only that
+	// graph, matching Java, which takes doWithWriteLock(LockIdentifier(rtSubspace))
+	// where rtSubspace = indexSubspace.subspace(prefixKey) — a PER-PREFIX lock, not
+	// a whole-index one. (The lock lives on the per-transaction context, so it only
+	// orders mutations within a transaction; distinct prefix graphs never contend,
+	// and neither do distinct transactions.) Locking the whole index here was a
+	// Go-only over-serialization that blocked concurrent per-prefix builds.
 	if oldRecord != nil {
 		entries, err := m.evaluateIndex(oldRecord)
 		if err != nil {
@@ -316,9 +317,9 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if err != nil {
 				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
 			}
-			storage := m.getStorageForPrefix(prefix)
-			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Delete(m.tx, trimmedPK); err != nil {
+			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
+				return graph.Delete(m.tx, trimmedPK)
+			}); err != nil {
 				return err
 			}
 		}
@@ -341,15 +342,27 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if err != nil {
 				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
 			}
-			storage := m.getStorageForPrefix(prefix)
-			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Insert(m.tx, trimmedPK, vector); err != nil {
+			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
+				return graph.Insert(m.tx, trimmedPK, vector)
+			}); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+// withPrefixWriteLock runs fn against the prefix's HNSW graph while holding the
+// per-prefix write lock — the same scope as Java's
+// doWithWriteLock(LockIdentifier(indexSubspace.subspace(prefixKey))). For an
+// unprefixed index this is the index subspace itself.
+func (m *vectorIndexMaintainer) withPrefixWriteLock(prefix tuple.Tuple, fn func(*hnswGraph) error) error {
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
+	storage := m.getStorageForPrefix(prefix)
+	return fn(NewHNSWGraph(storage, m.hnswConfig))
 }
 
 // tupleToVector converts tuple elements to a float64 vector. Returns:
