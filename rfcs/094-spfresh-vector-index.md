@@ -1,11 +1,16 @@
 # RFC-094 — SPFresh: an FDB-native vector index (two-level centroid routing + posting lists, incremental rebalancing)
 
-**Status:** Rev 4. Review history: rev 1 NAK'd 4/4 (FDB C++ author, Torvalds,
-LanceDB founder, codex); rev 2 closed the lost-vector hole (SEAL lifecycle),
-re-NAK'd; rev 3 added two-level routing/build, single-tx splits, HDR cutover —
-round 3 returned LanceDB ACK, FDB author NAK-narrow (spec text), Torvalds NAK
-(build state machine, cold start, tail math), codex 6 findings. Rev 4 incorporates
-everything; verdicts and dispositions on PR #279.
+**Status:** Rev 5. Review history: rev 1 NAK'd 4/4 (FDB C++ author, Torvalds,
+LanceDB founder, codex); rev 2 closed the lost-vector hole (SEAL lifecycle);
+rev 3 added two-level routing/build, single-tx splits, HDR cutover; rev 4 added
+coarse splits, the build state machine, and the α/tail fixes — round 4 returned
+Torvalds ACK (editorial conditions), LanceDB ACK (non-blocking), FDB author
+NAK-narrow (two confirmed races), codex 6 findings. Rev 5 incorporates all of
+round 4: the trigger-probe real read + the SEALED-resumes zombie restriction, the
+wave-B straggler fence direction fix, the generation-prefixed layout (abort GC +
+retrain swap), HDR cell-qualified children + refresh-on-absent, counter kind
+tags, raw vector encoding, the coarse-split starvation guard, and the corrected
+build formulas/I/O. Verdicts and dispositions on PR #279.
 
 **Scope:** A second, Go-only vector index type built *for* FoundationDB's
 performance model. **Design target: consistently good performance across 1M–10M
@@ -54,9 +59,9 @@ cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured
 ```
                      CLIENT (stateless; per-process two-level cache)
   ┌────────────────────────────────────────────────────────────────────┐
-  │ L1: coarse cells (~2k @10M, fp16, ~3 MB)  — always resident         │
+  │ L1: coarse cells (~2.5k @10M, fp16, ~3.8 MB) — always resident      │
   │ L2: fine centroids per cell (~48/cell, fp16, ≤77 KB/cell) — LRU;    │
-  │     miss = one range read (one reply by construction)               │
+  │     miss = one range read (one reply at target fill; ≤2 near cellMax)│
   │ background refresh timer (1 s) via CHANGELOG; horizon ⇒ full reload │
   └──────────────┬─────────────────────────────────────────────────────┘
                  │ route: scan L1 → probe w=32 cells → ~1.5k fine
@@ -104,20 +109,35 @@ cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured
 All under the index's own subspace `S` (new index type ⇒ no Java collision).
 Grouping prefixes compose in front as for the HNSW index.
 
+**Generation prefix:** every subspace below except META lives under
+`S/(generation)`, an int chosen at build/retrain start and recorded in META;
+the `Readable` flip atomically updates META's current generation. This is what
+makes both stories clean: an **abandoned build** (never reached Readable) is
+GC'd by range-clearing its entire generation — not just staging; rev 4 left
+partial COARSE/CENTROIDS/POSTINGS/MEMBERSHIP/SIDECAR/COUNTERS rows visible to
+the next build (codex r4 #5) — and a **retrain** (§11) builds generation g+1
+and swaps, then range-clears g. Readers/writers resolve the generation once per
+cache refresh.
+
+**Vector encoding:** vector fields in CENTROIDS/COARSE/STAGING/SIDECAR values
+are stored as **raw fixed-width suffixes**, not tuple-escaped bytes elements —
+tuple encoding escapes 0x00 (→ 0x00FF) and fp16 vectors are zero-heavy, which
+would silently eat the one-reply byte budgets (FDB-author r4 #5).
+
 | Subspace | Key | Value | Notes |
 |---|---|---|---|
 | `S/0` CENTROIDS | `(cellID, fineID)` | `Tuple{fp16 vector, state, epoch, [childA, childB]}` | **fp16 on disk** (fp32 rows made a cell ~184 KB = 3 replies; fp16 keeps encode/score consistent with the cache — codex r3 #4); state: ACTIVE / SEALED / FORWARD / DEAD |
 | | `(cellID, HDR)` | `FORWARD{cellIDs}` | coarse-split marker for stale L2 fetchers |
 | `S/0'` COARSE | `(cellID)` | `Tuple{fp16 vector, state}` | state: ACTIVE / FORWARD(cells) |
 | `S/1` POSTINGS | `(fineID, pk)` | `Tuple{rabitqResidualCode}` | the range is the posting; **independent of cellID** — coarse restructure moves no data |
-| | `(fineID, HDR)` | `FORWARD{childIDs}` | fine-split marker. **HDR = tuple null (0x00)**: sorts before every legal pk because nulls are rejected in primary-key components — the spec leans on that invariant explicitly (FDB-author r3 #1). HDR occupies one row of the fetch cap: `Limit = 2×Lmax + 1` |
+| | `(fineID, HDR)` | `FORWARD{cellID, childIDs}` | fine-split marker. **HDR = tuple null (0x00)**: sorts before every legal pk because nulls are rejected in primary-key components — the spec leans on that invariant explicitly (FDB-author r3 #1). HDR occupies one row of the fetch cap: `Limit = 2×Lmax + 1`. The payload carries the children's **cellID** — a stale client may have cached this fine centroid under a cell it has since left via a coarse split, so child keys must never be derived from the routed cell (codex r4 #3); if the cell-qualified point reads still return absent (deeper staleness), force a synchronous cache refresh and re-route |
 | `S/2` MEMBERSHIP | `(pk)` | `Tuple{fineID...}` | authoritative copy-set |
-| `S/3` COUNTERS | `(fineID)` or `(cellID)` | int64 LE | atomic ADD; **advisory** — reconciled exactly at split/merge; build writes via ADD (commutes across cross-cell writers; commit_unknown drift is within the advisory tolerance and self-corrects at first reconciliation — codex r3 #6) |
+| `S/3` COUNTERS | `(FINE, fineID)` / `(CELL, cellID)` | int64 LE | **kind-tagged** — fineIDs and cellIDs come from the same block allocator but the two counter families must never alias (codex r4 #6). Atomic ADD; **advisory** — reconciled exactly at split/merge; build writes via ADD (commutes across cross-cell writers; commit_unknown drift self-corrects at first reconciliation) |
 | `S/4` CHANGELOG | `(versionstamp+uv)` | `Tuple{op, ids…}` | distinct 2-byte user-versions per tx. **Horizon advancement:** the rebalancer periodically sets META horizon = now − maxStaleness (default 10 min) and prunes older entries; GC of FORWARD markers keys off it |
-| `S/5` TASKS | `(kind, id)` | `Tuple{owner, leaseDeadline, payload}` | deterministic keys; kinds: split, merge, csplit, cellfin (build). **Trigger probes snapshot-read the row first and only `Set` when absent** — a blind Set would reset a live claim's lease and livelock a hot split (codex r3 #5). **Generic zombie rule:** any claimer that finds its target not ACTIVE deletes the task row and no-ops — covers stale `(merge,c)` surviving a split and vice versa (FDB-author r3 #2); pinned test |
+| `S/5` TASKS | `(kind, id)` | `Tuple{owner, leaseDeadline, payload}` | deterministic keys; kinds: split, merge, csplit, cellfin (build). **Trigger probes take a REAL read of the row and `Set` only when absent** — rev 4's snapshot-read probe was a confirmed race: a claim committing between the probe's GRV and its commit was invisible and the blind Set clobbered owner/lease/childIDs; worst case it landed between SEAL and SPLIT, lost the childIDs, and the old zombie rule then deleted the task — a permanently SEALED centroid (FDB-author r4 #3, codex r4 #2). The real read costs one point conflict range on the rare over-threshold path only. **Zombie rule (restricted):** a claimer that finds its target FORWARD / DEAD / absent deletes the task row and no-ops; a **SEALED target is an in-flight split to RESUME** (childIDs are in the task row) — never deleted. Pinned tests for both |
 | `S/6` META | `(key)` | misc | config echo, ID block allocator (2¹⁶/claim), horizon, RaBitQ transform, build state |
 | `S/7` SIDECAR | `(pk)` | fp16 vector | re-rank source |
-| `S/8` STAGING | `(cellID, pk)` | fp16 vector | **build-only** (now a first-class subspace with a GC story — Torvalds r3 #1): cleared per cell at finalization; an abandoned build (META build-epoch superseded) is range-cleared by the rebalancer |
+| `S/8` STAGING | `(cellID, pk)` | fp16 vector | **build-only**: cleared per cell at finalization; abandoned builds are handled by generation GC (the whole superseded generation is range-cleared — see the generation-prefix note above) |
 
 **Centroid IDs:** block-allocated (2¹⁶ per claimer, one real RMW per block). IDs
 never reused. Fine centroids keep their `fineID` for life; their *cell* can change
@@ -147,12 +167,13 @@ CPU  L1 scan (2.5k × fp16) → w = 32 cells (rev 3's w=16 probed 0.78% of cells
 RT1  k_c parallel GetRange(POSTINGS/(fineID,*)), snapshot, Limit = 2×Lmax+1
      (fetch cap: an oversized posting degrades THIS query boundedly + metric).
      HDR FORWARD row (stale cache; split landed inside our refresh window):
-     point-read children CENTROIDS rows — children are in the SAME cell as the
-     parent by construction (§6), so the stale client derives their keys from
-     the cellID it routed through (spelled out per FDB-author r3 #1) — then fetch
-     their postings: +2 RT, bounded. Chain depth > 1 (child split again within
-     the window): forced synchronous cache refresh, then re-route — depth is
-     bounded at 2 hops by spec, not by luck (Torvalds r3 minor).
+     point-read the children's CENTROIDS rows **using the cellID carried in the
+     HDR payload — never the cell the client routed through** (the parent may
+     itself have moved cells via a coarse split since the client cached it;
+     deriving from the routed cell silently dropped the posting — codex r4 #3) —
+     then fetch their postings: +2 RT, bounded. Absent even at the HDR's cell, or
+     chain depth > 1 (child split again within the window): forced synchronous
+     cache refresh, then re-route — bounded at 2 hops by spec (Torvalds r3).
      At peak ingest (10k inserts/s ⇒ ~78 splits/s across ~118k centroids),
      P(query touches ≥1 forwarded posting) ≈ k_c·splits/s·window/nlist ≈ 6 %;
      0.6 % at 1k inserts/s; linear in the refresh interval (LanceDB r3 #3).
@@ -189,8 +210,9 @@ as the HNSW scan).
      from this same-tx read**, counter −1s.
    - blind-write `POSTINGS/(c_i, pk)`, `SIDECAR/pk`, `MEMBERSHIP/pk`,
      `Add(COUNTERS/c_i, +1)`.
-   - sampled probe (1/8): snapshot-read counter; > Lmax ⇒ snapshot-read
-     `TASKS/(split, c_i)` and `Set` **only if absent**. Hard ceiling 4×Lmax ⇒
+   - sampled probe (1/8): snapshot-read counter; > Lmax ⇒ **REAL-read**
+     `TASKS/(split, c_i)` and `Set` only if absent (the conflict range is the
+     point of the read — §3 TASKS row). Hard ceiling 4×Lmax ⇒
      inline split: **after this insert tx commits**, the writer claims the same
      task row and runs the identical §6 lifecycle synchronously in its own
      transactions (claiming inside the insert tx would start the lease before
@@ -212,8 +234,11 @@ serialize transactionally; leases expire and are reclaimable.
 is validated against tx limits; the 4×Lmax ceiling worst case is ~225 KB read /
 ~450 KB written):
 
-1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (not ACTIVE ⇒
-   zombie rule: delete task, no-op); child IDs from the claimer's block; write
+1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (FORWARD /
+   DEAD ⇒ zombie rule: delete task, no-op; SEALED with own childIDs ⇒ resume at
+   step 2; **absent at this cell** ⇒ the row moved in a coarse split — delete the
+   task and let the next probe recreate it under the new cellID); child IDs from
+   the claimer's block; write
    SEALED + childIDs into the task row. `commit_unknown` retry: SEALED + own
    task row carrying these IDs ⇒ proceed. Fencing sound both directions
    (FDB-author r2: straggler insert's real state read aborts at the resolver;
@@ -258,12 +283,20 @@ fine splits/merges) > cellMax = 96, probed by the fine-split tx (Set-if-absent
   coarse split's real reads of every row mean a racing fine SEAL aborts one of
   the two at the resolver — whichever loses retries. No cross-lifecycle window.
 - 2-means over the fine centroid *vectors*; allocate two cellIDs; write two
-  COARSE rows (ACTIVE) + fine-count counters; rewrite the fine CENTROIDS rows
-  under their new cells (fineID, state, epoch preserved); write
+  COARSE rows (ACTIVE) — **their routing vectors are the fresh 2-means centers,
+  i.e. the coarse vector is recomputed at every cell split by construction**
+  (made explicit per LanceDB r4); fine-count counters; rewrite the fine
+  CENTROIDS rows under their new cells (fineID, state, epoch preserved); write
   `CENTROIDS/(oldCell, HDR) = FORWARD(cells)` for stale L2 fetchers; flip
   `COARSE/(oldCell)` → FORWARD; changelog; clear task.
 - Inserts need no fence (§2 table): fineIDs are stable; a state read against a
   moved row sees absent and re-routes.
+- **Starvation guard** (LanceDB r4): the defer-on-SEALED rule could let a
+  hotspot cell starve its own coarse split — continuous fine splits keep some
+  centroid SEALED under exactly the load that needs the cell split. After
+  `csplitDeferLimit = 8` consecutive deferrals, fine-split task issuance for
+  that cell is paused (probes skip the Set) until the coarse split completes;
+  metered.
 
 Cold start therefore: one cell, one fine centroid (first vector); fine splits
 grow centroids; coarse splits grow cells; the shape converges to the bulk-built
@@ -286,16 +319,21 @@ cells — Torvalds r3 #1) and staged RaBitQ codes that cannot train k-means or
 re-encode residuals (codex r3 #2). Rev 4:
 
 1. **Sample pass:** reservoir-sample 256k vectors.
-2. **Coarse k-means:** K₀ = N/avgFill/cellTarget (≈ 2.5k @10M) on the sample
-   (≥ 100 samples/centroid ✓). Write COARSE rows + transform.
+2. **Coarse k-means:** K₀ = **N·r / (avgFill · cellTarget)** ≈ 20M/(170·48) ≈
+   2.45k @10M on the sample (≥ 100 samples/centroid ✓) — `avgFill` counts
+   posting *entries* (replicated), `N` counts source vectors, so r must appear
+   or the build mints half the cells and immediately violates Lmax (Torvalds
+   r4 #2, codex r4 #1). Write COARSE rows + transform.
 3. **Coarse assignment pass** (OnlineIndexer batches, resumable by record range):
    stream records; write `STAGING/(cellID, pk) = fp16(v)` — **full vectors**,
    because pass 4 must train k-means and re-encode residuals (lossy codes can't;
    staging is 15 GB, not rev 3's understated 4.4 GB) — plus `SIDECAR/pk`.
 4. **Per-cell finalization — wave A (centroids):** one deterministic
-   `TASKS/(cellfin, cellID)` row per cell, lease-claimed like any task. Per cell:
-   range-read staging (~5k × 1.6 KB ≈ 8 MB → multiple replies, fine — build path,
-   off-query); k-means to pop/avgFill fine centroids (~86 full members each);
+   `TASKS/(cellfin, cellID)` row per cell, lease-claimed like any task. Per cell
+   (pop ≈ N/K₀ ≈ 4.1k staged vectors): range-read staging (~4.1k × 1.6 KB ≈
+   6.5 MB → multiple replies, fine — build path, off-query); k-means to
+   **pop·r/avgFill ≈ 48** fine centroids (= cellTarget by construction;
+   ~85 full members each);
    **fold sub-Lmin clusters into nearest siblings before writing** (or build
    completion dumps thousands of merge tasks — LanceDB r3 #2); write fine
    CENTROIDS rows only. Idempotent re-run: rewriting centroids for an
@@ -306,11 +344,19 @@ re-encode residuals (codex r3 #2). Rev 4:
    counters resolves the cross-cell counter race — codex r3 #6): assign each
    staged vector (closure across neighbor cells' centroids via the now-complete
    table); write final POSTINGS + MEMBERSHIP; `Add` counters; clear that cell's
-   staging range **in the same tx as its last batch** (REAL-read of the staging
-   range so any straggling foreground staging write conflicts the finalizer —
-   the seal pattern). DONE per cell.
-6. Flip `Readable`. Abandoned builds (superseded META build epoch): rebalancer
-   range-clears STAGING and orphaned cellfin tasks.
+   staging range in the same tx as its last batch, and write the cell's DONE
+   state into its cellfin row. **The fence direction lives on the straggler,
+   not the finalizer** (rev 4 had it backwards — only the committer's reads are
+   checked, so a finalizer-side read cannot stop a later blind staging write
+   from landing in the cleared range: an orphaned vector, the rev-1 hole reborn
+   in the build path; FDB-author r4 #4): a foreground insert staging into an
+   unfinalized cell takes a **REAL read of that cell's cellfin row** — DONE (or
+   the row appearing mid-flight) aborts the straggler, which retries and routes
+   to the live path. The finalizer's own staging range read still serializes it
+   against stragglers that committed first (it re-runs including them).
+6. Flip `Readable` (atomically updating META's current generation). Abandoned
+   builds: the entire superseded generation is range-cleared (§3) — staging,
+   partial centroids, postings, everything.
 
 **Build/foreground interleaving (declared — FDB-author r3 #3):** in 094.1 the
 build runs with the index in `WriteOnly` but the *application contract* is
@@ -323,10 +369,13 @@ fine split serializes appends.
 
 **Derived cost, 10M × 768D:** coarse k-means ≈ 1 min; assignment pass ≈ 3 min
 CPU + ~50k batch txs writing 15 GB staging + 15 GB sidecar ≈ 40–60 min at 8-way;
-wave A ≈ 2.5k cells × (8 MB read + 75 KB written) ≈ 20 GB read ≈ 15–25 min;
-wave B ≈ read 15 GB staging + write 4.4 GB postings ≈ 20–30 min. **Total ≈
-1.5–2.5 h wall, I/O-bound** (~55 GB total I/O — stated, not hidden). HNSW
-extrapolates to ~12 days.
+wave A reads the 15 GB staging once (2.45k cells × ~6.5 MB) + writes ~190 MB of
+centroids ≈ 15–25 min; wave B reads staging again (15 GB) + writes 4.4 GB
+postings ≈ 20–30 min. **Total ≈ 1.5–2.5 h wall, I/O-bound; ~65 GB total I/O**
+(30 GB written, 30 GB re-read, postings/centroids — each term above, summed
+honestly per Torvalds r4 #3). **Transient disk high-water ≈ 35 GB** (staging +
+sidecar coexist until wave B clears staging — LanceDB r4). HNSW extrapolates to
+~12 days.
 
 ## 9. Performance targets (derived; validate in 094.1/094.5)
 
@@ -363,6 +412,9 @@ fine/coarse counts + state distribution; fine-per-cell p99 (coarse-split health)
 L2 miss rate; cache staleness + full reloads; task age + lease takeovers;
 seal-conflict rate; HDR-forward encounters (expected ≈ 6 % of queries at peak
 ingest, §4); fetch-cap overage; inline-split count (≈ 0 with a live rebalancer);
+coarse-split deferrals + starvation-guard activations; **coarse drift gauge**
+‖COARSE vector − mean(fine vectors)‖ p99 (cells that stop splitting are exactly
+the ones nobody recenters — this is the tripwire before retrain; LanceDB r4);
 build wave progress + staging bytes; **online recall sampler**. Permanent
 distribution drift ⇒ **retrain** (new generation under a fresh META epoch via §8,
 atomic swap; 094.5) — needed for drift only, never for growth (§6b).
@@ -384,9 +436,14 @@ atomic swap; 094.5) — needed for drift only, never for growth (§6b).
    inline split with writer killed between SEAL and SPLIT ⇒ lease recovery;
    **coarse-split-vs-fine-SEAL both orders (the §6b exclusion rule)**;
    insert-state-read-vs-coarse-move (absent ⇒ re-route); zombie task rows
-   (stale merge task after split, stale split task after merge ⇒ deleted);
-   trigger probe never resets a live claim; GC drain-not-clear; build wave B
-   straggler-staging-write conflicts the finalizer.
+   (stale merge task after split ⇒ deleted; **SEALED target ⇒ resumed, never
+   deleted**); **trigger probe vs concurrent claim — the probe's real read
+   makes the resolver order them; a clobber is unrepresentable** (the rev-4
+   race, pinned); **straggler staging write vs wave-B DONE — the straggler's
+   real cellfin read aborts it post-finalization; no orphaned staging entry**
+   (the rev-4 fence-direction bug, pinned); stale-cell HDR forward (parent
+   moved cells, then split — children found via the HDR's cellID, codex r4
+   #3); GC drain-not-clear.
 4. **Concurrency stress:** N writers — conflict *metrics*: zero insert-vs-insert
    1020s; insert-vs-split bounded by split count; rebalancer + coarse splits
    concurrent with writers/readers.
@@ -404,9 +461,12 @@ atomic swap; 094.5) — needed for drift only, never for growth (§6b).
    query path (two-level routing, filtered, crossover) + real-embedding recall
    benchmark + p99 burst measurement. Build-then-write contract; read-only after
    build, enforced and stated.
-2. **094.2** Foreground writes (fencing, sidecar, counters, Set-if-absent
-   triggers, build/foreground staging interleaving) + N-writer conflict-metrics
-   stress + update/delete-vs-split pinned interleavings (manual split trigger).
+2. **094.2** Foreground writes (fencing, sidecar, counters, real-read triggers,
+   build/foreground staging interleaving) + N-writer conflict-metrics stress.
+   Carries the §6 SEAL/SPLIT transaction *primitives* (invoked manually from
+   tests — no rebalancer, no triggers firing) so the update/delete-vs-split and
+   probe-vs-claim interleavings are pinned here; the autonomous lifecycle
+   (claims, leases, NPA, merges, coarse splits) is 094.3 (Torvalds r4 #4).
 3. **094.3** Rebalancer: fine SEAL/SPLIT/FORWARD + HDR + NPA + merge + cooldown +
    **coarse splits (§6b)** + GC-drain + lease recovery + inline split + zombie
    rules + chaos + the full pinned interleaving suite + cold-start-to-1M e2e.
