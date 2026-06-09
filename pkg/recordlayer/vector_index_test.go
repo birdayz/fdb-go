@@ -1037,6 +1037,62 @@ var _ = Describe("HNSW Inlining Storage", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("cold insert reaching a lonely inlining entry layer succeeds (Java: empty fetch = empty node)", func() {
+		// P4 regression (codex finding #4 — confirmed real). Java's InliningStorageAdapter
+		// cannot distinguish "node with no neighbors" from "node absent" (its Javadoc says
+		// so, InliningStorageAdapter.java:94-95); fetchNodeInternal returns a node with an
+		// EMPTY neighbor list for an empty range, never an error. Go returned
+		// errHNSWNotPresent, which the insert reverse-connection loop propagated raw:
+		// a COLD transaction (empty per-tx cache) inserting a node whose level reaches a
+		// lonely entry point's inlining layer selects that entry as a neighbor
+		// (searchLayerMulti pre-seeds the entry into its results), loads its empty edge
+		// range for the reverse edge, and failed with "node not found at layer N
+		// (inlining)". Same-tx inserts were saved by the cache (saveNodeLayerInlining
+		// caches empty-but-present), which is why only the cross-tx case broke.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-insert")
+
+		// Two PKs whose deterministic level reaches an inlining layer (>= 1).
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 2; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Tx 1: first node becomes the entry point, lonely (no neighbors → no KVs) at
+		// every inlining layer it occupies.
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, warmGraph.Insert(rtx.Transaction(), pks[0], []float64{1, 1})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Tx 2, COLD cache (fresh storage): the second insert reaches the lonely layer,
+		// selects the entry as its neighbor, and must add the reverse edge — not fail.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed(),
+				"cold insert reaching a lonely inlining entry layer must not fail (empty fetch = empty node)")
+			// Both nodes retrievable afterwards.
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 2, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert 5 nodes, kNN k=3 returns 3 closest (inlining)", func() {
 		graph := makeInliningGraph(2)
 

@@ -168,8 +168,11 @@ func TestHNSW_DeleteRepair_PropagatesScanError(t *testing.T) {
 }
 
 // TestHNSW_DeleteRepair_SkipsAbsentNeighbor is the companion: a genuinely-absent
-// neighbor (clean empty scan → errHNSWNotPresent) is still skipped (returns nil, empty
-// candidate set), so the fix doesn't turn a normal "neighbor already gone" into a failure.
+// neighbor is still skipped (returns nil, empty candidate set), so the fix doesn't turn
+// a normal "neighbor already gone" into a failure. Under the Java inlining contract a
+// clean empty scan returns an empty-neighbor node (not an error); the absent candidate
+// is then filtered because its vector is unresolvable (nothing cached at this layer or
+// layer 0) — same observable outcome, Java's mechanism.
 func TestHNSW_DeleteRepair_SkipsAbsentNeighbor(t *testing.T) {
 	t.Parallel()
 	s := &hnswStorage{

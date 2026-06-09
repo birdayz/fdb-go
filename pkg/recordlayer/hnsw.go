@@ -2190,11 +2190,12 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 	// makes a Java reader sharing the cluster throw — a wire-format break.
 	//
 	// The lonely-node case (an entry point at layers above all other nodes) needs no
-	// sentinel: the per-tx cache below records EMPTY (non-nil) neighbors so a same-tx read
-	// returns "exists, no neighbors"; cross-tx the descent tolerates the empty range —
-	// searchLayerMulti pre-seeds the entry into its result set, searchLayerGreedy treats an
-	// absent neighbor list as "no neighbors" and stops. Node existence is determined by the
-	// layer-0 compact record / topLayer(pk), exactly as in Java — never by an inlining edge.
+	// sentinel: loadNodeLayerInlining returns a node with an EMPTY neighbor list for an
+	// empty range (Java's InliningStorageAdapter contract — absent and lonely are
+	// indistinguishable at an inlining layer), so both same-tx (cache) and cross-tx
+	// (range read) readers see "exists, no neighbors". Node existence is determined by
+	// the layer-0 compact record / topLayer(pk), exactly as in Java — never by an
+	// inlining edge.
 
 	// Write each edge with the neighbor's vector.
 	for _, nbPK := range neighbors {
@@ -2263,7 +2264,10 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	if cached, ok := s.cacheLookup(cacheKey); ok {
 		hnswStatCacheHit(s.stats)
 		if cached == nil {
-			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
+			// Deleted in this tx (deleteNodeLayerInlining caches nil). Java's RYW range
+			// read sees the cleared range and returns a node with an EMPTY neighbor list —
+			// inlining storage cannot distinguish absent from lonely (see below).
+			return nil, [][]byte{}, nil
 		}
 		// If we have neighbors, return immediately. If neighbors is nil, this was
 		// a vector-only cache entry from an edge read — we need to fetch the actual
@@ -2336,9 +2340,19 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	}
 
 	if !foundAnyKV {
-		// No KVs at all — node truly doesn't exist at this layer.
-		s.cache[cacheKey] = nil
-		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
+		// Empty range — return a node with an EMPTY neighbor list, never an error.
+		// This is Java's InliningStorageAdapter contract: inlining storage cannot
+		// distinguish a node with no neighbors from an absent one (its Javadoc says so,
+		// InliningStorageAdapter.java:94-95), and fetchNodeInternal/nodeFromRaw always
+		// build a node from the (possibly empty) KV list (InliningStorageAdapter.java:
+		// 106-118, 139-156). Node existence is determined by the layer-0 compact record,
+		// never by an inlining edge. Returning errHNSWNotPresent here broke cold inserts:
+		// a fresh tx whose insert level reaches a lonely entry point's layer selects that
+		// entry as a neighbor (searchLayerMulti pre-seeds the entry into its results) and
+		// the reverse-connection load propagated the error as fatal.
+		empty := &parsedNode{vecBytes: nil, neighbors: [][]byte{}}
+		s.cache[cacheKey] = empty
+		return nil, empty.neighbors, nil
 	}
 
 	// Cache the full node. Preserve any existing vecBytes from a prior
@@ -2528,7 +2542,9 @@ func (s *hnswStorage) loadNodeLayerBatchDispatch(tx fdb.ReadTransaction, layer i
 		compactKey = append(compactKey, span...)
 		if cached, ok := s.cache[string(compactKey)]; ok {
 			if cached == nil {
-				results[i].err = fmt.Errorf("hnsw: node not found at layer %d (inlining): %w", layer, errHNSWNotPresent)
+				// Deleted in this tx — Java's inlining fetch returns an empty node
+				// (see loadNodeLayerInlining).
+				results[i].neighbors = [][]byte{}
 			} else {
 				results[i].vecBytes = cached.vecBytes
 				results[i].neighbors = cached.neighbors
