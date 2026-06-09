@@ -1251,6 +1251,59 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		return NewHNSWGraph(storage, config)
 	}
 
+	It("RaBitQ centroid bootstrap establishes a centroid after StatsThreshold inserts (Java parity)", func() {
+		// Java Insert.addToStatsIfNecessary: with RaBitQ + a translation-preserving metric and no
+		// centroid yet, inserts sample vectors into the SAMPLES subspace, roll them up, and once
+		// StatsThreshold accumulate, establish the rotated centroid and transition the transform.
+		// Force probabilities to 1.0 and a low threshold so the bootstrap fires deterministically.
+		const dims = 8
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0, // always sample
+			MaintainStatsProbability:     1.0, // always roll up
+			StatsThreshold:               10,  // establish the centroid once 10 accumulate
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bootstrap"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(11))
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// firstInsert (node 0) does not sample; nodes 1..14 each sample + roll up, so by
+			// ~node 10 the accumulated count reaches StatsThreshold and the centroid is established.
+			for i := 0; i < 15; i++ {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+			}
+			info, lerr := storage.loadAccessInfo(tx)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue(), "centroid must be established after StatsThreshold inserts")
+			Expect(info.centroid).NotTo(BeNil())
+			Expect(info.rotatorSeed).NotTo(Equal(int64(-1)))
+			// The SAMPLES subspace must be cleared once the centroid is established.
+			r, perr := fdb.PrefixRange(storage.samplesSubspace.Bytes())
+			Expect(perr).NotTo(HaveOccurred())
+			kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "samples must be deleted after the centroid is established")
+			// Search still works over the mixed (identity + transformed) graph.
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64()
+			}
+			results, serr := graph.Search(tx, q, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(len(results)).To(BeNumerically(">", 0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert single node and search returns it", func() {
 		graph := makeRaBitQGraph(8, 4)
 

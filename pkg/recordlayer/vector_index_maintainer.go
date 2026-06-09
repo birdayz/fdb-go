@@ -173,6 +173,24 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options["hnswUseInlining"]; ok {
 		config.UseInlining = v == "true"
 	}
+	if v, ok := index.Options[IndexOptionHNSWSampleVectorStatsProbability]; ok {
+		var p float64
+		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
+			config.SampleVectorStatsProbability = p
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMaintainStatsProbability]; ok {
+		var p float64
+		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
+			config.MaintainStatsProbability = p
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
+		var t int
+		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 && t > 0 {
+			config.StatsThreshold = t
+		}
+	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
 		numExBits := 4
 		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {

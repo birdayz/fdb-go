@@ -24,6 +24,7 @@ package recordlayer
 import (
 	"bytes"
 	"container/heap"
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"math"
@@ -72,6 +73,13 @@ type HNSWConfig struct {
 	EfRepair              int             // Max candidates for delete repair (default 64, 0 = no limit)
 	UseInlining           bool            // Use inlining storage for layers > 0 (default false)
 	Quantizer             VectorQuantizer // Optional quantizer (nil = raw float64 storage)
+
+	// RaBitQ centroid-bootstrap stats (Java Config). When RaBitQ is enabled and no centroid
+	// is yet established, inserts sample vectors into the SAMPLES subspace, periodically roll
+	// them up, and once StatsThreshold vectors have accumulated, establish the rotated centroid.
+	SampleVectorStatsProbability float64 // prob of sampling each inserted vector (default 0.5)
+	MaintainStatsProbability     float64 // prob of rolling up samples on an insert (default 0.05)
+	StatsThreshold               int     // accumulated count needed to establish the centroid (default 1000)
 
 	// Concurrency limits — Java uses these to limit async pipeline parallelism.
 	// Go's synchronous FDB model doesn't use these for concurrency control, but
@@ -129,6 +137,9 @@ func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 		MaxNumConcurrentNodeFetches:         16,
 		MaxNumConcurrentNeighborhoodFetches: 10,
 		MaxNumConcurrentDeleteFromLayer:     2,
+		SampleVectorStatsProbability:        0.5,  // Java DEFAULT_SAMPLE_VECTOR_STATS_PROBABILITY
+		MaintainStatsProbability:            0.05, // Java DEFAULT_MAINTAIN_STATS_PROBABILITY
+		StatsThreshold:                      1000, // Java DEFAULT_STATS_THRESHOLD
 	}
 }
 
@@ -405,6 +416,14 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		g.storage.saveAccessInfo(tx, accessInfo)
 	}
 
+	// RaBitQ centroid bootstrap: sample this vector and, once StatsThreshold have accumulated,
+	// establish the rotated centroid (Java Insert.addToStatsIfNecessary). The random is
+	// PK-seeded per insert (Primitives.random(primaryKey)); queryVec is the vector in the
+	// current (identity, pre-centroid) transform space, which is what Java samples.
+	if err := g.addToStatsIfNecessary(tx, accessInfo, queryVec, newSplittableRandomForKey(primaryKey)); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -450,6 +469,165 @@ func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vect
 	}
 	g.storage.saveAccessInfo(tx, info)
 	return nil
+}
+
+// --- RaBitQ centroid bootstrap (Java Insert.addToStatsIfNecessary + StorageAdapter samples) ---
+
+// aggregatedVector is one SAMPLES entry: a partial sum of `count` raw vectors. Java AggregatedVector.
+type aggregatedVector struct {
+	count int
+	vec   []float64
+}
+
+// addToStatsIfNecessary samples the inserted vector toward establishing a RaBitQ centroid,
+// matching Java Insert.addToStatsIfNecessary. Active only when RaBitQ is enabled and no centroid
+// is yet established. transformedVec is the new vector in the current (identity, pre-centroid)
+// transform space. The random is the insert's PK-seeded SplittableRandom, consumed in Java's
+// order (sample, maintain, then the rotator seed at the transition).
+func (g *hnswGraph) addToStatsIfNecessary(tx fdb.Transaction, info *hnswAccessInfo, transformedVec []float64, random *splittableRandom) error {
+	if g.config.Quantizer == nil || info == nil || info.hasTransform() {
+		return nil // not RaBitQ, or centroid already established
+	}
+	if random.nextDouble() < g.config.SampleVectorStatsProbability {
+		if err := g.storage.appendSampledVector(tx, 1, transformedVec); err != nil {
+			return err
+		}
+	}
+	if random.nextDouble() >= g.config.MaintainStatsProbability {
+		return nil
+	}
+	// Roll up: consume up to 50 samples, aggregate, append the partial back.
+	samples, err := g.storage.consumeSampledVectors(tx, 50)
+	if err != nil {
+		return err
+	}
+	agg := aggregateVectors(samples)
+	if agg.count == 0 {
+		return nil
+	}
+	if err := g.storage.appendSampledVector(tx, agg.count, agg.vec); err != nil {
+		return err
+	}
+	if agg.count < g.config.StatsThreshold {
+		return nil
+	}
+	// Establish the centroid: rotatorSeed = random.nextLong(); centroid = -mean; rotate; transition.
+	rotatorSeed := random.nextLong()
+	rotator := newFhtKacRotator(rotatorSeed, g.config.NumDimensions, 10)
+	centroid := make([]float64, len(agg.vec))
+	for i, v := range agg.vec {
+		centroid[i] = v * (-1.0 / float64(agg.count))
+	}
+	rotatedCentroid := rotator.apply(centroid)
+
+	// Re-express the entry node vector in the new (rotated + translated) coordinate system, so the
+	// entry node is always in the internal system while data vectors may be a mix (Java comment).
+	normalize := g.config.Metric == VectorMetricCosine
+	transform := newHNSWTransform(rotatorSeed, rotatedCentroid, g.config.NumDimensions, normalize)
+	entryVec, derr := g.decodeStoredVector(info.vectorBytes)
+	if derr != nil {
+		return fmt.Errorf("hnsw stats: decode entry vector: %w", derr)
+	}
+	info.rotatorSeed = rotatorSeed
+	info.centroid = rotatedCentroid
+	info.vectorBytes = g.encodeVectorBytes(transform.apply(entryVec))
+	g.storage.saveAccessInfo(tx, info)
+	return g.storage.deleteAllSampledVectors(tx)
+}
+
+// aggregateVectors sums the partial vectors and their counts. Java Insert.aggregateVectors.
+func aggregateVectors(samples []aggregatedVector) aggregatedVector {
+	var sum []float64
+	count := 0
+	for _, s := range samples {
+		if sum == nil {
+			sum = make([]float64, len(s.vec))
+		}
+		for i, v := range s.vec {
+			if i < len(sum) {
+				sum[i] += v
+			}
+		}
+		count += s.count
+	}
+	return aggregatedVector{count: count, vec: sum}
+}
+
+// appendSampledVector writes one SAMPLES entry. Key: samplesSubspace.Pack(count, uniqueBytes);
+// value: Tuple{serializeVector(vec)}. Matches Java StorageAdapter.appendSampledVector — the
+// per-entry count is in the key, the (raw) vector in the value. The unique key element is random
+// (Java uses UUID.randomUUID); it is ignored on read, so any unique value works and does not
+// affect the order-independent aggregate.
+func (s *hnswStorage) appendSampledVector(tx fdb.Transaction, count int, vec []float64) error {
+	var uniq [16]byte
+	if _, err := cryptorand.Read(uniq[:]); err != nil {
+		return fmt.Errorf("hnsw stats: sample key entropy: %w", err)
+	}
+	key := s.samplesSubspace.Pack(tuple.Tuple{int64(count), uniq[:]})
+	value := tuple.Tuple{serializeVector(vec)}.Pack()
+	tx.Set(fdb.Key(key), value)
+	return nil
+}
+
+// consumeSampledVectors reads up to numMax SAMPLES entries (snapshot, reverse) and CLEARS each
+// (only the consumed keys take a read-conflict, not the whole range). Java consumeSampledVectors.
+func (s *hnswStorage) consumeSampledVectors(tx fdb.Transaction, numMax int) ([]aggregatedVector, error) {
+	r, err := fdb.PrefixRange(s.samplesSubspace.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("hnsw stats: samples range: %w", err)
+	}
+	kvs, err := tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: numMax, Reverse: true, Mode: fdb.StreamingModeIterator}).GetSliceWithError()
+	if err != nil {
+		return nil, fmt.Errorf("hnsw stats: read samples: %w", err)
+	}
+	out := make([]aggregatedVector, 0, len(kvs))
+	for _, kv := range kvs {
+		av, perr := s.aggregatedVectorFromRaw(kv.Key, kv.Value)
+		if perr != nil {
+			continue
+		}
+		if cerr := tx.AddReadConflictKey(fdb.Key(kv.Key)); cerr != nil {
+			return nil, cerr
+		}
+		tx.Clear(fdb.Key(kv.Key))
+		out = append(out, av)
+	}
+	return out, nil
+}
+
+// deleteAllSampledVectors clears the whole SAMPLES subspace. Java deleteAllSampledVectors.
+func (s *hnswStorage) deleteAllSampledVectors(tx fdb.Transaction) error {
+	r, err := fdb.PrefixRange(s.samplesSubspace.Bytes())
+	if err != nil {
+		return fmt.Errorf("hnsw stats: samples range: %w", err)
+	}
+	tx.ClearRange(r)
+	return nil
+}
+
+// aggregatedVectorFromRaw decodes one SAMPLES entry: count from key[0], vector from the value.
+func (s *hnswStorage) aggregatedVectorFromRaw(key, value []byte) (aggregatedVector, error) {
+	keyTuple, err := s.samplesSubspace.Unpack(fdb.Key(key))
+	if err != nil || len(keyTuple) < 1 {
+		return aggregatedVector{}, fmt.Errorf("hnsw stats: unpack sample key")
+	}
+	count, ok := keyTuple[0].(int64)
+	if !ok {
+		return aggregatedVector{}, fmt.Errorf("hnsw stats: sample count not int64")
+	}
+	valTuple, err := tuple.Unpack(value)
+	if err != nil || len(valTuple) < 1 {
+		return aggregatedVector{}, fmt.Errorf("hnsw stats: unpack sample value")
+	}
+	vb, ok := valTuple[0].([]byte)
+	if !ok {
+		return aggregatedVector{}, fmt.Errorf("hnsw stats: sample vector not bytes")
+	}
+	vec, derr := deserializeVector(vb)
+	if derr != nil {
+		return aggregatedVector{}, derr
+	}
+	return aggregatedVector{count: int(count), vec: vec}, nil
 }
 
 // Delete removes a node from the HNSW graph and repairs neighbor connections.
@@ -1280,11 +1458,12 @@ func hnswFatal(err error) error {
 }
 
 type hnswStorage struct {
-	dataSubspace   subspace.Subspace
-	accessSubspace subspace.Subspace
-	config         HNSWConfig
-	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
-	stats          *HNSWStats             // optional I/O counters (nil = no tracking)
+	dataSubspace    subspace.Subspace
+	accessSubspace  subspace.Subspace
+	samplesSubspace subspace.Subspace // SUBSPACE_PREFIX_SAMPLES (0x02): RaBitQ centroid-bootstrap samples
+	config          HNSWConfig
+	cache           map[string]*parsedNode // FDB key → parsed node (nil = not found)
+	stats           *HNSWStats             // optional I/O counters (nil = no tracking)
 
 	// scan opens a range iterator for a layer scan. nil in production (uses the real
 	// tx.GetRange().Iterator() via scanIter); tests set it to inject a fake iterator so
@@ -1319,10 +1498,11 @@ func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
 	s := &hnswStorage{
-		dataSubspace:   ss.Sub(int64(0)),
-		accessSubspace: ss.Sub(int64(1)),
-		config:         config,
-		cache:          make(map[string]*parsedNode),
+		dataSubspace:    ss.Sub(int64(0)),
+		accessSubspace:  ss.Sub(int64(1)),
+		samplesSubspace: ss.Sub(int64(2)),
+		config:          config,
+		cache:           make(map[string]*parsedNode),
 	}
 	return s
 }
