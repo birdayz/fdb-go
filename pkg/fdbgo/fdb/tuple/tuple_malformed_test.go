@@ -1,15 +1,19 @@
 package tuple
 
 import (
+	"bytes"
+	"reflect"
 	"testing"
 )
 
 // TestUnpackMalformedReturnsError pins Unpack's documented contract — "or an
-// error if the key does not correctly encode a FoundationDB tuple" — on the
-// malformed inputs that used to PANIC (slice out of range), found by fuzzing
-// the SPFresh codec layer built on top of Unpack. Library code must never
-// panic on data bytes (design principle #4): a corrupted value read from FDB
-// must surface as an error the caller can handle, not crash the process.
+// error if the key does not correctly encode a FoundationDB tuple" — on
+// malformed inputs found by fuzzing the SPFresh codec layer built on top of
+// Unpack. Most of these used to PANIC (slice out of range); two were silent
+// WRONG-ACCEPTS (an unterminated bytes element whose payload happened to end
+// the input decoded as a shorter value instead of erroring). Library code must
+// never panic on data bytes (design principle #4), and malformed encodings
+// must error, not decode to something plausible.
 func TestUnpackMalformedReturnsError(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -62,8 +66,13 @@ func FuzzUnpack(f *testing.F) {
 		if err != nil {
 			t.Fatalf("re-unpack of accepted tuple failed: %v (orig %x, repacked %x)", err, data, repacked)
 		}
-		if len(tup2) != len(tup) {
-			t.Fatalf("re-unpack length mismatch: %d vs %d (orig %x)", len(tup2), len(tup), data)
+		// Element-wise equality, not just length: decoded element types are
+		// canonical, so DeepEqual is exact — except NaN (never equal to
+		// itself), which we exempt by comparing through a re-pack instead.
+		if !reflect.DeepEqual(tup2, tup) {
+			if !bytes.Equal(tup2.Pack(), repacked) {
+				t.Fatalf("re-unpack element mismatch: %v vs %v (orig %x)", tup2, tup, data)
+			}
 		}
 	})
 }
