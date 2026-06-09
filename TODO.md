@@ -839,3 +839,12 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   Go-only/wire-format declaration, the test plan) before any code. Start with **batched beam search**
   (wire-neutral, lands on current HNSW) to bank the query win, then prototype **SPFresh** as the
   native index.
+
+- [ ] **fdbgo/wire: `TestPrecomputeSize_GetReadVersionRequest` never runs in CI and fails when run.**
+  The test reads `pkg/fdbgo/wire/types/testdata.json` and `t.Skipf`s when absent; the bazel
+  target doesn't declare the file as a data dep, so `just test`/CI silently SKIP it (a no-skip-rule
+  violation hiding a red test). Under plain `go test ./pkg/fdbgo/wire` the file exists and the test
+  fails: `SIZE MISMATCH: Go=160 C++=168 (delta=-8)`. Likely the hand-modeled C++ PrecomputeSize
+  mirror in the test is stale rather than a live serializer bug (GRV requests work against real
+  FDB constantly), but it must be dispositioned: fix the model or the serializer, add the data dep
+  so it RUNS in bazel, and remove the skip. Found while fuzzing the SPFresh codecs (094.1).

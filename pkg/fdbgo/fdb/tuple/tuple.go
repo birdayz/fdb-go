@@ -671,12 +671,21 @@ func (t Tuple) countIncompleteVersionstamps() int {
 	return incompleteCount
 }
 
+// findTerminator returns the length of the bytes/string payload up to its
+// 0x00 terminator (skipping escaped 0x00FF pairs), or -1 when the input has
+// no terminator — a malformed encoding the caller must surface as an error,
+// never index with (Unpack's contract is to return an error on bytes that do
+// not correctly encode a tuple; the old code returned -1 implicitly and the
+// caller sliced b[1:0], a panic found by fuzzing).
 func findTerminator(b []byte) int {
 	bp := b
 	var length int
 
 	for {
 		idx := bytes.IndexByte(bp, 0x00)
+		if idx < 0 {
+			return -1
+		}
 		length += idx
 		if idx+1 == len(bp) || bp[idx+1] != 0xFF {
 			break
@@ -688,19 +697,25 @@ func findTerminator(b []byte) int {
 	return length
 }
 
-func decodeBytes(b []byte) ([]byte, int) {
+func decodeBytes(b []byte) ([]byte, int, error) {
 	idx := findTerminator(b[1:])
-	return bytes.Replace(b[1:idx+1], []byte{0x00, 0xFF}, []byte{0x00}, -1), idx + 2
+	if idx < 0 {
+		return nil, 0, fmt.Errorf("no 0x00 terminator found for bytes/string element")
+	}
+	return bytes.Replace(b[1:idx+1], []byte{0x00, 0xFF}, []byte{0x00}, -1), idx + 2, nil
 }
 
-func decodeString(b []byte) (string, int) {
-	bp, idx := decodeBytes(b)
-	return string(bp), idx
+func decodeString(b []byte) (string, int, error) {
+	bp, idx, err := decodeBytes(b)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(bp), idx, nil
 }
 
-func decodeInt(b []byte) (any, int) {
+func decodeInt(b []byte) (any, int, error) {
 	if b[0] == intZeroCode {
-		return int64(0), 1
+		return int64(0), 1, nil
 	}
 
 	var neg bool
@@ -711,6 +726,10 @@ func decodeInt(b []byte) (any, int) {
 		neg = true
 	}
 
+	if n+1 > len(b) {
+		return nil, 0, fmt.Errorf("insufficient bytes to decode %d-byte integer", n)
+	}
+
 	bp := make([]byte, 8)
 	copy(bp[8-n:], b[1:n+1])
 
@@ -718,11 +737,11 @@ func decodeInt(b []byte) (any, int) {
 	binary.Read(bytes.NewBuffer(bp), binary.BigEndian, &ret)
 
 	if neg {
-		return ret - int64(sizeLimits[n]), n + 1
+		return ret - int64(sizeLimits[n]), n + 1, nil
 	}
 
 	if ret > 0 {
-		return ret, n + 1
+		return ret, n + 1, nil
 	}
 
 	// The encoded value claimed to be positive yet when put in an int64
@@ -730,15 +749,18 @@ func decodeInt(b []byte) (any, int) {
 	// 64-bit value that uses the most significant bit. This can be fit in a
 	// uint64, so return that. Note that this is the *only* time we return
 	// a uint64.
-	return uint64(ret), n + 1
+	return uint64(ret), n + 1, nil
 }
 
-func decodeBigInt(b []byte) (any, int) {
+func decodeBigInt(b []byte) (any, int, error) {
 	val := new(big.Int)
 	offset := 1
 	var length int
 
 	if b[0] == negIntStart || b[0] == posIntEnd {
+		if len(b) < 2 {
+			return nil, 0, fmt.Errorf("insufficient bytes to decode big integer length")
+		}
 		length = int(b[1])
 		if b[0] == negIntStart {
 			length ^= 0xff
@@ -748,6 +770,10 @@ func decodeBigInt(b []byte) (any, int) {
 	} else {
 		// Must be a negative 8 byte integer
 		length = 8
+	}
+
+	if length+offset > len(b) {
+		return nil, 0, fmt.Errorf("insufficient bytes to decode %d-byte big integer", length)
 	}
 
 	val.SetBytes(b[offset : length+offset])
@@ -760,10 +786,10 @@ func decodeBigInt(b []byte) (any, int) {
 
 	// This is the only value that fits in an int64 or uint64 that is decoded with this function
 	if val.Cmp(minInt64BigInt) == 0 {
-		return val.Int64(), length + offset
+		return val.Int64(), length + offset, nil
 	}
 
-	return val, length + offset
+	return val, length + offset, nil
 }
 
 func decodeFloat(b []byte) (float32, int) {
@@ -825,15 +851,39 @@ func decodeTuple(b []byte, nested bool) (Tuple, int, error) {
 				return t, i + 1, nil
 			}
 		case b[i] == bytesCode:
-			el, off = decodeBytes(b[i:])
+			var err error
+			el, off, err = decodeBytes(b[i:])
+			if err != nil {
+				return nil, i, fmt.Errorf("unable to decode bytes starting at position %d of byte array for tuple: %w", i, err)
+			}
 		case b[i] == stringCode:
-			el, off = decodeString(b[i:])
+			var err error
+			el, off, err = decodeString(b[i:])
+			if err != nil {
+				return nil, i, fmt.Errorf("unable to decode string starting at position %d of byte array for tuple: %w", i, err)
+			}
 		case negIntStart+1 < b[i] && b[i] < posIntEnd:
-			el, off = decodeInt(b[i:])
-		case negIntStart+1 == b[i] && (b[i+1]&0x80 != 0):
-			el, off = decodeInt(b[i:])
+			var err error
+			el, off, err = decodeInt(b[i:])
+			if err != nil {
+				return nil, i, fmt.Errorf("unable to decode integer starting at position %d of byte array for tuple: %w", i, err)
+			}
+		// The 8-byte-negative-int discriminator needs the byte AFTER the type
+		// code; when the input ends at the type code, fall through to the
+		// bigint case below, whose own bounds check reports the truncation
+		// (indexing b[i+1] unguarded was a fuzz-found panic).
+		case negIntStart+1 == b[i] && i+1 < len(b) && (b[i+1]&0x80 != 0):
+			var err error
+			el, off, err = decodeInt(b[i:])
+			if err != nil {
+				return nil, i, fmt.Errorf("unable to decode integer starting at position %d of byte array for tuple: %w", i, err)
+			}
 		case negIntStart <= b[i] && b[i] <= posIntEnd:
-			el, off = decodeBigInt(b[i:])
+			var err error
+			el, off, err = decodeBigInt(b[i:])
+			if err != nil {
+				return nil, i, fmt.Errorf("unable to decode big integer starting at position %d of byte array for tuple: %w", i, err)
+			}
 		case b[i] == floatCode:
 			if i+5 > len(b) {
 				return nil, i, fmt.Errorf("insufficient bytes to decode float starting at position %d of byte array for tuple", i)
