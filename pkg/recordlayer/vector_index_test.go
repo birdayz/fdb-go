@@ -628,6 +628,65 @@ var _ = Describe("HNSW Graph Direct", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("delete-repair keeps secondary candidates when EfRepair is omitted (zero normalizes to Java default)", func() {
+		// P3 regression. Java requires efRepair ∈ [m, 400] (Config.java:91-92) with
+		// default 64 — zero is invalid, NOT an "unlimited" sentinel. A Go struct literal
+		// that omits EfRepair used to carry 0 into the delete-repair sample rate
+		// (efRepair - |primary|)/numCandidates, going negative the moment any primary
+		// neighbor exists — every secondary repair candidate was silently dropped and
+		// deletes under-repaired the graph. NewHNSWGraph must normalize 0 → 64.
+		//
+		// Topology: D→[P1,P2], P1→[D,S1], P2→[D,S2]. The repair candidate set must be
+		// {P1,P2,S1,S2} (primaries + sampled secondaries). With the bug it was {P1,P2}.
+		ss := specSubspace().Sub("hnsw-efrepair-zero")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			// EfRepair deliberately omitted (zero value) — the case under test.
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+		Expect(graph.config.EfRepair).To(Equal(64), "NewHNSWGraph must normalize EfRepair=0 to Java's default 64")
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			d := tuple.Tuple{int64(99)}
+			p1, p2 := tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}
+			s1, s2 := tuple.Tuple{int64(3)}, tuple.Tuple{int64(4)}
+			vec := func(x float64) []byte { return serializeVector([]float64{x, 0}) }
+
+			storage.saveNodeLayer(tx, 0, d, vec(0), []tuple.Tuple{p1, p2})
+			storage.saveNodeLayer(tx, 0, p1, vec(1), []tuple.Tuple{d, s1})
+			storage.saveNodeLayer(tx, 0, p2, vec(2), []tuple.Tuple{d, s2})
+			storage.saveNodeLayer(tx, 0, s1, vec(3), []tuple.Tuple{p1})
+			storage.saveNodeLayer(tx, 0, s2, vec(4), []tuple.Tuple{p2})
+
+			deletedNeighbors := [][]byte{nestPK(p1), nestPK(p2)}
+			cands, cerr := graph.findDeletionRepairCandidates(tx, 0, d, deletedNeighbors, newSplittableRandomForKey(d))
+			Expect(cerr).NotTo(HaveOccurred())
+
+			got := make(map[int64]bool, len(cands))
+			for _, c := range cands {
+				got[c.pk[0].(int64)] = true
+			}
+			Expect(got).To(HaveKey(int64(1)), "primary P1 must be a repair candidate")
+			Expect(got).To(HaveKey(int64(2)), "primary P2 must be a repair candidate")
+			// The red→green signal: with EfRepair stuck at 0 the sample rate is negative
+			// and the secondaries are dropped.
+			Expect(got).To(HaveKey(int64(3)), "secondary S1 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(got).To(HaveKey(int64(4)), "secondary S2 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(cands).To(HaveLen(4))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("access info round-trips", func() {
 		ss := specSubspace().Sub("hnsw-access")
 		config := HNSWConfig{

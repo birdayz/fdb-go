@@ -70,7 +70,7 @@ type HNSWConfig struct {
 	Metric                VectorMetric    // Distance metric
 	ExtendCandidates      bool            // Extend candidate set with 2nd-degree neighbors (default false)
 	KeepPrunedConnections bool            // Retain pruned candidates to fill up to M (default false)
-	EfRepair              int             // Max candidates for delete repair (default 64, 0 = no limit)
+	EfRepair              int             // Delete-repair beam width; Java requires [m, 400] (default 64; 0 means "use default")
 	UseInlining           bool            // Use inlining storage for layers > 0 (default false)
 	Quantizer             VectorQuantizer // Optional quantizer (nil = raw float64 storage)
 
@@ -132,7 +132,7 @@ func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 		MMax:                                16,
 		MMax0:                               32,
 		EfConstruction:                      200,
-		EfRepair:                            64,
+		EfRepair:                            defaultEfRepair,
 		Metric:                              VectorMetricEuclidean,
 		MaxNumConcurrentNodeFetches:         16,
 		MaxNumConcurrentNeighborhoodFetches: 10,
@@ -167,8 +167,22 @@ type hnswGraph struct {
 	opXform *hnswTransform
 }
 
+// defaultEfRepair is Java's DEFAULT_EF_REPAIR (Config.java:41). Java forbids efRepair=0
+// outright (its precondition is efRepair ∈ [m, 400], Config.java:91-92) — 0 is not a
+// sentinel for "unlimited". The maintainer path starts from DefaultHNSWConfig and
+// validates, so it never carries 0; only a direct struct literal can omit the field.
+const defaultEfRepair = 64
+
 // NewHNSWGraph creates a new HNSW graph.
 func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
+	// Normalize an omitted EfRepair (Go zero value) to the default, matching Java's
+	// builder default. Left at 0 it would drive the delete-repair sample rate
+	// (efRepair - |primaries|) / numCandidates negative the moment any primary neighbor
+	// exists, skipping every secondary repair candidate and silently losing graph
+	// connectivity on delete.
+	if config.EfRepair == 0 {
+		config.EfRepair = defaultEfRepair
+	}
 	return &hnswGraph{
 		storage: storage,
 		config:  config,
