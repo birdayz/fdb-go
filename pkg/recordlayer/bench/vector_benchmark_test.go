@@ -162,9 +162,6 @@ func vecBuildMetaData(dims int, useRaBitQ bool) (*recordlayer.RecordMetaData, *r
 	if useRaBitQ {
 		vecIdx.Options["hnswUseRaBitQ"] = "true"
 	}
-	if n := vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 0); n > 0 {
-		vecIdx.Options["hnswSharedCacheMaxNodes"] = strconv.Itoa(n)
-	}
 
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
@@ -1131,11 +1128,11 @@ func vecWriteProfile(path, name string) {
 
 // TestVectorBuildLarge streams a large HNSW index to FDB without ever holding
 // the whole dataset in RAM: vectors are generated per batch and discarded, so
-// process memory is bounded by the shared node cache, not the dataset. This is
-// what makes a 1M-vector build runnable on a box with limited free RAM.
+// process memory is bounded by the per-batch working set, not the dataset. This
+// is what makes a 1M-vector build runnable on a box with limited free RAM.
 //
 //	VECTOR_BUILD=1 VECTOR_BENCH_SIZE=1000000 VECTOR_BENCH_DIMS=1536 \
-//	  VECTOR_BENCH_BATCH=16 VECTOR_BENCH_SHARED_CACHE=150000 \
+//	  VECTOR_BENCH_BATCH=16 \
 //	  go test ./pkg/recordlayer/bench -run TestVectorBuildLarge -v -timeout 1200m
 func TestVectorBuildLarge(t *testing.T) {
 	if os.Getenv("VECTOR_BUILD") != "1" {
@@ -1159,8 +1156,8 @@ func TestVectorBuildLarge(t *testing.T) {
 	ctx := context.Background()
 	rng := rand.New(rand.NewSource(1))
 
-	t.Logf("Streaming build: size=%d dims=%d batch=%d sharedCache=%d cores=%d",
-		size, dims, batchSize, vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 0), runtime.NumCPU())
+	t.Logf("Streaming build: size=%d dims=%d batch=%d cores=%d",
+		size, dims, batchSize, runtime.NumCPU())
 
 	start := time.Now()
 	progressEvery := max(20000, size/50)
@@ -1296,7 +1293,6 @@ func TestVectorIngestSweep(t *testing.T) {
 	perShard := vecEnvInt("VECTOR_BENCH_SIZE", 4000)
 	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
 	batch := vecEnvInt("VECTOR_BENCH_BATCH", 16)
-	cache := vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 200000)
 	t.Logf("FDB processes: %d", procs)
 	levels := []int{1, 2, 4, 8, 16, 24}
 	if v := os.Getenv("VECTOR_BENCH_LEVELS"); v != "" {
@@ -1309,7 +1305,7 @@ func TestVectorIngestSweep(t *testing.T) {
 	}
 	md, _ := vecBuildMetaData(dims, false)
 	ctx := context.Background()
-	t.Logf("Ingest sweep: %d vec/shard (%dD), batch=%d, cache=%d, cores=%d", perShard, dims, batch, cache, runtime.NumCPU())
+	t.Logf("Ingest sweep: %d vec/shard (%dD), batch=%d, cores=%d", perShard, dims, batch, runtime.NumCPU())
 
 	buildShard := func(tag string) error {
 		ss := vecBenchSubspace(tag)

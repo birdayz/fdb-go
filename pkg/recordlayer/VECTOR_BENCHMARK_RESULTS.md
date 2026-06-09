@@ -114,6 +114,18 @@ VECTOR_BENCH_RABITQ=false    # enable RaBitQ quantization
 Hardware: 24-core, 64 GB, FDB 7.3.75 testcontainer (single node). All at 1536-D
 DOUBLE vectors, the LanceDB-1M comparison shape.
 
+> **UPDATE — cross-transaction cache removed for Java compliance.** The rows below
+> marked "+ shared cache" were measured *with* a process-wide, cross-transaction
+> node cache. That cache was a **Go-only behavioral divergence** (Java keeps only a
+> per-operation `nodeCache`, never cross-transaction) and was **removed** to keep
+> this HNSW index 100% Java-faithful. So those rows are **no longer the shipped
+> index's numbers** — they're retained as the *measured ceiling* that motivates a
+> separate, explicitly-Go-native index (see TODO.md → "Exploration: a second,
+> FDB-native vector index"). The **wire-neutral, result-identical** changes
+> (raw-span PKs, distance-from-bytes, 4-lane distance) remain in the shipped index;
+> its real numbers are the "+ raw-span + distance-from-bytes" rows (search ~25 ms
+> p50), and insert reverts to Java's latency-bound, non-asymptoting profile.
+
 ### Search (1K × 1536D, k=10, efSearch=64)
 
 | stage | alloc/query | p50 | p99 | recall@10 |
@@ -143,23 +155,26 @@ build is ~7–9 h on this single node** with the cache sized to hold the graph
 (~24 GB for 1M × 1536-D nodes; fits in 64 GB, so no eviction) — feasible as an
 overnight build, where uncached (collapsing rate) it was effectively unbuildable.
 
-The shared cross-transaction node cache (opt-in: hnswSharedCacheMaxNodes, or
-HNSW_SHARED_CACHE_NODES) is the big lever — it stops the per-transaction cache
-from going cold every batch and re-reading the hot layers, taking 10K from 10.7
-to 45.9 vec/s. It is correct for single-writer indexing + read-only search
-(reads populate from committed data, every write invalidates, clearAll drops
-all, aborts never pollute); off by default.
+The shared cross-transaction node cache was the big lever here — it stopped the
+per-transaction cache from going cold every batch and re-reading the hot layers,
+taking 10K from 10.7 to 45.9 vec/s. **It has since been removed** (Go-only
+divergence from Java; see the UPDATE banner above). Without it the shipped index
+re-reads the hot upper layers every transaction, exactly as Java does, so the
+insert rate is latency-bound and does not asymptote — the asymptoting numbers in
+the table above belong to the removed cache and motivate the separate native
+index, not this one.
 
 ### On "1M"
 
 - 1M queries/sec is physically impossible at 1536-D (~2 M FLOPs/query × 1M =
   ~2.3 PFLOP/s, ~2000× a 24-core CPU). LanceDB's "1m" is the 1M-*vector* dataset.
 - 1M-vector SEARCH is ready (4.5–15 ms; raise efSearch for recall at scale).
-- 1M-vector BUILD: the cache+unroll made it several-times faster and, more
-  importantly, made the insert rate asymptote (~40 vec/s at 30K, see above)
-  instead of collapsing — so a 1M build is ~7–9 h on this single node (measured
-  curve extrapolated; cache sized to avoid eviction). Inserts are serialized by
-  the single-writer lock (== Java's doWithWriteLock), so a build uses ~1 core
-  regardless of machine; going faster than that needs concurrent HNSW
-  construction (research-level, diverges from Java — out of scope) or a real
-  multi-node FDB cluster (parallelizes the write floor).
+- 1M-vector BUILD: the ~7–9 h single-node projection (asymptoting ~40 vec/s at
+  30K) **depended on the now-removed cross-transaction cache** and therefore
+  describes the *future native index*, not the shipped Java-faithful HNSW. The
+  shipped index, like Java, re-reads the hot layers each transaction, so its
+  insert rate is latency-bound and degrades as the graph grows. Inserts are also
+  serialized by the per-prefix write lock (== Java's doWithWriteLock), so a build
+  uses ~1 core regardless of machine; going faster needs the FDB-native index
+  (TODO) — batched beam search, SPFresh/DiskANN, or atomic-append edges — or a
+  real multi-node FDB cluster (parallelizes the write floor).

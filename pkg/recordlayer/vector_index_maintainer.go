@@ -165,12 +165,6 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options["hnswUseInlining"]; ok {
 		config.UseInlining = v == "true"
 	}
-	if v, ok := index.Options["hnswSharedCacheMaxNodes"]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 {
-			config.SharedCacheMaxNodes = n
-		}
-	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
 		numExBits := 4
 		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
