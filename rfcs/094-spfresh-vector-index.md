@@ -72,7 +72,7 @@ cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured
        CENTROIDS/(cellID, fineID) → fp16 vector + state + epoch
        CENTROIDS/(cellID, HDR) → FORWARD(cells)          after coarse split
        COARSE/(cellID) → fp16 vector + state             SIDECAR/(pk) → fp16
-       MEMBERSHIP/(pk) → [fineID...]                     COUNTERS/(id) → ADD
+       MEMBERSHIP/(pk) → [fineID...]                     COUNTERS/(kind,id) → ADD
        CHANGELOG/(vs) → delta      TASKS/(kind, id) → {owner, lease, …}
        STAGING/(cellID, pk) → fp16 vector (build-only)   META/ → config…
 ```
@@ -104,6 +104,44 @@ cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured
 | update/delete vs split moving the same pk | serialize on `MEMBERSHIP/pk` + the split's **real** posting read; later one retries against truth |
 | query vs anything | snapshot reads — never conflicts |
 
+### 2.1 FDB-native leverage (the global commit version, exploited)
+
+FDB's sequencer hands every transaction a globally ordered version — the read
+version at GRV, capturable as versionstamps on commit. The design exploits it
+four ways; the first two are load-bearing above, the rest are optimizations
+slotted for 094.4 (optional — none affect the correctness arguments):
+
+1. **One consistent snapshot per query** (load-bearing): all k_c posting reads +
+   the re-rank burst execute at a single read version — a query can never see a
+   torn split (half parent, half children). The HDR/FORWARD reasoning depends on
+   this; loosely-coupled ANN stores cannot offer it.
+2. **The changelog is an exact change feed** (load-bearing): "every topology
+   delta since version V", no clock skew, no ETags — the entire cache protocol.
+3. **`\xff/metadataVersion` piggyback** (094.4): this special key's value is
+   returned to every client *with* the GRV — zero extra reads, zero conflict
+   ranges, zero round trips. Bump it on **generation swaps and coarse splits**
+   (rare, topology-level events): every query then learns "routing table
+   changed" for free at RT0, shrinking worst-case staleness for exactly the
+   events that most disturb routing. NOT for fine splits (~78/s at peak — the
+   key is cluster-global and shared with every other layer; HDR markers already
+   handle fine-split staleness correctly). The Java record layer uses the same
+   key for metadata caching — same restraint applies.
+4. **Watches** (094.4): a watch on the changelog-head key converts the 1 s
+   refresh timer into server push — staleness drops toward ~ms (directly
+   shrinking the ~6 % HDR-forward query tax at peak ingest, §4) and idle
+   processes stop polling.
+
+And one **product guarantee** that falls out of the global version rather than
+costing anything: **strict read-after-write freshness**. An ACKed insert is
+visible to every subsequent search, cluster-wide — postings are read live at the
+query's read version; only *routing* is cached, and the state-read fence plus
+HDR markers correct it. Disk-ANN systems built on refresh intervals
+(Elasticsearch, SPANN-on-SSD pipelines) cannot make this promise; here it is
+the default. (Speculative, explicitly deferred: per-posting modification
+markers via `SET_VERSIONSTAMPED_VALUE` would enable client-side hot-posting
+caching with exact invalidation — a 094.4 experiment only if query skew data
+says it pays.)
+
 ## 3. Key layout
 
 All under the index's own subspace `S` (new index type ⇒ no Java collision).
@@ -116,8 +154,17 @@ makes both stories clean: an **abandoned build** (never reached Readable) is
 GC'd by range-clearing its entire generation — not just staging; rev 4 left
 partial COARSE/CENTROIDS/POSTINGS/MEMBERSHIP/SIDECAR/COUNTERS rows visible to
 the next build (codex r4 #5) — and a **retrain** (§11) builds generation g+1
-and swaps, then range-clears g. Readers/writers resolve the generation once per
-cache refresh.
+and swaps; the superseded generation is range-cleared only after a **grace
+period ≥ maxStaleness** (the 10-min horizon). Queries against a superseded g
+degrade to partial-at-worst under MVCC and re-resolve at their next refresh.
+Writers are fenced *at the flip*, not at the clear (during the grace window g's
+rows are still ACTIVE, so state reads alone would pass and the mutation would be
+invisible in g+1 and eventually GC'd — codex r5 #1): **every write tx real-reads
+META's current-generation key** (one point read in the existing parallel burst;
+written only by the flip tx, so it conflicts with nothing in steady state) —
+the flip aborts every in-flight writer of g at the resolver, and their retries
+resolve g+1. Belt-and-braces, a writer whose target rows are all absent forces
+a synchronous refresh rather than blind-writing (FDB-author r5).
 
 **Vector encoding:** vector fields in CENTROIDS/COARSE/STAGING/SIDECAR values
 are stored as **raw fixed-width suffixes**, not tuple-escaped bytes elements —
@@ -209,7 +256,7 @@ as the HNSW scan).
    - read `MEMBERSHIP/pk` (real); existing ⇒ update: clear old keys **derived
      from this same-tx read**, counter −1s.
    - blind-write `POSTINGS/(c_i, pk)`, `SIDECAR/pk`, `MEMBERSHIP/pk`,
-     `Add(COUNTERS/c_i, +1)`.
+     `Add(COUNTERS/(FINE, c_i), +1)`.
    - sampled probe (1/8): snapshot-read counter; > Lmax ⇒ **REAL-read**
      `TASKS/(split, c_i)` and `Set` only if absent (the conflict range is the
      point of the read — §3 TASKS row). Hard ceiling 4×Lmax ⇒
@@ -271,7 +318,7 @@ Torvalds r3 #2, LanceDB r3 #4, codex r3 #3, found independently).
 Because POSTINGS and MEMBERSHIP are keyed by `fineID` alone, restructuring cells
 moves **no posting data** — only ~cellMax small CENTROIDS rows (~150 KB).
 
-**CoarseSplit(cell)**, trigger: fine-count counter (`COUNTERS/(cellID)`, ADD'd by
+**CoarseSplit(cell)**, trigger: fine-count counter (`COUNTERS/(CELL, cellID)`, ADD'd by
 fine splits/merges) > cellMax = 96, probed by the fine-split tx (Set-if-absent
 `TASKS/(csplit, cellID)`). One tx:
 - read claim; read `COARSE/(cell)` = ACTIVE (zombie rule applies);
@@ -337,23 +384,30 @@ re-encode residuals (codex r3 #2). Rev 4:
    **fold sub-Lmin clusters into nearest siblings before writing** (or build
    completion dumps thousands of merge tasks — LanceDB r3 #2); write fine
    CENTROIDS rows only. Idempotent re-run: rewriting centroids for an
-   unfinalized cell is harmless; DONE marker in the task row.
+   unfinalized cell is harmless; the cellfin row advances to **CENTROIDS_DONE**
+   — deliberately distinct from wave-B completion (codex r5 #2).
 5. **Wave B (postings):** per cell, after wave A completes globally (closure
    assignment needs *all* fine centroids — cross-cell replicas would otherwise
    target centroids that don't exist yet; this two-wave order plus ADD-not-Set
    counters resolves the cross-cell counter race — codex r3 #6): assign each
    staged vector (closure across neighbor cells' centroids via the now-complete
    table); write final POSTINGS + MEMBERSHIP; `Add` counters; clear that cell's
-   staging range in the same tx as its last batch, and write the cell's DONE
-   state into its cellfin row. **The fence direction lives on the straggler,
-   not the finalizer** (rev 4 had it backwards — only the committer's reads are
-   checked, so a finalizer-side read cannot stop a later blind staging write
-   from landing in the cleared range: an orphaned vector, the rev-1 hole reborn
-   in the build path; FDB-author r4 #4): a foreground insert staging into an
-   unfinalized cell takes a **REAL read of that cell's cellfin row** — DONE (or
-   the row appearing mid-flight) aborts the straggler, which retries and routes
-   to the live path. The finalizer's own staging range read still serializes it
-   against stragglers that committed first (it re-runs including them).
+   staging range in the same tx as its last batch, and write **FINALIZED** into
+   its cellfin row — **the closing tx's real read covers the cell's ENTIRE
+   staging range, not just the final batch's slice** (else a straggler landing
+   in an already-processed prefix is cleared unassigned — FDB-author r5).
+   **The fence direction lives on the straggler, not the finalizer** (rev 4 had
+   it backwards — only the committer's reads are checked, so a finalizer-side
+   read cannot stop a later blind staging write from landing in the cleared
+   range: an orphaned vector, the rev-1 hole reborn in the build path;
+   FDB-author r4 #4): a foreground insert staging into a not-yet-finalized cell
+   takes a **REAL read of that cell's cellfin row** and routes by its state —
+   **only FINALIZED routes to the live path**; absent or CENTROIDS_DONE keeps
+   staging (between the waves the cell's centroids exist but its postings do
+   not; rev 5's single "DONE" conflated the two and lost the straggler's vector
+   — codex r5 #2). A FINALIZED transition mid-flight aborts the straggler at
+   the resolver, whose retry routes live. The finalizer's own staging range
+   read still serializes it against stragglers that committed first.
 6. Flip `Readable` (atomically updating META's current generation). Abandoned
    builds: the entire superseded generation is range-cleared (§3) — staging,
    partial centroids, postings, everything.
