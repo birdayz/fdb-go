@@ -25,6 +25,7 @@ type options struct {
 	networkAliases []string
 	knobs          map[string]string // server knobs: --knob_NAME=VALUE
 	processCount   int               // fdbserver processes per container (default 1)
+	dataOnDisk     bool              // store /var/fdb/data on disk (not tmpfs) for large datasets
 }
 
 func defaultOptions() options {
@@ -212,6 +213,19 @@ func WithProcessCount(n int) Option {
 			return fmt.Errorf("process count must be 1-10, got %d", n)
 		}
 		o.processCount = n
+		return nil
+	}}
+}
+
+// WithDataOnDisk stores /var/fdb/data on disk (the container's writable layer)
+// instead of the default tmpfs. The default tmpfs keeps tests fast and avoids a
+// leaked anonymous volume, but caps a dataset at host RAM; use this (with an SSD
+// storage engine, e.g. WithStorageEngine("ssd-redwood-1")) for datasets larger
+// than memory. The container's anonymous data volume is on disk and is cleaned
+// up with the container.
+func WithDataOnDisk() Option {
+	return Option{applyFn: func(o *options) error {
+		o.dataOnDisk = true
 		return nil
 	}}
 }

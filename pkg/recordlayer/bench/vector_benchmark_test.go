@@ -201,6 +201,9 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 	// the 10MB tx limit (transaction_too_large 2101) once the graph densifies. Scale
 	// the batch down with dimensionality (≈ const bytes/tx), overridable via env.
 	batchSize := vecEnvInt("VECTOR_BENCH_BATCH", max(1, 50*128/dims))
+	insertStart := time.Now()
+	progressEvery := max(10000, n/50)
+	nextProgress := progressEvery
 	for batch := 0; batch*batchSize < n; batch++ {
 		batchStart := batch * batchSize
 		batchEnd := batchStart + batchSize
@@ -261,6 +264,12 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 		})
 		if err != nil {
 			tb.Fatalf("batch %d: %v", batch, err)
+		}
+		// Progress (for long builds): count, elapsed, instantaneous rate.
+		if done := batchEnd; done >= nextProgress {
+			el := time.Since(insertStart)
+			tb.Logf("  ...inserted %d/%d in %v (%.1f vec/sec)", done, n, el.Round(time.Second), float64(done)/el.Seconds())
+			nextProgress += progressEvery
 		}
 	}
 	return vectors
@@ -1116,4 +1125,137 @@ func vecWriteProfile(path, name string) {
 	if p := pprof.Lookup(name); p != nil {
 		_ = p.WriteTo(f, 0)
 	}
+}
+
+// TestVectorBuildLarge streams a large HNSW index to FDB without ever holding
+// the whole dataset in RAM: vectors are generated per batch and discarded, so
+// process memory is bounded by the shared node cache, not the dataset. This is
+// what makes a 1M-vector build runnable on a box with limited free RAM.
+//
+//	VECTOR_BUILD=1 VECTOR_BENCH_SIZE=1000000 VECTOR_BENCH_DIMS=1536 \
+//	  VECTOR_BENCH_BATCH=16 VECTOR_BENCH_SHARED_CACHE=150000 \
+//	  go test ./pkg/recordlayer/bench -run TestVectorBuildLarge -v -timeout 1200m
+func TestVectorBuildLarge(t *testing.T) {
+	if os.Getenv("VECTOR_BUILD") != "1" {
+		t.Skip("set VECTOR_BUILD=1 to run the large streaming build")
+	}
+	// Datasets larger than RAM need disk-backed FDB (the shared bench DB uses the
+	// memory engine on tmpfs). VECTOR_BENCH_DISK=1 spins a dedicated disk-backed
+	// container with an SSD storage engine.
+	db := vectorBenchDB
+	if os.Getenv("VECTOR_BENCH_DISK") == "1" {
+		db = vecDiskBackedDB(t)
+	} else {
+		ensureVectorBenchDB(t)
+		db = vectorBenchDB
+	}
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	batchSize := vecEnvInt("VECTOR_BENCH_BATCH", 16)
+	md, vecIdx := vecBuildMetaData(dims, false)
+	ss := vecBenchSubspace(t.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(1))
+
+	t.Logf("Streaming build: size=%d dims=%d batch=%d sharedCache=%d cores=%d",
+		size, dims, batchSize, vecEnvInt("VECTOR_BENCH_SHARED_CACHE", 0), runtime.NumCPU())
+
+	start := time.Now()
+	progressEvery := max(20000, size/50)
+	nextProgress := progressEvery
+	buf := make([][]float64, batchSize)
+	for batchStart := 0; batchStart < size; batchStart += batchSize {
+		end := batchStart + batchSize
+		if end > size {
+			end = size
+		}
+		for i := batchStart; i < end; i++ {
+			buf[i-batchStart] = vecRandomVector(rng, dims)
+		}
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := batchStart; i < end; i++ {
+				if _, err := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(int64(i)),
+					Price:      proto.Int32(int32(i % 1000)),
+					VectorData: serializeVector(buf[i-batchStart]),
+				}); err != nil {
+					return nil, fmt.Errorf("insert %d: %w", i, err)
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("batch at %d: %v", batchStart, err)
+		}
+		if end >= nextProgress {
+			el := time.Since(start)
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			t.Logf("  ...%d/%d in %v (%.1f vec/sec, heap %dMB)",
+				end, size, el.Round(time.Second), float64(end)/el.Seconds(), ms.HeapInuse>>20)
+			nextProgress += progressEvery
+		}
+	}
+	total := time.Since(start)
+	t.Logf("BUILD DONE: %d vectors in %v (%.1f vec/sec)", size, total.Round(time.Second), float64(size)/total.Seconds())
+
+	// Spot-check searchability (no brute-force recall — dataset isn't retained).
+	q := vecRandomVector(rng, dims)
+	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+		if err != nil {
+			return nil, err
+		}
+		res, err := store.SearchVectorIndex(vecIdx, q, 10, 200)
+		if err != nil {
+			return nil, err
+		}
+		t.Logf("sample search returned %d results", len(res))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("sample search: %v", err)
+	}
+}
+
+// vecDiskBackedDB spins a dedicated FDB container that stores data on disk with
+// an SSD storage engine, for datasets larger than RAM (the shared bench DB uses
+// the in-RAM memory engine on tmpfs). The container is terminated at test end.
+func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
+	t.Helper()
+	setupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	container, err := foundationdbtc.Run(setupCtx, "",
+		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithDataOnDisk(),
+		foundationdbtc.WithStorageEngine("ssd-redwood-1"),
+	)
+	if err != nil {
+		t.Fatalf("start disk-backed FDB: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	clusterFile, err := container.ClusterFile(setupCtx)
+	if err != nil {
+		t.Fatalf("cluster file: %v", err)
+	}
+	tmpFile, err := os.CreateTemp("", "fdb_diskbench_*.txt")
+	if err != nil {
+		t.Fatalf("temp file: %v", err)
+	}
+	if _, err := tmpFile.WriteString(clusterFile); err != nil {
+		t.Fatalf("write cluster file: %v", err)
+	}
+	tmpFile.Close()
+	fdb.MustAPIVersion(720)
+	dbConn, err := fdb.OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("open disk-backed FDB: %v", err)
+	}
+	return recordlayer.NewFDBDatabase(dbConn)
 }

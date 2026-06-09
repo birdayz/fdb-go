@@ -109,12 +109,17 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 		Image:        img,
 		Env:          env,
 		ExposedPorts: []string{portStr},
-		// Mount tmpfs over /var/fdb/data to prevent the VOLUME directive in the
-		// FDB Docker image from creating anonymous volumes that leak on removal.
-		// Without this, every container leaks ~90MB that persists after termination.
-		Tmpfs: map[string]string{"/var/fdb/data": ""},
 		WaitingFor: wait.ForLog("FDBD joined cluster").
 			WithStartupTimeout(cfg.startupTimeout),
+	}
+	// Mount tmpfs over /var/fdb/data to prevent the VOLUME directive in the
+	// FDB Docker image from creating anonymous volumes that leak on removal.
+	// Without this, every container leaks ~90MB that persists after termination.
+	// WithDataOnDisk skips this so datasets larger than RAM can be stored on disk
+	// (the anonymous volume on the host filesystem); it is cleaned up with the
+	// container.
+	if !cfg.dataOnDisk {
+		req.Tmpfs = map[string]string{"/var/fdb/data": ""}
 	}
 
 	// When knobs are set, override the entrypoint to patch the startup script.
