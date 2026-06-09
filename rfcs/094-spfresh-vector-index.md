@@ -160,11 +160,16 @@ degrade to partial-at-worst under MVCC and re-resolve at their next refresh.
 Writers are fenced *at the flip*, not at the clear (during the grace window g's
 rows are still ACTIVE, so state reads alone would pass and the mutation would be
 invisible in g+1 and eventually GC'd — codex r5 #1): **every write tx real-reads
-META's current-generation key** (one point read in the existing parallel burst;
-written only by the flip tx, so it conflicts with nothing in steady state) —
-the flip aborts every in-flight writer of g at the resolver, and their retries
-resolve g+1. Belt-and-braces, a writer whose target rows are all absent forces
-a synchronous refresh rather than blind-writing (FDB-author r5).
+META's current-generation key and uses it BOTH ways** (codex r6 #1): as a
+**value check** — the read value must equal the tx's cached generation, else
+refresh and retry (covers a tx that *starts* after the flip: the flip already
+committed, so no conflict will fire, but the value mismatch is visible) — and
+as a **conflict fence** — the flip's write aborts every *in-flight* writer of g
+at the resolver. One point read in the existing parallel burst, written only by
+flip txs. Together the two cases are exhaustive: a write lands in g only if the
+flip neither committed before its read nor during its window — i.e. never.
+Belt-and-braces, a writer whose target rows are all absent forces a synchronous
+refresh rather than blind-writing (FDB-author r5).
 
 **Vector encoding:** vector fields in CENTROIDS/COARSE/STAGING/SIDECAR values
 are stored as **raw fixed-width suffixes**, not tuple-escaped bytes elements —
@@ -394,8 +399,14 @@ re-encode residuals (codex r3 #2). Rev 4:
    table); write final POSTINGS + MEMBERSHIP; `Add` counters; clear that cell's
    staging range in the same tx as its last batch, and write **FINALIZED** into
    its cellfin row — **the closing tx's real read covers the cell's ENTIRE
-   staging range, not just the final batch's slice** (else a straggler landing
-   in an already-processed prefix is cleared unassigned — FDB-author r5).
+   staging range, and the tx processes every row that read returns which earlier
+   batches did not cover** (the rows are already in hand from the read) before
+   clearing; if the uncovered remainder exceeds the tx budget, commit *without*
+   clearing and run another batch. Two distinct straggler cases, both closed: a
+   straggler committing **during** the closing tx's window conflicts its read
+   range and aborts/re-runs the finalizer (FDB-author r5); one committing
+   **before** its read version is simply *visible data* — no conflict fires —
+   and must be assigned, not cleared (codex r6 #2).
    **The fence direction lives on the straggler, not the finalizer** (rev 4 had
    it backwards — only the committer's reads are checked, so a finalizer-side
    read cannot stop a later blind staging write from landing in the cleared
