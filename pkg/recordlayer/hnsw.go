@@ -761,6 +761,13 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	// This can exceed the CURRENT entry layer (the entry may have been deleted and
 	// replaced by a lower node) — bounding by the entry layer would orphan the KVs
 	// above it.
+	//
+	// topLayer(pk, M) is always the layer set the node was inserted with, because M is
+	// immutable for an existing index: the metadata-evolution validator rejects a
+	// changed hnswM (validateVectorIndexOptions; Java
+	// VectorIndexMaintainerFactory.validateChangedOptions disallows HNSW_M), so a
+	// "deleted with a different M than inserted" scenario cannot reach this code at the
+	// supported surface — in either engine.
 	topLvl := topLayer(primaryKey, g.config.M)
 
 	// Pipeline: fire all compact-layer reads at once.
