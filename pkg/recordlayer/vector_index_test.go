@@ -1326,21 +1326,65 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("stores RaBitQ-encoded bytes in FDB", func() {
-		graph := makeRaBitQGraph(4, 4)
+	It("stores plain bytes pre-centroid and RaBitQ-encoded bytes post-centroid (Java parity)", func() {
+		// Java parity (Insert.java:262-278, 196-198): for a translation-preserving metric
+		// (Euclidean), RaBitQ uses the noOp quantizer until a centroid is sampled, so
+		// pre-centroid vectors are stored PLAIN (type ordinal 2, DOUBLE) and only become
+		// RaBitQ-encoded (type ordinal 3) once the centroid is established. Storing
+		// RaBitQ-encoded bytes pre-centroid (the old Go behavior) is a wire divergence:
+		// Java would read those bytes as RaBitQ under an identity transform and mis-decode.
+		const dims = 4
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               8,
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-storefmt"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(7))
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 
-			pk := tuple.Tuple{int64(42)}
-			vec := []float64{1.0, 2.0, 3.0, 4.0}
-			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			// First (pre-centroid) node: must be stored PLAIN (DOUBLE, type ordinal 2).
+			pre := tuple.Tuple{int64(0)}
+			Expect(graph.Insert(tx, pre, []float64{1.0, 2.0, 3.0, 4.0})).To(Succeed())
+			preBytes, _, lerr := graph.storage.loadNodeLayer(tx, 0, pre)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(preBytes)).To(BeNumerically(">", 0))
+			Expect(preBytes[0]).To(Equal(byte(2)), "pre-centroid vector must be stored PLAIN (DOUBLE), not RaBitQ")
 
-			// Load the node and verify the stored bytes have type ordinal 3 (RABITQ).
-			vecBytes, _, err := graph.storage.loadNodeLayer(tx, 0, pk)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(vecBytes)).To(BeNumerically(">", 0))
-			Expect(vecBytes[0]).To(Equal(byte(3)), "stored vector should have RABITQ type ordinal")
+			// Insert until the centroid is established (StatsThreshold accumulates).
+			i := int64(1)
+			for {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, v)).To(Succeed())
+				info, ierr := graph.storage.loadAccessInfo(tx)
+				Expect(ierr).NotTo(HaveOccurred())
+				if info.hasTransform() {
+					break
+				}
+				i++
+				Expect(i).To(BeNumerically("<", 100), "centroid should establish well before 100 inserts")
+			}
+
+			// A node inserted AFTER the centroid is established must be RaBitQ-encoded.
+			post := tuple.Tuple{int64(1000)}
+			pv := make([]float64, dims)
+			for d := range pv {
+				pv[d] = rng.NormFloat64()
+			}
+			Expect(graph.Insert(tx, post, pv)).To(Succeed())
+			postBytes, _, perr := graph.storage.loadNodeLayer(tx, 0, post)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(len(postBytes)).To(BeNumerically(">", 0))
+			Expect(postBytes[0]).To(Equal(byte(3)), "post-centroid vector must be RaBitQ-encoded (type ordinal 3)")
 
 			return nil, nil
 		})
@@ -1497,13 +1541,120 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("search is correct after a mid-stream centroid bootstrap (mixed plain + RaBitQ graph)", func() {
+		// P1 regression. When the RaBitQ centroid is established mid-stream, the nodes
+		// inserted before it are stored plain (identity coordinates) and the nodes after
+		// it are RaBitQ-encoded (rotated + centroid-translated coordinates). The query is
+		// transformed into the post-centroid system, so the pre-centroid plain nodes MUST
+		// be lifted into that system at read (Java's StorageTransform) before comparison.
+		//
+		// Before the fix Go stored pre-centroid vectors RaBitQ-encoded in identity space
+		// and never lifted them, so after the transition they were compared against a
+		// centroid-space query in the wrong coordinate system — a pre-centroid vector
+		// could not even retrieve itself. Self-retrieval of the pre-centroid nodes is the
+		// red→green signal: exact for a correctly-lifted plain vector, garbage otherwise.
+		const dims = 12
+		config := HNSWConfig{
+			NumDimensions: dims, M: 8, MMax: 8, MMax0: 16, EfConstruction: 200, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 6),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               15, // centroid establishes around the 15th insert
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-mixed-recall"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(2026))
+
+		const n = 80
+		vectors := make([][]float64, n)
+		for i := range vectors {
+			vectors[i] = make([]float64, dims)
+			for d := range vectors[i] {
+				vectors[i][d] = rng.NormFloat64() * 5
+			}
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			preCentroidCount := 0
+			centroidEstablished := false
+			for i, v := range vectors {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+				if !centroidEstablished {
+					info, ierr := graph.storage.loadAccessInfo(tx)
+					Expect(ierr).NotTo(HaveOccurred())
+					if info.hasTransform() {
+						centroidEstablished = true
+					} else {
+						preCentroidCount++
+					}
+				}
+			}
+			// The graph must genuinely be mixed: some plain pre-centroid nodes AND a
+			// transition that actually fired, else this test would not exercise the bug.
+			Expect(centroidEstablished).To(BeTrue(), "centroid must establish mid-stream")
+			Expect(preCentroidCount).To(BeNumerically(">", 5), "must have several pre-centroid (plain) nodes")
+			Expect(preCentroidCount).To(BeNumerically("<", n), "must have post-centroid (RaBitQ) nodes too")
+
+			// Every pre-centroid node must retrieve itself as its own nearest neighbor.
+			// This is exact for a correctly-lifted plain vector; the pre-fix bug made it
+			// impossible (wrong coordinate system).
+			for i := 0; i < preCentroidCount; i++ {
+				results, serr := graph.Search(tx, vectors[i], 1, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				Expect(results).NotTo(BeEmpty(), "pre-centroid node %d returned no results", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)),
+					"pre-centroid node %d must retrieve itself as nearest (mixed-coordinate bug)", i)
+				Expect(results[0].Distance).To(BeNumerically("<", 1e-6),
+					"pre-centroid self-distance must be ~0 (exact, lifted)")
+			}
+
+			// And overall recall@5 over the whole mixed graph must be high.
+			const k = 5
+			hits, total := 0, 0
+			for i := 0; i < n; i += 7 {
+				results, serr := graph.Search(tx, vectors[i], k, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				type idDist struct {
+					id   int
+					dist float64
+				}
+				all := make([]idDist, n)
+				for j := range vectors {
+					all[j] = idDist{j, euclideanDistance(vectors[i], vectors[j])}
+				}
+				sort.Slice(all, func(a, b int) bool { return all[a].dist < all[b].dist })
+				trueK := make(map[int]bool, k)
+				for j := 0; j < k; j++ {
+					trueK[all[j].id] = true
+				}
+				for _, r := range results {
+					if trueK[int(r.PrimaryKey[0].(int64))] {
+						hits++
+					}
+					total++
+				}
+			}
+			recall := float64(hits) / float64(total)
+			Expect(recall).To(BeNumerically(">=", 0.8),
+				"recall@5 over the mixed graph should be >= 80%% (got %.0f%%)", recall*100)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("decodeStoredVector reconstructs approximate vector from RaBitQ bytes", func() {
 		dims := 8
 		numExBits := 7
 		graph := makeRaBitQGraph(dims, numExBits)
 
 		original := []float64{1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0}
-		encoded := graph.encodeVectorBytes(original)
+		// transformActive=true forces the RaBitQ encoding (the post-centroid regime);
+		// this exercises the quantizer round-trip directly.
+		encoded := graph.encodeVectorBytes(original, true)
 		Expect(encoded[0]).To(Equal(byte(3))) // RABITQ
 
 		decoded, err := graph.decodeStoredVector(encoded)

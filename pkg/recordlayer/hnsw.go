@@ -148,6 +148,23 @@ func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 type hnswGraph struct {
 	storage *hnswStorage
 	config  HNSWConfig
+
+	// opXform is the storage transform of the in-flight operation (the rotation +
+	// centroid that maps a raw vector into the graph's current coordinate system).
+	// Set once at the start of each Insert/Search/Delete from the freshly-read
+	// AccessInfo; nil when no centroid is established yet (or the index has no
+	// quantizer). It is the read-side analog of Java's StorageTransform, which
+	// CompactStorageAdapter.compactNodeFromTuples applies to every fetched vector
+	// (CompactStorageAdapter.java:199): a vector stored *plain* (pre-centroid, noOp
+	// quantizer) must be lifted by opXform before it is compared, so plain and
+	// RaBitQ-encoded nodes — "a mix of vectors" (Insert.java:360) — are always
+	// compared in one coordinate system.
+	//
+	// A field, not a threaded parameter, because — unlike Java's single reused Hnsw
+	// object — Go builds a fresh hnswGraph per operation (NewHNSWGraph in
+	// withPrefixWriteLock / per Search), driven single-goroutine within one FDB
+	// transaction, so there is no concurrent reader/writer to race on it.
+	opXform *hnswTransform
 }
 
 // NewHNSWGraph creates a new HNSW graph.
@@ -173,11 +190,18 @@ func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
 	return newHNSWTransform(info.rotatorSeed, info.centroid, g.config.NumDimensions, normalize)
 }
 
-// encodeVectorBytes returns the bytes to store for a vector.
-// When a quantizer is configured and a transform is active, the caller must apply the
-// transform before calling this. Returns quantized bytes or raw DOUBLE-serialized bytes.
-func (g *hnswGraph) encodeVectorBytes(vector []float64) []byte {
-	if g.config.Quantizer != nil {
+// encodeVectorBytes returns the bytes to store for a vector. transformActive reports
+// whether the vector was stored under an active storage transform (an established
+// centroid, or the immediate rotation used for translation-non-preserving metrics).
+//
+// This mirrors Java's quantizer selection (Insert.java:196-198, 262-278): with RaBitQ
+// the quantizer is the noOp quantizer until a centroid exists — so pre-centroid vectors
+// are stored *plain* (recoverable, lifted by the storage transform at read) — and only
+// the real RaBitQuantizer once the transform is active. The caller must already have
+// applied the transform to `vector`. Returns quantized bytes only when both a quantizer
+// is configured and the transform is active; otherwise raw DOUBLE-serialized bytes.
+func (g *hnswGraph) encodeVectorBytes(vector []float64, transformActive bool) []byte {
+	if g.config.Quantizer != nil && transformActive {
 		return g.config.Quantizer.Encode(vector)
 	}
 	return serializeVector(vector)
@@ -208,6 +232,20 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 		}
 		return dist
 	}
+	// Plain (non-quantized) stored vector. When a storage transform is active (a
+	// centroid has been established), this vector was stored *before* the centroid
+	// under the noOp quantizer, so it is still in raw coordinates — lift it into the
+	// current coordinate system before comparing, exactly as Java applies the current
+	// StorageTransform to a fetched plain vector (CompactStorageAdapter.java:199).
+	// query is already in that system (Search/Insert transformed it up front).
+	if g.opXform != nil {
+		vec, err := deserializeVector(storedVecBytes)
+		if err != nil {
+			return math.Inf(1)
+		}
+		return vectorDistance(query, g.opXform.apply(vec), g.config.Metric)
+	}
+	// No active transform: query and stored vector share raw coordinates already.
 	// Fast path: read components straight from the stored bytes, no []float64.
 	if dist, ok := vectorDistanceFromBytes(query, storedVecBytes, g.config.Metric); ok {
 		return dist
@@ -229,9 +267,21 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 		return nil, fmt.Errorf("hnsw: empty vector bytes")
 	}
 	if g.config.Quantizer != nil && storedVecBytes[0] == g.config.Quantizer.GetTypeByte() {
+		// Quantized: already in the current coordinate system (the centroid is
+		// established once and never changes), so it is directly comparable.
 		return g.config.Quantizer.Decode(storedVecBytes, g.config.NumDimensions)
 	}
-	return deserializeVector(storedVecBytes)
+	vec, err := deserializeVector(storedVecBytes)
+	if err != nil {
+		return nil, err
+	}
+	// Plain vector stored before the centroid (noOp quantizer) — lift it into the
+	// current coordinate system so pairwise distances against quantized neighbors are
+	// consistent (Java applies the current StorageTransform to every fetched vector).
+	if g.opXform != nil {
+		vec = g.opXform.apply(vec)
+	}
+	return vec, nil
 }
 
 // Insert adds a vector to the HNSW graph.
@@ -280,14 +330,18 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 	// Build transform from access info (nil if no rotation configured).
 	transform := g.buildTransform(accessInfo)
+	g.opXform = transform
 
 	// Transform vector for storage and search.
-	// All vectors in the graph are stored in the transformed coordinate system.
+	// All vectors in the graph are stored in the current coordinate system: when a
+	// transform is active the vector is rotated/translated and quantized; otherwise it
+	// is stored plain (and lifted at read once a centroid exists), matching Java's
+	// noOp-until-centroid quantizer choice.
 	queryVec := vector
 	if transform != nil {
 		queryVec = transform.apply(vector)
 	}
-	vecBytes := g.encodeVectorBytes(queryVec)
+	vecBytes := g.encodeVectorBytes(queryVec, transform != nil)
 
 	epLayer := accessInfo.layer
 	epPK := accessInfo.pk
@@ -461,7 +515,10 @@ func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vect
 		}
 	}
 
-	vecBytes := g.encodeVectorBytes(queryVec)
+	// Quantize only when a transform is active (Cosine/DotProduct: immediate rotation).
+	// For a translation-preserving metric (Euclidean) the first node is pre-centroid, so
+	// it is stored plain — matching Java's noOp quantizer until a centroid is sampled.
+	vecBytes := g.encodeVectorBytes(queryVec, info.hasTransform())
 	info.vectorBytes = vecBytes
 
 	for layer := 0; layer <= insertLayer; layer++ {
@@ -530,7 +587,12 @@ func (g *hnswGraph) addToStatsIfNecessary(tx fdb.Transaction, info *hnswAccessIn
 	}
 	info.rotatorSeed = rotatorSeed
 	info.centroid = rotatedCentroid
-	info.vectorBytes = g.encodeVectorBytes(transform.apply(entryVec))
+	// The entry node's AccessInfo copy is now expressed in the freshly-established
+	// coordinate system, so it is quantized (transform active). entryVec was decoded
+	// with opXform still nil (this insert is pre-centroid), i.e. as the raw vector, so
+	// applying the new transform lifts it correctly. The entry node's data-subspace
+	// bytes stay plain and are lifted at read like any other pre-centroid vector.
+	info.vectorBytes = g.encodeVectorBytes(transform.apply(entryVec), true)
 	g.storage.saveAccessInfo(tx, info)
 	return g.storage.deleteAllSampledVectors(tx)
 }
@@ -649,6 +711,9 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		}
 		return nil // genuinely empty graph, nothing to delete
 	}
+	// Lift pre-centroid plain vectors into the current coordinate system during repair
+	// distance computations (see opXform). nil when no centroid is established.
+	g.opXform = g.buildTransform(accessInfo)
 	epLayer := accessInfo.layer
 
 	// Pipeline: fire all compact-layer reads at once.
@@ -1024,7 +1089,9 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 
 	// Apply transform to query vector so it's in the same coordinate system
 	// as the stored vectors. Matches Java's StorageTransform.transform(queryVector).
+	// opXform also lifts any plain (pre-centroid) stored vector at read time.
 	transform := g.buildTransform(accessInfo)
+	g.opXform = transform
 	searchQuery := query
 	if transform != nil {
 		searchQuery = transform.apply(query)

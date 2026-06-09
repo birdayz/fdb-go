@@ -807,6 +807,13 @@ func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
 		128,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	// Establish the RaBitQ centroid after a few inserts so the small chaos dataset
+	// actually exercises the quantization regime (and the mid-stream plain→RaBitQ
+	// transition) under faults. Without this, Java parity stores everything plain
+	// (noOp quantizer until StatsThreshold=1000), bypassing RaBitQ entirely.
+	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
+	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
+	vecIdx.Options["hnswStatsThreshold"] = "3"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
@@ -1293,6 +1300,12 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 		2,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	// Force the RaBitQ centroid to establish early (Java parity stores plain until
+	// StatsThreshold=1000), so this small dataset truly exercises the quantization
+	// pipeline + the plain→RaBitQ transition under commit_unknown faults.
+	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
+	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
+	vecIdx.Options["hnswStatsThreshold"] = "3"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
