@@ -64,8 +64,8 @@ type VectorQuantizer interface {
 type HNSWConfig struct {
 	NumDimensions         int
 	M                     int             // Connectivity factor (default 16)
-	MMax                  int             // Max connections for non-zero layers (default M)
-	MMax0                 int             // Max connections for layer 0 (default 2*M)
+	MMax                  int             // Max connections for non-zero layers (default 16 — Java DEFAULT_M_MAX, a constant, NOT derived from M; setting M > 16 requires setting MMax too, like Java)
+	MMax0                 int             // Max connections for layer 0 (default 32 — Java DEFAULT_M_MAX_0, a constant, NOT derived from M)
 	EfConstruction        int             // Insertion search factor (default 200)
 	Metric                VectorMetric    // Distance metric
 	ExtendCandidates      bool            // Extend candidate set with 2nd-degree neighbors (default false)
