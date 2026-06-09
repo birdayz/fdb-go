@@ -259,6 +259,7 @@ go_test(
         "store_delete_where_test.go",
         "store_function_test.go",
         "store_generic_test.go",
+        "store_open_retryable_error_test.go",
         "store_state_cache_test.go",
         "store_state_test.go",
         "store_stress_test.go",
