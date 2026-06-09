@@ -41,6 +41,40 @@ func Serialize(vec []float64) []byte {
 // precision is self-describing (byte 0), so no external type info is needed.
 // RaBitQ-quantized vectors are not decodable here (they require the quantizer)
 // and return an error.
+//
+// Payload exposes a stored vector's raw IEEE-754 payload for zero-allocation,
+// component-at-a-time reads (e.g. computing a distance without materializing a
+// []float64). It returns the type ordinal, the payload slice (sans the leading
+// type byte), the number of bytes per component, and ok=false when the data is
+// empty or RaBitQ-quantized (which must go through the VectorQuantizer instead).
+func Payload(data []byte) (typeOrdinal byte, payload []byte, stride int, ok bool) {
+	if len(data) < 1 {
+		return 0, nil, 0, false
+	}
+	switch data[0] {
+	case typeHalf:
+		return typeHalf, data[1:], 2, true
+	case typeSingle:
+		return typeSingle, data[1:], 4, true
+	case typeDouble:
+		return typeDouble, data[1:], 8, true
+	default: // RaBitQ or unknown
+		return data[0], data[1:], 0, false
+	}
+}
+
+// Type ordinals re-exported for callers that read components directly.
+const (
+	TypeHalf   = typeHalf
+	TypeSingle = typeSingle
+	TypeDouble = typeDouble
+)
+
+// HalfToFloat32 converts an IEEE-754 half-precision (16-bit) value to float32.
+// Exported for zero-alloc readers that decode HALF payloads component by
+// component (see Payload).
+func HalfToFloat32(h uint16) float32 { return halfToFloat32(h) }
+
 func Deserialize(data []byte) ([]float64, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("vectorcodec: empty vector data")

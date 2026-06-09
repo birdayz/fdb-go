@@ -17,17 +17,21 @@ import (
 )
 
 var _ = Describe("Distance Metrics", func() {
-	It("euclidean distance computes squared L2", func() {
+	It("euclidean distance is true L2 (sqrt); square variant is squared", func() {
 		a := []float64{1.0, 2.0, 3.0}
 		b := []float64{4.0, 5.0, 6.0}
-		// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9+9+9 = 27
-		Expect(euclideanDistance(a, b)).To(BeNumerically("~", 27.0, 1e-9))
+		// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9+9+9 = 27; L2 = sqrt(27). Matches Java's
+		// EuclideanMetric.distance = Math.sqrt(...); EuclideanSquare keeps the sum.
+		Expect(euclideanDistance(a, b)).To(BeNumerically("~", math.Sqrt(27.0), 1e-9))
+		Expect(euclideanSquareDistance(a, b)).To(BeNumerically("~", 27.0, 1e-9))
 
-		// Distance to self is zero.
+		// Distance to self is zero (both variants).
 		Expect(euclideanDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
+		Expect(euclideanSquareDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
 
-		// Single dimension.
-		Expect(euclideanDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 16.0, 1e-9))
+		// Single dimension: |7-3| = 4, squared = 16.
+		Expect(euclideanDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 4.0, 1e-9))
+		Expect(euclideanSquareDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 16.0, 1e-9))
 	})
 
 	It("cosine distance: orthogonal = 1.0, identical = 0.0", func() {
@@ -168,6 +172,36 @@ var _ = Describe("Layer Assignment", func() {
 		Expect(r1).NotTo(Equal(r3))
 	})
 
+	It("splittableRandom.split matches java.util.SplittableRandom (known-answer)", func() {
+		// Oracle values generated with OpenJDK 25 (the SplitMix algorithm is fixed):
+		//   SplittableRandom r = new SplittableRandom(0x123456789abcdef0L);
+		//   r.nextLong();                      // p1
+		//   SplittableRandom c1 = r.split();   // c1a, c1b = c1.nextLong() x2
+		//   SplittableRandom c2 = r.split();   // c2a
+		//   r.nextLong();                      // p2 (parent stream resumes after splits)
+		//   SplittableRandom gc = c1.split();  // gca (split of a split child)
+		//   c1.nextDouble();                   // c1d
+		// HNSW delete relies on split(): one child per layer (Java Delete.deleteFromLayers).
+		r := &splittableRandom{seed: 0x123456789abcdef0, gamma: goldenGamma}
+		Expect(r.nextLong()).To(Equal(int64(1592342178222199016)), "p1")
+		c1 := r.split()
+		Expect(c1.nextLong()).To(Equal(int64(3429967862750260442)), "c1a")
+		Expect(c1.nextLong()).To(Equal(int64(-1062649399360441825)), "c1b")
+		c2 := r.split()
+		Expect(c2.nextLong()).To(Equal(int64(-7717078838966176596)), "c2a")
+		Expect(r.nextLong()).To(Equal(int64(6724426161381059673)), "p2")
+		gc := c1.split()
+		Expect(gc.nextLong()).To(Equal(int64(7881248587903041880)), "gca")
+		Expect(c1.nextDouble()).To(BeNumerically("~", 0.7535564508747816, 1e-15), "c1d")
+
+		// Delete's exact shape: seed 42, two sequential splits, one nextDouble each.
+		d := &splittableRandom{seed: 42, gamma: goldenGamma}
+		dl0 := d.split()
+		dl1 := d.split()
+		Expect(dl0.nextDouble()).To(BeNumerically("~", 0.5928260530359551, 1e-15), "dl0")
+		Expect(dl1.nextDouble()).To(BeNumerically("~", 0.19301583440619918, 1e-15), "dl1")
+	})
+
 	It("javaHashCode matches Java behavior", func() {
 		// Java: int hash = 1; for (byte b : data) hash = 31 * hash + b;
 		// For data = {1}, hash = 31*1 + 1 = 32
@@ -227,6 +261,32 @@ var _ = Describe("HNSW Config Validation", func() {
 		c.EfConstruction = 401
 		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
 	})
+
+	// Cross-field invariants — Java Config.java:88-92. The default config satisfies them.
+	It("accepts the default config", func() {
+		Expect(ValidateHNSWConfig(DefaultHNSWConfig(128))).To(Succeed())
+	})
+
+	It("rejects m > mMax", func() {
+		c := DefaultHNSWConfig(128) // M=16, MMax=16
+		c.M = 20                    // 20 > 16, both individually in range
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
+
+	It("rejects mMax > mMax0", func() {
+		c := DefaultHNSWConfig(128) // MMax=16, MMax0=32
+		c.MMax = 40                 // 40 > 32, both individually in range
+		c.MMax0 = 32
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
+
+	It("rejects efRepair < m or efRepair > 400", func() {
+		c := DefaultHNSWConfig(128) // M=16, efRepair=64
+		c.EfRepair = 10             // 10 < m=16
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+		c.EfRepair = 401 // > 400
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
 })
 
 var _ = Describe("HNSW Graph Direct", func() {
@@ -246,6 +306,34 @@ var _ = Describe("HNSW Graph Direct", func() {
 		storage := newHNSWStorage(ss, config)
 		return NewHNSWGraph(storage, config)
 	}
+
+	It("new node selects M neighbors at layer 0, not MMax0 (Java parity)", func() {
+		// Java Insert.insertIntoLayer selects getConfig().getM() for the NEW node
+		// (Insert.java:507); maxConn (MMax/MMax0) is only the cap for pruning EXISTING
+		// neighbors. Use EUCLIDEAN_SQUARE (no triangle inequality → selectNeighbors takes a
+		// plain top-cap slice, no diversity pruning) so the new node's degree is exactly
+		// min(candidates, cap): post-fix M=4, pre-fix MMax0=8. Insert a dense cluster
+		// (>> MMax0 reachable); the LAST node's layer-0 degree (no later reverse edges) must
+		// be M=4, not MMax0=8 (the pre-fix Go value). Revert-proof: restore maxConn → 8.
+		config := HNSWConfig{NumDimensions: 4, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, Metric: VectorMetricEuclideanSquare}
+		graph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-newnode-degree"), config), config)
+		rng := rand.New(rand.NewSource(7))
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			var lastPK tuple.Tuple
+			for i := 0; i < 60; i++ { // dense random cluster, well >> MMax0
+				lastPK = tuple.Tuple{int64(i)}
+				v := []float64{rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10}
+				Expect(graph.Insert(tx, lastPK, v)).To(Succeed())
+			}
+			_, neighbors, lerr := graph.storage.loadNodeLayer(tx, 0, lastPK)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(neighbors)).To(Equal(config.M),
+				"new node must select M neighbors at layer 0, not MMax0 (pre-fix Go selected MMax0)")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 
 	It("insert single node, search returns it", func() {
 		graph := makeGraph(3)
@@ -557,13 +645,72 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(gotVecBytes).To(Equal(vecBytes))
 			Expect(gotNeighbors).To(HaveLen(2))
-			Expect(tupleEqual(gotNeighbors[0], tuple.Tuple{int64(1)})).To(BeTrue())
-			Expect(tupleEqual(gotNeighbors[1], tuple.Tuple{int64(2)})).To(BeTrue())
+			Expect(spanPKInt(gotNeighbors[0])).To(Equal(int64(1)))
+			Expect(spanPKInt(gotNeighbors[1])).To(Equal(int64(2)))
 
 			// Delete and verify.
 			storage.deleteNodeLayer(tx, 0, pk)
 			_, _, err = storage.loadNodeLayer(tx, 0, pk)
 			Expect(err).To(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete-repair keeps secondary candidates when EfRepair is omitted (zero normalizes to Java default)", func() {
+		// P3 regression. Java requires efRepair ∈ [m, 400] (Config.java:91-92) with
+		// default 64 — zero is invalid, NOT an "unlimited" sentinel. A Go struct literal
+		// that omits EfRepair used to carry 0 into the delete-repair sample rate
+		// (efRepair - |primary|)/numCandidates, going negative the moment any primary
+		// neighbor exists — every secondary repair candidate was silently dropped and
+		// deletes under-repaired the graph. NewHNSWGraph must normalize 0 → 64.
+		//
+		// Topology: D→[P1,P2], P1→[D,S1], P2→[D,S2]. The repair candidate set must be
+		// {P1,P2,S1,S2} (primaries + sampled secondaries). With the bug it was {P1,P2}.
+		ss := specSubspace().Sub("hnsw-efrepair-zero")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			// EfRepair deliberately omitted (zero value) — the case under test.
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+		Expect(graph.config.EfRepair).To(Equal(64), "NewHNSWGraph must normalize EfRepair=0 to Java's default 64")
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			d := tuple.Tuple{int64(99)}
+			p1, p2 := tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}
+			s1, s2 := tuple.Tuple{int64(3)}, tuple.Tuple{int64(4)}
+			vec := func(x float64) []byte { return serializeVector([]float64{x, 0}) }
+
+			storage.saveNodeLayer(tx, 0, d, vec(0), []tuple.Tuple{p1, p2})
+			storage.saveNodeLayer(tx, 0, p1, vec(1), []tuple.Tuple{d, s1})
+			storage.saveNodeLayer(tx, 0, p2, vec(2), []tuple.Tuple{d, s2})
+			storage.saveNodeLayer(tx, 0, s1, vec(3), []tuple.Tuple{p1})
+			storage.saveNodeLayer(tx, 0, s2, vec(4), []tuple.Tuple{p2})
+
+			deletedNeighbors := [][]byte{nestPK(p1), nestPK(p2)}
+			cands, cerr := graph.findDeletionRepairCandidates(tx, 0, d, deletedNeighbors, newSplittableRandomForKey(d))
+			Expect(cerr).NotTo(HaveOccurred())
+
+			got := make(map[int64]bool, len(cands))
+			for _, c := range cands {
+				got[c.pk[0].(int64)] = true
+			}
+			Expect(got).To(HaveKey(int64(1)), "primary P1 must be a repair candidate")
+			Expect(got).To(HaveKey(int64(2)), "primary P2 must be a repair candidate")
+			// The red→green signal: with EfRepair stuck at 0 the sample rate is negative
+			// and the secondaries are dropped.
+			Expect(got).To(HaveKey(int64(3)), "secondary S1 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(got).To(HaveKey(int64(4)), "secondary S2 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(cands).To(HaveLen(4))
 
 			return nil, nil
 		})
@@ -711,7 +858,9 @@ var _ = Describe("HNSW Graph Direct", func() {
 				if loadErr != nil {
 					continue // node might not exist at layer 0 (shouldn't happen for layer 0)
 				}
-				for _, neighbor := range neighbors {
+				for _, neighborSpan := range neighbors {
+					neighbor, derr := decodeNestedPK(neighborSpan)
+					Expect(derr).NotTo(HaveOccurred())
 					if !visited[string(neighbor.Pack())] {
 						visited[string(neighbor.Pack())] = true
 						queue = append(queue, neighbor)
@@ -844,6 +993,204 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
 			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("lonely inlining node writes NO sentinel KV (Java wire compat)", func() {
+		// Java's InliningStorageAdapter writes NOTHING for a node with no neighbors at an
+		// inlining layer (BaseNeighborsChangeSet.writeDelta is a no-op for an empty change
+		// set). A sentinel would be a 2-element (layer, pk) key; Java's inlining scanner
+		// parses every KV at a layer as a 3-element edge via keyTuple.getNestedTuple(2)
+		// (InliningStorageAdapter.java:198/376), so a 2-element key crashes a Java reader
+		// sharing the cluster. Revert-proof: restore the `tx.Set(prefix, []byte{})` sentinel
+		// and this asserts a non-zero KV count → fails.
+		graph := makeInliningGraph(3)
+		pk := tuple.Tuple{int64(42)}
+		const layer = 1 // inlining (UseInlining=true, layer > 0)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			Expect(graph.storage.saveNodeLayerInlining(rtx.Transaction(), layer, pk, nil, nil)).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh transaction reads committed data directly from FDB (bypassing the cache):
+		// the lonely node's (layer, pk) prefix must hold zero KVs.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			prefix := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+			r, perr := fdb.PrefixRange(prefix)
+			Expect(perr).NotTo(HaveOccurred())
+			iter := rtx.Transaction().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+			count := 0
+			for iter.Advance() {
+				_, gerr := iter.Get()
+				Expect(gerr).NotTo(HaveOccurred())
+				count++
+			}
+			Expect(count).To(BeZero(),
+				"a lonely inlining node must write zero KVs — a 2-element sentinel key breaks Java's inlining scanner")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("inlining graph with a lonely entry searches correctly on a cold cache (cross-tx)", func() {
+		// With the sentinel removed, a lonely entry point at an inlining layer must still be
+		// reachable when the per-tx cache is cold (a fresh transaction/process). Insert enough
+		// nodes that the top node is alone at an inlining layer, commit, then search from a
+		// fresh storage (cold cache) reading committed FDB data.
+		graph := makeInliningGraph(2)
+		const n = 60
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < n; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), float64(i * 2)})).To(Succeed())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh graph on the SAME subspace → cold cache → reads from committed FDB, exercising
+		// the (sentinel-less) lonely-entry descent end to end.
+		config := graph.config
+		coldGraph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-inlining"), config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			results, serr := coldGraph.Search(rtx.Transaction(), []float64{7.0, 14.0}, 1, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(7)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold insert reaching a lonely inlining entry layer succeeds (Java: empty fetch = empty node)", func() {
+		// P4 regression (codex finding #4 — confirmed real). Java's InliningStorageAdapter
+		// cannot distinguish "node with no neighbors" from "node absent" (its Javadoc says
+		// so, InliningStorageAdapter.java:94-95); fetchNodeInternal returns a node with an
+		// EMPTY neighbor list for an empty range, never an error. Go returned
+		// errHNSWNotPresent, which the insert reverse-connection loop propagated raw:
+		// a COLD transaction (empty per-tx cache) inserting a node whose level reaches a
+		// lonely entry point's inlining layer selects that entry as a neighbor
+		// (searchLayerMulti pre-seeds the entry into its results), loads its empty edge
+		// range for the reverse edge, and failed with "node not found at layer N
+		// (inlining)". Same-tx inserts were saved by the cache (saveNodeLayerInlining
+		// caches empty-but-present), which is why only the cross-tx case broke.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-insert")
+
+		// Two PKs whose deterministic level reaches an inlining layer (>= 1).
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 2; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Tx 1: first node becomes the entry point, lonely (no neighbors → no KVs) at
+		// every inlining layer it occupies.
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, warmGraph.Insert(rtx.Transaction(), pks[0], []float64{1, 1})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Tx 2, COLD cache (fresh storage): the second insert reaches the lonely layer,
+		// selects the entry as its neighbor, and must add the reverse edge — not fail.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed(),
+				"cold insert reaching a lonely inlining entry layer must not fail (empty fetch = empty node)")
+			// Both nodes retrievable afterwards.
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 2, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			// The upper-layer edges must ACTUALLY be written, both directions —
+			// "succeeding" while silently skipping them (neighbor vector not in the cold
+			// cache → saveNodeLayerInlining dropped the edge) leaves the layer
+			// disconnected; layer-0 search masks it. Java cannot skip: the vector
+			// travels WITH the reference (NodeReferenceWithVector) from search to write.
+			st := coldGraph.storage
+			newToEp := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[1], pks[0]})
+			epToNew := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[0], pks[1]})
+			v1, gerr := tx.Get(fdb.Key(newToEp)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v1).NotTo(BeNil(), "edge (layer 1, newNode → entry) must be written on a cold insert")
+			v2, gerr := tx.Get(fdb.Key(epToNew)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v2).NotTo(BeNil(), "reverse edge (layer 1, entry → newNode) must be written on a cold insert")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold insert into a CONNECTED inlining layer succeeds (vector merges into source-cached entries)", func() {
+		// Codex round-3 finding. A node loaded as a SOURCE at an inlining layer is cached
+		// with vecBytes nil (inlining nodes don't store their own vector at their layer).
+		// If its vector later arrives — via a threaded neighborVec or an edge value naming
+		// it — the cache write must MERGE the vector into the existing entry, not skip it
+		// because "already cached". Otherwise a later reverse-edge save that resolves that
+		// node's vector from the cache fails with "no vector for neighbor".
+		//
+		// Natural trigger: a CONNECTED upper layer (A↔B at layer 1), cold insert C
+		// reaching layer 1. The search loads A as a source first (cached vec-nil), B's
+		// edge read hits the already-cached A and (pre-fix) skips filling A's vector;
+		// the reverse-edge save for B then needs A's vector → cold error.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-connected")
+
+		// Three PKs whose deterministic level reaches layer >= 1.
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 3; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Warm: two nodes both reaching layer 1 — the second insert connects them there,
+		// so layer 1 is a CONNECTED inlining layer (real edge KVs exist).
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(warmGraph.Insert(tx, pks[0], []float64{1, 1})).To(Succeed())
+			Expect(warmGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cold: the third insert reaches layer 1, selects both, and must be able to
+		// resolve every neighbor vector when writing the reverse edges.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[2], []float64{3, 3})).To(Succeed(),
+				"cold insert into a connected inlining layer must not fail (vector must merge into the source-cached entry)")
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1122,6 +1469,59 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		return NewHNSWGraph(storage, config)
 	}
 
+	It("RaBitQ centroid bootstrap establishes a centroid after StatsThreshold inserts (Java parity)", func() {
+		// Java Insert.addToStatsIfNecessary: with RaBitQ + a translation-preserving metric and no
+		// centroid yet, inserts sample vectors into the SAMPLES subspace, roll them up, and once
+		// StatsThreshold accumulate, establish the rotated centroid and transition the transform.
+		// Force probabilities to 1.0 and a low threshold so the bootstrap fires deterministically.
+		const dims = 8
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0, // always sample
+			MaintainStatsProbability:     1.0, // always roll up
+			StatsThreshold:               10,  // establish the centroid once 10 accumulate
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bootstrap"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(11))
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// firstInsert (node 0) does not sample; nodes 1..14 each sample + roll up, so by
+			// ~node 10 the accumulated count reaches StatsThreshold and the centroid is established.
+			for i := 0; i < 15; i++ {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+			}
+			info, lerr := storage.loadAccessInfo(tx)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue(), "centroid must be established after StatsThreshold inserts")
+			Expect(info.centroid).NotTo(BeNil())
+			Expect(info.rotatorSeed).NotTo(Equal(int64(-1)))
+			// The SAMPLES subspace must be cleared once the centroid is established.
+			r, perr := fdb.PrefixRange(storage.samplesSubspace.Bytes())
+			Expect(perr).NotTo(HaveOccurred())
+			kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "samples must be deleted after the centroid is established")
+			// Search still works over the mixed (identity + transformed) graph.
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64()
+			}
+			results, serr := graph.Search(tx, q, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(len(results)).To(BeNumerically(">", 0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert single node and search returns it", func() {
 		graph := makeRaBitQGraph(8, 4)
 
@@ -1144,21 +1544,65 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("stores RaBitQ-encoded bytes in FDB", func() {
-		graph := makeRaBitQGraph(4, 4)
+	It("stores plain bytes pre-centroid and RaBitQ-encoded bytes post-centroid (Java parity)", func() {
+		// Java parity (Insert.java:262-278, 196-198): for a translation-preserving metric
+		// (Euclidean), RaBitQ uses the noOp quantizer until a centroid is sampled, so
+		// pre-centroid vectors are stored PLAIN (type ordinal 2, DOUBLE) and only become
+		// RaBitQ-encoded (type ordinal 3) once the centroid is established. Storing
+		// RaBitQ-encoded bytes pre-centroid (the old Go behavior) is a wire divergence:
+		// Java would read those bytes as RaBitQ under an identity transform and mis-decode.
+		const dims = 4
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               8,
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-storefmt"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(7))
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 
-			pk := tuple.Tuple{int64(42)}
-			vec := []float64{1.0, 2.0, 3.0, 4.0}
-			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			// First (pre-centroid) node: must be stored PLAIN (DOUBLE, type ordinal 2).
+			pre := tuple.Tuple{int64(0)}
+			Expect(graph.Insert(tx, pre, []float64{1.0, 2.0, 3.0, 4.0})).To(Succeed())
+			preBytes, _, lerr := graph.storage.loadNodeLayer(tx, 0, pre)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(preBytes)).To(BeNumerically(">", 0))
+			Expect(preBytes[0]).To(Equal(byte(2)), "pre-centroid vector must be stored PLAIN (DOUBLE), not RaBitQ")
 
-			// Load the node and verify the stored bytes have type ordinal 3 (RABITQ).
-			vecBytes, _, err := graph.storage.loadNodeLayer(tx, 0, pk)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(vecBytes)).To(BeNumerically(">", 0))
-			Expect(vecBytes[0]).To(Equal(byte(3)), "stored vector should have RABITQ type ordinal")
+			// Insert until the centroid is established (StatsThreshold accumulates).
+			i := int64(1)
+			for {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, v)).To(Succeed())
+				info, ierr := graph.storage.loadAccessInfo(tx)
+				Expect(ierr).NotTo(HaveOccurred())
+				if info.hasTransform() {
+					break
+				}
+				i++
+				Expect(i).To(BeNumerically("<", 100), "centroid should establish well before 100 inserts")
+			}
+
+			// A node inserted AFTER the centroid is established must be RaBitQ-encoded.
+			post := tuple.Tuple{int64(1000)}
+			pv := make([]float64, dims)
+			for d := range pv {
+				pv[d] = rng.NormFloat64()
+			}
+			Expect(graph.Insert(tx, post, pv)).To(Succeed())
+			postBytes, _, perr := graph.storage.loadNodeLayer(tx, 0, post)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(len(postBytes)).To(BeNumerically(">", 0))
+			Expect(postBytes[0]).To(Equal(byte(3)), "post-centroid vector must be RaBitQ-encoded (type ordinal 3)")
 
 			return nil, nil
 		})
@@ -1315,13 +1759,120 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("search is correct after a mid-stream centroid bootstrap (mixed plain + RaBitQ graph)", func() {
+		// P1 regression. When the RaBitQ centroid is established mid-stream, the nodes
+		// inserted before it are stored plain (identity coordinates) and the nodes after
+		// it are RaBitQ-encoded (rotated + centroid-translated coordinates). The query is
+		// transformed into the post-centroid system, so the pre-centroid plain nodes MUST
+		// be lifted into that system at read (Java's StorageTransform) before comparison.
+		//
+		// Before the fix Go stored pre-centroid vectors RaBitQ-encoded in identity space
+		// and never lifted them, so after the transition they were compared against a
+		// centroid-space query in the wrong coordinate system — a pre-centroid vector
+		// could not even retrieve itself. Self-retrieval of the pre-centroid nodes is the
+		// red→green signal: exact for a correctly-lifted plain vector, garbage otherwise.
+		const dims = 12
+		config := HNSWConfig{
+			NumDimensions: dims, M: 8, MMax: 8, MMax0: 16, EfConstruction: 200, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 6),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               15, // centroid establishes around the 15th insert
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-mixed-recall"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(2026))
+
+		const n = 80
+		vectors := make([][]float64, n)
+		for i := range vectors {
+			vectors[i] = make([]float64, dims)
+			for d := range vectors[i] {
+				vectors[i][d] = rng.NormFloat64() * 5
+			}
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			preCentroidCount := 0
+			centroidEstablished := false
+			for i, v := range vectors {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+				if !centroidEstablished {
+					info, ierr := graph.storage.loadAccessInfo(tx)
+					Expect(ierr).NotTo(HaveOccurred())
+					if info.hasTransform() {
+						centroidEstablished = true
+					} else {
+						preCentroidCount++
+					}
+				}
+			}
+			// The graph must genuinely be mixed: some plain pre-centroid nodes AND a
+			// transition that actually fired, else this test would not exercise the bug.
+			Expect(centroidEstablished).To(BeTrue(), "centroid must establish mid-stream")
+			Expect(preCentroidCount).To(BeNumerically(">", 5), "must have several pre-centroid (plain) nodes")
+			Expect(preCentroidCount).To(BeNumerically("<", n), "must have post-centroid (RaBitQ) nodes too")
+
+			// Every pre-centroid node must retrieve itself as its own nearest neighbor.
+			// This is exact for a correctly-lifted plain vector; the pre-fix bug made it
+			// impossible (wrong coordinate system).
+			for i := 0; i < preCentroidCount; i++ {
+				results, serr := graph.Search(tx, vectors[i], 1, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				Expect(results).NotTo(BeEmpty(), "pre-centroid node %d returned no results", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)),
+					"pre-centroid node %d must retrieve itself as nearest (mixed-coordinate bug)", i)
+				Expect(results[0].Distance).To(BeNumerically("<", 1e-6),
+					"pre-centroid self-distance must be ~0 (exact, lifted)")
+			}
+
+			// And overall recall@5 over the whole mixed graph must be high.
+			const k = 5
+			hits, total := 0, 0
+			for i := 0; i < n; i += 7 {
+				results, serr := graph.Search(tx, vectors[i], k, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				type idDist struct {
+					id   int
+					dist float64
+				}
+				all := make([]idDist, n)
+				for j := range vectors {
+					all[j] = idDist{j, euclideanDistance(vectors[i], vectors[j])}
+				}
+				sort.Slice(all, func(a, b int) bool { return all[a].dist < all[b].dist })
+				trueK := make(map[int]bool, k)
+				for j := 0; j < k; j++ {
+					trueK[all[j].id] = true
+				}
+				for _, r := range results {
+					if trueK[int(r.PrimaryKey[0].(int64))] {
+						hits++
+					}
+					total++
+				}
+			}
+			recall := float64(hits) / float64(total)
+			Expect(recall).To(BeNumerically(">=", 0.8),
+				"recall@5 over the mixed graph should be >= 80%% (got %.0f%%)", recall*100)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("decodeStoredVector reconstructs approximate vector from RaBitQ bytes", func() {
 		dims := 8
 		numExBits := 7
 		graph := makeRaBitQGraph(dims, numExBits)
 
 		original := []float64{1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0}
-		encoded := graph.encodeVectorBytes(original)
+		// transformActive=true forces the RaBitQ encoding (the post-centroid regime);
+		// this exercises the quantizer round-trip directly.
+		encoded := graph.encodeVectorBytes(original, true)
 		Expect(encoded[0]).To(Equal(byte(3))) // RABITQ
 
 		decoded, err := graph.decodeStoredVector(encoded)
@@ -1400,6 +1951,28 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(distRaBitQ).To(BeNumerically("~", expected, expected*0.5))
 	})
 
+	It("RaBitQ Euclidean self-distance is finite and >= 0 (clamp negative estimate)", func() {
+		// The RaBitQ squared-L2 estimate can be slightly NEGATIVE near zero distance
+		// (it is an estimate, not a true sum of squares). The Euclidean metric sqrt's it,
+		// so without clamping a self/near-self match becomes NaN — which sorts as
+		// "not nearest" and drops the match (chaos vector_index_self_search_miss).
+		// computeDistance must clamp to >= 0. Revert-proof: drop the math.Max(0, …) and
+		// some self-distance below goes NaN.
+		dims := 16
+		graph := makeRaBitQGraph(dims, 4)
+		rq := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, 4)
+		rng := rand.New(rand.NewSource(60606)) // the chaos seed that surfaced the NaN
+		for i := 0; i < 300; i++ {
+			v := make([]float64, dims)
+			for j := range v {
+				v[j] = rng.NormFloat64()
+			}
+			d := graph.computeDistance(v, rq.Encode(v).ToBytes()) // self-distance
+			Expect(math.IsNaN(d)).To(BeFalse(), "self-distance must not be NaN — clamp the negative RaBitQ estimate before sqrt")
+			Expect(d).To(BeNumerically(">=", 0.0))
+		}
+	})
+
 	It("empty graph returns nil results", func() {
 		graph := makeRaBitQGraph(4, 4)
 
@@ -1424,6 +1997,32 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		return builder
 	}
+
+	It("rejects an invalid HNSW config when the index is used (validation wired into maintainer)", func() {
+		ks := specSubspace()
+		// m=20 > default mMax=16 — a config Java's Config constructor rejects. The store
+		// must surface the error when it constructs the vector index maintainer, not
+		// silently build a bad graph. Revert-proof: drop the ValidateHNSWConfig call in
+		// newVectorIndexMaintainer and the save succeeds.
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		vecIdx.Options[IndexOptionHNSWM] = "20"
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if serr != nil {
+				return nil, serr // validation may fire at store open (maintainer construction)
+			}
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("m (20) must be <= mMax"))
+	})
 
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
 		ks := specSubspace()
@@ -1478,11 +2077,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
 			}
 
-			// id=1 at (10,10): dist to (15,15) = (15-10)^2 + (15-10)^2 = 50
-			// id=2 at (20,20): dist to (15,15) = (15-20)^2 + (15-20)^2 = 50
-			// Both equidistant at 50.
-			Expect(results[0].Distance).To(BeNumerically("~", 50.0, 1e-6))
-			Expect(results[1].Distance).To(BeNumerically("~", 50.0, 1e-6))
+			// id=1 at (10,10): dist to (15,15) = sqrt((15-10)^2 + (15-10)^2) = sqrt(50)
+			// id=2 at (20,20): dist to (15,15) = sqrt((15-20)^2 + (15-20)^2) = sqrt(50)
+			// Both equidistant at sqrt(50) (true L2).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
+			Expect(results[1].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
 
 			return nil, nil
 		})
@@ -1792,8 +2391,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				gotIDs = append(gotIDs, result.GetValue().Key[0].(int64))
 			}
 
-			// Expected order by squared distance from origin:
-			// id=2(1,1)=2, id=4(5,5)=50, id=1(10,10)=200, id=3(50,50)=5000, id=5(100,100)=20000
+			// Expected order by distance from origin (sqrt is monotone, so the order is the
+			// same whether L2 or squared): id=2(1,1) < id=4(5,5) < id=1(10,10) < id=3(50,50) < id=5(100,100)
 			Expect(gotIDs).To(Equal([]int64{2, 4, 1, 3, 5}))
 
 			return nil, nil
@@ -1858,8 +2457,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		a := []float64{3.0, 4.0}
 		b := []float64{0.0, 0.0}
 
-		// Euclidean: 3^2 + 4^2 = 25
-		Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(BeNumerically("~", 25.0, 1e-9))
+		// Euclidean (true L2): sqrt(3^2 + 4^2) = sqrt(25) = 5
+		Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(BeNumerically("~", 5.0, 1e-9))
+
+		// Euclidean-square: 3^2 + 4^2 = 25 (no sqrt)
+		Expect(vectorDistance(a, b, VectorMetricEuclideanSquare)).To(BeNumerically("~", 25.0, 1e-9))
 
 		// Cosine: 1 - dot/(normA*normB). dot=0 when b=0,0 -> special case returns 1.
 		Expect(vectorDistance(a, b, VectorMetricCosine)).To(BeNumerically("~", 1.0, 1e-9))
@@ -1940,8 +2542,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(1))
 			// The closest to origin should be one of the two records at (100,100),
-			// NOT at the old position (0,0). Distance to (100,100) = 100^2 + 100^2 = 20000.
-			Expect(results[0].Distance).To(BeNumerically("~", 20000.0, 1e-6))
+			// NOT at the old position (0,0). Distance to (100,100) = sqrt(100^2 + 100^2) = sqrt(20000).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(20000.0), 1e-6))
 
 			return nil, nil
 		})
@@ -2873,29 +3475,31 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		storage := newHNSWStorage(ss, config)
 		graph := NewHNSWGraph(storage, config)
 
-		// Query at origin (0,0). Distances are squared Euclidean.
-		// A = (1, 0)  -> dist = 1
-		// B = (1.1, 0) -> dist = 1.21 (very close to A)
-		// C = (0, 2)  -> dist = 4    (different direction from A)
-		// D = (0, 2.1) -> dist = 4.41 (close to C)
-		// E = (3, 3)  -> dist = 18   (far away)
+		// Query at origin (0,0). Distances are true L2 (sqrt), matching euclideanDistance —
+		// the candidate query-distance and the heuristic's internal pairwise distance must
+		// be in the same (sqrt) space or the diversity comparison is wrong.
+		// A = (1, 0)   -> dist = 1
+		// B = (1.1, 0) -> dist = 1.1              (very close to A)
+		// C = (0, 2)   -> dist = 2                (different direction from A)
+		// D = (0, 2.1) -> dist = 2.1              (close to C)
+		// E = (3, 3)   -> dist = sqrt(18) ≈ 4.243 (far away)
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 1.21},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 4.0},
-			{pk: tuple.Tuple{int64(4)}, vec: []float64{0, 2.1}, dist: 4.41},
-			{pk: tuple.Tuple{int64(5)}, vec: []float64{3, 3}, dist: 18.0},
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{1.1, 0}, 1.1),
+			candSpan(3, []float64{0, 2}, 2.0),
+			candSpan(4, []float64{0, 2.1}, 2.1),
+			candSpan(5, []float64{3, 3}, math.Sqrt(18.0)),
 		}
 
 		selected := graph.selectNeighbors(candidates, 2)
 		Expect(selected).To(HaveLen(2))
 
 		// First should be A (closest).
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
 		// Second should be C (diverse direction), not B (clustered with A).
-		// dist(B, A) = (0.1)^2 = 0.01 < B.dist=1.21 -> B is pruned
-		// dist(C, A) = 1 + 4 = 5 > C.dist=4 -> C is selected
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(3)))
+		// dist(B, A) = 0.1 < B.dist=1.1 -> B is pruned
+		// dist(C, A) = sqrt(5) ≈ 2.236 > C.dist=2 -> C is selected
+		Expect(candPKInt(selected[1])).To(Equal(int64(3)))
 	})
 
 	It("keepPrunedConnections fills up to maxConn", func() {
@@ -2916,20 +3520,20 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// Heuristic will pick only the closest, prune the rest.
 		// With keepPrunedConnections, pruned ones fill up to maxConn.
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{2, 0}, dist: 4.0},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{3, 0}, dist: 9.0},
-			{pk: tuple.Tuple{int64(4)}, vec: []float64{4, 0}, dist: 16.0},
-			{pk: tuple.Tuple{int64(5)}, vec: []float64{5, 0}, dist: 25.0},
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{2, 0}, 4.0),
+			candSpan(3, []float64{3, 0}, 9.0),
+			candSpan(4, []float64{4, 0}, 16.0),
+			candSpan(5, []float64{5, 0}, 25.0),
 		}
 
 		// maxConn=3: heuristic selects only id=1 (closest), then prunes 2,3,4,5.
 		// keepPrunedConnections adds back 2, 3 to fill up to 3.
 		selected := graph.selectNeighbors(candidates, 3)
 		Expect(selected).To(HaveLen(3))
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
-		Expect(selected[2].pk[0].(int64)).To(Equal(int64(3)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
+		Expect(candPKInt(selected[2])).To(Equal(int64(3)))
 	})
 
 	It("heuristic is skipped for cosine metric (no triangle inequality)", func() {
@@ -2948,16 +3552,16 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// With cosine metric, selectNeighbors should do simple sort-and-truncate,
 		// NOT the diversity heuristic.
 		candidates := []hnswCandidate{
-			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 0.1},
-			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 0.2},
-			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 0.5},
+			candSpan(1, []float64{1, 0}, 0.1),
+			candSpan(2, []float64{1.1, 0}, 0.2),
+			candSpan(3, []float64{0, 2}, 0.5),
 		}
 
 		selected := graph.selectNeighbors(candidates, 2)
 		Expect(selected).To(HaveLen(2))
 		// Simple sort: takes the two closest by dist.
-		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
-		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
 	})
 
 	It("extendCandidates explores 2nd-degree neighbors during insert", func() {
@@ -3194,6 +3798,16 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				Expect(graph.Delete(tx, tuple.Tuple{int64(i)})).To(Succeed())
 			}
 
+			// Deleted nodes must actually be GONE — not re-created by a later delete's
+			// repair. Java's shouldUsePrimaryCandidateForRepair rejects the node being
+			// deleted, so a stale self-reference never re-enters the candidate set and gets
+			// re-saved. Revert-proof: stop excluding the deleted node from the primary set
+			// and these loads find the (re-created) node.
+			for i := 0; i < 5; i++ {
+				_, _, lerr := storage.loadNodeLayer(tx, 0, tuple.Tuple{int64(i)})
+				Expect(lerr).To(HaveOccurred(), "deleted node %d must be gone at layer 0, not re-created", i)
+			}
+
 			// Remaining 15 vectors should all be findable.
 			for i := 5; i < numVectors; i++ {
 				results, err := graph.Search(tx, vectors[i], 1, 100)
@@ -3257,6 +3871,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 
 	It("satisfiesTriangleInequality returns correct values per metric", func() {
 		Expect(VectorMetricEuclidean.satisfiesTriangleInequality()).To(BeTrue())
+		Expect(VectorMetricEuclideanSquare.satisfiesTriangleInequality()).To(BeFalse())
 		Expect(VectorMetricCosine.satisfiesTriangleInequality()).To(BeFalse())
 		Expect(VectorMetricInnerProduct.satisfiesTriangleInequality()).To(BeFalse())
 	})
@@ -3651,3 +4266,28 @@ var _ = Describe("HNSW Pipelined Multi-Layer Deletion", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// --- span-representation test helpers (HNSW carries neighbor PKs as nested spans) ---
+
+// candSpan builds an hnswCandidate whose PK is the int64 id, in span form.
+func candSpan(id int64, vec []float64, dist float64) hnswCandidate {
+	return hnswCandidate{pkSpan: nestPK(tuple.Tuple{id}), vec: vec, dist: dist}
+}
+
+// candPKInt decodes a candidate's span PK and returns its first int64 element.
+func candPKInt(c hnswCandidate) int64 {
+	pk, err := decodeNestedPK(c.pkSpan)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}
+
+// spanPKInt decodes a neighbor span and returns its first int64 element.
+func spanPKInt(span []byte) int64 {
+	pk, err := decodeNestedPK(span)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}

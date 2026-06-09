@@ -117,14 +117,21 @@ func newVectorIndexMaintainer(
 	indexSubspace, hnswSubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
-) *vectorIndexMaintainer {
+) (*vectorIndexMaintainer, error) {
 	config := parseHNSWConfig(index)
+	// Validate the config (ranges + cross-field invariants), matching Java's Config
+	// constructor which throws on an invalid config. Without this Go would silently build
+	// a graph from a config Java rejects — e.g. m > mMax (new node selects more than the
+	// pruning cap → churn) or efRepair < m.
+	if err := ValidateHNSWConfig(config); err != nil {
+		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
+	}
 	return &vectorIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
 		storageCache:            make(map[string]*hnswStorage),
-	}
+	}, nil
 }
 
 // parseHNSWConfig reads HNSW configuration from index options.
@@ -143,10 +150,11 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 		case "DOT_PRODUCT_METRIC", "inner_product":
 			config.Metric = VectorMetricInnerProduct
 		case "EUCLIDEAN_SQUARE_METRIC":
-			// Java's EUCLIDEAN_SQUARE uses squared L2 (same as our Euclidean).
-			config.Metric = VectorMetricEuclidean
+			// Squared L2 (no sqrt), not a true metric — matches Java's
+			// EUCLIDEAN_SQUARE_METRIC (MetricDefinition.EuclideanSquareMetric).
+			config.Metric = VectorMetricEuclideanSquare
 		default:
-			// EUCLIDEAN_METRIC and any other value defaults to Euclidean.
+			// EUCLIDEAN_METRIC (true L2, sqrt) and any other value default to Euclidean.
 			config.Metric = VectorMetricEuclidean
 		}
 	}
@@ -164,6 +172,24 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	}
 	if v, ok := index.Options["hnswUseInlining"]; ok {
 		config.UseInlining = v == "true"
+	}
+	if v, ok := index.Options[IndexOptionHNSWSampleVectorStatsProbability]; ok {
+		var p float64
+		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
+			config.SampleVectorStatsProbability = p
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMaintainStatsProbability]; ok {
+		var p float64
+		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
+			config.MaintainStatsProbability = p
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
+		var t int
+		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 && t > 0 {
+			config.StatsThreshold = t
+		}
 	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
 		numExBits := 4
@@ -284,12 +310,13 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Acquire write lock on HNSW subspace — serialize graph mutations.
-	// Matches Java's VectorIndexMaintainer.updateIndexKeys() which acquires
-	// a write lock via context.doWithWriteLock(LockIdentifier).
-	lockKey := string(m.hnswSubspace.Bytes())
-	m.store.AcquireWriteLock(lockKey)
-	defer m.store.ReleaseWriteLock(lockKey)
+	// Each entry mutates exactly one per-prefix HNSW graph; serialize only that
+	// graph, matching Java, which takes doWithWriteLock(LockIdentifier(rtSubspace))
+	// where rtSubspace = indexSubspace.subspace(prefixKey) — a PER-PREFIX lock, not
+	// a whole-index one. (The lock lives on the per-transaction context, so it only
+	// orders mutations within a transaction; distinct prefix graphs never contend,
+	// and neither do distinct transactions.) Locking the whole index here was a
+	// Go-only over-serialization that blocked concurrent per-prefix builds.
 	if oldRecord != nil {
 		entries, err := m.evaluateIndex(oldRecord)
 		if err != nil {
@@ -310,9 +337,9 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if err != nil {
 				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
 			}
-			storage := m.getStorageForPrefix(prefix)
-			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Delete(m.tx, trimmedPK); err != nil {
+			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
+				return graph.Delete(m.tx, trimmedPK)
+			}); err != nil {
 				return err
 			}
 		}
@@ -335,15 +362,27 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if err != nil {
 				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
 			}
-			storage := m.getStorageForPrefix(prefix)
-			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Insert(m.tx, trimmedPK, vector); err != nil {
+			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
+				return graph.Insert(m.tx, trimmedPK, vector)
+			}); err != nil {
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+// withPrefixWriteLock runs fn against the prefix's HNSW graph while holding the
+// per-prefix write lock — the same scope as Java's
+// doWithWriteLock(LockIdentifier(indexSubspace.subspace(prefixKey))). For an
+// unprefixed index this is the index subspace itself.
+func (m *vectorIndexMaintainer) withPrefixWriteLock(prefix tuple.Tuple, fn func(*hnswGraph) error) error {
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
+	storage := m.getStorageForPrefix(prefix)
+	return fn(NewHNSWGraph(storage, m.hnswConfig))
 }
 
 // tupleToVector converts tuple elements to a float64 vector. Returns:

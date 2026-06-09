@@ -98,7 +98,8 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
 }
 
 // commitDummyTransaction runs a dummy transaction as a synchronization barrier.
-// Matches C++ NativeAPI.actor.cpp:commitDummyTransaction (line 4225).
+// Matches C++ NativeAPI.actor.cpp:commitDummyTransaction (line 6306), called
+// from tryCommit (line 6750) after commit_unknown_result.
 //
 // Purpose: after commit_unknown_result, we don't know if the original commit
 // landed. The dummy transaction conflicts with the original (shares a conflict
@@ -154,10 +155,19 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
 		dummy.lockAware = true
 
-		// C++ does tr->set(key, "") + adds read/write conflict ranges.
-		// The Set ensures the commit proxy doesn't optimize away the tx
-		// as a no-op.
-		dummy.Set(key, []byte{})
+		// C++ commitDummyTransaction (NativeAPI.actor.cpp:6328-6330) adds ONLY a
+		// read + write conflict range over the key and commits — it does NOT write
+		// any value. The write conflict range alone makes the txn non-no-op
+		// (Commit's read-only fast path returns early only when BOTH len(muts)==0
+		// AND nWriteConflicts==0, transaction.go:1160), so no value mutation is
+		// needed as a "force non-no-op".
+		//
+		// A dummy.Set(key, "") here is a divergence that CORRUPTS data: `key` is a
+		// user conflict key from the original transaction (e.g. a record's unsplit
+		// key). Committing SET(key, "") overwrites that record with an empty value,
+		// which a later read sees as present-empty — the root cause of the
+		// concurrent-ingest "union descriptor does not contain any known record
+		// type" deserialize failures.
 		dummy.addReadConflictForKey(key)
 		dummy.addWriteConflictForKey(key)
 

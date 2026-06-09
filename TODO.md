@@ -794,3 +794,48 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   **Why low prio.** The suite is green and freshly reviewed; ~1.7x for a ~32k-line mechanical rewrite
   of wire-compat-critical tests is a weak risk/reward, and the real speed lever (JVM count) is
   memory-bound regardless. Do the cheap JVM-count bump first if speed is ever urgent.
+
+## Exploration: a second, FDB-native vector index (Go-only — NOT Java parity)
+
+- [ ] **Explore an FDB-native ANN index designed for a high-latency networked KV store.**
+  *Status: research / RFC needed. This is a deliberate Go-only extension, NOT a Java-parity item* —
+  Java has no such index, so it is allowed under "query reach may exceed Java" **only if** it ships as
+  a separate index type with deep test coverage. **Wire-format tradeoff (must be stated up front):** a
+  new on-disk graph/posting-list layout is *wire format*; Java's `VectorIndexMaintainer` cannot
+  read/write it, so this index is **Go-built and Go-read only** — it forfeits cross-engine sharing for
+  that index. That is the cost of admission, not a free lunch.
+
+  **Motivation.** The existing HNSW index is now **100% Java-faithful** (the Go-only cross-transaction
+  `sharedNodeCache` was removed for compliance — see `hnsw.go`). Being faithful, it inherits Java's
+  latency profile on FDB: classic HNSW assumes O(1) RAM and does 50–200 *sequential, data-dependent*
+  pointer-chasing reads per op; on FDB every hop is a ~0.3–0.5 ms round-trip, so search/build are
+  round-trip-bound (block profile: `Transact` ~35% + `Commit` ~24% of build time; `fdbserver` <1 core;
+  client ~7/24 cores). Java hides this with async `CompletableFuture` fan-out; Go's synchronous client
+  cannot. The honest fix is not more caching bolted onto HNSW — it's an index whose *algorithm* fits a
+  networked KV store.
+
+  **Candidates (ranked by fit / payoff):**
+  - **SPFresh** — *in-place incremental update for disk-based ANN* (LIRE/centroid-partitioned posting
+    lists + lightweight rebalancing). Most interesting for THIS substrate: it directly targets the
+    build/freshness + concurrent-writer problem we hit (the single-writer lock + FDB-1020 conflict
+    storm on shared graph nodes). Posting-list partitions map cleanly onto FDB subspaces; updates are
+    local to a partition → far less cross-writer contention than HNSW's shared adjacency mutation.
+  - **DiskANN / Vamana** — single flat graph, higher degree + long-range edges → a search touches
+    *fewer* nodes with *more* neighbors each, amortizing per-read latency. Pairs with PQ/**RaBitQ
+    (already in-tree, `pkg/rabitq`)** for in-memory distance, fetching full vectors only for finalists.
+  - **SPANN** — cluster + posting-list; turns the random-access graph walk into a few large
+    `GetRange` reads (one round-trip for many keys — exactly what FDB is good at). Recall/locality
+    tradeoff vs a navigable graph.
+  - **Batched beam search** — *not a new index*: keep HNSW but expand the whole `ef` frontier in one
+    batched multi-get per round instead of node-at-a-time, collapsing N sequential hops into log-depth
+    batched rounds. **Wire-neutral** (no format change) → the cheapest real query-latency win and a
+    good first step regardless of which index above we pick. Could even land on the existing HNSW.
+  - **FDB-native build primitive — atomic-append neighbor lists.** If adding an edge is an FDB atomic
+    mutation (no read-modify-write), writers don't register a read-conflict range on the neighbor →
+    no 1020 storm → concurrent multi-writer build becomes correct *and* fast without the single-writer
+    lock. Applicable to HNSW or a new index.
+
+  **Next step:** write an RFC (scope: which index, the on-disk layout, the query/build algorithm, the
+  Go-only/wire-format declaration, the test plan) before any code. Start with **batched beam search**
+  (wire-neutral, lands on current HNSW) to bank the query win, then prototype **SPFresh** as the
+  native index.

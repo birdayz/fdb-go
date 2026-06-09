@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -846,4 +847,81 @@ func buildSeedMetaDataBytes(withValueIndex, withCountIndex, withSumIndex bool) [
 		return nil
 	}
 	return b
+}
+
+// ---------------------------------------------------------------------------
+// FuzzParseNodeValue — round-trips the HNSW compact node value through the
+// span-based parseNodeValue. The vector bytes must come back identical, and
+// every neighbor span must decode to the original primary key. The fetch-key
+// equality (layerPrefix ++ span == Pack({layer, pk})) is what makes carrying
+// raw spans through the search hot path correct, so it's asserted too.
+// ---------------------------------------------------------------------------
+
+func FuzzParseNodeValue(f *testing.F) {
+	f.Add([]byte{0x01, 0x00, 0x05, 0xff}, uint8(3))
+	f.Add([]byte{}, uint8(0))
+	f.Add([]byte{0x00, 0x00, 0x00, 0x05, 0x05}, uint8(5))
+	f.Add([]byte{0xff, 0xff, 0xff}, uint8(1))
+
+	ss := newHNSWStorage(specSubspaceFuzz(), DefaultHNSWConfig(8))
+	const layer = 0
+
+	f.Fuzz(func(t *testing.T, vec []byte, nNeighbors uint8) {
+		n := int(nNeighbors % 40)
+		neighbors := make([]tuple.Tuple, n)
+		for i := range neighbors {
+			// Mix int and composite PKs, including value bytes that collide with
+			// tuple type codes (0x00, 0x05).
+			switch i % 3 {
+			case 0:
+				neighbors[i] = tuple.Tuple{int64(i * 7)}
+			case 1:
+				neighbors[i] = tuple.Tuple{int64(i), []byte{0x00, 0x05, byte(i)}}
+			default:
+				neighbors[i] = tuple.Tuple{int64(-i), "k\x00v"}
+			}
+		}
+
+		// Build the value exactly like saveNodeLayer.
+		neighborList := make(tuple.Tuple, len(neighbors))
+		for i, pk := range neighbors {
+			neighborList[i] = pk
+		}
+		value := tuple.Tuple{int64(0), tuple.Tuple{vec}, neighborList}.Pack()
+
+		gotVec, gotSpans, err := parseNodeValue(value)
+		if err != nil {
+			t.Fatalf("parseNodeValue: %v (vec=%x n=%d)", err, vec, n)
+		}
+		if len(vec) == 0 {
+			if len(gotVec) != 0 {
+				t.Fatalf("empty vector came back as %x", gotVec)
+			}
+		} else if !bytes.Equal(gotVec, vec) {
+			t.Fatalf("vector mismatch:\n got %x\n want %x", gotVec, vec)
+		}
+		if len(gotSpans) != n {
+			t.Fatalf("neighbor count: got %d want %d", len(gotSpans), n)
+		}
+		layerPrefix := ss.dataSubspace.Pack(tuple.Tuple{int64(layer)})
+		for i, span := range gotSpans {
+			pk, derr := decodeNestedPK(span)
+			if derr != nil {
+				t.Fatalf("decode span %d: %v", i, derr)
+			}
+			if !tupleEqual(pk, neighbors[i]) {
+				t.Fatalf("neighbor %d mismatch: got %v want %v", i, pk, neighbors[i])
+			}
+			// span must reconstruct the exact fetch key.
+			gotKey := append(append([]byte{}, layerPrefix...), span...)
+			wantKey := ss.dataSubspace.Pack(tuple.Tuple{int64(layer), neighbors[i]})
+			if !bytes.Equal(gotKey, wantKey) {
+				t.Fatalf("fetch-key mismatch for neighbor %d:\n got  %x\n want %x", i, gotKey, wantKey)
+			}
+		}
+	})
+}
+
+func specSubspaceFuzz() subspace.Subspace {
+	return subspace.FromBytes([]byte("fuzz-hnsw-node"))
 }

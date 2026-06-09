@@ -380,7 +380,10 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 
 	kvs, err := store.context.Transaction().GetRange(storeRange, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 	if err != nil {
-		return false, nil, fmt.Errorf("failed to read store range: %v", err)
+		// %w, not %v: preserve the fdb.Error type so a retryable read error
+		// (future_version, transaction_too_old, …) stays retryable in the
+		// Transact loop rather than being flattened to a fatal string.
+		return false, nil, fmt.Errorf("failed to read store range: %w", err)
 	}
 	if len(kvs) == 0 {
 		// Store is completely empty

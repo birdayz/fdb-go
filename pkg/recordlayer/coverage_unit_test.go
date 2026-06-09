@@ -73,8 +73,8 @@ var _ = Describe("Coverage Unit Tests", func() {
 		It("truncates to shorter vector when b is shorter", func() {
 			a := []float64{1, 2, 3}
 			b := []float64{4, 6}
-			// (1-4)^2 + (2-6)^2 = 9 + 16 = 25
-			Expect(euclideanDistance(a, b)).To(Equal(25.0))
+			// (1-4)^2 + (2-6)^2 = 9 + 16 = 25; true L2 = sqrt(25) = 5
+			Expect(euclideanDistance(a, b)).To(Equal(5.0))
 		})
 	})
 
@@ -110,7 +110,8 @@ var _ = Describe("Coverage Unit Tests", func() {
 		It("dispatches to euclidean by default", func() {
 			a := []float64{0, 0}
 			b := []float64{3, 4}
-			Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(Equal(25.0))
+			// 3^2 + 4^2 = 25; true L2 = sqrt(25) = 5
+			Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(Equal(5.0))
 		})
 
 		It("dispatches to cosine", func() {
@@ -130,6 +131,13 @@ var _ = Describe("Coverage Unit Tests", func() {
 		It("euclidean satisfies both properties", func() {
 			Expect(VectorMetricEuclidean.satisfiesPreservedUnderTranslation()).To(BeTrue())
 			Expect(VectorMetricEuclidean.satisfiesTriangleInequality()).To(BeTrue())
+		})
+
+		It("euclidean-square is translation-preserved but not a true metric", func() {
+			// Matches Java EuclideanSquareMetric: preserved under translation (default),
+			// but satisfiesTriangleInequality() == false (squared L2 is not a true metric).
+			Expect(VectorMetricEuclideanSquare.satisfiesPreservedUnderTranslation()).To(BeTrue())
+			Expect(VectorMetricEuclideanSquare.satisfiesTriangleInequality()).To(BeFalse())
 		})
 
 		It("cosine satisfies neither property", func() {

@@ -106,3 +106,75 @@ VECTOR_BENCH_EF_SEARCH=64    # HNSW search expansion factor
 VECTOR_BENCH_READERS=10      # concurrent search goroutines
 VECTOR_BENCH_RABITQ=false    # enable RaBitQ quantization
 ```
+
+---
+
+## 2026-06 HNSW perf pass (branch perf/hnsw-span-decode)
+
+Hardware: 24-core, 64 GB, FDB 7.3.75 testcontainer (single node). All at 1536-D
+DOUBLE vectors, the LanceDB-1M comparison shape.
+
+> **UPDATE — cross-transaction cache removed for Java compliance.** The rows below
+> marked "+ shared cache" were measured *with* a process-wide, cross-transaction
+> node cache. That cache was a **Go-only behavioral divergence** (Java keeps only a
+> per-operation `nodeCache`, never cross-transaction) and was **removed** to keep
+> this HNSW index 100% Java-faithful. So those rows are **no longer the shipped
+> index's numbers** — they're retained as the *measured ceiling* that motivates a
+> separate, explicitly-Go-native index (see TODO.md → "Exploration: a second,
+> FDB-native vector index"). The **wire-neutral, result-identical** changes
+> (raw-span PKs, distance-from-bytes, 4-lane distance) remain in the shipped index;
+> its real numbers are the "+ raw-span + distance-from-bytes" rows (search ~25 ms
+> p50), and insert reverts to Java's latency-bound, non-asymptoting profile.
+
+### Search (1K × 1536D, k=10, efSearch=64)
+
+| stage | alloc/query | p50 | p99 | recall@10 |
+|--|--|--|--|--|
+| baseline | 102.8 MB | 46 ms | 64 ms | 0.977 |
+| + raw-span neighbor PKs + distance-from-bytes | 23.8 MB | 25 ms | 32 ms | 0.977 |
+| + shared cache + 4-lane distance | — | **4.5 ms** | 12.5 ms | 0.977 |
+
+Search beats LanceDB's warmed 25 ms p50. Three wire-neutral, recall-exact changes:
+raw-span PKs (no decode/box in the hot loop), distance straight from stored bytes
+(no []float64), and a 4-lane unrolled distance reduction.
+
+### Insert (vec/sec, parallelism=8, batch=16)
+
+| graph size | batch=4 (old) | + batch16 | + shared cache | + 4-lane dist (cache on) |
+|--|--|--|--|--|
+| 1K | 46 | — | — | 177 |
+| 6K | — | — | 55.9 | 67 |
+| 10K | 10.7 | 24.1 | 45.9 | ~55 |
+| 30K | — | — | — | 40.6 |
+
+Crucially the cached rate **asymptotes** rather than collapsing: 177 → 67 → 46 →
+40.6 vec/s as the graph grows 1K → 30K — the 10K→30K drop is only ~13% over 3×
+the size (per-insert cost stabilizes: bounded efConstruction neighborhood,
+neighbor lists saturate at MMax0). Extrapolating the flattening curve, a **1M
+build is ~7–9 h on this single node** with the cache sized to hold the graph
+(~24 GB for 1M × 1536-D nodes; fits in 64 GB, so no eviction) — feasible as an
+overnight build, where uncached (collapsing rate) it was effectively unbuildable.
+
+The shared cross-transaction node cache was the big lever here — it stopped the
+per-transaction cache from going cold every batch and re-reading the hot layers,
+taking 10K from 10.7 to 45.9 vec/s. **It has since been removed** (Go-only
+divergence from Java; see the UPDATE banner above). Without it the shipped index
+re-reads the hot upper layers every transaction, exactly as Java does, so the
+insert rate is latency-bound and does not asymptote — the asymptoting numbers in
+the table above belong to the removed cache and motivate the separate native
+index, not this one.
+
+### On "1M"
+
+- 1M queries/sec is physically impossible at 1536-D (~2 M FLOPs/query × 1M =
+  ~2.3 PFLOP/s, ~2000× a 24-core CPU). LanceDB's "1m" is the 1M-*vector* dataset.
+- 1M-vector SEARCH is ready (4.5–15 ms; raise efSearch for recall at scale).
+- 1M-vector BUILD: the ~7–9 h single-node projection (asymptoting ~40 vec/s at
+  30K) **depended on the now-removed cross-transaction cache** and therefore
+  describes the *future native index*, not the shipped Java-faithful HNSW. The
+  shipped index, like Java, re-reads the hot layers each transaction, so its
+  insert rate is latency-bound and degrades as the graph grows. Inserts are also
+  serialized by the per-prefix write lock (== Java's doWithWriteLock), so a build
+  uses ~1 core regardless of machine; going faster needs the FDB-native index
+  (TODO) — batched beam search, SPFresh/DiskANN, or atomic-append edges — or a
+  real multi-node FDB cluster (parallelizes the write floor).

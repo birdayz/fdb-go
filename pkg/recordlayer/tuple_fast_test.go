@@ -145,6 +145,57 @@ func TestSplitKeySuffix_EmptyReturnsError(t *testing.T) {
 // TestTupleSkipNestedInNested is a targeted regression test for the bug where
 // tupleSkip would stop at the inner nested tuple's 0x00 terminator instead of
 // the outer one, causing the outer tuple to be measured as too short.
+// TestTupleSkipNestedWithBytesPayload pins the bug where tupleSkip on a nested
+// tuple stopped at the first inner element's *terminator* 0x00 (e.g. a bytes
+// element's trailing 0x00) instead of parsing element-by-element. HNSW stores
+// node vectors as nested {bytes} tuples whose payloads contain arbitrary 0x00 /
+// 0x05 bytes, so a node value's element walk must skip such a nested tuple to
+// its true end. Each case asserts tupleSkip returns the full packed length.
+func TestTupleSkipNestedWithBytesPayload(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		v    tuple.Tuple
+	}{
+		// Vectors: bytes payloads with 0x00 (escaped as 0x00 0xFF) and 0x05.
+		{"nested_bytes_nulls", tuple.Tuple{tuple.Tuple{[]byte{0x01, 0x00, 0x05, 0xff, 0x00, 0x7e, 0x05, 0x05}}}},
+		{"nested_bytes_trailing_null", tuple.Tuple{tuple.Tuple{[]byte{0x10, 0x20, 0x00}}}},
+		{"nested_bytes_only_null", tuple.Tuple{tuple.Tuple{[]byte{0x00}}}},
+		// Int value bytes that collide with the nested type code (0x05).
+		{"nested_int_0x05", tuple.Tuple{tuple.Tuple{int64(5)}}},
+		{"nested_int_with_null", tuple.Tuple{tuple.Tuple{int64(256)}}}, // 0x16 0x01 0x00
+		// The full node-value shape: {nodeKind, {vec}, {pk1, pk2}}.
+		{"node_value_shape", tuple.Tuple{
+			int64(0),
+			tuple.Tuple{[]byte{0x01, 0x00, 0x05, 0xff, 0x00, 0x7e}},
+			tuple.Tuple{tuple.Tuple{int64(5)}, tuple.Tuple{int64(2)}},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			packed := tc.v.Pack()
+			// tupleSkip on the first element must consume exactly that element.
+			firstLen := len(tuple.Tuple{tc.v[0]}.Pack())
+			if got := tupleSkip(packed); got != firstLen {
+				t.Errorf("tupleSkip(%x) = %d, want %d (first element length)", packed, got, firstLen)
+			}
+			// And walking every element must consume the whole buffer.
+			p := 0
+			for p < len(packed) {
+				n := tupleSkip(packed[p:])
+				if n <= 0 {
+					t.Fatalf("tupleSkip stalled at offset %d in %x", p, packed)
+				}
+				p += n
+			}
+			if p != len(packed) {
+				t.Errorf("element walk consumed %d bytes, want %d (%x)", p, len(packed), packed)
+			}
+		})
+	}
+}
+
 func TestTupleSkipNestedInNested(t *testing.T) {
 	t.Parallel()
 	// Pack: (nested(nested(1), 2), 99)

@@ -7,16 +7,21 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/testcontainers/testcontainers-go"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -189,9 +194,15 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 		vectors[i] = vecRandomVector(rng, dims)
 	}
 
-	// Batch insert to stay under FDB transaction limits.
-	// HNSW inserts are expensive (graph traversal), so keep batches small.
-	batchSize := 50
+	// Batch insert to stay under FDB transaction limits. HNSW inserts are
+	// expensive (graph traversal) AND high-dimensional vectors + the neighbor-list
+	// writes scale the per-transaction byte size — at 1536D a batch of 50 overflows
+	// the 10MB tx limit (transaction_too_large 2101) once the graph densifies. Scale
+	// the batch down with dimensionality (≈ const bytes/tx), overridable via env.
+	batchSize := vecEnvInt("VECTOR_BENCH_BATCH", max(1, 50*128/dims))
+	insertStart := time.Now()
+	progressEvery := max(10000, n/50)
+	nextProgress := progressEvery
 	for batch := 0; batch*batchSize < n; batch++ {
 		batchStart := batch * batchSize
 		batchEnd := batchStart + batchSize
@@ -252,6 +263,12 @@ func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *re
 		})
 		if err != nil {
 			tb.Fatalf("batch %d: %v", batch, err)
+		}
+		// Progress (for long builds): count, elapsed, instantaneous rate.
+		if done := batchEnd; done >= nextProgress {
+			el := time.Since(insertStart)
+			tb.Logf("  ...inserted %d/%d in %v (%.1f vec/sec)", done, n, el.Round(time.Second), float64(done)/el.Seconds())
+			nextProgress += progressEvery
 		}
 	}
 	return vectors
@@ -884,4 +901,554 @@ func euclideanDistance(a, b []float64) float64 {
 		sum += d * d
 	}
 	return sum
+}
+
+// TestVectorConcurrencyScaling measures how vector-search throughput scales
+// with the number of concurrent readers. Each reader runs independent K-NN
+// queries on independent transactions, so throughput SHOULD climb near-linearly
+// with readers until the FDB server (or a client-side serialization point)
+// saturates. A flat/sub-linear curve localizes the bottleneck; the optional
+// profiles say whether it's CPU (distance math), network wait, or lock contention.
+//
+//	VECTOR_SCALING=1 [VECTOR_PROFILE=1] [VECTOR_BENCH_SIZE/DIMS/...] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorConcurrencyScaling -v -timeout 20m
+//
+// VECTOR_PROFILE=1 dumps cpu/block/mutex profiles for the peak concurrency
+// level to /tmp/vecprof_{cpu,block,mutex}.prof.
+func TestVectorConcurrencyScaling(t *testing.T) {
+	if os.Getenv("VECTOR_SCALING") != "1" {
+		t.Skip("set VECTOR_SCALING=1 to run")
+	}
+	ensureVectorBenchDB(t)
+
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	k := vecEnvInt("VECTOR_BENCH_K", 10)
+	efSearch := vecEnvInt("VECTOR_BENCH_EF_SEARCH", 64)
+	parallelism := vecEnvInt("VECTOR_BENCH_PARALLELISM", 8)
+	perLevel := time.Duration(vecEnvInt("VECTOR_BENCH_SECS", 6)) * time.Second
+
+	md, vecIdx := vecBuildMetaData(dims, false)
+	ss := vecBenchSubspace(t.Name())
+	rng := rand.New(rand.NewSource(42))
+
+	t.Logf("Scaling test: size=%d dims=%d k=%d ef=%d perLevel=%v cores=%d",
+		size, dims, k, efSearch, perLevel, runtime.NumCPU())
+	insertStart := time.Now()
+	vecInsertVectorsParallel(t, vectorBenchDB, md, ss, size, dims, parallelism, rng)
+	t.Logf("  Inserted %d vectors in %v", size, time.Since(insertStart))
+
+	profile := os.Getenv("VECTOR_PROFILE") == "1"
+	if profile {
+		runtime.SetBlockProfileRate(1)     // sample every blocking event
+		runtime.SetMutexProfileFraction(1) // sample every mutex contention
+	}
+
+	levels := []int{1, 2, 4, 8, 16, 24}
+	peak := levels[len(levels)-1]
+	t.Logf("%-9s %-8s %-10s %-11s %-11s %-7s %-8s %-9s %-7s %-8s",
+		"wall", "readers", "ops/sec", "p50", "p99", "scale", "cliCPU", "alloc/op", "nGC", "gcPause")
+	var baseOpsPerSec float64
+	for _, n := range levels {
+		var stopCPU func()
+		if profile && n == peak {
+			f, err := os.Create("/tmp/vecprof_cpu.prof")
+			if err == nil {
+				_ = pprof.StartCPUProfile(f)
+				stopCPU = func() { pprof.StopCPUProfile(); f.Close() }
+			}
+		}
+		var ms0, ms1 runtime.MemStats
+		runtime.ReadMemStats(&ms0)
+		cpu0 := cpuSecondsSelf()
+		t0 := time.Now()
+		res := vecRunConcurrentSearch(t, vectorBenchDB, md, vecIdx, ss, dims, k, efSearch, n, perLevel)
+		wall := time.Since(t0)
+		cliCPU := (cpuSecondsSelf() - cpu0) / wall.Seconds()
+		runtime.ReadMemStats(&ms1)
+		if stopCPU != nil {
+			stopCPU()
+			vecWriteProfile("/tmp/vecprof_block.prof", "block")
+			vecWriteProfile("/tmp/vecprof_mutex.prof", "mutex")
+			vecWriteProfile("/tmp/vecprof_allocs.prof", "allocs")
+		}
+		if n == 1 {
+			baseOpsPerSec = res.opsPerSec
+		}
+		scale := 0.0
+		if baseOpsPerSec > 0 {
+			scale = res.opsPerSec / baseOpsPerSec
+		}
+		allocPerOp := uint64(0)
+		if res.ops > 0 {
+			allocPerOp = (ms1.TotalAlloc - ms0.TotalAlloc) / uint64(res.ops)
+		}
+		gcPause := time.Duration(ms1.PauseTotalNs - ms0.PauseTotalNs)
+		// wall window [start..end] printed so a parallel `docker stats` sampler can
+		// be aligned to each concurrency level (server CPU vs client cores).
+		t.Logf("%-9s %-8d %-10.1f %-11v %-11v %-6.2fx %-7.1f %-9s %-9d %v",
+			t0.Format("15:04:05"), n, res.opsPerSec, res.p50, res.p99, scale,
+			cliCPU, vecHumanBytes(allocPerOp), ms1.NumGC-ms0.NumGC, gcPause)
+	}
+}
+
+// cpuSecondsSelf returns cumulative user+system CPU seconds consumed by this
+// process (the client). Diffing it across a timed window and dividing by wall
+// time yields "cores busy" — the client-side CPU cost of the workload.
+func cpuSecondsSelf() float64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	u := time.Duration(ru.Utime.Sec)*time.Second + time.Duration(ru.Utime.Usec)*time.Microsecond
+	s := time.Duration(ru.Stime.Sec)*time.Second + time.Duration(ru.Stime.Usec)*time.Microsecond
+	return (u + s).Seconds()
+}
+
+func vecHumanBytes(b uint64) string {
+	switch {
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
+}
+
+// TestRawReadScaling measures the raw point-read throughput ceiling of the
+// FDB testcontainer, bypassing HNSW and tuple-decode entirely. Each op is one
+// transaction issuing RAW_BATCH pipelined Gets. If raw reads plateau at the
+// same per-op ceiling as the HNSW search, the bottleneck is the single-node
+// server's read throughput; if raw reads scale far higher, the HNSW/decode
+// path is the client-side cap. Gated on RAW_SCALING=1.
+func TestRawReadScaling(t *testing.T) {
+	if os.Getenv("RAW_SCALING") != "1" {
+		t.Skip("set RAW_SCALING=1 to run")
+	}
+	ensureVectorBenchDB(t)
+	ctx := context.Background()
+	ss := vecBenchSubspace(t.Name())
+	batch := vecEnvInt("RAW_BATCH", 50)
+	perLevel := time.Duration(vecEnvInt("VECTOR_BENCH_SECS", 4)) * time.Second
+
+	const nKeys = 2000
+	keys := make([][]byte, nKeys)
+	for i := range keys {
+		keys[i] = ss.Pack(tuple.Tuple{int64(i)})
+	}
+	// Seed keys (chunked to stay under the 10MB tx limit; values are tiny here).
+	for off := 0; off < nKeys; off += 500 {
+		end := off + 500
+		if end > nKeys {
+			end = nKeys
+		}
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := off; i < end; i++ {
+				tx.Set(fdb.Key(keys[i]), []byte{byte(i), byte(i >> 8)})
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed keys: %v", err)
+		}
+	}
+
+	levels := []int{1, 2, 4, 8, 16, 24, 48, 96}
+	t.Logf("Raw point-read scaling: batch=%d reads/tx, cores=%d", batch, runtime.NumCPU())
+	t.Logf("%-9s %-8s %-13s %-11s %-7s %-8s", "wall", "readers", "reads/sec", "p50/tx", "scale", "cliCPU")
+	var base float64
+	for _, nr := range levels {
+		var ops atomic.Int64 // reads
+		var mu sync.Mutex
+		var lats []time.Duration
+		var wg sync.WaitGroup
+		t0 := time.Now()
+		deadline := t0.Add(perLevel)
+		cpu0 := cpuSecondsSelf()
+		for r := 0; r < nr; r++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				rng := rand.New(rand.NewSource(int64(id*131 + 1)))
+				var local []time.Duration
+				for time.Now().Before(deadline) {
+					op := time.Now()
+					_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						tx := rtx.Transaction()
+						futs := make([]fdb.FutureByteSlice, batch)
+						for b := 0; b < batch; b++ {
+							futs[b] = tx.Get(fdb.Key(keys[rng.Intn(nKeys)]))
+						}
+						for b := 0; b < batch; b++ {
+							if _, e := futs[b].Get(); e != nil {
+								return nil, e
+							}
+						}
+						return nil, nil
+					})
+					if err == nil {
+						ops.Add(int64(batch))
+						local = append(local, time.Since(op))
+					}
+				}
+				mu.Lock()
+				lats = append(lats, local...)
+				mu.Unlock()
+			}(r)
+		}
+		wg.Wait()
+		el := time.Since(t0)
+		cores := (cpuSecondsSelf() - cpu0) / el.Seconds()
+		sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
+		readsPerSec := float64(ops.Load()) / el.Seconds()
+		if nr == 1 {
+			base = readsPerSec
+		}
+		scale := 0.0
+		if base > 0 {
+			scale = readsPerSec / base
+		}
+		t.Logf("%-9s %-8d %-13.0f %-11v %-6.2fx %-7.1f",
+			t0.Format("15:04:05"), nr, readsPerSec, vecLatencyPercentile(lats, 0.5), scale, cores)
+	}
+}
+
+func vecWriteProfile(path, name string) {
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if p := pprof.Lookup(name); p != nil {
+		_ = p.WriteTo(f, 0)
+	}
+}
+
+// TestVectorBuildLarge streams a large HNSW index to FDB without ever holding
+// the whole dataset in RAM: vectors are generated per batch and discarded, so
+// process memory is bounded by the per-batch working set, not the dataset. This
+// is what makes a 1M-vector build runnable on a box with limited free RAM.
+//
+//	VECTOR_BUILD=1 VECTOR_BENCH_SIZE=1000000 VECTOR_BENCH_DIMS=1536 \
+//	  VECTOR_BENCH_BATCH=16 \
+//	  go test ./pkg/recordlayer/bench -run TestVectorBuildLarge -v -timeout 1200m
+func TestVectorBuildLarge(t *testing.T) {
+	if os.Getenv("VECTOR_BUILD") != "1" {
+		t.Skip("set VECTOR_BUILD=1 to run the large streaming build")
+	}
+	// Datasets larger than RAM need disk-backed FDB (the shared bench DB uses the
+	// memory engine on tmpfs). VECTOR_BENCH_DISK=1 spins a dedicated disk-backed
+	// container with an SSD storage engine.
+	db := vectorBenchDB
+	if os.Getenv("VECTOR_BENCH_DISK") == "1" {
+		db = vecDiskBackedDB(t)
+	} else {
+		ensureVectorBenchDB(t)
+		db = vectorBenchDB
+	}
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	batchSize := vecEnvInt("VECTOR_BENCH_BATCH", 16)
+	md, vecIdx := vecBuildMetaData(dims, false)
+	ss := vecBenchSubspace(t.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(1))
+
+	t.Logf("Streaming build: size=%d dims=%d batch=%d cores=%d",
+		size, dims, batchSize, runtime.NumCPU())
+
+	start := time.Now()
+	progressEvery := max(20000, size/50)
+	nextProgress := progressEvery
+	buf := make([][]float64, batchSize)
+	for batchStart := 0; batchStart < size; batchStart += batchSize {
+		end := batchStart + batchSize
+		if end > size {
+			end = size
+		}
+		for i := batchStart; i < end; i++ {
+			buf[i-batchStart] = vecRandomVector(rng, dims)
+		}
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := batchStart; i < end; i++ {
+				if _, err := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(int64(i)),
+					Price:      proto.Int32(int32(i % 1000)),
+					VectorData: serializeVector(buf[i-batchStart]),
+				}); err != nil {
+					return nil, fmt.Errorf("insert %d: %w", i, err)
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("batch at %d: %v", batchStart, err)
+		}
+		if end >= nextProgress {
+			el := time.Since(start)
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			t.Logf("  ...%d/%d in %v (%.1f vec/sec, heap %dMB)",
+				end, size, el.Round(time.Second), float64(end)/el.Seconds(), ms.HeapInuse>>20)
+			nextProgress += progressEvery
+		}
+	}
+	total := time.Since(start)
+	t.Logf("BUILD DONE: %d vectors in %v (%.1f vec/sec)", size, total.Round(time.Second), float64(size)/total.Seconds())
+
+	// Spot-check searchability (no brute-force recall — dataset isn't retained).
+	q := vecRandomVector(rng, dims)
+	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+		if err != nil {
+			return nil, err
+		}
+		res, err := store.SearchVectorIndex(vecIdx, q, 10, 200)
+		if err != nil {
+			return nil, err
+		}
+		t.Logf("sample search returned %d results", len(res))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("sample search: %v", err)
+	}
+}
+
+// vecDiskBackedDB spins a dedicated FDB container that stores data on disk with
+// an SSD storage engine, for datasets larger than RAM (the shared bench DB uses
+// the in-RAM memory engine on tmpfs). The container is terminated at test end.
+func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
+	t.Helper()
+	setupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	container, err := foundationdbtc.Run(setupCtx, "",
+		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithDataOnDisk(),
+		foundationdbtc.WithStorageEngine("ssd-redwood-1"),
+	)
+	if err != nil {
+		t.Fatalf("start disk-backed FDB: %v", err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	clusterFile, err := container.ClusterFile(setupCtx)
+	if err != nil {
+		t.Fatalf("cluster file: %v", err)
+	}
+	tmpFile, err := os.CreateTemp("", "fdb_diskbench_*.txt")
+	if err != nil {
+		t.Fatalf("temp file: %v", err)
+	}
+	if _, err := tmpFile.WriteString(clusterFile); err != nil {
+		t.Fatalf("write cluster file: %v", err)
+	}
+	tmpFile.Close()
+	fdb.MustAPIVersion(720)
+	dbConn, err := fdb.OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("open disk-backed FDB: %v", err)
+	}
+	return recordlayer.NewFDBDatabase(dbConn)
+}
+
+// TestVectorIngestScaling measures whether ingestion scales horizontally across
+// independent shard graphs. Each shard is its own subspace (its own HNSW graph,
+// per-tx per-prefix write lock, own shared cache), so concurrent shard builders
+// run on separate transactions that don't contend or FDB-conflict. It builds the
+// same shards sequentially then concurrently and reports the speedup — the answer
+// to "the single-writer lock serializes one graph; shard to use all cores."
+//
+//	VECTOR_INGEST=1 [VECTOR_BENCH_SHARDS=8 VECTOR_BENCH_SIZE=3000] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorIngestScaling -v -timeout 30m
+//
+// TestVectorIngestSweep measures how ingestion throughput scales with the number
+// of concurrent shard builders. Each shard is an independent HNSW graph (its own
+// subspace, per-tx per-prefix write lock, own shared cache), so concurrent
+// builders run on separate transactions that don't contend or FDB-conflict. It
+// sweeps the builder count and reports aggregate vec/sec — the ceiling is where
+// the single-node FDB or the client cores saturate.
+//
+//	VECTOR_INGEST=1 [VECTOR_BENCH_SIZE=4000 VECTOR_BENCH_LEVELS=1,2,4,8,16,24] \
+//	  go test ./pkg/recordlayer/bench -run TestVectorIngestSweep -v -timeout 60m
+func TestVectorIngestSweep(t *testing.T) {
+	if os.Getenv("VECTOR_INGEST") != "1" {
+		t.Skip("set VECTOR_INGEST=1 to run")
+	}
+	db := vectorBenchDB
+	procs := vecEnvInt("VECTOR_BENCH_PROCS", 1)
+	if procs > 1 {
+		db = vecMultiProcDB(t, procs)
+	} else {
+		ensureVectorBenchDB(t)
+		db = vectorBenchDB
+	}
+	perShard := vecEnvInt("VECTOR_BENCH_SIZE", 4000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 1536)
+	batch := vecEnvInt("VECTOR_BENCH_BATCH", 16)
+	t.Logf("FDB processes: %d", procs)
+	levels := []int{1, 2, 4, 8, 16, 24}
+	if v := os.Getenv("VECTOR_BENCH_LEVELS"); v != "" {
+		levels = nil
+		for _, s := range strings.Split(v, ",") {
+			if n, err := strconv.Atoi(s); err == nil {
+				levels = append(levels, n)
+			}
+		}
+	}
+	md, _ := vecBuildMetaData(dims, false)
+	ctx := context.Background()
+	t.Logf("Ingest sweep: %d vec/shard (%dD), batch=%d, cores=%d", perShard, dims, batch, runtime.NumCPU())
+
+	buildShard := func(tag string) error {
+		ss := vecBenchSubspace(tag)
+		rng := rand.New(rand.NewSource(int64(len(tag)*7919 + 1)))
+		buf := make([][]float64, batch)
+		for start := 0; start < perShard; start += batch {
+			end := start + batch
+			if end > perShard {
+				end = perShard
+			}
+			for i := start; i < end; i++ {
+				buf[i-start] = vecRandomVector(rng, dims)
+			}
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := start; i < end; i++ {
+					if _, err := store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i % 1000)),
+						VectorData: serializeVector(buf[i-start]),
+					}); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// VECTOR_PROFILE=1 captures a client-side CPU profile (plus alloc/block/mutex)
+	// of the peak (most concurrent) level's build, written to /tmp/vecprof_ingest_*.
+	// Answers "what is the client spending CPU on during ingest" — distance compute,
+	// tuple/proto encode, FDB client serialization, or GC — and, by comparing the
+	// client core count against total machine CPU, whether the build is client-CPU-
+	// bound (won't scale horizontally) or FDB-bound (more nodes help).
+	profile := os.Getenv("VECTOR_PROFILE") == "1"
+	if profile {
+		runtime.SetBlockProfileRate(1)     // sample every blocking event (I/O waits)
+		runtime.SetMutexProfileFraction(1) // sample every mutex contention (write lock)
+	}
+	peak := levels[len(levels)-1]
+	t.Logf("%-8s %-14s %-14s %-8s %-8s", "builders", "aggregate v/s", "per-shard v/s", "scale", "cliCPU")
+	var base float64
+	runID := 0
+	for _, c := range levels {
+		var stopCPU func()
+		if profile && c == peak {
+			if f, err := os.Create("/tmp/vecprof_ingest_cpu.prof"); err == nil {
+				_ = pprof.StartCPUProfile(f)
+				stopCPU = func() { pprof.StopCPUProfile(); f.Close() }
+			}
+		}
+		cpu0 := cpuSecondsSelf()
+		t0 := time.Now()
+		var wg sync.WaitGroup
+		errs := make(chan error, c)
+		for s := 0; s < c; s++ {
+			wg.Add(1)
+			runID++
+			go func(id int) {
+				defer wg.Done()
+				if err := buildShard(fmt.Sprintf("%s-r%d", t.Name(), id)); err != nil {
+					errs <- err
+				}
+			}(runID)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("builder error: %v", err)
+		}
+		el := time.Since(t0)
+		cores := (cpuSecondsSelf() - cpu0) / el.Seconds()
+		agg := float64(c*perShard) / el.Seconds()
+		if c == levels[0] {
+			base = agg / float64(c) // per-shard baseline
+		}
+		if stopCPU != nil {
+			stopCPU()
+			vecWriteProfile("/tmp/vecprof_ingest_allocs.prof", "allocs")
+			vecWriteProfile("/tmp/vecprof_ingest_block.prof", "block")
+			vecWriteProfile("/tmp/vecprof_ingest_mutex.prof", "mutex")
+			t.Logf("profiles written: /tmp/vecprof_ingest_{cpu,allocs,block,mutex}.prof")
+		}
+		t.Logf("%-8d %-14.1f %-14.1f %-7.2fx %-7.1f", c, agg, agg/float64(c), (agg/float64(c))/base, cores)
+	}
+}
+
+// vecMultiProcDB spins a dedicated FDB container with N fdbserver processes, to
+// test whether more FDB commit/storage capacity lifts the concurrent-ingest
+// ceiling that one process imposes. Defaults to the disk-backed ssd-redwood-1
+// engine (VECTOR_BENCH_ENGINE to override): the in-RAM memory engine holds the
+// whole dataset in RAM and, with ~2N fdbserver processes competing for cores,
+// fills memory and starves the cluster at high concurrency (process_behind /
+// unresponsive container at C≈12). Disk-backed Redwood spills to the container's
+// data volume, so commit capacity — not RAM — sets the ceiling. Terminated at
+// test end.
+func vecMultiProcDB(t *testing.T, procs int) *recordlayer.FDBDatabase {
+	t.Helper()
+	engine := os.Getenv("VECTOR_BENCH_ENGINE")
+	if engine == "" {
+		engine = "ssd-redwood-1"
+	}
+	setupCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	opts := []testcontainers.ContainerCustomizer{
+		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithProcessCount(procs),
+		foundationdbtc.WithStorageEngine(engine),
+	}
+	if engine != "memory" {
+		// Spill to the container's on-disk data volume instead of the default
+		// tmpfs, so the dataset isn't capped by (and doesn't exhaust) host RAM.
+		opts = append(opts, foundationdbtc.WithDataOnDisk())
+	}
+	t.Logf("FDB engine: %s (%d procs)", engine, procs)
+	container, err := foundationdbtc.Run(setupCtx, "", opts...)
+	if err != nil {
+		t.Fatalf("start %d-proc FDB: %v", procs, err)
+	}
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	clusterFile, err := container.ClusterFile(setupCtx)
+	if err != nil {
+		t.Fatalf("cluster file: %v", err)
+	}
+	tmpFile, err := os.CreateTemp("", "fdb_mproc_*.txt")
+	if err != nil {
+		t.Fatalf("temp file: %v", err)
+	}
+	if _, err := tmpFile.WriteString(clusterFile); err != nil {
+		t.Fatalf("write cluster file: %v", err)
+	}
+	tmpFile.Close()
+	fdb.MustAPIVersion(720)
+	dbConn, err := fdb.OpenDatabase(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("open %d-proc FDB: %v", procs, err)
+	}
+	return recordlayer.NewFDBDatabase(dbConn)
 }

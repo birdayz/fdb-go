@@ -195,7 +195,12 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	// Resolve store info.
 	storeInfoValue, err := storeInfoFuture.Get()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read store info: %v", err)
+		// %w, not %v: this is a raw FDB read error (future_version,
+		// transaction_too_old, process_behind, …). Flattening it with %v would
+		// destroy the fdb.Error/*wire.FDBError type, so the Transact retry loop's
+		// errors.As classification (via unconvertError → OnError) would treat a
+		// retryable error as fatal and fail the transaction instead of retrying.
+		return nil, fmt.Errorf("failed to read store info: %w", err)
 	}
 
 	var exists bool

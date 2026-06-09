@@ -632,11 +632,18 @@ func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
-	builder.AddIndex("Order", recordlayer.NewVectorIndex(
+	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_idx",
 		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
 		2,
-	))
+	)
+	// This scenario asserts strict reachability (every inserted vector must be found by
+	// its own kNN search). Default HNSW (keepPrunedConnections=false) does NOT guarantee
+	// that — a non-diverse reverse edge can be pruned from all M neighbors, orphaning a
+	// node (true in Java too). keepPrunedConnections=true is the HNSW mechanism that keeps
+	// those edges, so the index actually provides the reachability the invariant checks.
+	vecIdx.Options[recordlayer.IndexOptionVectorKeepPrunedConnections] = "true"
+	builder.AddIndex("Order", vecIdx)
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build vector metadata: " + err.Error())
@@ -800,6 +807,13 @@ func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
 		128,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	// Establish the RaBitQ centroid after a few inserts so the small chaos dataset
+	// actually exercises the quantization regime (and the mid-stream plain→RaBitQ
+	// transition) under faults. Without this, Java parity stores everything plain
+	// (noOp quantizer until StatsThreshold=1000), bypassing RaBitQ entirely.
+	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
+	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
+	vecIdx.Options["hnswStatsThreshold"] = "3"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
@@ -1286,6 +1300,12 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 		2,
 	)
 	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	// Force the RaBitQ centroid to establish early (Java parity stores plain until
+	// StatsThreshold=1000), so this small dataset truly exercises the quantization
+	// pipeline + the plain→RaBitQ transition under commit_unknown faults.
+	vecIdx.Options["hnswSampleVectorStatsProbability"] = "1.0"
+	vecIdx.Options["hnswMaintainStatsProbability"] = "1.0"
+	vecIdx.Options["hnswStatsThreshold"] = "3"
 	builder.AddIndex("Order", vecIdx)
 
 	md, err := builder.Build()
