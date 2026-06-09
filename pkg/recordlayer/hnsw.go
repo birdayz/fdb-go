@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -538,7 +537,16 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		return nil // already deleted or doesn't exist
 	}
 
-	// Delete from all layers and repair.
+	// Delete from each layer (0..epLayer), repairing the deleted node's neighbors against
+	// a SHARED candidate set with deterministic, PK-seeded sampling — matching Java
+	// Delete.deleteFromLayers/deleteFromLayer. The random is seeded once from the deleted
+	// key (Primitives.random(primaryKey)) and threaded across layers so the sampling is
+	// reproducible (the previous per-neighbor repair used Go-map iteration + global
+	// rand.Shuffle and was non-deterministic).
+	random := newSplittableRandomForKey(primaryKey)
+	var newEntryPK tuple.Tuple
+	var newEntryVecBytes []byte
+	newEntryLayer := 0
 	for layer := 0; layer <= epLayer; layer++ {
 		_, neighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, primaryKey)
 		if loadErr != nil {
@@ -547,45 +555,26 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 			}
 			continue // not present at this layer
 		}
+		// neighbors aliases the per-tx cache entry; copy before the repair mutates the cache.
+		nbCopy := make([][]byte, len(neighbors))
+		copy(nbCopy, neighbors)
 
-		g.storage.deleteNodeLayerDispatch(tx, layer, primaryKey)
-
-		// Repair: for each neighbor, reconnect.
-		for _, nbSpan := range neighbors {
-			nbPK, derr := decodeNestedPK(nbSpan)
-			if derr != nil {
-				return derr
-			}
-			if repairErr := g.repairNeighbor(tx, layer, nbPK, primaryKey); repairErr != nil {
-				return repairErr
-			}
+		entryPK, entryVec, derr := g.deleteFromLayerRepair(tx, layer, primaryKey, nbCopy, random)
+		if derr != nil {
+			return derr
+		}
+		// Java returns one potential entry per layer (the first repair candidate) and picks
+		// the first non-null from the highest layer down — i.e. the highest layer that had a
+		// candidate. Overwriting each layer yields exactly that.
+		if entryPK != nil {
+			newEntryPK = entryPK
+			newEntryVecBytes = entryVec
+			newEntryLayer = layer
 		}
 	}
 
-	// Update entry point if needed.
+	// Update the entry point if we deleted it.
 	if tupleEqual(accessInfo.pk, primaryKey) {
-		// Find a replacement entry point by scanning for any remaining node,
-		// starting from the highest layer and working down.
-		var newEntryPK tuple.Tuple
-		var newEntryVecBytes []byte
-		newEntryLayer := 0
-
-		for layer := accessInfo.layer; layer >= 0 && newEntryPK == nil; layer-- {
-			// Find any node at this layer.
-			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayerDispatch(tx, layer)
-			// A transient scan error must abort the delete (so it retries) rather than
-			// be read as "layer empty" — otherwise we'd pick a wrong/no entry point and
-			// commit. A genuine empty layer (errHNSWNotPresent) is skipped to the next.
-			if e := hnswFatal(scanErr); e != nil {
-				return e
-			}
-			if foundPK != nil {
-				newEntryPK = foundPK
-				newEntryVecBytes = foundVec
-				newEntryLayer = layer
-			}
-		}
-
 		if newEntryPK != nil {
 			// Preserve transform state (rotatorSeed, centroid) when updating entry point.
 			accessInfo.layer = newEntryLayer
@@ -598,6 +587,250 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	return nil
+}
+
+// repairCandidate is a node in the shared deletion-repair candidate set: its primary key,
+// nested-span form, resolved vector bytes (for re-saving) and decoded vector (for distance),
+// and its current neighbor spans (to remove the deleted node and to extend with repaired ins).
+type repairCandidate struct {
+	pk        tuple.Tuple
+	span      []byte
+	vecBytes  []byte
+	vec       []float64
+	neighbors [][]byte
+}
+
+// findDeletionRepairCandidates builds the shared repair candidate set for a delete at one
+// layer: the deleted node's existing neighbors (PRIMARY, always kept) plus their neighbors
+// (SECONDARY) sampled deterministically at rate (efRepair - |primary|)/numCandidates via the
+// PK-seeded random. Matches Java Delete.findDeletionRepairCandidates + Primitives.neighbors/
+// findNeighborReferences (a LinkedHashSet: primary first, then distinct non-primary neighbors
+// in discovery order; one random.nextDouble() per non-primary candidate, in that order).
+func (g *hnswGraph) findDeletionRepairCandidates(tx fdb.ReadTransaction, layer int, deletedPK tuple.Tuple, deletedNeighbors [][]byte, random *splittableRandom) ([]repairCandidate, error) {
+	deletedSpan := nestPK(deletedPK)
+
+	// PRIMARY = the deleted node's neighbors, EXCLUDING the deleted node itself. Java's
+	// shouldUsePrimaryCandidateForRepair rejects a reference to the node being deleted
+	// (Primitives.findNeighborReferences seeds the set with the initial node, then the
+	// predicate filters it out) — so a stale self-reference never re-enters the candidate
+	// set and gets re-saved. We exclude it directly when forming the primary set.
+	primarySet := make(map[string]bool, len(deletedNeighbors))
+	var primarySpans [][]byte
+	for _, s := range deletedNeighbors {
+		if bytes.Equal(s, deletedSpan) || primarySet[string(s)] {
+			continue
+		}
+		primarySet[string(s)] = true
+		primarySpans = append(primarySpans, s)
+	}
+
+	// PRIMARY nodes loaded so we can walk their neighbors for the secondary set.
+	primaryBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, primarySpans)
+
+	// Ordered ref set (LinkedHashSet): primary first, then distinct non-primary
+	// neighbors-of-primary (excluding the deleted node).
+	refs := make([][]byte, 0, len(primarySpans))
+	refsSeen := make(map[string]bool, len(primarySpans))
+	for _, s := range primarySpans {
+		refs = append(refs, s)
+		refsSeen[string(s)] = true
+	}
+	for _, r := range primaryBatch {
+		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return nil, e
+			}
+			continue // primary neighbor absent — skip its sub-neighbors
+		}
+		for _, nb := range r.neighbors {
+			key := string(nb)
+			if primarySet[key] || refsSeen[key] || bytes.Equal(nb, deletedSpan) {
+				continue
+			}
+			refs = append(refs, nb)
+			refsSeen[key] = true
+		}
+	}
+
+	numCandidates := len(refs)
+	var sampleRate float64
+	if numCandidates > 0 {
+		sampleRate = float64(g.config.EfRepair-len(primarySpans)) / float64(numCandidates)
+	}
+
+	// Sample: primary (initials) always accepted (no random call); others accepted if
+	// sampleRate >= 1 or random.nextDouble() < sampleRate — in ref order, matching Java.
+	var selectedSpans [][]byte
+	for _, ref := range refs {
+		if primarySet[string(ref)] {
+			selectedSpans = append(selectedSpans, ref)
+			continue
+		}
+		if bytes.Equal(ref, deletedSpan) {
+			continue
+		}
+		if sampleRate >= 1 || random.nextDouble() < sampleRate {
+			selectedSpans = append(selectedSpans, ref)
+		}
+	}
+
+	// Load the selected candidates; filterExisting (skip absent ones). Preserve selectedSpans
+	// order so the candidate set (and the first-candidate entry choice) is deterministic.
+	batch := g.storage.loadNodeLayerBatchDispatch(tx, layer, selectedSpans)
+	resByKey := make(map[string]nodeResult, len(batch))
+	for _, r := range batch {
+		resByKey[string(r.span)] = r
+	}
+	var candidates []repairCandidate
+	for _, span := range selectedSpans {
+		r, ok := resByKey[string(span)]
+		if !ok || r.err != nil {
+			if ok && r.err != nil {
+				if e := hnswFatal(r.err); e != nil {
+					return nil, e
+				}
+			}
+			continue // absent candidate — filtered out
+		}
+		pk, derr := decodeNestedPK(r.span)
+		if derr != nil {
+			return nil, derr
+		}
+		resolved := g.storage.resolveVectorBytes(layer, pk, r.vecBytes)
+		vec, decErr := g.decodeStoredVector(resolved)
+		if decErr != nil {
+			continue
+		}
+		candidates = append(candidates, repairCandidate{pk: pk, span: r.span, vecBytes: resolved, vec: vec, neighbors: r.neighbors})
+	}
+	return candidates, nil
+}
+
+// deleteFromLayerRepair deletes deletedPK from one layer and repairs its neighbors against
+// the shared candidate set, then prunes and persists. Returns the first repair candidate as
+// Java's potential new entry node (Delete.deleteFromLayer).
+func (g *hnswGraph) deleteFromLayerRepair(tx fdb.Transaction, layer int, deletedPK tuple.Tuple, deletedNeighbors [][]byte, random *splittableRandom) (tuple.Tuple, []byte, error) {
+	deletedSpan := nestPK(deletedPK)
+	candidates, err := g.findDeletionRepairCandidates(tx, layer, deletedPK, deletedNeighbors, random)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// changeSet: candidate span → its mutable neighbor spans (deleted node removed up front,
+	// Java initializeCandidateChangeSetMap → DeleteNeighborsChangeSet). `changed` tracks which
+	// candidates were modified so we only re-write those (Java: changeSet.hasChanges()).
+	changeSet := make(map[string][][]byte, len(candidates))
+	candByKey := make(map[string]repairCandidate, len(candidates))
+	changed := make(map[string]bool, len(candidates))
+	order := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		key := string(c.span)
+		nbs := make([][]byte, 0, len(c.neighbors))
+		removed := false
+		for _, nb := range c.neighbors {
+			if bytes.Equal(nb, deletedSpan) {
+				removed = true
+				continue
+			}
+			nbs = append(nbs, nb)
+		}
+		changeSet[key] = nbs
+		candByKey[key] = c
+		order = append(order, key)
+		if removed {
+			changed[key] = true
+		}
+	}
+
+	// Repair each primary neighbor P of the deleted node against the shared candidate set:
+	// select M diverse candidates for P (Java repairInsForNeighborNode → selectCandidates(M))
+	// and add P to each selected candidate's neighbor list (reconnecting P into the graph).
+	for _, pSpan := range deletedNeighbors {
+		p, ok := candByKey[string(pSpan)]
+		if !ok {
+			continue // primary neighbor not a (still-existing) candidate
+		}
+		cands := make([]hnswCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			if bytes.Equal(c.span, pSpan) {
+				continue // not P itself
+			}
+			cands = append(cands, hnswCandidate{pkSpan: c.span, vecBytes: c.vecBytes, vec: c.vec, dist: vectorDistance(p.vec, c.vec, g.config.Metric)})
+		}
+		selected := g.selectNeighbors(cands, g.config.M)
+		for _, sc := range selected {
+			scKey := string(sc.pkSpan)
+			if !containsSpan(changeSet[scKey], pSpan) {
+				changeSet[scKey] = append(changeSet[scKey], pSpan)
+				changed[scKey] = true
+			}
+		}
+	}
+
+	// Prune each modified candidate to MMax/MMax0 (Java pruneNeighborsIfNecessary).
+	maxConn := g.config.MMax
+	if layer == 0 {
+		maxConn = g.config.MMax0
+	}
+	for _, key := range order {
+		if !changed[key] || len(changeSet[key]) <= maxConn {
+			continue
+		}
+		c := candByKey[key]
+		pkList := make([]tuple.Tuple, 0, len(changeSet[key]))
+		for _, sp := range changeSet[key] {
+			pk, derr := decodeNestedPK(sp)
+			if derr != nil {
+				return nil, nil, derr
+			}
+			pkList = append(pkList, pk)
+		}
+		prunedPKs, perr := g.pruneNeighbors(tx, c.vec, pkList, maxConn, layer)
+		if perr != nil {
+			return nil, nil, perr
+		}
+		pruned := make([][]byte, len(prunedPKs))
+		for i, pk := range prunedPKs {
+			pruned[i] = nestPK(pk)
+		}
+		changeSet[key] = pruned
+	}
+
+	// Delete the node, then persist every modified candidate.
+	g.storage.deleteNodeLayerDispatch(tx, layer, deletedPK)
+	for _, key := range order {
+		if !changed[key] {
+			continue
+		}
+		c := candByKey[key]
+		nbPKs := make([]tuple.Tuple, 0, len(changeSet[key]))
+		for _, sp := range changeSet[key] {
+			pk, derr := decodeNestedPK(sp)
+			if derr != nil {
+				return nil, nil, derr
+			}
+			nbPKs = append(nbPKs, pk)
+		}
+		g.storage.saveNodeLayerDispatch(tx, layer, c.pk, c.vecBytes, nbPKs)
+	}
+
+	// New entry node = the first candidate (Java returns the first of candidateReferencesMap,
+	// which preserves the candidate insertion order; guaranteed to exist).
+	if len(order) > 0 {
+		first := candByKey[order[0]]
+		return first.pk, first.vecBytes, nil
+	}
+	return nil, nil, nil
+}
+
+// containsSpan reports whether spans contains the given span (byte-equal).
+func containsSpan(spans [][]byte, span []byte) bool {
+	for _, s := range spans {
+		if bytes.Equal(s, span) {
+			return true
+		}
+	}
+	return false
 }
 
 // Search finds the k nearest neighbors to the query vector.
@@ -998,141 +1231,6 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 		result[i] = pk
 	}
 	return result, nil
-}
-
-// repairNeighbor removes a deleted node from a neighbor's list and finds replacement connections.
-func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, deletedPK tuple.Tuple) error {
-	nbVecBytes, nbNeighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, neighborPK)
-	if err != nil {
-		if e := hnswFatal(err); e != nil {
-			return e // transient read error — abort/retry, don't treat as absent
-		}
-		return nil // neighbor doesn't exist
-	}
-
-	// Work in span form (delete/repair is bounded, not the search hot path).
-	deletedSpan := nestPK(deletedPK)
-	neighborSpan := nestPK(neighborPK)
-
-	// Remove deleted node from neighbor's list.
-	filtered := make([][]byte, 0, len(nbNeighbors))
-	for _, span := range nbNeighbors {
-		if !bytes.Equal(span, deletedSpan) {
-			filtered = append(filtered, span)
-		}
-	}
-
-	// Batch-load filtered neighbors to get their neighbor lists.
-	filteredBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, filtered)
-
-	// Find candidates from neighbors-of-neighbors.
-	candidateMap := make(map[string][]byte)
-	for _, r := range filteredBatch {
-		if r.err != nil {
-			if e := hnswFatal(r.err); e != nil {
-				return e
-			}
-			continue
-		}
-		for _, candidate := range r.neighbors {
-			candidateKey := string(candidate)
-			if !bytes.Equal(candidate, neighborSpan) && !bytes.Equal(candidate, deletedSpan) {
-				candidateMap[candidateKey] = candidate
-			}
-		}
-	}
-
-	// Build candidate list with distances.
-	// For inlining layers, own vector is at layer 0.
-	resolvedVec := g.storage.resolveVectorBytes(layer, neighborPK, nbVecBytes)
-	nbVec, decErr := g.decodeStoredVector(resolvedVec)
-	if decErr != nil {
-		return fmt.Errorf("hnsw repair: decode neighbor %v vector at layer %d: %w", neighborPK, layer, decErr)
-	}
-
-	// Start with existing (filtered) neighbors (already in cache from batch above).
-	seen := make(map[string]bool)
-	var allCandidates []hnswCandidate
-	for _, r := range filteredBatch {
-		if r.err != nil {
-			if e := hnswFatal(r.err); e != nil {
-				return e
-			}
-			continue
-		}
-		rPK, derr := decodeNestedPK(r.span)
-		if derr != nil {
-			return derr
-		}
-		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, rPK, r.vecBytes)
-		candidateVec, decErr := g.decodeStoredVector(resolvedCandidateVec)
-		if decErr != nil {
-			continue
-		}
-		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pkSpan: r.span, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
-		seen[string(r.span)] = true
-	}
-
-	// Collect unseen candidates from neighbors-of-neighbors.
-	var newCandidatePKs [][]byte
-	for key, span := range candidateMap {
-		if seen[key] {
-			continue
-		}
-		newCandidatePKs = append(newCandidatePKs, span)
-	}
-
-	// Sample down new candidates if efRepair is set (matches Java's
-	// shouldUseSecondaryCandidateForRepair() which limits repair exploration).
-	if g.config.EfRepair > 0 && len(newCandidatePKs) > g.config.EfRepair {
-		rand.Shuffle(len(newCandidatePKs), func(i, j int) {
-			newCandidatePKs[i], newCandidatePKs[j] = newCandidatePKs[j], newCandidatePKs[i]
-		})
-		newCandidatePKs = newCandidatePKs[:g.config.EfRepair]
-	}
-
-	// Batch-fetch new candidates.
-	newBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, newCandidatePKs)
-	for _, r := range newBatch {
-		if r.err != nil {
-			if e := hnswFatal(r.err); e != nil {
-				return e
-			}
-			continue
-		}
-		rPK, derr := decodeNestedPK(r.span)
-		if derr != nil {
-			return derr
-		}
-		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, rPK, r.vecBytes)
-		candidateVec, decErr := g.decodeStoredVector(resolvedCandidateVec)
-		if decErr != nil {
-			continue
-		}
-		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pkSpan: r.span, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
-	}
-
-	// Select best connections using the heuristic.
-	maxConn := g.config.MMax
-	if layer == 0 {
-		maxConn = g.config.MMax0
-	}
-
-	selected := g.selectNeighbors(allCandidates, maxConn)
-
-	newNeighbors := make([]tuple.Tuple, len(selected))
-	for i, c := range selected {
-		pk, derr := decodeNestedPK(c.pkSpan)
-		if derr != nil {
-			return derr
-		}
-		newNeighbors[i] = pk
-	}
-
-	g.storage.saveNodeLayerDispatch(tx, layer, neighborPK, nbVecBytes, newNeighbors)
-	return nil
 }
 
 // hnswSearchResult is a search result.
@@ -2211,14 +2309,6 @@ func (s *hnswStorage) preloadLayerDispatch(tx fdb.ReadTransaction, layer int) er
 	return s.preloadLayer(tx, layer)
 }
 
-// findAnyNodeAtLayerDispatch finds any node at a layer in the appropriate format.
-func (s *hnswStorage) findAnyNodeAtLayerDispatch(tx fdb.ReadTransaction, layer int) (pk tuple.Tuple, vectorBytes []byte, err error) {
-	if s.isInliningLayer(layer) {
-		return s.findAnyNodeAtLayerInlining(tx, layer)
-	}
-	return s.findAnyNodeAtLayer(tx, layer)
-}
-
 // --- Vector serialization ---
 // Wire-compatible with Java's VectorType.DOUBLE.
 
@@ -2273,6 +2363,34 @@ func splitMixLong(x int64) int64 {
 // splitMixDouble converts a SplitMix64 hash to a double in [0, 1).
 func splitMixDouble(x int64) float64 {
 	return float64(uint64(splitMixLong(x))>>11) * (1.0 / float64(int64(1)<<53))
+}
+
+// splittableRandom is a stateful port of java.util.SplittableRandom (seeded form,
+// fixed GOLDEN_GAMMA). HNSW delete uses it for deterministic, PK-seeded sampling of
+// repair candidates — matching Java's Primitives.random(primaryKey) =
+// new SplittableRandom(splitMixLong(primaryKey.hashCode())). splitMixLong(x) already
+// computes mix64(x + GOLDEN_GAMMA) — exactly SplittableRandom.nextLong() for state x —
+// so nextLong returns splitMixLong(seed) and then advances seed by GOLDEN_GAMMA.
+type splittableRandom struct {
+	seed int64
+}
+
+// newSplittableRandomForKey seeds the RNG from a primary key, matching Java's
+// Primitives.random(pk): new SplittableRandom(splitMixLong(pk.hashCode())).
+func newSplittableRandomForKey(primaryKey tuple.Tuple) *splittableRandom {
+	return &splittableRandom{seed: splitMixLong(int64(javaHashCode(primaryKey.Pack())))}
+}
+
+func (r *splittableRandom) nextLong() int64 {
+	result := splitMixLong(r.seed) // mix64(seed + GOLDEN_GAMMA) == Java nextLong() for this seed
+	r.seed += -0x61C8864680B583EB  // advance seed by GOLDEN_GAMMA (nextSeed)
+	return result
+}
+
+// nextDouble returns a double in [0, 1), matching SplittableRandom.nextDouble() =
+// (nextLong() >>> 11) * 0x1.0p-53.
+func (r *splittableRandom) nextDouble() float64 {
+	return float64(uint64(r.nextLong())>>11) * (1.0 / float64(int64(1)<<53))
 }
 
 // javaHashCode computes a Java-compatible hash code for byte array.

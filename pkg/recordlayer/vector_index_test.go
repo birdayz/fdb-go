@@ -3376,6 +3376,16 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				Expect(graph.Delete(tx, tuple.Tuple{int64(i)})).To(Succeed())
 			}
 
+			// Deleted nodes must actually be GONE — not re-created by a later delete's
+			// repair. Java's shouldUsePrimaryCandidateForRepair rejects the node being
+			// deleted, so a stale self-reference never re-enters the candidate set and gets
+			// re-saved. Revert-proof: stop excluding the deleted node from the primary set
+			// and these loads find the (re-created) node.
+			for i := 0; i < 5; i++ {
+				_, _, lerr := storage.loadNodeLayer(tx, 0, tuple.Tuple{int64(i)})
+				Expect(lerr).To(HaveOccurred(), "deleted node %d must be gone at layer 0, not re-created", i)
+			}
+
 			// Remaining 15 vectors should all be findable.
 			for i := 5; i < numVectors; i++ {
 				results, err := graph.Search(tx, vectors[i], 1, 100)
