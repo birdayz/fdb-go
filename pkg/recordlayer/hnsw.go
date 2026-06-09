@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -596,7 +597,10 @@ func (g *hnswGraph) addToStatsIfNecessary(tx fdb.Transaction, info *hnswAccessIn
 	if err != nil {
 		return err
 	}
-	agg := aggregateVectors(samples)
+	agg, aggErr := aggregateVectors(samples)
+	if aggErr != nil {
+		return aggErr
+	}
 	if agg.count == 0 {
 		return nil
 	}
@@ -636,21 +640,24 @@ func (g *hnswGraph) addToStatsIfNecessary(tx fdb.Transaction, info *hnswAccessIn
 }
 
 // aggregateVectors sums the partial vectors and their counts. Java Insert.aggregateVectors.
-func aggregateVectors(samples []aggregatedVector) aggregatedVector {
+// All samples come from one index, so their dimensions must agree; a mismatch means
+// corrupt SAMPLES data and must surface, not be silently truncated into a wrong centroid.
+func aggregateVectors(samples []aggregatedVector) (aggregatedVector, error) {
 	var sum []float64
 	count := 0
 	for _, s := range samples {
 		if sum == nil {
 			sum = make([]float64, len(s.vec))
 		}
+		if len(s.vec) != len(sum) {
+			return aggregatedVector{}, fmt.Errorf("hnsw stats: sampled vector dimension mismatch: %d vs %d", len(s.vec), len(sum))
+		}
 		for i, v := range s.vec {
-			if i < len(sum) {
-				sum[i] += v
-			}
+			sum[i] += v
 		}
 		count += s.count
 	}
-	return aggregatedVector{count: count, vec: sum}
+	return aggregatedVector{count: count, vec: sum}, nil
 }
 
 // appendSampledVector writes one SAMPLES entry. Key: samplesSubspace.Pack(count, uniqueBytes);
@@ -738,10 +745,6 @@ func (s *hnswStorage) aggregatedVectorFromRaw(key, value []byte) (aggregatedVect
 // For inlining layers, uses preloadLayerDispatch (already done during search/insert).
 // Repairs are still sequential (each needs neighbor data from FDB).
 func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
-	// Load access info first to get the max layer in the graph.
-	// We scan from epLayer down to 0 to find where the node actually exists,
-	// rather than computing topLayer from PK hash (which would be wrong if M
-	// changed or the node was inserted with a different M).
 	accessInfo, accessErr := g.storage.loadAccessInfo(tx)
 	if accessErr != nil {
 		if e := hnswFatal(accessErr); e != nil {
@@ -752,7 +755,13 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	// Lift pre-centroid plain vectors into the current coordinate system during repair
 	// distance computations (see opXform). nil when no centroid is established.
 	g.opXform = g.buildTransform(accessInfo)
-	epLayer := accessInfo.layer
+	// The node occupies layers [0, topLayer(pk)] by construction (Insert writes every
+	// one); Java's Delete bounds its layer scan the same way (Delete.java:186
+	// primitives.topLayer(primaryKey), deleteFromLayers rangeClosed(0, topLayer)).
+	// This can exceed the CURRENT entry layer (the entry may have been deleted and
+	// replaced by a lower node) — bounding by the entry layer would orphan the KVs
+	// above it.
+	topLvl := topLayer(primaryKey, g.config.M)
 
 	// Pipeline: fire all compact-layer reads at once.
 	// Inlining layers use range reads via loadNodeLayerDispatch.
@@ -763,7 +772,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 	var futures []layerFuture
 
-	for layer := 0; layer <= epLayer; layer++ {
+	for layer := 0; layer <= topLvl; layer++ {
 		if g.storage.isInliningLayer(layer) {
 			continue // inlining layers use range reads, not single-key gets
 		}
@@ -818,17 +827,18 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		return nil // already deleted or doesn't exist
 	}
 
-	// Delete from each layer (0..epLayer), repairing the deleted node's neighbors against
-	// a SHARED candidate set with deterministic, PK-seeded sampling — matching Java
-	// Delete.deleteFromLayers/deleteFromLayer. The random is seeded once from the deleted
-	// key (Primitives.random(primaryKey)) and threaded across layers so the sampling is
-	// reproducible (the previous per-neighbor repair used Go-map iteration + global
-	// rand.Shuffle and was non-deterministic).
+	// Delete from each layer (0..topLayer(pk)), repairing the deleted node's neighbors
+	// against a SHARED candidate set with deterministic, PK-seeded sampling — matching
+	// Java Delete.deleteFromLayers/deleteFromLayer. The random is seeded once from the
+	// deleted key (Primitives.random(primaryKey)) and SPLIT once per layer
+	// (Delete.java:261 random.split()), so each layer's sampling is an independent
+	// stream: layer N's draws don't depend on how many candidates layer N-1 had.
 	random := newSplittableRandomForKey(primaryKey)
 	var newEntryPK tuple.Tuple
 	var newEntryVecBytes []byte
 	newEntryLayer := 0
-	for layer := 0; layer <= epLayer; layer++ {
+	for layer := 0; layer <= topLvl; layer++ {
+		layerRandom := random.split()
 		_, neighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, primaryKey)
 		if loadErr != nil {
 			if e := hnswFatal(loadErr); e != nil {
@@ -840,7 +850,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		nbCopy := make([][]byte, len(neighbors))
 		copy(nbCopy, neighbors)
 
-		entryPK, entryVec, derr := g.deleteFromLayerRepair(tx, layer, primaryKey, nbCopy, random)
+		entryPK, entryVec, derr := g.deleteFromLayerRepair(tx, layer, primaryKey, nbCopy, layerRandom)
 		if derr != nil {
 			return derr
 		}
@@ -2125,59 +2135,6 @@ func (s *hnswStorage) clearAccessInfo(tx fdb.Transaction) {
 	tx.Clear(fdb.Key(key))
 }
 
-// findAnyNodeAtLayer finds any node present at the given layer.
-// Returns the first node found by scanning the layer prefix.
-func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk tuple.Tuple, vectorBytes []byte, err error) {
-	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
-	r, rangeErr := fdb.PrefixRange(prefix)
-	if rangeErr != nil {
-		return nil, nil, rangeErr
-	}
-
-	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
-	if ri.Advance() {
-		kv, getErr := ri.Get()
-		if getErr != nil {
-			return nil, nil, getErr
-		}
-
-		// Extract primary key from the FDB key.
-		// Key format: dataSubspace + (layer, nestedPK)
-		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
-		if unpackErr != nil {
-			return nil, nil, unpackErr
-		}
-		// keyTuple[0] = layer, keyTuple[1] = primaryKey (nested tuple)
-		if len(keyTuple) > 1 {
-			if pkTuple, ok := keyTuple[1].(tuple.Tuple); ok {
-				pk = pkTuple
-			}
-		}
-
-		// Parse the value for vector bytes.
-		t, valErr := fastUnpack(kv.Value)
-		if valErr != nil {
-			return nil, nil, valErr
-		}
-		if len(t) >= 2 {
-			if vt, ok := t[1].(tuple.Tuple); ok && len(vt) > 0 {
-				if vb, ok := vt[0].([]byte); ok {
-					vectorBytes = vb
-				}
-			}
-		}
-
-		return pk, vectorBytes, nil
-	}
-
-	// Advance()==false: distinguish a transient FDB error from a genuinely empty
-	// layer, so a 1007/timeout isn't reported as the misleading "no nodes at layer".
-	if _, getErr := ri.Get(); getErr != nil {
-		return nil, nil, fmt.Errorf("hnsw: find any node at layer %d: %w", layer, getErr)
-	}
-	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d: %w", layer, errHNSWNotPresent)
-}
-
 // clearAll removes all HNSW graph data (data + access info).
 func (s *hnswStorage) clearAll(tx fdb.Transaction) {
 	for _, ss := range []subspace.Subspace{s.dataSubspace, s.accessSubspace} {
@@ -2264,18 +2221,14 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 		edgeValue := tuple.Tuple{nbVecBytes}.Pack()
 		tx.Set(fdb.Key(edgeKey), edgeValue)
 
-		// Cache the neighbor's vector at this layer (a partial, vector-only entry,
-		// same shape the load path writes) so later same-tx saves can resolve it.
-		nbCacheKey := string(s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK}))
-		if _, ok := s.cache[nbCacheKey]; !ok {
-			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
-		}
+		// Record the vector so later same-tx saves can resolve it (merges into a
+		// vector-less source entry — see cacheNeighborVector).
+		s.cacheNeighborVector(layer, nbPK, nbVecBytes)
 	}
 
 	// Update the cache for this node so loadNodeLayerDispatch returns
 	// neighbors from cache without hitting FDB.
 	compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
-	// For inlining layers, vecBytes is nil (vector lives at layer 0).
 	// Use empty slice (not nil) when no neighbors, so cache knows the node
 	// exists but has no neighbors (nil neighbors means "unknown, needs range read").
 	// Cache holds neighbors as nested-encoded spans.
@@ -2283,8 +2236,34 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 	for i, pk := range neighbors {
 		cachedNeighbors[i] = nestPK(pk)
 	}
-	s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: cachedNeighbors}
+	// Inlining storage has no own-vector at this layer, but the cache entry may carry
+	// the node's vector learned from an edge value or a threaded neighborVec — PRESERVE
+	// it (like the load path does). Writing vecBytes nil here clobbered the entry
+	// point's just-merged vector between two reverse-edge saves of the same insert,
+	// making the second save fail with "no vector for neighbor".
+	var existingVec []byte
+	if existing, ok := s.cache[string(compactKey)]; ok && existing != nil {
+		existingVec = existing.vecBytes
+	}
+	s.cache[string(compactKey)] = &parsedNode{vecBytes: existingVec, neighbors: cachedNeighbors}
 	return nil
+}
+
+// cacheNeighborVector records a neighbor's vector bytes at a layer. If the node is not
+// cached, writes a partial (vector-only) entry; if it is cached WITHOUT a vector — e.g.
+// it was loaded as a source, where inlining storage has no own-vector — the vector is
+// MERGED into the existing entry. Skipping the merge loses the only copy of the vector
+// a later save's cache fallback can reach (a node's vector arrives via edge values or
+// threaded neighborVecs, and each arrival must stick).
+func (s *hnswStorage) cacheNeighborVector(layer int, nbPK tuple.Tuple, vecBytes []byte) {
+	key := string(s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK}))
+	if existing, ok := s.cache[key]; ok {
+		if existing != nil && existing.vecBytes == nil {
+			existing.vecBytes = vecBytes
+		}
+		return
+	}
+	s.cache[key] = &parsedNode{vecBytes: vecBytes, neighbors: nil}
 }
 
 // getVectorBytesFromCache looks up a node's vector bytes from the cache at a given layer.
@@ -2381,15 +2360,10 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 
 		neighbors = append(neighbors, nestPK(nbPK))
 
-		// Cache the neighbor's data at this layer so loadNodeLayerBatch hits cache.
-		// We don't know the neighbor's own neighbors yet, but we have its vector.
-		nbCompactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK})
-		nbCacheKey := string(nbCompactKey)
-		if _, alreadyCached := s.cache[nbCacheKey]; !alreadyCached {
-			// Store a partial cache entry with the vector but no neighbors.
-			// This is enough for loadNodeLayerBatch to return vecBytes.
-			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
-		}
+		// Cache the neighbor's vector at this layer so loadNodeLayerBatch hits cache.
+		// We don't know the neighbor's own neighbors yet, but we have its vector —
+		// merged into a vector-less source entry if one exists (cacheNeighborVector).
+		s.cacheNeighborVector(layer, nbPK, nbVecBytes)
 	}
 	// Surface a transient FDB error that ended the scan via Advance()==false, so an
 	// incomplete neighbor list isn't returned as a complete one (silent corruption).
@@ -2508,55 +2482,15 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 		for i, e := range edges {
 			neighbors[i] = nestPK(e.neighborPK)
 
-			// Also cache each neighbor's vector.
-			nbCompactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), e.neighborPK})
-			nbCacheKey := string(nbCompactKey)
-			if _, alreadyCached := s.cache[nbCacheKey]; !alreadyCached {
-				s.cache[nbCacheKey] = &parsedNode{vecBytes: e.vecBytes, neighbors: nil}
-			}
+			// Also cache each neighbor's vector (merging into a vector-less source
+			// entry if one exists — cacheNeighborVector).
+			s.cacheNeighborVector(layer, e.neighborPK, e.vecBytes)
 		}
 
 		s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: neighbors}
 	}
 
 	return nil
-}
-
-// findAnyNodeAtLayerInlining finds any node present at the given inlining layer.
-func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer int) (pk tuple.Tuple, vectorBytes []byte, err error) {
-	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
-	r, rangeErr := fdb.PrefixRange(prefix)
-	if rangeErr != nil {
-		return nil, nil, rangeErr
-	}
-
-	// Read just 1 KV to find any node.
-	ri := s.scanIter(tx, r, fdb.RangeOptions{Limit: 1})
-	if ri.Advance() {
-		kv, getErr := ri.Get()
-		if getErr != nil {
-			return nil, nil, getErr
-		}
-
-		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
-		if unpackErr != nil || len(keyTuple) < 2 {
-			return nil, nil, fmt.Errorf("hnsw: inlining key too short at layer %d", layer)
-		}
-
-		if pkTuple, ok := keyTuple[1].(tuple.Tuple); ok {
-			// For inlining layers, the node's own vector is at layer 0.
-			// Return nil vectorBytes — the caller should have the entry point vector
-			// from the access info, or can look it up at layer 0.
-			return pkTuple, nil, nil
-		}
-	}
-
-	// Advance()==false: surface a transient FDB error rather than the misleading
-	// "no nodes at layer".
-	if _, getErr := ri.Get(); getErr != nil {
-		return nil, nil, fmt.Errorf("hnsw: find any node (inlining) at layer %d: %w", layer, getErr)
-	}
-	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d: %w", layer, errHNSWNotPresent)
 }
 
 // --- Dispatch methods ---
@@ -2690,14 +2624,34 @@ func topLayer(primaryKey tuple.Tuple, m int) int {
 	return level
 }
 
-// splitMixLong applies the SplitMix64 hash function.
-// Matches Java's SplittableRandom.mix64.
+// goldenGamma is Java SplittableRandom's GOLDEN_GAMMA, 0x9e3779b97f4a7c15 (signed).
+const goldenGamma int64 = -0x61C8864680B583EB
+
+// mix64 is Java SplittableRandom.mix64 (Stafford variant 13 of the SplitMix64 mixer).
+func mix64(z int64) int64 {
+	u := uint64(z)
+	u = (u ^ (u >> 30)) * 0xbf58476d1ce4e5b9
+	u = (u ^ (u >> 27)) * 0x94d049bb133111eb
+	return int64(u ^ (u >> 31))
+}
+
+// mixGamma is Java SplittableRandom.mixGamma: the MurmurHash3 64-bit mixer, forced
+// odd, with the low-transition correction — produces the gamma for a split() child.
+func mixGamma(z int64) int64 {
+	u := uint64(z)
+	u = (u ^ (u >> 33)) * 0xff51afd7ed558ccd
+	u = (u ^ (u >> 33)) * 0xc4ceb9fe1a85ec53
+	u = (u ^ (u >> 33)) | 1
+	if bits.OnesCount64(u^(u>>1)) < 24 {
+		u ^= 0xaaaaaaaaaaaaaaaa
+	}
+	return int64(u)
+}
+
+// splitMixLong applies the SplitMix64 hash function: mix64 of the GOLDEN_GAMMA-advanced
+// input — equivalently, the first nextLong() of new SplittableRandom(x).
 func splitMixLong(x int64) int64 {
-	x += -0x61C8864680B583EB                             // 0x9e3779b97f4a7c15 as signed int64
-	x = (x ^ int64(uint64(x)>>30)) * -0x40A7B892E31B1A47 // 0xbf58476d1ce4e5b9
-	x = (x ^ int64(uint64(x)>>27)) * -0x6B2FB644ECCEEE15 // 0x94d049bb133111eb
-	x = x ^ int64(uint64(x)>>31)
-	return x
+	return mix64(x + goldenGamma)
 }
 
 // splitMixDouble converts a SplitMix64 hash to a double in [0, 1).
@@ -2712,25 +2666,40 @@ func splitMixDouble(x int64) float64 {
 // computes mix64(x + GOLDEN_GAMMA) — exactly SplittableRandom.nextLong() for state x —
 // so nextLong returns splitMixLong(seed) and then advances seed by GOLDEN_GAMMA.
 type splittableRandom struct {
-	seed int64
+	seed  int64
+	gamma int64
 }
 
 // newSplittableRandomForKey seeds the RNG from a primary key, matching Java's
-// Primitives.random(pk): new SplittableRandom(splitMixLong(pk.hashCode())).
+// Primitives.random(pk): new SplittableRandom(splitMixLong(pk.hashCode())) — the
+// single-argument constructor uses GOLDEN_GAMMA.
 func newSplittableRandomForKey(primaryKey tuple.Tuple) *splittableRandom {
-	return &splittableRandom{seed: splitMixLong(int64(javaHashCode(primaryKey.Pack())))}
+	return &splittableRandom{seed: splitMixLong(int64(javaHashCode(primaryKey.Pack()))), gamma: goldenGamma}
+}
+
+// nextSeed advances and returns the seed (Java SplittableRandom.nextSeed).
+func (r *splittableRandom) nextSeed() int64 {
+	r.seed += r.gamma
+	return r.seed
 }
 
 func (r *splittableRandom) nextLong() int64 {
-	result := splitMixLong(r.seed) // mix64(seed + GOLDEN_GAMMA) == Java nextLong() for this seed
-	r.seed += -0x61C8864680B583EB  // advance seed by GOLDEN_GAMMA (nextSeed)
-	return result
+	return mix64(r.nextSeed())
 }
 
 // nextDouble returns a double in [0, 1), matching SplittableRandom.nextDouble() =
 // (nextLong() >>> 11) * 0x1.0p-53.
 func (r *splittableRandom) nextDouble() float64 {
 	return float64(uint64(r.nextLong())>>11) * (1.0 / float64(int64(1)<<53))
+}
+
+// split returns a child RNG whose stream is statistically independent of the
+// parent's, matching Java SplittableRandom.split(): seed = mix64(nextSeed()),
+// gamma = mixGamma(nextSeed()) — two parent seed advances per split. HNSW delete
+// splits once per layer (Java Delete.deleteFromLayers) so each layer's candidate
+// sampling is an independent stream regardless of how many draws other layers made.
+func (r *splittableRandom) split() *splittableRandom {
+	return &splittableRandom{seed: mix64(r.nextSeed()), gamma: mixGamma(r.nextSeed())}
 }
 
 // javaHashCode computes a Java-compatible hash code for byte array.

@@ -103,26 +103,6 @@ func TestHNSW_LoadNodeLayerInlining_SurfacesIteratorError(t *testing.T) {
 	}
 }
 
-func TestHNSW_FindAnyNodeAtLayer_SurfacesIteratorError(t *testing.T) {
-	t.Parallel()
-	injErr := errors.New("injected transaction_too_old (1007)")
-	s := hnswStorageWithFailingScan(injErr)
-	_, _, err := s.findAnyNodeAtLayer(nil, 0)
-	if !errors.Is(err, injErr) {
-		t.Fatalf("findAnyNodeAtLayer must surface the error, not report 'no nodes at layer', got %v", err)
-	}
-}
-
-func TestHNSW_FindAnyNodeAtLayerInlining_SurfacesIteratorError(t *testing.T) {
-	t.Parallel()
-	injErr := errors.New("injected transaction_too_old (1007)")
-	s := hnswStorageWithFailingScan(injErr)
-	_, _, err := s.findAnyNodeAtLayerInlining(nil, 0)
-	if !errors.Is(err, injErr) {
-		t.Fatalf("findAnyNodeAtLayerInlining must surface the error, not 'no nodes at layer', got %v", err)
-	}
-}
-
 // TestHNSWFatal pins the not-found-vs-fatal classification that the graph callers use:
 // only a genuine errHNSWNotPresent "absent" result is skippable; any other (transient)
 // error must propagate so the transaction aborts and retries.

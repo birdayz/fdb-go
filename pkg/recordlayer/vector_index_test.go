@@ -172,6 +172,36 @@ var _ = Describe("Layer Assignment", func() {
 		Expect(r1).NotTo(Equal(r3))
 	})
 
+	It("splittableRandom.split matches java.util.SplittableRandom (known-answer)", func() {
+		// Oracle values generated with OpenJDK 25 (the SplitMix algorithm is fixed):
+		//   SplittableRandom r = new SplittableRandom(0x123456789abcdef0L);
+		//   r.nextLong();                      // p1
+		//   SplittableRandom c1 = r.split();   // c1a, c1b = c1.nextLong() x2
+		//   SplittableRandom c2 = r.split();   // c2a
+		//   r.nextLong();                      // p2 (parent stream resumes after splits)
+		//   SplittableRandom gc = c1.split();  // gca (split of a split child)
+		//   c1.nextDouble();                   // c1d
+		// HNSW delete relies on split(): one child per layer (Java Delete.deleteFromLayers).
+		r := &splittableRandom{seed: 0x123456789abcdef0, gamma: goldenGamma}
+		Expect(r.nextLong()).To(Equal(int64(1592342178222199016)), "p1")
+		c1 := r.split()
+		Expect(c1.nextLong()).To(Equal(int64(3429967862750260442)), "c1a")
+		Expect(c1.nextLong()).To(Equal(int64(-1062649399360441825)), "c1b")
+		c2 := r.split()
+		Expect(c2.nextLong()).To(Equal(int64(-7717078838966176596)), "c2a")
+		Expect(r.nextLong()).To(Equal(int64(6724426161381059673)), "p2")
+		gc := c1.split()
+		Expect(gc.nextLong()).To(Equal(int64(7881248587903041880)), "gca")
+		Expect(c1.nextDouble()).To(BeNumerically("~", 0.7535564508747816, 1e-15), "c1d")
+
+		// Delete's exact shape: seed 42, two sequential splits, one nextDouble each.
+		d := &splittableRandom{seed: 42, gamma: goldenGamma}
+		dl0 := d.split()
+		dl1 := d.split()
+		Expect(dl0.nextDouble()).To(BeNumerically("~", 0.5928260530359551, 1e-15), "dl0")
+		Expect(dl1.nextDouble()).To(BeNumerically("~", 0.19301583440619918, 1e-15), "dl1")
+	})
+
 	It("javaHashCode matches Java behavior", func() {
 		// Java: int hash = 1; for (byte b : data) hash = 31 * hash + b;
 		// For data = {1}, hash = 31*1 + 1 = 32
@@ -1103,6 +1133,64 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			v2, gerr := tx.Get(fdb.Key(epToNew)).Get()
 			Expect(gerr).NotTo(HaveOccurred())
 			Expect(v2).NotTo(BeNil(), "reverse edge (layer 1, entry → newNode) must be written on a cold insert")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold insert into a CONNECTED inlining layer succeeds (vector merges into source-cached entries)", func() {
+		// Codex round-3 finding. A node loaded as a SOURCE at an inlining layer is cached
+		// with vecBytes nil (inlining nodes don't store their own vector at their layer).
+		// If its vector later arrives — via a threaded neighborVec or an edge value naming
+		// it — the cache write must MERGE the vector into the existing entry, not skip it
+		// because "already cached". Otherwise a later reverse-edge save that resolves that
+		// node's vector from the cache fails with "no vector for neighbor".
+		//
+		// Natural trigger: a CONNECTED upper layer (A↔B at layer 1), cold insert C
+		// reaching layer 1. The search loads A as a source first (cached vec-nil), B's
+		// edge read hits the already-cached A and (pre-fix) skips filling A's vector;
+		// the reverse-edge save for B then needs A's vector → cold error.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-connected")
+
+		// Three PKs whose deterministic level reaches layer >= 1.
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 3; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Warm: two nodes both reaching layer 1 — the second insert connects them there,
+		// so layer 1 is a CONNECTED inlining layer (real edge KVs exist).
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(warmGraph.Insert(tx, pks[0], []float64{1, 1})).To(Succeed())
+			Expect(warmGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cold: the third insert reaches layer 1, selects both, and must be able to
+		// resolve every neighbor vector when writing the reverse edges.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[2], []float64{3, 3})).To(Succeed(),
+				"cold insert into a connected inlining layer must not fail (vector must merge into the source-cached entry)")
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
