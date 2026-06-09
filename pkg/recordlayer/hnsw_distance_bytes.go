@@ -46,7 +46,7 @@ func vectorDistanceFromBytes(query []float64, stored []byte, metric VectorMetric
 				dot += query[j] * math.Float64frombits(binary.BigEndian.Uint64(payload[j*8:]))
 			}
 			return -dot, true
-		default: // squared L2 — four independent lanes (see euclideanDistance).
+		default: // Euclidean (sqrt) or EuclideanSquare (no sqrt) — four independent lanes.
 			var s0, s1, s2, s3 float64
 			j := 0
 			for ; j+4 <= n; j += 4 {
@@ -64,7 +64,10 @@ func vectorDistanceFromBytes(query []float64, stored []byte, metric VectorMetric
 				d := query[j] - math.Float64frombits(binary.BigEndian.Uint64(payload[j*8:]))
 				sum += d * d
 			}
-			return sum, true
+			if metric == VectorMetricEuclideanSquare {
+				return sum, true
+			}
+			return math.Sqrt(sum), true
 		}
 	}
 
@@ -93,13 +96,16 @@ func vectorDistanceFromBytes(query []float64, stored []byte, metric VectorMetric
 			dot += query[j] * read(j)
 		}
 		return -dot, true
-	default: // squared L2
+	default: // Euclidean (sqrt) or EuclideanSquare (no sqrt)
 		var sum float64
 		for j := 0; j < n; j++ {
 			d := query[j] - read(j)
 			sum += d * d
 		}
-		return sum, true
+		if metric == VectorMetricEuclideanSquare {
+			return sum, true
+		}
+		return math.Sqrt(sum), true
 	}
 }
 

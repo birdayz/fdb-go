@@ -170,6 +170,19 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 		if err != nil {
 			return math.Inf(1)
 		}
+		// RaBitQ estimates distance in SQUARED L2 space. The true-L2 Euclidean metric
+		// surfaces sqrt to stay consistent with the raw path (vectorDistanceFromBytes)
+		// and with Java's EuclideanMetric (a RaBitQ index and a raw index must report
+		// the same distance). EUCLIDEAN_SQUARE keeps the squared estimate.
+		//
+		// Clamp to >= 0 before sqrt: the RaBitQ estimate is approximate and can be
+		// slightly NEGATIVE near zero distance (e.g. a self/near-self match). True L2 is
+		// always >= 0; without the clamp sqrt(neg)=NaN, which sorts as "not nearest" and
+		// drops the self match (chaos vector_index_self_search_miss). A negative squared
+		// estimate correctly meant "≈0, nearest" pre-sqrt, so clamp preserves that.
+		if g.config.Metric == VectorMetricEuclidean {
+			return math.Sqrt(math.Max(0, dist))
+		}
 		return dist
 	}
 	// Fast path: read components straight from the stored bytes, no []float64.

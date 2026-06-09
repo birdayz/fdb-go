@@ -143,10 +143,11 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 		case "DOT_PRODUCT_METRIC", "inner_product":
 			config.Metric = VectorMetricInnerProduct
 		case "EUCLIDEAN_SQUARE_METRIC":
-			// Java's EUCLIDEAN_SQUARE uses squared L2 (same as our Euclidean).
-			config.Metric = VectorMetricEuclidean
+			// Squared L2 (no sqrt), not a true metric — matches Java's
+			// EUCLIDEAN_SQUARE_METRIC (MetricDefinition.EuclideanSquareMetric).
+			config.Metric = VectorMetricEuclideanSquare
 		default:
-			// EUCLIDEAN_METRIC and any other value defaults to Euclidean.
+			// EUCLIDEAN_METRIC (true L2, sqrt) and any other value default to Euclidean.
 			config.Metric = VectorMetricEuclidean
 		}
 	}

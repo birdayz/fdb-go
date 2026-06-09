@@ -15,7 +15,7 @@ import (
 func TestVectorDistanceFromBytes_MatchesDeserialize(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(1))
-	metrics := []VectorMetric{VectorMetricEuclidean, VectorMetricCosine, VectorMetricInnerProduct}
+	metrics := []VectorMetric{VectorMetricEuclidean, VectorMetricEuclideanSquare, VectorMetricCosine, VectorMetricInnerProduct}
 
 	for _, dims := range []int{1, 2, 7, 128, 1536} {
 		query := make([]float64, dims)

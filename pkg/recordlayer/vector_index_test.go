@@ -17,17 +17,21 @@ import (
 )
 
 var _ = Describe("Distance Metrics", func() {
-	It("euclidean distance computes squared L2", func() {
+	It("euclidean distance is true L2 (sqrt); square variant is squared", func() {
 		a := []float64{1.0, 2.0, 3.0}
 		b := []float64{4.0, 5.0, 6.0}
-		// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9+9+9 = 27
-		Expect(euclideanDistance(a, b)).To(BeNumerically("~", 27.0, 1e-9))
+		// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9+9+9 = 27; L2 = sqrt(27). Matches Java's
+		// EuclideanMetric.distance = Math.sqrt(...); EuclideanSquare keeps the sum.
+		Expect(euclideanDistance(a, b)).To(BeNumerically("~", math.Sqrt(27.0), 1e-9))
+		Expect(euclideanSquareDistance(a, b)).To(BeNumerically("~", 27.0, 1e-9))
 
-		// Distance to self is zero.
+		// Distance to self is zero (both variants).
 		Expect(euclideanDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
+		Expect(euclideanSquareDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
 
-		// Single dimension.
-		Expect(euclideanDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 16.0, 1e-9))
+		// Single dimension: |7-3| = 4, squared = 16.
+		Expect(euclideanDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 4.0, 1e-9))
+		Expect(euclideanSquareDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 16.0, 1e-9))
 	})
 
 	It("cosine distance: orthogonal = 1.0, identical = 0.0", func() {
@@ -1471,6 +1475,28 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(distRaBitQ).To(BeNumerically("~", expected, expected*0.5))
 	})
 
+	It("RaBitQ Euclidean self-distance is finite and >= 0 (clamp negative estimate)", func() {
+		// The RaBitQ squared-L2 estimate can be slightly NEGATIVE near zero distance
+		// (it is an estimate, not a true sum of squares). The Euclidean metric sqrt's it,
+		// so without clamping a self/near-self match becomes NaN — which sorts as
+		// "not nearest" and drops the match (chaos vector_index_self_search_miss).
+		// computeDistance must clamp to >= 0. Revert-proof: drop the math.Max(0, …) and
+		// some self-distance below goes NaN.
+		dims := 16
+		graph := makeRaBitQGraph(dims, 4)
+		rq := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, 4)
+		rng := rand.New(rand.NewSource(60606)) // the chaos seed that surfaced the NaN
+		for i := 0; i < 300; i++ {
+			v := make([]float64, dims)
+			for j := range v {
+				v[j] = rng.NormFloat64()
+			}
+			d := graph.computeDistance(v, rq.Encode(v).ToBytes()) // self-distance
+			Expect(math.IsNaN(d)).To(BeFalse(), "self-distance must not be NaN — clamp the negative RaBitQ estimate before sqrt")
+			Expect(d).To(BeNumerically(">=", 0.0))
+		}
+	})
+
 	It("empty graph returns nil results", func() {
 		graph := makeRaBitQGraph(4, 4)
 
@@ -1549,11 +1575,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
 			}
 
-			// id=1 at (10,10): dist to (15,15) = (15-10)^2 + (15-10)^2 = 50
-			// id=2 at (20,20): dist to (15,15) = (15-20)^2 + (15-20)^2 = 50
-			// Both equidistant at 50.
-			Expect(results[0].Distance).To(BeNumerically("~", 50.0, 1e-6))
-			Expect(results[1].Distance).To(BeNumerically("~", 50.0, 1e-6))
+			// id=1 at (10,10): dist to (15,15) = sqrt((15-10)^2 + (15-10)^2) = sqrt(50)
+			// id=2 at (20,20): dist to (15,15) = sqrt((15-20)^2 + (15-20)^2) = sqrt(50)
+			// Both equidistant at sqrt(50) (true L2).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
+			Expect(results[1].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
 
 			return nil, nil
 		})
@@ -1863,8 +1889,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				gotIDs = append(gotIDs, result.GetValue().Key[0].(int64))
 			}
 
-			// Expected order by squared distance from origin:
-			// id=2(1,1)=2, id=4(5,5)=50, id=1(10,10)=200, id=3(50,50)=5000, id=5(100,100)=20000
+			// Expected order by distance from origin (sqrt is monotone, so the order is the
+			// same whether L2 or squared): id=2(1,1) < id=4(5,5) < id=1(10,10) < id=3(50,50) < id=5(100,100)
 			Expect(gotIDs).To(Equal([]int64{2, 4, 1, 3, 5}))
 
 			return nil, nil
@@ -1929,8 +1955,11 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		a := []float64{3.0, 4.0}
 		b := []float64{0.0, 0.0}
 
-		// Euclidean: 3^2 + 4^2 = 25
-		Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(BeNumerically("~", 25.0, 1e-9))
+		// Euclidean (true L2): sqrt(3^2 + 4^2) = sqrt(25) = 5
+		Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(BeNumerically("~", 5.0, 1e-9))
+
+		// Euclidean-square: 3^2 + 4^2 = 25 (no sqrt)
+		Expect(vectorDistance(a, b, VectorMetricEuclideanSquare)).To(BeNumerically("~", 25.0, 1e-9))
 
 		// Cosine: 1 - dot/(normA*normB). dot=0 when b=0,0 -> special case returns 1.
 		Expect(vectorDistance(a, b, VectorMetricCosine)).To(BeNumerically("~", 1.0, 1e-9))
@@ -2011,8 +2040,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(1))
 			// The closest to origin should be one of the two records at (100,100),
-			// NOT at the old position (0,0). Distance to (100,100) = 100^2 + 100^2 = 20000.
-			Expect(results[0].Distance).To(BeNumerically("~", 20000.0, 1e-6))
+			// NOT at the old position (0,0). Distance to (100,100) = sqrt(100^2 + 100^2) = sqrt(20000).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(20000.0), 1e-6))
 
 			return nil, nil
 		})
@@ -2944,18 +2973,20 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		storage := newHNSWStorage(ss, config)
 		graph := NewHNSWGraph(storage, config)
 
-		// Query at origin (0,0). Distances are squared Euclidean.
-		// A = (1, 0)  -> dist = 1
-		// B = (1.1, 0) -> dist = 1.21 (very close to A)
-		// C = (0, 2)  -> dist = 4    (different direction from A)
-		// D = (0, 2.1) -> dist = 4.41 (close to C)
-		// E = (3, 3)  -> dist = 18   (far away)
+		// Query at origin (0,0). Distances are true L2 (sqrt), matching euclideanDistance —
+		// the candidate query-distance and the heuristic's internal pairwise distance must
+		// be in the same (sqrt) space or the diversity comparison is wrong.
+		// A = (1, 0)   -> dist = 1
+		// B = (1.1, 0) -> dist = 1.1              (very close to A)
+		// C = (0, 2)   -> dist = 2                (different direction from A)
+		// D = (0, 2.1) -> dist = 2.1              (close to C)
+		// E = (3, 3)   -> dist = sqrt(18) ≈ 4.243 (far away)
 		candidates := []hnswCandidate{
 			candSpan(1, []float64{1, 0}, 1.0),
-			candSpan(2, []float64{1.1, 0}, 1.21),
-			candSpan(3, []float64{0, 2}, 4.0),
-			candSpan(4, []float64{0, 2.1}, 4.41),
-			candSpan(5, []float64{3, 3}, 18.0),
+			candSpan(2, []float64{1.1, 0}, 1.1),
+			candSpan(3, []float64{0, 2}, 2.0),
+			candSpan(4, []float64{0, 2.1}, 2.1),
+			candSpan(5, []float64{3, 3}, math.Sqrt(18.0)),
 		}
 
 		selected := graph.selectNeighbors(candidates, 2)
@@ -2964,8 +2995,8 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		// First should be A (closest).
 		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
 		// Second should be C (diverse direction), not B (clustered with A).
-		// dist(B, A) = (0.1)^2 = 0.01 < B.dist=1.21 -> B is pruned
-		// dist(C, A) = 1 + 4 = 5 > C.dist=4 -> C is selected
+		// dist(B, A) = 0.1 < B.dist=1.1 -> B is pruned
+		// dist(C, A) = sqrt(5) ≈ 2.236 > C.dist=2 -> C is selected
 		Expect(candPKInt(selected[1])).To(Equal(int64(3)))
 	})
 
@@ -3328,6 +3359,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 
 	It("satisfiesTriangleInequality returns correct values per metric", func() {
 		Expect(VectorMetricEuclidean.satisfiesTriangleInequality()).To(BeTrue())
+		Expect(VectorMetricEuclideanSquare.satisfiesTriangleInequality()).To(BeFalse())
 		Expect(VectorMetricCosine.satisfiesTriangleInequality()).To(BeFalse())
 		Expect(VectorMetricInnerProduct.satisfiesTriangleInequality()).To(BeFalse())
 	})
