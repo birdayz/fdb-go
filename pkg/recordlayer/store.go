@@ -1120,7 +1120,7 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 	case IndexTypeVector:
 		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
 		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
-		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store), nil
+		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store), nil
 	}

@@ -117,14 +117,21 @@ func newVectorIndexMaintainer(
 	indexSubspace, hnswSubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
-) *vectorIndexMaintainer {
+) (*vectorIndexMaintainer, error) {
 	config := parseHNSWConfig(index)
+	// Validate the config (ranges + cross-field invariants), matching Java's Config
+	// constructor which throws on an invalid config. Without this Go would silently build
+	// a graph from a config Java rejects — e.g. m > mMax (new node selects more than the
+	// pruning cap → churn) or efRepair < m.
+	if err := ValidateHNSWConfig(config); err != nil {
+		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
+	}
 	return &vectorIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
 		storageCache:            make(map[string]*hnswStorage),
-	}
+	}, nil
 }
 
 // parseHNSWConfig reads HNSW configuration from index options.

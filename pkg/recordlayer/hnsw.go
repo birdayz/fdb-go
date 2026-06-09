@@ -101,6 +101,19 @@ func ValidateHNSWConfig(c HNSWConfig) error {
 	if c.EfConstruction < 100 || c.EfConstruction > 400 {
 		return fmt.Errorf("hnsw: efConstruction must be in [100, 400], got %d", c.EfConstruction)
 	}
+	// Cross-field invariants — Java Config constructor (Config.java:88-92):
+	//   Preconditions.checkArgument(m <= mMax, ...)
+	//   Preconditions.checkArgument(mMax <= mMax0, ...)
+	//   Preconditions.checkArgument(efRepair >= m && efRepair <= 400, ...)
+	if c.M > c.MMax {
+		return fmt.Errorf("hnsw: m (%d) must be <= mMax (%d)", c.M, c.MMax)
+	}
+	if c.MMax > c.MMax0 {
+		return fmt.Errorf("hnsw: mMax (%d) must be <= mMax0 (%d)", c.MMax, c.MMax0)
+	}
+	if c.EfRepair < c.M || c.EfRepair > 400 {
+		return fmt.Errorf("hnsw: efRepair must be in [m, 400] = [%d, 400], got %d", c.M, c.EfRepair)
+	}
 	return nil
 }
 

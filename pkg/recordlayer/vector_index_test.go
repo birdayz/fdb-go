@@ -231,6 +231,32 @@ var _ = Describe("HNSW Config Validation", func() {
 		c.EfConstruction = 401
 		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
 	})
+
+	// Cross-field invariants — Java Config.java:88-92. The default config satisfies them.
+	It("accepts the default config", func() {
+		Expect(ValidateHNSWConfig(DefaultHNSWConfig(128))).To(Succeed())
+	})
+
+	It("rejects m > mMax", func() {
+		c := DefaultHNSWConfig(128) // M=16, MMax=16
+		c.M = 20                    // 20 > 16, both individually in range
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
+
+	It("rejects mMax > mMax0", func() {
+		c := DefaultHNSWConfig(128) // MMax=16, MMax0=32
+		c.MMax = 40                 // 40 > 32, both individually in range
+		c.MMax0 = 32
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
+
+	It("rejects efRepair < m or efRepair > 400", func() {
+		c := DefaultHNSWConfig(128) // M=16, efRepair=64
+		c.EfRepair = 10             // 10 < m=16
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+		c.EfRepair = 401 // > 400
+		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
+	})
 })
 
 var _ = Describe("HNSW Graph Direct", func() {
@@ -1549,6 +1575,32 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		return builder
 	}
+
+	It("rejects an invalid HNSW config when the index is used (validation wired into maintainer)", func() {
+		ks := specSubspace()
+		// m=20 > default mMax=16 — a config Java's Config constructor rejects. The store
+		// must surface the error when it constructs the vector index maintainer, not
+		// silently build a bad graph. Revert-proof: drop the ValidateHNSWConfig call in
+		// newVectorIndexMaintainer and the save succeeds.
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		vecIdx.Options[IndexOptionHNSWM] = "20"
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if serr != nil {
+				return nil, serr // validation may fire at store open (maintainer construction)
+			}
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("m (20) must be <= mMax"))
+	})
 
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
 		ks := specSubspace()
