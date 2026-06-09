@@ -1355,6 +1355,22 @@ func countConcreteNode(p plans.RecordQueryPlan, counts *expressionCounts, ctx Pl
 		counts.coveringIndexCount++
 		// Aggregate access groups rows — no provable ≤1 bound (Java: unknown).
 		counts.unboundedDataAccess = true
+	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
+		// A multi-aggregate intersection's children are aggregate-index scans
+		// baked into this plan (the template-aware exprConcreteCounts resolves
+		// children via the empty expression graph, not plan children, so without
+		// this case they go uncounted and the node ranks as a no-data-access
+		// node). Count the intersection as ONE logical grouped data access — read
+		// the pre-aggregated groups, comparable to a single aggregate-index scan,
+		// NOT N independent accesses. Counting it as N made criterion #3 (fewer
+		// data accesses) prefer a single full Scan (count 1) over the intersection
+		// (count N) even though the scan reads the whole table + sorts; counting
+		// it as 1 ties the scan on count, then it wins on the scan-vs-covering-
+		// index criterion exactly like the single-aggregate path. Skip the child
+		// walk so the per-child scans aren't also counted.
+		counts.coveringIndexCount++
+		counts.unboundedDataAccess = true
+		return true
 	case *plans.RecordQueryVectorIndexPlan:
 		counts.indexScanCount++
 		// Top-K vector scan — no provable ≤1 bound (Java: unknown).
