@@ -21,6 +21,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/testcontainers/testcontainers-go"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -1344,10 +1345,29 @@ func TestVectorIngestSweep(t *testing.T) {
 		return nil
 	}
 
+	// VECTOR_PROFILE=1 captures a client-side CPU profile (plus alloc/block/mutex)
+	// of the peak (most concurrent) level's build, written to /tmp/vecprof_ingest_*.
+	// Answers "what is the client spending CPU on during ingest" — distance compute,
+	// tuple/proto encode, FDB client serialization, or GC — and, by comparing the
+	// client core count against total machine CPU, whether the build is client-CPU-
+	// bound (won't scale horizontally) or FDB-bound (more nodes help).
+	profile := os.Getenv("VECTOR_PROFILE") == "1"
+	if profile {
+		runtime.SetBlockProfileRate(1)     // sample every blocking event (I/O waits)
+		runtime.SetMutexProfileFraction(1) // sample every mutex contention (write lock)
+	}
+	peak := levels[len(levels)-1]
 	t.Logf("%-8s %-14s %-14s %-8s %-8s", "builders", "aggregate v/s", "per-shard v/s", "scale", "cliCPU")
 	var base float64
 	runID := 0
 	for _, c := range levels {
+		var stopCPU func()
+		if profile && c == peak {
+			if f, err := os.Create("/tmp/vecprof_ingest_cpu.prof"); err == nil {
+				_ = pprof.StartCPUProfile(f)
+				stopCPU = func() { pprof.StopCPUProfile(); f.Close() }
+			}
+		}
 		cpu0 := cpuSecondsSelf()
 		t0 := time.Now()
 		var wg sync.WaitGroup
@@ -1373,22 +1393,46 @@ func TestVectorIngestSweep(t *testing.T) {
 		if c == levels[0] {
 			base = agg / float64(c) // per-shard baseline
 		}
+		if stopCPU != nil {
+			stopCPU()
+			vecWriteProfile("/tmp/vecprof_ingest_allocs.prof", "allocs")
+			vecWriteProfile("/tmp/vecprof_ingest_block.prof", "block")
+			vecWriteProfile("/tmp/vecprof_ingest_mutex.prof", "mutex")
+			t.Logf("profiles written: /tmp/vecprof_ingest_{cpu,allocs,block,mutex}.prof")
+		}
 		t.Logf("%-8d %-14.1f %-14.1f %-7.2fx %-7.1f", c, agg, agg/float64(c), (agg/float64(c))/base, cores)
 	}
 }
 
 // vecMultiProcDB spins a dedicated FDB container with N fdbserver processes, to
 // test whether more FDB commit/storage capacity lifts the concurrent-ingest
-// ceiling that one process imposes. Memory engine (fast, in-RAM). Terminated at
+// ceiling that one process imposes. Defaults to the disk-backed ssd-redwood-1
+// engine (VECTOR_BENCH_ENGINE to override): the in-RAM memory engine holds the
+// whole dataset in RAM and, with ~2N fdbserver processes competing for cores,
+// fills memory and starves the cluster at high concurrency (process_behind /
+// unresponsive container at C≈12). Disk-backed Redwood spills to the container's
+// data volume, so commit capacity — not RAM — sets the ceiling. Terminated at
 // test end.
 func vecMultiProcDB(t *testing.T, procs int) *recordlayer.FDBDatabase {
 	t.Helper()
+	engine := os.Getenv("VECTOR_BENCH_ENGINE")
+	if engine == "" {
+		engine = "ssd-redwood-1"
+	}
 	setupCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	container, err := foundationdbtc.Run(setupCtx, "",
+	opts := []testcontainers.ContainerCustomizer{
 		foundationdbtc.WithAPIVersion(720),
 		foundationdbtc.WithProcessCount(procs),
-	)
+		foundationdbtc.WithStorageEngine(engine),
+	}
+	if engine != "memory" {
+		// Spill to the container's on-disk data volume instead of the default
+		// tmpfs, so the dataset isn't capped by (and doesn't exhaust) host RAM.
+		opts = append(opts, foundationdbtc.WithDataOnDisk())
+	}
+	t.Logf("FDB engine: %s (%d procs)", engine, procs)
+	container, err := foundationdbtc.Run(setupCtx, "", opts...)
 	if err != nil {
 		t.Fatalf("start %d-proc FDB: %v", procs, err)
 	}
