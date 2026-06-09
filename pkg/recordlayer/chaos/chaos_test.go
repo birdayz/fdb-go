@@ -632,11 +632,18 @@ func buildVectorMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
-	builder.AddIndex("Order", recordlayer.NewVectorIndex(
+	vecIdx := recordlayer.NewVectorIndex(
 		"order_vec_idx",
 		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
 		2,
-	))
+	)
+	// This scenario asserts strict reachability (every inserted vector must be found by
+	// its own kNN search). Default HNSW (keepPrunedConnections=false) does NOT guarantee
+	// that — a non-diverse reverse edge can be pruned from all M neighbors, orphaning a
+	// node (true in Java too). keepPrunedConnections=true is the HNSW mechanism that keeps
+	// those edges, so the index actually provides the reachability the invariant checks.
+	vecIdx.Options[recordlayer.IndexOptionVectorKeepPrunedConnections] = "true"
+	builder.AddIndex("Order", vecIdx)
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build vector metadata: " + err.Error())

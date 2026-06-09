@@ -251,6 +251,34 @@ var _ = Describe("HNSW Graph Direct", func() {
 		return NewHNSWGraph(storage, config)
 	}
 
+	It("new node selects M neighbors at layer 0, not MMax0 (Java parity)", func() {
+		// Java Insert.insertIntoLayer selects getConfig().getM() for the NEW node
+		// (Insert.java:507); maxConn (MMax/MMax0) is only the cap for pruning EXISTING
+		// neighbors. Use EUCLIDEAN_SQUARE (no triangle inequality → selectNeighbors takes a
+		// plain top-cap slice, no diversity pruning) so the new node's degree is exactly
+		// min(candidates, cap): post-fix M=4, pre-fix MMax0=8. Insert a dense cluster
+		// (>> MMax0 reachable); the LAST node's layer-0 degree (no later reverse edges) must
+		// be M=4, not MMax0=8 (the pre-fix Go value). Revert-proof: restore maxConn → 8.
+		config := HNSWConfig{NumDimensions: 4, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, Metric: VectorMetricEuclideanSquare}
+		graph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-newnode-degree"), config), config)
+		rng := rand.New(rand.NewSource(7))
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			var lastPK tuple.Tuple
+			for i := 0; i < 60; i++ { // dense random cluster, well >> MMax0
+				lastPK = tuple.Tuple{int64(i)}
+				v := []float64{rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10}
+				Expect(graph.Insert(tx, lastPK, v)).To(Succeed())
+			}
+			_, neighbors, lerr := graph.storage.loadNodeLayer(tx, 0, lastPK)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(neighbors)).To(Equal(config.M),
+				"new node must select M neighbors at layer 0, not MMax0 (pre-fix Go selected MMax0)")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert single node, search returns it", func() {
 		graph := makeGraph(3)
 

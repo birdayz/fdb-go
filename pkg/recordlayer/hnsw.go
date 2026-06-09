@@ -297,19 +297,24 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 			return err
 		}
 
-		// Select M best neighbors.
+		// The NEW node connects to up to M neighbors (Java Insert.insertIntoLayer:
+		// selectCandidates(..., getConfig().getM(), ...) — getM() is layer-independent).
+		// maxConn (MMax, or MMax0 at layer 0) is the cap for PRUNING existing neighbors
+		// when a reverse edge overflows them, NOT for the new node's own selection.
+		// Selecting maxConn here was a Go-only divergence: with the default MMax0=32 > M=16
+		// it gave the new node up to 32 layer-0 edges vs Java's 16 — a denser graph.
 		maxConn := g.config.MMax
 		if layer == 0 {
 			maxConn = g.config.MMax0
 		}
 		var selected []hnswCandidate
 		if g.config.ExtendCandidates {
-			selected, err = g.selectNeighborsHeuristic(tx, queryVec, neighbors, maxConn, layer)
+			selected, err = g.selectNeighborsHeuristic(tx, queryVec, neighbors, g.config.M, layer)
 			if err != nil {
 				return err
 			}
 		} else {
-			selected = g.selectNeighbors(neighbors, maxConn)
+			selected = g.selectNeighbors(neighbors, g.config.M)
 		}
 
 		// Decode the ≤M selected neighbor spans to tuple.Tuple once. The graph-write
