@@ -851,6 +851,75 @@ var _ = Describe("HNSW Inlining Storage", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("lonely inlining node writes NO sentinel KV (Java wire compat)", func() {
+		// Java's InliningStorageAdapter writes NOTHING for a node with no neighbors at an
+		// inlining layer (BaseNeighborsChangeSet.writeDelta is a no-op for an empty change
+		// set). A sentinel would be a 2-element (layer, pk) key; Java's inlining scanner
+		// parses every KV at a layer as a 3-element edge via keyTuple.getNestedTuple(2)
+		// (InliningStorageAdapter.java:198/376), so a 2-element key crashes a Java reader
+		// sharing the cluster. Revert-proof: restore the `tx.Set(prefix, []byte{})` sentinel
+		// and this asserts a non-zero KV count → fails.
+		graph := makeInliningGraph(3)
+		pk := tuple.Tuple{int64(42)}
+		const layer = 1 // inlining (UseInlining=true, layer > 0)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			graph.storage.saveNodeLayerInlining(rtx.Transaction(), layer, pk, nil)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh transaction reads committed data directly from FDB (bypassing the cache):
+		// the lonely node's (layer, pk) prefix must hold zero KVs.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			prefix := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+			r, perr := fdb.PrefixRange(prefix)
+			Expect(perr).NotTo(HaveOccurred())
+			iter := rtx.Transaction().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+			count := 0
+			for iter.Advance() {
+				_, gerr := iter.Get()
+				Expect(gerr).NotTo(HaveOccurred())
+				count++
+			}
+			Expect(count).To(BeZero(),
+				"a lonely inlining node must write zero KVs — a 2-element sentinel key breaks Java's inlining scanner")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("inlining graph with a lonely entry searches correctly on a cold cache (cross-tx)", func() {
+		// With the sentinel removed, a lonely entry point at an inlining layer must still be
+		// reachable when the per-tx cache is cold (a fresh transaction/process). Insert enough
+		// nodes that the top node is alone at an inlining layer, commit, then search from a
+		// fresh storage (cold cache) reading committed FDB data.
+		graph := makeInliningGraph(2)
+		const n = 60
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < n; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), float64(i * 2)})).To(Succeed())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh graph on the SAME subspace → cold cache → reads from committed FDB, exercising
+		// the (sentinel-less) lonely-entry descent end to end.
+		config := graph.config
+		coldGraph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-inlining"), config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			results, serr := coldGraph.Search(rtx.Transaction(), []float64{7.0, 14.0}, 1, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(7)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert 5 nodes, kNN k=3 returns 3 closest (inlining)", func() {
 		graph := makeInliningGraph(2)
 

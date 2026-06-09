@@ -1791,12 +1791,20 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 		tx.ClearRange(r)
 	}
 
-	// If no neighbors, write a sentinel KV at the exact prefix key to mark node existence.
-	// Without this, loadNodeLayerInlining's range read finds 0 KVs and returns "not found",
-	// which breaks greedy descent when the entry point has layers above all other nodes.
-	if len(neighbors) == 0 {
-		tx.Set(fdb.Key(prefix), []byte{})
-	}
+	// A node with no neighbors at an inlining layer writes NOTHING — matching Java's
+	// InliningStorageAdapter, where BaseNeighborsChangeSet.writeDelta is a no-op for an
+	// empty change set (Primitives.writeLonelyNodeOnLayer → writeNode → writeNodeInternal
+	// only calls changeSet.writeDelta). A sentinel KV here would be a 2-element (layer, pk)
+	// key; Java's inlining scanner parses every KV at a layer as a 3-element edge via
+	// keyTuple.getNestedTuple(2) (InliningStorageAdapter.java:198/376), so a 2-element key
+	// makes a Java reader sharing the cluster throw — a wire-format break.
+	//
+	// The lonely-node case (an entry point at layers above all other nodes) needs no
+	// sentinel: the per-tx cache below records EMPTY (non-nil) neighbors so a same-tx read
+	// returns "exists, no neighbors"; cross-tx the descent tolerates the empty range —
+	// searchLayerMulti pre-seeds the entry into its result set, searchLayerGreedy treats an
+	// absent neighbor list as "no neighbors" and stops. Node existence is determined by the
+	// layer-0 compact record / topLayer(pk), exactly as in Java — never by an inlining edge.
 
 	// Write each edge with the neighbor's vector.
 	for _, nbPK := range neighbors {
@@ -1897,8 +1905,10 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		// Unpack the key to get (layer, sourcePK, neighborPK).
 		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil || len(keyTuple) < 3 {
-			// Sentinel KV at (layer, pk) has only 2 elements — skip it.
-			// This marks the node's existence with 0 neighbors.
+			// An inlining edge key is always 3 elements (layer, pk, neighborPK). A
+			// shorter key is not a valid edge — skip defensively. (We no longer write a
+			// 2-element sentinel; Java never does either, so this only guards malformed
+			// or legacy data, never the normal path.)
 			continue
 		}
 
