@@ -1,18 +1,21 @@
 # RFC-094 — SPFresh: an FDB-native vector index (centroid + posting lists, incremental rebalancing)
 
-**Status:** Draft — awaiting review (Torvalds + codex; record-layer scope, no Cascades surface)
+**Status:** Rev 2 — rev 1 was NAK'd by all four reviewers (FDB C++ author, Torvalds,
+LanceDB founder, codex; verdicts on PR #279). Rev 2 redesigns the centroid lifecycle
+(SEAL→SPLIT→FORWARD), fixes the ID allocator, restates the conflict claims honestly,
+corrects the round-trip and clustering math, and adds backpressure, observability,
+filtered search, and cold start. Per-finding dispositions are on the PR.
 
 **Scope:** A second, Go-only vector index type built *for* FoundationDB's performance
 model, targeting 1M–10M vectors with linear writer scalability. Architecture: SPANN's
 centroid + posting-list layout for reads, SPFresh's LIRE protocol for in-place
-incremental updates, RaBitQ (already in-tree, `pkg/rabitq`) for compressed distance.
-The existing HNSW index (`IndexTypeVector`) is unchanged and remains the
+incremental updates, RaBitQ (in-tree, `pkg/rabitq`) for compressed distance. The
+existing HNSW index (`IndexTypeVector`) is unchanged and remains the
 Java-wire-compatible option.
 
 **TODO.md anchor:** "Exploration: a second, FDB-native vector index
-(SPFresh/DiskANN/SPANN/beam)" — this RFC is the design gate that entry calls for.
-Batched beam search (the wire-neutral HNSW query improvement listed there) is
-complementary and explicitly out of scope here.
+(SPFresh/DiskANN/SPANN/beam)". Batched beam search (the wire-neutral HNSW query
+improvement listed there) is complementary and out of scope here.
 
 ---
 
@@ -20,333 +23,419 @@ complementary and explicitly out of scope here.
 
 The HNSW index is now 100% Java-compliant (PR #278) — and that is exactly why it
 cannot reach the 1M–10M / many-concurrent-writers regime on FDB. Measured on this
-codebase (SIFT-128D unless noted; testcontainer FDB, ~0.3–0.5ms per round trip):
+codebase (SIFT-128D unless noted; testcontainer FDB, ~0.3–0.5 ms per round trip):
 
 | Metric | HNSW on FDB (measured) | Why |
 |---|---|---|
 | Build / insert | ~35–70 vec/sec, *degrading* with graph size (349 → 48 vec/sec from 100 → 1k vectors) | every insert greedy-descends the graph: O(layers × hops) **dependent** point reads; reverse-edge writes mutate shared hub nodes |
-| Search p50 | 25–73 ms | the traversal is sequential: each hop needs the previous hop's neighbor list — round-trip *depth*, not bandwidth |
+| Search p50 | 25–73 ms | sequential traversal: each hop needs the previous hop's neighbor list — round-trip *depth*, not bandwidth |
 | Concurrent writers | serialized | per-prefix write lock (Java parity); without it, FDB-1020 conflict storms on shared adjacency keys |
 | Gap vs disk-backed ANN systems | ~16× QPS vs Qdrant after all wire-neutral wins | architectural, not implementational |
 
-The wire-neutral optimizations already landed (raw spans, distance-from-bytes,
-4-lane distance, per-tx cache) bought 2.4×. The remaining gap is structural:
 **HNSW's unit of work is a pointer chase; FDB's unit of efficiency is a range read.**
 
 ### What a high-latency networked KV store is actually good at
 
-The design constraints, from first principles:
-
 | FDB property | Design consequence |
 |---|---|
 | ~0.3–2 ms per round trip, regardless of payload | minimize round-trip **depth**; dependent reads are the enemy |
-| range reads stream MB/s; futures pipeline | fetch *wide*, not *deep*: many parallel range reads in one burst |
-| optimistic concurrency; conflicts abort whole txs | foreground writes must touch disjoint keys; shared-key read-modify-write is poison |
-| atomic ops (ADD) and versionstamps are conflict-free | counters and append-keys come for free |
-| 5 s tx limit, 10 MB tx size, 100 KB value | any unit of maintenance work must be small and resumable |
-| no server-side compute | all distance math runs client-side, so the routing state it needs must be small enough to cache client-side |
+| range reads stream large payloads; futures pipeline | fetch *wide*: many parallel range reads in one burst |
+| `REPLY_BYTE_LIMIT` = 80 KB per range-read reply (ClientKnobs.cpp:66) | size postings so one posting = one reply |
+| optimistic concurrency; conflicts abort whole txs | foreground writes touch disjoint keys; conflict ranges are taken *deliberately*, where we want serialization |
+| atomic ADD and versionstamps are conflict-free | counters and append-keys come for free — but ADD is **not** fetch-and-add (no unique value returned) |
+| 5 s tx limit, 10 MB tx size, 100 KB value | maintenance work must be small, chunked, resumable |
+| no server-side compute | all distance math runs client-side; the routing state it needs must be cacheable client-side |
 
-SPANN/SPFresh is precisely the architecture these constraints select for: a small
-routing structure (centroids) that lives client-side, big dumb contiguous blocks
-(posting lists) that fetch in one round trip, writes that append to one partition
-without touching any shared structure, and all rebalancing pushed to background
-transactions that bear the retry cost instead of foreground writes.
+SPANN/SPFresh is the architecture these constraints select for: a small routing
+structure (centroids) cached client-side, big contiguous blocks (posting lists)
+fetched in single round trips, writes that append to one partition, and rebalancing
+pushed to background transactions that bear the retry cost.
 
 ## 2. Architecture overview
 
 ```
                        CLIENT (stateless, per-process cache)
-  ┌─────────────────────────────────────────────────────────────┐
-  │  centroid table: []{centroidID, RaBitQ code}  (~10–60 MB)   │
-  │  refreshed incrementally via versionstamped changelog        │
-  │  SIMD brute-force scan selects k_c nearest centroids         │
-  └───────────────┬─────────────────────────────────────────────┘
-                  │ k_c parallel GetRange (ONE round-trip burst)
+  ┌──────────────────────────────────────────────────────────────┐
+  │  centroid table: []{centroidID, fp16 full vector, state}      │
+  │  refreshed by a BACKGROUND timer (default 1 s) via changelog  │
+  │  SIMD scan selects k_c nearest ACTIVE centroids               │
+  └───────────────┬──────────────────────────────────────────────┘
+                  │ k_c parallel GetRange (one round-trip burst)
                   ▼
-  FDB   POSTINGS/(centroidID, pk) → RaBitQ code [+ fp16]   ← insert appends here
-        CENTROIDS/(centroidID)    → full vector + state
-        CHANGELOG/(versionstamp)  → centroid delta (add/del/forward)
-        MEMBERSHIP/(pk)           → [centroidID...]         ← delete reads here
-        COUNTERS/(centroidID)     → posting size (atomic ADD)
-        TASKS/(versionstamp)      → split/merge work items
-        META/                     → config, build state, GC horizon
+  FDB   POSTINGS/(centroidID, pk) → RaBitQ residual code
+        SIDECAR/(pk)              → fp16 full vector (re-rank)
+        CENTROIDS/(centroidID)    → full vector + state(+children) + epoch
+        CHANGELOG/(versionstamp)  → centroid delta        MEMBERSHIP/(pk) → [cID...]
+        COUNTERS/(centroidID)     → posting size (ADD)    TASKS/(vs)      → work items
+        META/                     → config, ID allocator, horizon, transform
 ```
 
-- **Search** = scan cached centroids (CPU, zero I/O) → fetch k_c postings in
-  parallel (1 RT) → RaBitQ distances (CPU) → re-rank top-C by reading source
-  records (1 RT, parallel point reads). **Constant round-trip depth ≈ 3.**
-- **Insert** = assign to r nearest centroids (CPU, cached) → write r posting keys +
-  1 membership key + r atomic counter ADDs → commit. **No shared structure
-  touched. Zero foreground conflicts.** No per-prefix lock.
-- **Rebalance** (SPFresh LIRE) = background: split oversized postings via 2-means,
-  reassign boundary vectors from neighboring postings, merge undersized ones.
-  Splits conflict with concurrent appends **by design** — and the *split* retries,
-  never the insert.
+- **Search** = scan cached centroids (CPU, zero I/O — the cache refresh is off the
+  query path) → fetch k_c postings in parallel (1 RT) → RaBitQ residual distances
+  (CPU) → re-rank top-C from the fp16 sidecar (1 RT, parallel point reads).
+  **3 network round trips** (GRV + postings + re-rank), constant in N.
+- **Insert** = route on cached centroids → **read the target centroids' state rows
+  (real reads — the deliberate conflict range, §5)** → write r posting keys +
+  sidecar + membership + counter ADDs → commit.
+- **Rebalance** (LIRE) = background SEAL→SPLIT→FORWARD lifecycle (§6): a sealed
+  centroid rejects late writers via their state read; the big split transaction then
+  runs against a frozen posting. Foreground inserts conflict **only** with a
+  seal/split of their own target centroid — never with each other.
+
+### Honest conflict claims (rev 2)
+
+| Pair | Outcome |
+|---|---|
+| insert(pk₁) vs insert(pk₂), any centroids | **never conflict** (disjoint writes, disjoint state reads of ACTIVE rows that nobody is writing) |
+| insert vs insert, same pk | serialize on `MEMBERSHIP/pk` — semantically required |
+| insert vs seal/split of a target centroid | the **later** one retries: a straggler insert aborts on its state read and re-routes; a seal racing a committed append retries and re-seals (§6) |
+| update/delete vs split that moves the same pk | serialize on `MEMBERSHIP/pk`; the foreground op retries against the new truth |
+| query vs anything | snapshot reads — never conflicts, never aborts anyone |
+
+Rev 1 claimed "zero foreground conflicts"; that was false for the
+straggler/membership cases above (FDB-author finding #2). What survives — and is the
+property that matters — is: **foreground writes never conflict with *each other*
+(except same-pk), and the conflict surface with maintenance is a single small state
+row per assigned centroid, paid only while that centroid is actually splitting.**
 
 ## 3. Key layout
 
-All under the index's subspace `S` (standard vector-index subspace allocation; a new
-index type ⇒ new index ⇒ its own subspace, so no collision with Java HNSW is possible
-by construction). Grouping prefixes (for `PARTITION BY`-style indexes) compose in
-front exactly as the HNSW index does today.
+All under the index's subspace `S` (new index type ⇒ own subspace ⇒ no collision
+with Java HNSW by construction). Grouping prefixes compose in front exactly as the
+HNSW index does today.
 
 | Subspace | Key | Value | Notes |
 |---|---|---|---|
-| `S/0` CENTROIDS | `(centroidID int64)` | `Tuple{fullVector bytes, state byte, epoch int64}` | state: ACTIVE / FORWARD / DEAD. FORWARD value carries the 2 child centroidIDs |
-| `S/1` POSTINGS | `(centroidID, pk Tuple)` | `Tuple{rabitqCode bytes [, fp16 bytes]}` | the contiguous range `(centroidID, *)` *is* the posting list |
+| `S/0` CENTROIDS | `(centroidID int64)` | `Tuple{fp32 vector, state, epoch, [childA, childB]}` | state: ACTIVE / SEALED / FORWARD / DEAD |
+| `S/1` POSTINGS | `(centroidID, pk Tuple)` | `Tuple{rabitqResidualCode}` | the range `(centroidID, *)` *is* the posting |
 | `S/2` MEMBERSHIP | `(pk Tuple)` | `Tuple{centroidID...}` | authoritative copy-set for delete/update/reassign |
-| `S/3` COUNTERS | `(centroidID)` | little-endian int64 | atomic ADD on insert/delete/split |
-| `S/4` CHANGELOG | `(versionstamp)` | `Tuple{op byte, centroidID, [payload]}` | ADD / DEAD / FORWARD deltas for cache refresh |
-| `S/5` TASKS | `(versionstamp)` | `Tuple{kind byte, centroidID}` | split/merge queue, claimed by the rebalancer |
-| `S/6` META | `(key)` | misc | config echo, build state, changelog GC horizon, RaBitQ transform (rotator seed + centroid, same encoding as HNSW's AccessInfo) |
+| `S/3` COUNTERS | `(centroidID)` | little-endian int64 | atomic ADD; **advisory only** (§6 reconciles) |
+| `S/4` CHANGELOG | `(versionstamp+userVersion)` | `Tuple{op, centroidID, payload}` | multiple entries per tx need distinct 2-byte user-versions (FDB-author #6) |
+| `S/5` TASKS | `(versionstamp+userVersion)` | `Tuple{kind, centroidID, owner, leaseDeadline, [childIDs]}` | claims carry a lease; expired claims are reclaimable (Torvalds #7) |
+| `S/6` META | `(key)` | misc | config echo, **centroid ID allocator (transactional RMW — §6)**, changelog GC horizon, RaBitQ transform, build state |
+| `S/7` SIDECAR | `(pk Tuple)` | fp16 full vector | re-rank source; written on insert, cleared on delete |
 
-`centroidID` is allocated from a META counter via atomic ADD-and-snapshot-read (or
-versionstamp-derived); IDs are never reused.
+**Centroid ID allocation:** a META allocator key read-modify-written with a *real*
+read (deliberate conflict). Contention scope = concurrent split/merge txs only —
+background ops, low rate. Rev 1's "atomic ADD + snapshot read" was not a
+fetch-and-add: two rebalancers could observe the same value and mint colliding IDs
+(codex P1). IDs are never reused.
 
-Sizing at 10M × 768D, RaBitQ 1 ex-bit (~192 B/code), `Lmax=512` (avg fill ~⅔ ≈ 340),
-replication r=2: ~20M posting entries / 340 ≈ **59k centroids**. Client cache =
-59k × ~200 B ≈ **12 MB**. POSTINGS total ≈ 20M × ~220 B ≈ **4.4 GB**. All values
-far under 100 KB; a full posting (512 × 220 B ≈ 113 KB) spans many KVs, so the
-*value* limit is irrelevant and the *range read* stays one round trip.
+**Sizing at 10M × 768D** (RaBitQ 1 ex-bit ≈ 192 B/code + key overhead ≈ 220 B/entry,
+replication r=2 ⇒ 20M entries):
+
+- `Lmax = 256` ⇒ posting ≤ ~56 KB ⇒ **one `REPLY_BYTE_LIMIT` reply per posting**
+  (rev 1's Lmax=512 ≈ 113 KB silently cost 2 sequential hops per posting —
+  FDB-author #4b). Avg fill ~⅔ ⇒ ~170 entries ⇒ **~118k centroids**.
+- Client cache = 118k × (1.5 KB fp16 + 16 B meta) ≈ **180 MB** per process at 10M
+  (≈ 18 MB at 1M). Full vectors are *required* client-side: residual encoding needs
+  `v − c` and scoring needs `q − c`; a quantized centroid code cannot produce either
+  (codex P2). fp16 centroids also avoid compounding routing error (LanceDB #7).
+  Multi-tenant processes enforce a global cache budget (default 1 GB, LRU across
+  (index, prefix) tables); a table over budget falls back to scanning CENTROIDS
+  per query (one extra range-read burst — degraded, correct, metered).
+- POSTINGS ≈ 4.4 GB; SIDECAR ≈ 10M × 1.5 KB = 15 GB (optional but default-on, §7).
+
+The centroid-density tradeoff is real and is a *tuning axis*, not a constant: recall
+wants many small postings probed wide (the IVF rule of thumb is nprobe ≈ √nlist for
+high recall); FDB wants postings near the 80 KB reply size. Phase 094.1's benchmark
+(on real 768D embeddings, not SIFT — LanceDB #1) freezes the defaults; the layout
+supports any (Lmax, nlist) point without migration (splits/merges move between them).
 
 ## 4. Query path
 
 ```
-budget: 3 round trips, p50 target < 10 ms at 10M (vs HNSW's 25–73 ms at 1k–1M)
+budget: 3 network round trips; p50 target < 10 ms at 10M (validate in 094.1/5)
 
-RT0  GetRange(CHANGELOG, from: cachedVersion)     ── usually empty; doubles as
-     (snapshot read, piggybacked with GRV)            cache validation + delta feed
-CPU  apply deltas; SIMD scan centroid table → k_c nearest ACTIVE centroids
-     (RaBitQ asymmetric distance; 59k codes ≈ sub-ms)
-RT1  k_c parallel GetRange(POSTINGS/(cID,*)) snapshot reads
-     SPANN query-aware pruning: drop centroids with dist > (1+ε)·d_nearest
-CPU  RaBitQ distance for every fetched code; maintain top-C heap (C ≈ 2–4× k)
-RT2  parallel loads of the C candidate source records (full vectors) → exact
-     re-rank → top-k
+bg   changelog refresh runs on a process timer (default 1 s): GetRange(CHANGELOG,
+     from: cachedVersion) + read META horizon. If cachedVersion < horizon (client
+     slept past GC), FULL reload of the centroid table (Torvalds #3). Queries
+     NEVER spend a round trip on cache maintenance (rev 1's per-query RT0 was a
+     hidden hot key: every query in the fleet hammering one changelog shard —
+     LanceDB #5).
+
+RT0  GRV (its own proxy round trip — rev 1 "piggybacked" it away; FDB-author #4a)
+CPU  SIMD scan of cached fp16 centroids → k_c nearest ACTIVE
+     (118k × 768D fp16 ≈ sub-ms); SPANN ε-pruning: drop centroids with
+     dist > (1+ε)·d_nearest
+RT1  k_c parallel GetRange(POSTINGS/(cID,*)) snapshot reads, each one reply;
+     per-posting fetch cap RangeOptions.Limit = 2×Lmax (backpressure guard — an
+     unmaintained oversized posting degrades THIS query bounded-ly and emits a
+     metric, instead of streaming 220 MB — Torvalds #4)
+CPU  RaBitQ residual distances vs (q − c) per posting; top-C heap (C ≈ 2–4× k);
+     replica dedup keeps the MIN estimate per pk (closure copies carry different
+     residuals — LanceDB #3a)
+RT2  parallel point reads of SIDECAR/(pk) for the C candidates (1.5 KB each;
+     ~600 KB at C=400 — 8× cheaper than reading 12 KB source records; LanceDB #6)
+     → exact fp16 re-rank → top-k. (Sidecar disabled ⇒ read source records.)
 ```
 
-- All reads are **snapshot** reads: queries take no conflict ranges and never abort
-  writers or rebalancers.
-- A FORWARD centroid encountered via a stale cache: the posting range read returns
-  the residual entries plus the forward marker is already in the cached delta; in the
-  worst case one extra RT re-fetches the two child postings. Bounded staleness, no
-  wrong results (children are written before the parent is marked FORWARD — §6).
-- Tombstone-free: deletes physically clear posting keys (§5), so queries do no
-  filtering. A pk seen twice (closure replication) dedups in the top-C heap — same
-  spirit as Java's HNSW dedup-on-read.
-- `EXPLAIN` surfaces as a new scan type (`VectorSPFreshIndexScan`) through the same
-  vector-scan planner surface the HNSW index uses; no Cascades rule changes (the
-  planner already dispatches on index type for vector predicates).
+- FORWARD centroid met via a ≤1 s-stale cache: routing already has the children
+  from the delta; residually, one extra RT re-fetches child postings. Children are
+  fully written before the parent flips FORWARD (§6), so no window returns wrong
+  results.
+- Tombstone-free reads: deletes physically clear posting keys (§5).
+- **Filtered search** (LanceDB #7 — specced now because it constrains the layout):
+  the posting scan already streams (pk, code) pairs; a pushed-down predicate
+  evaluates as a pk-set/bitmap filter *before* the top-C heap, and k_c widens
+  adaptively when selectivity starves the heap (same loop, no second path). Exact
+  per-query semantics ride the existing vector-scan planner surface; no Cascades
+  changes.
+- `EXPLAIN`: new scan type `VectorSPFreshIndexScan`; continuations: the scan
+  returns top-k like today's HNSW scan (a result-set continuation, not a traversal
+  continuation — same contract).
 
 ## 5. Write path
 
 **Insert(pk, v):**
-1. Refresh centroid cache (RT0 as above, amortized; inserts tolerate stale routing —
-   a slightly-wrong posting choice is a recall detail, repaired by reassignment).
-2. RNG-rule closure assignment (SPANN §4.2): take the r nearest centroids, keep
-   centroid c_i only if `dist(v, c_i) < α · dist(c_1, c_i)` — replicate to boundary
-   regions only. r ∈ [1,4], default 2, α = 1.0 (tunable).
-3. One transaction:
-   - `Set(POSTINGS/(c_i, pk), code(v))` for each kept c_i (blind writes)
-   - `Set(MEMBERSHIP/pk, [c_i...])` — read-modify-write **on this pk only** (an
-     existing row means update: clear old posting keys first, in the same tx)
-   - `Add(COUNTERS/c_i, +1)` (conflict-free atomic)
-   - snapshot-read each counter; if > Lmax, blind-write `TASKS/(vs) = split(c_i)`
-     (snapshot read ⇒ no conflict range on the hot counter)
+1. Route on the cached table: RNG-rule closure assignment (SPANN §4.2) — keep
+   centroid c_i of the r nearest only if `dist(v, c_i) < α · dist(c_1, c_i)`;
+   r ∈ [1,4] default 2, α = 1.0.
+2. One transaction:
+   - **real read** of `CENTROIDS/(c_i)` for each assigned centroid — the deliberate
+     conflict range that makes the SEAL lifecycle sound (§6). Not ACTIVE ⇒ drop
+     c_i, take the next-nearest from the cache (re-read its state) — the
+     authoritative state read corrects any cache staleness.
+   - read `MEMBERSHIP/pk` (real): existing row ⇒ update — clear old posting keys
+     (and their counter ADD −1) in the same tx.
+   - `Set(POSTINGS/(c_i, pk), residualCode(v, c_i))`, `Set(SIDECAR/pk, fp16(v))`,
+     `Set(MEMBERSHIP/pk, [c_i...])`, `Add(COUNTERS/c_i, +1)`.
+   - split trigger probe, **sampled** (default 1/8 of inserts): snapshot-read the
+     counter; if > Lmax, blind-write a TASKS item. Sampling bounds the hot-key
+     *read* load on a hot centroid's counter — RYW must do a real storage read to
+     apply your own ADD locally (DEPENDENT_WRITE, RYWIterator.cpp:34) (FDB-author
+     #5). If the snapshot count exceeds the **hard ceiling 4×Lmax**, the writer
+     performs the seal+split inline before returning (insert-side backpressure:
+     the index never depends on an external daemon for boundedness — Torvalds #4).
 
-Conflict analysis: two inserts of *different* pks share **no written key** and take
-**no read conflict** except their own membership rows ⇒ they never conflict, no
-matter how many writers, processes, or machines. Two writes of the *same* pk
-serialize on the membership key — which is the semantically required behavior. The
-HNSW per-prefix mutex and its multi-instance FDB-1020 storms are gone *by
-construction*, not mitigated.
+Cost: GRV + one parallel read burst (state rows ∥ membership ∥ sampled counter) +
+commit ≈ **3 round trips** (rev 1 claimed the same total with wrong itemization).
+Single-writer throughput is therefore tx-latency-bound at ~300–500 inserts/sec;
+the path to high aggregate rates is **batching** (many vectors per tx — the record
+layer's natural batch write) and **parallel writers**, which this design scales
+linearly because writers share no keys. Rev 1's ">1,000 vec/sec, 1 writer" implied
+unstated batching (Torvalds #1); the honest target table is §9.
 
-**Delete(pk):** read `MEMBERSHIP/pk` → clear each `POSTINGS/(c_i, pk)`, clear
-membership, `Add(COUNTERS/c_i, -1)`, enqueue merge task if a snapshot counter read
-< Lmin. Precise point deletes — no tombstones, no query-time filtering, no SPFresh
-garbage-accumulation problem (FDB gives us exact keys; an SSD-page design doesn't).
+**Delete(pk):** read membership → clear posting keys + sidecar + membership,
+`Add(COUNTERS/c_i, −1)`; sampled merge-trigger probe. Precise point deletes — no
+tombstones, no read filtering, no SPFresh garbage problem.
 
-**Update** = insert with an existing membership row (handled above, one tx).
+**Update** = insert with an existing membership row (one tx, above).
 
-A delete racing a split that moves the same pk serializes correctly through the
-membership key: the split rewrites `MEMBERSHIP/pk` (§6), the delete reads it — FDB's
-conflict detection orders them, and whichever loses retries against the new truth.
+## 6. LIRE maintenance: the SEAL → SPLIT → FORWARD lifecycle
 
-## 6. LIRE maintenance (SPFresh §3, adapted to FDB transactions)
+Background **rebalancer**: claims a TASKS item (tx write of owner + lease deadline;
+expired leases reclaimable — a dead rebalancer never wedges a task), does bounded
+work, repeats. Runs **in-process on writers by default** (a goroutine the maintainer
+owns, like HNSW maintenance work happens inline today), optionally as a dedicated
+runner; multiple instances coexist (claims serialize transactionally).
 
-Run by a background **rebalancer** (an `OnlineIndexer`-style job: claim a TASKS key,
-do bounded work, commit, repeat — resumable, idempotent via task keys + centroid
-epochs). Multiple rebalancer instances coexist: task claims are tx-protected.
+**Split(c)** — three steps, each idempotent:
 
-**Split(c)** when counter > Lmax:
-1. Tx A (bounded: ≤ Lmax entries ≈ 113 KB read + 2× written):
-   - range-read `POSTINGS/(c,*)` — this read's conflict range is what makes a
-     concurrent foreground append *win*: the append commits, the split conflicts
-     and retries with the new entry included. Foreground latency is never taxed.
-   - 2-means on the decoded codes (client CPU) → centroids c₁, c₂ (new IDs)
-   - write both child CENTROIDS rows (ACTIVE) + their POSTINGS entries + updated
-     MEMBERSHIP rows + COUNTERS; mark `c` FORWARD(c₁,c₂); clear old posting range;
-     CHANGELOG: ADD c₁, ADD c₂, FORWARD c.
-   If Lmax is configured large enough that one tx would exceed limits, the split
-   chunks: children are fully written first, parent flips to FORWARD in the final
-   chunk — readers see either the old complete posting or the forward, never a
-   partial child set.
-2. **NPA reassignment** (SPFresh's accuracy-preserving step), as follow-up tasks:
-   for each centroid c_n in the K_n nearest neighbors of the *old* c (from the
-   cache): for each (pk, code) in `POSTINGS/(c_n,*)`, recompute the nearest-centroid
-   set under {…, c₁, c₂}; if it changed, rewrite that pk's posting keys + membership
-   (one small tx per batch of ~64 vectors). This is the piece that keeps recall flat
-   under churn — SPANN-without-reassignment degrades at region boundaries.
-3. GC: FORWARD centroids older than the changelog horizon (all caches refreshed
-   past them, horizon = max client staleness budget, default 10 min) flip to DEAD
-   and are purged with their changelog prefix.
+1. **SEAL** (tiny tx): read task claim; read `CENTROIDS/c` — require ACTIVE;
+   allocate child IDs from the META allocator (real RMW); write state SEALED +
+   child IDs into the task row. Idempotent under `commit_unknown_result`: the
+   retry that finds SEALED **with child IDs already recorded in its own task row**
+   treats the seal as committed and proceeds to step 2; SEALED with a different
+   task's IDs is impossible (the claim serializes ownership).
+   *Fencing:* every foreground insert real-reads the state row (§5). Seal-vs-insert
+   races serialize: if the seal commits first, the straggler insert aborts on its
+   state read and re-routes; if the insert commits first, the seal (whose write
+   intersects the insert's read range... no — whose *own* claim re-read and state
+   write conflict with nothing the insert wrote) — the seal simply commits too, and
+   the insert it raced is already in the posting it sealed, which is fine: **the
+   split reads the posting *after* the seal**, so it sees every entry that will ever
+   exist there. After SEAL commits, no insert can add to c (state read sees SEALED)
+   — the posting is frozen. This closes rev 1's lost-vector hole: a blind write into
+   a cleared range can no longer happen, because the writer's state read serializes
+   it against the lifecycle (the unanimous 4-reviewer finding; resolver mechanics:
+   only the *reader's* ranges are checked, SkipList.cpp:983, so the read must be on
+   the foreground side).
+   *Livelock:* rev 1's split could retry forever against a hot posting's appends
+   (LanceDB #3); sealing first means the big tx below runs contention-free.
+2. **SPLIT** (big tx, or chunked): read `CENTROIDS/c` — require SEALED with *these*
+   child IDs (idempotency guard); range-read the frozen posting; 2-means
+   client-side; write children (ACTIVE, **exact** counters — mandatory counter
+   reconciliation, drift never compounds; Torvalds #5), their POSTINGS + rewritten
+   MEMBERSHIP rows; clear the parent posting; flip parent → FORWARD(children);
+   CHANGELOG entries (distinct user-versions); **clear the TASKS key in this tx**.
+   Under `commit_unknown_result` the retry re-reads state: FORWARD (or task gone)
+   ⇒ already committed ⇒ no-op — no garbage 2-means, no re-minted IDs, no double
+   FORWARD (FDB-author #3). If posting bytes exceed single-tx comfort, chunk:
+   children fill first, parent stays SEALED, the final chunk flips FORWARD — readers
+   see the old complete posting or the forward, never a partial child set.
+3. **NPA reassignment** (follow-up tasks, the recall-preserving step from SPFresh):
+   for centroids in the K_n nearest neighbors of old c, re-evaluate each member's
+   nearest-centroid set under the new children; rewrite moved pks' postings +
+   membership in small batches (~64/tx). Serializes with foreground updates of the
+   same pk via the membership key.
 
-**Merge(c)** when counter < Lmin (default Lmax/8): move c's residents into their
-next-nearest centroids (same machinery as reassignment), FORWARD c to nothing
-(DEAD after horizon).
+**Merge(c)** when sampled counter < Lmin (= Lmax/8): same lifecycle (SEAL, drain
+into nearest neighbors, FORWARD-to-nothing). A **post-split merge cooldown** (no
+merge task for a child within T_cool, default 10 min) prevents split→reassign→merge
+thrash when NPA drains a fresh child (LanceDB #4).
 
-The rebalancer is *optional for correctness* — without it postings grow and recall
-at boundaries drifts, but reads and writes stay correct. This is the key operational
-property: maintenance debt degrades performance, never data.
+**GC:** FORWARD/DEAD centroids older than the changelog horizon: range-read the
+(supposedly empty) posting first; **if any entry exists, drain it to the children
+instead of clearing** — a one-line invariant check that converts any future
+lifecycle bug from silent data loss into a metric + repair (and a chaos `Verify()`
+invariant). Then purge centroid + changelog prefix.
+
+The rebalancer is optional for *correctness* of stored data, but rev 2 removes the
+"and therefore nobody needs to run it" implication: the inline hard-ceiling split
+(§5) bounds posting growth even with no rebalancer, and the query-side fetch cap
+bounds the read cost of any backlog (Torvalds #4).
 
 ## 7. RaBitQ integration
 
-- Global transform (rotator seed + rotated centroid) in META — same encoding and
-  bootstrap approach as the HNSW index's AccessInfo (PR #278 made that
-  Java-faithful; here it is Go-only, so the simpler **build-time** establishment is
-  used: the bulk build computes the exact mean, no sampling protocol needed; the
-  incremental-only path falls back to the SAMPLES-style bootstrap).
-- Posting codes quantize the **residual** `v − centroid(c)` (IVF-style): residuals
-  are small and centered, which is where RaBitQ's error bound is tightest — better
-  recall per bit than quantizing absolute positions (and strictly better than the
-  HNSW index can do, since HNSW has no per-region anchor).
-- Centroid-selection codes in the client cache quantize absolute positions (one
-  shared transform).
-- Re-rank from source records keeps exact distances out of the index entirely; an
-  optional `fp16` per-entry column trades 2× posting size for skipping RT2 when the
-  approximation margin is decisive (SPANN's "disk-bypass" trick).
+- Global transform (rotator seed + rotated centroid) in META — same encoding as the
+  HNSW AccessInfo; established exactly at build time (bulk path computes the true
+  mean; the from-zero incremental path uses the SAMPLES-style bootstrap already
+  in-tree).
+- Posting codes quantize the **residual** `v − centroid(c)` — IVF-standard, tightest
+  where RaBitQ's error bound lives; one global rotation is fine (data-independent;
+  LanceDB confirmed). Scoring computes `q − c` per probed posting — full centroid
+  vectors come from the client cache (codex P2 made this explicit).
+- Closure replicas of one pk carry *different* residuals ⇒ different estimates;
+  dedup keeps the min estimate (§4); the re-rank step then decides exactly.
+- Re-rank reads the fp16 SIDECAR (default on), not 12 KB source records; disabling
+  the sidecar (option) falls back to source-record reads — leaner storage, fatter
+  RT2. No fp16-in-posting variant (rev 1's "disk-bypass" bloated every posting 8×
+  for a per-query saving the sidecar gets cheaper — LanceDB #6).
 
 ## 8. Build path (bulk)
 
-Via `OnlineIndexer` (exists in-tree), index in `WriteOnly` during build:
-1. **Sample pass:** reservoir-sample ~256k vectors (range scan of records).
-2. **Hierarchical balanced k-means** (SPANN §4.1) on the sample, client-side, to
-   the target centroid count; write CENTROIDS + the RaBitQ transform.
-3. **Assignment pass:** stream all records in OnlineIndexer batches; each batch tx
-   does closure assignment + posting/membership/counter writes (same code as the
-   foreground insert — one write path, no parallel pipeline).
-4. Flip to `Readable`. Concurrent foreground writes during the build follow the
-   normal WriteOnly contract (they index themselves; the indexer skips built ranges).
+Via `OnlineIndexer`, index in `WriteOnly` during build:
 
-10M vectors at batch=200/tx ≈ 50k txs; with 8 parallel OnlineIndexer ranges and
-~3 RT/tx this is **~1–2 hours**, vs HNSW's measured 9.5 vec/sec ⇒ ~12 *days*. The
-build is also restartable at batch granularity, which the HNSW build is not.
+1. **Sample pass:** reservoir-sample 256k vectors.
+2. **Coarse k-means:** K₀ = 2,048 centroids on the sample — **125 samples per
+   centroid** (≥ the ~39–128 floor k-means needs; rev 1 trained 59k centroids from
+   the same sample = 4.3 each, i.e. garbage Voronoi cells — LanceDB #2). Write
+   CENTROIDS + transform.
+3. **Assignment pass:** stream all records in OnlineIndexer batches through the
+   *normal insert path* (closure assignment + posting/membership/sidecar writes).
+   One write path — build is just batched inserts (no parallel pipeline).
+4. **Split-driven growth:** initial postings average ~10k entries (≫ Lmax); the
+   standard lifecycle (§6) splits them down to equilibrium (~5 generations,
+   2k → ~118k centroids). This is the *same* machinery as steady-state — the build
+   exercises it at scale, and "growth by splitting" is also the **cold-start**
+   story: an empty index begins life as ONE centroid (the first vector) and grows
+   purely by splits. No degenerate brute-force mode, no second code path (rev 1's
+   open question 3 — Torvalds #6: the emergent version is the design).
+5. Flip `Readable`.
 
-## 9. Expected performance (targets, to be validated in phase 5)
+**Derived cost, 10M × 768D** (Torvalds #1 — CPU terms dominate, not round trips):
+coarse k-means ≈ 256k × 2k × 768 × ~15 iters ≈ 6×10¹² MACs ≈ ~1 min on 8 cores;
+assignment ≈ 10M × 2k × 768 ≈ 1.5×10¹³ MACs ≈ ~3 min (BLAS/SIMD batched);
+write I/O ≈ 10M × ~2 KB across ~50k batch txs at 8-way parallelism ≈ ~20–40 min;
+split cascade rewrites ≈ 5 × 4.4 GB ≈ 22 GB of background churn ≈ ~30–60 min
+overlappable with foreground writes. **Total ≈ 1–2 h wall clock, I/O-bound** — the
+rev 1 number, now with its dominant terms shown. HNSW extrapolates to ~12 days.
 
-| Operation | HNSW (measured) | SPFresh target | Mechanism |
+## 9. Performance targets (each row: how derived; validate in 094.1/094.5)
+
+| Operation | HNSW (measured) | SPFresh target | Derivation |
 |---|---|---|---|
-| Insert throughput, 1 writer | 35–70 vec/sec | > 1,000 vec/sec | 1 tx, ~3 RT, no traversal |
-| Insert scaling, N writers | ~flat (lock) | ~linear to FDB commit ceiling | zero shared keys |
-| Search p50 @ 1M | 25–73 ms | < 8 ms | 3 RT, parallel ranges |
-| Search p50 @ 10M | n/a (build infeasible) | < 12 ms | k_c, Lmax tuned; same depth |
-| Recall@10 | ~0.95 (ef=64) | ≥ 0.90 @ k_c=48; ≥ 0.95 @ k_c=96 | SPANN paper curves + re-rank |
-| Bulk build 10M | ~12 days (extrapolated) | 1–2 h | range-scan + batch assign |
-
-(SPANN reaches 90%+ recall@10 touching ~10% of postings; SPFresh holds recall flat
-under 1%/day churn with LIRE. Our re-rank step relaxes the in-posting recall
-requirement further.)
+| Insert, 1 writer, no batching | 35–70 vec/sec | ~300–500 vec/sec | 1 tx ≈ 2–3 ms, latency-bound |
+| Insert, batched (200/tx) | n/a | ~10k+ vec/sec/writer | 50 tx/s × 200; tx ≈ 400 KB writes |
+| Insert scaling, N writers | ~flat (lock) | ~linear to FDB commit ceiling | zero shared foreground keys |
+| Search p50 @ 1M | 25–73 ms | < 8 ms | 3 RTs + ~2 ms CPU + ~1.4 MB fetched |
+| Search p50 @ 10M | n/a | < 12 ms | same depth; bigger CPU scan + cache |
+| Recall@10, SIFT-1M | ~0.95 (ef=64) | ≥ 0.95 @ tuned (k_c, nlist) | re-rank makes in-posting recall the only loss source |
+| Recall@10, 768D real embeddings | n/a | **TBV in 094.1** on DBpedia-OpenAI / Cohere-wiki | rev 1 cited SPANN curves from a 16%-heads regime at our 0.6% ratio — not transferable (LanceDB #1); expect k_c ≈ √nlist territory |
+| Bulk build 10M | ~12 days (extrapolated) | 1–2 h | §8 derivation |
 
 ## 10. Wire format & Java story
 
-- **New index type** `IndexTypeVectorSPFresh = "vector_spfresh"` — a Go-only
-  extension, explicitly permitted by the project charter ("the read-side query
-  surface MAY go beyond Java... net-new capabilities Java lacks entirely are
-  welcome, provided wire compat is never sacrificed and the extension has deep test
-  coverage"). Java apps sharing the cluster: records remain fully Java-readable
-  (the index only adds entries under its own subspace); a Java app given metadata
-  containing this index type fails index-maintainer lookup exactly as for any
-  unknown type — deployments that share *metadata* must keep writers Go-only or
-  keep the index out of shared metadata. Documented in the index's godoc.
+- **New index type** `IndexTypeVectorSPFresh = "vector_spfresh"` — Go-only
+  extension, permitted by the project charter (read-side capabilities Java lacks
+  entirely; wire compat untouched: the index only writes under its own subspace,
+  records stay fully Java-readable). Java apps sharing *metadata* containing this
+  index type fail maintainer lookup as for any unknown type — deployments keep
+  writers Go-only or keep the index out of shared metadata; documented in godoc.
 - All structural options (`spfreshLmax`, `spfreshReplication`, `spfreshAlpha`,
-  dims, metric, RaBitQ bits) are **immutable** via `validateVectorIndexOptions`-
-  style evolution checks from day one (the lesson of RFC-round-4 on PR #278:
-  immutability is what makes config-derived invariants sound). Runtime knobs
-  (`k_c`, ε, re-rank C, rebalancer pacing) are query/maintenance-time, not stored.
-- No changes to record format, continuations (the scan returns top-k like the HNSW
-  scan does today), or any Java-shared subspace.
+  dims, metric, RaBitQ bits, sidecar on/off) **immutable** via the
+  `validateVectorIndexOptions`-style evolution check from day one (the PR #278
+  lesson: immutability is what makes config-derived invariants sound). Runtime
+  knobs (k_c, ε, C, refresh interval, rebalancer pacing) are not stored.
+- Known accepted hotspot: CHANGELOG/TASKS versionstamped keys are ascending-key
+  writes to a tail shard (FDB-author #5). Volume is split/merge-rate (background,
+  low), not insert-rate — accepted and metered.
 
-## 11. Testing plan (repo standard: no mocks, real FDB, t.Parallel)
+## 11. Observability (Torvalds #8)
 
-1. **Unit:** posting codec round-trip; RNG-rule assignment; 2-means determinism
-   (seeded); changelog delta application; counter/task arithmetic. Fuzz: posting
-   value parser, membership parser (0 panics / 200k execs).
-2. **FDB integration:** insert/search/delete/update e2e; closure dedup; FORWARD
-   traversal with a deliberately stale cache; split mid-stream (insert-during-split
-   conflict direction pinned: the *split* retries); merge; delete-vs-split race;
-   counter drift reconciliation; recovery of a half-claimed task.
-3. **Concurrency:** N-writer stress proving zero foreground 1020s (the headline
-   property — assert conflict metrics, not just throughput); rebalancer running
-   concurrently with writers + readers.
-4. **Chaos:** extend `StoreModel` with the posting/membership invariant
-   (membership row ⇔ exact posting keys; counters within drift bound) and
-   `Verify()` after faults; split/merge under `commit_unknown`.
-5. **Recall/perf:** SIFT-1M recall@10 vs brute force; A/B vs HNSW (the
-   `VECTOR_BENCHMARK_RESULTS.md` harness); 1M stress-table entry; 10M soak with
-   churn (SPFresh's headline scenario: sustained updates, flat recall).
+Metrics (via the maintainer's existing stats hook pattern): posting size p50/p99
+(sampled at split/query), counter drift observed at reconciliation, centroid count +
+state distribution, cache staleness seconds + full-reload count, task queue depth +
+oldest-task age, seal-conflict rate (foreground retries caused by maintenance),
+query fetch-cap overage count, re-rank candidate count, **online recall sampler** —
+a background job brute-forces a sampled query set against a posting scan and reports
+live recall (LanceDB #8); permanent distribution drift shows up here, and the answer
+to it is a **retrain**: build a new generation under a fresh META epoch with the
+bulk path and atomically swap (documented; phase 094.5).
 
-## 12. Phases (one PR each, e2e-proven per the no-fake-checkboxes rule)
+## 12. Testing plan (repo standard: no mocks, real FDB, t.Parallel)
 
-1. **094.1** Layout + static read path: subspaces, codecs, bulk build via
-   OnlineIndexer, query path, recall benchmark. (No incremental writes yet —
-   index is read-only after build; honest about it in the maintainer.)
-2. **094.2** Foreground writes: insert/update/delete + membership + counters +
-   task enqueue; N-writer zero-conflict stress.
-3. **094.3** Rebalancer: split + NPA reassign + merge + FORWARD/GC + chaos
-   invariants.
-4. **094.4** RaBitQ residual quantization + fp16 disk-bypass + re-rank tuning.
-5. **094.5** 10M soak, churn benchmarks, `VECTOR_BENCHMARK_RESULTS.md` update,
-   tuning-defaults freeze.
+1. **Unit/fuzz:** posting + sidecar + membership codecs (0 panics / 200k execs);
+   RNG-rule assignment; seeded 2-means; changelog application; lease expiry.
+2. **FDB integration:** e2e insert/search/delete/update; closure dedup
+   (min-estimate); FORWARD traversal with a deliberately stale cache; horizon
+   overrun → full reload; filtered search; cold start (1 vector → splits → 100k).
+3. **Lifecycle interleavings, each pinned as a deterministic test:**
+   straggler-insert-vs-SEAL (insert aborts, re-routes — **the rev-1 lost-vector
+   interleaving, pinned exactly as the FDB author wrote it**); append-then-seal
+   ordering (split sees the late append); split `commit_unknown` retry = no-op;
+   chunked split crash + lease-expiry resume; delete-vs-split same pk; GC
+   drain-not-clear invariant.
+4. **Concurrency stress:** N writers — assert **conflict metrics**, not just
+   throughput: zero insert-vs-insert 1020s; insert-vs-split conflicts bounded by
+   split count (the honest claim, tested as stated — Torvalds #4); rebalancer
+   concurrent with writers + readers.
+5. **Chaos:** extend `StoreModel` with the invariant {membership row ⇔ exact
+   posting keys ⇔ sidecar row; counters within declared drift; SEALED/FORWARD
+   postings consistent with children}; faults across seal/split/GC.
+6. **Recall/perf:** SIFT-1M *and* a 768D real-embedding set (DBpedia-OpenAI or
+   Cohere-wiki) vs brute force; A/B vs HNSW via the `VECTOR_BENCHMARK_RESULTS.md`
+   harness; 1M stress-table entry; 10M churn soak (SPFresh's headline: sustained
+   1–5%/day updates + a hotspot-region burst, flat recall).
 
-## 13. Alternatives considered
+## 13. Phases (one PR each; e2e-proven per the no-fake-checkboxes rule)
 
-- **DiskANN/Vamana on FDB:** still a graph traversal — fewer, fatter hops, but the
-  round-trip *depth* remains O(path length) and inserts still mutate shared
-  adjacency (RobustPrune touches many nodes' lists). Rejected for this substrate;
-  its ideas (high degree, PQ-in-memory) are subsumed by posting lists + RaBitQ.
-- **Batched beam search over existing HNSW:** real, wire-neutral query win
-  (collapses N hops into log-depth batched rounds) — worth doing *on the HNSW
-  index*, tracked separately in TODO.md; does nothing for write scalability.
-- **IVF-Flat without SPFresh:** SPANN minus rebalancing/closure — degrades under
-  churn and at region boundaries; the LIRE layer is cheap on FDB (it's just more
-  transactions) and is what makes the index production-grade rather than a demo.
-- **Brute force + RaBitQ:** optimal to ~100k vectors (one big parallel range
-  read); not viable at 1M+. The SPFresh design *degenerates to* this with one
-  centroid, which is effectively what phase 094.1 tests at small N.
+1. **094.1** Layout + codecs + bulk build (coarse k-means + assignment) + query
+   path **including filtered search and the real-embedding recall benchmark**;
+   read-only after build (stated honestly in the maintainer).
+2. **094.2** Foreground writes (insert/update/delete, state-row fencing, sidecar,
+   counters, task enqueue, inline hard-ceiling split) + N-writer conflict-metrics
+   stress + cold-start-by-splitting e2e.
+3. **094.3** Rebalancer: SEAL/SPLIT/FORWARD + NPA reassign + merge + cooldown +
+   GC-drain + lease recovery + chaos invariants + the pinned interleaving suite.
+4. **094.4** RaBitQ residual tuning + re-rank/C tuning + sidecar on/off A-B.
+5. **094.5** 10M churn soak, online recall sampler, retrain/swap, tuning-defaults
+   freeze, `VECTOR_BENCHMARK_RESULTS.md` update.
 
-## 14. Open questions
+## 14. Alternatives considered
 
-1. **Centroid cache in multi-tenant processes:** one cache per (index, store
-   prefix); LRU across tenants with a global memory budget — default 256 MB?
-2. **Counter accuracy:** atomic counters drift under `commit_unknown` retries
-   (the increment is not idempotent). Drift only mis-times split/merge triggers —
-   harmless to correctness; the split tx recomputes the true size from the range
-   read. Reconcile counters during splits, or also via a periodic task?
-3. **Grouped (prefixed) indexes:** per-group centroid tables could be tiny (small
-   groups ⇒ brute-force postings, no centroids at all below a threshold N₀ —
-   "auto-degenerate" mode). Worth specifying in 094.1 or defer?
-4. **`fp16` column default:** on (2× storage, often skips RT2) or off (lean)?
-   Decide with phase-4 data.
+- **DiskANN/Vamana on FDB:** round-trip depth still O(path length); inserts still
+  mutate shared adjacency. Rejected for this substrate.
+- **Batched beam search over existing HNSW:** real wire-neutral query win; tracked
+  separately in TODO.md; does nothing for write scalability.
+- **IVF-Flat without LIRE:** degrades under churn and at region boundaries; the
+  rebalancing layer is cheap here (it's just more transactions) and is what makes
+  this production-grade.
+- **Brute force + RaBitQ:** optimal to ~100k vectors; the cold-start shape of this
+  design (few centroids, big postings) *is* that, served by the same code path.
 
 ## 15. References
 
-- SPANN: Highly-efficient Billion-scale Approximate Nearest Neighbor Search
-  (Chen et al., NeurIPS 2021) — centroid/posting architecture, closure assignment,
-  query-aware pruning, hierarchical balanced clustering.
-- SPFresh: Incremental In-Place Update for Billion-Scale Vector Search
-  (Xu et al., SOSP 2023) — LIRE protocol: split / merge / neighbor-posting
-  reassignment, recall-under-churn methodology.
-- RaBitQ (Gao & Long, SIGMOD 2024) — in-tree at `pkg/rabitq`; residual
-  quantization fit per §7.
-- `pkg/recordlayer/VECTOR_BENCHMARK_RESULTS.md` — the measured HNSW-on-FDB numbers
-  motivating §1.
+- SPANN (Chen et al., NeurIPS 2021) — centroid/posting architecture, closure
+  assignment, ε-pruning, hierarchical balanced clustering.
+- SPFresh (Xu et al., SOSP 2023) — LIRE: split / merge / neighbor-posting
+  reassignment; recall-under-churn methodology.
+- RaBitQ (Gao & Long, SIGMOD 2024) — in-tree at `pkg/rabitq`; residual fit per §7.
+- FDB 7.3.75 sources for the mechanics cited throughout: resolver
+  (`fdbserver/SkipList.cpp:983`), `REPLY_BYTE_LIMIT` (`fdbclient/ClientKnobs.cpp:66`),
+  RYW dependent-write (`fdbclient/RYWIterator.cpp:34`), versionstamp user-versions
+  (`fdbclient/ReadYourWrites.actor.cpp:2252`).
+- `pkg/recordlayer/VECTOR_BENCHMARK_RESULTS.md` — measured HNSW-on-FDB numbers (§1).
+- PR #279 — rev 1 review verdicts (FDB C++ author, Torvalds, LanceDB founder,
+  codex) and per-finding dispositions.
