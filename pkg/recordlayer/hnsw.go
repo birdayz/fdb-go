@@ -419,12 +419,20 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 			}
 		}
 
-		// Build neighbor list for the new node at this layer.
+		// Build neighbor list for the new node at this layer, threading each selected
+		// candidate's vector with it (Java's NodeReferenceWithVector): inlining edge
+		// values need the neighbor's vector, and on a cold tx the cache may not have it.
 		newNodeNeighbors := make([]tuple.Tuple, len(selectedPKs))
 		copy(newNodeNeighbors, selectedPKs)
+		newNodeNeighborVecs := make([][]byte, len(selected))
+		for i, nb := range selected {
+			newNodeNeighborVecs[i] = nb.vecBytes
+		}
 
 		// Save new node at this layer.
-		g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, newNodeNeighbors)
+		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, newNodeNeighbors, newNodeNeighborVecs); saveErr != nil {
+			return fmt.Errorf("hnsw insert: save new node at layer %d: %w", layer, saveErr)
+		}
 
 		// Add reverse connections to each neighbor.
 		for _, nbPK := range selectedPKs {
@@ -459,7 +467,19 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 				}
 			}
 
-			g.storage.saveNodeLayerDispatch(tx, layer, nbPK, nbVecBytes, nbNeighbors)
+			// Thread the new node's vector for its entry in the reverse list (it is not
+			// in the cold cache yet — its layer-0 record is saved after the upper
+			// layers); existing neighbors resolve from the cache (their vectors were
+			// cached by the edge read that surfaced them).
+			nbNeighborVecs := make([][]byte, len(nbNeighbors))
+			for i, pk := range nbNeighbors {
+				if tupleEqual(pk, primaryKey) {
+					nbNeighborVecs[i] = vecBytes
+				}
+			}
+			if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, nbPK, nbVecBytes, nbNeighbors, nbNeighborVecs); saveErr != nil {
+				return fmt.Errorf("hnsw insert: save reverse connection for %v at layer %d: %w", nbPK, layer, saveErr)
+			}
 		}
 
 		if len(neighbors) > 0 {
@@ -476,7 +496,9 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	// and update the entry point.
 	if insertLayer > epLayer {
 		for layer := epLayer + 1; layer <= insertLayer; layer++ {
-			g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
+			if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil, nil); saveErr != nil {
+				return fmt.Errorf("hnsw insert: save lonely node at layer %d: %w", layer, saveErr)
+			}
 		}
 		accessInfo.layer = insertLayer
 		accessInfo.pk = primaryKey
@@ -536,7 +558,9 @@ func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vect
 	info.vectorBytes = vecBytes
 
 	for layer := 0; layer <= insertLayer; layer++ {
-		g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
+		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil, nil); saveErr != nil {
+			return fmt.Errorf("hnsw first insert: save layer %d: %w", layer, saveErr)
+		}
 	}
 	g.storage.saveAccessInfo(tx, info)
 	return nil
@@ -1053,7 +1077,10 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.Transaction, layer int, deleted
 		changeSet[key] = pruned
 	}
 
-	// Delete the node, then persist every modified candidate.
+	// Delete the node, then persist every modified candidate. Each neighbor's vector is
+	// threaded from the candidate set when the neighbor is itself a candidate (its
+	// resolved vector is in hand); other neighbors resolve from the per-tx cache (their
+	// vectors were cached by the edge reads that surfaced them).
 	g.storage.deleteNodeLayerDispatch(tx, layer, deletedPK)
 	for _, key := range order {
 		if !changed[key] {
@@ -1061,14 +1088,22 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.Transaction, layer int, deleted
 		}
 		c := candByKey[key]
 		nbPKs := make([]tuple.Tuple, 0, len(changeSet[key]))
+		nbVecs := make([][]byte, 0, len(changeSet[key]))
 		for _, sp := range changeSet[key] {
 			pk, derr := decodeNestedPK(sp)
 			if derr != nil {
 				return nil, nil, derr
 			}
 			nbPKs = append(nbPKs, pk)
+			if nb, ok := candByKey[string(sp)]; ok {
+				nbVecs = append(nbVecs, nb.vecBytes)
+			} else {
+				nbVecs = append(nbVecs, nil)
+			}
 		}
-		g.storage.saveNodeLayerDispatch(tx, layer, c.pk, c.vecBytes, nbPKs)
+		if saveErr := g.storage.saveNodeLayerDispatch(tx, layer, c.pk, c.vecBytes, nbPKs, nbVecs); saveErr != nil {
+			return nil, nil, fmt.Errorf("hnsw delete: save repaired candidate at layer %d: %w", layer, saveErr)
+		}
 	}
 
 	// New entry node = the first candidate (Java returns the first of candidateReferencesMap,
@@ -2173,7 +2208,12 @@ func (s *hnswStorage) isInliningLayer(layer int) bool {
 // saveNodeLayerInlining writes a node's edges in inlining format.
 // Each neighbor is a separate KV: (layer, pk, neighborPK) → tuple-packed neighborVector.
 // The node's own vector is not stored at inlining layers — it's stored at layer 0 (compact).
-func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, neighbors []tuple.Tuple) {
+// neighborVecs, when non-nil, is parallel to neighbors and carries each neighbor's stored
+// vector bytes — the Go analog of Java's NodeReferenceWithVector, where the vector travels
+// WITH the reference from search/selection to the write (InliningStorageAdapter writes
+// nodeReference.getVector(), never a cache lookup). A nil entry falls back to the per-tx
+// cache; an unresolvable vector is an ERROR, never a silently dropped edge.
+func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
 	// Clear all existing edges for this node at this layer.
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	r, err := fdb.PrefixRange(prefix)
@@ -2197,22 +2237,39 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 	// the layer-0 compact record / topLayer(pk), exactly as in Java — never by an
 	// inlining edge.
 
-	// Write each edge with the neighbor's vector.
-	for _, nbPK := range neighbors {
-		// Look up neighbor's vector from cache. During insert, neighbors were just
-		// loaded by loadNodeLayer/loadNodeLayerBatch, so they're in cache.
-		nbVecBytes := s.getVectorBytesFromCache(layer, nbPK)
+	// Write each edge with the neighbor's vector. The vector comes from the caller
+	// (threaded with the reference, like Java's NodeReferenceWithVector) or, for
+	// neighbors that were read in this tx, from the per-tx cache.
+	for i, nbPK := range neighbors {
+		var nbVecBytes []byte
+		if neighborVecs != nil {
+			nbVecBytes = neighborVecs[i]
+		}
+		if nbVecBytes == nil {
+			nbVecBytes = s.getVectorBytesFromCache(layer, nbPK)
+		}
 		if nbVecBytes == nil {
 			// Fallback: try layer 0 (compact format always has the vector).
 			nbVecBytes = s.getVectorBytesFromCache(0, nbPK)
 		}
 		if nbVecBytes == nil {
-			continue // neighbor not in cache — should not happen during normal operation
+			// Never drop an edge silently: a skipped write here "succeeds" while leaving
+			// the layer disconnected (it bit on cold inserts reaching a lonely entry's
+			// layer before vectors were threaded through). Java cannot hit this — the
+			// vector is part of the neighbor reference by construction.
+			return fmt.Errorf("hnsw: save inlining node %v at layer %d: no vector for neighbor %v", primaryKey, layer, nbPK)
 		}
 
 		edgeKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey, nbPK})
 		edgeValue := tuple.Tuple{nbVecBytes}.Pack()
 		tx.Set(fdb.Key(edgeKey), edgeValue)
+
+		// Cache the neighbor's vector at this layer (a partial, vector-only entry,
+		// same shape the load path writes) so later same-tx saves can resolve it.
+		nbCacheKey := string(s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK}))
+		if _, ok := s.cache[nbCacheKey]; !ok {
+			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
+		}
 	}
 
 	// Update the cache for this node so loadNodeLayerDispatch returns
@@ -2227,6 +2284,7 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 		cachedNeighbors[i] = nestPK(pk)
 	}
 	s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: cachedNeighbors}
+	return nil
 }
 
 // getVectorBytesFromCache looks up a node's vector bytes from the cache at a given layer.
@@ -2505,12 +2563,17 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 // These choose between compact and inlining format based on layer and config.
 
 // saveNodeLayerDispatch saves a node's layer data in the appropriate format.
-func (s *hnswStorage) saveNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple) {
+// neighborVecs (optional, parallel to neighbors) carries each neighbor's stored vector
+// bytes for inlining edge values — the Go analog of Java's NodeReferenceWithVector,
+// where the vector travels with the reference from search/selection to the write.
+// Compact writes don't need it (nil is fine). Returns an error if an inlining edge's
+// vector cannot be resolved from the provided vecs or the per-tx cache.
+func (s *hnswStorage) saveNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
 	if s.isInliningLayer(layer) {
-		s.saveNodeLayerInlining(tx, layer, primaryKey, neighbors)
-	} else {
-		s.saveNodeLayer(tx, layer, primaryKey, vectorBytes, neighbors)
+		return s.saveNodeLayerInlining(tx, layer, primaryKey, neighbors, neighborVecs)
 	}
+	s.saveNodeLayer(tx, layer, primaryKey, vectorBytes, neighbors)
+	return nil
 }
 
 // loadNodeLayerDispatch loads a node's layer data from the appropriate format.

@@ -981,7 +981,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 		const layer = 1 // inlining (UseInlining=true, layer > 0)
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			graph.storage.saveNodeLayerInlining(rtx.Transaction(), layer, pk, nil)
+			Expect(graph.storage.saveNodeLayerInlining(rtx.Transaction(), layer, pk, nil, nil)).To(Succeed())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1088,6 +1088,21 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			results, serr := coldGraph.Search(tx, []float64{1, 1}, 2, 100)
 			Expect(serr).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(2))
+
+			// The upper-layer edges must ACTUALLY be written, both directions —
+			// "succeeding" while silently skipping them (neighbor vector not in the cold
+			// cache → saveNodeLayerInlining dropped the edge) leaves the layer
+			// disconnected; layer-0 search masks it. Java cannot skip: the vector
+			// travels WITH the reference (NodeReferenceWithVector) from search to write.
+			st := coldGraph.storage
+			newToEp := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[1], pks[0]})
+			epToNew := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[0], pks[1]})
+			v1, gerr := tx.Get(fdb.Key(newToEp)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v1).NotTo(BeNil(), "edge (layer 1, newNode → entry) must be written on a cold insert")
+			v2, gerr := tx.Get(fdb.Key(epToNew)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v2).NotTo(BeNil(), "reverse edge (layer 1, entry → newNode) must be written on a cold insert")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
