@@ -31,6 +31,12 @@ type spfreshRoutingCache struct {
 	// rev-2 hot-key anti-pattern).
 	lastRefreshMs atomic.Int64
 
+	// lastUseMs drives idle-tenant eviction from the process-global cache
+	// map (multi-tenant fleets touch many indexes; an untouched tenant's
+	// cache must not live for the process lifetime). Stamped on every
+	// spfreshCacheFor hit.
+	lastUseMs atomic.Int64
+
 	generation int64
 	cursor     fdb.Key // changelog position (nil = never refreshed)
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 
@@ -64,17 +65,100 @@ func newSPFreshIndexMaintainer(
 
 // spfreshCaches holds the per-process routing caches, one per (index
 // subspace, generation) — the client-side state of RFC-094 §2. Browsing a
-// retrained generation gets a fresh cache; superseded entries age out with
-// the process (bounded: generations are rare).
-var spfreshCaches sync.Map // string(subspace bytes)+gen -> *spfreshRoutingCache
+// retrained generation gets a fresh cache. Bounded ACROSS tenants: each
+// cache is individually bounded (L2 LRU), but a multi-tenant serving fleet
+// touches arbitrarily many indexes, so idle caches are evicted by TTL and
+// the map is capped with oldest-first eviction (amortized inline — no
+// background goroutine). Evicting a live pointer is safe: holders keep
+// their snapshot; the next spfreshCacheFor reloads from FDB.
+var (
+	spfreshCaches      sync.Map     // string(subspace bytes)+gen -> *spfreshRoutingCache
+	spfreshCacheCount  atomic.Int64 // approximate map size (eviction trigger)
+	spfreshCacheSweeps atomic.Int64 // spfreshCacheFor calls since last sweep
+
+	// Eviction policy. Vars, not consts: the many-tenant soak tightens them.
+	spfreshCacheIdleTTLMs   int64 = 15 * 60 * 1000 // idle eviction horizon
+	spfreshCacheMaxEntries  int64 = 4096           // hard cap across tenants
+	spfreshCacheSweepEveryN int64 = 256            // amortization stride
+)
 
 func spfreshCacheFor(indexSubspace subspace.Subspace, generation int64) *spfreshRoutingCache {
 	key := fmt.Sprintf("%x/%d", indexSubspace.Bytes(), generation)
+	now := spfreshNowMs()
 	if c, ok := spfreshCaches.Load(key); ok {
-		return c.(*spfreshRoutingCache)
+		cache := c.(*spfreshRoutingCache)
+		cache.lastUseMs.Store(now)
+		spfreshMaybeEvictCaches(now)
+		return cache
 	}
-	c, _ := spfreshCaches.LoadOrStore(key, newSPFreshRoutingCache(0))
-	return c.(*spfreshRoutingCache)
+	fresh := newSPFreshRoutingCache(0)
+	fresh.lastUseMs.Store(now)
+	c, loaded := spfreshCaches.LoadOrStore(key, fresh)
+	if !loaded {
+		spfreshCacheCount.Add(1)
+	}
+	cache := c.(*spfreshRoutingCache)
+	cache.lastUseMs.Store(now)
+	spfreshMaybeEvictCaches(now)
+	return cache
+}
+
+// spfreshMaybeEvictCaches amortizes idle/over-cap eviction over cache hits:
+// a full map sweep every spfreshCacheSweepEveryN calls, or immediately while
+// the map is over its cap.
+func spfreshMaybeEvictCaches(nowMs int64) {
+	if spfreshCacheSweeps.Add(1)%spfreshCacheSweepEveryN != 0 &&
+		spfreshCacheCount.Load() <= spfreshCacheMaxEntries {
+		return
+	}
+	spfreshSweepCaches(nowMs)
+}
+
+// spfreshSweepCaches is the unamortized sweep body: TTL-evict idle caches,
+// then enforce the cross-tenant cap oldest-first (with hysteresis).
+func spfreshSweepCaches(nowMs int64) {
+	type entry struct {
+		key     string
+		lastUse int64
+	}
+	var entries []entry
+	spfreshCaches.Range(func(k, v any) bool {
+		entries = append(entries, entry{key: k.(string), lastUse: v.(*spfreshRoutingCache).lastUseMs.Load()})
+		return true
+	})
+	spfreshCacheCount.Store(int64(len(entries))) // re-sync the approximation
+	evict := func(key string) {
+		if _, loaded := spfreshCaches.LoadAndDelete(key); loaded {
+			spfreshCacheCount.Add(-1)
+		}
+	}
+	live := 0
+	for _, e := range entries {
+		if nowMs-e.lastUse > spfreshCacheIdleTTLMs {
+			evict(e.key)
+		} else {
+			live++
+		}
+	}
+	if int64(live) <= spfreshCacheMaxEntries {
+		return
+	}
+	// Over cap even after TTL: drop oldest-first down to 90% of the cap
+	// (hysteresis — evicting to the cap exactly would re-trigger a full
+	// sweep on every subsequent miss while the fleet hovers at the cap).
+	target := spfreshCacheMaxEntries - spfreshCacheMaxEntries/10
+	sort.Slice(entries, func(i, j int) bool { return entries[i].lastUse < entries[j].lastUse })
+	excess := int64(live) - target
+	for _, e := range entries {
+		if excess <= 0 {
+			break
+		}
+		if nowMs-e.lastUse > spfreshCacheIdleTTLMs {
+			continue // already evicted above
+		}
+		evict(e.key)
+		excess--
+	}
 }
 
 // Update is the foreground write path (RFC-094 §5, phase 094.2): delete-old
