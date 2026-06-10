@@ -251,12 +251,22 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 	}
 	for _, cfg := range strings.Split(sweep, ",") {
 		parts := strings.Split(cfg, ":")
-		if len(parts) != 3 {
-			t.Fatalf("SIFT_SWEEP entry %q: want w:kc:c", cfg)
+		if len(parts) != 3 && len(parts) != 4 {
+			t.Fatalf("SIFT_SWEEP entry %q: want w:kc:c[:eps]", cfg)
 		}
 		w, _ := strconv.Atoi(parts[0])
 		kc, _ := strconv.Atoi(parts[1])
 		c, _ := strconv.Atoi(parts[2])
+		high := tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)}
+		epsLabel := "default"
+		if len(parts) == 4 {
+			eps, perr := strconv.ParseFloat(parts[3], 64)
+			if perr != nil {
+				t.Fatalf("SIFT_SWEEP entry %q: bad eps: %v", cfg, perr)
+			}
+			high = append(high, eps)
+			epsLabel = parts[3]
+		}
 		latencies := make([]time.Duration, 0, len(queries))
 		hits, total := 0, 0
 		for lo := 0; lo < len(queries); lo += amortize {
@@ -285,7 +295,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 					qStart := time.Now()
 					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
 						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
-						High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
+						High: high,
 					}, nil, recordlayer.ScanProperties{})
 					var got []int64
 					for {
@@ -321,7 +331,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 			latencies = append(latencies, batchLat...)
 		}
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-		t.Logf("SWEEP w=%d kc=%d c=%d amortize=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, amortize, k,
+		t.Logf("SWEEP w=%d kc=%d c=%d eps=%s amortize=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, epsLabel, amortize, k,
 			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
 
 		// SIFT_QPS=G additionally hammers this config with G concurrent
@@ -355,7 +365,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 							}
 							cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
 								Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
-								High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
+								High: high,
 							}, nil, recordlayer.ScanProperties{})
 							for {
 								res, cerr := cursor.OnNext(ctx)
@@ -375,7 +385,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 			}
 			wg.Wait()
 			elapsed := time.Since(qpsStart)
-			t.Logf("SWEEP-QPS w=%d kc=%d c=%d G=%d: %d queries in %v → %.0f QPS", w, kc, c, qpsG,
+			t.Logf("SWEEP-QPS w=%d kc=%d c=%d eps=%s G=%d: %d queries in %v → %.0f QPS", w, kc, c, epsLabel, qpsG,
 				totalQ, elapsed.Round(time.Millisecond), float64(totalQ)/elapsed.Seconds())
 		}
 	}

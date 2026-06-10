@@ -26,10 +26,11 @@ type spfreshSearcher struct {
 	quant   *spfreshQuantizer
 
 	// runtime knobs (RFC-094 §4 defaults; never stored)
-	w        int  // coarse cells probed
-	kc       int  // fine postings fetched
-	c        int  // re-rank candidates
-	noRerank bool // rank by RaBitQ estimates alone (skip the sidecar wave)
+	w        int     // coarse cells probed
+	kc       int     // fine postings fetched (CAP under ε-pruning)
+	c        int     // re-rank candidates
+	epsilon  float64 // SPANN Eq.(3) pruning ratio ε₂; ≤ 0 disables pruning
+	noRerank bool    // rank by RaBitQ estimates alone (skip the sidecar wave)
 }
 
 func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *spfreshRoutingCache) *spfreshSearcher {
@@ -41,12 +42,39 @@ func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *sp
 		// Defaults from the 094.4 SIFT-100k sweep: w=16/kc=64/c=200 holds
 		// recall@10 = 0.999 at 1.6× lower latency than the 094.1 values
 		// (32/96/400, recall 1.0000). Per-query overrides ride the scan
-		// contract's High tuple (k, kc, w, c) — e.g. 8/24/64 gives 0.974 at
-		// ~10 ms p50 for latency-first callers.
+		// contract's High tuple (k, kc, w, c[, ε]) — e.g. 8/24/64 gives 0.974
+		// at ~10 ms p50 for latency-first callers.
 		w:  16,
 		kc: 64,
 		c:  200,
+		// SPANN §4.2's published recall@10 setting. With pruning on, kc is a
+		// CAP, not a constant cost: the paper's Fig. 2 shows 80% of SIFT-1M
+		// queries need ~6 posting lists while 99% need 114 — Eq. (3) gives
+		// the easy majority the short probe and the hard tail the cap.
+		epsilon: 7.0,
 	}
+}
+
+// spfreshPruneRouted applies SPANN Eq. (3) query-aware dynamic pruning to a
+// d2-ascending routed list: probe list ij ⟺ Dist(q,c_ij) ≤ (1+ε)·Dist(q,c_i1).
+// d2 is SQUARED distance, so the threshold squares the ratio. The pruned tail
+// is returned for the starvation widening (RFC-094 §4 "k_c widens adaptively
+// under ε-pruning starvation") — the caller refetches it when the probed set
+// can't fill the re-rank budget.
+func spfreshPruneRouted(routed []spfreshRouted, epsilon float64) (probe, pruned []spfreshRouted) {
+	if epsilon <= 0 || len(routed) <= 1 {
+		return routed, nil
+	}
+	ratio := 1 + epsilon
+	threshold := ratio * ratio * routed[0].d2
+	cut := len(routed)
+	for i := 1; i < len(routed); i++ {
+		if routed[i].d2 > threshold {
+			cut = i
+			break
+		}
+	}
+	return routed[:cut], routed[cut:]
 }
 
 // spfreshSearchResult is one search hit.
@@ -76,6 +104,13 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		return nil, nil
 	}
 
+	// SPANN Eq. (3) query-aware dynamic pruning: probe only the routed lists
+	// whose centroid distance is within (1+ε) of the nearest one — easy
+	// queries pay a handful of range reads, hard ones the full kc cap. The
+	// pruned tail is refetched below if the probed set starves the re-rank
+	// budget (RFC-094 §4 adaptive widening).
+	probe, pruned := spfreshPruneRouted(routed, s.epsilon)
+
 	// One parallel burst: all posting range reads issued before any resolves.
 	// The fetch cap (4×Lmax+1 rows) bounds an unmaintained posting's cost to
 	// THIS query (metered, never unbounded — RFC-094 §4).
@@ -84,59 +119,75 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		routed spfreshRouted
 		future fdb.RangeResult
 	}
-	fetches := make([]postingFetch, 0, len(routed))
-	for _, rt := range routed {
-		r, rerr := s.storage.postingRange(rt.fineID)
-		if rerr != nil {
-			return nil, rerr
-		}
-		fetches = append(fetches, postingFetch{
-			routed: rt,
-			future: tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
-		})
-	}
 
 	// Residual distance estimation per posting; min-estimate dedup across
 	// closure replicas (RFC-094 §4/§7).
 	best := make(map[string]*spfreshApproxHit)
 	residual := make([]float64, len(query))
 	var forwards []spfreshRouted // stale-cache HDR redirects, resolved after the burst
-	for _, f := range fetches {
-		kvs, kerr := f.future.GetSliceWithError()
-		if kerr != nil {
-			return nil, fmt.Errorf("spfresh search: posting %d: %w", f.routed.fineID, kerr)
+	fetchAndScore := func(rts []spfreshRouted) error {
+		fetches := make([]postingFetch, 0, len(rts))
+		for _, rt := range rts {
+			r, rerr := s.storage.postingRange(rt.fineID)
+			if rerr != nil {
+				return rerr
+			}
+			fetches = append(fetches, postingFetch{
+				routed: rt,
+				future: tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
+			})
 		}
-		for d := range query {
-			residual[d] = query[d] - f.routed.vec[d]
+		for _, f := range fetches {
+			kvs, kerr := f.future.GetSliceWithError()
+			if kerr != nil {
+				return fmt.Errorf("spfresh search: posting %d: %w", f.routed.fineID, kerr)
+			}
+			for d := range query {
+				residual[d] = query[d] - f.routed.vec[d]
+			}
+			// One scorer per posting: the residual query's self-dot and the
+			// code buffer are computed once and reused across the posting's
+			// codes (the per-code allocation path dominated estimate CPU —
+			// 094.4).
+			score := s.quant.scorer(residual, s.config.NumDimensions)
+			for _, kv := range kvs {
+				pk, isEntry, perr := s.storage.postingPK(kv.Key)
+				if perr != nil {
+					return perr
+				}
+				if !isEntry {
+					// Forwarded posting (split landed inside our staleness
+					// window): queue the children, resolved below (+2 RT
+					// bounded).
+					cellID, childA, childB, herr := decodePostingHDR(kv.Value)
+					if herr != nil {
+						return herr
+					}
+					fwd, ferr := s.resolveForward(tx, cellID, childA, childB)
+					if ferr != nil {
+						return ferr
+					}
+					forwards = append(forwards, fwd...)
+					continue
+				}
+				est, derr := score(kv.Value)
+				if derr != nil {
+					return derr
+				}
+				s.mergeHit(best, pk, est)
+			}
 		}
-		// One scorer per posting: the residual query's self-dot and the code
-		// buffer are computed once and reused across the posting's codes
-		// (the per-code allocation path dominated estimate CPU — 094.4).
-		score := s.quant.scorer(residual, s.config.NumDimensions)
-		for _, kv := range kvs {
-			pk, isEntry, perr := s.storage.postingPK(kv.Key)
-			if perr != nil {
-				return nil, perr
-			}
-			if !isEntry {
-				// Forwarded posting (split landed inside our staleness
-				// window): queue the children, resolved below (+2 RT bounded).
-				cellID, childA, childB, herr := decodePostingHDR(kv.Value)
-				if herr != nil {
-					return nil, herr
-				}
-				fwd, ferr := s.resolveForward(tx, cellID, childA, childB)
-				if ferr != nil {
-					return nil, ferr
-				}
-				forwards = append(forwards, fwd...)
-				continue
-			}
-			est, derr := score(kv.Value)
-			if derr != nil {
-				return nil, derr
-			}
-			s.mergeHit(best, pk, est)
+		return nil
+	}
+	if err := fetchAndScore(probe); err != nil {
+		return nil, err
+	}
+	// ε-pruning starvation widening (RFC-094 §4): if the pruned probe set
+	// can't fill the re-rank budget, fetch the pruned tail too — one extra
+	// burst, only on starved queries, never beyond the kc cap.
+	if len(pruned) > 0 && len(best) < s.c {
+		if err := fetchAndScore(pruned); err != nil {
+			return nil, err
 		}
 	}
 

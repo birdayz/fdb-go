@@ -65,7 +65,16 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 				// (childA == 0) are safe to clear: the next probe re-files.
 				if row.childA != 0 {
 					if _, ferr := spfreshFindCentroidCell(tx, s, fineID); ferr == nil {
-						return nil // moved mid-split: resume via fresh scan
+						// Moved mid-split: keep the task for a fresh scan to
+						// resume at the right cell — and RELEASE the lease
+						// the claim above just wrote, or every other
+						// invocation (unique owners) skips this task as
+						// live-foreign until expiry, stalling the split for
+						// a full lease interval (codex P2).
+						row.owner = ""
+						row.leaseDeadlineMs = 0
+						tx.Set(s.taskKey(spfreshTaskSplit, fineID), encodeTaskRow(row))
+						return nil
 					} else if !errors.Is(ferr, errSPFreshNotFound) {
 						return ferr
 					}

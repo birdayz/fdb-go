@@ -350,8 +350,10 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	if len(scanRange.Low) > 1 {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: prefixed (grouped) scans not supported in 094.1", m.index.Name)}
 	}
-	// High = (k [, kc [, w [, c]]]): per-query tuning knobs (RFC-094 §4 /
-	// 094.4). kc keeps the HNSW efSearch slot; w and c extend it.
+	// High = (k [, kc [, w [, c [, ε]]]]): per-query tuning knobs (RFC-094 §4
+	// / 094.4). kc keeps the HNSW efSearch slot; w and c extend it; ε is the
+	// SPANN Eq. (3) pruning ratio (float or int; ≤ 0 disables pruning, absent
+	// keeps the searcher default).
 	k := 10
 	efSearch, wProbe, cRerank := 0, 0, 0
 	if scanRange.High != nil {
@@ -364,8 +366,17 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 			}
 		}
 	}
+	epsilon, epsilonSet := 0.0, false
+	if len(scanRange.High) > 4 {
+		switch v := scanRange.High[4].(type) {
+		case float64:
+			epsilon, epsilonSet = v, true
+		case int64:
+			epsilon, epsilonSet = float64(v), true
+		}
+	}
 
-	results, err := m.searchCurrentGeneration(queryVector, k, efSearch, wProbe, cRerank)
+	results, err := m.searchCurrentGeneration(queryVector, k, efSearch, wProbe, cRerank, epsilon, epsilonSet)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -380,7 +391,7 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 
 // searchCurrentGeneration resolves the readable generation, refreshes/loads
 // the per-process cache, and runs the search in the maintainer's transaction.
-func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int) ([]spfreshSearchResult, error) {
+func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
 	// Resolve the generation (snapshot — queries never conflict).
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0) // gen 0: META access only
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
@@ -435,6 +446,9 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 		searcher.c = max(cRerank, k)
 	} else if cRerank == -1 {
 		searcher.noRerank = true
+	}
+	if epsilonSet {
+		searcher.epsilon = epsilon // ≤ 0 disables pruning
 	}
 	return searcher.search(m.tx, query, k)
 }

@@ -331,12 +331,20 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(serr).NotTo(HaveOccurred())
 		Expect(out.proceed).To(BeFalse())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			task, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, fine)).Get()
+			tx := rtx.Transaction()
+			task, gerr := tx.Get(storage.taskKey(spfreshTaskSplit, fine)).Get()
 			Expect(gerr).NotTo(HaveOccurred())
 			Expect(task).NotTo(BeNil(), "sealed task must survive a stale-cell claim: it holds the only child IDs")
 			row, derr := decodeTaskRow(task)
 			Expect(derr).NotTo(HaveOccurred())
 			Expect(row.childA).To(Equal(int64(100)))
+			// And the keep must RELEASE the stale executor's lease: a
+			// different owner claims it immediately (codex P2 — a kept task
+			// leased to a no-progress invocation stalls the split until
+			// lease expiry, since unique owners never self-reclaim).
+			claimed, cerr := spfreshTaskClaim(tx, storage, spfreshTaskSplit, fine, "other-exec", spfreshLeaseDeadline(), spfreshNowMs())
+			Expect(cerr).NotTo(HaveOccurred(), "kept sealed task must be immediately claimable, not lease-stalled")
+			Expect(claimed.childA).To(Equal(int64(100)), "children must survive the keep")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
