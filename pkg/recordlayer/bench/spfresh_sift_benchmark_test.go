@@ -323,6 +323,61 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 		t.Logf("SWEEP w=%d kc=%d c=%d amortize=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, amortize, k,
 			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+
+		// SIFT_QPS=G additionally hammers this config with G concurrent
+		// query workers (one query per transaction — the serving shape) and
+		// reports aggregate throughput. Every read number without this was
+		// single-threaded latency; queries are stateless snapshot reads, so
+		// this measures the real capacity of one client process.
+		if qpsG := siftEnvInt("SIFT_QPS", 0); qpsG > 0 {
+			const totalQ = 800
+			var next atomic.Int64
+			var wg sync.WaitGroup
+			qpsStart := time.Now()
+			for g := 0; g < qpsG; g++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for {
+						i := int(next.Add(1) - 1)
+						if i >= totalQ {
+							return
+						}
+						query := float32sToFloat64s(queries[i%len(queries)])
+						if _, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+							store, serr := storeBuilder(rtx)
+							if serr != nil {
+								return nil, serr
+							}
+							maintainer, merr := store.GetIndexMaintainer(store.GetMetaData().GetIndex("spf_data"))
+							if merr != nil {
+								return nil, merr
+							}
+							cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+								Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+								High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
+							}, nil, recordlayer.ScanProperties{})
+							for {
+								res, cerr := cursor.OnNext(ctx)
+								if cerr != nil {
+									return nil, cerr
+								}
+								if !res.HasNext() {
+									return nil, nil
+								}
+							}
+						}); qerr != nil {
+							t.Errorf("qps worker query %d: %v", i, qerr)
+							return
+						}
+					}
+				}()
+			}
+			wg.Wait()
+			elapsed := time.Since(qpsStart)
+			t.Logf("SWEEP-QPS w=%d kc=%d c=%d G=%d: %d queries in %v → %.0f QPS", w, kc, c, qpsG,
+				totalQ, elapsed.Round(time.Millisecond), float64(totalQ)/elapsed.Seconds())
+		}
 	}
 }
 
