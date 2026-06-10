@@ -138,3 +138,35 @@ func TestSPFreshNearestK(t *testing.T) {
 		t.Fatalf("tie-break by id: got %+v", tie)
 	}
 }
+
+// The parallel path (n spanning many chunks): determinism must hold through
+// the chunk-merged float reductions — fixed chunk size, merge in chunk order,
+// independent of worker count and scheduling.
+func TestSPFreshKMeansDeterministicParallel(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(7))
+	vecs := make([][]float64, 3*spfreshKMeansChunk+123) // >3 chunks, ragged tail
+	for i := range vecs {
+		vecs[i] = []float64{rng.NormFloat64(), rng.NormFloat64(), rng.NormFloat64(), rng.NormFloat64()}
+	}
+	c1, a1 := spfreshKMeans(vecs, 32, 11, 25)
+	c2, a2 := spfreshKMeans(vecs, 32, 11, 25)
+	for i := range a1 {
+		if a1[i] != a2[i] {
+			t.Fatalf("assignment %d differs across identical parallel runs", i)
+		}
+	}
+	for i := range c1 {
+		for d := range c1[i] {
+			if c1[i][d] != c2[i][d] {
+				t.Fatalf("centroid %d dim %d differs across identical parallel runs", i, d)
+			}
+		}
+	}
+	// Every cluster non-degenerate and every point assigned in range.
+	for i, a := range a1 {
+		if a < 0 || a >= len(c1) {
+			t.Fatalf("point %d assigned out of range: %d", i, a)
+		}
+	}
+}

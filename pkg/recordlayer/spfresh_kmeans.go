@@ -2,13 +2,60 @@ package recordlayer
 
 import (
 	"math"
+	"runtime"
 	"sort"
+	"sync"
+	"sync/atomic"
 )
 
 // SPFresh clustering and closure assignment (RFC-094 §5, §6, §8). Pure CPU,
 // deterministic given the seed — splits and builds must be reproducible for
 // the pinned lifecycle tests, so all randomness flows through the same
 // splittableRandom the rest of the index uses.
+
+// spfreshKMeansChunk is the fixed work-unit size for the parallel loops.
+// FIXED (not derived from worker count) so chunk boundaries — and therefore
+// the float accumulation order in the chunk-merged reductions — are identical
+// on every machine: determinism holds per (vectors, k, seed) regardless of
+// GOMAXPROCS.
+const spfreshKMeansChunk = 4096
+
+// spfreshParallelChunks runs fn over [0,n) in fixed-size chunks across
+// NumCPU workers. fn must only write chunk-local or index-disjoint state.
+func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
+	chunks := (n + spfreshKMeansChunk - 1) / spfreshKMeansChunk
+	if chunks <= 1 {
+		if n > 0 {
+			fn(0, 0, n)
+		}
+		return
+	}
+	workers := runtime.NumCPU()
+	if workers > chunks {
+		workers = chunks
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				c := int(next.Add(1) - 1)
+				if c >= chunks {
+					return
+				}
+				lo := c * spfreshKMeansChunk
+				hi := lo + spfreshKMeansChunk
+				if hi > n {
+					hi = n
+				}
+				fn(c, lo, hi)
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 // spfreshKMeans runs Lloyd's algorithm with k-means++ seeding on the given
 // vectors, returning k centroids and each vector's assignment. Deterministic
@@ -39,9 +86,11 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	centroids = append(centroids, append([]float64(nil), vectors[first]...))
 
 	d2 := make([]float64, n) // squared distance to nearest chosen centroid
-	for i := range d2 {
-		d2[i] = spfreshSquaredDistance(vectors[i], centroids[0])
-	}
+	spfreshParallelChunks(n, func(_, lo, hi int) {
+		for i := lo; i < hi; i++ {
+			d2[i] = spfreshSquaredDistance(vectors[i], centroids[0])
+		}
+	})
 	for len(centroids) < k {
 		var sum float64
 		for _, d := range d2 {
@@ -65,11 +114,13 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		}
 		c := append([]float64(nil), vectors[idx]...)
 		centroids = append(centroids, c)
-		for i := range d2 {
-			if d := spfreshSquaredDistance(vectors[i], c); d < d2[i] {
-				d2[i] = d
+		spfreshParallelChunks(n, func(_, lo, hi int) {
+			for i := lo; i < hi; i++ {
+				if d := spfreshSquaredDistance(vectors[i], c); d < d2[i] {
+					d2[i] = d
+				}
 			}
-		}
+		})
 	}
 
 	// Lloyd iterations.
@@ -79,34 +130,67 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	for i := range sums {
 		sums[i] = make([]float64, dims)
 	}
+	numChunks := (n + spfreshKMeansChunk - 1) / spfreshKMeansChunk
 	for iter := 0; iter < maxIters; iter++ {
-		changed := false
-		for i, v := range vectors {
-			best, bestD := 0, math.Inf(1)
-			for c := range centroids {
-				if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-					best, bestD = c, d
+		// Assignment: index-disjoint writes, order-independent — parallel.
+		var changedFlag atomic.Bool
+		spfreshParallelChunks(n, func(_, lo, hi int) {
+			chunkChanged := false
+			for i := lo; i < hi; i++ {
+				v := vectors[i]
+				best, bestD := 0, math.Inf(1)
+				for c := range centroids {
+					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+						best, bestD = c, d
+					}
+				}
+				if assign[i] != best {
+					chunkChanged = true
+					assign[i] = best
 				}
 			}
-			if assign[i] != best || iter == 0 {
-				changed = changed || assign[i] != best
-				assign[i] = best
+			if chunkChanged {
+				changedFlag.Store(true)
 			}
-		}
-		if iter > 0 && !changed {
+		})
+		if iter > 0 && !changedFlag.Load() {
 			break
 		}
+		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the
+		// float addition order is fixed by the constant chunk size —
+		// deterministic on any machine, any worker count.
+		partialCounts := make([][]int, numChunks)
+		partialSums := make([][][]float64, numChunks)
+		spfreshParallelChunks(n, func(chunk, lo, hi int) {
+			pc := make([]int, k)
+			ps := make([][]float64, k)
+			for i := lo; i < hi; i++ {
+				c := assign[i]
+				pc[c]++
+				if ps[c] == nil {
+					ps[c] = make([]float64, dims)
+				}
+				for d, x := range vectors[i] {
+					ps[c][d] += x
+				}
+			}
+			partialCounts[chunk] = pc
+			partialSums[chunk] = ps
+		})
 		for c := range sums {
 			counts[c] = 0
 			for d := range sums[c] {
 				sums[c][d] = 0
 			}
 		}
-		for i, v := range vectors {
-			c := assign[i]
-			counts[c]++
-			for d, x := range v {
-				sums[c][d] += x
+		for chunk := 0; chunk < numChunks; chunk++ {
+			for c := 0; c < k; c++ {
+				counts[c] += partialCounts[chunk][c]
+				if partialSums[chunk][c] != nil {
+					for d, x := range partialSums[chunk][c] {
+						sums[c][d] += x
+					}
+				}
 			}
 		}
 		for c := range centroids {
@@ -130,15 +214,18 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		}
 	}
 	// Final assignment against the converged centroids.
-	for i, v := range vectors {
-		best, bestD := 0, math.Inf(1)
-		for c := range centroids {
-			if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-				best, bestD = c, d
+	spfreshParallelChunks(n, func(_, lo, hi int) {
+		for i := lo; i < hi; i++ {
+			v := vectors[i]
+			best, bestD := 0, math.Inf(1)
+			for c := range centroids {
+				if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+					best, bestD = c, d
+				}
 			}
+			assign[i] = best
 		}
-		assign[i] = best
-	}
+	})
 	return centroids, assign
 }
 
