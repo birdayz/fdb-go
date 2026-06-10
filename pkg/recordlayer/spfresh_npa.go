@@ -100,7 +100,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		// Candidates: members of the neighbor postings (snapshot, capped at
 		// the one-reply contract like the query path).
 		for fineID := range neighbors {
-			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, fineID, 2*config.Lmax+1)
+			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, fineID, 4*config.Lmax+1)
 			if perr != nil {
 				return perr
 			}
