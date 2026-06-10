@@ -203,7 +203,10 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		}
 
 		for i, childID := range children {
-			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cents[i]))
+			// epoch = creation time (ms): the merge lifecycle's post-split
+			// cooldown reads it (T_cool, RFC-094 §6 — split↔merge oscillation
+			// guard).
+			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, spfreshNowMs(), 0, 0, cents[i]))
 			spfreshCounterSet(tx, s, spfreshCounterFine, childID, counts[i])
 		}
 
