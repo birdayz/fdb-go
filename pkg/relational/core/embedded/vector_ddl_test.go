@@ -122,3 +122,61 @@ func assertOpt(t *testing.T, idx *recordlayer.Index, key, want string) {
 		t.Errorf("option %q = %q, want %q", key, got, want)
 	}
 }
+
+// TestVectorDDL_SPFresh drives CREATE VECTOR INDEX … USING SPFRESH through
+// the full DDL parse path (RFC-094 094.6): the resulting metadata index is an
+// SPFresh index with the metric routed to the SPFresh option namespace and
+// the dimension count derived from the column's VECTOR type.
+func TestVectorDDL_SPFresh(t *testing.T) {
+	t.Parallel()
+	ddl := `CREATE TABLE documents (
+			doc_id string,
+			embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_spf USING SPFRESH ON documents(embedding)
+			OPTIONS (METRIC = COSINE_METRIC)`
+
+	tmpl, err := buildSchemaTemplateFromDDL(ddl)
+	if err != nil {
+		t.Fatalf("buildSchemaTemplateFromDDL: %v", err)
+	}
+	idx := tmpl.Underlying().GetIndex("DOC_SPF")
+	if idx == nil {
+		t.Fatal("vector index DOC_SPF not found in metadata")
+	}
+	if idx.Type != recordlayer.IndexTypeVectorSPFresh {
+		t.Errorf("index type = %q, want %q", idx.Type, recordlayer.IndexTypeVectorSPFresh)
+	}
+	if got := idx.Options[recordlayer.IndexOptionSPFreshNumDimensions]; got != "3" {
+		t.Errorf("spfreshNumDimensions = %q, want 3 (derived from vector(3, half))", got)
+	}
+	if got := idx.Options[recordlayer.IndexOptionSPFreshMetric]; got != "COSINE_METRIC" {
+		t.Errorf("spfreshMetric = %q, want COSINE_METRIC (METRIC must route to the SPFresh namespace)", got)
+	}
+	if _, has := idx.Options[recordlayer.IndexOptionVectorMetric]; has {
+		t.Error("hnswMetric set on an SPFresh index — option namespace leak")
+	}
+}
+
+// TestVectorDDL_SPFreshErrors pins the rejection shapes: PARTITION BY and
+// HNSW-only options error loudly at DDL time instead of being silently
+// dropped or misapplied.
+func TestVectorDDL_SPFreshErrors(t *testing.T) {
+	t.Parallel()
+	for name, ddl := range map[string]string{
+		"partition by": `CREATE TABLE documents (
+				zone string, doc_id string, embedding vector(3, half),
+				PRIMARY KEY (zone, doc_id))
+			CREATE VECTOR INDEX doc_spf USING SPFRESH ON documents(embedding)
+				PARTITION BY (zone)`,
+		"hnsw-only option": `CREATE TABLE documents (
+				doc_id string, embedding vector(3, half),
+				PRIMARY KEY (doc_id))
+			CREATE VECTOR INDEX doc_spf USING SPFRESH ON documents(embedding)
+				OPTIONS (EF_CONSTRUCTION = 100)`,
+	} {
+		if _, err := buildSchemaTemplateFromDDL(ddl); err == nil {
+			t.Errorf("%s: DDL accepted, want loud rejection", name)
+		}
+	}
+}
