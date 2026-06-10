@@ -256,11 +256,13 @@ func (c *spfreshRoutingCache) ensureCell(tx fdb.ReadTransaction, s *spfreshStora
 	return cell, nil
 }
 
-// spfreshRouted is one routed fine centroid: where it lives and its vector
-// (needed for residual encode/score).
+// spfreshRouted is one routed fine centroid: where it lives, its CACHED state
+// (the authoritative row may have moved on — write fences re-read), and its
+// vector (needed for residual encode/score).
 type spfreshRouted struct {
 	cellID int64
 	fineID int64
+	state  byte
 	vec    []float64
 	d2     float64
 }
@@ -271,18 +273,21 @@ type spfreshRouted struct {
 // tie-breaks by id. Reads route ACTIVE and SEALED (a sealed posting still
 // holds its members until SPLIT commits).
 func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
-	return c.routeStates(tx, s, query, w, kc, true)
-}
-
-// routeForWrite is the insert variant: SEALED is excluded BEFORE the kc
-// truncation — the write fence rejects SEALED anyway, so sealed rows in the
-// candidate list only starve the insert of ACTIVE fallbacks when a split
-// wave seals many nearby centroids (codex 094.2 r2).
-func (c *spfreshRoutingCache) routeForWrite(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
 	return c.routeStates(tx, s, query, w, kc, false)
 }
 
-func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int, includeSealed bool) ([]spfreshRouted, error) {
+// routeForWrite is the insert variant: SEALED candidates are KEPT (a row
+// cached as SEALED may be FORWARD in storage by now — the write fence must
+// see it to follow the children; dropping it broke the forward-follow
+// recovery during the post-split staleness window, codex 094.2 r3) but they
+// do NOT count toward the kc budget — the fence rejects true-SEALED anyway,
+// so letting them consume slots starved inserts of ACTIVE fallbacks when a
+// split wave sealed many nearby centroids (codex 094.2 r2).
+func (c *spfreshRoutingCache) routeForWrite(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
+	return c.routeStates(tx, s, query, w, kc, true)
+}
+
+func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int, writeBudget bool) ([]spfreshRouted, error) {
 	c.mu.RLock()
 	ids := c.coarseIDs
 	vecs := c.coarseVecs
@@ -316,17 +321,18 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 			return nil
 		}
 		for i, fineID := range cell.fineIDs {
-			// ACTIVE always routes; SEALED routes for reads only (a SEALED
-			// posting still holds its members until SPLIT commits — filtering
-			// it from queries hid them for the whole seal window, codex
-			// 094.2 r1 P1) and is excluded for writes (see routeForWrite).
-			if cell.states[i] != spfreshStateActive &&
-				!(includeSealed && cell.states[i] == spfreshStateSealed) {
+			// ACTIVE and SEALED both route: a SEALED posting still holds its
+			// members until SPLIT commits (filtering it from queries hid them
+			// for the whole seal window — codex 094.2 r1), and a row cached
+			// as SEALED may already be FORWARD in storage (the write fence
+			// follows it to the children — codex 094.2 r3).
+			if cell.states[i] != spfreshStateActive && cell.states[i] != spfreshStateSealed {
 				continue
 			}
 			routed = append(routed, spfreshRouted{
 				cellID: cellID,
 				fineID: fineID,
+				state:  cell.states[i],
 				vec:    cell.vecs[i],
 				d2:     spfreshSquaredDistance(query, cell.vecs[i]),
 			})
@@ -345,6 +351,23 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 		}
 		return routed[i].fineID < routed[j].fineID
 	})
+	if writeBudget {
+		// SEALED entries ride along (the fence resolves their true state)
+		// but only ACTIVE entries consume the budget; 2·kc hard-caps the
+		// fence's worst-case state reads.
+		kept := routed[:0]
+		active := 0
+		for _, r := range routed {
+			if active >= kc || len(kept) >= 2*kc {
+				break
+			}
+			if r.state == spfreshStateActive {
+				active++
+			}
+			kept = append(kept, r)
+		}
+		return kept, nil
+	}
 	if kc < len(routed) {
 		routed = routed[:kc]
 	}

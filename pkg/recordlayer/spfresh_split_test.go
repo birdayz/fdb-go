@@ -489,11 +489,107 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 			Expect(cache.fullReload(tx, s, 1)).To(Succeed())
 			write, werr := cache.routeForWrite(tx, s, []float64{0, 0}, 8, spfreshInsertCandidates)
 			Expect(werr).NotTo(HaveOccurred())
-			Expect(write).To(HaveLen(1))
-			Expect(write[0].fineID).To(Equal(int64(99)), "the ACTIVE fallback must survive the cutoff")
+			// SEALED candidates ride along (the fence may need to follow a
+			// SEALED-turned-FORWARD parent — codex r3) but don't consume the
+			// budget: the ACTIVE fallback beyond all 17 must be present.
+			var fineIDs []int64
+			for _, r := range write {
+				fineIDs = append(fineIDs, r.fineID)
+			}
+			Expect(fineIDs).To(ContainElement(int64(99)), "the ACTIVE fallback must survive the cutoff")
 			read, rerr := cache.route(tx, s, []float64{0, 0}, 8, spfreshInsertCandidates)
 			Expect(rerr).NotTo(HaveOccurred())
 			Expect(len(read)).To(Equal(spfreshInsertCandidates), "reads still see SEALED postings")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a parent cached SEALED but FORWARD in storage is still followed by inserts (codex 094.2 r3)", func() {
+		// The SEAL→SPLIT staleness window: the cache loaded during SEAL, the
+		// split committed after. Write routing must keep the SEALED-cached
+		// parent so the fence can real-read FORWARD and follow the children —
+		// the r2 fix dropped it and broke the recovery path.
+		ks := specSubspace()
+		idx := spfIndex("spf_r3_sealedfwd")
+		builder := baseMD()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+			storage := newSPFreshStorage(store.indexSubspace(idx), 1)
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			// The parent: SEALED on disk (what the cache will load).
+			spfreshSaveCentroid(tx, storage, 1, 70, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{1, 0}))
+			// A far ACTIVE fallback so routing has somewhere else to go.
+			spfreshSaveCentroid(tx, storage, 1, 80, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{200, 0}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var storage *spfreshStorage
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+			storage = newSPFreshStorage(store.indexSubspace(idx), 1)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cache loads while the parent is SEALED — including the L2 cell
+		// (route forces ensureCell), or the lazy load would read post-split
+		// state and dodge the staleness window under test.
+		cache := newSPFreshRoutingCache(0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			if rerr := cache.fullReload(tx, storage, 1); rerr != nil {
+				return nil, rerr
+			}
+			routed, rerr := cache.route(tx, storage, []float64{1, 0}, 8, 16)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(routed).To(HaveLen(2), "cell cached with the SEALED parent")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The split commits: parent FORWARD, children ACTIVE near it.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSaveCentroid(tx, storage, 1, 70, encodeCentroidRow(spfreshStateForward, 0, 71, 72, []float64{1, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 71, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0.5, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 72, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{1.5, 0}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Insert near the parent on the STALE cache: route keeps the
+		// SEALED-cached parent, the fence reads FORWARD, follows children.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			m := maintainer.(*spfreshIndexMaintainer)
+			tx := rtx.Transaction()
+			query := []float64{1, 0}
+			routed, rerr := cache.routeForWrite(tx, storage, query, 8, spfreshInsertCandidates)
+			Expect(rerr).NotTo(HaveOccurred())
+			var ids []int64
+			for _, r := range routed {
+				ids = append(ids, r.fineID)
+			}
+			Expect(ids).To(ContainElement(int64(70)), "the SEALED-cached parent must stay routable for writes")
+			Expect(m.spfreshInsertRouted(storage, routed, tuple.Tuple{int64(5)}, query)).To(Succeed())
+			mem, memErr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(5)})
+			Expect(memErr).NotTo(HaveOccurred())
+			for _, id := range mem {
+				Expect([]int64{71, 72}).To(ContainElement(id), "insert must land in the followed children, not the far fallback")
+			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
