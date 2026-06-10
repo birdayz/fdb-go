@@ -913,3 +913,36 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   `client/reply_ground_truth_test.go`), generator now reproduces the hand-fixes that lived in
   DO-NOT-EDIT files (KeyRangeRef swap-inversion, OOM cap), bazel data deps added + every skip in
   the net is now a Fatalf, orphan `wire/conformance_test.go` + dead justfile recipes deleted.
+
+## SPFresh multi-tenant scale-out (RFC-094 follow-up; post-094.5)
+
+The index is tenant-local by construction (per-store subspaces — the CloudKit pattern), so
+100k-tenant fleets are structurally supported: each user is an independent SPFresh index with its
+own topology, counters, changelog, and task queue; per-tenant changelogs also dissolve the
+versionstamped hot-shard concern. The on-disk format and lifecycle algorithms need no changes —
+everything below is infrastructure *around* the index. Items 1–2 are required before pointing a
+real fleet at it; 3–4 harden it.
+
+- [ ] **1. Tenant maintenance sweeper.** Splits/merges/reassignments are caller-driven today
+  (something must call `RebalanceSPFreshIndex` per index — the benchmark runs its own goroutine).
+  Build the background worker fleet that discovers indexes with pending task rows and drives their
+  rebalancing ("find tenants with work, do the work, move on"). Safe concurrent executors are
+  already solved (unique lease owners, task-level exclusion); what's missing is purely the
+  discovery/scheduling layer — which tenants, what order, how often.
+- [ ] **2. Routing-cache eviction across tenants.** `spfreshCaches` (process-global, keyed by
+  index subspace + generation) never evicts: touch a tenant once and its cache lives until the
+  process dies. Bounded per tenant (L2 LRU), unbounded across tenants — a serving process handling
+  thousands of users leaks cache memory for its lifetime. Add idle-TTL or a global LRU over the
+  cache map; cold tenants rebuild on next touch.
+- [ ] **3. Per-tenant maintenance budgets.** Leases prevent corruption but not starvation: a whale
+  tenant's split storm must not starve 99,999 small tenants' maintenance. The sweeper needs
+  per-tenant work budgets / fair scheduling.
+- [ ] **4. Many-tenant aggregate soak.** Every number so far is single-tenant. Pin the new
+  dimension: N small indexes churning concurrently on one cluster (fill + churn + recall sampling
+  per tenant), watching aggregate conflict rate and sweeper lag.
+- [ ] **5. Concurrent-reader QPS measurement.** All read benchmarks to date are single-threaded
+  latency (25.5ms p50 ⇒ ~39 QPS/thread default, ~106 QPS/thread fast). Queries are stateless
+  snapshot reads off the in-process routing cache and should scale near-linearly with client
+  cores/processes until storage-server read bandwidth (~100–300KB/query). Add a G-goroutine
+  hammer phase to the fill benchmark reporting aggregate QPS per config; also the basis for the
+  10-client scale-out estimate (whitepaper claim: needs measurement, not argument).

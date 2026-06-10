@@ -263,3 +263,48 @@ The foreground-fill path surfaced and fixed four convergence bugs (uncommitted
 RYW poisoning the shared routing cache; split and coarse-split children born
 oversized never re-triggering; the all-SEALED cold-start window hard-erroring
 instead of retrying).
+
+### SPFresh 300k FOREGROUND fill (SIFT-300k, post convergence fixes)
+
+Same harness at 3× scale, after the second round of convergence fixes
+(unique rebalancer lease owners, cold-start-only first-centroid mint, csplit
+pause-window split re-filing — see spfresh_cascade_test.go):
+
+| Metric | Value |
+|--------|-------|
+| Write throughput (fill 0→300k) | **242 vec/s** (4 writers, incl. full drain; 6,688 lifecycle actions) |
+| Read default 16/64/200 | recall@10 **0.9870**, p50 **25.5ms**, p99 34.3ms |
+| Read fast 8/24/64 | recall@10 **0.9100**, p50 **9.4ms**, p99 14.2ms |
+| Final topology | 97 cells, 3,321 fine centroids, 573k entries (r≈1.9 replication), all ≤ 4×Lmax |
+| Integrity | 100/100 sampled pks: membership ⊆ postings, all targets ACTIVE |
+
+The throughput drop vs the earlier 100k number is honest accounting: pre-fix
+runs quiesced early with corrupted topologies (recall as low as 0.17 at 300k
+when two rebalancer executors sharing a lease owner interleaved lifecycles);
+the post-fix rebalancer does all the splits the data actually demands.
+
+### SPFresh 1M FOREGROUND fill (SIFT-1M, the real numbers)
+
+| Metric | Value |
+|--------|-------|
+| Write throughput (fill 0→1M) | **205 vec/s** (4 writers, 1h21m incl. full drain; 22,852 lifecycle actions) |
+| Read default 16/64/200 | recall@10 **0.9500**, p50 **29.4ms**, p99 58.8ms |
+| Read fast 8/24/64 | recall@10 **0.8160**, p50 **11.1ms**, p99 16.8ms |
+| Final topology | 247 cells, 11,336 fine centroids, 1.95M entries (r≈1.95), 11,298 ≤Lmax / 38 ≤4×Lmax / 0 over |
+| Integrity | 100/100 sampled pks; zero orphaned membership targets; task queue empty |
+
+(The earlier, pre-convergence-fix 1M attempt did 420 vec/s with recall 0.058 —
+fast and wrong. 205 vec/s is what correct maintenance costs at this scale.)
+
+Recall at fixed probes declines with index size by design — kc=64 probes cover
+64/11,336 fines at 1M vs 64/3,321 at 300k. The recall/latency dial is the
+per-query (k, kc, w, c) contract: the 100k sweep table above shows the curve;
+re-tuning defaults for the 1M+ regime is part of 094.5's defaults freeze.
+
+Foreground fill summary (4 writers, one client process, fill incl. drain):
+
+| Scale | Fill | Recall@10 default | Recall@10 fast |
+|-------|------|-------------------|----------------|
+| 100k | 481 vec/s | 0.988 @ 25.0ms p50 | 0.947 @ 9.9ms |
+| 300k | 242 vec/s | 0.987 @ 25.5ms p50 | 0.910 @ 9.4ms |
+| 1M | 205 vec/s | 0.950 @ 29.4ms p50 | 0.816 @ 11.1ms |
