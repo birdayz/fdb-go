@@ -44,7 +44,7 @@ const (
 	spfreshMetaIDBlock    int64 = 1 // centroid/cell ID block allocator (int64)
 	spfreshMetaHorizon    int64 = 2 // changelog GC horizon (version)
 	spfreshMetaTransform  int64 = 3 // RaBitQ transform (rotator seed + centroid)
-	spfreshMetaBuild      int64 = 4 // build state (generation being built, phase)
+	spfreshMetaBuild      int64 = 4 // build ownership token (opaque 16 bytes; see spfreshVerifyBuilderToken)
 )
 
 // Centroid / coarse-cell lifecycle states (RFC-094 §6, §6b).
@@ -60,6 +60,10 @@ const (
 // waves a cell's centroids exist but its postings do not — a build-time
 // straggler routes to the live path only on FINALIZED.
 const (
+	// Split-task lifecycle states (§6; the task row's state byte).
+	spfreshSplitTaskPending byte = 0 // trigger filed, not sealed
+	spfreshSplitTaskSealed  byte = 1 // SEALED, childIDs minted in the row
+
 	spfreshCellfinClaimed       byte = 0
 	spfreshCellfinCentroidsDone byte = 1
 	spfreshCellfinFinalized     byte = 2

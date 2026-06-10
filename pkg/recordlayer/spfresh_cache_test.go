@@ -39,14 +39,19 @@ var _ = Describe("SPFresh routing cache", func() {
 			tx := rtx.Transaction()
 			Expect(cache.fullReload(tx, s, 1)).To(Succeed())
 
-			// w=2 probes both cells; SEALED fine 21 must be excluded.
+			// w=2 probes both cells. SEALED fine 21 must be INCLUDED: until
+			// its split commits, the sealed posting is the only place its
+			// members live — queries that skip it miss them for the whole
+			// seal window (codex 094.2 r1; the original assertion here
+			// pinned the bug). The write path rejects SEALED at its REAL
+			// state fence instead.
 			routed, rerr := cache.route(tx, s, []float64{1, 0}, 2, 10)
 			Expect(rerr).NotTo(HaveOccurred())
 			ids := []int64{}
 			for _, r := range routed {
 				ids = append(ids, r.fineID)
 			}
-			Expect(ids).To(Equal([]int64{10, 11, 20}), "ascending distance, SEALED excluded")
+			Expect(ids).To(Equal([]int64{10, 11, 20, 21}), "ascending distance; ACTIVE and SEALED both route")
 			Expect(routed[0].cellID).To(Equal(int64(1)))
 			Expect(routed[0].vec).To(Equal([]float64{0, 0}), "routed vector needed for residuals")
 

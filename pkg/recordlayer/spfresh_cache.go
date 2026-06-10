@@ -256,20 +256,38 @@ func (c *spfreshRoutingCache) ensureCell(tx fdb.ReadTransaction, s *spfreshStora
 	return cell, nil
 }
 
-// spfreshRouted is one routed fine centroid: where it lives and its vector
-// (needed for residual encode/score).
+// spfreshRouted is one routed fine centroid: where it lives, its CACHED state
+// (the authoritative row may have moved on — write fences re-read), and its
+// vector (needed for residual encode/score).
 type spfreshRouted struct {
 	cellID int64
 	fineID int64
+	state  byte
 	vec    []float64
 	d2     float64
 }
 
-// route selects the kc nearest ACTIVE fine centroids for the query: scan L1 →
-// probe the w nearest cells (loading missed L2 cells; following coarse
+// route selects the kc nearest readable fine centroids for the query: scan
+// L1 → probe the w nearest cells (loading missed L2 cells; following coarse
 // forwards one hop) → scan their fine centroids (RFC-094 §4). Deterministic
-// tie-breaks by id.
+// tie-breaks by id. Reads route ACTIVE and SEALED (a sealed posting still
+// holds its members until SPLIT commits).
 func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
+	return c.routeStates(tx, s, query, w, kc, false)
+}
+
+// routeForWrite is the insert variant: SEALED candidates are KEPT (a row
+// cached as SEALED may be FORWARD in storage by now — the write fence must
+// see it to follow the children; dropping it broke the forward-follow
+// recovery during the post-split staleness window, codex 094.2 r3) but they
+// do NOT count toward the kc budget — the fence rejects true-SEALED anyway,
+// so letting them consume slots starved inserts of ACTIVE fallbacks when a
+// split wave sealed many nearby centroids (codex 094.2 r2).
+func (c *spfreshRoutingCache) routeForWrite(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
+	return c.routeStates(tx, s, query, w, kc, true)
+}
+
+func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int, writeBudget bool) ([]spfreshRouted, error) {
 	c.mu.RLock()
 	ids := c.coarseIDs
 	vecs := c.coarseVecs
@@ -303,12 +321,18 @@ func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, q
 			return nil
 		}
 		for i, fineID := range cell.fineIDs {
-			if cell.states[i] != spfreshStateActive {
+			// ACTIVE and SEALED both route: a SEALED posting still holds its
+			// members until SPLIT commits (filtering it from queries hid them
+			// for the whole seal window — codex 094.2 r1), and a row cached
+			// as SEALED may already be FORWARD in storage (the write fence
+			// follows it to the children — codex 094.2 r3).
+			if cell.states[i] != spfreshStateActive && cell.states[i] != spfreshStateSealed {
 				continue
 			}
 			routed = append(routed, spfreshRouted{
 				cellID: cellID,
 				fineID: fineID,
+				state:  cell.states[i],
 				vec:    cell.vecs[i],
 				d2:     spfreshSquaredDistance(query, cell.vecs[i]),
 			})
@@ -327,6 +351,33 @@ func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, q
 		}
 		return routed[i].fineID < routed[j].fineID
 	})
+	if writeBudget {
+		// Separate budgets per state, one sorted pass: up to kc ACTIVE and
+		// up to kc SEALED. SEALED rides along for the fence to resolve (it
+		// may be FORWARD in storage — codex r3) but can never crowd out the
+		// ACTIVE fallbacks: a single combined cap did exactly that when a
+		// split wave left more than the cap's worth of SEALED rows sorted
+		// ahead of the first ACTIVE one (codex r4). Total ≤ 2·kc bounds the
+		// fence's worst-case state reads.
+		kept := routed[:0]
+		active, sealed := 0, 0
+		for _, r := range routed {
+			if active >= kc {
+				break
+			}
+			switch r.state {
+			case spfreshStateActive:
+				active++
+			case spfreshStateSealed:
+				if sealed >= kc {
+					continue
+				}
+				sealed++
+			}
+			kept = append(kept, r)
+		}
+		return kept, nil
+	}
 	if kc < len(routed) {
 		routed = routed[:kc]
 	}

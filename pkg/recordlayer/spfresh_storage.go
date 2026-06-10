@@ -113,6 +113,11 @@ func spfreshTakeBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte
 // spfreshClaimBuilderToken claims ownership if the slot is free or already
 // ours (commit_unknown retry); a foreign token is a hard error — first claimer
 // wins between builders driven without the maintainer's takeover clear.
+// The token is deliberately never cleared after a successful flip (clearing it
+// in the flip tx would break the flip's commit_unknown retry idempotence), so
+// a foreign token here may belong to a long-COMPLETED build, not a live one.
+// Direct-driven builders (tests) that mean to supersede one take ownership
+// explicitly via spfreshTakeBuilderToken; the maintainer path always does.
 func spfreshClaimBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
 	key := s.metaKey(spfreshMetaBuild)
 	cur, err := tx.Get(key).Get()
@@ -211,11 +216,27 @@ func spfreshSaveCoarse(tx fdb.Transaction, s *spfreshStorage, cellID int64, row 
 // spfreshLoadAllCoarse snapshot-reads the full coarse table (the L1 cache —
 // ~2.5k rows at 10M, a few replies, off the query path).
 func spfreshLoadAllCoarse(tx fdb.ReadTransaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
+	return spfreshLoadAllCoarseRange(tx.Snapshot(), s)
+}
+
+// spfreshLoadAllCoarseForWrite REAL-reads the full coarse table — the §8
+// pre-coarse fence on the WriteOnly write path. The conflict range is the
+// point: a save whose read version predates the coarse pass's commit decides
+// "pre-coarse window, no-op" — without the range, that save can commit AFTER
+// the assignment scan's read versions and its record is silently never
+// indexed (Torvalds 094.2 #1: the original snapshot read here was a lost
+// record with a comment claiming otherwise). With it, the coarse commit
+// aborts the save at the resolver and the retry routes itself.
+func spfreshLoadAllCoarseForWrite(tx fdb.Transaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
+	return spfreshLoadAllCoarseRange(tx, s)
+}
+
+func spfreshLoadAllCoarseRange(tx fdb.ReadTransaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
 	r, err := fdb.PrefixRange(s.coarse.Bytes())
 	if err != nil {
 		return nil, nil, fmt.Errorf("spfresh: coarse range: %w", err)
 	}
-	kvs, err := tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+	kvs, err := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
 	if err != nil {
 		return nil, nil, fmt.Errorf("spfresh: load coarse table: %w", err)
 	}
