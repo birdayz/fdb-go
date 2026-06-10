@@ -112,6 +112,75 @@ func Deserialize(data []byte) ([]float64, error) {
 	}
 }
 
+// SerializeHalf encodes a float64 vector into the HALF on-disk format
+// (byte 0 = VectorType.HALF, then 2 big-endian bytes per component). Values are
+// rounded to nearest-even half precision; magnitudes beyond half range become
+// ±Inf, exactly as a Java HalfRealVector would store them. The SPFresh index
+// (RFC-094) uses this for centroid/sidecar/staging vector fields — a raw
+// fixed-width layout with no tuple escaping.
+func SerializeHalf(vec []float64) []byte {
+	buf := make([]byte, 1+2*len(vec))
+	buf[0] = typeHalf
+	for i, v := range vec {
+		binary.BigEndian.PutUint16(buf[1+i*2:], float32ToHalf(float32(v)))
+	}
+	return buf
+}
+
+// float32ToHalf converts float32 to IEEE 754 half precision with
+// round-to-nearest-even, the inverse of halfToFloat32.
+func float32ToHalf(f float32) uint16 {
+	b := math.Float32bits(f)
+	sign := uint16(b>>16) & 0x8000
+	exp := int32(b>>23) & 0xff
+	frac := b & 0x7fffff
+
+	switch {
+	case exp == 0xff: // Inf or NaN
+		if frac == 0 {
+			return sign | 0x7c00
+		}
+		nan := uint16(frac >> 13)
+		if nan == 0 {
+			nan = 1 // keep NaN a NaN after truncation
+		}
+		return sign | 0x7c00 | nan
+	case exp > 142: // overflow (half exp > 30) -> Inf
+		return sign | 0x7c00
+	case exp >= 113: // normalized half
+		he := uint32(exp - 112)
+		mant := frac >> 13
+		// round to nearest even on the 13 dropped bits
+		round := frac & 0x1fff
+		if round > 0x1000 || (round == 0x1000 && mant&1 == 1) {
+			mant++
+			if mant == 0x400 { // mantissa overflow -> bump exponent
+				mant = 0
+				he++
+				if he >= 0x1f {
+					return sign | 0x7c00
+				}
+			}
+		}
+		return sign | uint16(he<<10) | uint16(mant)
+	case exp >= 102: // subnormal half (incl. the rounding band just below it)
+		// target mantissa = round(value / 2^-24) = (frac|2^23) >> (126 - exp),
+		// round-to-nearest-even on the dropped bits. A carry can reach 0x400,
+		// which is exactly the min-normal half bit pattern — still correct.
+		shift := uint32(126 - exp) // in [14, 24]
+		full := frac | 0x800000
+		mant := full >> shift
+		dropped := full & ((1 << shift) - 1)
+		half := uint32(1) << (shift - 1)
+		if dropped > half || (dropped == half && mant&1 == 1) {
+			mant++
+		}
+		return sign | uint16(mant)
+	default: // underflow -> signed zero
+		return sign
+	}
+}
+
 // halfToFloat32 converts an IEEE 754 half-precision (16-bit) float to float32.
 func halfToFloat32(h uint16) float32 {
 	sign := uint32(h>>15) << 31

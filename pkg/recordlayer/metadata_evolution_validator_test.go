@@ -1947,6 +1947,60 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("hnswM"))
 		})
 
+		// SPFresh (RFC-094) option validation: every structural option immutable.
+		It("rejects SPFresh structural option change (spfreshLmax)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_spf", Field("price"))
+				idx.Type = IndexTypeVectorSPFresh
+				idx.Options = map[string]string{IndexOptionSPFreshLmax: "256"}
+				b.AddIndex("Order", idx)
+			})
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_spf", Field("price"))
+				idx.Type = IndexTypeVectorSPFresh
+				idx.Options = map[string]string{IndexOptionSPFreshLmax: "512"}
+				b.AddIndex("Order", idx)
+			})
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("spfreshLmax"))
+		})
+
+		It("rejects SPFresh alpha change (the closure-sizing invariant)", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_spf", Field("price"))
+				idx.Type = IndexTypeVectorSPFresh
+				idx.Options = map[string]string{IndexOptionSPFreshAlpha: "1.2"}
+				b.AddIndex("Order", idx)
+			})
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_spf", Field("price"))
+				idx.Type = IndexTypeVectorSPFresh
+				idx.Options = map[string]string{IndexOptionSPFreshAlpha: "1.5"}
+				b.AddIndex("Order", idx)
+			})
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("spfreshAlpha"))
+		})
+
+		It("accepts unchanged SPFresh options across versions", func() {
+			build := func(version int) *RecordMetaData {
+				return buildMetaData(version, func(b *RecordMetaDataBuilder) {
+					idx := NewIndex("idx_spf", Field("price"))
+					idx.Type = IndexTypeVectorSPFresh
+					idx.Options = map[string]string{
+						IndexOptionSPFreshNumDimensions: "128",
+						IndexOptionSPFreshLmax:          "256",
+					}
+					b.AddIndex("Order", idx)
+				})
+			}
+			Expect(ValidateEvolution(build(1), build(2))).To(Succeed())
+		})
+
 		// MULTIDIMENSIONAL (R-tree) option validation
 		It("rejects R-tree structural option change (maxM)", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {

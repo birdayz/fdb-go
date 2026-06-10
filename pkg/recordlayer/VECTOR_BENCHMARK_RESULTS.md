@@ -178,3 +178,28 @@ index, not this one.
   uses ~1 core regardless of machine; going faster needs the FDB-native index
   (TODO) — batched beam search, SPFresh/DiskANN, or atomic-append edges — or a
   real multi-node FDB cluster (parallelizes the write floor).
+
+## SPFresh (RFC-094) — 094.1 baseline (SIFT, build-then-read)
+
+First measured numbers for the FDB-native SPFresh index (phase 094.1: bulk
+build + query path; foreground writes land in 094.2, tuning in 094.4):
+
+| Metric | SIFT-10k | SIFT-100k | HNSW reference |
+|---|---|---|---|
+| Build | 2,687 vec/s | **1,559 vec/s** | 9.5–35 vec/s (degrading) → **~50–150×** |
+| Recall@10 (vs brute force) | 1.0000 | **1.0000** | ~0.95 (ef=64) |
+| Query p50 | 90 ms | **49 ms** | 25–73 ms (at ≤1k–10k only) |
+| Query p99 | 170 ms | **95 ms** | 80–170 ms |
+
+Notes: recall is perfect on SIFT at k_c=96 (8% of postings probed at 100k)
+thanks to closure replication + exact sidecar re-rank; real-768D-embedding
+recall is TBV per RFC-094 §9. Query p50 includes per-query store open +
+maintainer construction (same harness shape as the HNSW benchmark) and
+unoptimized Go-side RaBitQ estimation — 094.4 is the tuning phase; the
+RFC's <8 ms p50 target stands against that phase, not this one. The
+per-query changelog refresh anti-pattern cost ~15% p50 and was removed
+during this measurement (queries now pay zero cache-maintenance I/O).
+
+Run: `SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_test
+--test_arg="--test.run=TestSPFreshSIFTBenchmark" --test_output=streamed
+--test_env=SPFRESH_BENCH --test_env=SIFT_N`

@@ -584,6 +584,8 @@ func validateIndexOptions(oldIdx, newIdx *Index) error {
 		err = validatePermutedIndexOptions(oldIdx, newIdx, changed)
 	case IndexTypeVector:
 		err = validateVectorIndexOptions(oldIdx, newIdx, changed)
+	case IndexTypeVectorSPFresh:
+		err = validateSPFreshIndexOptions(oldIdx, newIdx, changed)
 	case IndexTypeMultidimensional:
 		err = validateMultidimensionalIndexOptions(oldIdx, newIdx, changed)
 	}
@@ -674,6 +676,44 @@ func validatePermutedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool
 // Structural options (metric, dimensions, graph parameters) cannot change.
 // Runtime-only options (concurrency limits, stats) are safe to change.
 // Matches Java's VectorIndexValidator.validateChangedOptions().
+// validateSPFreshIndexOptions enforces RFC-094 §10: every structural SPFresh
+// option is immutable for an existing index — the lifecycle invariants
+// (topology, posting sizes, closure replication, single-tx split budget) are
+// derived from them, and a changed value would silently invalidate data
+// written under the old one (the PR #278 lesson: immutability is what makes
+// config-derived invariants sound). There are deliberately NO runtime-mutable
+// SPFresh options: query/maintenance knobs are never stored.
+func validateSPFreshIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
+	structural := []string{
+		IndexOptionSPFreshNumDimensions,
+		IndexOptionSPFreshMetric,
+		IndexOptionSPFreshLmax,
+		IndexOptionSPFreshLminRatio,
+		IndexOptionSPFreshCellTarget,
+		IndexOptionSPFreshCellMax,
+		IndexOptionSPFreshReplication,
+		IndexOptionSPFreshAlpha,
+		IndexOptionSPFreshKn,
+		IndexOptionSPFreshCooldownSec,
+		IndexOptionSPFreshRaBitQNumExBits,
+		IndexOptionSPFreshSidecar,
+	}
+	for _, key := range structural {
+		if !changed[key] {
+			continue
+		}
+		oldVal := optionValueOrDefault(oldIdx.Options, key, "")
+		newVal := optionValueOrDefault(newIdx.Options, key, "")
+		if oldVal != newVal {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("SPFresh option %q changed for index %q", key, newIdx.Name),
+			}
+		}
+		delete(changed, key)
+	}
+	return nil
+}
+
 func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
 	// Structural options: disallow effective value changes.
 	structural := []string{

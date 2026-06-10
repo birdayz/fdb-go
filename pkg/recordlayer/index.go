@@ -31,6 +31,13 @@ const (
 	IndexTypeTimeWindowLeaderboard = "time_window_leaderboard"
 	IndexTypeMultidimensional      = "multidimensional"
 	IndexTypeVector                = "vector"
+	// IndexTypeVectorSPFresh is the Go-only FDB-native vector index (RFC-094):
+	// SPANN centroid + posting-list layout with two-level routing and SPFresh
+	// incremental rebalancing. Java has no counterpart; deployments sharing
+	// metadata with Java apps must keep this index out of shared metadata (a
+	// Java app fails maintainer lookup for the unknown type). Records remain
+	// fully Java-readable — the index writes only under its own subspace.
+	IndexTypeVectorSPFresh = "vector_spfresh"
 )
 
 // Index option keys matching Java's IndexOptions.

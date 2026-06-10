@@ -11,6 +11,7 @@ go_library(
 go_test(
     name = "tuple_test",
     srcs = [
+        "tuple_malformed_test.go",
         "tuple_roundtrip_test.go",
         "tuple_test.go",
     ],
