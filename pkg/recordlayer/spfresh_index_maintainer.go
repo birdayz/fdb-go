@@ -29,6 +29,13 @@ import (
 type spfreshIndexMaintainer struct {
 	standardIndexMaintainer
 	config SPFreshConfig
+
+	// writeCache is the TX-LOCAL routing cache for this maintainer's write
+	// path (one maintainer per store per transaction): seeded from the
+	// process-global cache, reloaded only through THIS transaction, and
+	// discarded with it — uncommitted RYW state never reaches the global
+	// cache (see spfreshRoutingCache.cloneForWrite).
+	writeCache *spfreshRoutingCache
 }
 
 func newSPFreshIndexMaintainer(

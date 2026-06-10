@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -320,6 +322,211 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 		}
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 		t.Logf("SWEEP w=%d kc=%d c=%d amortize=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, amortize, k,
+			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+	}
+}
+
+// TestSPFreshForegroundFillBenchmark measures the PRODUCTION write path: fill
+// the index from zero through plain SaveRecord (§6b cold start — no bulk
+// build) with concurrent writers and an in-process rebalancer looping beside
+// them (the RFC-094 §6 deployment shape), then measure read latency + recall
+// on the grown index. The three numbers the phase cares about: write
+// throughput to fill N, query p50/p99 at N, recall@10 at N.
+//
+//	SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_test \
+//	  --test_arg="--test.run=TestSPFreshForegroundFillBenchmark" --test_output=streamed \
+//	  --test_env=SPFRESH_BENCH --test_env=SIFT_N
+func TestSPFreshForegroundFillBenchmark(t *testing.T) {
+	if os.Getenv("SPFRESH_BENCH") != "1" {
+		t.Skip("set SPFRESH_BENCH=1 to run the SPFresh foreground fill benchmark")
+	}
+	n := siftEnvInt("SIFT_N", 100000)
+	k := siftEnvInt("SIFT_K", 10)
+	numQueries := siftEnvInt("SIFT_NUM_QUERIES", 100)
+	batchSize := siftEnvInt("SIFT_BATCH_SIZE", 200)
+	writers := siftEnvInt("SIFT_WRITERS", 4)
+
+	siftDir := resolveSIFTDir()
+	baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
+	if err != nil {
+		t.Fatalf("load base vectors: %v", err)
+	}
+	queryVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_query.fvecs"), numQueries)
+	if err != nil {
+		t.Fatalf("load query vectors: %v", err)
+	}
+	baseF64 := make([][]float64, n)
+	for i, v := range baseVecs {
+		baseF64[i] = float32sToFloat64s(v)
+	}
+	t.Logf("SPFresh foreground fill: N=%d writers=%d batch=%d", n, writers, batchSize)
+
+	ensureVectorBenchDB(t)
+	ctx := context.Background()
+	spfIdx := recordlayer.NewIndex("spf_fill",
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0))
+	spfIdx.Type = recordlayer.IndexTypeVectorSPFresh
+	spfIdx.Options = map[string]string{
+		recordlayer.IndexOptionSPFreshNumDimensions: "128",
+	}
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.AddIndex("Order", spfIdx)
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	ss := vecBenchSubspace(fmt.Sprintf("spfresh-fill-%d", time.Now().UnixNano()))
+	storeBuilder := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+		return recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+	}
+
+	// Foreground fill: index READABLE from record one; writers split the id
+	// space; a rebalancer loops beside them (the in-process-on-writers shape).
+	fillStart := time.Now()
+	var wg sync.WaitGroup
+	var fillDone atomic.Bool
+	var rebalanceActions atomic.Int64
+	errs := make(chan error, writers+1)
+	per := n / writers
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			lo, hi := w*per, (w+1)*per
+			if w == writers-1 {
+				hi = n
+			}
+			for b := lo; b < hi; b += batchSize {
+				be := min(b+batchSize, hi)
+				if _, werr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, serr := storeBuilder(rtx)
+					if serr != nil {
+						return nil, serr
+					}
+					for i := b; i < be; i++ {
+						if _, serr := store.SaveRecord(&gen.Order{
+							OrderId: proto.Int64(int64(i)), VectorData: recordlayer.SerializeVector(baseF64[i]),
+						}); serr != nil {
+							return nil, serr
+						}
+					}
+					return nil, nil
+				}); werr != nil {
+					errs <- fmt.Errorf("writer %d batch %d: %w", w, b, werr)
+					return
+				}
+			}
+		}(w)
+	}
+	go func() {
+		for !fillDone.Load() {
+			acts, rerr := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+			if rerr != nil {
+				errs <- fmt.Errorf("rebalancer: %w", rerr)
+				return
+			}
+			rebalanceActions.Add(int64(acts))
+			if acts == 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+	wg.Wait()
+	fillDone.Store(true)
+	select {
+	case e := <-errs:
+		t.Fatal(e)
+	default:
+	}
+	// Drain the remaining task queue (counts toward fill time: the index
+	// isn't "filled" until maintenance quiesces).
+	acts, err := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+	if err != nil {
+		t.Fatalf("final rebalance: %v", err)
+	}
+	rebalanceActions.Add(int64(acts))
+	fillDur := time.Since(fillStart)
+	t.Logf("FILL: %d vectors in %v (%.0f vec/sec, %d writers, batch %d, %d rebalance actions)",
+		n, fillDur, float64(n)/fillDur.Seconds(), writers, batchSize, rebalanceActions.Load())
+	if _, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, serr := storeBuilder(rtx)
+		if serr != nil {
+			return nil, serr
+		}
+		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("topology dump: %v", err)
+	}
+
+	// Reads + recall on the grown index, tuned default and fast points.
+	type sbd interface {
+		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	}
+	for _, cfg := range []struct {
+		name     string
+		kc, w, c int
+	}{
+		{"default(16/64/200)", 0, 0, 0},
+		{"fast(8/24/64)", 24, 8, 64},
+	} {
+		latencies := make([]time.Duration, 0, len(queryVecs))
+		hits, total := 0, 0
+		for _, qv := range queryVecs {
+			query := float32sToFloat64s(qv)
+			want := bruteForceIDs(baseF64, query, k)
+			qStart := time.Now()
+			var got []int64
+			_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				maintainer, merr := store.GetIndexMaintainer(spfIdx)
+				if merr != nil {
+					return nil, merr
+				}
+				high := tuple.Tuple{int64(k)}
+				if cfg.kc > 0 {
+					high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
+				}
+				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+					High: high,
+				}, nil, recordlayer.ScanProperties{})
+				got = got[:0]
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					if cerr != nil {
+						return nil, cerr
+					}
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				return nil, nil
+			})
+			if qerr != nil {
+				t.Fatalf("query: %v", qerr)
+			}
+			latencies = append(latencies, time.Since(qStart))
+			wantSet := make(map[int64]bool, k)
+			for _, id := range want {
+				wantSet[id] = true
+			}
+			for _, id := range got {
+				if wantSet[id] {
+					hits++
+				}
+				total++
+			}
+		}
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		t.Logf("READ %s: recall@%d=%.4f p50=%v p99=%v", cfg.name, k,
 			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
 	}
 }

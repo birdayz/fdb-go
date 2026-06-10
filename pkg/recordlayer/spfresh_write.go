@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
@@ -54,7 +56,9 @@ type spfreshWriteContext struct {
 func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext, error) {
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0)
 	gen, err := spfreshReadGenerationForWrite(m.tx, metaStorage)
+	bootstrapped := false
 	if errors.Is(err, errSPFreshNotFound) {
+		bootstrapped = true
 		// Cold start (RFC-094 §6b): a READABLE index with no generation is an
 		// EMPTY index — the SQL flow is CREATE INDEX then INSERT, no bulk
 		// build. Bootstrap generation 1 with one cell in this same
@@ -69,13 +73,25 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 		return nil, err
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
-	cache := spfreshCacheFor(m.indexSubspace, gen)
-	if !cache.ready(gen) {
-		if err := cache.fullReload(m.tx, storage, gen); err != nil {
-			return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, err)
+	if m.writeCache == nil || !m.writeCache.ready(gen) {
+		// The write path routes on a TX-LOCAL cache only (kept on the
+		// maintainer, which lives one transaction): loading the process-
+		// global cache through a WRITING transaction publishes uncommitted
+		// RYW state — minted centroids, bootstrap cells — and an abort
+		// leaves every other writer routing on phantoms (caught by the
+		// concurrent foreground-fill benchmark). Seed L1 from the global
+		// cache when it's warm; otherwise load from this tx.
+		global := spfreshCacheFor(m.indexSubspace, gen)
+		if !bootstrapped && global.ready(gen) {
+			m.writeCache = global.cloneForWrite()
+		} else {
+			m.writeCache = newSPFreshRoutingCache(0)
+			if err := m.writeCache.fullReload(m.tx, storage, gen); err != nil {
+				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, err)
+			}
 		}
 	}
-	return &spfreshWriteContext{storage: storage, cache: cache}, nil
+	return &spfreshWriteContext{storage: storage, cache: m.writeCache}, nil
 }
 
 // spfreshInsert indexes one (pk, vector): route on cache → closure copy-set →
@@ -84,49 +100,45 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 // split probe. An existing membership row (update) is cleared from keys
 // derived from this same-tx read.
 func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple.Tuple, vec []float64) error {
-	routed, err := wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
-	if err != nil {
-		if !errors.Is(err, errSPFreshEmptyRouting) {
+	// Bounded attempts, each running the FULL path: route -> mint-the-first-
+	// centroid when none exist (§6b) -> authoritative fence. Between
+	// attempts the cache reloads: a stale view can both present phantom
+	// candidates (rejected by the fence) AND hide that the index is still
+	// centroidless — the mint fallback must therefore be reachable on every
+	// attempt, not only the first (caught by the concurrent foreground-fill
+	// benchmark: phantom candidates -> reload to an empty cell -> the old
+	// single-shot retry hard-errored instead of minting).
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
+				return fmt.Errorf("spfresh index %q: stale-route reload: %w", m.index.Name, rerr)
+			}
+		}
+		routed, err := wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
+		if err != nil && !errors.Is(err, errSPFreshEmptyRouting) {
 			return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
 		}
-		// Freshly bootstrapped index: the cache has no coarse cells yet.
-		if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
-			return rerr
-		}
-		routed = nil
-	}
-	if len(routed) == 0 {
-		// No fine centroids exist yet: this insert mints the first (§6b).
-		first, ferr := m.spfreshFirstCentroid(wc.storage, vec)
-		if ferr != nil && !errors.Is(ferr, errSPFreshStaleRoute) {
-			return ferr
-		}
-		if ferr == nil {
+		if len(routed) == 0 {
+			// No fine centroids visible: mint the first (§6b). A concurrent
+			// mint surfaces as errSPFreshStaleRoute — reload and re-route.
+			first, ferr := m.spfreshFirstCentroid(wc.storage, vec)
+			if ferr != nil {
+				if errors.Is(ferr, errSPFreshStaleRoute) {
+					lastErr = ferr
+					continue
+				}
+				return ferr
+			}
 			routed = first
-		} else if routed, err = wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates); err != nil {
-			return fmt.Errorf("spfresh index %q: route insert (post-mint): %w", m.index.Name, err)
 		}
+		ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec)
+		if !errors.Is(ierr, errSPFreshStaleRoute) {
+			return ierr
+		}
+		lastErr = ierr
 	}
-	ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec)
-	if !errors.Is(ierr, errSPFreshStaleRoute) {
-		return ierr
-	}
-	// Every routed candidate failed the authoritative fence: the cache is
-	// stale beyond the in-place fallbacks (e.g. a COARSE split relocated the
-	// centroids — forward-follow looks in the parent's old cell and finds
-	// nothing). §5's "re-route conservatively": reload the cache in this
-	// transaction and retry once.
-	if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
-		return fmt.Errorf("spfresh index %q: stale-route reload: %w", m.index.Name, rerr)
-	}
-	routed, err = wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
-	if err != nil {
-		return fmt.Errorf("spfresh index %q: route insert (reloaded): %w", m.index.Name, err)
-	}
-	if ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec); ierr != nil {
-		return fmt.Errorf("spfresh index %q: insert after cache reload: %w", m.index.Name, ierr)
-	}
-	return nil
+	return fmt.Errorf("spfresh index %q: insert did not converge after cache reloads: %w", m.index.Name, lastErr)
 }
 
 // errSPFreshStaleRoute: every routed candidate failed the authoritative state
@@ -191,7 +203,13 @@ func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, v
 		return nil, lerr
 	}
 	if len(rows) > 0 {
-		return nil, errSPFreshStaleRoute // someone else just minted: re-route
+		// Someone else just minted: our REAL read sees their committed rows,
+		// but the process-local cache may still hold the stale EMPTY cell —
+		// evict it so the caller's re-route reads the populated cell instead
+		// of failing with zero candidates (caught by the concurrent
+		// foreground-fill benchmark: two writers racing the first mint).
+		spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(cellID)
+		return nil, errSPFreshStaleRoute
 	}
 	fineID, err := spfreshClaimIDBlock(m.tx, storage)
 	if err != nil {
@@ -244,6 +262,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	verified := make([]spfreshCandidate, 0, m.config.Replication+2)
 	vecs := make(map[int64][]float64, m.config.Replication)
 	cells := make(map[int64]int64, m.config.Replication)
+	sawInFlight := false
 	work := append([]spfreshRouted(nil), routed...)
 	seen := make(map[int64]bool, len(work))
 	for examined := 0; len(work) > 0 && examined < 4*(len(routed)+2); examined++ {
@@ -266,6 +285,9 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		switch row.state {
 		case spfreshStateActive:
 			// verified below
+		case spfreshStateSealed:
+			sawInFlight = true
+			continue // a split owns it; next-nearest (or retry below)
 		case spfreshStateForward:
 			for _, childID := range []int64{row.childA, row.childB} {
 				if childID == 0 || seen[childID] {
@@ -294,7 +316,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			}
 			continue
 		default:
-			continue // SEALED/DEAD: next-nearest
+			continue // DEAD: next-nearest
 		}
 		cvec, verr := row.vector()
 		if verr != nil {
@@ -313,7 +335,17 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		cells[cand.fineID] = cand.cellID
 	}
 	if len(verified) == 0 {
-		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.index.Name, len(routed), errSPFreshStaleRoute)
+		if sawInFlight {
+			// Every reachable centroid is mid-lifecycle (SEALED) — the §6
+			// cold-start corner where ONE hot posting is being split and no
+			// ACTIVE sibling exists yet. The split commits within its two-tx
+			// window; surface the same retryable conflict a resolver abort
+			// would (RFC-094 §6 "whichever loses retries"), so the enclosing
+			// transaction re-runs with a fresh read version and sees the
+			// children ACTIVE.
+			return fdb.Error{Code: 1020} // not_committed
+		}
+		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates (%s): %w", m.index.Name, len(routed), spfreshDebugTopology(m.tx, storage), errSPFreshStaleRoute)
 	}
 	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
 
@@ -419,4 +451,45 @@ func spfreshSampledProbe(pk tuple.Tuple) bool {
 	h := fnv.New64a()
 	_, _ = h.Write(pk.Pack())
 	return h.Sum64()%spfreshProbeSampleEvery == 0
+}
+
+// spfreshDebugTopology summarizes the coarse table + fine states (diagnostics).
+func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage) string {
+	ids, rows, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return fmt.Sprintf("coarse err=%v", err)
+	}
+	out := fmt.Sprintf("gen=%d cells=%d [", s.generation, len(ids))
+	for i, id := range ids {
+		if i > 14 {
+			out += "..."
+			break
+		}
+		cellRows, _, _, cerr := spfreshLoadCell(tx, s, id)
+		if cerr != nil {
+			out += fmt.Sprintf("c%d(err) ", id)
+			continue
+		}
+		states := map[byte]int{}
+		for _, r := range cellRows {
+			states[r.row.state]++
+		}
+		out += fmt.Sprintf("c%d(st%d,fines=%v) ", id, rows[i].state, states)
+	}
+	return out + "]"
+}
+
+// SPFreshDebugTopology dumps an index's coarse/fine topology summary
+// (benchmark/operational diagnostics).
+func SPFreshDebugTopology(rtx *FDBRecordContext, store *FDBRecordStore, indexName string) string {
+	idx := store.GetMetaData().GetIndex(indexName)
+	if idx == nil {
+		return "index not found"
+	}
+	storage := newSPFreshStorage(store.indexSubspace(idx), 0)
+	gen, err := spfreshReadGenerationSnapshot(rtx.Transaction(), storage)
+	if err != nil {
+		return fmt.Sprintf("gen err=%v", err)
+	}
+	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen))
 }

@@ -163,6 +163,18 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			spfreshSaveCoarse(tx, s, id, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cents[i]))
 			spfreshCounterSet(tx, s, spfreshCounterCell, id, counts[i])
 			deltas = append(deltas, spfreshDelta{op: spfreshOpAddCell, ids: []int64{id}})
+			// Re-trigger: a child born already over cellMax must split again.
+			// The only OTHER csplit trigger site is the fine-split commit, so
+			// without this the topology stops converging the moment writes
+			// stop — a cell that grew far past cellMax under sustained load
+			// stays a routing hotspot forever (caught by the 100k foreground
+			// fill: one cell held 270+ fine centroids and reads degraded to
+			// ~107 ms / 0.90 recall).
+			if counts[i] > int64(config.CellMax) {
+				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskCSplit, id); terr != nil {
+					return terr
+				}
+			}
 		}
 
 		// Retire the old cell: centroid range cleared behind the HDR forward

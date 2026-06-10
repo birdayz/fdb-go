@@ -75,6 +75,26 @@ func newSPFreshRoutingCache(maxCells int) *spfreshRoutingCache {
 	}
 }
 
+// cloneForWrite returns a TX-LOCAL cache seeded with this cache's L1 (slice
+// copies; the vectors themselves are shared read-only) and an EMPTY L2. The
+// write path must never load state into the process-global cache through its
+// own transaction: RYW makes it publish UNCOMMITTED writes (minted centroids,
+// bootstrap cells), and an abort leaves every other writer routing on
+// phantoms (caught by the concurrent foreground-fill benchmark).
+func (c *spfreshRoutingCache) cloneForWrite() *spfreshRoutingCache {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	clone := newSPFreshRoutingCache(c.maxCells)
+	clone.generation = c.generation
+	clone.cursor = append(fdb.Key(nil), c.cursor...)
+	clone.coarseIDs = append([]int64(nil), c.coarseIDs...)
+	clone.coarseVecs = append([][]float64(nil), c.coarseVecs...)
+	for k, v := range c.coarseFwd {
+		clone.coarseFwd[k] = v
+	}
+	return clone
+}
+
 // fullReload rebuilds L1 from FDB and drops L2 (generation flip, horizon
 // overrun, or first use). Uses snapshot reads; sets the changelog cursor to
 // the current tail so subsequent refreshes are incremental.

@@ -208,6 +208,18 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			// guard).
 			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, spfreshNowMs(), 0, 0, cents[i]))
 			spfreshCounterSet(tx, s, spfreshCounterFine, childID, counts[i])
+			// Re-trigger: under sustained write load a posting can balloon
+			// far past Lmax before its split runs, so each child may be born
+			// over Lmax itself — and split triggers otherwise file ONLY from
+			// insert probes, so once writes stop the topology would freeze
+			// with oversized postings (entries beyond the 4×Lmax read cap
+			// become invisible to queries — caught by the 100k foreground
+			// fill at recall 0.87, 187 fines where ~1100 were needed).
+			if counts[i] > int64(config.Lmax) {
+				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, childID); terr != nil {
+					return terr
+				}
+			}
 		}
 
 		// Parent: posting cleared behind the HDR forward marker (HDR sorts

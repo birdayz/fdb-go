@@ -244,3 +244,22 @@ wave: **1.0000 at every wave** (post-build through wave 6; 60% of the index
 churned cumulatively; rebalancer actions per wave: 32/0/0/2/0/0). No topology
 decay. Reproduce: `SPFRESH_BENCH=1 SIFT_N=20000 SOAK_WAVES=6 … TestSPFreshChurnSoak`;
 the 10M soak is the same harness at SIFT_N/SOAK_* scale.
+
+### SPFresh 100k FOREGROUND fill (SIFT-100k, the production write path)
+
+No bulk build: 4 concurrent writers SaveRecord (200/tx) from zero (§6b cold
+start) with an in-process rebalancer looping beside them; fill time includes
+draining the maintenance queue to quiescence.
+
+| Metric | Value |
+|--------|-------|
+| Write throughput (fill 0→100k) | **481 vec/s** (4 writers, incl. full drain; 1,552 lifecycle actions) |
+| Read default 16/64/200 | recall@10 **0.9880**, p50 **25.0ms**, p99 80ms |
+| Read fast 8/24/64 | recall@10 **0.9470**, p50 **9.9ms**, p99 27ms |
+| Final topology | 31 cells, ~1.1k fine centroids (converged ≤ cellMax/Lmax) |
+
+For contrast, bulk build at the same N: 1,524 vec/s build, recall 1.0000 @ 25.4ms.
+The foreground-fill path surfaced and fixed four convergence bugs (uncommitted
+RYW poisoning the shared routing cache; split and coarse-split children born
+oversized never re-triggering; the all-SEALED cold-start window hard-erroring
+instead of retrying).

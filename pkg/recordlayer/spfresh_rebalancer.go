@@ -160,17 +160,28 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		return 0, err
 	}
 
-	// The readable generation is the one being maintained.
+	// The readable generation is the one being maintained. No generation =
+	// the index was never bootstrapped or built (§6b insert-first): nothing
+	// to rebalance — idle, don't error (a production rebalancer loop starts
+	// alongside the writers, often before the first insert).
 	var gen int64
+	bootstrapped := true
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		g, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(indexSubspace, 0))
 		if gerr != nil {
-			return fmt.Errorf("spfresh rebalance: no readable generation: %w", gerr)
+			if errors.Is(gerr, errSPFreshNotFound) {
+				bootstrapped = false
+				return nil
+			}
+			return fmt.Errorf("spfresh rebalance: read generation: %w", gerr)
 		}
 		gen = g
 		return nil
 	}); err != nil {
 		return 0, err
+	}
+	if !bootstrapped {
+		return 0, nil
 	}
 	s := newSPFreshStorage(indexSubspace, gen)
 
