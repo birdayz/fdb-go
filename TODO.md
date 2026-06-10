@@ -923,21 +923,21 @@ versionstamped hot-shard concern. The on-disk format and lifecycle algorithms ne
 everything below is infrastructure *around* the index. Items 1–2 are required before pointing a
 real fleet at it; 3–4 harden it.
 
-- [ ] **1. Tenant maintenance sweeper.** Splits/merges/reassignments are caller-driven today
+- [x] **1. Tenant maintenance sweeper.** DONE (SweepSPFreshIndexes + SPFreshHasPendingMaintenance probe + round-budgeted rebalance core; found+fixed the builder Cellfin task-row leak that made every bulk-built index probe permanently busy). Splits/merges/reassignments are caller-driven today
   (something must call `RebalanceSPFreshIndex` per index — the benchmark runs its own goroutine).
   Build the background worker fleet that discovers indexes with pending task rows and drives their
   rebalancing ("find tenants with work, do the work, move on"). Safe concurrent executors are
   already solved (unique lease owners, task-level exclusion); what's missing is purely the
   discovery/scheduling layer — which tenants, what order, how often.
-- [ ] **2. Routing-cache eviction across tenants.** `spfreshCaches` (process-global, keyed by
+- [x] **2. Routing-cache eviction across tenants.** DONE (idle-TTL 15min + 4096-entry cap with oldest-first eviction and hysteresis, amortized inline in spfreshCacheFor). `spfreshCaches` (process-global, keyed by
   index subspace + generation) never evicts: touch a tenant once and its cache lives until the
   process dies. Bounded per tenant (L2 LRU), unbounded across tenants — a serving process handling
   thousands of users leaks cache memory for its lifetime. Add idle-TTL or a global LRU over the
   cache map; cold tenants rebuild on next touch.
-- [ ] **3. Per-tenant maintenance budgets.** Leases prevent corruption but not starvation: a whale
+- [x] **3. Per-tenant maintenance budgets.** DONE (MaxRoundsPerTenant fairness budget in the sweeper; undrained tenants reported and continued next pass; per-tenant errors isolated via errors.Join). Leases prevent corruption but not starvation: a whale
   tenant's split storm must not starve 99,999 small tenants' maintenance. The sweeper needs
   per-tenant work budgets / fair scheduling.
-- [ ] **4. Many-tenant aggregate soak.** Every number so far is single-tenant. Pin the new
+- [x] **4. Many-tenant aggregate soak.** DONE (TestSPFreshMultiTenantSoak: 20 tenants × 2k vectors, 4 interleaved writers + 2 concurrent sweepers → 1,093 vec/s AGGREGATE — multi-tenancy spreads the conflict surface, beating single-tenant fill 2–5×; worst tenant recall@10 = 1.0000; fleet drained, every probe quiet). Every number so far is single-tenant. Pin the new
   dimension: N small indexes churning concurrently on one cluster (fill + churn + recall sampling
   per tenant), watching aggregate conflict rate and sweeper lag.
 - [ ] **5. Concurrent-reader QPS measurement.** All read benchmarks to date are single-threaded

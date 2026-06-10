@@ -8,6 +8,7 @@ go_test(
         "sift_benchmark_test.go",
         "sift_loader_test.go",
         "spfresh_churn_soak_test.go",
+        "spfresh_multitenant_test.go",
         "spfresh_sift_benchmark_test.go",
         "vector_benchmark_test.go",
     ],
