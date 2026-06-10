@@ -217,7 +217,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		Expect(err.Error()).To(ContainSubstring("alpha"))
 	})
 
-	It("ScanByDistance before any build reports a clear error", func() {
+	It("ScanByDistance before any build or insert returns zero rows (§6b insert-first)", func() {
 		ks := specSubspace()
 		idx := newIndex("spf_unbuilt")
 		builder := baseMetaData()
@@ -237,9 +237,12 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 				Low:  tuple.Tuple{SerializeVector([]float64{1, 1})},
 				High: tuple.Tuple{int64(1)},
 			}, nil, ScanProperties{})
-			_, cerr := cursor.OnNext(ctx)
-			Expect(cerr).To(HaveOccurred())
-			Expect(cerr.Error()).To(ContainSubstring("no readable generation"))
+			// 094.1 errored here ('build the index first'); since the §6b
+			// insert-first flow an untouched index is simply EMPTY
+			// (Torvalds 094.4 #2).
+			res, cerr := cursor.OnNext(ctx)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(res.HasNext()).To(BeFalse())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

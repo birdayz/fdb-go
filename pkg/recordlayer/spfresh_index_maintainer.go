@@ -378,7 +378,12 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0) // gen 0: META access only
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
 	if err != nil {
-		return nil, fmt.Errorf("spfresh index %q: no readable generation (build the index first): %w", m.index.Name, err)
+		if errors.Is(err, errSPFreshNotFound) {
+			// No generation = nothing was ever inserted or built (§6b
+			// insert-first flow): an empty index answers kNN with zero rows.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
 	cache := spfreshCacheFor(m.indexSubspace, gen)

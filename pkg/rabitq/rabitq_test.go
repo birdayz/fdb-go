@@ -647,6 +647,16 @@ func TestScorerMatchesDistance(t *testing.T) {
 			if got1Again != want {
 				t.Fatalf("exBits=%d trial=%d: third Score diverged: %v vs %v", exBits, trial, got1Again, want)
 			}
+			// Cosine zero-norm queries must ERROR through the scorer exactly
+			// like Distance — not rank as a finite estimate (codex 094.4).
+			qc := NewQuantizer(MetricCosine, exBits)
+			zq := make([]float64, dims)
+			zcode := qc.Encode(vec)
+			_, derr := qc.Distance(zq, zcode, dims)
+			_, serr2 := qc.NewScorer(zq).Score(zcode, dims)
+			if (derr == nil) != (serr2 == nil) {
+				t.Fatalf("exBits=%d: cosine zero-query divergence: Distance err=%v Scorer err=%v", exBits, derr, serr2)
+			}
 		}
 	}
 }

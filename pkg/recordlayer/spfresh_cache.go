@@ -243,6 +243,14 @@ func (c *spfreshRoutingCache) refresh(tx fdb.ReadTransaction, s *spfreshStorage,
 	return nil
 }
 
+// evictCell drops one L2 cell (lock-taking variant — lifecycle code that
+// changed a cell's contents in its own transaction calls this post-write).
+func (c *spfreshRoutingCache) evictCell(cellID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictCellLocked(cellID)
+}
+
 func (c *spfreshRoutingCache) evictCellLocked(cellID int64) {
 	if cell, ok := c.cells[cellID]; ok {
 		c.lru.Remove(cell.lruElem)

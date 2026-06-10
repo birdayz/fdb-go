@@ -138,6 +138,18 @@ var errSPFreshStaleRoute = errors.New("spfresh: routed candidates all stale (cac
 // §6b cold-start shape. Runs inside the caller's transaction; the caller has
 // already REAL-read the generation as absent (the racing-bootstrap fence).
 func (m *spfreshIndexMaintainer) spfreshBootstrap(metaStorage *spfreshStorage) (int64, error) {
+	// A builder token with NO generation means a bulk build is in flight (or
+	// died pre-flip): bootstrapping would create a live generation 1 that the
+	// build keeps writing into — and the build's flip would then self-ACK the
+	// BOOTSTRAP's generation as its own committed flip (Torvalds 094.4 #1).
+	// REAL read: a build taking the token concurrently aborts this insert at
+	// the resolver. A crashed build's residue is cleared by rerunning
+	// BuildSPFreshIndex (its entry takeover re-takes the token).
+	if tok, terr := m.tx.Get(metaStorage.metaKey(spfreshMetaBuild)).Get(); terr != nil {
+		return 0, terr
+	} else if tok != nil {
+		return 0, fmt.Errorf("spfresh index %q: a bulk build is in flight (or died before flipping) — retry after it completes, or rerun BuildSPFreshIndex", m.index.Name)
+	}
 	storage := newSPFreshStorage(m.indexSubspace, 1)
 	cellID, err := spfreshClaimIDBlock(m.tx, storage)
 	if err != nil {
@@ -197,6 +209,12 @@ func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, v
 	}); err != nil {
 		return nil, err
 	}
+	// Evict the process-local cached EMPTY bootstrap cell: queries that ran
+	// before this insert cached it with zero candidates, and the amortized
+	// refresh can be throttled past this window — they would miss the new
+	// record until the next changelog refresh (codex 094.4 P2). Same-process
+	// only by design; other processes converge via the addFine delta above.
+	spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(cellID)
 	return []spfreshRouted{{cellID: cellID, fineID: fineID, state: spfreshStateActive, vec: rt, d2: 0}}, nil
 }
 

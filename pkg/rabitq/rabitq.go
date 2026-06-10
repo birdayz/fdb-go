@@ -666,7 +666,6 @@ type Scorer struct {
 	numExBits int
 	query     []float64
 	gAdd      float64
-	gError    float64
 	buf       []int
 }
 
@@ -678,13 +677,11 @@ func (q *Quantizer) NewScorer(query []float64) *Scorer {
 	// live reference would silently mix one posting's gAdd with the next
 	// posting's components.
 	query = append([]float64(nil), query...)
-	gAdd := dot(query, query)
 	return &Scorer{
 		metric:    q.metric,
 		numExBits: q.numExBits,
 		query:     query,
-		gAdd:      gAdd,
-		gError:    math.Sqrt(gAdd),
+		gAdd:      dot(query, query),
 		buf:       make([]int, len(query)),
 	}
 }
@@ -692,6 +689,11 @@ func (q *Quantizer) NewScorer(query []float64) *Scorer {
 // Score estimates the distance to one stored code. Identical math to
 // Distance (EstimateDistance), minus the per-code allocations.
 func (s *Scorer) Score(data []byte, numDimensions int) (float64, error) {
+	// Match EstimateDistance's cosine zero/non-finite query guard: those
+	// inputs must error like Distance does, never rank as finite (codex P2).
+	if s.metric == MetricCosine && (!(s.gAdd > 0.0) || math.IsInf(s.gAdd, 0) || math.IsNaN(s.gAdd)) {
+		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", math.NaN())
+	}
 	if len(data) < 25 {
 		return 0, fmt.Errorf("rabitq: data too short: %d bytes", len(data))
 	}

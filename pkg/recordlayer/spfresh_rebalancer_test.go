@@ -370,3 +370,170 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// Torvalds 094.4 NAK regressions: the bootstrap's fencing story.
+var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
+	ctx := context.Background()
+
+	mdAndBuilder := func(name string) (*RecordMetaData, func(*FDBRecordContext) (*FDBRecordStore, error), *Index) {
+		ks := specSubspace()
+		idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		return md, storeBuilder, idx
+	}
+
+	It("#1: an insert refuses to bootstrap while a bulk build holds the token", func() {
+		_, storeBuilder, idx := mdAndBuilder("spf_boot_vs_build")
+		// Simulate the build's entry state: token taken, no generation yet
+		// (exactly what BuildSPFreshIndex's pre-build clear tx leaves).
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
+			spfreshTakeBuilderToken(rtx.Transaction(), metaStorage, []byte("in-flight-build"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The first insert must refuse loudly — pre-fix it bootstrapped
+		// generation 1 and the racing build's flip would have self-ACKed the
+		// bootstrap's generation as its own.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(1)})
+			return nil, serr
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("bulk build is in flight"))
+	})
+
+	It("#2: SELECT against a never-touched index returns zero rows, not an error", func() {
+		_, storeBuilder, idx := mdAndBuilder("spf_empty_select")
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			cursor := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			}).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector([]float64{1, 1})},
+				High: tuple.Tuple{int64(5)},
+			}, nil, ScanProperties{})
+			res, cerr := cursor.OnNext(ctx)
+			Expect(cerr).NotTo(HaveOccurred(), "empty-index kNN must not error (§6b insert-first flow)")
+			Expect(res.HasNext()).To(BeFalse(), "empty index answers with zero rows")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// codex 094.4 P2: a query against the freshly bootstrapped (still empty)
+// index caches the bootstrap cell with zero candidates; the first insert must
+// evict that cached cell or same-process queries miss the record until the
+// throttled refresh fires.
+var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
+	ctx := context.Background()
+
+	It("a query cached against the empty index sees the first insert immediately", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_boot_cache", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		knn := func(q []float64, k int) []int64 {
+			var got []int64
+			_, kerr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				Expect(serr).NotTo(HaveOccurred())
+				maintainer, merr := store.getIndexMaintainer(idx)
+				Expect(merr).NotTo(HaveOccurred())
+				cursor := maintainer.(interface {
+					ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+				}).ScanByDistance(TupleRange{
+					Low:  tuple.Tuple{SerializeVector(q)},
+					High: tuple.Tuple{int64(k)},
+				}, nil, ScanProperties{})
+				got = got[:0]
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					Expect(cerr).NotTo(HaveOccurred())
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				return nil, nil
+			})
+			Expect(kerr).NotTo(HaveOccurred())
+			return got
+		}
+
+		// First insert: bootstraps generation + cell (still no centroid until
+		// THIS insert mints one — but the cache hasn't seen the cell yet).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// Delete it again: the posting empties but the topology stays.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, derr := store.DeleteRecord(tuple.Tuple{int64(1)})
+			return nil, derr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Query the EMPTY index: this caches the (empty-ish) cell in the
+		// process-local L2.
+		Expect(knn([]float64{10, 10}, 3)).To(BeEmpty())
+
+		// Insert: pre-fix, the cached empty cell kept routing to zero
+		// candidates until the throttled refresh — the record was invisible
+		// in this process.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(11), Quantity: proto.Int32(11)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(knn([]float64{11, 11}, 3)).To(ContainElement(int64(2)),
+			"first insert must be visible to a process that cached the empty index")
+	})
+})
