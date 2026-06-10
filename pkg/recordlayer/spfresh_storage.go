@@ -183,6 +183,16 @@ func SPFreshEnableAudit() {
 	spfreshAuditOn.Store(true)
 }
 
+// SPFreshDisableAudit turns the audit log off and releases its memory.
+// Flag first, then the map: a concurrent spfreshAudit that already passed
+// the flag check still finds a (stale, discarded) map under the mutex.
+func SPFreshDisableAudit() {
+	spfreshAuditOn.Store(false)
+	spfreshAuditMu.Lock()
+	spfreshAuditLog = map[int64][]string{}
+	spfreshAuditMu.Unlock()
+}
+
 // SPFreshAuditTrail returns the recorded trail for a fineID.
 func SPFreshAuditTrail(fineID int64) []string {
 	spfreshAuditMu.Lock()

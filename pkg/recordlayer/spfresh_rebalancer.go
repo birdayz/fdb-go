@@ -2,10 +2,14 @@ package recordlayer
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -26,17 +30,34 @@ import (
 // save commits (the record context has no after-commit hook infrastructure
 // yet; when it grows one, wiring it is a one-liner around this entry point).
 
-// spfreshOwnerSeq disambiguates rebalancer invocations within a process;
-// cross-process uniqueness comes from lease expiry (a dead owner's lease is
-// reclaimable after its deadline regardless of name).
+// spfreshOwnerSeq disambiguates rebalancer invocations within a process.
 var spfreshOwnerSeq atomic.Int64
 
+// spfreshProcessNonce makes lease owners unique ACROSS processes. Every
+// process counts spfreshOwnerSeq from zero, so without a process-unique
+// component two live workers on different machines both mint
+// "rebalance-<index>-1" and the same-owner reclaim in spfreshTaskClaim
+// voids mutual exclusion. Lease expiry does NOT cover this: it protects
+// against DEAD owners, not live name collisions (codex P1).
+var spfreshProcessNonce = newSPFreshProcessNonce()
+
+func newSPFreshProcessNonce() string {
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		// crypto/rand read cannot fail on supported platforms; if it ever
+		// does, pid+walltime still beats a constant.
+		return fmt.Sprintf("%d.%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // spfreshRebalanceOwner mints a lease owner UNIQUE to one rebalancer
-// invocation. Never share an owner string across invocations: the claim
-// keeps same-owner reclaim (in-executor retries), so shared names give zero
-// mutual exclusion between concurrent executors.
+// invocation, within and across processes. Never share an owner string
+// across invocations: the claim keeps same-owner reclaim (in-executor
+// retries), so shared names give zero mutual exclusion between concurrent
+// executors.
 func spfreshRebalanceOwner(indexName string) string {
-	return fmt.Sprintf("rebalance-%s-%d", indexName, spfreshOwnerSeq.Add(1))
+	return fmt.Sprintf("rebalance-%s-%s-%d", indexName, spfreshProcessNonce, spfreshOwnerSeq.Add(1))
 }
 
 // spfreshTaskRef is one scanned task: kind, id, and (for fine lifecycles)

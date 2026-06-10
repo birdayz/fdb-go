@@ -55,8 +55,23 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 		cent, err := spfreshReadCentroidForWrite(tx, s, cellID, fineID)
 		if err != nil {
 			if errors.Is(err, errSPFreshNotFound) {
+				// Absent at OUR cellID — usually moved by a coarse split. If
+				// the seal already committed (row.childA != 0), this task row
+				// is the ONLY copy of the child IDs (the SEALED centroid row
+				// stores children as 0,0): clearing it would strand the
+				// posting SEALED forever, unresumable. Relocate first; if the
+				// fine exists elsewhere, keep the task — the next scan
+				// resumes the split at the right cell. Pre-seal tasks
+				// (childA == 0) are safe to clear: the next probe re-files.
+				if row.childA != 0 {
+					if _, ferr := spfreshFindCentroidCell(tx, s, fineID); ferr == nil {
+						return nil // moved mid-split: resume via fresh scan
+					} else if !errors.Is(ferr, errSPFreshNotFound) {
+						return ferr
+					}
+				}
 				tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
-				return nil // moved by a coarse split: next probe re-files it
+				return nil // truly gone (or pre-seal): next probe re-files it
 			}
 			return err
 		}

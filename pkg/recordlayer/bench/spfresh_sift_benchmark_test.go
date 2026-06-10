@@ -360,6 +360,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		baseF64[i] = float32sToFloat64s(v)
 	}
 	recordlayer.SPFreshEnableAudit()
+	defer recordlayer.SPFreshDisableAudit()
 	t.Logf("SPFresh foreground fill: N=%d writers=%d batch=%d", n, writers, batchSize)
 
 	ensureVectorBenchDB(t)
@@ -465,7 +466,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 			return nil, serr
 		}
 		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
-		t.Logf("INTEGRITY: %s", recordlayer.SPFreshDebugIntegrity(rtx, store, "spf_fill", n, 100))
+		t.Logf("INTEGRITY: %s", recordlayer.SPFreshDebugIntegrity(rtx, store, "spf_fill", 100))
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("topology dump: %v", err)

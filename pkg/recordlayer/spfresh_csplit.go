@@ -152,7 +152,10 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			// and post-quiescence nothing re-probes them (the 300k/1M fills
 			// ended with an empty queue and 4k-entry postings; recall
 			// collapsed). Re-file triggers for any oversized posting as part
-			// of completing the split that caused the pause.
+			// of completing the split that caused the pause. `rows` holds
+			// ACTIVE rows ONLY (the state switch above defers on SEALED and
+			// diverts FORWARD/DEAD to tombstones), so this can never file a
+			// childless task beside an in-flight split's SEALED row.
 			cnt, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, r.fineID)
 			if cerr != nil {
 				return cerr

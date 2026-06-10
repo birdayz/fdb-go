@@ -163,6 +163,15 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		b := spfreshRebalanceOwner("idx")
 		Expect(a).NotTo(Equal(b))
 
+		// Cross-PROCESS uniqueness (codex P1): every process counts the
+		// sequence from zero, so the owner must embed a per-process random
+		// nonce or two live workers on different machines collide on
+		// "rebalance-idx-1". Pin: the owner contains this process's nonce,
+		// and the nonce generator is random, not constant.
+		Expect(a).To(ContainSubstring(spfreshProcessNonce))
+		Expect(spfreshProcessNonce).NotTo(BeEmpty())
+		Expect(newSPFreshProcessNonce()).NotTo(Equal(newSPFreshProcessNonce()))
+
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-lease").Sub("uniq"), 1)
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -208,6 +217,144 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 			rows, _, _, lerr := spfreshLoadCell(tx, storage, 1)
 			Expect(lerr).NotTo(HaveOccurred())
 			Expect(rows).To(BeEmpty())
+
+			// The all-candidates-stale error must stay CHEAP (codex P2): it
+			// is a normal retryable outcome inside the caller's save
+			// transaction, and embedding the topology dump made every
+			// transient stale route scan the whole index. "hist=" is the
+			// dump's posting-histogram signature.
+			ierr := m.spfreshInsertRouted(storage,
+				[]spfreshRouted{{cellID: 2, fineID: 99, state: spfreshStateActive, vec: []float64{1, 1}, d2: 0}},
+				tuple.Tuple{int64(777)}, []float64{1, 1})
+			Expect(ierr).To(MatchError(errSPFreshStaleRoute))
+			Expect(ierr.Error()).NotTo(ContainSubstring("hist="),
+				"stale-route errors must not embed the O(index) topology dump")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// Torvalds delta-review findings on dc894af8, pinned: the csplit pause-window
+// repair must not file split tasks for SEALED rows, and the seal zombie-clear
+// must not destroy a sealed task (the only copy of the child IDs).
+var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
+	ctx := context.Background()
+
+	It("csplit move re-files split tasks for moved oversized ACTIVE rows (pause-window repair)", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-csplit").Sub("repair"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		// The post-pause shape: an ACTIVE posting ballooned past Lmax while
+		// fine-split probes were suppressed, so it has NO split task; the
+		// csplit that caused the pause now executes. (SEALED rows never reach
+		// the move — the claim defers on them — so the repair only ever sees
+		// ACTIVE rows.)
+		const fatFine, slimFine = int64(10), int64(11)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{25, 25}))
+			cvec := []float64{0, 0}
+			spfreshSaveCentroid(tx, storage, 1, fatFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cvec))
+			for i := 0; i < config.Lmax+4; i++ {
+				pk := tuple.Tuple{int64(20000 + i)}
+				v := []float64{float64(i%9) * 0.4, float64(i%7) * 0.4}
+				tx.Set(storage.postingKey(fatFine, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{fatFine}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, fatFine, int64(config.Lmax+4))
+			// A second ACTIVE fine so the 2-means partition is two-sided.
+			spfreshSaveCentroid(tx, storage, 1, slimFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{50, 50}))
+			spfreshCounterSet(tx, storage, spfreshCounterFine, slimFine, 1)
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, int64(config.CellMax+1))
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskCSplit, 1)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Drain. The csplit moves both fines; the repair files fatFine's
+		// split task in the SAME move transaction; later rounds execute it.
+		// Reverting the repair leaves fatFine ACTIVE over Lmax forever with
+		// an empty queue — the 300k/1M recall collapse.
+		for round := 0; round < 100; round++ {
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "pauserepair", int64(round))
+			Expect(rerr).NotTo(HaveOccurred())
+			if worked == 0 {
+				break
+			}
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// The coarse split ran: cell 1 is no longer ACTIVE.
+			_, coarseRows, lerr := spfreshLoadAllCoarse(tx, storage)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(coarseRows)).To(BeNumerically(">", 1), "coarse split must have executed")
+			// The repaired split ran to completion: the ballooned parent is
+			// FORWARD (not ACTIVE), its entries live in children ≤ Lmax.
+			cell, ferr := spfreshFindCentroidCell(tx, storage, fatFine)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, fatFine)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(row.state).NotTo(Equal(spfreshStateActive),
+				"queue quiesced with the moved posting still ACTIVE over Lmax — the pause-window repair did not fire")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("seal zombie-clear preserves a sealed task whose row moved cells", func() {
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-seal").Sub("relocate"), 1)
+		const fine = int64(10)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			spfreshSaveCoarse(tx, storage, 2, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{50, 50}))
+			// Sealed mid-split, then moved by a coarse split to cell 2. The
+			// task row carries the ONLY copy of the children.
+			spfreshSaveCentroid(tx, storage, 2, fine, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{50, 50}))
+			tx.Set(storage.taskKey(spfreshTaskSplit, fine), encodeTaskRow(spfreshTaskRow{state: spfreshSplitTaskSealed, childA: 100, childB: 101}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A stale executor claims with the OLD cell. Pre-fix this cleared
+		// the task — stranding the posting SEALED forever (children lost).
+		out, serr := spfreshSealFine(ctx, sharedDB, storage, "stale-exec", 1, fine)
+		Expect(serr).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeFalse())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			task, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, fine)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(task).NotTo(BeNil(), "sealed task must survive a stale-cell claim: it holds the only child IDs")
+			row, derr := decodeTaskRow(task)
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(row.childA).To(Equal(int64(100)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A sealed task whose fine is gone EVERYWHERE is still cleared.
+		const goneFine = int64(99)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(storage.taskKey(spfreshTaskSplit, goneFine), encodeTaskRow(spfreshTaskRow{state: spfreshSplitTaskSealed, childA: 200, childB: 201}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, serr = spfreshSealFine(ctx, sharedDB, storage, "stale-exec", 1, goneFine)
+		Expect(serr).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeFalse())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			task, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, goneFine)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(task).To(BeNil(), "a task for a fine absent from every cell is a zombie: cleared")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

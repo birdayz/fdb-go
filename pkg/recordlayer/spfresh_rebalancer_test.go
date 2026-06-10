@@ -173,6 +173,42 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("the entry point respects a live foreign lease (call-site owner pin)", func() {
+		storeBuilder, indexSubspace := setup("spf_foreignlease", 8)
+		storage := newSPFreshStorage(indexSubspace, 1)
+
+		// A task held by a LIVE foreign worker (another machine, mid-
+		// lifecycle). RebalanceSPFreshIndex must leave it untouched — which
+		// requires the owner it mints to never equal the foreign one. Two
+		// executors sharing an owner string reclaim each other's leases
+		// (same-owner reclaim is kept for in-executor retries) — the 300k
+		// fill corruption.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			if _, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, 424242); terr != nil {
+				return nil, terr
+			}
+			_, cerr := spfreshTaskClaim(tx, storage, spfreshTaskSplit, 424242, "foreign-worker", spfreshLeaseDeadline(), spfreshNowMs())
+			return nil, cerr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = RebalanceSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_foreignlease")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, 424242)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(data).NotTo(BeNil())
+			row, derr := decodeTaskRow(data)
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(row.owner).To(Equal("foreign-worker"),
+				"a live foreign lease must survive a full rebalancer invocation untouched")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("cold-start growth: inserts + rebalancing grow fine AND coarse topology with full recall", func() {
 		storeBuilder, indexSubspace := setup("spf_coldstart", 8)
 		storage := newSPFreshStorage(indexSubspace, 1)

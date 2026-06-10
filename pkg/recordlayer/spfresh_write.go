@@ -355,7 +355,13 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			// children ACTIVE.
 			return fdb.Error{Code: 1020} // not_committed
 		}
-		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates (%s): %w", m.index.Name, len(routed), spfreshDebugTopology(m.tx, storage), errSPFreshStaleRoute)
+		// Keep this error CHEAP: it is a normal retryable outcome during
+		// split churn, raised inside the caller's save transaction. The full
+		// topology dump (spfreshDebugTopology) scans every posting in the
+		// index — embedding it here turned a transient retry into O(index)
+		// range reads. Diagnostics go through the exported
+		// SPFreshDebugTopology instead.
+		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.index.Name, len(routed), errSPFreshStaleRoute)
 	}
 	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
 
@@ -463,8 +469,10 @@ func spfreshSampledProbe(pk tuple.Tuple) bool {
 	return h.Sum64()%spfreshProbeSampleEvery == 0
 }
 
-// spfreshDebugTopology summarizes the coarse table + fine states (diagnostics).
-func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage) string {
+// spfreshDebugTopology summarizes the coarse table + fine states
+// (diagnostics). lmax buckets the posting-size histogram against the index's
+// REAL configured envelope.
+func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage, lmax int) string {
 	ids, rows, err := spfreshLoadAllCoarse(tx, s)
 	if err != nil {
 		return fmt.Sprintf("coarse err=%v", err)
@@ -502,9 +510,9 @@ func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage) string {
 			}
 			totalEntries += len(entries)
 			switch {
-			case len(entries) <= 256:
+			case len(entries) <= lmax:
 				postingSizes["<=Lmax"]++
-			case len(entries) <= 1024:
+			case len(entries) <= 4*lmax:
 				postingSizes["<=4Lmax"]++
 			default:
 				postingSizes[">4Lmax"]++
@@ -543,13 +551,15 @@ func SPFreshDebugTopology(rtx *FDBRecordContext, store *FDBRecordStore, indexNam
 	if err != nil {
 		return fmt.Sprintf("gen err=%v", err)
 	}
-	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen))
+	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen), parseSPFreshConfig(idx).Lmax)
 }
 
-// SPFreshDebugIntegrity samples `sample` pks from [0, n) and reports, for
-// each, whether its membership exists and whether every membership target
-// holds the posting entry (benchmark/operational diagnostics).
-func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexName string, n, sample int) string {
+// SPFreshDebugIntegrity samples up to `sample` pks evenly from the index's
+// OWN membership rows (no assumption about pk shape) and reports, for each,
+// whether every membership target holds the posting entry and what state the
+// target centroid is in. Diagnostics only: it streams the membership keyspace
+// (O(index) reads) — never call it on a production write path.
+func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexName string, sample int) string {
 	idx := store.GetMetaData().GetIndex(indexName)
 	if idx == nil {
 		return "index not found"
@@ -561,7 +571,6 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	}
 	s := newSPFreshStorage(store.indexSubspace(idx), gen)
 	tx := rtx.Transaction()
-	missingMembership, missingEntry, ok := 0, 0, 0
 	// Classify the STATE of each membership target: an entry is only
 	// query-visible if its centroid is ACTIVE (or SEALED) in some cell.
 	ids, _, lerr := spfreshLoadAllCoarse(tx, s)
@@ -578,28 +587,49 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 			fineState[r.fineID] = r.row.state
 		}
 	}
-	targetStates := map[string]int{}
-	step := n / sample
+	// Collect the membership pks (keys only matter), then sample evenly.
+	r, rerr := fdb.PrefixRange(s.membership.Bytes())
+	if rerr != nil {
+		return fmt.Sprintf("membership range err=%v", rerr)
+	}
+	kvs, gerr := tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+	if gerr != nil {
+		return fmt.Sprintf("membership scan err=%v", gerr)
+	}
+	var pks []tuple.Tuple
+	for _, kv := range kvs {
+		if pk, uerr := s.membership.Unpack(kv.Key); uerr == nil {
+			pks = append(pks, pk)
+		}
+	}
+	step := len(pks) / sample
 	if step < 1 {
 		step = 1
 	}
-	for i := 0; i < n; i += step {
-		pk := tuple.Tuple{int64(i)}
+	missingEntry, ok := 0, 0
+	sampled := 0
+	targetStates := map[string]int{}
+	var absentFines []int64
+	for i := 0; i < len(pks); i += step {
+		pk := pks[i]
 		mem, merr := spfreshReadMembership(tx, s, pk)
 		if merr != nil {
-			missingMembership++
-			continue
+			continue // raced a concurrent delete between scan and read
 		}
+		sampled++
 		all := true
 		for _, fineID := range mem {
-			data, gerr := tx.Snapshot().Get(s.postingKey(fineID, pk)).Get()
-			if gerr != nil || data == nil {
+			data, perr := tx.Snapshot().Get(s.postingKey(fineID, pk)).Get()
+			if perr != nil || data == nil {
 				all = false
 			}
 			if st, known := fineState[fineID]; known {
 				targetStates[fmt.Sprintf("st%d", st)]++
 			} else {
 				targetStates["ABSENT"]++
+				if len(absentFines) < 3 {
+					absentFines = append(absentFines, fineID)
+				}
 			}
 		}
 		if all {
@@ -611,32 +641,18 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	// Trace up to 3 ABSENT targets: posting size, HDR presence/payload, and
 	// pending-task state — enough to identify which lifecycle lost them.
 	examples := ""
-	seenAbsent := 0
-	for i := 0; i < n && seenAbsent < 3; i += step {
-		mem, merr := spfreshReadMembership(tx, s, tuple.Tuple{int64(i)})
-		if merr != nil {
-			continue
+	for _, fineID := range absentFines {
+		entries, _, _, _, _ := spfreshLoadPostingSnapshot(tx, s, fineID, 100000)
+		hdr, _ := tx.Snapshot().Get(s.postingHDRKey(fineID)).Get()
+		hdrInfo := "none"
+		if hdr != nil {
+			hc, ha, hb, herr := decodePostingHDR(hdr)
+			hdrInfo = fmt.Sprintf("(cell=%d a=%d b=%d err=%v)", hc, ha, hb, herr)
 		}
-		for _, fineID := range mem {
-			if _, known := fineState[fineID]; known {
-				continue
-			}
-			seenAbsent++
-			entries, _, _, _, _ := spfreshLoadPostingSnapshot(tx, s, fineID, 100000)
-			hdr, _ := tx.Snapshot().Get(s.postingHDRKey(fineID)).Get()
-			hdrInfo := "none"
-			if hdr != nil {
-				hc, ha, hb, herr := decodePostingHDR(hdr)
-				hdrInfo = fmt.Sprintf("(cell=%d a=%d b=%d err=%v)", hc, ha, hb, herr)
-			}
-			task, _ := tx.Snapshot().Get(s.taskKey(spfreshTaskSplit, fineID)).Get()
-			cnt, _ := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, fineID)
-			examples += fmt.Sprintf(" absent[f%d: posting=%d hdr=%s splitTask=%v counter=%d trail=%v]", fineID, len(entries), hdrInfo, task != nil, cnt, SPFreshAuditTrail(fineID))
-			if seenAbsent >= 3 {
-				break
-			}
-		}
+		task, _ := tx.Snapshot().Get(s.taskKey(spfreshTaskSplit, fineID)).Get()
+		cnt, _ := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, fineID)
+		examples += fmt.Sprintf(" absent[f%d: posting=%d hdr=%s splitTask=%v counter=%d trail=%v]", fineID, len(entries), hdrInfo, task != nil, cnt, SPFreshAuditTrail(fineID))
 	}
-	return fmt.Sprintf("sampled=%d ok=%d missingMembership=%d membershipWithoutEntry=%d targetStates=%v%s",
-		sample, ok, missingMembership, missingEntry, targetStates, examples)
+	return fmt.Sprintf("members=%d sampled=%d ok=%d membershipWithoutEntry=%d targetStates=%v%s",
+		len(pks), sampled, ok, missingEntry, targetStates, examples)
 }
