@@ -210,6 +210,8 @@ func (b *spfreshBuilder) flip(ctx context.Context) error {
 			return nil // our own committed flip, retried after commit_unknown_result
 		}
 		if cerr == nil && cur > b.storage.generation {
+			// Defense-in-depth only: a builder that flipped past us must own
+			// the token, so the verify above fails first in the same snapshot.
 			return fmt.Errorf("spfresh build: concurrent build flipped generation %d first; this build (gen %d) is abandoned", cur, b.storage.generation)
 		}
 		spfreshSetGeneration(tx, b.storage, b.storage.generation)

@@ -44,7 +44,7 @@ const (
 	spfreshMetaIDBlock    int64 = 1 // centroid/cell ID block allocator (int64)
 	spfreshMetaHorizon    int64 = 2 // changelog GC horizon (version)
 	spfreshMetaTransform  int64 = 3 // RaBitQ transform (rotator seed + centroid)
-	spfreshMetaBuild      int64 = 4 // build state (generation being built, phase)
+	spfreshMetaBuild      int64 = 4 // build ownership token (opaque 16 bytes; see spfreshVerifyBuilderToken)
 )
 
 // Centroid / coarse-cell lifecycle states (RFC-094 §6, §6b).

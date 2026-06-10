@@ -113,6 +113,11 @@ func spfreshTakeBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte
 // spfreshClaimBuilderToken claims ownership if the slot is free or already
 // ours (commit_unknown retry); a foreign token is a hard error — first claimer
 // wins between builders driven without the maintainer's takeover clear.
+// The token is deliberately never cleared after a successful flip (clearing it
+// in the flip tx would break the flip's commit_unknown retry idempotence), so
+// a foreign token here may belong to a long-COMPLETED build, not a live one.
+// Direct-driven builders (tests) that mean to supersede one take ownership
+// explicitly via spfreshTakeBuilderToken; the maintainer path always does.
 func spfreshClaimBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
 	key := s.metaKey(spfreshMetaBuild)
 	cur, err := tx.Get(key).Get()
