@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -148,7 +150,44 @@ func spfreshVerifyBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []by
 // --- CENTROIDS / COARSE ---
 
 func spfreshSaveCentroid(tx fdb.Transaction, s *spfreshStorage, cellID, fineID int64, row []byte) {
+	spfreshAudit("save", cellID, fineID, row[0])
 	tx.Set(s.centroidKey(cellID, fineID), row)
+}
+
+// spfreshAuditLog, when enabled, records centroid-row mutations (bisection
+// diagnostics only; in-memory, process-local — records ATTEMPTS, including
+// transactions that later abort). spfreshAuditOn keeps the disabled-path
+// check off the mutex AND race-free: Enable publishes the map under the
+// mutex BEFORE flipping the flag, so a writer that observes the flag always
+// sees the map.
+var (
+	spfreshAuditOn  atomic.Bool
+	spfreshAuditMu  sync.Mutex
+	spfreshAuditLog map[int64][]string
+)
+
+func spfreshAudit(op string, cellID, fineID int64, state byte) {
+	if !spfreshAuditOn.Load() {
+		return
+	}
+	spfreshAuditMu.Lock()
+	spfreshAuditLog[fineID] = append(spfreshAuditLog[fineID], fmt.Sprintf("%s(cell=%d,st=%d)", op, cellID, state))
+	spfreshAuditMu.Unlock()
+}
+
+// SPFreshEnableAudit turns on the centroid audit log (diagnostics).
+func SPFreshEnableAudit() {
+	spfreshAuditMu.Lock()
+	spfreshAuditLog = map[int64][]string{}
+	spfreshAuditMu.Unlock()
+	spfreshAuditOn.Store(true)
+}
+
+// SPFreshAuditTrail returns the recorded trail for a fineID.
+func SPFreshAuditTrail(fineID int64) []string {
+	spfreshAuditMu.Lock()
+	defer spfreshAuditMu.Unlock()
+	return spfreshAuditLog[fineID]
 }
 
 // spfreshReadCentroidForWrite REAL-reads a fine centroid's state row — the

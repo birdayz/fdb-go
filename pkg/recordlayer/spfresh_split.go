@@ -84,6 +84,7 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 			return err
 		}
 		// Preserve the raw vector bytes: SEALED still routes reads.
+		spfreshAudit("seal", cellID, fineID, spfreshStateSealed)
 		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateSealed, cent.epoch, 0, 0, cent.vecBytes))
 		row.state = spfreshSplitTaskSealed
 		row.childA, row.childB = start, start+1

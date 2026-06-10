@@ -187,29 +187,39 @@ func (m *spfreshIndexMaintainer) spfreshBootstrap(metaStorage *spfreshStorage) (
 // returns it as the routed candidate set. Same-transaction with the insert;
 // racing first inserts conflict on the cell's centroid range read.
 func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, vec []float64) ([]spfreshRouted, error) {
-	ids, _, err := spfreshLoadAllCoarseForWrite(m.tx, storage)
+	ids, coarseRows, err := spfreshLoadAllCoarseForWrite(m.tx, storage)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("spfresh index %q: no coarse cells (corrupt bootstrap)", m.index.Name)
 	}
-	cellID := ids[0]
-	// REAL-read the cell: two racing first inserts both see it empty and both
-	// mint a centroid — the range conflict aborts one, whose retry routes to
-	// the winner's centroid normally.
-	rows, _, _, lerr := spfreshLoadCellForWrite(m.tx, storage, cellID)
-	if lerr != nil {
-		return nil, lerr
+	// The mint exists ONLY for the §6b cold start: one ACTIVE cell, zero fine
+	// rows anywhere. A transient zero-candidate route at STEADY STATE must
+	// NOT reach it — the original version blindly minted into ids[0], which
+	// after the first coarse split is a FORWARDED EMPTY cell: the minted
+	// centroid lives where no query routes, and every entry inserted against
+	// it is invisible (the 300k fill orphaned thousands of entries this way;
+	// recall collapsed to 0.17 — caught by the centroid audit trail showing
+	// orphans saved into the forwarded cell 1).
+	cellID := int64(0)
+	for i, id := range ids {
+		rows, _, _, lerr := spfreshLoadCellForWrite(m.tx, storage, id)
+		if lerr != nil {
+			return nil, lerr
+		}
+		if len(rows) > 0 {
+			// The index is NOT empty: never mint. The cache that routed us
+			// here is stale — evict so the retry sees the real topology.
+			spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(id)
+			return nil, errSPFreshStaleRoute
+		}
+		if cellID == 0 && coarseRows[i].state == spfreshStateActive {
+			cellID = id
+		}
 	}
-	if len(rows) > 0 {
-		// Someone else just minted: our REAL read sees their committed rows,
-		// but the process-local cache may still hold the stale EMPTY cell —
-		// evict it so the caller's re-route reads the populated cell instead
-		// of failing with zero candidates (caught by the concurrent
-		// foreground-fill benchmark: two writers racing the first mint).
-		spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(cellID)
-		return nil, errSPFreshStaleRoute
+	if cellID == 0 {
+		return nil, errSPFreshStaleRoute // no ACTIVE cell: topology mid-flux, retry
 	}
 	fineID, err := spfreshClaimIDBlock(m.tx, storage)
 	if err != nil {
@@ -459,7 +469,49 @@ func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage) string {
 	if err != nil {
 		return fmt.Sprintf("coarse err=%v", err)
 	}
-	out := fmt.Sprintf("gen=%d cells=%d [", s.generation, len(ids))
+	// Pending tasks by kind + posting-size histogram + entry totals: the
+	// convergence diagnostics (is the queue truly drained? are postings
+	// within Lmax? where do the entries live?).
+	taskCounts := map[int64]int{}
+	if r, rerr := fdb.PrefixRange(s.tasks.Bytes()); rerr == nil {
+		if kvs, gerr := tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError(); gerr == nil {
+			for _, kv := range kvs {
+				if t, uerr := s.tasks.Unpack(kv.Key); uerr == nil && len(t) == 2 {
+					if k, ok := t[0].(int64); ok {
+						taskCounts[k]++
+					}
+				}
+			}
+		}
+	}
+	postingSizes := map[string]int{}
+	totalEntries, totalActive := 0, 0
+	for _, id := range ids {
+		cellRows, _, _, cerr := spfreshLoadCell(tx, s, id)
+		if cerr != nil {
+			continue
+		}
+		for _, r := range cellRows {
+			if r.row.state != spfreshStateActive {
+				continue
+			}
+			totalActive++
+			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, r.fineID, 100000)
+			if perr != nil {
+				continue
+			}
+			totalEntries += len(entries)
+			switch {
+			case len(entries) <= 256:
+				postingSizes["<=Lmax"]++
+			case len(entries) <= 1024:
+				postingSizes["<=4Lmax"]++
+			default:
+				postingSizes[">4Lmax"]++
+			}
+		}
+	}
+	out := fmt.Sprintf("gen=%d cells=%d activeFines=%d entries=%d tasks=%v hist=%v [", s.generation, len(ids), totalActive, totalEntries, taskCounts, postingSizes)
 	for i, id := range ids {
 		if i > 14 {
 			out += "..."
@@ -492,4 +544,99 @@ func SPFreshDebugTopology(rtx *FDBRecordContext, store *FDBRecordStore, indexNam
 		return fmt.Sprintf("gen err=%v", err)
 	}
 	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen))
+}
+
+// SPFreshDebugIntegrity samples `sample` pks from [0, n) and reports, for
+// each, whether its membership exists and whether every membership target
+// holds the posting entry (benchmark/operational diagnostics).
+func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexName string, n, sample int) string {
+	idx := store.GetMetaData().GetIndex(indexName)
+	if idx == nil {
+		return "index not found"
+	}
+	metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
+	gen, err := spfreshReadGenerationSnapshot(rtx.Transaction(), metaStorage)
+	if err != nil {
+		return fmt.Sprintf("gen err=%v", err)
+	}
+	s := newSPFreshStorage(store.indexSubspace(idx), gen)
+	tx := rtx.Transaction()
+	missingMembership, missingEntry, ok := 0, 0, 0
+	// Classify the STATE of each membership target: an entry is only
+	// query-visible if its centroid is ACTIVE (or SEALED) in some cell.
+	ids, _, lerr := spfreshLoadAllCoarse(tx, s)
+	if lerr != nil {
+		return fmt.Sprintf("coarse err=%v", lerr)
+	}
+	fineState := map[int64]byte{}
+	for _, cellID := range ids {
+		rows, _, _, cerr := spfreshLoadCell(tx, s, cellID)
+		if cerr != nil {
+			continue
+		}
+		for _, r := range rows {
+			fineState[r.fineID] = r.row.state
+		}
+	}
+	targetStates := map[string]int{}
+	step := n / sample
+	if step < 1 {
+		step = 1
+	}
+	for i := 0; i < n; i += step {
+		pk := tuple.Tuple{int64(i)}
+		mem, merr := spfreshReadMembership(tx, s, pk)
+		if merr != nil {
+			missingMembership++
+			continue
+		}
+		all := true
+		for _, fineID := range mem {
+			data, gerr := tx.Snapshot().Get(s.postingKey(fineID, pk)).Get()
+			if gerr != nil || data == nil {
+				all = false
+			}
+			if st, known := fineState[fineID]; known {
+				targetStates[fmt.Sprintf("st%d", st)]++
+			} else {
+				targetStates["ABSENT"]++
+			}
+		}
+		if all {
+			ok++
+		} else {
+			missingEntry++
+		}
+	}
+	// Trace up to 3 ABSENT targets: posting size, HDR presence/payload, and
+	// pending-task state — enough to identify which lifecycle lost them.
+	examples := ""
+	seenAbsent := 0
+	for i := 0; i < n && seenAbsent < 3; i += step {
+		mem, merr := spfreshReadMembership(tx, s, tuple.Tuple{int64(i)})
+		if merr != nil {
+			continue
+		}
+		for _, fineID := range mem {
+			if _, known := fineState[fineID]; known {
+				continue
+			}
+			seenAbsent++
+			entries, _, _, _, _ := spfreshLoadPostingSnapshot(tx, s, fineID, 100000)
+			hdr, _ := tx.Snapshot().Get(s.postingHDRKey(fineID)).Get()
+			hdrInfo := "none"
+			if hdr != nil {
+				hc, ha, hb, herr := decodePostingHDR(hdr)
+				hdrInfo = fmt.Sprintf("(cell=%d a=%d b=%d err=%v)", hc, ha, hb, herr)
+			}
+			task, _ := tx.Snapshot().Get(s.taskKey(spfreshTaskSplit, fineID)).Get()
+			cnt, _ := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, fineID)
+			examples += fmt.Sprintf(" absent[f%d: posting=%d hdr=%s splitTask=%v counter=%d trail=%v]", fineID, len(entries), hdrInfo, task != nil, cnt, SPFreshAuditTrail(fineID))
+			if seenAbsent >= 3 {
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("sampled=%d ok=%d missingMembership=%d membershipWithoutEntry=%d targetStates=%v%s",
+		sample, ok, missingMembership, missingEntry, targetStates, examples)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -24,6 +25,19 @@ import (
 // wants the RFC's synchronous behavior calls RebalanceSPFreshIndex after its
 // save commits (the record context has no after-commit hook infrastructure
 // yet; when it grows one, wiring it is a one-liner around this entry point).
+
+// spfreshOwnerSeq disambiguates rebalancer invocations within a process;
+// cross-process uniqueness comes from lease expiry (a dead owner's lease is
+// reclaimable after its deadline regardless of name).
+var spfreshOwnerSeq atomic.Int64
+
+// spfreshRebalanceOwner mints a lease owner UNIQUE to one rebalancer
+// invocation. Never share an owner string across invocations: the claim
+// keeps same-owner reclaim (in-executor retries), so shared names give zero
+// mutual exclusion between concurrent executors.
+func spfreshRebalanceOwner(indexName string) string {
+	return fmt.Sprintf("rebalance-%s-%d", indexName, spfreshOwnerSeq.Add(1))
+}
 
 // spfreshTaskRef is one scanned task: kind, id, and (for fine lifecycles)
 // the cell resolved at scan time — staleness is fine, every lifecycle
@@ -185,7 +199,15 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 	}
 	s := newSPFreshStorage(indexSubspace, gen)
 
-	owner := fmt.Sprintf("rebalance-%s", indexName)
+	// UNIQUE owner per invocation: the lease check is `row.owner != owner`,
+	// so two executors sharing an owner string reclaim each other's live
+	// leases freely — zero mutual exclusion. Two concurrent
+	// RebalanceSPFreshIndex calls for the same index (e.g. a rebalancer loop
+	// overlapping a final drain) then interleave MULTI-TRANSACTION lifecycles
+	// on the same tasks: one executor's coarse split races another's chunked
+	// split mid-drain, writing children into a cell the first just cleared —
+	// the 300k fill orphaned ~3/4 of its entries exactly this way.
+	owner := spfreshRebalanceOwner(indexName)
 	total := 0
 	const maxRounds = 32
 	var loopErr error

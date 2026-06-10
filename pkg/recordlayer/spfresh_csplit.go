@@ -143,11 +143,29 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			c := assign[i]
 			// Rewrite under the new cell: fineID, state, epoch, children and
 			// the raw vector bytes preserved verbatim.
+			spfreshAudit("cmove", cellID, r.fineID, r.row.state)
 			spfreshSaveCentroid(tx, s, cells[c], r.fineID, encodeCentroidRowRaw(r.row.state, r.row.epoch, r.row.childA, r.row.childB, r.row.vecBytes))
 			counts[c]++
+			// Repair the PAUSING window: while this csplit deferred, the
+			// starvation guard suppressed every fine-split PROBE for the
+			// cell — postings that crossed Lmax in that window have NO task,
+			// and post-quiescence nothing re-probes them (the 300k/1M fills
+			// ended with an empty queue and 4k-entry postings; recall
+			// collapsed). Re-file triggers for any oversized posting as part
+			// of completing the split that caused the pause.
+			cnt, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, r.fineID)
+			if cerr != nil {
+				return cerr
+			}
+			if cnt > int64(config.Lmax) {
+				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, r.fineID); terr != nil {
+					return terr
+				}
+			}
 		}
 		// Tombstones ride to their nearest new cell (GC discovery), without
 		// counting toward the ACTIVE-centroid cell counters.
+		spfreshAudit("csplit-counts", cellID, int64(len(rows)), byte(len(tombstones)))
 		for _, r := range tombstones {
 			v, verr := r.row.vector()
 			c := 0
@@ -183,6 +201,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		if rerr != nil {
 			return rerr
 		}
+		spfreshAudit("csplit-rangeclear", cellID, -1, 0)
 		tx.ClearRange(cr)
 		tx.Set(s.centroidHDRKey(cellID), encodeCellHDR(cellA, cellB))
 		spfreshSaveCoarse(tx, s, cellID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), cellA, cellB, coarse.vecBytes))

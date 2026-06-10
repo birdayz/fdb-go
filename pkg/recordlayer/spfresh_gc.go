@@ -119,6 +119,7 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 				return rerr
 			}
 			tx.ClearRange(pr)
+			spfreshAudit("gc-clear", ref.cellID, ref.fineID, cent.state)
 			tx.Clear(s.centroidKey(ref.cellID, ref.fineID))
 			tx.Clear(s.counterKey(spfreshCounterFine, ref.fineID))
 			return spfreshAppendDeltas(tx, s, []spfreshDelta{

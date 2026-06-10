@@ -359,6 +359,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	for i, v := range baseVecs {
 		baseF64[i] = float32sToFloat64s(v)
 	}
+	recordlayer.SPFreshEnableAudit()
 	t.Logf("SPFresh foreground fill: N=%d writers=%d batch=%d", n, writers, batchSize)
 
 	ensureVectorBenchDB(t)
@@ -421,7 +422,10 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 			}
 		}(w)
 	}
+	var rebalancerWG sync.WaitGroup
+	rebalancerWG.Add(1)
 	go func() {
+		defer rebalancerWG.Done()
 		for !fillDone.Load() {
 			acts, rerr := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
 			if rerr != nil {
@@ -436,6 +440,10 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	}()
 	wg.Wait()
 	fillDone.Store(true)
+	// Join the rebalancer BEFORE the final drain: overlapping executors are
+	// exactly the lease-race the unique-owner fix guards against, and the
+	// benchmark should measure the intended single-drain shape.
+	rebalancerWG.Wait()
 	select {
 	case e := <-errs:
 		t.Fatal(e)
@@ -457,6 +465,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 			return nil, serr
 		}
 		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
+		t.Logf("INTEGRITY: %s", recordlayer.SPFreshDebugIntegrity(rtx, store, "spf_fill", n, 100))
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("topology dump: %v", err)
