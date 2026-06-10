@@ -101,6 +101,15 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	// bound — every real entry sorts above it), or a cold-started cache would
 	// report "reload required" forever (cursor nil = never loaded).
 	last := fdb.Key(s.changelog.Bytes())
+	// Floor the cursor at the GC horizon: after a trim that emptied the log,
+	// anchoring at the bare prefix would leave cursor < horizon and the next
+	// refresh would force ANOTHER full reload, every interval, until a new
+	// delta lands (codex 094.3 r2).
+	if horizon, herr := tx.Snapshot().Get(s.metaKey(spfreshMetaHorizon)).Get(); herr != nil {
+		return fmt.Errorf("spfresh: read GC horizon: %w", herr)
+	} else if horizon != nil && string(horizon) > string(last) {
+		last = fdb.Key(horizon)
+	}
 	for {
 		deltas, l, derr := spfreshReadDeltasSince(tx, s, last, 1000)
 		if derr != nil {

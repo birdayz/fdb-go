@@ -239,6 +239,62 @@ var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", fu
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+
+		// ...and the reload must CONVERGE: after an empty-log trim, the
+		// reloaded cursor floors at the horizon — a bare-prefix anchor would
+		// leave cursor < horizon and force ANOTHER reload every interval
+		// until a new delta lands (codex 094.3 r2).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
+			Expect(cache.refresh(tx, storage, 1)).To(Succeed(), "post-trim reload must not loop on the horizon")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a merge finds in-cell targets even when the global neighborhood lives elsewhere (codex 094.3 r2)", func() {
+		config := testConfig()
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-gc").Sub("mergecell"), 1)
+		member := tuple.Tuple{int64(7)}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			// Cell 1: the under-Lmin centroid at (0,0) and ONE far in-cell
+			// sibling at (30,0). Cell 2: Kn near-identical centroids right
+			// next to (0,0) — the GLOBAL top-K is entirely cell 2, so the
+			// pre-fix route-then-filter found no in-cell target and skipped.
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{15, 0}))
+			spfreshSaveCoarse(tx, storage, 2, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{2, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 10, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 11, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{30, 0}))
+			for i := int64(0); i < int64(config.Kn); i++ {
+				spfreshSaveCentroid(tx, storage, 2, 20+i, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{1 + 0.1*float64(i), 0}))
+			}
+			// One member in the under-Lmin posting.
+			quantizer := newSPFreshQuantizer(config)
+			tx.Set(storage.postingKey(10, member), quantizer.Encode([]float64{0.1, 0}))
+			tx.Set(storage.membershipKey(member), encodeMembership([]int64{10}))
+			tx.Set(storage.sidecarKey(member), vectorcodec.SerializeHalf([]float64{0.1, 0}))
+			spfreshCounterSet(tx, storage, spfreshCounterFine, 10, 1)
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskMerge, 10)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-cell", 1, 10)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cent, cerr := spfreshReadCentroidForWrite(tx, storage, 1, 10)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(cent.state).To(Equal(spfreshStateForward), "merge must drain via the in-cell sibling, not skip because the global top-K lives in another cell")
+			Expect(cent.childA).To(Equal(int64(11)))
+			mem, merr := spfreshReadMembership(tx, storage, member)
+			Expect(merr).NotTo(HaveOccurred())
+			Expect(mem).To(Equal([]int64{11}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("#2: a tombstone rides the coarse split so GC can still find and purge it", func() {

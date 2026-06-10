@@ -68,48 +68,41 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			return nil
 		}
 
-		// Targets: the nearest ACTIVE siblings by centroid distance.
+		// Targets: the nearest ACTIVE siblings IN THE SAME CELL, found by
+		// loading the cell directly — the posting HDR can carry only one
+		// cellID, so cross-cell targets would be invisible to stale queries
+		// resolving the FORWARD (codex 094.3 r1 P2); and filtering a GLOBAL
+		// top-K route down to the cell could come up empty even when the cell
+		// has perfectly good siblings, making an under-Lmin posting a
+		// permanent non-candidate (codex 094.3 r2). The REAL cell read also
+		// fences a racing coarse split of this cell.
 		vec, err := cent.vector()
 		if err != nil {
 			return err
 		}
-		cache := newSPFreshRoutingCache(0)
-		if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
-			return rerr
-		}
-		routed, err := cache.route(tx, s, vec, 4, config.Kn)
-		if err != nil {
-			return err
+		cellRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, cellID)
+		if lerr != nil {
+			return lerr
 		}
 		var targets []spfreshMergeTarget
-		for _, r := range routed {
-			if r.fineID == fineID {
+		for _, r := range cellRows {
+			if r.fineID == fineID || r.row.state != spfreshStateActive {
 				continue
 			}
-			// Targets are restricted to the SAME cell: the posting HDR can
-			// carry only one cellID, and a stale query resolving the FORWARD
-			// looks the targets up in that cell — a cross-cell target would
-			// be invisible to it until a cache reload (codex 094.3 r1 P2).
-			// No in-cell target ⇒ the merge is skipped below.
-			if r.cellID != cellID {
-				continue
-			}
-			// Authoritative state: only ACTIVE rows receive drained members.
-			row, rerr := spfreshReadCentroidForWrite(tx, s, r.cellID, r.fineID)
-			if rerr != nil {
-				if errors.Is(rerr, errSPFreshNotFound) {
-					continue
-				}
-				return rerr
-			}
-			if row.state != spfreshStateActive {
-				continue
-			}
-			tvec, verr := row.vector()
+			tvec, verr := r.row.vector()
 			if verr != nil {
 				return verr
 			}
 			targets = append(targets, spfreshMergeTarget{fineID: r.fineID, vec: tvec})
+		}
+		// Nearest-first by distance to the merged centroid, capped at Kn.
+		for i := 1; i < len(targets); i++ {
+			for j := i; j > 0 && spfreshSquaredDistance(vec, targets[j].vec) < spfreshSquaredDistance(vec, targets[j-1].vec); j-- {
+				targets[j], targets[j-1] = targets[j-1], targets[j]
+			}
+		}
+		if len(targets) > config.Kn {
+			targets = targets[:config.Kn]
 		}
 		if len(targets) == 0 {
 			// No ACTIVE sibling in this cell to drain into (last centroid
