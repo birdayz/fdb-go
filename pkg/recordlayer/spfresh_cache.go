@@ -352,17 +352,27 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 		return routed[i].fineID < routed[j].fineID
 	})
 	if writeBudget {
-		// SEALED entries ride along (the fence resolves their true state)
-		// but only ACTIVE entries consume the budget; 2·kc hard-caps the
+		// Separate budgets per state, one sorted pass: up to kc ACTIVE and
+		// up to kc SEALED. SEALED rides along for the fence to resolve (it
+		// may be FORWARD in storage — codex r3) but can never crowd out the
+		// ACTIVE fallbacks: a single combined cap did exactly that when a
+		// split wave left more than the cap's worth of SEALED rows sorted
+		// ahead of the first ACTIVE one (codex r4). Total ≤ 2·kc bounds the
 		// fence's worst-case state reads.
 		kept := routed[:0]
-		active := 0
+		active, sealed := 0, 0
 		for _, r := range routed {
-			if active >= kc || len(kept) >= 2*kc {
+			if active >= kc {
 				break
 			}
-			if r.state == spfreshStateActive {
+			switch r.state {
+			case spfreshStateActive:
 				active++
+			case spfreshStateSealed:
+				if sealed >= kc {
+					continue
+				}
+				sealed++
 			}
 			kept = append(kept, r)
 		}

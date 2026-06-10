@@ -465,17 +465,18 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(big.stagingScanBatch()).To(BeNumerically(">=", 1))
 	})
 
-	It("write routing excludes SEALED before the candidate cutoff (codex 094.2 r2)", func() {
-		// 17 SEALED centroids nearer than the only ACTIVE one: the insert
-		// route must not let them eat the candidate budget (the fence rejects
-		// them anyway) — pre-fix, routeForWrite didn't exist, SEALED filled
-		// all 16 slots and the ACTIVE fallback was truncated away.
+	It("write routing never lets SEALED rows starve the ACTIVE fallbacks (codex 094.2 r2+r4)", func() {
+		// 40 SEALED centroids — more than ANY combined cap (2·kc = 32) —
+		// nearer than the only ACTIVE one: per-state budgets must still keep
+		// the ACTIVE fallback. Two prior shapes of this bug: r2 (SEALED
+		// consumed the kc slots), r4 (the combined 2·kc cap filled with
+		// SEALED before reaching the first ACTIVE).
 		s := newSPFreshStorage(specSubspace().Sub("spfresh-r2").Sub("sealed-budget"), 1)
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			spfreshSetGeneration(tx, s, 1)
 			spfreshSaveCoarse(tx, s, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
-			for i := int64(0); i < 17; i++ {
+			for i := int64(0); i < 40; i++ {
 				spfreshSaveCentroid(tx, s, 1, 10+i, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{float64(i + 1), 0}))
 			}
 			spfreshSaveCentroid(tx, s, 1, 99, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{50, 0}))
