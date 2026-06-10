@@ -222,6 +222,10 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, 1)
 
 		tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
+		// §6 step 3 follow-up: enqueue the NPA reassignment for the
+		// neighborhood. Carries the children; the parent's posting HDR
+		// (written above, same tx) carries the cell.
+		tx.Set(s.taskKey(spfreshTaskNPA, fineID), encodeTaskRow(spfreshTaskRow{childA: childA, childB: childB}))
 		return spfreshAppendDeltas(tx, s, []spfreshDelta{
 			{op: spfreshOpAddFine, ids: []int64{cellID, childA}},
 			{op: spfreshOpAddFine, ids: []int64{cellID, childB}},

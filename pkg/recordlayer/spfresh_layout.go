@@ -82,6 +82,10 @@ const (
 	spfreshTaskMerge   int64 = 1
 	spfreshTaskCSplit  int64 = 2
 	spfreshTaskCellfin int64 = 3
+	// spfreshTaskNPA is the post-split neighborhood reassignment follow-up
+	// (§6 step 3); id = the split PARENT's fineID, childA/childB carried in
+	// the row. Enqueued by the SPLIT transaction itself.
+	spfreshTaskNPA int64 = 4
 )
 
 // spfreshHDR is the reserved posting/centroid header key element: tuple nil
