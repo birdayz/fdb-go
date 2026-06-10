@@ -171,7 +171,7 @@ enumDefinition
 indexDefinition
     : (UNIQUE)? INDEX indexName=uid AS queryTerm indexAttributes?                                                                  #indexAsSelectDefinition
     | (UNIQUE)? INDEX indexName=uid ON source=fullId indexColumnList includeClause? indexOptions?                                  #indexOnSourceDefinition
-    | VECTOR INDEX indexName=uid USING HNSW ON source=fullId indexColumnList includeClause? indexPartitionClause? vectorIndexOptions?   #vectorIndexDefinition
+    | VECTOR INDEX indexName=uid USING method=(HNSW | SPFRESH) ON source=fullId indexColumnList includeClause? indexPartitionClause? vectorIndexOptions?   #vectorIndexDefinition
     ;
 
 indexColumnList

@@ -218,19 +218,23 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 		}
 	}
 
-	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName)
+	method := "HNSW"
+	if def.GetMethod() != nil {
+		method = strings.ToUpper(def.GetMethod().GetText())
+	}
+	options, err := parseVectorIndexOptions(def.VectorIndexOptions(), indexName, method)
 	if err != nil {
 		return err
 	}
 
-	b.AddVectorIndex(tableName, indexName, vecCols[0], partitionCols, options)
+	b.AddVectorIndexUsing(method, tableName, indexName, vecCols[0], partitionCols, options)
 	return nil
 }
 
 // parseVectorIndexOptions parses the OPTIONS(...) clause of a vector index
 // into recordlayer HNSW option keys. Mirrors Java's
 // DdlVisitor.parseVectorOptions (CONNECTIVITY→HNSW_M, METRIC→enum name, ...).
-func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName string) (map[string]string, error) {
+func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName, method string) (map[string]string, error) {
 	opts := map[string]string{}
 	if ctx == nil {
 		return opts, nil
@@ -261,7 +265,11 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName 
 				return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 					"vector index %q", indexName)
 			}
-			opts[recordlayer.IndexOptionVectorMetric] = metric
+			if method == "SPFRESH" {
+				opts[recordlayer.IndexOptionSPFreshMetric] = metric
+			} else {
+				opts[recordlayer.IndexOptionVectorMetric] = metric
+			}
 		case oc.RABITQ_NUM_EX_BITS() != nil:
 			opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
 		case oc.SAMPLE_VECTOR_STATS_PROBABILITY() != nil:
@@ -270,6 +278,14 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName 
 			opts[recordlayer.IndexOptionHNSWStatsThreshold] = oc.GetStatsThreshold().GetText()
 		case oc.USE_RABITQ() != nil:
 			opts[recordlayer.IndexOptionHNSWUseRaBitQ] = oc.GetUseRabitQ().GetText()
+		}
+	}
+	if method == "SPFRESH" {
+		for k := range opts {
+			if strings.HasPrefix(k, "hnsw") {
+				return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+					"vector index %q: option %q is not supported with USING SPFRESH", indexName, k)
+			}
 		}
 	}
 	return opts, nil
