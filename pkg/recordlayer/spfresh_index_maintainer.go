@@ -68,17 +68,73 @@ func spfreshCacheFor(indexSubspace subspace.Subspace, generation int64) *spfresh
 	return c.(*spfreshRoutingCache)
 }
 
-// Update rejects foreground writes in 094.1 (no fake checkboxes: the
-// conflict-free write path with its state-row fencing is 094.2; silently
-// dropping index maintenance would corrupt the index).
+// Update is the foreground write path (RFC-094 §5, phase 094.2): delete-old
+// then insert-new inside the caller's transaction. The insert re-reads
+// membership itself, so a same-pk save (the common update) is correct either
+// way; the explicit delete branch covers evaluated entries whose vector
+// changed shape or vanished.
 func (m *spfreshIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	return fmt.Errorf("spfresh index %q: foreground record writes are not supported in phase 094.1 (build-then-read; RFC-094 §13) — rebuild the index to incorporate changes", m.index.Name)
+	if oldRecord == nil && newRecord == nil {
+		return nil
+	}
+	wc, err := m.spfreshResolveForWrite()
+	if err != nil {
+		return err
+	}
+
+	if oldRecord != nil {
+		entries, eerr := m.evaluateIndex(oldRecord)
+		if eerr != nil {
+			return fmt.Errorf("evaluate spfresh index %q for old record: %w", m.index.Name, eerr)
+		}
+		for _, entry := range entries {
+			// Delete is membership-driven by pk: it never needs the old vector
+			// decoded (mirrors the HNSW delete contract — a record saved
+			// unindexable by an older binary must stay deletable).
+			pk, terr := m.index.TrimPrimaryKey(entry.primaryKey)
+			if terr != nil {
+				return terr
+			}
+			if derr := m.spfreshDelete(wc, pk); derr != nil {
+				return derr
+			}
+		}
+	}
+
+	if newRecord != nil {
+		entries, eerr := m.evaluateIndex(newRecord)
+		if eerr != nil {
+			return fmt.Errorf("evaluate spfresh index %q for new record: %w", m.index.Name, eerr)
+		}
+		for _, entry := range entries {
+			vec, verr := spfreshEntryVector(m.index, entry)
+			if verr != nil {
+				return verr
+			}
+			if vec == nil {
+				continue // absent/null vector: unindexed
+			}
+			if len(vec) != m.config.NumDimensions {
+				return fmt.Errorf("spfresh index %q: record vector has %d dimensions, index has %d", m.index.Name, len(vec), m.config.NumDimensions)
+			}
+			pk, terr := m.index.TrimPrimaryKey(entry.primaryKey)
+			if terr != nil {
+				return terr
+			}
+			if ierr := m.spfreshInsert(wc, pk, vec); ierr != nil {
+				return ierr
+			}
+		}
+	}
+	return nil
 }
 
-// UpdateWhileWriteOnly: same contract in 094.1 (the build/foreground staging
-// interleaving is 094.2).
+// UpdateWhileWriteOnly rejects writes until the build/foreground staging
+// interleaving lands (later in 094.2): the bulk build's record scan would
+// miss records saved behind its continuation, silently dropping them from
+// the index.
 func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	return m.Update(oldRecord, newRecord)
+	return fmt.Errorf("spfresh index %q: writes during a bulk build are not supported yet (RFC-094 §8 staging interleaving) — build with the index disabled, then mark readable", m.index.Name)
 }
 
 // Scan: vector indexes have no meaningful BY_VALUE range scan (entries are

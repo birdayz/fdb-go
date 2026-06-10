@@ -80,6 +80,7 @@ go_library(
         "spfresh_query.go",
         "spfresh_storage.go",
         "spfresh_util.go",
+        "spfresh_write.go",
         "split_helper.go",
         "split_key_expression.go",
         "store.go",

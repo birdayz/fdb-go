@@ -10,6 +10,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
@@ -37,7 +38,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		return idx
 	}
 
-	It("build-then-read: records -> BuildSPFreshIndex -> ScanByDistance; writes rejected per 094.1", func() {
+	It("build-then-read: records -> BuildSPFreshIndex -> ScanByDistance -> live writes (094.2)", func() {
 		ks := specSubspace()
 		idx := newIndex("spf_price_qty")
 		builder := baseMetaData()
@@ -132,16 +133,67 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Phase D: the 094.1 contract — foreground writes against the readable
-		// index are rejected loudly (never silently dropped maintenance).
+		// Phase D: the 094.2 foreground write path, end to end through
+		// SaveRecord/DeleteRecord against the READABLE index.
+		knn := func(q []float64, k int) []int64 {
+			var got []int64
+			_, kerr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				Expect(serr).NotTo(HaveOccurred())
+				maintainer, merr := store.getIndexMaintainer(idx)
+				Expect(merr).NotTo(HaveOccurred())
+				cursor := maintainer.(interface {
+					ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+				}).ScanByDistance(TupleRange{
+					Low:  tuple.Tuple{SerializeVector(q)},
+					High: tuple.Tuple{int64(k)},
+				}, nil, ScanProperties{})
+				got = got[:0]
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					Expect(cerr).NotTo(HaveOccurred())
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				return nil, nil
+			})
+			Expect(kerr).NotTo(HaveOccurred())
+			return got
+		}
+
+		// Insert: a brand-new record becomes searchable.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
 			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(1), Quantity: proto.Int32(1)})
 			return nil, serr
 		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("not supported in phase 094.1"))
+		Expect(err).NotTo(HaveOccurred(), "094.2: foreground insert against the readable index")
+		Expect(knn([]float64{1, 1}, 1)).To(Equal([]int64{99}), "inserted record is the nearest to its own vector")
+
+		// Update: the SAME pk re-saved with a new vector moves; the old
+		// location is cleared (membership-driven, same-tx read).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(200), Quantity: proto.Int32(200)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(knn([]float64{200, 200}, 1)).To(Equal([]int64{99}), "updated record found at its new vector")
+		Expect(knn([]float64{1, 1}, 1)).NotTo(Equal([]int64{99}), "updated record no longer at its old vector")
+
+		// Delete: the record disappears from kNN results entirely.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, derr := store.DeleteRecord(tuple.Tuple{int64(99)})
+			return nil, derr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(knn([]float64{200, 200}, 8)).NotTo(ContainElement(int64(99)), "deleted record gone from kNN")
 	})
 
 	It("rejects an invalid SPFresh config at maintainer construction", func() {
@@ -191,6 +243,159 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("SPFresh 094.2 write path", func() {
+	ctx := context.Background()
+
+	baseMD := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		return builder
+	}
+	spfIndex := func(name string) *Index {
+		idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "32",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		return idx
+	}
+
+	// setupBuilt loads the given points, builds, and marks readable; returns
+	// the store builder and the index subspace for direct state inspection.
+	setupBuilt := func(name string, ids []int64, at func(int64) (int32, int32)) (func(*FDBRecordContext) (*FDBRecordStore, error), subspace.Subspace) {
+		ks := specSubspace()
+		idx := spfIndex(name)
+		builder := baseMD()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		var indexSubspace subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			indexSubspace = store.indexSubspace(idx)
+			_, serr = store.MarkIndexDisabled(name)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for _, id := range ids {
+				p, q := at(id)
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, name, 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.MarkIndexReadable(name)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return storeBuilder, indexSubspace
+	}
+
+	countTasks := func(indexSubspace subspace.Subspace, kind int64) int {
+		storage := newSPFreshStorage(indexSubspace, 1)
+		n := 0
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			n = 0
+			r, rerr := fdb.PrefixRange(storage.tasks.Bytes())
+			Expect(rerr).NotTo(HaveOccurred())
+			kvs, gerr := rtx.Transaction().GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			for _, kv := range kvs {
+				t, terr := storage.tasks.Unpack(kv.Key)
+				Expect(terr).NotTo(HaveOccurred())
+				if t[0].(int64) == kind {
+					n++
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return n
+	}
+
+	It("overfilling a posting past Lmax writes a split trigger task", func() {
+		ids := make([]int64, 8)
+		for i := range ids {
+			ids[i] = int64(i + 1)
+		}
+		// All build points tightly clustered: one fine centroid takes them all.
+		storeBuilder, indexSubspace := setupBuilt("spf_split_trigger", ids, func(id int64) (int32, int32) {
+			return int32(10 + id%2), int32(10 + id%3)
+		})
+		Expect(countTasks(indexSubspace, spfreshTaskSplit)).To(BeZero(), "no split trigger after a balanced build")
+
+		// Insert far past 2×Lmax = 64 at the same spot: the unconditional
+		// branch guarantees the trigger regardless of pk-hash sampling.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for id := int64(100); id < 180; id++ {
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countTasks(indexSubspace, spfreshTaskSplit)).To(BeNumerically(">", 0),
+			"a posting past the overfill ceiling must have enqueued a split task")
+	})
+
+	It("draining a posting below Lmin writes a merge trigger task", func() {
+		// Deletion order ends on SAMPLED pks (the probe is 1-in-8 by pk hash,
+		// deterministic) so the sub-Lmin probe is guaranteed to run.
+		var sampled, unsampled []int64
+		for id := int64(1); len(sampled) < 4 || len(unsampled) < 8; id++ {
+			if spfreshSampledProbe(tuple.Tuple{id}) {
+				if len(sampled) < 4 {
+					sampled = append(sampled, id)
+				}
+			} else if len(unsampled) < 8 {
+				unsampled = append(unsampled, id)
+			}
+		}
+		ids := append(append([]int64{}, unsampled...), sampled...)
+		storeBuilder, indexSubspace := setupBuilt("spf_merge_trigger", ids, func(id int64) (int32, int32) {
+			return int32(10 + id%2), int32(10 + id%3)
+		})
+		Expect(countTasks(indexSubspace, spfreshTaskMerge)).To(BeZero())
+
+		// Delete unsampled first, sampled last: by the time the posting is
+		// below Lmin = Lmax/8 = 4, sampled deletes are still arriving.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for _, id := range ids {
+				if _, derr := store.DeleteRecord(tuple.Tuple{id}); derr != nil {
+					return nil, derr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(countTasks(indexSubspace, spfreshTaskMerge)).To(BeNumerically(">", 0),
+			"a drained posting must have enqueued a merge task")
 	})
 })
 
