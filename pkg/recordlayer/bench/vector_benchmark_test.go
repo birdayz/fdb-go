@@ -1141,7 +1141,7 @@ func TestVectorBuildLarge(t *testing.T) {
 	// Datasets larger than RAM need disk-backed FDB (the shared bench DB uses the
 	// memory engine on tmpfs). VECTOR_BENCH_DISK=1 spins a dedicated disk-backed
 	// container with an SSD storage engine.
-	db := vectorBenchDB
+	var db *recordlayer.FDBDatabase
 	if os.Getenv("VECTOR_BENCH_DISK") == "1" {
 		db = vecDiskBackedDB(t)
 	} else {

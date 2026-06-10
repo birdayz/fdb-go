@@ -156,11 +156,12 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	storage := newSPFreshStorage(m.indexSubspace, gen)
 	cache := spfreshCacheFor(m.indexSubspace, gen)
 
-	// Off-query-path in steady state: the refresh is incremental and usually
-	// a no-op; only a cold cache pays the full reload here (RFC-094 §4's
-	// timer arrives with the rebalancer in 094.3 — until then topology only
-	// changes at rebuilds, which change the generation and hence the cache).
-	if rerr := cache.refresh(m.tx, storage, gen); rerr != nil {
+	// Queries pay ZERO cache-maintenance I/O once loaded (RFC-094 §4 — the
+	// per-query changelog read was the rev-2-NAK'd hot-key anti-pattern, and
+	// it cost ~half the measured p50 at SIFT-100k). In 094.1 the topology is
+	// static per generation: only a cold cache or a generation change reloads;
+	// the incremental timer refresh arrives with the rebalancer in 094.3.
+	if !cache.ready(gen) {
 		if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
 			return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
 		}
@@ -180,64 +181,90 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 // point; resumable builds via OnlineIndexer integration land with 094.2's
 // staging interleaving.
 func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, seed int64) error {
-	// Collect inputs: scan all records, evaluate the index expression.
+	// Collect inputs: scan the records in CONTINUATION-BATCHED transactions —
+	// one unbounded scan blows the 5 s FDB transaction limit at scale and the
+	// retry loop restarts it from scratch forever (caught by the SIFT-100k
+	// benchmark hanging in exactly that loop). Each tx reads up to
+	// spfreshScanBatch records and hands its continuation to the next.
+	const spfreshScanBatch = 1000
 	var inputs []spfreshBuildInput
 	var index *Index
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
-	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-		store, serr := storeBuilder(rtx)
-		if serr != nil {
-			return serr
-		}
-		index = store.GetMetaData().GetIndex(indexName)
-		if index == nil {
-			return fmt.Errorf("spfresh build: index %q not found", indexName)
-		}
-		if index.Type != IndexTypeVectorSPFresh {
-			return fmt.Errorf("spfresh build: index %q has type %q", indexName, index.Type)
-		}
-		config = parseSPFreshConfig(index)
-		if verr := ValidateSPFreshConfig(config); verr != nil {
-			return verr
-		}
-		indexSubspace = store.indexSubspace(index)
-		evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
-
-		cursor := store.ScanRecords(nil, ScanProperties{})
-		defer func() { _ = cursor.Close() }()
-		for {
-			result, cerr := cursor.OnNext(ctx)
-			if cerr != nil {
-				return cerr
+	var continuation []byte
+	for first := true; first || continuation != nil; first = false {
+		// Per-attempt staging: the body may RETRY (1007/1020); appending to
+		// the outer slices inside it would duplicate the batch.
+		var batchInputs []spfreshBuildInput
+		var nextContinuation []byte
+		err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			batchInputs = batchInputs[:0]
+			nextContinuation = nil
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return serr
 			}
-			if !result.HasNext() {
-				break
-			}
-			rec := result.GetValue()
-			entries, eerr := evaluator.evaluateIndex(rec)
-			if eerr != nil {
-				return eerr
-			}
-			for _, entry := range entries {
-				vec, verr := spfreshEntryVector(index, entry)
-				if verr != nil {
+			if index == nil {
+				index = store.GetMetaData().GetIndex(indexName)
+				if index == nil {
+					return fmt.Errorf("spfresh build: index %q not found", indexName)
+				}
+				if index.Type != IndexTypeVectorSPFresh {
+					return fmt.Errorf("spfresh build: index %q has type %q", indexName, index.Type)
+				}
+				config = parseSPFreshConfig(index)
+				if verr := ValidateSPFreshConfig(config); verr != nil {
 					return verr
 				}
-				if vec == nil {
-					continue // absent/null vector: unindexed
-				}
-				trimmedPK, terr := index.TrimPrimaryKey(entry.primaryKey)
-				if terr != nil {
-					return terr
-				}
-				inputs = append(inputs, spfreshBuildInput{pk: trimmedPK, vec: vec})
+				indexSubspace = store.indexSubspace(index)
 			}
+			evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
+
+			props := ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: spfreshScanBatch}}
+			cursor := store.ScanRecords(continuation, props)
+			defer func() { _ = cursor.Close() }()
+			for {
+				result, cerr := cursor.OnNext(ctx)
+				if cerr != nil {
+					return cerr
+				}
+				if !result.HasNext() {
+					if !result.GetNoNextReason().IsSourceExhausted() {
+						cont, cterr := result.GetContinuation().ToBytes()
+						if cterr != nil {
+							return cterr
+						}
+						nextContinuation = cont
+					}
+					break
+				}
+				rec := result.GetValue()
+				entries, eerr := evaluator.evaluateIndex(rec)
+				if eerr != nil {
+					return eerr
+				}
+				for _, entry := range entries {
+					vec, verr := spfreshEntryVector(index, entry)
+					if verr != nil {
+						return verr
+					}
+					if vec == nil {
+						continue // absent/null vector: unindexed
+					}
+					trimmedPK, terr := index.TrimPrimaryKey(entry.primaryKey)
+					if terr != nil {
+						return terr
+					}
+					batchInputs = append(batchInputs, spfreshBuildInput{pk: trimmedPK, vec: vec})
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-		return nil
-	})
-	if err != nil {
-		return err
+		inputs = append(inputs, batchInputs...)
+		continuation = nextContinuation
 	}
 	if len(inputs) == 0 {
 		return fmt.Errorf("spfresh build: no records with vectors for index %q", indexName)

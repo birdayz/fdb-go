@@ -117,6 +117,17 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	return nil
 }
 
+// ready reports whether the cache is loaded for the given generation — the
+// query path's zero-I/O check (RFC-094 §4: queries never pay a cache-
+// maintenance round trip; refresh runs on the maintainer's timer in 094.3,
+// and in 094.1 the topology is static per generation, so a loaded cache stays
+// valid until the generation changes).
+func (c *spfreshRoutingCache) ready(currentGeneration int64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cursor != nil && c.generation == currentGeneration && len(c.coarseIDs) > 0
+}
+
 // refresh applies changelog deltas since the cursor (the background-timer
 // body, RFC-094 §4). Returns errSPFreshNotFound when the cache needs a full
 // reload instead (generation flip observed, or the cursor predates the GC
