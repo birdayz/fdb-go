@@ -379,8 +379,19 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
 	if err != nil {
 		if errors.Is(err, errSPFreshNotFound) {
-			// No generation = nothing was ever inserted or built (§6b
-			// insert-first flow): an empty index answers kNN with zero rows.
+			// No generation: either nothing was ever inserted or built (§6b
+			// insert-first — zero rows), or a bulk build holds the token and
+			// has not flipped yet — that index is BUILDING, and silently
+			// reporting it empty would be a lie (codex 094.4 r2; same
+			// distinction the insert path draws). Snapshot read: queries
+			// take no conflict ranges.
+			tok, terr := m.tx.Snapshot().Get(metaStorage.metaKey(spfreshMetaBuild)).Get()
+			if terr != nil {
+				return nil, terr
+			}
+			if tok != nil {
+				return nil, fmt.Errorf("spfresh index %q: a bulk build is in flight (or died before flipping) — retry after it completes, or rerun BuildSPFreshIndex", m.index.Name)
+			}
 			return nil, nil
 		}
 		return nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)

@@ -446,14 +446,17 @@ var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
 	})
 })
 
-// codex 094.4 P2: a query against the freshly bootstrapped (still empty)
-// index caches the bootstrap cell with zero candidates; the first insert must
-// evict that cached cell or same-process queries miss the record until the
-// throttled refresh fires.
+// codex 094.4 P2: a query against a bootstrapped-but-centroidless index
+// caches the bootstrap cell with zero candidates; the first centroid mint
+// must evict that cached cell or same-process queries miss the record until
+// the throttled refresh fires. The window is reachable from the public
+// surface: a SaveRecord whose vector evaluates NULL (unset fields) bootstraps
+// the generation WITHOUT minting a centroid (Update resolves-for-write before
+// skipping the nil vector).
 var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
 	ctx := context.Background()
 
-	It("a query cached against the empty index sees the first insert immediately", func() {
+	It("a query cached against the centroidless index sees the first real insert immediately", func() {
 		ks := specSubspace()
 		idx := NewIndex("spf_boot_cache", Concat(Field("price"), Field("quantity")))
 		idx.Type = IndexTypeVectorSPFresh
@@ -501,31 +504,36 @@ var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
 			return got
 		}
 
-		// First insert: bootstraps generation + cell (still no centroid until
-		// THIS insert mints one — but the cache hasn't seen the cell yet).
+		// NULL-vector save: bootstraps generation 1 + the empty cell, mints
+		// NO centroid (the vector evaluates nil and the insert is skipped).
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
 			return nil, serr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		// Delete it again: the posting empties but the topology stays.
+
+		// Query the centroidless index: zero rows — and the L2 cache now
+		// holds the EMPTY bootstrap cell.
+		Expect(knn([]float64{10, 10}, 3)).To(BeEmpty())
+
+		// Pin the throttle window deterministically: the amortized refresh
+		// just fired, so the next query inside the interval will NOT consult
+		// the changelog.
+		var indexSubspace subspace.Subspace
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
-			_, derr := store.DeleteRecord(tuple.Tuple{int64(1)})
-			return nil, derr
+			indexSubspace = store.indexSubspace(idx)
+			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+		spfreshCacheFor(indexSubspace, 1).lastRefreshMs.Store(spfreshNowMs())
 
-		// Query the EMPTY index: this caches the (empty-ish) cell in the
-		// process-local L2.
-		Expect(knn([]float64{10, 10}, 3)).To(BeEmpty())
-
-		// Insert: pre-fix, the cached empty cell kept routing to zero
-		// candidates until the throttled refresh — the record was invisible
-		// in this process.
+		// First REAL insert: mints the centroid — and must evict the cached
+		// empty cell (pre-fix it did not, and this query returned zero rows
+		// until the refresh interval expired).
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			Expect(serr).NotTo(HaveOccurred())
@@ -534,6 +542,114 @@ var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(knn([]float64{11, 11}, 3)).To(ContainElement(int64(2)),
-			"first insert must be visible to a process that cached the empty index")
+			"first real insert must be visible to a process that cached the centroidless index")
+	})
+})
+
+// codex 094.4 r2 regressions.
+var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", func() {
+	ctx := context.Background()
+
+	It("a cosine query exactly at a centroid returns the match, not an estimator error", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_cosine_exact", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshMetric:        "COSINE_METRIC",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		// Cold-start insert: the FIRST centroid is minted AT this vector, so
+		// querying the same vector makes the residual exactly zero — the case
+		// the RaBitQ estimator rejects for cosine.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			cursor := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			}).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector([]float64{3, 4})},
+				High: tuple.Tuple{int64(1)},
+			}, nil, ScanProperties{})
+			res, cerr := cursor.OnNext(ctx)
+			Expect(cerr).NotTo(HaveOccurred(), "cosine exact-match query must not fail on the zero-residual estimate")
+			Expect(res.HasNext()).To(BeTrue())
+			Expect(res.GetValue().Key[0]).To(Equal(int64(1)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a scan during an in-flight build errors instead of reporting the index empty", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_scan_vs_build", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		// The build's entry state: token taken, no generation.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
+			spfreshTakeBuilderToken(rtx.Transaction(), metaStorage, []byte("in-flight-build"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			cursor := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			}).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector([]float64{1, 1})},
+				High: tuple.Tuple{int64(1)},
+			}, nil, ScanProperties{})
+			_, cerr := cursor.OnNext(ctx)
+			Expect(cerr).To(HaveOccurred(), "a building index must not silently report zero rows")
+			Expect(cerr.Error()).To(ContainSubstring("bulk build is in flight"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

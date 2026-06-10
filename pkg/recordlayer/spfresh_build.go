@@ -501,11 +501,12 @@ func (b *spfreshBuilder) newQuantizer() *spfreshQuantizer {
 
 // spfreshQuantizer wraps the RaBitQ quantizer for posting residual codes.
 type spfreshQuantizer struct {
-	q VectorQuantizer
+	q      VectorQuantizer
+	config SPFreshConfig
 }
 
 func newSPFreshQuantizer(config SPFreshConfig) *spfreshQuantizer {
-	return &spfreshQuantizer{q: spfreshNewRaBitQ(config)}
+	return &spfreshQuantizer{q: spfreshNewRaBitQ(config), config: config}
 }
 
 func (s *spfreshQuantizer) Encode(residual []float64) []byte {
@@ -516,6 +517,21 @@ func (s *spfreshQuantizer) Encode(residual []float64) []byte {
 // when the quantizer is RaBitQ (the posting-scan hot path — 094.4), falling
 // back to the general Distance for any other VectorQuantizer.
 func (s *spfreshQuantizer) scorer(residualQuery []float64, dims int) func(code []byte) (float64, error) {
+	// Cosine + zero RESIDUAL is a legitimate SPFresh input (the query equals
+	// a centroid — e.g. querying the first inserted vector), but the RaBitQ
+	// estimator rejects zero-norm cosine queries by design. Estimates only
+	// rank candidates for the top-C cut; the sidecar re-rank is exact — so
+	// rank that posting's entries with a constant best-case estimate and let
+	// the re-rank sort truth (codex 094.4 r2).
+	if s.config.Metric == VectorMetricCosine {
+		var norm float64
+		for _, v := range residualQuery {
+			norm += v * v
+		}
+		if !(norm > 0) {
+			return func([]byte) (float64, error) { return 0, nil }
+		}
+	}
 	if rq, ok := s.q.(*rabitq.Quantizer); ok {
 		sc := rq.NewScorer(residualQuery)
 		return func(code []byte) (float64, error) { return sc.Score(code, dims) }
