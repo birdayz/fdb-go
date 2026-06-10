@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -162,9 +163,18 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 		}
 	}
 
-	// 6: flip readable.
+	// 6: flip readable — CAS: only from the generation this build was based
+	// on (codex r3: a concurrent build that flipped first must not be
+	// overwritten; the REAL read's conflict range serializes racing flips).
 	err = spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
+		cur, cerr := spfreshReadGenerationForWrite(tx, newSPFreshStorage(b.storage.index, 0))
+		if cerr != nil && !errors.Is(cerr, errSPFreshNotFound) {
+			return cerr
+		}
+		if cerr == nil && cur >= b.storage.generation {
+			return fmt.Errorf("spfresh build: concurrent build flipped generation %d first; this build (gen %d) is abandoned", cur, b.storage.generation)
+		}
 		spfreshSetGeneration(tx, b.storage, b.storage.generation)
 		return spfreshAppendDeltas(tx, b.storage, []spfreshDelta{
 			{op: spfreshOpGeneration, ids: []int64{b.storage.generation}},

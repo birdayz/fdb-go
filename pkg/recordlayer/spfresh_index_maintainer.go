@@ -315,6 +315,17 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// centroids for the newly scanned inputs (codex 094.1 r2). The target is
 	// not readable (the flip never happened), so clearing it is safe.
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		// CAS fence (codex r3): another builder may have flipped oldGen+1
+		// readable since the snapshot read above — clearing it then would
+		// destroy the LIVE generation. Re-verify with a REAL read (the
+		// conflict range also serializes against a concurrent flip).
+		cur, cerr := spfreshReadGenerationForWrite(rtx.Transaction(), newSPFreshStorage(indexSubspace, 0))
+		if cerr != nil && !errors.Is(cerr, errSPFreshNotFound) {
+			return cerr
+		}
+		if cerr == nil && cur != oldGen {
+			return fmt.Errorf("spfresh build: concurrent build detected (generation moved %d -> %d); retry the build", oldGen, cur)
+		}
 		r, rerr := storage.generationRange()
 		if rerr != nil {
 			return rerr
