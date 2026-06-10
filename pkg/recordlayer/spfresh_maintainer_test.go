@@ -247,9 +247,11 @@ var _ = Describe("SPFresh 094.1 review regressions", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_scanbatch", 7)).To(Succeed())
 
-		// Every record indexed exactly once: membership exists per pk, and the
-		// total posting entries match the closure copy-sets (no duplicates
-		// from a re-scanned batch).
+		// Every record indexed: membership exists per pk. (Duplicates from a
+		// re-scanned batch are structurally idempotent — staging keys are
+		// (cellID, pk) Sets — so presence is the meaningful assertion here;
+		// the per-attempt staging in BuildSPFreshIndex is what prevents the
+		// retry-duplication class.)
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			store, serr := storeBuilder(rtx)

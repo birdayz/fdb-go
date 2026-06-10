@@ -80,6 +80,13 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 			if derr != nil {
 				return derr
 			}
+			if row.childB != int64(len(coarse)) {
+				// A prior ABANDONED build's residue with a different record
+				// set (BuildSPFreshIndex clears the target generation before
+				// building, so this is defense-in-depth, not a live path):
+				// reusing it would index coarseVec out of range.
+				return fmt.Errorf("spfresh build: build-state row records %d cells, this run computed %d — clear the target generation and rebuild", row.childB, len(coarse))
+			}
 			b.cellIDs = make([]int64, row.childB)
 			for i := range b.cellIDs {
 				b.cellIDs[i] = row.childA + int64(i)

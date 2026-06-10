@@ -39,6 +39,14 @@ func newSPFreshIndexMaintainer(
 	if err := ValidateSPFreshConfig(config); err != nil {
 		return nil, fmt.Errorf("spfresh index %q: %w", index.Name, err)
 	}
+	if index.primaryKeyComponentPositions != nil {
+		// The index stores TrimPrimaryKey'd tails; with PK components shared
+		// into the index key the tail is not the full primary key, and
+		// pinning it on scan entries would make the executor LoadRecord the
+		// wrong key (codex 094.1 r2). Full-PK reconstruction lands with the
+		// grouped/prefixed support; reject the shape until then.
+		return nil, fmt.Errorf("spfresh index %q: primary-key components shared with the index key are not supported in 094.1", index.Name)
+	}
 	return &spfreshIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		config:                  config,
@@ -301,6 +309,21 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return err
 	}
 	storage := newSPFreshStorage(indexSubspace, oldGen+1)
+	// Abandoned-build GC at the entry point (RFC-094 §3): a prior build into
+	// this same target that aborted PRE-FLIP left build-state/cell residue a
+	// fresh run would mistake for its own commit retries — publishing stale
+	// centroids for the newly scanned inputs (codex 094.1 r2). The target is
+	// not readable (the flip never happened), so clearing it is safe.
+	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		r, rerr := storage.generationRange()
+		if rerr != nil {
+			return rerr
+		}
+		rtx.Transaction().ClearRange(r)
+		return nil
+	}); err != nil {
+		return err
+	}
 	builder := newSPFreshBuilder(db, storage, config, fmt.Sprintf("build-%s", indexName))
 	if berr := builder.build(ctx, inputs, seed); berr != nil {
 		return berr
