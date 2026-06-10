@@ -60,6 +60,10 @@ const (
 // waves a cell's centroids exist but its postings do not — a build-time
 // straggler routes to the live path only on FINALIZED.
 const (
+	// Split-task lifecycle states (§6; the task row's state byte).
+	spfreshSplitTaskPending byte = 0 // trigger filed, not sealed
+	spfreshSplitTaskSealed  byte = 1 // SEALED, childIDs minted in the row
+
 	spfreshCellfinClaimed       byte = 0
 	spfreshCellfinCentroidsDone byte = 1
 	spfreshCellfinFinalized     byte = 2
