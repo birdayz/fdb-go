@@ -53,6 +53,10 @@ type spfreshCachedCell struct {
 	lruElem *list.Element
 }
 
+// errSPFreshEmptyRouting: the cache holds no coarse cells — never loaded, or
+// the index is freshly bootstrapped and empty.
+var errSPFreshEmptyRouting = errors.New("spfresh: routing cache has no coarse cells (reload required)")
+
 // spfreshDefaultMaxCells bounds L2 residency per cache. At cellTarget=48 and
 // 768D fp64-decoded vectors a cell is ~300 KB; 1024 cells ≈ 300 MB worst case
 // — within the RFC's per-tenant budget; the multi-tenant global budget is the
@@ -275,9 +279,10 @@ func (c *spfreshRoutingCache) ensureCell(tx fdb.ReadTransaction, s *spfreshStora
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 && fwdA == 0 && fwdB == 0 {
-		return nil, fmt.Errorf("spfresh: cell %d empty and not forwarded: %w", cellID, errSPFreshNotFound)
-	}
+	// An empty, unforwarded cell is a VALID state: the §6b cold-start
+	// bootstrap creates exactly one until the first insert mints a centroid.
+	// It caches as an empty cell (zero candidates) rather than erroring —
+	// queries against an empty index return zero rows.
 	cell = &spfreshCachedCell{fwd: [2]int64{fwdA, fwdB}}
 	for _, r := range rows {
 		vec, verr := r.row.vector()
@@ -342,7 +347,7 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 	vecs := c.coarseVecs
 	c.mu.RUnlock()
 	if len(ids) == 0 {
-		return nil, errors.New("spfresh: routing cache has no coarse cells (reload required)")
+		return nil, errSPFreshEmptyRouting
 	}
 
 	cells := spfreshNearestK(query, ids, vecs, w)

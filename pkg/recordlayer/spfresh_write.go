@@ -54,10 +54,18 @@ type spfreshWriteContext struct {
 func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext, error) {
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0)
 	gen, err := spfreshReadGenerationForWrite(m.tx, metaStorage)
+	if errors.Is(err, errSPFreshNotFound) {
+		// Cold start (RFC-094 §6b): a READABLE index with no generation is an
+		// EMPTY index — the SQL flow is CREATE INDEX then INSERT, no bulk
+		// build. Bootstrap generation 1 with one cell in this same
+		// transaction; the REAL generation read above fences racing first
+		// inserts (both see absent, both write, the loser aborts at the
+		// resolver and its retry sees the bootstrap). Fine centroids arrive
+		// with the inserts themselves; fine and coarse splits grow the shape
+		// from there — growth never requires a retrain.
+		gen, err = m.spfreshBootstrap(metaStorage)
+	}
 	if err != nil {
-		if errors.Is(err, errSPFreshNotFound) {
-			return nil, fmt.Errorf("spfresh index %q: no readable generation — bulk-build the index before writing records (RFC-094 build-then-write)", m.index.Name)
-		}
 		return nil, err
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
@@ -78,7 +86,26 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple.Tuple, vec []float64) error {
 	routed, err := wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
 	if err != nil {
-		return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
+		if !errors.Is(err, errSPFreshEmptyRouting) {
+			return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
+		}
+		// Freshly bootstrapped index: the cache has no coarse cells yet.
+		if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
+			return rerr
+		}
+		routed = nil
+	}
+	if len(routed) == 0 {
+		// No fine centroids exist yet: this insert mints the first (§6b).
+		first, ferr := m.spfreshFirstCentroid(wc.storage, vec)
+		if ferr != nil && !errors.Is(ferr, errSPFreshStaleRoute) {
+			return ferr
+		}
+		if ferr == nil {
+			routed = first
+		} else if routed, err = wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates); err != nil {
+			return fmt.Errorf("spfresh index %q: route insert (post-mint): %w", m.index.Name, err)
+		}
 	}
 	ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec)
 	if !errors.Is(ierr, errSPFreshStaleRoute) {
@@ -106,6 +133,78 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 // fence — the routing cache is stale beyond in-place recovery and must be
 // reloaded.
 var errSPFreshStaleRoute = errors.New("spfresh: routed candidates all stale (cache reload required)")
+
+// spfreshBootstrap establishes generation 1 with a single empty cell — the
+// §6b cold-start shape. Runs inside the caller's transaction; the caller has
+// already REAL-read the generation as absent (the racing-bootstrap fence).
+func (m *spfreshIndexMaintainer) spfreshBootstrap(metaStorage *spfreshStorage) (int64, error) {
+	storage := newSPFreshStorage(m.indexSubspace, 1)
+	cellID, err := spfreshClaimIDBlock(m.tx, storage)
+	if err != nil {
+		return 0, err
+	}
+	// The cell's routing vector is the zero vector — with one cell, routing
+	// is degenerate anyway, and the first coarse split recomputes fresh
+	// 2-means centers by construction.
+	spfreshSaveCoarse(m.tx, storage, cellID, encodeCentroidRow(spfreshStateActive, 0, 0, 0, make([]float64, m.config.NumDimensions)))
+	spfreshCounterSet(m.tx, storage, spfreshCounterCell, cellID, 0)
+	spfreshSetGeneration(m.tx, metaStorage, 1)
+	if err := spfreshAppendDeltas(m.tx, storage, []spfreshDelta{
+		{op: spfreshOpAddCell, ids: []int64{cellID}},
+		{op: spfreshOpGeneration, ids: []int64{1}},
+	}); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+// spfreshFirstCentroid creates the index's first fine centroid AT the
+// inserted vector (§6b: "one cell, one fine centroid (first vector)") and
+// returns it as the routed candidate set. Same-transaction with the insert;
+// racing first inserts conflict on the cell's centroid range read.
+func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, vec []float64) ([]spfreshRouted, error) {
+	ids, _, err := spfreshLoadAllCoarseForWrite(m.tx, storage)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("spfresh index %q: no coarse cells (corrupt bootstrap)", m.index.Name)
+	}
+	cellID := ids[0]
+	// REAL-read the cell: two racing first inserts both see it empty and both
+	// mint a centroid — the range conflict aborts one, whose retry routes to
+	// the winner's centroid normally.
+	rows, _, _, lerr := spfreshLoadCellForWrite(m.tx, storage, cellID)
+	if lerr != nil {
+		return nil, lerr
+	}
+	if len(rows) > 0 {
+		return nil, errSPFreshStaleRoute // someone else just minted: re-route
+	}
+	fineID, err := spfreshClaimIDBlock(m.tx, storage)
+	if err != nil {
+		return nil, err
+	}
+	rt, rerr := vectorcodecRoundtrip(vec)
+	if rerr != nil {
+		return nil, rerr
+	}
+	spfreshSaveCentroid(m.tx, storage, cellID, fineID, encodeCentroidRow(spfreshStateActive, 0, 0, 0, rt))
+	spfreshCounterSet(m.tx, storage, spfreshCounterFine, fineID, 0)
+	spfreshCounterAdd(m.tx, storage, spfreshCounterCell, cellID, 1)
+	if err := spfreshAppendDeltas(m.tx, storage, []spfreshDelta{
+		{op: spfreshOpAddFine, ids: []int64{cellID, fineID}},
+	}); err != nil {
+		return nil, err
+	}
+	return []spfreshRouted{{cellID: cellID, fineID: fineID, state: spfreshStateActive, vec: rt, d2: 0}}, nil
+}
+
+// vectorcodecRoundtrip pins a vector to its stored fp16 form (one table, one
+// set of bytes — the Torvalds 094.2 #3 rule).
+func vectorcodecRoundtrip(vec []float64) ([]float64, error) {
+	return vectorcodec.Deserialize(vectorcodec.SerializeHalf(vec))
+}
 
 // spfreshInsertRouted is the post-routing half of the insert; the WriteOnly
 // staging path routes within a single FINALIZED cell instead of on the cache.

@@ -277,3 +277,96 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// The SQL-shape lifecycle (RFC-094 §6b cold start): CREATE INDEX on an empty
+// store, INSERT records — no bulk build anywhere. The first insert bootstraps
+// generation 1 + the first centroid; growth is splits all the way up.
+var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
+	ctx := context.Background()
+
+	It("a readable empty index accepts inserts from zero and serves kNN", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_bootstrap", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		// Query against the EMPTY readable index: zero rows, no error.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			// First insert: bootstraps generation + first centroid in-tx.
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred(), "first insert must bootstrap the §6b cold-start shape")
+
+		// 150 more inserts + periodic rebalancing grow the topology.
+		for lo := 0; lo < 150; lo += 50 {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				for i := lo; i < lo+50; i++ {
+					id := int64(100 + i)
+					if _, serr := store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(int32((i * 13) % 150)),
+						Quantity: proto.Int32(int32((i * 7) % 150)),
+					}); serr != nil {
+						return nil, serr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = RebalanceSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_bootstrap")
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Recall sampling: records findable at their own vectors.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			sbd := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			})
+			for i := 0; i < 150; i += 13 {
+				q := []float64{float64((i * 13) % 150), float64((i * 7) % 150)}
+				cursor := sbd.ScanByDistance(TupleRange{
+					Low:  tuple.Tuple{SerializeVector(q)},
+					High: tuple.Tuple{int64(3)},
+				}, nil, ScanProperties{})
+				var got []int64
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					Expect(cerr).NotTo(HaveOccurred())
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				Expect(got).To(ContainElement(int64(100+i)), fmt.Sprintf("record %d lost in cold-start growth", 100+i))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
