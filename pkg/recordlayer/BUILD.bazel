@@ -266,6 +266,7 @@ go_test(
         "spfresh_maintainer_test.go",
         "spfresh_split_test.go",
         "spfresh_storage_test.go",
+        "spfresh_stress_test.go",
         "split_helper_test.go",
         "split_key_expression_test.go",
         "split_record_test.go",
