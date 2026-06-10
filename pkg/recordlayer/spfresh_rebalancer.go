@@ -174,6 +174,23 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 // so multiple rounds are normal). Bounded against pathological re-triggering.
 // Returns the total number of lifecycle actions taken.
 func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string) (int, error) {
+	const maxRounds = 32
+	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds)
+	if err != nil {
+		return total, err
+	}
+	if !drained {
+		return total, fmt.Errorf("spfresh rebalance: task queue did not quiesce in %d rounds (%d actions) — re-trigger loop?", maxRounds, total)
+	}
+	return total, nil
+}
+
+// rebalanceSPFreshIndexRounds is the round-budgeted core: up to maxRounds
+// scan-and-act passes, reporting whether the queue drained. The multi-tenant
+// sweeper uses small budgets for fairness (a whale tenant's backlog must not
+// starve other tenants' maintenance); an undrained queue is NOT an error
+// there — the next sweep pass continues it.
+func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds int) (int, bool, error) {
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -192,7 +209,7 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		indexSubspace = store.indexSubspace(index)
 		return nil
 	}); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	// The readable generation is the one being maintained. No generation =
@@ -213,10 +230,10 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		gen = g
 		return nil
 	}); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if !bootstrapped {
-		return 0, nil
+		return 0, true, nil // nothing to drain
 	}
 	s := newSPFreshStorage(indexSubspace, gen)
 
@@ -230,24 +247,22 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 	// the 300k fill orphaned ~3/4 of its entries exactly this way.
 	owner := spfreshRebalanceOwner(indexName)
 	total := 0
-	const maxRounds = 32
-	var loopErr error
+	drained := false
 	for round := 0; round < maxRounds; round++ {
 		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919)
 		if err != nil {
-			return total, err
+			return total, false, err
 		}
 		total += worked
 		if worked == 0 {
-			loopErr = nil
+			drained = true
 			break
 		}
-		loopErr = fmt.Errorf("spfresh rebalance: task queue did not quiesce in %d rounds (%d actions) — re-trigger loop?", maxRounds, total)
 	}
 	// GC: retired topology past the cooldown horizon (the same window that
 	// guards split↔merge oscillation guards stale readers' grace period).
 	if _, err := spfreshGCSweep(ctx, db, s, config, int64(config.CooldownSec)*1000); err != nil {
-		return total, err
+		return total, drained, err
 	}
 	if total > 0 {
 		// The rebalancer just changed the topology it routes on: refresh the
@@ -256,8 +271,8 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 			return spfreshCacheFor(indexSubspace, gen).fullReload(rtx.Transaction(), s, gen)
 		}); err != nil {
-			return total, err
+			return total, drained, err
 		}
 	}
-	return total, loopErr
+	return total, drained, nil
 }

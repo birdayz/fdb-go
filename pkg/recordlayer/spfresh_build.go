@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
@@ -263,6 +264,17 @@ func (b *spfreshBuilder) flip(ctx context.Context) error {
 			// the token, so the verify above fails first in the same snapshot.
 			return fmt.Errorf("spfresh build: concurrent build flipped generation %d first; this build (gen %d) is abandoned", cur, b.storage.generation)
 		}
+		// The build's per-cell bookkeeping (Cellfin rows) is dead the moment
+		// the generation publishes — clear it in the SAME transaction, so
+		// the task subspace holds only live maintenance triggers. The
+		// sweeper's pending-work probe and every rebalancer scan depend on
+		// "tasks non-empty ⇔ work to do"; leaking build garbage here made a
+		// freshly built index look permanently busy.
+		cellfinRange, rerr := fdb.PrefixRange(b.storage.tasks.Pack(tuple.Tuple{spfreshTaskCellfin}))
+		if rerr != nil {
+			return rerr
+		}
+		tx.ClearRange(cellfinRange)
 		spfreshSetGeneration(tx, b.storage, b.storage.generation)
 		return spfreshAppendDeltas(tx, b.storage, []spfreshDelta{
 			{op: spfreshOpGeneration, ids: []int64{b.storage.generation}},
@@ -300,6 +312,11 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ou
 		}
 		row, err := spfreshTaskClaim(tx, b.storage, spfreshTaskCellfin, cellID, b.owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
+			if errors.Is(err, errSPFreshNotFound) {
+				// The flip cleared the Cellfin rows: the build already
+				// published — a late retry of this wave is a no-op.
+				return nil
+			}
 			return err
 		}
 		if row.state == spfreshCellfinCentroidsDone || row.state == spfreshCellfinFinalized {
@@ -447,6 +464,11 @@ func (b *spfreshBuilder) waveB(ctx context.Context, cellID int64, router *spfres
 		}
 		row, err := spfreshTaskClaim(tx, b.storage, spfreshTaskCellfin, cellID, b.owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
+			if errors.Is(err, errSPFreshNotFound) {
+				// The flip cleared the Cellfin rows: the build already
+				// published — a late retry of this wave is a no-op.
+				return nil
+			}
 			return err
 		}
 		if row.state == spfreshCellfinFinalized {
