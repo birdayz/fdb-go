@@ -10,6 +10,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
 // §6 SEAL→SPLIT→FORWARD primitives and the foreground-vs-split interleavings
@@ -700,21 +701,19 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 var _ = Describe("SPFresh chunked oversized split", func() {
 	ctx := context.Background()
 
-	It("drains an over-budget posting across bounded transactions with full integrity", func() {
-		oldBudget := spfreshTxByteBudget
-		spfreshTxByteBudget = 800 // a handful of entries trips the chunked path
-		defer func() { spfreshTxByteBudget = oldBudget }()
-
+	It("drains an over-envelope posting across bounded transactions with full integrity", func() {
 		config := DefaultSPFreshConfig(2)
-		config.Lmax = 16
+		config.Lmax = 16 // 4×Lmax = 64: postings past that drain chunked
 		config.CellTarget = 4
 		config.CellMax = 8
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-chunked").Sub("drain"), 1)
 
-		// Two clusters; cluster A's posting gets 40 members (>> budget).
+		// Build a SMALL two-cluster index, then balloon cluster A's posting
+		// far past the 4×Lmax envelope by direct posting writes (the exact
+		// state sustained write load leaves when the rebalancer lags).
 		var inputs []spfreshBuildInput
 		id := int64(1)
-		for i := 0; i < 40; i++ {
+		for i := 0; i < 8; i++ {
 			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i%5) * 0.2, float64(i%7) * 0.2}})
 			id++
 		}
@@ -724,6 +723,33 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 		}
 		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
 		Expect(builder.build(ctx, inputs, 42)).To(Succeed())
+		// Balloon: 90 more members written the way the foreground insert
+		// writes them (posting + membership + sidecar + counter).
+		quantizerB := newSPFreshQuantizer(config)
+		var firstFine int64
+		_, err0 := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+			Expect(merr).NotTo(HaveOccurred())
+			firstFine = mem[0]
+			cellOf, ferr := spfreshFindCentroidCell(tx, storage, firstFine)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cellOf, firstFine)
+			Expect(rerr).NotTo(HaveOccurred())
+			cvec, verr := row.vector()
+			Expect(verr).NotTo(HaveOccurred())
+			for i := 0; i < 90; i++ {
+				pk := tuple.Tuple{int64(1000 + i)}
+				v := []float64{float64(i%5) * 0.21, float64(i%7) * 0.19}
+				residual := []float64{v[0] - cvec[0], v[1] - cvec[1]}
+				tx.Set(storage.postingKey(firstFine, pk), quantizerB.Encode(residual))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{firstFine}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+				spfreshCounterAdd(tx, storage, spfreshCounterFine, firstFine, 1)
+			}
+			return nil, nil
+		})
+		Expect(err0).NotTo(HaveOccurred())
 
 		// The fullest posting is cluster A's (or one of its build-time splits).
 		var cellID, fineID int64
@@ -754,8 +780,8 @@ var _ = Describe("SPFresh chunked oversized split", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(len(members)*(config.postingEntryBytes()+96)).To(BeNumerically(">", spfreshTxByteBudget),
-			"test premise: the posting must exceed the single-tx budget")
+		Expect(len(members)).To(BeNumerically(">", 4*config.Lmax),
+			"test premise: the posting must exceed the 4×Lmax single-tx envelope")
 
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)

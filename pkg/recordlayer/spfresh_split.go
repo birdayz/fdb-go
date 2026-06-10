@@ -144,12 +144,16 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		// RFC's no-chunking rule assumed writers run that ceiling inline,
 		// which needs after-commit hooks the record context doesn't have).
 		// Rewriting every entry + membership in ONE transaction then blows
-		// FDB's 10 MB write limit (transaction_too_large at the 1M
-		// foreground fill). Such postings drain CHUNKED instead — sealing
-		// already froze appends, and each chunk moves pks atomically with
-		// their membership rewrites, so updates/deletes serialize per pk
-		// exactly like the §6 single-tx argument.
-		if len(entries)*(config.postingEntryBytes()+96) > spfreshTxByteBudget {
+		// FDB's 10 MB limit — writes AND the per-entry read-conflict ranges
+		// (sidecar + membership point reads) count, which is why a byte
+		// estimate of the writes alone under-predicted (transaction_too_large
+		// at the 1M foreground fill, twice). Dispatch on the DESIGN ENVELOPE
+		// instead: ≤ 4×Lmax is what the config validator proves fits; bigger
+		// postings drain CHUNKED — sealing froze appends, and each chunk
+		// moves pks atomically with their membership rewrites, so
+		// updates/deletes serialize per pk exactly like the single-tx
+		// argument.
+		if len(entries) > 4*config.Lmax {
 			oversized = true
 			oversizedChildren = [2]int64{childA, childB}
 			return nil // single-tx path abandoned; drain outside

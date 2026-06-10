@@ -105,28 +105,28 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		case spfreshTaskSplit:
 			out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
 			if serr != nil {
-				return worked, serr
+				return worked, fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr)
 			}
 			if !out.proceed {
 				continue // zombie cleaned or foreign lease
 			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
-				return worked, serr
+				return worked, fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr)
 			}
 			worked++
 		case spfreshTaskNPA:
 			if nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id); nerr != nil {
-				return worked, nerr
+				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
 			}
 			worked++
 		case spfreshTaskMerge:
 			if merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id); merr != nil {
-				return worked, merr
+				return worked, fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr)
 			}
 			worked++
 		case spfreshTaskCSplit:
 			if cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id); cerr != nil {
-				return worked, cerr
+				return worked, fmt.Errorf("coarse split cell %d: %w", ref.id, cerr)
 			}
 			worked++
 		}
