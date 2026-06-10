@@ -399,6 +399,176 @@ var _ = Describe("SPFresh 094.2 write path", func() {
 	})
 })
 
+var _ = Describe("SPFresh §8 staging interleaving", func() {
+	ctx := context.Background()
+
+	It("saves during every build window land in (or leave) the index correctly", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_wo", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "32",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		save := func(id int64, p, q int32) {
+			_, serr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, berr := storeBuilder(rtx)
+				Expect(berr).NotTo(HaveOccurred())
+				_, berr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)})
+				return nil, berr
+			})
+			Expect(serr).NotTo(HaveOccurred())
+		}
+
+		var indexSubspace subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			indexSubspace = store.indexSubspace(idx)
+			_, serr = store.MarkIndexWriteOnly("spf_wo")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		storage := newSPFreshStorage(indexSubspace, 1)
+
+		// WINDOW 1 — pre-coarse: saves are index no-ops; the assignment scan
+		// covers them later. Records 1..8 in one tight cluster.
+		inputs := make([]spfreshBuildInput, 0, 8)
+		for i := int64(1); i <= 8; i++ {
+			p, q := int32(10+i%3), int32(10+i%5)
+			save(i, p, q)
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{i}, vec: []float64{float64(p), float64(q)}})
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, merr := spfreshReadMembership(rtx.Transaction(), storage, tuple.Tuple{int64(1)})
+			Expect(merr).To(MatchError(errSPFreshNotFound), "pre-coarse save must not write index state")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The build starts: coarse table commits.
+		config := parseSPFreshConfig(idx)
+		bld := newSPFreshBuilder(sharedDB, storage, config, "build-test")
+		sample := make([][]float64, len(inputs))
+		for i := range inputs {
+			sample[i] = inputs[i].vec
+		}
+		Expect(bld.coarsePass(ctx, sample, 42)).To(Succeed())
+
+		// WINDOW 2 — post-coarse, pre-finalize: the save STAGES itself.
+		save(100, 11, 12)
+		var stagedCell int64
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			stagedCell = 0
+			for _, cellID := range bld.cellIDs {
+				pks, _, serr := spfreshLoadStagingCell(tx, storage, cellID)
+				Expect(serr).NotTo(HaveOccurred())
+				for _, pk := range pks {
+					if pk[0].(int64) == 100 {
+						stagedCell = cellID
+					}
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stagedCell).NotTo(BeZero(), "window-2 save must stage itself into its routed cell")
+
+		// A delete in the same window removes the staged copy: record 100
+		// saved then deleted mid-build must NOT surface in the final index.
+		save(101, 12, 11)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, derr := store.DeleteRecord(tuple.Tuple{int64(101)})
+			return nil, derr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The assignment scan (records 1..8; windows may double-cover — Sets
+		// are idempotent), then wave A.
+		Expect(bld.stageBatch(ctx, inputs)).To(Succeed())
+		fineIDs := make(map[int64][]int64)
+		fineVecs := make(map[int64][][]float64)
+		for _, cellID := range bld.cellIDs {
+			Expect(bld.waveA(ctx, cellID, 42, fineIDs, fineVecs)).To(Succeed())
+		}
+		router := bld.buildRouter(fineIDs, fineVecs)
+		for _, cellID := range bld.cellIDs {
+			Expect(bld.waveB(ctx, cellID, router)).To(Succeed())
+		}
+
+		// WINDOW 3 — post-FINALIZE, pre-flip: the save goes LIVE within its
+		// finalized cell.
+		save(200, 13, 10)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			mem, merr := spfreshReadMembership(rtx.Transaction(), storage, tuple.Tuple{int64(200)})
+			Expect(merr).NotTo(HaveOccurred(), "window-3 save must take the live path")
+			Expect(mem).NotTo(BeEmpty())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Flip, complete the range set, mark readable.
+		Expect(bld.flip(ctx)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			rangeSet := NewIndexingRangeSet(store.subspace, idx)
+			if _, ierr := rangeSet.InsertRange(rtx.Transaction(), nil, rangeSetFinalKey, false); ierr != nil {
+				return nil, ierr
+			}
+			_, serr = store.MarkIndexReadable("spf_wo")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The verdict: 1..8 (pre-coarse, scan-covered), 100 (self-staged) and
+		// 200 (live) are all findable; 101 (deleted mid-build) is not.
+		var got []int64
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			cursor := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			}).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector([]float64{11, 11})},
+				High: tuple.Tuple{int64(16)},
+			}, nil, ScanProperties{})
+			got = got[:0]
+			for {
+				res, cerr := cursor.OnNext(ctx)
+				Expect(cerr).NotTo(HaveOccurred())
+				if !res.HasNext() {
+					break
+				}
+				got = append(got, res.GetValue().Key[0].(int64))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(ContainElements(int64(1), int64(2), int64(3), int64(4), int64(5), int64(6), int64(7), int64(8)), "pre-coarse saves covered by the assignment scan")
+		Expect(got).To(ContainElement(int64(100)), "window-2 save staged itself and was wave-B assigned")
+		Expect(got).To(ContainElement(int64(200)), "window-3 save took the live path")
+		Expect(got).NotTo(ContainElement(int64(101)), "mid-build delete must stick")
+	})
+})
+
 var _ = Describe("SPFresh 094.1 review regressions", func() {
 	ctx := context.Background()
 

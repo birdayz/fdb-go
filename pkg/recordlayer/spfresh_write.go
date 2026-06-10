@@ -80,7 +80,12 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	if err != nil {
 		return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
 	}
+	return m.spfreshInsertRouted(wc.storage, routed, pk, vec)
+}
 
+// spfreshInsertRouted is the post-routing half of the insert; the WriteOnly
+// staging path routes within a single FINALIZED cell instead of on the cache.
+func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, routed []spfreshRouted, pk tuple.Tuple, vec []float64) error {
 	// Fence: verify candidates ACTIVE with REAL state reads, in nearest-first
 	// order, until Replication verified candidates are in hand. The cache said
 	// ACTIVE; the authoritative row decides (SEALED/FORWARD/absent ⇒ the cell
@@ -93,7 +98,7 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 		if len(verified) == m.config.Replication {
 			break
 		}
-		row, rerr := spfreshReadCentroidForWrite(m.tx, wc.storage, cand.cellID, cand.fineID)
+		row, rerr := spfreshReadCentroidForWrite(m.tx, storage, cand.cellID, cand.fineID)
 		if rerr != nil {
 			if errors.Is(rerr, errSPFreshNotFound) {
 				continue
@@ -119,13 +124,13 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	// Same-pk serialization point: an existing copy-set means this is an
 	// update — clear the old keys derived from THIS read (a split moving the
 	// pk concurrently rewrites membership, so the resolver orders us).
-	oldIDs, merr := spfreshReadMembership(m.tx, wc.storage, pk)
+	oldIDs, merr := spfreshReadMembership(m.tx, storage, pk)
 	if merr != nil && !errors.Is(merr, errSPFreshNotFound) {
 		return merr
 	}
 	for _, fineID := range oldIDs {
-		m.tx.Clear(wc.storage.postingKey(fineID, pk))
-		spfreshCounterAdd(m.tx, wc.storage, spfreshCounterFine, fineID, -1)
+		m.tx.Clear(storage.postingKey(fineID, pk))
+		spfreshCounterAdd(m.tx, storage, spfreshCounterFine, fineID, -1)
 	}
 
 	quantizer := newSPFreshQuantizer(m.config)
@@ -137,13 +142,13 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 		for d := range vec {
 			residual[d] = vec[d] - cvec[d]
 		}
-		m.tx.Set(wc.storage.postingKey(c.id, pk), quantizer.Encode(residual))
-		spfreshCounterAdd(m.tx, wc.storage, spfreshCounterFine, c.id, 1)
+		m.tx.Set(storage.postingKey(c.id, pk), quantizer.Encode(residual))
+		spfreshCounterAdd(m.tx, storage, spfreshCounterFine, c.id, 1)
 		newIDs = append(newIDs, c.id)
 	}
-	m.tx.Set(wc.storage.membershipKey(pk), encodeMembership(newIDs))
+	m.tx.Set(storage.membershipKey(pk), encodeMembership(newIDs))
 	if m.config.Sidecar {
-		m.tx.Set(wc.storage.sidecarKey(pk), fp16)
+		m.tx.Set(storage.sidecarKey(pk), fp16)
 	}
 
 	// Sampled split probe (RFC-094 §5 step 2, trigger only — the consuming
@@ -151,7 +156,7 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	// hash so tests can pin it; the unconditional 2×Lmax branch bounds how far
 	// an unlucky sampling run can overshoot before a trigger lands.
 	for _, fineID := range newIDs {
-		count, cerr := spfreshCounterReadSnapshot(m.tx, wc.storage, spfreshCounterFine, fineID)
+		count, cerr := spfreshCounterReadSnapshot(m.tx, storage, spfreshCounterFine, fineID)
 		if cerr != nil {
 			return cerr
 		}
@@ -159,7 +164,7 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 			continue
 		}
 		if spfreshSampledProbe(pk) || count > int64(2*m.config.Lmax) {
-			if _, terr := spfreshTaskSetIfAbsent(m.tx, wc.storage, spfreshTaskSplit, fineID); terr != nil {
+			if _, terr := spfreshTaskSetIfAbsent(m.tx, storage, spfreshTaskSplit, fineID); terr != nil {
 				return terr
 			}
 		}
@@ -171,8 +176,8 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 // — clear the posting copies named by the same-tx membership read, the
 // sidecar, and the membership row; counter −1s; sampled merge probe. A pk
 // with no membership row was never indexed: no-op.
-func (m *spfreshIndexMaintainer) spfreshDelete(wc *spfreshWriteContext, pk tuple.Tuple) error {
-	ids, err := spfreshReadMembership(m.tx, wc.storage, pk)
+func (m *spfreshIndexMaintainer) spfreshDelete(storage *spfreshStorage, pk tuple.Tuple) error {
+	ids, err := spfreshReadMembership(m.tx, storage, pk)
 	if err != nil {
 		if errors.Is(err, errSPFreshNotFound) {
 			return nil
@@ -180,20 +185,20 @@ func (m *spfreshIndexMaintainer) spfreshDelete(wc *spfreshWriteContext, pk tuple
 		return err
 	}
 	for _, fineID := range ids {
-		m.tx.Clear(wc.storage.postingKey(fineID, pk))
-		spfreshCounterAdd(m.tx, wc.storage, spfreshCounterFine, fineID, -1)
+		m.tx.Clear(storage.postingKey(fineID, pk))
+		spfreshCounterAdd(m.tx, storage, spfreshCounterFine, fineID, -1)
 	}
-	m.tx.Clear(wc.storage.membershipKey(pk))
-	m.tx.Clear(wc.storage.sidecarKey(pk))
+	m.tx.Clear(storage.membershipKey(pk))
+	m.tx.Clear(storage.sidecarKey(pk))
 
 	if spfreshSampledProbe(pk) {
 		for _, fineID := range ids {
-			count, cerr := spfreshCounterReadSnapshot(m.tx, wc.storage, spfreshCounterFine, fineID)
+			count, cerr := spfreshCounterReadSnapshot(m.tx, storage, spfreshCounterFine, fineID)
 			if cerr != nil {
 				return cerr
 			}
 			if count < int64(m.config.Lmin()) {
-				if _, terr := spfreshTaskSetIfAbsent(m.tx, wc.storage, spfreshTaskMerge, fineID); terr != nil {
+				if _, terr := spfreshTaskSetIfAbsent(m.tx, storage, spfreshTaskMerge, fineID); terr != nil {
 					return terr
 				}
 			}

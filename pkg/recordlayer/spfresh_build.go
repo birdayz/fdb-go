@@ -55,23 +55,41 @@ func newSPFreshBuilder(db *FDBDatabase, storage *spfreshStorage, config SPFreshC
 }
 
 // build runs the full §8 pipeline over the inputs and flips the generation
-// readable. seed makes the clustering deterministic for tests.
+// readable: coarsePass → stageBatch loop → finalize. The maintainer's
+// BuildSPFreshIndex drives the same steps with record scans interleaved
+// (coarse FIRST, then the assignment scan — the ordering §8's foreground
+// interleaving depends on); direct callers (tests) use this composition.
 func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, seed int64) error {
-	if len(inputs) == 0 {
-		return fmt.Errorf("spfresh build: no inputs")
-	}
-
-	// 1+2: sample (all inputs at test scale; reservoir at production scale is
-	// the maintainer's record-scan concern) and coarse k-means.
-	// K₀ = N·r / (avgFill · cellTarget); avgFill ≈ ⅔·Lmax (RFC-094 §8).
-	avgFill := (2 * b.config.Lmax) / 3
-	k0 := (len(inputs)*b.config.Replication + avgFill*b.config.CellTarget - 1) / (avgFill * b.config.CellTarget)
-	if k0 < 1 {
-		k0 = 1
-	}
 	sample := make([][]float64, len(inputs))
 	for i := range inputs {
 		sample[i] = inputs[i].vec
+	}
+	if err := b.coarsePass(ctx, sample, seed); err != nil {
+		return err
+	}
+	for lo := 0; lo < len(inputs); lo += b.stagingBatch {
+		hi := min(lo+b.stagingBatch, len(inputs))
+		if err := b.stageBatch(ctx, inputs[lo:hi]); err != nil {
+			return err
+		}
+	}
+	return b.finalize(ctx, seed)
+}
+
+// coarsePass is §8 steps 1+2: coarse k-means over the sample (all inputs at
+// test scale; reservoir sampling at production scale is the maintainer's
+// record-scan concern) and the COARSE/cellfin row writes. Committing the
+// coarse table BEFORE the assignment scan is what closes the lost-record
+// window: from this point on a foreground write can always route itself.
+// K₀ = N·r / (avgFill · cellTarget); avgFill ≈ ⅔·Lmax (RFC-094 §8).
+func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, seed int64) error {
+	if len(sample) == 0 {
+		return fmt.Errorf("spfresh build: no inputs")
+	}
+	avgFill := (2 * b.config.Lmax) / 3
+	k0 := (len(sample)*b.config.Replication + avgFill*b.config.CellTarget - 1) / (avgFill * b.config.CellTarget)
+	if k0 < 1 {
+		k0 = 1
 	}
 	coarse, _ := spfreshKMeans(sample, k0, seed, 25)
 
@@ -134,36 +152,41 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 	if err != nil {
 		return fmt.Errorf("spfresh build: coarse pass: %w", err)
 	}
+	return nil
+}
 
-	// 3: staging assignment pass (batched txs; resumable at batch granularity
-	// because staging writes are idempotent Sets).
-	for lo := 0; lo < len(inputs); lo += b.stagingBatch {
-		hi := min(lo+b.stagingBatch, len(inputs))
-		batch := inputs[lo:hi]
-		err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
-			tx := rtx.Transaction()
-			if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
-				return terr
-			}
-			for _, in := range batch {
-				cell := b.nearestCell(in.vec)
-				fp16 := vectorcodec.SerializeHalf(in.vec)
-				spfreshSaveStaging(tx, b.storage, cell, in.pk, fp16)
-				if b.config.Sidecar {
-					spfreshSaveSidecar(tx, b.storage, in.pk, fp16)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("spfresh build: staging batch at %d: %w", lo, err)
+// stageBatch is one §8 step-3 assignment transaction: route each input to its
+// nearest coarse cell, write STAGING (full fp16 vectors — pass 4 must train
+// k-means and re-encode residuals; lossy codes can't) + SIDECAR. Idempotent
+// Sets, resumable at batch granularity.
+func (b *spfreshBuilder) stageBatch(ctx context.Context, batch []spfreshBuildInput) error {
+	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
+		tx := rtx.Transaction()
+		if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+			return terr
 		}
+		for _, in := range batch {
+			cell := b.nearestCell(in.vec)
+			fp16 := vectorcodec.SerializeHalf(in.vec)
+			spfreshSaveStaging(tx, b.storage, cell, in.pk, fp16)
+			if b.config.Sidecar {
+				spfreshSaveSidecar(tx, b.storage, in.pk, fp16)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("spfresh build: staging batch: %w", err)
 	}
+	return nil
+}
 
-	// 4: wave A — per-cell fine k-means on the FULL staged membership
-	// (RFC-094 §8: the sampling floor doesn't move down a level), sub-Lmin
-	// fold, CENTROIDS_DONE. All cells complete before wave B (closure needs
-	// the global fine table).
+// finalize is §8 steps 4–6: wave A (per-cell fine k-means on the FULL staged
+// membership — the sampling floor doesn't move down a level — with sub-Lmin
+// fold, CENTROIDS_DONE), wave B (closure assignment across the completed
+// global table; postings + membership + ADD counters; staging cleared in the
+// closing tx, FINALIZED), and the generation flip.
+func (b *spfreshBuilder) finalize(ctx context.Context, seed int64) error {
 	fineIDs := make(map[int64][]int64)      // cellID -> fine ids
 	fineVecs := make(map[int64][][]float64) // cellID -> fine vectors
 	for _, cellID := range b.cellIDs {
@@ -172,7 +195,6 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 		}
 	}
 
-	// 5: wave B — closure assignment across the completed table.
 	router := b.buildRouter(fineIDs, fineVecs)
 	for _, cellID := range b.cellIDs {
 		if err := b.waveB(ctx, cellID, router); err != nil {
@@ -180,7 +202,6 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 		}
 	}
 
-	// 6: flip readable.
 	if err := b.flip(ctx); err != nil {
 		return fmt.Errorf("spfresh build: flip: %w", err)
 	}

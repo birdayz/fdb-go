@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"google.golang.org/protobuf/proto"
@@ -11,6 +12,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
 // spfreshIndexMaintainer is the record-layer integration of the SPFresh
@@ -95,7 +97,7 @@ func (m *spfreshIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 			if terr != nil {
 				return terr
 			}
-			if derr := m.spfreshDelete(wc, pk); derr != nil {
+			if derr := m.spfreshDelete(wc.storage, pk); derr != nil {
 				return derr
 			}
 		}
@@ -129,12 +131,163 @@ func (m *spfreshIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	return nil
 }
 
-// UpdateWhileWriteOnly rejects writes until the build/foreground staging
-// interleaving lands (later in 094.2): the bulk build's record scan would
-// miss records saved behind its continuation, silently dropping them from
-// the index.
+// UpdateWhileWriteOnly is the §8 build/foreground staging interleaving: a
+// record save during a first build routes itself by the build's visible
+// progress. The window logic, with the fence each window depends on:
+//
+//   - readable generation present (post-flip, pre-MarkIndexReadable): the
+//     build is done — the live Update path applies. The generation read is
+//     REAL, so a flip committing mid-write aborts us and the retry goes live.
+//   - no generation, no COARSE table (pre-coarse window): NO-OP — the
+//     assignment scan runs strictly AFTER the coarse table commits, so its
+//     read versions cover every record committed in this window.
+//   - COARSE present, cellfin row not FINALIZED: stage (fp16 + sidecar) into
+//     the nearest coarse cell — wave B's closing REAL read picks it up or
+//     conflicts and re-runs. The cellfin read is REAL: it is the §8
+//     straggler-side fence — a FINALIZED transition mid-flight aborts THIS
+//     transaction at the resolver, and the retry routes live.
+//   - cellfin FINALIZED: live §5 insert routed within that cell (its
+//     centroids and postings exist; cross-cell closure would target cells
+//     whose postings may not exist yet — their residency is reconciled by
+//     the 094.3 NPA/rebalancer machinery like any boundary drift).
 func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	return fmt.Errorf("spfresh index %q: writes during a bulk build are not supported yet (RFC-094 §8 staging interleaving) — build with the index disabled, then mark readable", m.index.Name)
+	if oldRecord == nil && newRecord == nil {
+		return nil
+	}
+	metaStorage := newSPFreshStorage(m.indexSubspace, 0)
+	if _, gerr := spfreshReadGenerationForWrite(m.tx, metaStorage); gerr == nil {
+		return m.Update(oldRecord, newRecord)
+	} else if !errors.Is(gerr, errSPFreshNotFound) {
+		return gerr
+	}
+
+	// First build in flight (or not started): target generation 1.
+	storage := newSPFreshStorage(m.indexSubspace, 1)
+	// REAL read: a write racing the coarse pass's commit aborts here and the
+	// retry sees the committed table.
+	cellIDs, cellRows, err := spfreshLoadAllCoarse(m.tx, storage)
+	if err != nil {
+		return err
+	}
+
+	if oldRecord != nil {
+		entries, eerr := m.evaluateIndex(oldRecord)
+		if eerr != nil {
+			return fmt.Errorf("evaluate spfresh index %q for old record: %w", m.index.Name, eerr)
+		}
+		for _, entry := range entries {
+			pk, terr := m.index.TrimPrimaryKey(entry.primaryKey)
+			if terr != nil {
+				return terr
+			}
+			// Live copies (membership-driven; no-op if absent) AND any staged
+			// copy: the routing is deterministic, so the staged key — written
+			// by this pk's earlier save or by the assignment scan — lives at
+			// the same nearest-cell slot this delete computes.
+			if derr := m.spfreshDelete(storage, pk); derr != nil {
+				return derr
+			}
+			vec, _ := spfreshEntryVector(m.index, entry)
+			if vec != nil && len(cellIDs) > 0 {
+				cell := spfreshNearestCellOf(vec, cellIDs, cellRows)
+				m.tx.Clear(storage.stagingKey(cell, pk))
+			}
+		}
+	}
+
+	if newRecord != nil {
+		entries, eerr := m.evaluateIndex(newRecord)
+		if eerr != nil {
+			return fmt.Errorf("evaluate spfresh index %q for new record: %w", m.index.Name, eerr)
+		}
+		for _, entry := range entries {
+			vec, verr := spfreshEntryVector(m.index, entry)
+			if verr != nil {
+				return verr
+			}
+			if vec == nil {
+				continue
+			}
+			if len(vec) != m.config.NumDimensions {
+				return fmt.Errorf("spfresh index %q: record vector has %d dimensions, index has %d", m.index.Name, len(vec), m.config.NumDimensions)
+			}
+			pk, terr := m.index.TrimPrimaryKey(entry.primaryKey)
+			if terr != nil {
+				return terr
+			}
+			if len(cellIDs) == 0 {
+				continue // pre-coarse window: the assignment scan covers this record
+			}
+			cell := spfreshNearestCellOf(vec, cellIDs, cellRows)
+
+			// The §8 straggler-side fence: REAL-read the cellfin row.
+			state := spfreshCellfinClaimed
+			if data, gerr := m.tx.Get(storage.taskKey(spfreshTaskCellfin, cell)).Get(); gerr != nil {
+				return gerr
+			} else if data != nil {
+				row, derr := decodeTaskRow(data)
+				if derr != nil {
+					return derr
+				}
+				state = row.state
+			}
+			if state == spfreshCellfinFinalized {
+				// Live path, routed within this finalized cell.
+				rows, _, _, lerr := spfreshLoadCell(m.tx, storage, cell)
+				if lerr != nil {
+					return lerr
+				}
+				routed := make([]spfreshRouted, 0, len(rows))
+				for _, r := range rows {
+					cvec, cverr := r.row.vector()
+					if cverr != nil {
+						return cverr
+					}
+					routed = append(routed, spfreshRouted{
+						cellID: cell, fineID: r.fineID, vec: cvec,
+						d2: spfreshSquaredDistance(vec, cvec),
+					})
+				}
+				sort.Slice(routed, func(i, j int) bool {
+					if routed[i].d2 != routed[j].d2 {
+						return routed[i].d2 < routed[j].d2
+					}
+					return routed[i].fineID < routed[j].fineID
+				})
+				if ierr := m.spfreshInsertRouted(storage, routed, pk, vec); ierr != nil {
+					return ierr
+				}
+				continue
+			}
+			// Staging path: identical bytes to the build's own assignment
+			// writes; wave B assigns it with everything else.
+			fp16 := vectorcodec.SerializeHalf(vec)
+			spfreshSaveStaging(m.tx, storage, cell, pk, fp16)
+			if m.config.Sidecar {
+				spfreshSaveSidecar(m.tx, storage, pk, fp16)
+			}
+		}
+	}
+	return nil
+}
+
+// spfreshNearestCellOf routes a vector to its nearest ACTIVE coarse cell.
+func spfreshNearestCellOf(vec []float64, cellIDs []int64, rows []spfreshCentroidRow) int64 {
+	best, bestD := int64(0), 0.0
+	for i, id := range cellIDs {
+		if rows[i].state != spfreshStateActive {
+			continue
+		}
+		cvec, err := rows[i].vector()
+		if err != nil {
+			continue
+		}
+		d := spfreshSquaredDistance(vec, cvec)
+		if best == 0 || d < bestD {
+			best, bestD = id, d
+		}
+	}
+	return best
 }
 
 // Scan: vector indexes have no meaningful BY_VALUE range scan (entries are
@@ -252,25 +405,25 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 // small deterministic regression, not only by the env-gated SIFT benchmark.
 var spfreshScanBatchSize = 1000
 
-// BuildSPFreshIndex bulk-builds an SPFresh index over the store's existing
-// records (RFC-094 §8) and flips it readable. 094.1's build-then-read entry
-// point; resumable builds via OnlineIndexer integration land with 094.2's
-// staging interleaving.
-func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, seed int64) error {
-	// Collect inputs: scan the records in CONTINUATION-BATCHED transactions —
-	// one unbounded scan blows the 5 s FDB transaction limit at scale and the
-	// retry loop restarts it from scratch forever (caught by the SIFT-100k
-	// benchmark hanging in exactly that loop). Each tx reads up to
-	// spfreshScanBatch records and hands its continuation to the next.
+// spfreshScanRecordBatches scans the store's records in CONTINUATION-BATCHED
+// transactions — one unbounded scan blows the 5 s FDB transaction limit at
+// scale and the retry loop restarts it from scratch forever (caught by the
+// SIFT-100k benchmark hanging in exactly that loop). Each tx reads up to
+// spfreshScanBatchSize records, evaluates the index entries, and hands the
+// batch of (pk, vector) inputs to fn.
+func spfreshScanRecordBatches(
+	ctx context.Context,
+	db *FDBDatabase,
+	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
+	index *Index,
+	indexSubspace subspace.Subspace,
+	fn func(batch []spfreshBuildInput) error,
+) error {
 	scanBatch := spfreshScanBatchSize
-	var inputs []spfreshBuildInput
-	var index *Index
-	var indexSubspace subspace.Subspace
-	var config SPFreshConfig
 	var continuation []byte
 	for first := true; first || continuation != nil; first = false {
-		// Per-attempt staging: the body may RETRY (1007/1020); appending to
-		// the outer slices inside it would duplicate the batch.
+		// Per-attempt staging: the body may RETRY (1007/1020); handing batches
+		// to fn inside it would duplicate them.
 		var batchInputs []spfreshBuildInput
 		var nextContinuation []byte
 		err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -279,20 +432,6 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 			store, serr := storeBuilder(rtx)
 			if serr != nil {
 				return serr
-			}
-			if index == nil {
-				index = store.GetMetaData().GetIndex(indexName)
-				if index == nil {
-					return fmt.Errorf("spfresh build: index %q not found", indexName)
-				}
-				if index.Type != IndexTypeVectorSPFresh {
-					return fmt.Errorf("spfresh build: index %q has type %q", indexName, index.Type)
-				}
-				config = parseSPFreshConfig(index)
-				if verr := ValidateSPFreshConfig(config); verr != nil {
-					return verr
-				}
-				indexSubspace = store.indexSubspace(index)
 			}
 			evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
 
@@ -339,10 +478,63 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		if err != nil {
 			return err
 		}
-		inputs = append(inputs, batchInputs...)
+		if len(batchInputs) > 0 {
+			if err := fn(batchInputs); err != nil {
+				return err
+			}
+		}
 		continuation = nextContinuation
 	}
-	if len(inputs) == 0 {
+	return nil
+}
+
+// BuildSPFreshIndex bulk-builds an SPFresh index over the store's existing
+// records (RFC-094 §8) and flips it readable. The §8 step order is the
+// foreground-interleaving contract: the COARSE table commits BEFORE the
+// assignment scan, so every record save thereafter can route itself
+// (UpdateWhileWriteOnly stages or goes live by cellfin state), and every
+// record saved before it is covered by the assignment scan's later read
+// versions. Double coverage (a save the scan also reads) is harmless —
+// staging writes are idempotent Sets on the same key.
+func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, seed int64) error {
+	// Resolve the index once.
+	var index *Index
+	var indexSubspace subspace.Subspace
+	var config SPFreshConfig
+	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		store, serr := storeBuilder(rtx)
+		if serr != nil {
+			return serr
+		}
+		index = store.GetMetaData().GetIndex(indexName)
+		if index == nil {
+			return fmt.Errorf("spfresh build: index %q not found", indexName)
+		}
+		if index.Type != IndexTypeVectorSPFresh {
+			return fmt.Errorf("spfresh build: index %q has type %q", indexName, index.Type)
+		}
+		config = parseSPFreshConfig(index)
+		if verr := ValidateSPFreshConfig(config); verr != nil {
+			return verr
+		}
+		indexSubspace = store.indexSubspace(index)
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Sample scan (§8 step 1): all records at current scale; reservoir
+	// sampling caps this at production scale.
+	var sample [][]float64
+	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, func(batch []spfreshBuildInput) error {
+		for _, in := range batch {
+			sample = append(sample, in.vec)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(sample) == 0 {
 		return fmt.Errorf("spfresh build: no records with vectors for index %q", indexName)
 	}
 
@@ -397,7 +589,19 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	}); err != nil {
 		return err
 	}
-	if berr := builder.build(ctx, inputs, seed); berr != nil {
+	// §8 steps 2–6, with the assignment scan as a SECOND record pass AFTER
+	// the coarse table commits (the interleaving contract — see the function
+	// comment). Records saved post-coarse may be staged twice (by themselves
+	// and by this scan); the Sets are idempotent.
+	if berr := builder.coarsePass(ctx, sample, seed); berr != nil {
+		return berr
+	}
+	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, func(batch []spfreshBuildInput) error {
+		return builder.stageBatch(ctx, batch)
+	}); berr != nil {
+		return berr
+	}
+	if berr := builder.finalize(ctx, seed); berr != nil {
 		return berr
 	}
 	if oldGen > 0 {
