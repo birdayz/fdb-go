@@ -68,16 +68,20 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		// All fine rows, REAL (the composability fence with fine lifecycles).
 		// SEALED defers — a fine split owns that centroid mid-window and the
 		// coarse split must not relocate it from under the guard re-read.
-		// FORWARD/DEAD rows are COMPLETED lifecycles: tombstones whose
-		// forwarding lives in the posting HDRs — they are dropped, not moved
-		// (a stale-cache reader of the old (cell, fine) location sees absent
-		// and re-routes; deferring on them would block the coarse split
-		// forever, since they never become ACTIVE again).
-		allRows, _, _, lerr := spfreshLoadCell(tx, s, cellID)
+		// FORWARD/DEAD rows are COMPLETED lifecycles: they never become
+		// ACTIVE again, so deferring on them would block the split forever —
+		// but they MUST MOVE with the partition, not drop: GC discovers
+		// purgeable fineIDs by scanning cells' centroid rows, so a dropped
+		// tombstone's posting HDR (and any live residual §6's drain protects)
+		// would leak forever (Torvalds 094.3 #2). They're header-sized rows;
+		// they ride to the nearest new cell and stay out of the k-means and
+		// the cell counters (which count ACTIVE centroids).
+		allRows, _, _, lerr := spfreshLoadCellForWrite(tx, s, cellID)
 		if lerr != nil {
 			return lerr
 		}
 		rows := allRows[:0]
+		var tombstones []spfreshCellRow
 		for _, r := range allRows {
 			switch r.row.state {
 			case spfreshStateSealed:
@@ -91,6 +95,8 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 				return nil
 			case spfreshStateActive:
 				rows = append(rows, r)
+			default: // FORWARD/DEAD
+				tombstones = append(tombstones, r)
 			}
 		}
 		if len(rows) < 2 {
@@ -113,6 +119,18 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil
 		}
+		// A one-sided partition (k-means collapse on near-duplicate vectors)
+		// would publish an EMPTY ACTIVE cell — which ensureCell treats as an
+		// error, failing every query that probes it (codex 094.3 r1 P2).
+		// Nothing meaningful to split either.
+		partition := make([]int, 2)
+		for _, c := range assign {
+			partition[c]++
+		}
+		if partition[0] == 0 || partition[1] == 0 {
+			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
+			return nil
+		}
 
 		start, aerr := spfreshClaimIDBlock(tx, s)
 		if aerr != nil {
@@ -127,6 +145,16 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			// the raw vector bytes preserved verbatim.
 			spfreshSaveCentroid(tx, s, cells[c], r.fineID, encodeCentroidRowRaw(r.row.state, r.row.epoch, r.row.childA, r.row.childB, r.row.vecBytes))
 			counts[c]++
+		}
+		// Tombstones ride to their nearest new cell (GC discovery), without
+		// counting toward the ACTIVE-centroid cell counters.
+		for _, r := range tombstones {
+			v, verr := r.row.vector()
+			c := 0
+			if verr == nil && spfreshSquaredDistance(v, cents[1]) < spfreshSquaredDistance(v, cents[0]) {
+				c = 1
+			}
+			spfreshSaveCentroid(tx, s, cells[c], r.fineID, encodeCentroidRowRaw(r.row.state, r.row.epoch, r.row.childA, r.row.childB, r.row.vecBytes))
 		}
 		deltas := make([]spfreshDelta, 0, 3)
 		for i, id := range cells {

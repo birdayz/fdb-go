@@ -86,6 +86,14 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			if r.fineID == fineID {
 				continue
 			}
+			// Targets are restricted to the SAME cell: the posting HDR can
+			// carry only one cellID, and a stale query resolving the FORWARD
+			// looks the targets up in that cell — a cross-cell target would
+			// be invisible to it until a cache reload (codex 094.3 r1 P2).
+			// No in-cell target ⇒ the merge is skipped below.
+			if r.cellID != cellID {
+				continue
+			}
 			// Authoritative state: only ACTIVE rows receive drained members.
 			row, rerr := spfreshReadCentroidForWrite(tx, s, r.cellID, r.fineID)
 			if rerr != nil {
@@ -104,8 +112,10 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			targets = append(targets, spfreshMergeTarget{fineID: r.fineID, vec: tvec})
 		}
 		if len(targets) == 0 {
-			// The last centroid standing has nowhere to drain: not a merge
-			// candidate. Drop the task; the index simply stays small.
+			// No ACTIVE sibling in this cell to drain into (last centroid
+			// standing, or the neighborhood lives in other cells): not a
+			// merge candidate. Drop the task; the next probe may retry after
+			// the topology changes.
 			tx.Clear(s.taskKey(spfreshTaskMerge, fineID))
 			return nil
 		}
@@ -125,11 +135,9 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 				}
 				return merr
 			}
-			inSet := map[int64]bool{}
 			newSet := make([]int64, 0, len(mem))
 			for _, id := range mem {
 				if id != fineID {
-					inSet[id] = true
 					newSet = append(newSet, id)
 				}
 			}
@@ -147,30 +155,24 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 				return verr
 			}
 			if len(newSet) == 0 || !spfreshAnyIn(newSet, targets) {
-				// Move the copy to the nearest target not already present.
-				best, bestD := int64(0), 0.0
-				var bestVec []float64
-				for _, t := range targets {
-					if inSet[t.fineID] {
-						continue
-					}
-					d := spfreshSquaredDistance(v, t.vec)
-					if best == 0 || d < bestD {
+				// Move the copy to the nearest target. The entry condition
+				// guarantees NO target is in the remaining copy-set and
+				// targets is non-empty, so a best always exists — replication
+				// can never hit zero here.
+				best, bestD := targets[0].fineID, spfreshSquaredDistance(v, targets[0].vec)
+				bestVec := targets[0].vec
+				for _, t := range targets[1:] {
+					if d := spfreshSquaredDistance(v, t.vec); d < bestD {
 						best, bestD, bestVec = t.fineID, d, t.vec
 					}
 				}
-				if best == 0 {
-					// Every target already holds a copy; dropping the merged
-					// copy still leaves replicas.
-				} else {
-					residual := make([]float64, len(v))
-					for d := range v {
-						residual[d] = v[d] - bestVec[d]
-					}
-					tx.Set(s.postingKey(best, e.pk), quantizer.Encode(residual))
-					counterDeltas[best]++
-					newSet = append(newSet, best)
+				residual := make([]float64, len(v))
+				for d := range v {
+					residual[d] = v[d] - bestVec[d]
 				}
+				tx.Set(s.postingKey(best, e.pk), quantizer.Encode(residual))
+				counterDeltas[best]++
+				newSet = append(newSet, best)
 			}
 			tx.Set(s.membershipKey(e.pk), encodeMembership(newSet))
 		}

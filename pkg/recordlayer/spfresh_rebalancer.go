@@ -88,8 +88,9 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		return 0, err
 	}
 
-	// Lifecycle order: split (0) < NPA (4, after splits) < merge (1) <
-	// coarse split (2). Within a kind, id order for determinism.
+	// Lifecycle execution order (NOT the kind constants): splits first, then
+	// the NPAs they enqueue, then merges, then coarse splits. Within a kind,
+	// id order for determinism.
 	order := map[int64]int{spfreshTaskSplit: 0, spfreshTaskNPA: 1, spfreshTaskMerge: 2, spfreshTaskCSplit: 3}
 	sort.Slice(refs, func(i, j int) bool {
 		if order[refs[i].kind] != order[refs[j].kind] {

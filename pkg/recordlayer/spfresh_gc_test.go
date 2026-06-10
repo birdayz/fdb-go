@@ -187,3 +187,133 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// Torvalds 094.3 NAK regressions.
+var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", func() {
+	ctx := context.Background()
+
+	testConfig := func() SPFreshConfig {
+		c := DefaultSPFreshConfig(2)
+		c.Lmax = 32
+		c.CellTarget = 4
+		c.CellMax = 8
+		return c
+	}
+
+	It("#1: the changelog trim actually clears entries and stale cursors are forced to reload", func() {
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-gc").Sub("trim"), 1)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			return nil, spfreshAppendDeltas(tx, storage, []spfreshDelta{{op: spfreshOpAddCell, ids: []int64{1}}})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A cache anchors its cursor at the current tail...
+		cache := newSPFreshRoutingCache(0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, cache.fullReload(rtx.Transaction(), storage, 1)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// ...then more history lands behind its back...
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, spfreshAppendDeltas(rtx.Transaction(), storage, []spfreshDelta{{op: spfreshOpAddCell, ids: []int64{2}}})
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// ...and the trim erases it (horizon 0 = everything below now).
+		_, err = spfreshGCSweep(ctx, sharedDB, storage, testConfig(), 0)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// The trim ACTUALLY cleared (the pre-fix boundary lacked the
+			// tuple versionstamp type byte, sorted below every real key, and
+			// cleared nothing — silently unbounded changelog growth).
+			deltas, _, derr := spfreshReadDeltasSince(tx, storage, nil, 100)
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(deltas).To(BeEmpty(), "trim cleared nothing: boundary key encoding is wrong")
+			// A stale cursor MUST escalate to a full reload.
+			rerr := cache.refresh(tx, storage, 1)
+			Expect(rerr).To(MatchError(errSPFreshNotFound), "stale cursor predates the trim and must force a reload")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("#2: a tombstone rides the coarse split so GC can still find and purge it", func() {
+		config := testConfig()
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-gc").Sub("ride"), 1)
+		var inputs []spfreshBuildInput
+		id := int64(1)
+		for i := 0; i < 8; i++ {
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i%2) * 0.1, float64(i%3) * 0.1}})
+			id++
+		}
+		for i := 0; i < 8; i++ {
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{50 + float64(i%2)*0.1, float64(i%3) * 0.1}})
+			id++
+		}
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+		Expect(builder.build(ctx, inputs, 42)).To(Succeed())
+
+		// Split a posting: its parent becomes a FORWARD tombstone in cell C.
+		var cellID, fineID int64
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+			Expect(merr).NotTo(HaveOccurred())
+			fineID = mem[0]
+			var ferr error
+			cellID, ferr = spfreshFindCentroidCell(tx, storage, fineID)
+			Expect(ferr).NotTo(HaveOccurred())
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "gc-test", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "gc-test", cellID, fineID, 7)).To(Succeed())
+
+		// Coarse-split the tombstone's cell.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskCSplit, cellID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "gc-test", cellID, 7)).To(Succeed())
+
+		// The tombstone moved with the partition (pre-fix it was dropped:
+		// GC's scan could never find it; its posting HDR leaked forever).
+		var newCell int64
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			coarse, cerr := spfreshReadCoarseForWrite(tx, storage, cellID)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(coarse.state).To(Equal(spfreshStateForward))
+			for _, child := range []int64{coarse.childA, coarse.childB} {
+				if _, rerr := spfreshReadCentroidForWrite(tx, storage, child, fineID); rerr == nil {
+					newCell = child
+				}
+			}
+			Expect(newCell).NotTo(BeZero(), "FORWARD tombstone dropped by the coarse split — GC discovery broken")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// And GC purges it through its new location.
+		_, err = spfreshGCSweep(ctx, sharedDB, storage, config, 0)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			_, cerr := spfreshReadCentroidForWrite(tx, storage, newCell, fineID)
+			Expect(cerr).To(MatchError(errSPFreshNotFound), "ridden tombstone purged")
+			hdr, herr := tx.Get(storage.postingHDRKey(fineID)).Get()
+			Expect(herr).NotTo(HaveOccurred())
+			Expect(hdr).To(BeNil(), "posting HDR purged through the moved tombstone")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

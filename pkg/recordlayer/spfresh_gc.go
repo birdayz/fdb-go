@@ -178,9 +178,24 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 		if horizonVersion <= 0 {
 			return nil
 		}
-		var boundary [10]byte // versionstamp shape: 8B version + 2B batch
-		binary.BigEndian.PutUint64(boundary[:8], uint64(horizonVersion))
-		end := fdb.Key(append(s.changelog.Bytes(), boundary[:]...))
+		// Changelog keys are TUPLE-encoded versionstamps: prefix + 0x33 type
+		// byte + 10B versionstamp (8B version BE + 2B batch) + 2B user-version
+		// (spfreshAppendDeltas → PackWithVersionstamp). The boundary must use
+		// the same shape or it sorts below every real key and the trim clears
+		// NOTHING — the changelog grows unboundedly and refresh()'s
+		// stale-cursor check can never fire (Torvalds 094.3 #1: the original
+		// raw-bytes boundary was exactly that dead code, masked in tests by
+		// young clusters where horizonVersion <= 0 skips the block).
+		boundary := make([]byte, 0, 13)
+		boundary = append(boundary, 0x33) // tuple versionstamp type code
+		var ver [8]byte
+		// +1 with zero batch/user bytes makes the exclusive ClearRange end
+		// INCLUSIVE of horizonVersion itself: an entry committed at exactly
+		// the GRV (the common case right after a write burst) must trim too.
+		binary.BigEndian.PutUint64(ver[:], uint64(horizonVersion+1))
+		boundary = append(boundary, ver[:]...)
+		boundary = append(boundary, 0, 0, 0, 0) // batch + user-version: zeros
+		end := fdb.Key(append(s.changelog.Bytes(), boundary...))
 		begin := fdb.Key(s.changelog.Bytes())
 		tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
 		tx.Set(s.metaKey(spfreshMetaHorizon), end)

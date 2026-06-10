@@ -175,11 +175,24 @@ type spfreshCellRow struct {
 // fill — one reply at target fill). Returns the rows in key order and, when
 // present, the coarse-forward HDR payload (cellA, cellB != 0).
 func spfreshLoadCell(tx fdb.ReadTransaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
+	return spfreshLoadCellRange(tx.Snapshot(), s, cellID)
+}
+
+// spfreshLoadCellForWrite REAL-reads a cell's centroid rows — the §6b
+// composability fence: a coarse split clears and rewrites the WHOLE range
+// based on this read, so a fine lifecycle committing a new child/FORWARD row
+// after a snapshot load would be silently wiped (codex 094.3 r1 P1). The
+// conflict range makes whichever side commits second abort at the resolver.
+func spfreshLoadCellForWrite(tx fdb.Transaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
+	return spfreshLoadCellRange(tx, s, cellID)
+}
+
+func spfreshLoadCellRange(tx fdb.ReadTransaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
 	r, err := s.cellRange(cellID)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	kvs, err := tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+	kvs, err := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("spfresh: load cell %d: %w", cellID, err)
 	}

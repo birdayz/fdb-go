@@ -151,9 +151,17 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 				rows, _, _, cerr := spfreshLoadCell(tx, storage, child)
 				Expect(cerr).NotTo(HaveOccurred())
 				moved += len(rows)
+				active := 0
+				for _, r := range rows {
+					if r.row.state == spfreshStateActive {
+						active++
+					}
+				}
 				count, cterr := spfreshCounterReadSnapshot(tx, storage, spfreshCounterCell, child)
 				Expect(cterr).NotTo(HaveOccurred())
-				Expect(count).To(Equal(int64(len(rows))), "exact cell counters by partition")
+				// Tombstones ride the partition for GC discovery but the cell
+				// counter counts ACTIVE centroids only.
+				Expect(count).To(Equal(int64(active)), "exact cell counters by partition")
 			}
 			Expect(moved).To(BeNumerically(">=", 2), "fine rows rewritten under the new cells")
 			// The csplit task (and with it the pause) is gone.

@@ -99,25 +99,35 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 
 		// Candidates: members of the neighbor postings (snapshot, capped at
 		// the one-reply contract like the query path).
+		// Sidecar reads issued as one parallel burst (the plan is one tx; a
+		// serial Get per member at production Lmax flirts with the 5s limit).
+		type pending struct {
+			pk  tuple.Tuple
+			fut fdb.FutureByteSlice
+		}
+		var futs []pending
 		for fineID := range neighbors {
 			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, fineID, 4*config.Lmax+1)
 			if perr != nil {
 				return perr
 			}
 			for _, e := range entries {
-				data, gerr := tx.Snapshot().Get(s.sidecarKey(e.pk)).Get()
-				if gerr != nil {
-					return gerr
-				}
-				if data == nil {
-					continue // no sidecar: nothing to re-evaluate against
-				}
-				v, verr := vectorcodec.Deserialize(data)
-				if verr != nil {
-					return verr
-				}
-				cands = append(cands, candidate{pk: e.pk, vec: v})
+				futs = append(futs, pending{pk: e.pk, fut: tx.Snapshot().Get(s.sidecarKey(e.pk))})
 			}
+		}
+		for _, f := range futs {
+			data, gerr := f.fut.Get()
+			if gerr != nil {
+				return gerr
+			}
+			if data == nil {
+				continue // no sidecar: nothing to re-evaluate against
+			}
+			v, verr := vectorcodec.Deserialize(data)
+			if verr != nil {
+				return verr
+			}
+			cands = append(cands, candidate{pk: f.pk, vec: v})
 		}
 		return nil
 	})
