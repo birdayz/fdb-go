@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
@@ -187,6 +188,173 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 			_, cerr := cursor.OnNext(ctx)
 			Expect(cerr).To(HaveOccurred())
 			Expect(cerr.Error()).To(ContainSubstring("no readable generation"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("SPFresh 094.1 review regressions", func() {
+	ctx := context.Background()
+
+	baseMD := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		return builder
+	}
+	spfIndex := func(name string) *Index {
+		idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "32",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		return idx
+	}
+
+	It("build's record scan crosses continuation batches without duplicating records", func() {
+		// The unbatched scan blew the 5s tx limit at scale and retried forever
+		// (SIFT-100k hang); the env-gated benchmark can't guard it in CI.
+		// Force the continuation path: 10 records, batch size 3.
+		old := spfreshScanBatchSize
+		spfreshScanBatchSize = 3
+		defer func() { spfreshScanBatchSize = old }()
+
+		ks := specSubspace()
+		idx := spfIndex("spf_scanbatch")
+		b := baseMD()
+		b.AddIndex("Order", idx)
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.MarkIndexDisabled("spf_scanbatch")
+			Expect(serr).NotTo(HaveOccurred())
+			for i := int64(1); i <= 10; i++ {
+				_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))})
+				Expect(serr).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_scanbatch", 7)).To(Succeed())
+
+		// Every record indexed exactly once: membership exists per pk, and the
+		// total posting entries match the closure copy-sets (no duplicates
+		// from a re-scanned batch).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			gen1 := newSPFreshStorage(store.indexSubspace(idx), 1)
+			for i := int64(1); i <= 10; i++ {
+				ids, merr := spfreshReadMembership(tx, gen1, tuple.Tuple{i})
+				Expect(merr).NotTo(HaveOccurred())
+				Expect(ids).NotTo(BeEmpty(), "record %d must be indexed", i)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a warm routing cache never reads the changelog on the query path", func() {
+		// The per-query changelog refresh was the rev-2-NAK'd hot-key
+		// anti-pattern (~15% of measured p50). Poison the changelog with a
+		// generation delta AFTER warming: a query must keep serving (it never
+		// reads the changelog); an explicit refresh must see the poison.
+		ks := specSubspace().Sub("spfresh-warm")
+		s := newSPFreshStorage(ks, 1)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, s, 1)
+			spfreshSaveCoarse(tx, s, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			spfreshSaveCentroid(tx, s, 1, 10, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		cache := newSPFreshRoutingCache(0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, cache.fullReload(rtx.Transaction(), s, 1)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cache.ready(1)).To(BeTrue())
+		Expect(cache.ready(2)).To(BeFalse(), "other generation must not be ready")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, spfreshAppendDeltas(rtx.Transaction(), s, []spfreshDelta{
+				{op: spfreshOpGeneration, ids: []int64{99}},
+			})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// Query path: ready() short-circuits — no changelog read, so the
+			// poison is invisible and routing still works.
+			Expect(cache.ready(1)).To(BeTrue())
+			routed, rerr := cache.route(tx, s, []float64{0, 0}, 1, 10)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(routed).To(HaveLen(1))
+			// The refresh path DOES read the changelog and sees the poison —
+			// proving the two paths are genuinely distinct.
+			Expect(cache.refresh(tx, s, 1)).To(MatchError(errSPFreshNotFound))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rebuilding targets a fresh generation and clears the superseded one", func() {
+		ks := specSubspace()
+		idx := spfIndex("spf_rebuild")
+		b := baseMD()
+		b.AddIndex("Order", idx)
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.MarkIndexDisabled("spf_rebuild")
+			Expect(serr).NotTo(HaveOccurred())
+			for i := int64(1); i <= 5; i++ {
+				_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(0)})
+				Expect(serr).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_rebuild", 7)).To(Succeed())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_rebuild", 8)).To(Succeed(), "rebuild must work")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			sub := store.indexSubspace(idx)
+			g, gerr := spfreshReadGenerationSnapshot(tx, newSPFreshStorage(sub, 0))
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(g).To(Equal(int64(2)), "rebuild flips to generation 2")
+			// Generation 1 fully cleared.
+			r, rerr := newSPFreshStorage(sub, 1).generationRange()
+			Expect(rerr).NotTo(HaveOccurred())
+			kvs, kerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(kerr).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "superseded generation must be range-cleared")
+			// Generation 2 serves.
+			ids, merr := spfreshReadMembership(tx, newSPFreshStorage(sub, 2), tuple.Tuple{int64(1)})
+			Expect(merr).NotTo(HaveOccurred())
+			Expect(ids).NotTo(BeEmpty())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

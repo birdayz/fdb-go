@@ -66,13 +66,32 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 	}
 	coarse, _ := spfreshKMeans(sample, k0, seed, 25)
 
-	// Allocate cell IDs and write COARSE rows.
+	// Allocate cell IDs and write COARSE rows. IDEMPOTENT under retry: the
+	// build-state row (META, generation-scoped via the task subspace) records
+	// the minted cell block in the SAME tx; a commit_unknown retry re-reads it
+	// and reuses the block instead of minting a second orphaned cell set
+	// (Torvalds 094.1 #1a).
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
+		if prior, perr := tx.Get(b.storage.taskKey(spfreshTaskCellfin, 0)).Get(); perr != nil {
+			return perr
+		} else if prior != nil {
+			row, derr := decodeTaskRow(prior)
+			if derr != nil {
+				return derr
+			}
+			b.cellIDs = make([]int64, row.childB)
+			for i := range b.cellIDs {
+				b.cellIDs[i] = row.childA + int64(i)
+			}
+			b.coarseVec = coarse
+			return nil
+		}
 		start, cerr := spfreshClaimIDBlock(tx, b.storage)
 		if cerr != nil {
 			return cerr
 		}
+		tx.Set(b.storage.taskKey(spfreshTaskCellfin, 0), encodeTaskRow(spfreshTaskRow{childA: start, childB: int64(len(coarse))}))
 		b.cellIDs = make([]int64, len(coarse))
 		b.coarseVec = coarse
 		deltas := make([]spfreshDelta, 0, len(coarse))
@@ -166,15 +185,23 @@ func (b *spfreshBuilder) nearestCell(vec []float64) int64 {
 // CENTROIDS_DONE. Idempotent: a re-run (lease takeover after a crash)
 // rewrites the same rows for an unfinalized cell.
 func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, outIDs map[int64][]int64, outVecs map[int64][][]float64) error {
-	return spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
+	// Stage router outputs per ATTEMPT; commit them to the shared maps only
+	// after the transaction succeeds — appending inside the retriable closure
+	// leaked phantom/duplicate fineIDs into the wave-B router on retries
+	// (Torvalds 094.1 #1c, codex P1).
+	var stagedIDs []int64
+	var stagedVecs [][]float64
+	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
+		stagedIDs, stagedVecs = stagedIDs[:0], stagedVecs[:0]
 		tx := rtx.Transaction()
 		row, err := spfreshTaskClaim(tx, b.storage, spfreshTaskCellfin, cellID, b.owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
 			return err
 		}
-		if row.state == spfreshCellfinFinalized {
-			// Crash-recovered re-run of a finished cell: reload its centroids
-			// for the router instead of re-clustering.
+		if row.state == spfreshCellfinCentroidsDone || row.state == spfreshCellfinFinalized {
+			// Already clustered (commit_unknown retry or crash recovery):
+			// reload the COMMITTED centroids — re-clustering would mint
+			// attempt-fresh IDs and duplicate rows (Torvalds 094.1 #1b).
 			rows, _, _, lerr := spfreshLoadCell(tx, b.storage, cellID)
 			if lerr != nil {
 				return lerr
@@ -184,8 +211,8 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ou
 				if verr != nil {
 					return verr
 				}
-				outIDs[cellID] = append(outIDs[cellID], r.fineID)
-				outVecs[cellID] = append(outVecs[cellID], vec)
+				stagedIDs = append(stagedIDs, r.fineID)
+				stagedVecs = append(stagedVecs, vec)
 			}
 			return nil
 		}
@@ -242,14 +269,24 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ou
 		for i, c := range keep {
 			fineID := start + int64(i)
 			spfreshSaveCentroid(tx, b.storage, cellID, fineID, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cents[c]))
-			outIDs[cellID] = append(outIDs[cellID], fineID)
-			outVecs[cellID] = append(outVecs[cellID], cents[c])
+			stagedIDs = append(stagedIDs, fineID)
+			stagedVecs = append(stagedVecs, cents[c])
 			deltas = append(deltas, spfreshDelta{op: spfreshOpAddFine, ids: []int64{cellID, fineID}})
 		}
+		// The CELL counter is the cell's FINE-CENTROID count (RFC-094 §3, the
+		// 094.3 coarse-split trigger input) — owned here, where the count is
+		// exact by construction (Torvalds 094.1 #2).
+		spfreshCounterSet(tx, b.storage, spfreshCounterCell, cellID, int64(len(keep)))
 		row.state = spfreshCellfinCentroidsDone
 		tx.Set(b.storage.taskKey(spfreshTaskCellfin, cellID), encodeTaskRow(row))
 		return spfreshAppendDeltas(tx, b.storage, deltas)
 	})
+	if err != nil {
+		return err
+	}
+	outIDs[cellID] = append(outIDs[cellID], stagedIDs...)
+	outVecs[cellID] = append(outVecs[cellID], stagedVecs...)
+	return nil
 }
 
 // spfreshBuildRouter routes a vector to fine centroids across ALL cells (the
@@ -336,8 +373,6 @@ func (b *spfreshBuilder) waveB(ctx context.Context, cellID int64, router *spfres
 		for fineID, delta := range counterDeltas {
 			spfreshCounterAdd(tx, b.storage, spfreshCounterFine, fineID, delta)
 		}
-		// Cell fine-count counter (the coarse-split trigger input, §6b).
-		spfreshCounterAdd(tx, b.storage, spfreshCounterCell, cellID, int64(len(counterDeltas)))
 
 		// Clear staging in this same closing tx; the REAL staging read above
 		// covers the whole range.

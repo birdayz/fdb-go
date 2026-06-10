@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -115,6 +116,9 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("SPFresh BY_DISTANCE scan: invalid query vector: %w", err)}
 	}
+	if len(queryVector) != m.config.NumDimensions {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: query vector has %d dimensions, index has %d", m.index.Name, len(queryVector), m.config.NumDimensions)}
+	}
 	if len(scanRange.Low) > 1 {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: prefixed (grouped) scans not supported in 094.1", m.index.Name)}
 	}
@@ -139,7 +143,9 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	}
 	entries := make([]*IndexEntry, len(results))
 	for i, r := range results {
-		entries[i] = &IndexEntry{Key: r.PrimaryKey, Value: tuple.Tuple{nil}}
+		// Index + pinned primaryKey make the entry usable through the normal
+		// executor path (IndexEntry.PrimaryKey loads the record).
+		entries[i] = &IndexEntry{Index: m.index, Key: r.PrimaryKey, Value: tuple.Tuple{nil}, primaryKey: r.PrimaryKey}
 	}
 	return FromListWithContinuation(entries, continuation)
 }
@@ -176,6 +182,12 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	return searcher.search(m.tx, query, k)
 }
 
+// spfreshScanBatchSize is the records-per-transaction limit of the build's
+// record-collection scan (one unbounded scan blows the 5 s tx limit and
+// retries forever). Variable so the continuation path is exercised by a
+// small deterministic regression, not only by the env-gated SIFT benchmark.
+var spfreshScanBatchSize = 1000
+
 // BuildSPFreshIndex bulk-builds an SPFresh index over the store's existing
 // records (RFC-094 §8) and flips it readable. 094.1's build-then-read entry
 // point; resumable builds via OnlineIndexer integration land with 094.2's
@@ -186,7 +198,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// retry loop restarts it from scratch forever (caught by the SIFT-100k
 	// benchmark hanging in exactly that loop). Each tx reads up to
 	// spfreshScanBatch records and hands its continuation to the next.
-	const spfreshScanBatch = 1000
+	scanBatch := spfreshScanBatchSize
 	var inputs []spfreshBuildInput
 	var index *Index
 	var indexSubspace subspace.Subspace
@@ -220,7 +232,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 			}
 			evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
 
-			props := ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: spfreshScanBatch}}
+			props := ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: scanBatch}}
 			cursor := store.ScanRecords(continuation, props)
 			defer func() { _ = cursor.Close() }()
 			for {
@@ -270,10 +282,43 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return fmt.Errorf("spfresh build: no records with vectors for index %q", indexName)
 	}
 
-	storage := newSPFreshStorage(indexSubspace, 1)
+	// Builds target generation current+1 (1 for a first build): a REBUILD into
+	// the live generation would mix stale postings with new ones and leave
+	// process caches 'ready' on stale routing (Torvalds/codex 094.1 review).
+	var oldGen int64
+	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		g, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(indexSubspace, 0))
+		if gerr != nil {
+			if errors.Is(gerr, errSPFreshNotFound) {
+				oldGen = 0
+				return nil
+			}
+			return gerr
+		}
+		oldGen = g
+		return nil
+	}); err != nil {
+		return err
+	}
+	storage := newSPFreshStorage(indexSubspace, oldGen+1)
 	builder := newSPFreshBuilder(db, storage, config, fmt.Sprintf("build-%s", indexName))
 	if berr := builder.build(ctx, inputs, seed); berr != nil {
 		return berr
+	}
+	if oldGen > 0 {
+		// Clear the superseded generation. 094.1 is build-then-read with no
+		// concurrent writers; the staleness grace period for live readers
+		// arrives with 094.3's horizon machinery (RFC-094 §3).
+		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			r, rerr := newSPFreshStorage(indexSubspace, oldGen).generationRange()
+			if rerr != nil {
+				return rerr
+			}
+			rtx.Transaction().ClearRange(r)
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Record the build in the index's range set (the bulk build covered the
