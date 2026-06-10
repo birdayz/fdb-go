@@ -26,9 +26,10 @@ type spfreshSearcher struct {
 	quant   *spfreshQuantizer
 
 	// runtime knobs (RFC-094 §4 defaults; never stored)
-	w  int // coarse cells probed
-	kc int // fine postings fetched
-	c  int // re-rank candidates
+	w        int  // coarse cells probed
+	kc       int  // fine postings fetched
+	c        int  // re-rank candidates
+	noRerank bool // rank by RaBitQ estimates alone (skip the sidecar wave)
 }
 
 func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *spfreshRoutingCache) *spfreshSearcher {
@@ -108,6 +109,10 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		for d := range query {
 			residual[d] = query[d] - f.routed.vec[d]
 		}
+		// One scorer per posting: the residual query's self-dot and the code
+		// buffer are computed once and reused across the posting's codes
+		// (the per-code allocation path dominated estimate CPU — 094.4).
+		score := s.quant.scorer(residual, s.config.NumDimensions)
 		for _, kv := range kvs {
 			pk, isEntry, perr := s.storage.postingPK(kv.Key)
 			if perr != nil {
@@ -127,7 +132,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 				forwards = append(forwards, fwd...)
 				continue
 			}
-			est, derr := s.quant.Distance(residual, kv.Value, s.config.NumDimensions)
+			est, derr := score(kv.Value)
 			if derr != nil {
 				return nil, derr
 			}
@@ -159,12 +164,13 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			for d := range query {
 				residual[d] = query[d] - f.routed.vec[d]
 			}
+			score := s.quant.scorer(residual, s.config.NumDimensions)
 			for _, kv := range kvs {
 				pk, isEntry, perr := s.storage.postingPK(kv.Key)
 				if perr != nil || !isEntry {
 					continue // chain depth 2: next refresh handles it
 				}
-				est, derr := s.quant.Distance(residual, kv.Value, s.config.NumDimensions)
+				est, derr := score(kv.Value)
 				if derr != nil {
 					return nil, derr
 				}
@@ -200,7 +206,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	// sidecar disabled the estimates stand (the maintainer's record-read
 	// fallback arrives with the maintainer slice).
 	results := make([]spfreshSearchResult, 0, len(hits))
-	if s.config.Sidecar {
+	if s.config.Sidecar && !s.noRerank {
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
 			futures[i] = tx.Snapshot().Get(s.storage.sidecarKey(h.pk))

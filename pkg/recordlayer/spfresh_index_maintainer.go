@@ -350,7 +350,9 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	if scanRange.High != nil {
 		ints := []*int{&k, &efSearch, &wProbe, &cRerank}
 		for i := 0; i < len(scanRange.High) && i < len(ints); i++ {
-			if v, ok := asInt64(scanRange.High[i]); ok && v > 0 {
+			if v, ok := asInt64(scanRange.High[i]); ok && (v > 0 || (i == 3 && v == -1)) {
+				// c = -1: estimates-only ranking, no sidecar re-rank wave
+				// (the 094.4 sidecar A/B; distances are then approximate).
 				*ints[i] = int(v)
 			}
 		}
@@ -408,6 +410,8 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	}
 	if cRerank > 0 {
 		searcher.c = max(cRerank, k)
+	} else if cRerank == -1 {
+		searcher.noRerank = true
 	}
 	return searcher.search(m.tx, query, k)
 }

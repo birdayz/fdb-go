@@ -230,15 +230,32 @@ func EncodedVectorFromBytes(data []byte, numDimensions, numExBits int) (*Encoded
 // unpackComponents unpacks bit-packed encoded components from a byte slice.
 // Matches Java's EncodedRealVector.unpackComponents().
 func unpackComponents(data []byte, numDimensions, numExBits int) ([]int, error) {
+	result := make([]int, numDimensions)
+	if err := unpackComponentsInto(data, result, numExBits); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// unpackComponentsInto unpacks into a caller-provided buffer (len = dims) —
+// the allocation-free path the per-query Scorer reuses across codes.
+func unpackComponentsInto(data []byte, result []int, numExBits int) error {
+	numDimensions := len(result)
 	// Validate packed data length to avoid panics on truncated data.
 	bitsPerComponent := numExBits + 1
 	totalBits := numDimensions * bitsPerComponent
 	expectedBytes := (totalBits + 7) / 8
 	if len(data) < expectedBytes {
-		return nil, fmt.Errorf("rabitq: truncated encoded vector data: got %d bytes, need %d", len(data), expectedBytes)
+		return fmt.Errorf("rabitq: truncated encoded vector data: got %d bytes, need %d", len(data), expectedBytes)
 	}
-
-	result := make([]int, numDimensions)
+	// The bit loop ACCUMULATES via |= — the buffer must start zeroed, and a
+	// reused Scorer buffer arrives dirty (re-scoring the SAME code is
+	// idempotent under OR, which is exactly how the original differential
+	// test missed this; different codes through one scorer corrupted every
+	// estimate after the first).
+	for i := range result {
+		result[i] = 0
+	}
 	remainingBitsInByte := 8
 	pos := 0
 	currentByte := data[pos]
@@ -271,7 +288,7 @@ func unpackComponents(data []byte, numDimensions, numExBits int) ([]int, error) 
 			currentByte = data[pos]
 		}
 	}
-	return result, nil
+	return nil
 }
 
 // --- RaBitQ Quantizer ---
@@ -636,4 +653,77 @@ func (e *RaBitEstimator) Distance(query []float64, encoded *EncodedVector) (floa
 		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", est.Distance)
 	}
 	return est.Distance, nil
+}
+
+// Scorer is a single-threaded, per-query distance estimator: the query's
+// self-dot is computed ONCE and the component buffer is reused across codes.
+// The general Distance path paid a fresh []int allocation, a bit-unpack, an
+// estimator construction AND a re-derived query norm PER CODE — at SPFresh
+// posting-scan volume (thousands of codes per query) that overhead dominated
+// the estimate cost (RFC-094 094.4 tuning).
+type Scorer struct {
+	metric    Metric
+	numExBits int
+	query     []float64
+	gAdd      float64
+	gError    float64
+	buf       []int
+}
+
+// NewScorer prepares a scorer for one query vector. Not safe for concurrent
+// use (the component buffer is shared across Score calls).
+func (q *Quantizer) NewScorer(query []float64) *Scorer {
+	// Copy: the scorer snapshots the query self-dot, so it must also snapshot
+	// the components — callers reuse residual buffers across postings, and a
+	// live reference would silently mix one posting's gAdd with the next
+	// posting's components.
+	query = append([]float64(nil), query...)
+	gAdd := dot(query, query)
+	return &Scorer{
+		metric:    q.metric,
+		numExBits: q.numExBits,
+		query:     query,
+		gAdd:      gAdd,
+		gError:    math.Sqrt(gAdd),
+		buf:       make([]int, len(query)),
+	}
+}
+
+// Score estimates the distance to one stored code. Identical math to
+// Distance (EstimateDistance), minus the per-code allocations.
+func (s *Scorer) Score(data []byte, numDimensions int) (float64, error) {
+	if len(data) < 25 {
+		return 0, fmt.Errorf("rabitq: data too short: %d bytes", len(data))
+	}
+	if data[0] != TypeByte {
+		return 0, fmt.Errorf("rabitq: expected type ordinal %d, got %d", TypeByte, data[0])
+	}
+	fAddEx := math.Float64frombits(binary.BigEndian.Uint64(data[1:]))
+	fRescaleEx := math.Float64frombits(binary.BigEndian.Uint64(data[9:]))
+	if cap(s.buf) < numDimensions {
+		s.buf = make([]int, numDimensions)
+	}
+	comps := s.buf[:numDimensions]
+	if err := unpackComponentsInto(data[25:], comps, s.numExBits); err != nil {
+		return 0, err
+	}
+	cb := float64(int(1)<<s.numExBits) - 0.5
+	var dotProduct float64
+	for i := 0; i < numDimensions && i < len(s.query); i++ {
+		dotProduct += s.query[i] * (float64(comps[i]) - cb)
+	}
+	euclideanSquare := fAddEx + s.gAdd + fRescaleEx*dotProduct
+	var d float64
+	switch s.metric {
+	case MetricCosine:
+		d = 0.5 * euclideanSquare
+	case MetricInnerProduct:
+		d = 0.5*euclideanSquare - 1
+	default:
+		d = euclideanSquare
+	}
+	if math.IsInf(d, 0) || math.IsNaN(d) {
+		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", d)
+	}
+	return d, nil
 }

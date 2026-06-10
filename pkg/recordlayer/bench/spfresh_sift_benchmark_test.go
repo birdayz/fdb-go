@@ -240,6 +240,13 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
+	// SIFT_AMORTIZE=N batches N queries per transaction (one GRV + one store
+	// open shared) — the production shape for query servers, and the
+	// breakdown that separates harness overhead from index reads.
+	amortize := siftEnvInt("SIFT_AMORTIZE", 1)
+	if amortize < 1 {
+		amortize = 1
+	}
 	for _, cfg := range strings.Split(sweep, ",") {
 		parts := strings.Split(cfg, ":")
 		if len(parts) != 3 {
@@ -250,12 +257,18 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 		c, _ := strconv.Atoi(parts[2])
 		latencies := make([]time.Duration, 0, len(queries))
 		hits, total := 0, 0
-		for _, qv := range queries {
-			query := float32sToFloat64s(qv)
-			want := bruteForceIDs(base, query, k)
-			qStart := time.Now()
-			var got []int64
+		for lo := 0; lo < len(queries); lo += amortize {
+			hi := lo + amortize
+			if hi > len(queries) {
+				hi = len(queries)
+			}
+			batch := queries[lo:hi]
+			batchLat := make([]time.Duration, 0, len(batch))
+			batchHits, batchTotal := 0, 0
 			_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				// Per-attempt staging: the closure may retry.
+				batchLat = batchLat[:0]
+				batchHits, batchTotal = 0, 0
 				store, serr := storeBuilder(rtx)
 				if serr != nil {
 					return nil, serr
@@ -265,40 +278,48 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 				if merr != nil {
 					return nil, merr
 				}
-				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
-					High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
-				}, nil, recordlayer.ScanProperties{})
-				got = got[:0]
-				for {
-					res, cerr := cursor.OnNext(ctx)
-					if cerr != nil {
-						return nil, cerr
+				for _, qv := range batch {
+					query := float32sToFloat64s(qv)
+					qStart := time.Now()
+					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+						High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
+					}, nil, recordlayer.ScanProperties{})
+					var got []int64
+					for {
+						res, cerr := cursor.OnNext(ctx)
+						if cerr != nil {
+							return nil, cerr
+						}
+						if !res.HasNext() {
+							break
+						}
+						got = append(got, res.GetValue().Key[0].(int64))
 					}
-					if !res.HasNext() {
-						break
+					batchLat = append(batchLat, time.Since(qStart))
+					want := bruteForceIDs(base, query, k)
+					wantSet := make(map[int64]bool, k)
+					for _, id := range want {
+						wantSet[id] = true
 					}
-					got = append(got, res.GetValue().Key[0].(int64))
+					for _, id := range got {
+						if wantSet[id] {
+							batchHits++
+						}
+						batchTotal++
+					}
 				}
 				return nil, nil
 			})
 			if err != nil {
-				t.Fatalf("sweep %s query: %v", cfg, err)
+				t.Fatalf("sweep %s batch at %d: %v", cfg, lo, err)
 			}
-			latencies = append(latencies, time.Since(qStart))
-			wantSet := make(map[int64]bool, k)
-			for _, id := range want {
-				wantSet[id] = true
-			}
-			for _, id := range got {
-				if wantSet[id] {
-					hits++
-				}
-				total++
-			}
+			hits += batchHits
+			total += batchTotal
+			latencies = append(latencies, batchLat...)
 		}
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-		t.Logf("SWEEP w=%d kc=%d c=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, k,
+		t.Logf("SWEEP w=%d kc=%d c=%d amortize=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, amortize, k,
 			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
 	}
 }

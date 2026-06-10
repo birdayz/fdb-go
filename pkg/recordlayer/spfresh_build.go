@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
@@ -509,6 +510,17 @@ func newSPFreshQuantizer(config SPFreshConfig) *spfreshQuantizer {
 
 func (s *spfreshQuantizer) Encode(residual []float64) []byte {
 	return s.q.Encode(residual)
+}
+
+// scorer returns a per-query estimate function: allocation-free across codes
+// when the quantizer is RaBitQ (the posting-scan hot path — 094.4), falling
+// back to the general Distance for any other VectorQuantizer.
+func (s *spfreshQuantizer) scorer(residualQuery []float64, dims int) func(code []byte) (float64, error) {
+	if rq, ok := s.q.(*rabitq.Quantizer); ok {
+		sc := rq.NewScorer(residualQuery)
+		return func(code []byte) (float64, error) { return sc.Score(code, dims) }
+	}
+	return func(code []byte) (float64, error) { return s.q.Distance(residualQuery, code, dims) }
 }
 
 // Distance estimates the metric distance between a residual query (q − c) and

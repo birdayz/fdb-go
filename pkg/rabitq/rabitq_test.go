@@ -603,3 +603,50 @@ func TestQuantizerInterface(t *testing.T) {
 		t.Fatalf("expected 4 dims, got %d", len(decoded))
 	}
 }
+
+// Scorer must be bit-identical to Distance — it exists only to hoist
+// allocations out of the per-code loop (RFC-094 094.4).
+func TestScorerMatchesDistance(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(7))
+	for _, exBits := range []int{0, 1, 2} {
+		q := NewQuantizer(MetricEuclidean, exBits)
+		for trial := 0; trial < 200; trial++ {
+			dims := 2 + rng.Intn(64)
+			vec := make([]float64, dims)
+			query := make([]float64, dims)
+			for i := range vec {
+				vec[i] = rng.NormFloat64() * 3
+				query[i] = rng.NormFloat64() * 3
+			}
+			code := q.Encode(vec)
+			want, werr := q.Distance(query, code, dims)
+			sc := q.NewScorer(query)
+			got, gerr := sc.Score(code, dims)
+			if (werr == nil) != (gerr == nil) {
+				t.Fatalf("exBits=%d trial=%d: error mismatch: %v vs %v", exBits, trial, werr, gerr)
+			}
+			if werr == nil && got != want {
+				t.Fatalf("exBits=%d trial=%d dims=%d: Score=%v Distance=%v", exBits, trial, dims, got, want)
+			}
+			// Reuse across DIFFERENT codes must not contaminate: the unpack
+			// accumulates via |=, so a dirty buffer poisons every code after
+			// the first (re-scoring the SAME code is idempotent under OR and
+			// hides it).
+			vec2 := make([]float64, dims)
+			for i := range vec2 {
+				vec2[i] = rng.NormFloat64() * 3
+			}
+			code2 := q.Encode(vec2)
+			want2, _ := q.Distance(query, code2, dims)
+			got2, _ := sc.Score(code2, dims)
+			if got2 != want2 {
+				t.Fatalf("exBits=%d trial=%d: scorer reuse across codes diverged: %v vs %v", exBits, trial, got2, want2)
+			}
+			got1Again, _ := sc.Score(code, dims)
+			if got1Again != want {
+				t.Fatalf("exBits=%d trial=%d: third Score diverged: %v vs %v", exBits, trial, got1Again, want)
+			}
+		}
+	}
+}
