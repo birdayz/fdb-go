@@ -62,10 +62,12 @@ const (
 	// spfreshReplyByteBudget is the per-range-reply byte budget the layout is
 	// sized against (FDB REPLY_BYTE_LIMIT, ClientKnobs.cpp:66).
 	spfreshReplyByteBudget = 80000
-	// spfreshTxByteBudget bounds the single-tx split worst case (4×Lmax entries
-	// read + ~2× written) far below FDB's 10 MB transaction limit.
-	spfreshTxByteBudget = 4 << 20
 )
+
+// spfreshTxByteBudget bounds the single-tx split worst case (4×Lmax entries
+// read + ~2× written) far below FDB's 10 MB transaction limit. Variable so
+// the chunked-drain dispatch is testable at small scale.
+var spfreshTxByteBudget = 4 << 20
 
 // SPFreshConfig is the structural configuration of an SPFresh index. Every
 // field here is immutable for an existing index (RFC-094 §10).
