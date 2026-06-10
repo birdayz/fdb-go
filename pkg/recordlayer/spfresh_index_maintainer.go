@@ -309,6 +309,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return err
 	}
 	storage := newSPFreshStorage(indexSubspace, oldGen+1)
+	builder := newSPFreshBuilder(db, storage, config, fmt.Sprintf("build-%s", indexName))
 	// Abandoned-build GC at the entry point (RFC-094 §3): a prior build into
 	// this same target that aborted PRE-FLIP left build-state/cell residue a
 	// fresh run would mistake for its own commit retries — publishing stale
@@ -331,11 +332,15 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 			return rerr
 		}
 		rtx.Transaction().ClearRange(r)
+		// Take build ownership atomically with the clear: an older build
+		// still in flight loses the token and its remaining transactions
+		// abort at the resolver instead of interleaving writes into the
+		// prefix we just cleared (codex 094.1 r4).
+		spfreshTakeBuilderToken(rtx.Transaction(), storage, builder.token)
 		return nil
 	}); err != nil {
 		return err
 	}
-	builder := newSPFreshBuilder(db, storage, config, fmt.Sprintf("build-%s", indexName))
 	if berr := builder.build(ctx, inputs, seed); berr != nil {
 		return berr
 	}

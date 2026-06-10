@@ -2,8 +2,10 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
@@ -34,6 +36,7 @@ type spfreshBuilder struct {
 	storage *spfreshStorage
 	config  SPFreshConfig
 	owner   string // lease owner identity for cellfin claims
+	token   []byte // ownership token (META/build) — see spfreshVerifyBuilderToken
 
 	// batch sizes, overridable in tests
 	stagingBatch int
@@ -43,7 +46,12 @@ type spfreshBuilder struct {
 }
 
 func newSPFreshBuilder(db *FDBDatabase, storage *spfreshStorage, config SPFreshConfig, owner string) *spfreshBuilder {
-	return &spfreshBuilder{db: db, storage: storage, config: config, owner: owner, stagingBatch: 200}
+	// Uniqueness, not secrecy: the token only has to distinguish two builder
+	// instances racing the same index.
+	token := make([]byte, 16)
+	binary.LittleEndian.PutUint64(token, rand.Uint64())
+	binary.LittleEndian.PutUint64(token[8:], rand.Uint64())
+	return &spfreshBuilder{db: db, storage: storage, config: config, owner: owner, token: token, stagingBatch: 200}
 }
 
 // build runs the full §8 pipeline over the inputs and flips the generation
@@ -74,6 +82,12 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 	// (Torvalds 094.1 #1a).
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
+		// Claim build ownership (or re-find our own claim on a commit_unknown
+		// retry). The maintainer path already took the token atomically with
+		// the pre-build clear; for builders driven directly the claim is here.
+		if terr := spfreshClaimBuilderToken(tx, b.storage, b.token); terr != nil {
+			return terr
+		}
 		if prior, perr := tx.Get(b.storage.taskKey(spfreshTaskCellfin, 0)).Get(); perr != nil {
 			return perr
 		} else if prior != nil {
@@ -128,6 +142,9 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 		batch := inputs[lo:hi]
 		err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 			tx := rtx.Transaction()
+			if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+				return terr
+			}
 			for _, in := range batch {
 				cell := b.nearestCell(in.vec)
 				fp16 := vectorcodec.SerializeHalf(in.vec)
@@ -163,16 +180,36 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 		}
 	}
 
-	// 6: flip readable — CAS: only from the generation this build was based
-	// on (codex r3: a concurrent build that flipped first must not be
-	// overwritten; the REAL read's conflict range serializes racing flips).
-	err = spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
+	// 6: flip readable.
+	if err := b.flip(ctx); err != nil {
+		return fmt.Errorf("spfresh build: flip: %w", err)
+	}
+	return nil
+}
+
+// flip publishes the built generation — CAS: only from the generation this
+// build was based on (codex r3: a concurrent build that flipped first must not
+// be overwritten; the REAL reads' conflict ranges serialize racing flips).
+// Idempotent under commit_unknown_result: cur == target with OUR token still
+// in place is this build's own committed flip being retried — success, not a
+// concurrent builder (codex r4). The narrow leftover corner — a retry that
+// lands after a NEWER build already took the token — reports a takeover error
+// even though our flip committed; that build's own BuildSPFreshIndex run
+// redoes the completion bookkeeping, so nothing is lost.
+func (b *spfreshBuilder) flip(ctx context.Context) error {
+	return spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
+		if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+			return terr
+		}
 		cur, cerr := spfreshReadGenerationForWrite(tx, newSPFreshStorage(b.storage.index, 0))
 		if cerr != nil && !errors.Is(cerr, errSPFreshNotFound) {
 			return cerr
 		}
-		if cerr == nil && cur >= b.storage.generation {
+		if cerr == nil && cur == b.storage.generation {
+			return nil // our own committed flip, retried after commit_unknown_result
+		}
+		if cerr == nil && cur > b.storage.generation {
 			return fmt.Errorf("spfresh build: concurrent build flipped generation %d first; this build (gen %d) is abandoned", cur, b.storage.generation)
 		}
 		spfreshSetGeneration(tx, b.storage, b.storage.generation)
@@ -180,10 +217,6 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 			{op: spfreshOpGeneration, ids: []int64{b.storage.generation}},
 		})
 	})
-	if err != nil {
-		return fmt.Errorf("spfresh build: flip: %w", err)
-	}
-	return nil
 }
 
 func (b *spfreshBuilder) nearestCell(vec []float64) int64 {
@@ -211,6 +244,9 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ou
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		stagedIDs, stagedVecs = stagedIDs[:0], stagedVecs[:0]
 		tx := rtx.Transaction()
+		if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+			return terr
+		}
 		row, err := spfreshTaskClaim(tx, b.storage, spfreshTaskCellfin, cellID, b.owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
 			return err
@@ -355,6 +391,9 @@ func (b *spfreshBuilder) waveB(ctx context.Context, cellID int64, router *spfres
 	quantizer := b.newQuantizer()
 	return spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
 		tx := rtx.Transaction()
+		if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+			return terr
+		}
 		row, err := spfreshTaskClaim(tx, b.storage, spfreshTaskCellfin, cellID, b.owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
 			return err

@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -89,6 +90,54 @@ func spfreshClaimIDBlock(tx fdb.Transaction, s *spfreshStorage) (start int64, er
 	binary.LittleEndian.PutUint64(buf[:], uint64(next+spfreshIDBlockSize))
 	tx.Set(key, buf[:])
 	return next, nil
+}
+
+// --- builder ownership token (META/build) ---
+//
+// Exactly one build may target an index at a time. The token is claimed
+// atomically with the pre-build clear; every build transaction re-verifies it
+// with a REAL read, so a newer build's takeover (it overwrites the token)
+// aborts the older build's in-flight transactions at the resolver instead of
+// letting two builds interleave writes into the same generation prefix, and
+// the flip can tell "my own committed flip, retried after
+// commit_unknown_result" (token still mine) apart from a concurrent builder
+// (codex 094.1 r4).
+
+// spfreshTakeBuilderToken unconditionally claims build ownership — the
+// maintainer's pre-build clear path, where the generation CAS in the same
+// transaction has already proven the target is not live.
+func spfreshTakeBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) {
+	tx.Set(s.metaKey(spfreshMetaBuild), token)
+}
+
+// spfreshClaimBuilderToken claims ownership if the slot is free or already
+// ours (commit_unknown retry); a foreign token is a hard error — first claimer
+// wins between builders driven without the maintainer's takeover clear.
+func spfreshClaimBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
+	key := s.metaKey(spfreshMetaBuild)
+	cur, err := tx.Get(key).Get()
+	if err != nil {
+		return fmt.Errorf("spfresh: read builder token: %w", err)
+	}
+	if cur != nil && !bytes.Equal(cur, token) {
+		return fmt.Errorf("spfresh build: another build owns this index (builder token mismatch)")
+	}
+	tx.Set(key, token)
+	return nil
+}
+
+// spfreshVerifyBuilderToken errors unless the ownership slot still carries
+// this build's token. REAL read: the conflict range makes any of our
+// transactions in flight when a takeover commits abort at the resolver.
+func spfreshVerifyBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
+	cur, err := tx.Get(s.metaKey(spfreshMetaBuild)).Get()
+	if err != nil {
+		return fmt.Errorf("spfresh: read builder token: %w", err)
+	}
+	if !bytes.Equal(cur, token) {
+		return fmt.Errorf("spfresh build: another build took over this index (builder token mismatch)")
+	}
+	return nil
 }
 
 // --- CENTROIDS / COARSE ---

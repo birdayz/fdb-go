@@ -232,4 +232,44 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(builder.waveB(ctx, 999, router)).To(MatchError(ContainSubstring("wave B before wave A")))
 	})
+
+	It("flip retried after its own commit is an idempotent success, not a concurrent-build error (codex r4)", func() {
+		config := testConfig(8)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-e2e").Sub("flip-retry"), 1)
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+		Expect(builder.build(ctx, makeInputs(100, 8, 3), 5)).To(Succeed())
+
+		// A commit_unknown_result retry re-runs the flip closure AFTER the flip
+		// committed: it observes cur == target. With our token still in place
+		// that is OUR flip — it must succeed, not report a concurrent build.
+		Expect(builder.flip(ctx)).To(Succeed())
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			gen, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), storage)
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(gen).To(Equal(int64(1)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a takeover token aborts a stale builder's transactions", func() {
+		config := testConfig(8)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-e2e").Sub("takeover"), 1)
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+		Expect(builder.build(ctx, makeInputs(100, 8, 3), 5)).To(Succeed())
+
+		// A newer build takes ownership (the maintainer does this atomically
+		// with its pre-build clear). The stale builder's flip retry must now
+		// fail loudly instead of treating gen == target as its own commit.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			spfreshTakeBuilderToken(rtx.Transaction(), storage, []byte("other-builder-token"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(builder.flip(ctx)).To(MatchError(ContainSubstring("took over")))
+		// Wave transactions carry the same fence.
+		router := builder.buildRouter(map[int64][]int64{}, map[int64][][]float64{})
+		Expect(builder.waveB(ctx, builder.cellIDs[0], router)).To(MatchError(ContainSubstring("took over")))
+	})
 })
