@@ -447,15 +447,23 @@ func spfreshScanRecordBatches(
 			}
 			evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
 
-			// SERIALIZABLE, not the zero-value snapshot: when inTx stages the
-			// batch in this same transaction, the scan's read conflict range
-			// over the record keyspace is the delete fence — a delete
-			// committing after our read version aborts this tx and the retry
-			// re-reads truth. A snapshot scan stages ghosts (the pre-fix bug:
+			// Isolation by mode. inTx (the assignment scan) MUST be
+			// SERIALIZABLE: the scan's read conflict range over the record
+			// keyspace is the delete fence — a delete committing after our
+			// read version aborts this tx and the retry re-reads truth; a
+			// snapshot scan stages ghosts (the pre-fix bug:
 			// IsolationLevelSnapshot is Go's zero value, so the default was
-			// silently fenceless).
+			// silently fenceless). post (the sample scan) must stay SNAPSHOT:
+			// it writes nothing, so a conflict range over every batch of the
+			// whole dataset buys nothing and thrashes on aborts during
+			// exactly the window UpdateWhileWriteOnly guarantees concurrent
+			// writers exist (Torvalds 094.2 re-review).
+			isolation := IsolationLevelSnapshot
+			if inTx != nil {
+				isolation = IsolationLevelSerializable
+			}
 			props := ScanProperties{ExecuteProperties: ExecuteProperties{
-				IsolationLevel:   IsolationLevelSerializable,
+				IsolationLevel:   isolation,
 				ReturnedRowLimit: scanBatch,
 			}}
 			cursor := store.ScanRecords(continuation, props)
