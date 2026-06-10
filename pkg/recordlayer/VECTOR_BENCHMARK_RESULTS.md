@@ -222,3 +222,17 @@ Remaining p50 above the §9 <8ms target is dominated by per-query transaction
 overhead (GRV + store open in the bench harness), not index reads — the 094.4
 FDB-native items (GRV amortization, metadataVersion piggyback, watch refresh)
 own that. Reproduce: `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SWEEP="w:kc:c,..."`.
+
+### SPFresh 094.4 slice 2: allocation-free scorer (same sweep, after)
+
+| w | kc | c | recall@10 | p50 before | p50 after |
+|---|----|----|-----------|------------|-----------|
+| 32 | 96 | 400 | 1.0000 | 52.3ms | 40.9ms |
+| 16 | 64 | 200 | 0.9990 | 33.5ms | **25.4ms** |
+| 8 | 32 | 100 | 0.9890 | 15.9ms | 12.3ms |
+| 8 | 24 | 64 | 0.9740 | 10.4ms | 9.5ms |
+
+p99 tightened more (44.5→34.0ms at defaults). The §9 <8ms p50 sits one
+step away at the 0.974 point; the residual cost is split between the
+posting-read waves and per-entry bookkeeping (tuple unpack + dedup map) —
+profile-first before touching it further.
