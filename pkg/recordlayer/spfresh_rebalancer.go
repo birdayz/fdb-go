@@ -189,6 +189,11 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		}
 		loopErr = fmt.Errorf("spfresh rebalance: task queue did not quiesce in %d rounds (%d actions) — re-trigger loop?", maxRounds, total)
 	}
+	// GC: retired topology past the cooldown horizon (the same window that
+	// guards split↔merge oscillation guards stale readers' grace period).
+	if _, err := spfreshGCSweep(ctx, db, s, config, int64(config.CooldownSec)*1000); err != nil {
+		return total, err
+	}
 	if total > 0 {
 		// The rebalancer just changed the topology it routes on: refresh the
 		// process-local cache eagerly (the §4 "maintainer timer" action —

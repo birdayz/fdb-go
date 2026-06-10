@@ -145,7 +145,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		tx.ClearRange(cr)
 		tx.Set(s.centroidHDRKey(cellID), encodeCellHDR(cellA, cellB))
-		spfreshSaveCoarse(tx, s, cellID, encodeCentroidRowRaw(spfreshStateForward, 0, cellA, cellB, coarse.vecBytes))
+		spfreshSaveCoarse(tx, s, cellID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), cellA, cellB, coarse.vecBytes))
 		tx.Clear(s.counterKey(spfreshCounterCell, cellID))
 		tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 		deltas = append(deltas, spfreshDelta{op: spfreshOpForwardCell, ids: []int64{cellID, cellA, cellB}})

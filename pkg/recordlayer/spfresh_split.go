@@ -219,7 +219,7 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		}
 		tx.ClearRange(pr)
 		tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, childA, childB))
-		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, cent.epoch, childA, childB, cent.vecBytes))
+		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), childA, childB, cent.vecBytes))
 		tx.Clear(s.counterKey(spfreshCounterFine, fineID))
 		// The cell gained a fine centroid net (+2 children, −1 parent).
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, 1)

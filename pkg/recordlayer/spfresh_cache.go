@@ -171,6 +171,15 @@ func (c *spfreshRoutingCache) refresh(tx fdb.ReadTransaction, s *spfreshStorage,
 	if gen != currentGeneration || cursor == nil {
 		return errSPFreshNotFound // full reload required
 	}
+	// GC horizon: a cursor that predates the changelog trim boundary has lost
+	// its incremental history — the deltas it would have applied are gone.
+	horizon, herr := tx.Snapshot().Get(s.metaKey(spfreshMetaHorizon)).Get()
+	if herr != nil {
+		return fmt.Errorf("spfresh: read GC horizon: %w", herr)
+	}
+	if horizon != nil && string(cursor) < string(horizon) {
+		return errSPFreshNotFound // full reload required
+	}
 
 	deltas, last, err := spfreshReadDeltasSince(tx, s, cursor, 10000)
 	if err != nil {
