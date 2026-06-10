@@ -203,3 +203,22 @@ during this measurement (queries now pay zero cache-maintenance I/O).
 Run: `SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_test
 --test_arg="--test.run=TestSPFreshSIFTBenchmark" --test_output=streamed
 --test_env=SPFRESH_BENCH --test_env=SIFT_N`
+
+### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
+
+Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):
+
+| w | kc | c | recall@10 | p50 | p99 |
+|---|----|----|-----------|------|------|
+| 32 | 96 | 400 | 1.0000 | 52.3ms | 99.1ms |
+| 16 | 64 | 200 | 0.9990 | 33.5ms | 44.5ms |
+| 8 | 48 | 150 | 0.9970 | 25.2ms | 36.3ms |
+| 16 | 32 | 100 | 0.9890 | 14.2ms | 20.3ms |
+| 8 | 32 | 100 | 0.9890 | 15.9ms | 26.6ms |
+| 8 | 24 | 64 | 0.9740 | 10.4ms | 16.8ms |
+
+Defaults moved to **16/64/200** (recall 0.999, 1.6× faster than 094.1's 32/96/400).
+Remaining p50 above the §9 <8ms target is dominated by per-query transaction
+overhead (GRV + store open in the bench harness), not index reads — the 094.4
+FDB-native items (GRV amortization, metadataVersion piggyback, watch refresh)
+own that. Reproduce: `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SWEEP="w:kc:c,..."`.

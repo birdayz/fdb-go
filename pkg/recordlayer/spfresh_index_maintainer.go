@@ -343,22 +343,20 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	if len(scanRange.Low) > 1 {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: prefixed (grouped) scans not supported in 094.1", m.index.Name)}
 	}
+	// High = (k [, kc [, w [, c]]]): per-query tuning knobs (RFC-094 §4 /
+	// 094.4). kc keeps the HNSW efSearch slot; w and c extend it.
 	k := 10
-	efSearch := 0
+	efSearch, wProbe, cRerank := 0, 0, 0
 	if scanRange.High != nil {
-		if len(scanRange.High) >= 1 {
-			if kVal, ok := asInt64(scanRange.High[0]); ok && kVal > 0 {
-				k = int(kVal)
-			}
-		}
-		if len(scanRange.High) >= 2 {
-			if efVal, ok := asInt64(scanRange.High[1]); ok && efVal > 0 {
-				efSearch = int(efVal)
+		ints := []*int{&k, &efSearch, &wProbe, &cRerank}
+		for i := 0; i < len(scanRange.High) && i < len(ints); i++ {
+			if v, ok := asInt64(scanRange.High[i]); ok && v > 0 {
+				*ints[i] = int(v)
 			}
 		}
 	}
 
-	results, err := m.searchCurrentGeneration(queryVector, k, efSearch)
+	results, err := m.searchCurrentGeneration(queryVector, k, efSearch, wProbe, cRerank)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -373,7 +371,7 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 
 // searchCurrentGeneration resolves the readable generation, refreshes/loads
 // the per-process cache, and runs the search in the maintainer's transaction.
-func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch int) ([]spfreshSearchResult, error) {
+func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int) ([]spfreshSearchResult, error) {
 	// Resolve the generation (snapshot — queries never conflict).
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0) // gen 0: META access only
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
@@ -400,9 +398,16 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)
 	if efSearch > 0 {
-		// Map the HNSW-style efSearch knob onto the fine-probe width.
-		searcher.kc = max(searcher.kc, efSearch)
+		// The HNSW-style efSearch slot sets the fine-probe width DIRECTLY
+		// (094.4: sweeps need to tune DOWN as well as up).
+		searcher.kc = efSearch
 		searcher.c = max(searcher.c, 4*k)
+	}
+	if wProbe > 0 {
+		searcher.w = wProbe
+	}
+	if cRerank > 0 {
+		searcher.c = max(cRerank, k)
 	}
 	return searcher.search(m.tx, query, k)
 }

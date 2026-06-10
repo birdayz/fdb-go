@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +135,11 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	t.Logf("BUILD: %d vectors in %v (%.0f vec/sec)", n, buildDur, float64(n)/buildDur.Seconds())
 
 	// Queries: recall vs brute force over the subset + latency percentiles.
+	// SIFT_SWEEP=w:kc:c[,w:kc:c...] additionally sweeps searcher parameters
+	// against the SAME built index (094.4 tuning) and logs one line each.
+	if sweep := os.Getenv("SIFT_SWEEP"); sweep != "" {
+		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep)
+	}
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
@@ -224,4 +231,74 @@ func bruteForceIDs(base [][]float64, query []float64, k int) []int64 {
 		ids[i] = all[i].id
 	}
 	return ids
+}
+
+// runSIFTSweep measures recall/latency for each w:kc:c configuration against
+// the already-built index (094.4 tuning; the knobs ride the scan contract's
+// High tuple). One log line per config.
+func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), base [][]float64, queries [][]float32, k int, sweep string) {
+	type sbd interface {
+		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	}
+	for _, cfg := range strings.Split(sweep, ",") {
+		parts := strings.Split(cfg, ":")
+		if len(parts) != 3 {
+			t.Fatalf("SIFT_SWEEP entry %q: want w:kc:c", cfg)
+		}
+		w, _ := strconv.Atoi(parts[0])
+		kc, _ := strconv.Atoi(parts[1])
+		c, _ := strconv.Atoi(parts[2])
+		latencies := make([]time.Duration, 0, len(queries))
+		hits, total := 0, 0
+		for _, qv := range queries {
+			query := float32sToFloat64s(qv)
+			want := bruteForceIDs(base, query, k)
+			qStart := time.Now()
+			var got []int64
+			_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				idx := store.GetMetaData().GetIndex("spf_data")
+				maintainer, merr := store.GetIndexMaintainer(idx)
+				if merr != nil {
+					return nil, merr
+				}
+				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+					High: tuple.Tuple{int64(k), int64(kc), int64(w), int64(c)},
+				}, nil, recordlayer.ScanProperties{})
+				got = got[:0]
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					if cerr != nil {
+						return nil, cerr
+					}
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("sweep %s query: %v", cfg, err)
+			}
+			latencies = append(latencies, time.Since(qStart))
+			wantSet := make(map[int64]bool, k)
+			for _, id := range want {
+				wantSet[id] = true
+			}
+			for _, id := range got {
+				if wantSet[id] {
+					hits++
+				}
+				total++
+			}
+		}
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		t.Logf("SWEEP w=%d kc=%d c=%d: recall@%d=%.4f p50=%v p99=%v", w, kc, c, k,
+			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+	}
 }

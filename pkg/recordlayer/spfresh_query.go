@@ -37,9 +37,14 @@ func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *sp
 		config:  config,
 		cache:   cache,
 		quant:   newSPFreshQuantizer(config),
-		w:       32,
-		kc:      96,
-		c:       400,
+		// Defaults from the 094.4 SIFT-100k sweep: w=16/kc=64/c=200 holds
+		// recall@10 = 0.999 at 1.6× lower latency than the 094.1 values
+		// (32/96/400, recall 1.0000). Per-query overrides ride the scan
+		// contract's High tuple (k, kc, w, c) — e.g. 8/24/64 gives 0.974 at
+		// ~10 ms p50 for latency-first callers.
+		w:  16,
+		kc: 64,
+		c:  200,
 	}
 }
 
