@@ -71,9 +71,9 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	}
 
 	// One parallel burst: all posting range reads issued before any resolves.
-	// The fetch cap (2×Lmax+1 rows) bounds an unmaintained posting's cost to
+	// The fetch cap (4×Lmax+1 rows) bounds an unmaintained posting's cost to
 	// THIS query (metered, never unbounded — RFC-094 §4).
-	limit := 2*s.config.Lmax + 1
+	limit := 4*s.config.Lmax + 1
 	type postingFetch struct {
 		routed spfreshRouted
 		future fdb.RangeResult

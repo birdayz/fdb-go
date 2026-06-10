@@ -84,7 +84,7 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 			return err
 		}
 		// Preserve the raw vector bytes: SEALED still routes reads.
-		spfreshSaveCentroid(tx, s, cellID, fineID, append(encodeCentroidRow(spfreshStateSealed, cent.epoch, 0, 0, nil), cent.vecBytes...))
+		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateSealed, cent.epoch, 0, 0, cent.vecBytes))
 		row.state = spfreshSplitTaskSealed
 		row.childA, row.childB = start, start+1
 		tx.Set(s.taskKey(spfreshTaskSplit, fineID), encodeTaskRow(row))
@@ -203,7 +203,10 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		}
 
 		for i, childID := range children {
-			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cents[i]))
+			// epoch = creation time (ms): the merge lifecycle's post-split
+			// cooldown reads it (T_cool, RFC-094 §6 — split↔merge oscillation
+			// guard).
+			spfreshSaveCentroid(tx, s, cellID, childID, encodeCentroidRow(spfreshStateActive, spfreshNowMs(), 0, 0, cents[i]))
 			spfreshCounterSet(tx, s, spfreshCounterFine, childID, counts[i])
 		}
 
@@ -216,12 +219,27 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		}
 		tx.ClearRange(pr)
 		tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, childA, childB))
-		spfreshSaveCentroid(tx, s, cellID, fineID, append(encodeCentroidRow(spfreshStateForward, cent.epoch, childA, childB, nil), cent.vecBytes...))
+		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), childA, childB, cent.vecBytes))
 		tx.Clear(s.counterKey(spfreshCounterFine, fineID))
 		// The cell gained a fine centroid net (+2 children, −1 parent).
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, 1)
+		// §6b trigger: the fine-split tx probes the cell's fine count (RYW
+		// covers our own ADD) and files the coarse split past cellMax.
+		cellCount, ccerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterCell, cellID)
+		if ccerr != nil {
+			return ccerr
+		}
+		if cellCount > int64(config.CellMax) {
+			if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskCSplit, cellID); terr != nil {
+				return terr
+			}
+		}
 
 		tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
+		// §6 step 3 follow-up: enqueue the NPA reassignment for the
+		// neighborhood. Carries the children; the parent's posting HDR
+		// (written above, same tx) carries the cell.
+		tx.Set(s.taskKey(spfreshTaskNPA, fineID), encodeTaskRow(spfreshTaskRow{childA: childA, childB: childB}))
 		return spfreshAppendDeltas(tx, s, []spfreshDelta{
 			{op: spfreshOpAddFine, ids: []int64{cellID, childA}},
 			{op: spfreshOpAddFine, ids: []int64{cellID, childB}},

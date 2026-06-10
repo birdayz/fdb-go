@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
@@ -23,6 +24,12 @@ import (
 // speculation.
 type spfreshRoutingCache struct {
 	mu sync.RWMutex
+
+	// lastRefreshMs gates the amortized in-generation refresh (094.3: the
+	// topology changes within a generation now). Atomic CAS so exactly one
+	// query per interval pays the changelog read — never one per query (the
+	// rev-2 hot-key anti-pattern).
+	lastRefreshMs atomic.Int64
 
 	generation int64
 	cursor     fdb.Key // changelog position (nil = never refreshed)
@@ -94,6 +101,15 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	// bound — every real entry sorts above it), or a cold-started cache would
 	// report "reload required" forever (cursor nil = never loaded).
 	last := fdb.Key(s.changelog.Bytes())
+	// Floor the cursor at the GC horizon: after a trim that emptied the log,
+	// anchoring at the bare prefix would leave cursor < horizon and the next
+	// refresh would force ANOTHER full reload, every interval, until a new
+	// delta lands (codex 094.3 r2).
+	if horizon, herr := tx.Snapshot().Get(s.metaKey(spfreshMetaHorizon)).Get(); herr != nil {
+		return fmt.Errorf("spfresh: read GC horizon: %w", herr)
+	} else if horizon != nil && string(horizon) > string(last) {
+		last = fdb.Key(horizon)
+	}
 	for {
 		deltas, l, derr := spfreshReadDeltasSince(tx, s, last, 1000)
 		if derr != nil {
@@ -128,6 +144,30 @@ func (c *spfreshRoutingCache) ready(currentGeneration int64) bool {
 	return c.cursor != nil && c.generation == currentGeneration && len(c.coarseIDs) > 0
 }
 
+// spfreshRefreshIntervalMs is the amortized refresh cadence: between
+// refreshes, queries ride the searcher's ≤depth-1 posting-HDR tolerance and
+// inserts the write fence's forward-follow.
+const spfreshRefreshIntervalMs = 1000
+
+// maybeRefresh applies changelog deltas at most once per interval — the
+// in-process form of §4's "refresh runs on the maintainer's timer". Exactly
+// one caller per interval wins the CAS and pays the read; a horizon overrun
+// or topology delta needing L1 escalates to a full reload.
+func (c *spfreshRoutingCache) maybeRefresh(tx fdb.ReadTransaction, s *spfreshStorage, currentGeneration int64) error {
+	now := spfreshNowMs()
+	last := c.lastRefreshMs.Load()
+	if now-last < spfreshRefreshIntervalMs || !c.lastRefreshMs.CompareAndSwap(last, now) {
+		return nil
+	}
+	if err := c.refresh(tx, s, currentGeneration); err != nil {
+		if errors.Is(err, errSPFreshNotFound) {
+			return c.fullReload(tx, s, currentGeneration)
+		}
+		return err
+	}
+	return nil
+}
+
 // refresh applies changelog deltas since the cursor (the background-timer
 // body, RFC-094 §4). Returns errSPFreshNotFound when the cache needs a full
 // reload instead (generation flip observed, or the cursor predates the GC
@@ -138,6 +178,15 @@ func (c *spfreshRoutingCache) refresh(tx fdb.ReadTransaction, s *spfreshStorage,
 	gen, cursor := c.generation, c.cursor
 	c.mu.RUnlock()
 	if gen != currentGeneration || cursor == nil {
+		return errSPFreshNotFound // full reload required
+	}
+	// GC horizon: a cursor that predates the changelog trim boundary has lost
+	// its incremental history — the deltas it would have applied are gone.
+	horizon, herr := tx.Snapshot().Get(s.metaKey(spfreshMetaHorizon)).Get()
+	if herr != nil {
+		return fmt.Errorf("spfresh: read GC horizon: %w", herr)
+	}
+	if horizon != nil && string(cursor) < string(horizon) {
 		return errSPFreshNotFound // full reload required
 	}
 

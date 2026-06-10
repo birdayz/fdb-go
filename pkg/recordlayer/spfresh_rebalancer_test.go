@@ -1,0 +1,279 @@
+package recordlayer
+
+import (
+	"context"
+	"fmt"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+)
+
+var _ = Describe("SPFresh rebalancer + coarse splits", func() {
+	ctx := context.Background()
+
+	spfIndex := func(name string) *Index {
+		idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		return idx
+	}
+	baseMD := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		return builder
+	}
+
+	// setup: seeds, build, readable. Returns storeBuilder + index subspace.
+	setup := func(name string, seedN int) (func(*FDBRecordContext) (*FDBRecordStore, error), subspace.Subspace) {
+		ks := specSubspace()
+		idx := spfIndex(name)
+		builder := baseMD()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		var indexSubspace subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			indexSubspace = store.indexSubspace(idx)
+			_, serr = store.MarkIndexDisabled(name)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for i := 0; i < seedN; i++ {
+				if _, serr := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(int32(i % 3)), Quantity: proto.Int32(int32(i % 2)),
+				}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, name, 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.MarkIndexReadable(name)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return storeBuilder, indexSubspace
+	}
+
+	It("coarse split defers on SEALED rows and the guard pauses fine-split issuance", func() {
+		_, indexSubspace := setup("spf_csplit_defer", 8)
+		storage := newSPFreshStorage(indexSubspace, 1)
+		config := parseSPFreshConfig(spfIndex("spf_csplit_defer"))
+
+		// Seal one fine centroid (a fine split mid-window), then file a
+		// coarse split for its cell.
+		var cellID, fineID int64
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+			Expect(merr).NotTo(HaveOccurred())
+			fineID = mem[0]
+			var ferr error
+			cellID, ferr = spfreshFindCentroidCell(tx, storage, fineID)
+			Expect(ferr).NotTo(HaveOccurred())
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "csplit-test", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskCSplit, cellID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Deferrals accumulate; at the limit the guard pauses issuance.
+		for i := 0; i < spfreshCSplitDeferLimit; i++ {
+			Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			paused, perr := spfreshCSplitPaused(tx, storage, cellID)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(paused).To(BeTrue(), "defer limit must pause fine-split issuance")
+			// The cell is untouched (still ACTIVE, rows in place).
+			coarse, cerr := spfreshReadCoarseForWrite(tx, storage, cellID)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(coarse.state).To(Equal(spfreshStateActive))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Complete the fine split; the coarse split can now proceed.
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "csplit-test", cellID, fineID, 7)).To(Succeed())
+		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+		// Idempotent re-run on the FORWARD cell.
+		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			coarse, cerr := spfreshReadCoarseForWrite(tx, storage, cellID)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(coarse.state).To(Equal(spfreshStateForward), "old cell forwards to the new ones")
+			Expect(coarse.childA).NotTo(BeZero())
+			// The fine rows moved: every child cell row preserved fineID and
+			// state; the old cell's range holds only the HDR.
+			rowsOld, _, _, lerr := spfreshLoadCell(tx, storage, cellID)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(rowsOld).To(BeEmpty(), "old cell's centroid rows cleared behind the HDR")
+			hdr, herr := tx.Get(storage.centroidHDRKey(cellID)).Get()
+			Expect(herr).NotTo(HaveOccurred())
+			Expect(hdr).NotTo(BeNil())
+			moved := 0
+			for _, child := range []int64{coarse.childA, coarse.childB} {
+				rows, _, _, cerr := spfreshLoadCell(tx, storage, child)
+				Expect(cerr).NotTo(HaveOccurred())
+				moved += len(rows)
+				active := 0
+				for _, r := range rows {
+					if r.row.state == spfreshStateActive {
+						active++
+					}
+				}
+				count, cterr := spfreshCounterReadSnapshot(tx, storage, spfreshCounterCell, child)
+				Expect(cterr).NotTo(HaveOccurred())
+				// Tombstones ride the partition for GC discovery but the cell
+				// counter counts ACTIVE centroids only.
+				Expect(count).To(Equal(int64(active)), "exact cell counters by partition")
+			}
+			Expect(moved).To(BeNumerically(">=", 2), "fine rows rewritten under the new cells")
+			// The csplit task (and with it the pause) is gone.
+			paused, perr := spfreshCSplitPaused(tx, storage, cellID)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(paused).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold-start growth: inserts + rebalancing grow fine AND coarse topology with full recall", func() {
+		storeBuilder, indexSubspace := setup("spf_coldstart", 8)
+		storage := newSPFreshStorage(indexSubspace, 1)
+
+		// 300 inserts across a widening grid, rebalancing every 50: postings
+		// overfill -> fine splits -> cell fills -> coarse split(s).
+		const n = 300
+		for lo := 0; lo < n; lo += 50 {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				for i := lo; i < lo+50; i++ {
+					id := int64(1000 + i)
+					if _, serr := store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(int32((i * 13) % 200)),
+						Quantity: proto.Int32(int32((i * 7) % 200)),
+					}); serr != nil {
+						return nil, serr
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = RebalanceSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_coldstart")
+			Expect(err).NotTo(HaveOccurred())
+		}
+		actions, err := RebalanceSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_coldstart")
+		Expect(err).NotTo(HaveOccurred())
+		_ = actions
+
+		// Topology grew at BOTH levels.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			ids, rows, lerr := spfreshLoadAllCoarse(tx, storage)
+			Expect(lerr).NotTo(HaveOccurred())
+			activeCells, fines := 0, 0
+			for i := range ids {
+				if rows[i].state != spfreshStateActive {
+					continue
+				}
+				activeCells++
+				cellRows, _, _, cerr := spfreshLoadCell(tx, storage, ids[i])
+				Expect(cerr).NotTo(HaveOccurred())
+				fines += len(cellRows)
+			}
+			Expect(activeCells).To(BeNumerically(">", 1), "coarse splits must have grown the cell count (§6b cold-start)")
+			Expect(fines).To(BeNumerically(">", 8), "fine splits must have grown the centroid count")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Structural invariants after all the churn: every membership entry
+		// has a posting row in an ACTIVE or SEALED posting.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < n; i++ {
+				pk := tuple.Tuple{int64(1000 + i)}
+				mem, merr := spfreshReadMembership(tx, storage, pk)
+				Expect(merr).NotTo(HaveOccurred())
+				Expect(mem).NotTo(BeEmpty())
+				for _, fineID := range mem {
+					data, gerr := tx.Get(storage.postingKey(fineID, pk)).Get()
+					Expect(gerr).NotTo(HaveOccurred())
+					Expect(data).NotTo(BeNil(), "membership names a missing posting entry after growth")
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// Full recall: every inserted record is its own nearest neighbor.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			idx := store.GetMetaData().GetIndex("spf_coldstart")
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			sbd := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			})
+			for i := 0; i < n; i += 17 { // sample
+				q := []float64{float64((i * 13) % 200), float64((i * 7) % 200)}
+				cursor := sbd.ScanByDistance(TupleRange{
+					Low:  tuple.Tuple{SerializeVector(q)},
+					High: tuple.Tuple{int64(3)},
+				}, nil, ScanProperties{})
+				var got []int64
+				for {
+					res, cerr := cursor.OnNext(ctx)
+					Expect(cerr).NotTo(HaveOccurred())
+					if !res.HasNext() {
+						break
+					}
+					got = append(got, res.GetValue().Key[0].(int64))
+				}
+				Expect(got).To(ContainElement(int64(1000+i)), fmt.Sprintf("record %d lost during growth", 1000+i))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

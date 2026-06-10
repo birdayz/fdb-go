@@ -383,15 +383,19 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	storage := newSPFreshStorage(m.indexSubspace, gen)
 	cache := spfreshCacheFor(m.indexSubspace, gen)
 
-	// Queries pay ZERO cache-maintenance I/O once loaded (RFC-094 §4 — the
-	// per-query changelog read was the rev-2-NAK'd hot-key anti-pattern, and
-	// it cost ~half the measured p50 at SIFT-100k). In 094.1 the topology is
-	// static per generation: only a cold cache or a generation change reloads;
-	// the incremental timer refresh arrives with the rebalancer in 094.3.
+	// Queries pay ZERO cache-maintenance I/O on the common path (RFC-094 §4 —
+	// the per-query changelog read was the rev-2-NAK'd hot-key anti-pattern,
+	// and it cost ~half the measured p50 at SIFT-100k). With the 094.3
+	// rebalancer the topology changes WITHIN a generation, so the cache
+	// additionally refreshes on an amortized timer: one changelog read per
+	// interval per process, not per query; between refreshes queries ride the
+	// searcher's posting-HDR forward tolerance.
 	if !cache.ready(gen) {
 		if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
 			return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
 		}
+	} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
+		return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 	}
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)
