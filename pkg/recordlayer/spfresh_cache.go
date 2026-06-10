@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
@@ -23,6 +24,12 @@ import (
 // speculation.
 type spfreshRoutingCache struct {
 	mu sync.RWMutex
+
+	// lastRefreshMs gates the amortized in-generation refresh (094.3: the
+	// topology changes within a generation now). Atomic CAS so exactly one
+	// query per interval pays the changelog read — never one per query (the
+	// rev-2 hot-key anti-pattern).
+	lastRefreshMs atomic.Int64
 
 	generation int64
 	cursor     fdb.Key // changelog position (nil = never refreshed)
@@ -126,6 +133,30 @@ func (c *spfreshRoutingCache) ready(currentGeneration int64) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.cursor != nil && c.generation == currentGeneration && len(c.coarseIDs) > 0
+}
+
+// spfreshRefreshIntervalMs is the amortized refresh cadence: between
+// refreshes, queries ride the searcher's ≤depth-1 posting-HDR tolerance and
+// inserts the write fence's forward-follow.
+const spfreshRefreshIntervalMs = 1000
+
+// maybeRefresh applies changelog deltas at most once per interval — the
+// in-process form of §4's "refresh runs on the maintainer's timer". Exactly
+// one caller per interval wins the CAS and pays the read; a horizon overrun
+// or topology delta needing L1 escalates to a full reload.
+func (c *spfreshRoutingCache) maybeRefresh(tx fdb.ReadTransaction, s *spfreshStorage, currentGeneration int64) error {
+	now := spfreshNowMs()
+	last := c.lastRefreshMs.Load()
+	if now-last < spfreshRefreshIntervalMs || !c.lastRefreshMs.CompareAndSwap(last, now) {
+		return nil
+	}
+	if err := c.refresh(tx, s, currentGeneration); err != nil {
+		if errors.Is(err, errSPFreshNotFound) {
+			return c.fullReload(tx, s, currentGeneration)
+		}
+		return err
+	}
+	return nil
 }
 
 // refresh applies changelog deltas since the cursor (the background-timer

@@ -209,6 +209,19 @@ func spfreshLoadCell(tx fdb.ReadTransaction, s *spfreshStorage, cellID int64) (r
 	return rows, fwdA, fwdB, nil
 }
 
+// spfreshReadCoarseForWrite REAL-reads one COARSE row — the coarse-lifecycle
+// state fence (§6b zombie rules). Absent returns errSPFreshNotFound.
+func spfreshReadCoarseForWrite(tx fdb.Transaction, s *spfreshStorage, cellID int64) (spfreshCentroidRow, error) {
+	data, err := tx.Get(s.coarseKey(cellID)).Get()
+	if err != nil {
+		return spfreshCentroidRow{}, fmt.Errorf("spfresh: read coarse %d: %w", cellID, err)
+	}
+	if data == nil {
+		return spfreshCentroidRow{}, errSPFreshNotFound
+	}
+	return decodeCentroidRow(data)
+}
+
 func spfreshSaveCoarse(tx fdb.Transaction, s *spfreshStorage, cellID int64, row []byte) {
 	tx.Set(s.coarseKey(cellID), row)
 }

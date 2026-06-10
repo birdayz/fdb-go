@@ -80,8 +80,32 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	if err != nil {
 		return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
 	}
-	return m.spfreshInsertRouted(wc.storage, routed, pk, vec)
+	ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec)
+	if !errors.Is(ierr, errSPFreshStaleRoute) {
+		return ierr
+	}
+	// Every routed candidate failed the authoritative fence: the cache is
+	// stale beyond the in-place fallbacks (e.g. a COARSE split relocated the
+	// centroids — forward-follow looks in the parent's old cell and finds
+	// nothing). §5's "re-route conservatively": reload the cache in this
+	// transaction and retry once.
+	if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
+		return fmt.Errorf("spfresh index %q: stale-route reload: %w", m.index.Name, rerr)
+	}
+	routed, err = wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
+	if err != nil {
+		return fmt.Errorf("spfresh index %q: route insert (reloaded): %w", m.index.Name, err)
+	}
+	if ierr := m.spfreshInsertRouted(wc.storage, routed, pk, vec); ierr != nil {
+		return fmt.Errorf("spfresh index %q: insert after cache reload: %w", m.index.Name, ierr)
+	}
+	return nil
 }
+
+// errSPFreshStaleRoute: every routed candidate failed the authoritative state
+// fence — the routing cache is stale beyond in-place recovery and must be
+// reloaded.
+var errSPFreshStaleRoute = errors.New("spfresh: routed candidates all stale (cache reload required)")
 
 // spfreshInsertRouted is the post-routing half of the insert; the WriteOnly
 // staging path routes within a single FINALIZED cell instead of on the cache.
@@ -172,7 +196,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		cells[cand.fineID] = cand.cellID
 	}
 	if len(verified) == 0 {
-		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates (routing cache stale beyond fallback depth)", m.index.Name, len(routed))
+		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.index.Name, len(routed), errSPFreshStaleRoute)
 	}
 	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
 
@@ -219,6 +243,15 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			continue
 		}
 		if spfreshSampledProbe(pk) || count > int64(2*m.config.Lmax) {
+			// Starvation guard (§6b): a pending coarse split past its defer
+			// limit pauses fine-split issuance for the cell until it runs.
+			paused, perr := spfreshCSplitPaused(m.tx, storage, cells[fineID])
+			if perr != nil {
+				return perr
+			}
+			if paused {
+				continue
+			}
 			if _, terr := spfreshTaskSetIfAbsent(m.tx, storage, spfreshTaskSplit, fineID); terr != nil {
 				return terr
 			}

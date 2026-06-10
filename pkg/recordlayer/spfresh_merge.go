@@ -190,7 +190,7 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			tgtB = targets[1].fineID
 		}
 		tx.Set(s.postingHDRKey(fineID), encodePostingHDR(cellID, tgtA, tgtB))
-		spfreshSaveCentroid(tx, s, cellID, fineID, append(encodeCentroidRow(spfreshStateForward, cent.epoch, tgtA, tgtB, nil), cent.vecBytes...))
+		spfreshSaveCentroid(tx, s, cellID, fineID, encodeCentroidRowRaw(spfreshStateForward, cent.epoch, tgtA, tgtB, cent.vecBytes))
 		tx.Clear(s.counterKey(spfreshCounterFine, fineID))
 		// The cell lost a fine centroid.
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, -1)

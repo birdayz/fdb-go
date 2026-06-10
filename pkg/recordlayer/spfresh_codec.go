@@ -42,6 +42,21 @@ func encodeCentroidRow(state byte, epoch, childA, childB int64, vec []float64) [
 	return append(buf, vb...)
 }
 
+// encodeCentroidRowRaw re-headers a row PRESERVING its encoded vector bytes
+// verbatim (state transitions: SEAL, FORWARD flips, cell moves). This is the
+// only correct way to keep a vector across a rewrite: passing nil to
+// encodeCentroidRow and appending the old payload yields a DOUBLE vectorcodec
+// header (SerializeHalf(nil) still emits its type byte) — a corrupt vector
+// that decodes to garbage dimensions (caught by the 094.3 cold-start e2e).
+func encodeCentroidRowRaw(state byte, epoch, childA, childB int64, vecBytes []byte) []byte {
+	buf := make([]byte, spfreshCentroidHeaderLen, spfreshCentroidHeaderLen+len(vecBytes))
+	buf[0] = state
+	binary.LittleEndian.PutUint64(buf[1:], uint64(epoch))
+	binary.LittleEndian.PutUint64(buf[9:], uint64(childA))
+	binary.LittleEndian.PutUint64(buf[17:], uint64(childB))
+	return append(buf, vecBytes...)
+}
+
 func decodeCentroidRow(data []byte) (spfreshCentroidRow, error) {
 	if len(data) < spfreshCentroidHeaderLen {
 		return spfreshCentroidRow{}, fmt.Errorf("spfresh: centroid row too short: %d bytes", len(data))
