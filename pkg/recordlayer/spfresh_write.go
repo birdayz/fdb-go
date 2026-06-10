@@ -76,7 +76,7 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 // split probe. An existing membership row (update) is cleared from keys
 // derived from this same-tx read.
 func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple.Tuple, vec []float64) error {
-	routed, err := wc.cache.route(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
+	routed, err := wc.cache.routeForWrite(m.tx, wc.storage, vec, spfreshInsertProbeCells, spfreshInsertCandidates)
 	if err != nil {
 		return fmt.Errorf("spfresh index %q: route insert: %w", m.index.Name, err)
 	}
@@ -94,7 +94,13 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	// skipping, or an insert near a freshly split centroid fails with no
 	// candidates until the cache reloads (codex 094.2 r1 P1). Worklist kept
 	// d2-sorted as children are spliced in; visit budget bounds forward chains.
-	verified := make([]spfreshCandidate, 0, m.config.Replication)
+	// verified is kept d2-ASCENDING by sorted insertion: spfreshClosure
+	// assumes nearest-first (verified[0] is its c1), and a followed FORWARD
+	// child can be NEARER than an already-verified candidate — appending
+	// would hand closure a wrong c1 and mis-assign the insert (codex 094.2
+	// r2). The cutoff is sound for the same reason: stop only when the
+	// sorted worklist's head can no longer improve the best Replication.
+	verified := make([]spfreshCandidate, 0, m.config.Replication+2)
 	vecs := make(map[int64][]float64, m.config.Replication)
 	cells := make(map[int64]int64, m.config.Replication)
 	work := append([]spfreshRouted(nil), routed...)
@@ -106,7 +112,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			continue
 		}
 		seen[cand.fineID] = true
-		if len(verified) == m.config.Replication {
+		if len(verified) >= m.config.Replication && cand.d2 >= verified[m.config.Replication-1].d2 {
 			break
 		}
 		row, rerr := spfreshReadCentroidForWrite(m.tx, storage, cand.cellID, cand.fineID)
@@ -153,7 +159,15 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		if verr != nil {
 			return verr
 		}
-		verified = append(verified, spfreshCandidate{id: cand.fineID, d2: cand.d2})
+		nc := spfreshCandidate{id: cand.fineID, d2: cand.d2}
+		at := len(verified)
+		for i := range verified {
+			if nc.d2 < verified[i].d2 {
+				at = i
+				break
+			}
+		}
+		verified = append(verified[:at], append([]spfreshCandidate{nc}, verified[at:]...)...)
 		vecs[cand.fineID] = cvec
 		cells[cand.fineID] = cand.cellID
 	}

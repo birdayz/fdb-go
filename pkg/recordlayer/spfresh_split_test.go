@@ -465,6 +465,83 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(big.stagingScanBatch()).To(BeNumerically(">=", 1))
 	})
 
+	It("write routing excludes SEALED before the candidate cutoff (codex 094.2 r2)", func() {
+		// 17 SEALED centroids nearer than the only ACTIVE one: the insert
+		// route must not let them eat the candidate budget (the fence rejects
+		// them anyway) — pre-fix, routeForWrite didn't exist, SEALED filled
+		// all 16 slots and the ACTIVE fallback was truncated away.
+		s := newSPFreshStorage(specSubspace().Sub("spfresh-r2").Sub("sealed-budget"), 1)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, s, 1)
+			spfreshSaveCoarse(tx, s, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			for i := int64(0); i < 17; i++ {
+				spfreshSaveCentroid(tx, s, 1, 10+i, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{float64(i + 1), 0}))
+			}
+			spfreshSaveCentroid(tx, s, 1, 99, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{50, 0}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		cache := newSPFreshRoutingCache(0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(cache.fullReload(tx, s, 1)).To(Succeed())
+			write, werr := cache.routeForWrite(tx, s, []float64{0, 0}, 8, spfreshInsertCandidates)
+			Expect(werr).NotTo(HaveOccurred())
+			Expect(write).To(HaveLen(1))
+			Expect(write[0].fineID).To(Equal(int64(99)), "the ACTIVE fallback must survive the cutoff")
+			read, rerr := cache.route(tx, s, []float64{0, 0}, 8, spfreshInsertCandidates)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(len(read)).To(Equal(spfreshInsertCandidates), "reads still see SEALED postings")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a followed FORWARD child keeps the verified list nearest-first for closure (codex 094.2 r2)", func() {
+		// Stale-cache order: an ACTIVE candidate pops BEFORE a FORWARD parent
+		// whose child is nearer than it. The closure's c1 must be the child —
+		// pre-fix the child was appended after the farther candidate, closure
+		// took the wrong c1 and kept both copies.
+		ks := specSubspace()
+		idx := spfIndex("spf_r2_order")
+		builder := baseMD()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+			storage := newSPFreshStorage(store.indexSubspace(idx), 1)
+			tx := rtx.Transaction()
+			// activeX at d2≈10.2, FORWARD parent at d2≈12.3 with childA at
+			// d2≈2.9 (nearer than activeX) and childB far away.
+			spfreshSaveCentroid(tx, storage, 1, 50, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{3.2, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 60, encodeCentroidRow(spfreshStateForward, 0, 61, 62, []float64{3.5, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 61, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{1.7, 0}))
+			spfreshSaveCentroid(tx, storage, 1, 62, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{10, 0}))
+
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			m := maintainer.(*spfreshIndexMaintainer)
+			query := []float64{0, 0}
+			routed := []spfreshRouted{
+				{cellID: 1, fineID: 50, vec: []float64{3.2, 0}, d2: spfreshSquaredDistance(query, []float64{3.2, 0})},
+				{cellID: 1, fineID: 60, vec: []float64{3.5, 0}, d2: spfreshSquaredDistance(query, []float64{3.5, 0})},
+			}
+			Expect(m.spfreshInsertRouted(storage, routed, tuple.Tuple{int64(1)}, query)).To(Succeed())
+
+			mem, memErr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+			Expect(memErr).NotTo(HaveOccurred())
+			Expect(mem).To(Equal([]int64{61}),
+				"closure must see the followed child as c1: alpha drops the farther activeX; keeping both means c1 was wrong")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("an insert committing before SEAL is in the frozen posting the split reads", func() {
 		// The §6 fencing-sound-both-directions claim, forward direction: insert
 		// commits first, then SEAL+SPLIT — the member must come out the other

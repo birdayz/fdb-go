@@ -265,11 +265,24 @@ type spfreshRouted struct {
 	d2     float64
 }
 
-// route selects the kc nearest ACTIVE fine centroids for the query: scan L1 →
-// probe the w nearest cells (loading missed L2 cells; following coarse
+// route selects the kc nearest readable fine centroids for the query: scan
+// L1 → probe the w nearest cells (loading missed L2 cells; following coarse
 // forwards one hop) → scan their fine centroids (RFC-094 §4). Deterministic
-// tie-breaks by id.
+// tie-breaks by id. Reads route ACTIVE and SEALED (a sealed posting still
+// holds its members until SPLIT commits).
 func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
+	return c.routeStates(tx, s, query, w, kc, true)
+}
+
+// routeForWrite is the insert variant: SEALED is excluded BEFORE the kc
+// truncation — the write fence rejects SEALED anyway, so sealed rows in the
+// candidate list only starve the insert of ACTIVE fallbacks when a split
+// wave seals many nearby centroids (codex 094.2 r2).
+func (c *spfreshRoutingCache) routeForWrite(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int) ([]spfreshRouted, error) {
+	return c.routeStates(tx, s, query, w, kc, false)
+}
+
+func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStorage, query []float64, w, kc int, includeSealed bool) ([]spfreshRouted, error) {
 	c.mu.RLock()
 	ids := c.coarseIDs
 	vecs := c.coarseVecs
@@ -303,12 +316,12 @@ func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, q
 			return nil
 		}
 		for i, fineID := range cell.fineIDs {
-			// ACTIVE and SEALED both route: a SEALED posting still holds its
-			// members until SPLIT commits — filtering it out makes queries
-			// miss them for the whole seal window (codex 094.2 r1 P1). The
-			// write path is unaffected: its REAL state fence rejects SEALED
-			// authoritatively and falls to the next-nearest.
-			if cell.states[i] != spfreshStateActive && cell.states[i] != spfreshStateSealed {
+			// ACTIVE always routes; SEALED routes for reads only (a SEALED
+			// posting still holds its members until SPLIT commits — filtering
+			// it from queries hid them for the whole seal window, codex
+			// 094.2 r1 P1) and is excluded for writes (see routeForWrite).
+			if cell.states[i] != spfreshStateActive &&
+				!(includeSealed && cell.states[i] == spfreshStateSealed) {
 				continue
 			}
 			routed = append(routed, spfreshRouted{
