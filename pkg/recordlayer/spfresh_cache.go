@@ -303,7 +303,12 @@ func (c *spfreshRoutingCache) route(tx fdb.ReadTransaction, s *spfreshStorage, q
 			return nil
 		}
 		for i, fineID := range cell.fineIDs {
-			if cell.states[i] != spfreshStateActive {
+			// ACTIVE and SEALED both route: a SEALED posting still holds its
+			// members until SPLIT commits — filtering it out makes queries
+			// miss them for the whole seal window (codex 094.2 r1 P1). The
+			// write path is unaffected: its REAL state fence rejects SEALED
+			// authoritatively and falls to the next-nearest.
+			if cell.states[i] != spfreshStateActive && cell.states[i] != spfreshStateSealed {
 				continue
 			}
 			routed = append(routed, spfreshRouted{

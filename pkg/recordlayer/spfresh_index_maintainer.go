@@ -427,10 +427,11 @@ func spfreshScanRecordBatches(
 	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
 	index *Index,
 	indexSubspace subspace.Subspace,
+	batchSize int,
 	inTx func(rtx *FDBRecordContext, batch []spfreshBuildInput) error,
 	post func(batch []spfreshBuildInput) error,
 ) error {
-	scanBatch := spfreshScanBatchSize
+	scanBatch := batchSize
 	var continuation []byte
 	for first := true; first || continuation != nil; first = false {
 		// Per-attempt staging: the body may RETRY (1007/1020); handing batches
@@ -550,7 +551,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// Sample scan (§8 step 1): all records at current scale; reservoir
 	// sampling caps this at production scale.
 	var sample [][]float64
-	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, nil, func(batch []spfreshBuildInput) error {
+	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, spfreshScanBatchSize, nil, func(batch []spfreshBuildInput) error {
 		for _, in := range batch {
 			sample = append(sample, in.vec)
 		}
@@ -621,8 +622,11 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return berr
 	}
 	// The staging writes ride INSIDE each scan transaction: the scan's REAL
-	// read of the record range is the delete fence (Torvalds 094.2 #2).
-	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, builder.stageInTx, nil); berr != nil {
+	// read of the record range is the delete fence (Torvalds 094.2 #2). The
+	// batch is BYTE-bounded, not just row-bounded — a staging batch writes
+	// fp16 STAGING + SIDECAR per record, and 1000 records × 4096 dims would
+	// blow the 10 MB transaction limit (codex 094.2 r1 P2).
+	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, config.stagingScanBatch(), builder.stageInTx, nil); berr != nil {
 		return berr
 	}
 	if berr := builder.finalize(ctx, seed); berr != nil {

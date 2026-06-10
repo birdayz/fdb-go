@@ -88,13 +88,24 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, routed []spfreshRouted, pk tuple.Tuple, vec []float64) error {
 	// Fence: verify candidates ACTIVE with REAL state reads, in nearest-first
 	// order, until Replication verified candidates are in hand. The cache said
-	// ACTIVE; the authoritative row decides (SEALED/FORWARD/absent ⇒ the cell
-	// moved or a split is in flight — drop and take the next-nearest;
-	// RFC-094 §5 step 2).
+	// ACTIVE; the authoritative row decides: SEALED/absent ⇒ drop and take the
+	// next-nearest (RFC-094 §5 step 2); FORWARD ⇒ a stale cache routed us to a
+	// split parent — FOLLOW its children from the authoritative row instead of
+	// skipping, or an insert near a freshly split centroid fails with no
+	// candidates until the cache reloads (codex 094.2 r1 P1). Worklist kept
+	// d2-sorted as children are spliced in; visit budget bounds forward chains.
 	verified := make([]spfreshCandidate, 0, m.config.Replication)
 	vecs := make(map[int64][]float64, m.config.Replication)
 	cells := make(map[int64]int64, m.config.Replication)
-	for _, cand := range routed {
+	work := append([]spfreshRouted(nil), routed...)
+	seen := make(map[int64]bool, len(work))
+	for examined := 0; len(work) > 0 && examined < 4*(len(routed)+2); examined++ {
+		cand := work[0]
+		work = work[1:]
+		if seen[cand.fineID] {
+			continue
+		}
+		seen[cand.fineID] = true
 		if len(verified) == m.config.Replication {
 			break
 		}
@@ -105,8 +116,38 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			}
 			return rerr
 		}
-		if row.state != spfreshStateActive {
+		switch row.state {
+		case spfreshStateActive:
+			// verified below
+		case spfreshStateForward:
+			for _, childID := range []int64{row.childA, row.childB} {
+				if childID == 0 || seen[childID] {
+					continue
+				}
+				crow, cerr := spfreshReadCentroidForWrite(m.tx, storage, cand.cellID, childID)
+				if cerr != nil {
+					if errors.Is(cerr, errSPFreshNotFound) {
+						continue
+					}
+					return cerr
+				}
+				cvec, cverr := crow.vector()
+				if cverr != nil {
+					return cverr
+				}
+				child := spfreshRouted{cellID: cand.cellID, fineID: childID, vec: cvec, d2: spfreshSquaredDistance(vec, cvec)}
+				at := len(work)
+				for i := range work {
+					if child.d2 < work[i].d2 {
+						at = i
+						break
+					}
+				}
+				work = append(work[:at], append([]spfreshRouted{child}, work[at:]...)...)
+			}
 			continue
+		default:
+			continue // SEALED/DEAD: next-nearest
 		}
 		cvec, verr := row.vector()
 		if verr != nil {

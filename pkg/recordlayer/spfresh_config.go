@@ -87,6 +87,23 @@ type SPFreshConfig struct {
 // Lmin returns the merge threshold in entries.
 func (c SPFreshConfig) Lmin() int { return c.Lmax / c.LminRatio }
 
+// stagingScanBatch bounds the assignment scan's records-per-transaction by
+// BYTES, not just rows: each staged record writes a STAGING and a SIDECAR
+// fp16 vector (2 bytes/dim each) in the scan's own transaction, so a fixed
+// 1000-row batch at 4096 dims would exceed FDB's 10 MB transaction limit
+// (codex 094.2 r1 P2). Capped at spfreshScanBatchSize for small vectors.
+func (c SPFreshConfig) stagingScanBatch() int {
+	perRecord := 2*(2*c.NumDimensions) + 128 // staging + sidecar values, key overhead
+	n := spfreshTxByteBudget / perRecord
+	if n < 1 {
+		n = 1
+	}
+	if n > spfreshScanBatchSize {
+		n = spfreshScanBatchSize
+	}
+	return n
+}
+
 // postingEntryBytes is the worst-case size of one posting entry: the RaBitQ
 // residual code plus key overhead (subspace prefix, fineID, nested pk).
 func (c SPFreshConfig) postingEntryBytes() int {

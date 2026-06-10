@@ -402,6 +402,69 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(out.proceed).To(BeFalse(), "absent centroid is a zombie task")
 	})
 
+	It("queries keep returning a SEALED posting's members (codex 094.2 r1)", func() {
+		// Until SPLIT commits, the parent posting is the ONLY place its
+		// members live. A cache loaded during the seal window must still
+		// route reads to it — filtering SEALED out of query routing made
+		// every member invisible for the whole window.
+		storeBuilder, _, storage := setupBuilt("spf_sealed_vis", clusteredPoints(10))
+		cellID, fineID, members := largestPosting(storage)
+		Expect(len(members)).To(BeNumerically(">=", 2))
+		fileTask(storage, fineID)
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "splitter-1", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+
+		// The maintainer cache for this subspace loads NOW — post-seal.
+		got := knn(storeBuilder, "spf_sealed_vis", []float64{10, 10}, 10)
+		Expect(got).To(HaveLen(10), "SEALED posting's members missing from kNN during the seal window")
+	})
+
+	It("an insert routed by a stale cache follows a FORWARD parent to its children (codex 094.2 r1)", func() {
+		// One tight cluster → one fine centroid. Warm the cache, split the
+		// centroid, then insert: the stale cache still routes to the parent;
+		// the REAL state fence sees FORWARD and must follow childA/childB
+		// instead of failing with "no ACTIVE fine centroid".
+		storeBuilder, _, storage := setupBuilt("spf_fwd_insert", clusteredPoints(8))
+		// Warm the per-process cache pre-split.
+		Expect(knn(storeBuilder, "spf_fwd_insert", []float64{10, 10}, 4)).To(HaveLen(4))
+
+		cellID, fineID, _ := largestPosting(storage)
+		fileTask(storage, fineID)
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "splitter-1", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, DefaultSPFreshConfig(2), "splitter-1", cellID, fineID, 7)).To(Succeed())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(777), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred(), "insert near a freshly split centroid must follow the forward, not fail")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			mem, merr := spfreshReadMembership(rtx.Transaction(), storage, tuple.Tuple{int64(777)})
+			Expect(merr).NotTo(HaveOccurred())
+			Expect(mem).NotTo(BeEmpty())
+			Expect(mem).NotTo(ContainElement(fineID), "insert landed in the FORWARD parent")
+			for _, id := range mem {
+				Expect([]int64{out.childA, out.childB}).To(ContainElement(id), "insert must land in a split child")
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("the assignment scan batch is byte-bounded by dimension (codex 094.2 r1)", func() {
+		small := DefaultSPFreshConfig(2)
+		Expect(small.stagingScanBatch()).To(Equal(spfreshScanBatchSize), "small vectors keep the row cap")
+		big := DefaultSPFreshConfig(4096)
+		Expect(big.stagingScanBatch()).To(BeNumerically("<", 300), "4096-dim staging batches must shrink to fit the tx budget")
+		Expect(big.stagingScanBatch()).To(BeNumerically(">=", 1))
+	})
+
 	It("an insert committing before SEAL is in the frozen posting the split reads", func() {
 		// The §6 fencing-sound-both-directions claim, forward direction: insert
 		// commits first, then SEAL+SPLIT — the member must come out the other

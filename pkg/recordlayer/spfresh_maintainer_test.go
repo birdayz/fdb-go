@@ -666,7 +666,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		spfreshScanBatchSize = 3
 		defer func() { spfreshScanBatchSize = oldBatch }()
 		deleted := false
-		err = spfreshScanRecordBatches(ctx, sharedDB, storeBuilder, idx, indexSubspace,
+		err = spfreshScanRecordBatches(ctx, sharedDB, storeBuilder, idx, indexSubspace, spfreshScanBatchSize,
 			func(rtx *FDBRecordContext, batch []spfreshBuildInput) error {
 				if !deleted {
 					deleted = true
