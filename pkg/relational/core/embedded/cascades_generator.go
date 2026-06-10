@@ -1424,10 +1424,12 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	)
 }
 
-// tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a VECTOR
-// (HNSW) index, or nil if the index is not a vector index. columnNames are all
-// index columns (partition prefix + the vector column); partitionCount is the
-// KeyWithValue split point; the metric comes from the HNSW options.
+// tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector
+// index (HNSW or SPFresh — the two share the logical match shape and the
+// BY_DISTANCE physical contract; RFC-094 §10), or nil if the index is not a
+// vector index. columnNames are all index columns (partition prefix + the
+// vector column); partitionCount is the KeyWithValue split point; the metric
+// comes from the method's own option namespace.
 func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.VectorIndexScanMatchCandidate {
 	if (idx.Type != recordlayer.IndexTypeVector && idx.Type != recordlayer.IndexTypeVectorSPFresh) || idx.RootExpression == nil {
 		return nil
