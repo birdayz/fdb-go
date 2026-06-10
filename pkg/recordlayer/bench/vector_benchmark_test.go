@@ -48,6 +48,11 @@ func ensureVectorBenchDB(tb testing.TB) {
 		defer setupCancel()
 		container, err := foundationdbtc.Run(setupCtx, "",
 			foundationdbtc.WithAPIVersion(720),
+			// Benchmarks write multi-GB datasets (SIFT-1M ≈ 2 GB of records
+			// + postings + sidecars); the default memory engine stalls hard
+			// at its ~1 GB per-process cap (the 1M foreground fill deadlined
+			// at ~317k records). SSD is also the production-realistic engine.
+			foundationdbtc.WithStorageEngine("ssd"),
 		)
 		if err != nil {
 			tb.Fatalf("failed to start FDB container: %v", err)
