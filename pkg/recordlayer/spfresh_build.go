@@ -519,17 +519,25 @@ func (s *spfreshQuantizer) Encode(residual []float64) []byte {
 func (s *spfreshQuantizer) scorer(residualQuery []float64, dims int) func(code []byte) (float64, error) {
 	// Cosine + zero RESIDUAL is a legitimate SPFresh input (the query equals
 	// a centroid — e.g. querying the first inserted vector), but the RaBitQ
-	// estimator rejects zero-norm cosine queries by design. Estimates only
-	// rank candidates for the top-C cut; the sidecar re-rank is exact — so
-	// rank that posting's entries with a constant best-case estimate and let
-	// the re-rank sort truth (codex 094.4 r2).
+	// estimator rejects zero-norm cosine queries by design. The cosine
+	// estimate formula is 0.5·euclideanSquare, and at a zero query that
+	// degenerates to 0.5·‖residual_c‖² — so score these codes with the
+	// EUCLIDEAN estimator (no zero-query guard, identical encoded fields)
+	// and keep the 0.5 cosine scale: the estimates stay monotone within the
+	// posting AND comparable across postings (a constant best-case estimate
+	// here created an Lmax-sized tie that could evict the true match from
+	// the top-C cut before the exact re-rank — codex 094.4 r2+r3).
 	if s.config.Metric == VectorMetricCosine {
 		var norm float64
 		for _, v := range residualQuery {
 			norm += v * v
 		}
 		if !(norm > 0) {
-			return func([]byte) (float64, error) { return 0, nil }
+			sc := rabitq.NewQuantizer(rabitq.MetricEuclidean, s.config.NumExBits).NewScorer(residualQuery)
+			return func(code []byte) (float64, error) {
+				est, err := sc.Score(code, dims)
+				return 0.5 * est, err
+			}
 		}
 	}
 	if rq, ok := s.q.(*rabitq.Quantizer); ok {

@@ -653,3 +653,71 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", 
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// codex 094.4 r3: a zero-residual cosine query must RANK its posting (the
+// constant-tie workaround could evict the true match from the top-C cut by
+// pk tie-break before the exact re-rank).
+var _ = Describe("SPFresh cosine zero-residual ranking (codex 094.4 r3)", func() {
+	ctx := context.Background()
+
+	It("ranks the exact match first within the zero-residual posting", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_cos_rank", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshMetric:        "COSINE_METRIC",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		// Insert id 5 FIRST: the cold-start centroid is minted AT its vector,
+		// so querying it later is the zero-residual case. Then id 1 with a
+		// different ANGLE — under a constant-estimate tie, the pk tie-break
+		// would pick id 1 (the wrong answer) when c=1 truncates before
+		// re-rank.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(4), Quantity: proto.Int32(3)}); serr != nil {
+				return nil, serr
+			}
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(3), Quantity: proto.Int32(4)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			// k=1 with re-rank pool c=1: the top-C cut happens BEFORE the
+			// exact re-rank, so the estimate ordering is load-bearing.
+			cursor := maintainer.(interface {
+				ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+			}).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector([]float64{4, 3})},
+				High: tuple.Tuple{int64(1), int64(0), int64(0), int64(1)},
+			}, nil, ScanProperties{})
+			res, cerr := cursor.OnNext(ctx)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(res.HasNext()).To(BeTrue())
+			Expect(res.GetValue().Key[0]).To(Equal(int64(5)),
+				"the exact match must out-rank the different-angle vector in the estimate ordering, not lose a constant tie by pk")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
