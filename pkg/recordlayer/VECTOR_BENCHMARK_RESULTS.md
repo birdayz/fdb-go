@@ -236,3 +236,11 @@ p99 tightened more (44.5→34.0ms at defaults). The §9 <8ms p50 sits one
 step away at the 0.974 point; the residual cost is split between the
 posting-read waves and per-entry bookkeeping (tuple unpack + dedup map) —
 profile-first before touching it further.
+
+### SPFresh 094.5 churn soak (SIFT-20k, 6 waves × 10% delete+reinsert)
+
+Recall@10 sampled online against brute force over the live set after each
+wave: **1.0000 at every wave** (post-build through wave 6; 60% of the index
+churned cumulatively; rebalancer actions per wave: 32/0/0/2/0/0). No topology
+decay. Reproduce: `SPFRESH_BENCH=1 SIFT_N=20000 SOAK_WAVES=6 … TestSPFreshChurnSoak`;
+the 10M soak is the same harness at SIFT_N/SOAK_* scale.
