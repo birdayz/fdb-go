@@ -163,9 +163,9 @@ func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 
 	// First build in flight (or not started): target generation 1.
 	storage := newSPFreshStorage(m.indexSubspace, 1)
-	// REAL read: a write racing the coarse pass's commit aborts here and the
-	// retry sees the committed table.
-	cellIDs, cellRows, err := spfreshLoadAllCoarse(m.tx, storage)
+	// REAL read — see spfreshLoadAllCoarseForWrite: this conflict range is
+	// what makes the "pre-coarse no-op" decision safe to act on.
+	cellIDs, cellRows, err := spfreshLoadAllCoarseForWrite(m.tx, storage)
 	if err != nil {
 		return err
 	}
@@ -187,8 +187,12 @@ func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 			if derr := m.spfreshDelete(storage, pk); derr != nil {
 				return derr
 			}
-			vec, _ := spfreshEntryVector(m.index, entry)
-			if vec != nil && len(cellIDs) > 0 {
+			// An undecodable vector was never staged (every staging writer —
+			// the scan and the insert path — errors before writing one), so
+			// skipping the staged-copy clear for it is sound; don't swallow
+			// the distinction silently (Torvalds 094.2 #3).
+			vec, verr := spfreshEntryVector(m.index, entry)
+			if verr == nil && vec != nil && len(cellIDs) > 0 {
 				cell := spfreshNearestCellOf(vec, cellIDs, cellRows)
 				m.tx.Clear(storage.stagingKey(cell, pk))
 			}
@@ -409,21 +413,28 @@ var spfreshScanBatchSize = 1000
 // transactions — one unbounded scan blows the 5 s FDB transaction limit at
 // scale and the retry loop restarts it from scratch forever (caught by the
 // SIFT-100k benchmark hanging in exactly that loop). Each tx reads up to
-// spfreshScanBatchSize records, evaluates the index entries, and hands the
-// batch of (pk, vector) inputs to fn.
+// spfreshScanBatchSize records and evaluates the index entries.
+//
+// Exactly one of the callbacks is non-nil:
+//   - inTx runs INSIDE the scan transaction — index writes that must commit
+//     atomically with the scan's REAL record-range read (the assignment
+//     scan's delete fence). Its writes must be idempotent: the tx can retry.
+//   - post runs AFTER the transaction succeeds — pure in-memory collection
+//     (the sample scan), which must NOT run per attempt or retries duplicate.
 func spfreshScanRecordBatches(
 	ctx context.Context,
 	db *FDBDatabase,
 	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
 	index *Index,
 	indexSubspace subspace.Subspace,
-	fn func(batch []spfreshBuildInput) error,
+	inTx func(rtx *FDBRecordContext, batch []spfreshBuildInput) error,
+	post func(batch []spfreshBuildInput) error,
 ) error {
 	scanBatch := spfreshScanBatchSize
 	var continuation []byte
 	for first := true; first || continuation != nil; first = false {
 		// Per-attempt staging: the body may RETRY (1007/1020); handing batches
-		// to fn inside it would duplicate them.
+		// to post inside it would duplicate them.
 		var batchInputs []spfreshBuildInput
 		var nextContinuation []byte
 		err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -435,7 +446,17 @@ func spfreshScanRecordBatches(
 			}
 			evaluator := newStandardIndexMaintainer(index, indexSubspace, rtx.Transaction(), store)
 
-			props := ScanProperties{ExecuteProperties: ExecuteProperties{ReturnedRowLimit: scanBatch}}
+			// SERIALIZABLE, not the zero-value snapshot: when inTx stages the
+			// batch in this same transaction, the scan's read conflict range
+			// over the record keyspace is the delete fence — a delete
+			// committing after our read version aborts this tx and the retry
+			// re-reads truth. A snapshot scan stages ghosts (the pre-fix bug:
+			// IsolationLevelSnapshot is Go's zero value, so the default was
+			// silently fenceless).
+			props := ScanProperties{ExecuteProperties: ExecuteProperties{
+				IsolationLevel:   IsolationLevelSerializable,
+				ReturnedRowLimit: scanBatch,
+			}}
 			cursor := store.ScanRecords(continuation, props)
 			defer func() { _ = cursor.Close() }()
 			for {
@@ -473,13 +494,16 @@ func spfreshScanRecordBatches(
 					batchInputs = append(batchInputs, spfreshBuildInput{pk: trimmedPK, vec: vec})
 				}
 			}
+			if inTx != nil && len(batchInputs) > 0 {
+				return inTx(rtx, batchInputs)
+			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		if len(batchInputs) > 0 {
-			if err := fn(batchInputs); err != nil {
+		if post != nil && len(batchInputs) > 0 {
+			if err := post(batchInputs); err != nil {
 				return err
 			}
 		}
@@ -526,7 +550,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// Sample scan (§8 step 1): all records at current scale; reservoir
 	// sampling caps this at production scale.
 	var sample [][]float64
-	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, func(batch []spfreshBuildInput) error {
+	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, nil, func(batch []spfreshBuildInput) error {
 		for _, in := range batch {
 			sample = append(sample, in.vec)
 		}
@@ -596,9 +620,9 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	if berr := builder.coarsePass(ctx, sample, seed); berr != nil {
 		return berr
 	}
-	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, func(batch []spfreshBuildInput) error {
-		return builder.stageBatch(ctx, batch)
-	}); berr != nil {
+	// The staging writes ride INSIDE each scan transaction: the scan's REAL
+	// read of the record range is the delete fence (Torvalds 094.2 #2).
+	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, builder.stageInTx, nil); berr != nil {
 		return berr
 	}
 	if berr := builder.finalize(ctx, seed); berr != nil {

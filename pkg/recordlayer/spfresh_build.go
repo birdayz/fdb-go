@@ -92,6 +92,20 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, see
 		k0 = 1
 	}
 	coarse, _ := spfreshKMeans(sample, k0, seed, 25)
+	// Roundtrip the centroids through fp16 BEFORE anything routes on them:
+	// the COARSE rows store fp16, so foreground writers route on the
+	// roundtripped vectors — if the builder's own staging routed on the raw
+	// k-means output, a boundary vector could land in DIFFERENT cells on the
+	// two paths, get double-staged, and leave an orphaned posting entry whose
+	// membership row names only the last writer (Torvalds 094.2 #3). One
+	// table, one set of bytes, both routers.
+	for i, vec := range coarse {
+		rt, rerr := vectorcodec.Deserialize(vectorcodec.SerializeHalf(vec))
+		if rerr != nil {
+			return fmt.Errorf("spfresh build: fp16 roundtrip centroid %d: %w", i, rerr)
+		}
+		coarse[i] = rt
+	}
 
 	// Allocate cell IDs and write COARSE rows. IDEMPOTENT under retry: the
 	// build-state row (META, generation-scoped via the task subspace) records
@@ -158,25 +172,38 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, see
 // stageBatch is one §8 step-3 assignment transaction: route each input to its
 // nearest coarse cell, write STAGING (full fp16 vectors — pass 4 must train
 // k-means and re-encode residuals; lossy codes can't) + SIDECAR. Idempotent
-// Sets, resumable at batch granularity.
+// Sets, resumable at batch granularity. Direct-build path only (static
+// inputs, no concurrent deletes); the maintainer's assignment scan stages
+// via stageInTx INSIDE the scan transaction instead.
 func (b *spfreshBuilder) stageBatch(ctx context.Context, batch []spfreshBuildInput) error {
 	err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
-		tx := rtx.Transaction()
-		if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
-			return terr
-		}
-		for _, in := range batch {
-			cell := b.nearestCell(in.vec)
-			fp16 := vectorcodec.SerializeHalf(in.vec)
-			spfreshSaveStaging(tx, b.storage, cell, in.pk, fp16)
-			if b.config.Sidecar {
-				spfreshSaveSidecar(tx, b.storage, in.pk, fp16)
-			}
-		}
-		return nil
+		return b.stageInTx(rtx, batch)
 	})
 	if err != nil {
 		return fmt.Errorf("spfresh build: staging batch: %w", err)
+	}
+	return nil
+}
+
+// stageInTx writes one batch's staging rows in the CALLER's transaction. The
+// maintainer's assignment scan calls this inside the scan tx so the staging
+// writes commit atomically with the scan's REAL read of the record range —
+// a delete committing after the scan read aborts the whole tx at the
+// resolver and the retry's scan no longer returns the record. Staging the
+// batch in a separate tx re-stages pks deleted in between: a permanent ghost,
+// since no future delete clears a pk whose record is gone (Torvalds 094.2 #2).
+func (b *spfreshBuilder) stageInTx(rtx *FDBRecordContext, batch []spfreshBuildInput) error {
+	tx := rtx.Transaction()
+	if terr := spfreshVerifyBuilderToken(tx, b.storage, b.token); terr != nil {
+		return terr
+	}
+	for _, in := range batch {
+		cell := b.nearestCell(in.vec)
+		fp16 := vectorcodec.SerializeHalf(in.vec)
+		spfreshSaveStaging(tx, b.storage, cell, in.pk, fp16)
+		if b.config.Sidecar {
+			spfreshSaveSidecar(tx, b.storage, in.pk, fp16)
+		}
 	}
 	return nil
 }

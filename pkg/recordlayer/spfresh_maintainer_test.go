@@ -569,6 +569,169 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 	})
 })
 
+// The three Torvalds 094.2 NAK holes, each pinned (red against the pre-fix
+// behavior, green now).
+var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
+	ctx := context.Background()
+
+	It("#1: the pre-coarse no-op decision carries a conflict range — a racing coarse commit aborts the save", func() {
+		ks := specSubspace()
+		storage := newSPFreshStorage(ks.Sub("spfresh-fence").Sub("coarse"), 1)
+		config := DefaultSPFreshConfig(2)
+
+		// The write-path shape, compressed: read the coarse table FOR WRITE,
+		// decide "pre-coarse: no-op", then commit. Between the read and the
+		// commit, the coarse pass lands. The REAL read's conflict range MUST
+		// abort the first attempt — a snapshot read commits the stale no-op
+		// and the record is lost (the pre-fix bug).
+		attempts := 0
+		var sawCoarse bool
+		err := spfreshRun(ctx, sharedDB, func(rtx *FDBRecordContext) error {
+			attempts++
+			tx := rtx.Transaction()
+			ids, _, lerr := spfreshLoadAllCoarseForWrite(tx, storage)
+			if lerr != nil {
+				return lerr
+			}
+			if attempts == 1 {
+				Expect(ids).To(BeEmpty(), "first attempt sees the pre-coarse window")
+				// The coarse pass commits AFTER our read version, BEFORE our
+				// commit (a separate transaction).
+				bld := newSPFreshBuilder(sharedDB, storage, config, "racer")
+				Expect(bld.coarsePass(ctx, [][]float64{{1, 1}, {2, 2}, {100, 100}}, 7)).To(Succeed())
+			}
+			sawCoarse = len(ids) > 0
+			// Any write makes this a committing transaction.
+			tx.Set(storage.metaKey(spfreshMetaHorizon), []byte{1, 0, 0, 0, 0, 0, 0, 0})
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(attempts).To(Equal(2), "the coarse commit must conflict the no-op decision")
+		Expect(sawCoarse).To(BeTrue(), "the retry sees the committed coarse table and can route itself")
+	})
+
+	It("#2: a delete racing the assignment scan never leaves a staged ghost", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_ghost", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "32",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		var indexSubspace subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			indexSubspace = store.indexSubspace(idx)
+			_, serr = store.MarkIndexWriteOnly("spf_ghost")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for i := int64(1); i <= 6; i++ {
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 + i%3)), Quantity: proto.Int32(int32(10 + i%5))}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		storage := newSPFreshStorage(indexSubspace, 1)
+		config := parseSPFreshConfig(idx)
+		bld := newSPFreshBuilder(sharedDB, storage, config, "ghost-build")
+		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 7)).To(Succeed())
+
+		// Assignment scan in batches of 3; mid-FIRST-batch a delete of record
+		// 2 commits. The staging writes ride INSIDE the scan tx, whose REAL
+		// read of the record range the delete conflicts: the scan retries and
+		// re-reads truth. (Pre-fix, staging ran in a SEPARATE tx after the
+		// scan: nothing conflicted, the dead pk was staged, and wave B would
+		// have indexed a permanent ghost no future delete could clear.)
+		oldBatch := spfreshScanBatchSize
+		spfreshScanBatchSize = 3
+		defer func() { spfreshScanBatchSize = oldBatch }()
+		deleted := false
+		err = spfreshScanRecordBatches(ctx, sharedDB, storeBuilder, idx, indexSubspace,
+			func(rtx *FDBRecordContext, batch []spfreshBuildInput) error {
+				if !deleted {
+					deleted = true
+					_, derr := sharedDB.Run(ctx, func(inner *FDBRecordContext) (any, error) {
+						store, serr := storeBuilder(inner)
+						if serr != nil {
+							return nil, serr
+						}
+						_, derr := store.DeleteRecord(tuple.Tuple{int64(2)})
+						return nil, derr
+					})
+					Expect(derr).NotTo(HaveOccurred())
+				}
+				return bld.stageInTx(rtx, batch)
+			}, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		// No staged ghost: pk 2 is in NO cell's staging; the survivors are.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			staged := map[int64]bool{}
+			for _, cellID := range bld.cellIDs {
+				pks, _, serr := spfreshLoadStagingCell(tx, storage, cellID)
+				Expect(serr).NotTo(HaveOccurred())
+				for _, pk := range pks {
+					staged[pk[0].(int64)] = true
+				}
+			}
+			Expect(staged).NotTo(HaveKey(int64(2)), "deleted record staged: a permanent ghost")
+			for _, want := range []int64{1, 3, 4, 5, 6} {
+				Expect(staged).To(HaveKey(want), "survivor lost by the scan retry")
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("#3: the builder routes staging on the SAME fp16 bytes foreground writers decode", func() {
+		ks := specSubspace()
+		storage := newSPFreshStorage(ks.Sub("spfresh-fence").Sub("fp16"), 1)
+		config := DefaultSPFreshConfig(2)
+		bld := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+		// Vectors chosen so raw k-means output is NOT fp16-representable
+		// (1.0005 rounds to 1.0 in half precision): the centroid the builder
+		// routes on must equal the stored row's decode, or a boundary vector
+		// double-stages into different cells on the two paths.
+		sample := [][]float64{{1.0005, 0}, {1.0005, 0}, {500, 500}, {500, 500}}
+		Expect(bld.coarsePass(ctx, sample, 7)).To(Succeed())
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ids, rows, lerr := spfreshLoadAllCoarse(rtx.Transaction(), storage)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(ids).To(Equal(bld.cellIDs))
+			for i := range rows {
+				stored, verr := rows[i].vector()
+				Expect(verr).NotTo(HaveOccurred())
+				Expect(bld.coarseVec[i]).To(Equal(stored),
+					"builder routing input %d diverges from the stored fp16 row — split-brain routing", i)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 var _ = Describe("SPFresh 094.1 review regressions", func() {
 	ctx := context.Background()
 
