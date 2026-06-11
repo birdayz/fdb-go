@@ -296,4 +296,10 @@ func TestGRVCache_CommitUpdateDoesNotExtendFreshness(t *testing.T) {
 	if got := c.version.Load(); got != 200 {
 		t.Fatalf("version = %d, want 200 (commit still advances the version)", got)
 	}
+	// Monotonicity of the commit path itself: a backwards version is rejected
+	// (FDB-C++ review nit — previously only updateFromGRV's rejection was pinned).
+	c.update(150)
+	if got := c.version.Load(); got != 200 {
+		t.Fatalf("version = %d after backwards commit update, want 200", got)
+	}
 }
