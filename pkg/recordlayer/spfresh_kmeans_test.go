@@ -461,3 +461,27 @@ func BenchmarkSPFreshSquaredDistance(b *testing.B) {
 	}
 	_ = sink
 }
+
+func TestSPFreshBuildRouterAssignWideningIsBounded(t *testing.T) {
+	t.Parallel()
+	// 70 same-direction near-duplicates inside the ratio bound, with the only
+	// diverse candidate hidden beyond the 4×base widening cap (rep=2 → base
+	// 16 → cap 64). The scan must STOP at the cap and accept the
+	// under-replicated copy-set: unbounded "widen until the ratio break" was
+	// quadratic at 1M density (the RNG rejects whole neighborhoods and the
+	// pool doubled to the entire fine table per vector). The miss is NPA's
+	// to repair, not the build's to hunt.
+	r := &spfreshBuildRouter{}
+	for i := 0; i < 70; i++ {
+		r.ids = append(r.ids, int64(i+1))
+		r.cells = append(r.cells, 10)
+		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.0001, 0})
+	}
+	r.ids = append(r.ids, 999)
+	r.cells = append(r.cells, 20)
+	r.vecs = append(r.vecs, []float64{-1.05, 0}) // diverse, in-ratio, but past the cap
+	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("bounded widening must stop at 4x base and accept under-replication: got %v", ids)
+	}
+}

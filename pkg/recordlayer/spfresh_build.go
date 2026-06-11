@@ -538,17 +538,23 @@ func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int
 
 // assign returns the closure copy-set (fineIDs) and the fine vectors for
 // residual encoding. The candidate pool is wider than the replica target so
-// the closure's RNG rule has same-direction candidates to skip — and it
-// WIDENS until the ratio bound (not the pool) terminates the scan: a fixed
-// pool can truncate just ahead of a diverse in-ratio candidate and silently
-// under-replicate (codex 094.4 r2). Doubling ends when the closure is
-// satisfied, the candidate stream is exhausted, or the tail falls outside
-// the ratio bound — the same termination the closure itself uses.
+// the closure's RNG rule has same-direction candidates to skip, and it
+// widens past a fixed pool that would truncate just ahead of a diverse
+// in-ratio candidate (codex 094.4 r2) — but the widening is BOUNDED at two
+// doublings (4× the base pool). Unbounded "widen until the ratio break"
+// was quadratic at 1M density: hundreds of fines sit inside α²·d²(c1) and
+// the RNG rejects them all as same-direction, so the pool doubled to the
+// entire fine table PER VECTOR (measured: 14s builds at 100k became
+// CPU-hours at 1M). Past the cap the same argument as the insert path's
+// cap applies: the rare missed diverse replica is repaired by NPA's
+// full-neighborhood re-closure after splits, and under-replication only
+// costs recall, never records.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
-	for pool := spfreshClosurePool(rep); ; pool *= 2 {
+	base := spfreshClosurePool(rep)
+	for pool := base; ; pool *= 2 {
 		cands := spfreshNearestK(vec, r.ids, r.vecs, pool)
 		kept := spfreshClosure(cands, rep, alpha)
-		if len(kept) >= rep || len(cands) < pool ||
+		if len(kept) >= rep || len(cands) < pool || pool >= 4*base ||
 			cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2 {
 			for _, c := range kept {
 				ids = append(ids, c.id)

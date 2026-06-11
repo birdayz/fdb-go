@@ -991,3 +991,11 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
   the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
   the fast-filled topology). The α-sweep (item 3) also lifts this floor.
+- [ ] **6. Parallelize the bulk-build staging pass.** First-ever 1M bulk builds (α-sweep,
+  2026-06-11) exposed it: records load in 81s, wave A/B are 8-way parallel, but the
+  staging loop is SEQUENTIAL — 5,000 one-at-a-time 200-row transactions at 1M ≈ tens of
+  minutes, making bulk build SLOWER than the 530 vec/s foreground fill at this scale.
+  Batches are independent (staging rows are per-(cell,pk) blind writes; token verify is
+  read-only) — the same N-writer fan-out the foreground fill uses applies directly, in
+  both the direct build() composition and the maintainer's record-scan-driven
+  BuildSPFreshIndex (producer/consumer split). Expect staging ~20min → ~3min at 1M.

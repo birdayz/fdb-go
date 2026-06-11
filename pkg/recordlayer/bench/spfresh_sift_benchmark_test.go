@@ -67,6 +67,14 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	spfIdx.Options = map[string]string{
 		recordlayer.IndexOptionSPFreshNumDimensions: "128",
 	}
+	// SIFT_REPLICATION / SIFT_ALPHA drive the α-led replication sweep
+	// (paper-ACK follow-up): bulk builds give a clean comparable series.
+	if rep := os.Getenv("SIFT_REPLICATION"); rep != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshReplication] = rep
+	}
+	if alpha := os.Getenv("SIFT_ALPHA"); alpha != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshAlpha] = alpha
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
@@ -135,6 +143,18 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 		t.Fatalf("mark readable: %v", err)
 	}
 	t.Logf("BUILD: %d vectors in %v (%.0f vec/sec)", n, buildDur, float64(n)/buildDur.Seconds())
+	if _, terr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, serr := storeBuilder(rtx)
+		if serr != nil {
+			return nil, serr
+		}
+		// Effective replication (entries/N) is the x-axis of the α-led
+		// replication sweep — log it for every build.
+		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_data"))
+		return nil, nil
+	}); terr != nil {
+		t.Fatalf("topology dump: %v", terr)
+	}
 
 	// Queries: recall vs brute force over the subset + latency percentiles.
 	// SIFT_SWEEP=w:kc:c[,w:kc:c...] additionally sweeps searcher parameters
