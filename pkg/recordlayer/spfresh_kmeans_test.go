@@ -262,6 +262,30 @@ func TestSPFreshBuildRouterAssignRNGPool(t *testing.T) {
 	}
 }
 
+func TestSPFreshBuildRouterAssignWidensPastFixedPool(t *testing.T) {
+	t.Parallel()
+	// 17 same-direction near-duplicates fill the entire initial pool
+	// (spfreshClosurePool(2) = 16) before the single diverse fine, which is
+	// still within the alpha ratio. A fixed pool truncates ahead of it and
+	// under-replicates to {nearest}; the widening loop must reach it
+	// (codex 094.4 r2).
+	r := &spfreshBuildRouter{}
+	for i := 0; i < 17; i++ {
+		r.ids = append(r.ids, int64(i+1))
+		r.cells = append(r.cells, 10)
+		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.001, 0})
+	}
+	const diverse = int64(99)
+	r.ids = append(r.ids, diverse)
+	r.cells = append(r.cells, 20)
+	r.vecs = append(r.vecs, []float64{-1.05, 0}) // d2 1.1025 <= 1.2²·1 = 1.44
+
+	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
+	if len(ids) != 2 || ids[1] != diverse {
+		t.Fatalf("widening must reach the diverse in-ratio candidate past the fixed pool: got %v", ids)
+	}
+}
+
 func TestSPFreshNearestK(t *testing.T) {
 	t.Parallel()
 	ids := []int64{10, 20, 30}

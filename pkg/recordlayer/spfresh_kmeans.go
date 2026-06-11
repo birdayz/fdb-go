@@ -368,9 +368,16 @@ func spfreshClosure(cands []spfreshCandidate, r int, alpha float64) []spfreshCan
 // spfreshClosurePool is the candidate-pool width that gives the closure's
 // RNG rule room to skip same-direction replicas: a pool of exactly r would
 // turn every RNG rejection into a silently smaller copy-set (under-
-// replication instead of diversity).
+// replication instead of diversity). 8× the replica target is SPTAG's
+// headroom (replicaCount 8, candidate set 64). A fixed pool can still
+// truncate ahead of a diverse in-ratio candidate (codex 094.4 r2) — the
+// build path widens iteratively until the RATIO bound terminates the scan;
+// the insert path deliberately caps here (each verified candidate is a
+// sequential REAL read inside the user's save transaction) and leaves the
+// rare beyond-cap miss to NPA, which re-runs the closure over the full
+// neighborhood pool after every split.
 func spfreshClosurePool(r int) int {
-	return max(4*r, 8)
+	return max(8*r, 16)
 }
 
 // spfreshRNGAccept is SPANN §3.2.2's RNG test: candidate c is a useful

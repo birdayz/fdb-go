@@ -538,16 +538,25 @@ func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int
 
 // assign returns the closure copy-set (fineIDs) and the fine vectors for
 // residual encoding. The candidate pool is wider than the replica target so
-// the closure's RNG rule has same-direction candidates to skip — a pool of
-// exactly rep would make every RNG rejection silently shrink the copy-set.
+// the closure's RNG rule has same-direction candidates to skip — and it
+// WIDENS until the ratio bound (not the pool) terminates the scan: a fixed
+// pool can truncate just ahead of a diverse in-ratio candidate and silently
+// under-replicate (codex 094.4 r2). Doubling ends when the closure is
+// satisfied, the candidate stream is exhausted, or the tail falls outside
+// the ratio bound — the same termination the closure itself uses.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
-	cands := spfreshNearestK(vec, r.ids, r.vecs, spfreshClosurePool(rep))
-	kept := spfreshClosure(cands, rep, alpha)
-	for _, c := range kept {
-		ids = append(ids, c.id)
-		fvecs = append(fvecs, c.vec)
+	for pool := spfreshClosurePool(rep); ; pool *= 2 {
+		cands := spfreshNearestK(vec, r.ids, r.vecs, pool)
+		kept := spfreshClosure(cands, rep, alpha)
+		if len(kept) >= rep || len(cands) < pool ||
+			cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2 {
+			for _, c := range kept {
+				ids = append(ids, c.id)
+				fvecs = append(fvecs, c.vec)
+			}
+			return ids, fvecs
+		}
 	}
-	return ids, fvecs
 }
 
 // waveB claims the cell, REAL-reads its full staging range (the conflict
