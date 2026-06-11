@@ -963,17 +963,14 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   small (+0.7pp from w 8→16 at kc=24, w>16 nil); the decay is F1 kc-tail (0.973 @ kc=128,
   0.987 @ kc=192, at 2-3× latency). Frozen: default 32/64/200/ε7 (0.952 @ 27.9ms, 134 QPS),
   fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
-- [ ] **3. α-led replication sweep (SPANN §3.2.2/§4.3.1, Fig 5/11) — RNG rule landed,
-  α is now the primary knob.** RNG diversity rule IMPLEMENTED and ACK'd (closure scans
-  past r with same-direction skip; speculative-burst insert verification; pinned by
-  Figure-5 unit test, insert FDB test, fuzz). Measured at 1M: effective ρ ≈ 1.04 — the
-  rule produced diversity BY ELIMINATION at α=1.2 (1.44× d² bound vs the paper's ε₁=10
-  ≈ 11×): Fig. 5's "assign to the different-direction list" half almost never fires.
-  Paper ACK rider: **ρ=1.04 at r=2 proves the r cap is not binding — an r=4 A/B at
-  α=1.2 is a predicted null.** Sweep α² toward {2, 4, 11} with r raised alongside so
-  the cap doesn't re-bind; target ρ ≈ 1.2–1.5 DIVERSE replicas (§4.3.1's own regime is
-  ρ≈1.2, +20% data); measure fast-budget recall and give the sweep a write-cost budget
-  line (fill 705 vec/s at 100k post-burst-fix; 110 → re-measure at 1M).
+- [x] **3. α-led replication sweep — DONE, measured NEGATIVE (r stays 2).** Four 1M
+  foreground fills: ρ ≈ 1.01/1.01/1.03/1.02 across α² ∈ {1.44, 1.44, 4, 11} (r 2/4/4/4);
+  recall moves ±1pp (variance), r=4 costs ~20% fill throughput for nothing. Closure
+  replication is structurally unavailable at Lmax=256 granularity (cells hold ~170
+  vectors vs the paper's ~6 — a vector sits deep inside one cell and the RNG rule
+  rejects every other centroid as same-direction). Full table + geometry in
+  VECTOR_BENCHMARK_RESULTS.md. The recall ladder beyond ~0.94 at 1M is granularity
+  (item 4), the refinement sweep (item 5), and kc.
 - [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 0.6% centroid ratio
   (post-RNG: 6,228 lists at 1M) vs paper's 16%: coarser lists make each kc step blunter;
   Lmax=256 is FDB-reply-budget justified (RFC) so only move it with measurements. Paper
@@ -991,11 +988,15 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
   the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
   the fast-filled topology). The α-sweep (item 3) also lifts this floor.
-- [ ] **6. Parallelize the bulk-build staging pass.** First-ever 1M bulk builds (α-sweep,
-  2026-06-11) exposed it: records load in 81s, wave A/B are 8-way parallel, but the
-  staging loop is SEQUENTIAL — 5,000 one-at-a-time 200-row transactions at 1M ≈ tens of
-  minutes, making bulk build SLOWER than the 530 vec/s foreground fill at this scale.
-  Batches are independent (staging rows are per-(cell,pk) blind writes; token verify is
-  read-only) — the same N-writer fan-out the foreground fill uses applies directly, in
-  both the direct build() composition and the maintainer's record-scan-driven
-  BuildSPFreshIndex (producer/consumer split). Expect staging ~20min → ~3min at 1M.
+- [ ] **6. Wave B should route two-level, not flat-scan the fine table.** (Original staging
+  theory was WRONG — 5,000 staging txs fit in ~80s; measured.) The real 1M bulk cost:
+  waveB assign() runs nearestK over ALL ~11.7k fines (12MB, cache-resident it is not)
+  up to 3 bounded pool passes per staged vector — memory-bandwidth-bound, ~15-20 min
+  of the 1M build. Queries route coarse→cell (two-level) for exactly this reason;
+  the build router should do the same: nearest w cells via L1 (245 × 128d), then fines
+  within those cells (~48×w) — ~30× less bandwidth. Bounded-widening semantics carry
+  over unchanged. ALSO still worth checking: staging parallelism (minor, ~80s at 1M).
+  MEASURED before killing: 759% CPU sustained for 54+ min (~7 CPU-hours) on the
+  bounded-pool build at 1M — far past the bandwidth model too. PROFILE FIRST
+  (go test -cpuprofile on a 300k bulk reproduces in minutes) before optimizing;
+  the two-level routing fix is the likely shape but the model has been wrong twice.

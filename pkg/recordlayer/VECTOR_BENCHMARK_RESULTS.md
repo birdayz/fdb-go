@@ -505,3 +505,29 @@ even on the fast-filled topology), or run the assignment-refinement sweep
 (TODO) after bulk ingest phases. The α-led replication sweep (TODO item 3)
 also lifts this floor — diverse replicas make assignment placement less
 critical.
+
+### α-led replication sweep (1M foreground fills, shipped path) — measured negative
+
+Four independent 1M fills; the r=2/α=1.2 row is the clean fill A/B above.
+α² is the closure's d²-space admission bound; ε₁≈10 (α²=11) is the paper's
+own §4.2 closure regime.
+
+| r | α² bound | effective ρ | fill | default | fast | kc=128 | kc=192 |
+|---|----------|------------|------|---------|------|--------|--------|
+| 2 | 1.44× | 1.009 | 530 vec/s | 0.925 | 0.830 | 0.973 | 0.987 |
+| 4 | 1.44× | 1.010 | 413 vec/s | 0.933 | 0.806 | 0.979 | 0.986 |
+| 4 | 4× | 1.032 | 419 vec/s | 0.939 | 0.813 | 0.981 | 0.991 |
+| 4 | 11× | 1.020 | 415 vec/s | 0.933 | 0.789 | 0.978 | 0.989 |
+
+**Verdict: closure replication is structurally unavailable on SIFT-1M at
+Lmax=256 granularity.** Even at the paper's own 11× admission bound the RNG
+rule keeps ρ ≈ 1.02, and recall moves within topology variance (±1pp). The
+geometry: SPANN §4.3.1 runs ~6 vectors per posting list (16% centroid
+ratio) where boundary vectors sit BETWEEN lists; ours run ~170 (0.6%), so
+a vector sits deep inside one cell and every other centroid fails the RNG
+diversity test as "same direction past c₁". Replication (Fig. 11) and
+ε-pruning (Fig. 12) degrade by the same mechanism — both are granularity
+properties, exactly the paper re-review's rider on the Lmax item. r stays
+2 (r=4 also costs ~20% fill throughput for nothing); the recall ladder
+beyond ~0.94 at 1M runs through granularity (Lmax), the refinement sweep,
+and kc.
