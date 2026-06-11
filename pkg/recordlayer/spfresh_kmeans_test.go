@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"math"
 	"math/rand"
+	"sort"
 	"testing"
 )
 
@@ -167,6 +168,48 @@ func TestSPFreshKMeansDeterministicParallel(t *testing.T) {
 	for i, a := range a1 {
 		if a < 0 || a >= len(c1) {
 			t.Fatalf("point %d assigned out of range: %d", i, a)
+		}
+	}
+}
+
+// spfreshNearestK is a top-k SELECTION (the full sort made the 1M build
+// unbounded); its results must stay bit-identical to sort-then-truncate,
+// ties and all.
+func TestSPFreshNearestKMatchesFullSort(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(99))
+	n := 5000
+	ids := make([]int64, n)
+	vecs := make([][]float64, n)
+	for i := range ids {
+		ids[i] = int64(i * 7)
+		// Coarse grid => many exact distance TIES exercise the id tie-break.
+		vecs[i] = []float64{float64(rng.Intn(8)), float64(rng.Intn(8))}
+	}
+	query := []float64{3.3, 4.1}
+	for _, k := range []int{1, 2, 7, 64, 200, n, n + 10} {
+		got := spfreshNearestK(query, ids, vecs, k)
+		// Reference: full sort, truncate.
+		ref := make([]spfreshCandidate, n)
+		for i := range ids {
+			ref[i] = spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i])}
+		}
+		sort.Slice(ref, func(i, j int) bool {
+			if ref[i].d2 != ref[j].d2 {
+				return ref[i].d2 < ref[j].d2
+			}
+			return ref[i].id < ref[j].id
+		})
+		if k < len(ref) {
+			ref = ref[:k]
+		}
+		if len(got) != len(ref) {
+			t.Fatalf("k=%d: got %d candidates, want %d", k, len(got), len(ref))
+		}
+		for i := range ref {
+			if got[i] != ref[i] {
+				t.Fatalf("k=%d: candidate %d = %+v, want %+v", k, i, got[i], ref[i])
+			}
 		}
 	}
 }

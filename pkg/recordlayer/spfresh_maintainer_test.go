@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"sort"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -506,8 +507,9 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 		Expect(bld.stageBatch(ctx, inputs)).To(Succeed())
 		fineIDs := make(map[int64][]int64)
 		fineVecs := make(map[int64][][]float64)
+		var waveAMu sync.Mutex
 		for _, cellID := range bld.cellIDs {
-			Expect(bld.waveA(ctx, cellID, 42, fineIDs, fineVecs)).To(Succeed())
+			Expect(bld.waveA(ctx, cellID, 42, &waveAMu, fineIDs, fineVecs)).To(Succeed())
 		}
 		router := bld.buildRouter(fineIDs, fineVecs)
 		for _, cellID := range bld.cellIDs {

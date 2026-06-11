@@ -250,21 +250,38 @@ type spfreshCandidate struct {
 
 // spfreshNearestK returns the k nearest candidates by squared distance,
 // ascending, deterministic tie-break by id. ids[i] corresponds to vecs[i].
+//
+// TOP-K SELECTION, not a full sort: k is tiny (replication r≈2 on the build
+// closure path, w/kc ≤ ~200 on the routing path) while len(ids) reaches tens
+// of thousands of fine centroids at 1M+ scale. The full sort.Slice here made
+// the bulk build effectively unbounded — wave B sorted all ~11k fines per
+// staged vector to take the top 2; ~2 billion comparator calls at SIFT-1M
+// (caught by a SIGQUIT stack dump of a build that outlived 2 hours).
 func spfreshNearestK(query []float64, ids []int64, vecs [][]float64, k int) []spfreshCandidate {
-	cands := make([]spfreshCandidate, len(ids))
-	for i := range ids {
-		cands[i] = spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i])}
+	if k <= 0 || len(ids) == 0 {
+		return nil
 	}
-	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].d2 != cands[j].d2 {
-			return cands[i].d2 < cands[j].d2
+	less := func(a, b spfreshCandidate) bool {
+		if a.d2 != b.d2 {
+			return a.d2 < b.d2
 		}
-		return cands[i].id < cands[j].id
-	})
-	if k < len(cands) {
-		cands = cands[:k]
+		return a.id < b.id
 	}
-	return cands
+	out := make([]spfreshCandidate, 0, min(k, len(ids))+1)
+	for i := range ids {
+		c := spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i])}
+		if len(out) == k && !less(c, out[k-1]) {
+			continue // common case after warmup: not in the top k
+		}
+		pos := sort.Search(len(out), func(j int) bool { return less(c, out[j]) })
+		out = append(out, spfreshCandidate{})
+		copy(out[pos+1:], out[pos:])
+		out[pos] = c
+		if len(out) > k {
+			out = out[:k]
+		}
+	}
+	return out
 }
 
 // spfreshClosure applies SPANN's RNG closure rule (RFC-094 §5): from the

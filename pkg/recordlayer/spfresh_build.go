@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -215,20 +217,68 @@ func (b *spfreshBuilder) stageInTx(rtx *FDBRecordContext, batch []spfreshBuildIn
 // fold, CENTROIDS_DONE), wave B (closure assignment across the completed
 // global table; postings + membership + ADD counters; staging cleared in the
 // closing tx, FINALIZED), and the generation flip.
+// spfreshBuildCellWorkers bounds the per-cell wave fan-out. The waves are
+// FDB-transaction + small-k-means work per INDEPENDENT cell (each cell owns
+// its cellfin task row, centroid rows, postings), so cells parallelize
+// safely; the bound keeps the builder from monopolizing the cluster — at 1M
+// the sequential walk over ~3k cells dominated the build wall-clock long
+// after the coarse k-means was parallelized.
+const spfreshBuildCellWorkers = 8
+
+// forEachCellParallel runs fn over the builder's cells with bounded
+// concurrency, stopping at the first error (in-flight cells finish; their
+// re-run is idempotent via the cellfin state machine anyway).
+func (b *spfreshBuilder) forEachCellParallel(fn func(cellID int64) error) error {
+	var next, errOnce atomic.Int64
+	var firstErr error
+	var wg sync.WaitGroup
+	workers := spfreshBuildCellWorkers
+	if workers > len(b.cellIDs) {
+		workers = len(b.cellIDs)
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(b.cellIDs) || errOnce.Load() != 0 {
+					return
+				}
+				if err := fn(b.cellIDs[i]); err != nil {
+					if errOnce.CompareAndSwap(0, 1) {
+						firstErr = err
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
 func (b *spfreshBuilder) finalize(ctx context.Context, seed int64) error {
 	fineIDs := make(map[int64][]int64)      // cellID -> fine ids
 	fineVecs := make(map[int64][][]float64) // cellID -> fine vectors
-	for _, cellID := range b.cellIDs {
-		if err := b.waveA(ctx, cellID, seed, fineIDs, fineVecs); err != nil {
+	var mapsMu sync.Mutex                   // guards the shared maps across cell workers
+	if err := b.forEachCellParallel(func(cellID int64) error {
+		if err := b.waveA(ctx, cellID, seed, &mapsMu, fineIDs, fineVecs); err != nil {
 			return fmt.Errorf("spfresh build: wave A cell %d: %w", cellID, err)
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	router := b.buildRouter(fineIDs, fineVecs)
-	for _, cellID := range b.cellIDs {
+	if err := b.forEachCellParallel(func(cellID int64) error {
 		if err := b.waveB(ctx, cellID, router); err != nil {
 			return fmt.Errorf("spfresh build: wave B cell %d: %w", cellID, err)
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	if err := b.flip(ctx); err != nil {
@@ -297,7 +347,7 @@ func (b *spfreshBuilder) nearestCell(vec []float64) int64 {
 // the CENTROIDS rows + addFine deltas, and advances the task to
 // CENTROIDS_DONE. Idempotent: a re-run (lease takeover after a crash)
 // rewrites the same rows for an unfinalized cell.
-func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, outIDs map[int64][]int64, outVecs map[int64][][]float64) error {
+func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, mapsMu *sync.Mutex, outIDs map[int64][]int64, outVecs map[int64][][]float64) error {
 	// Stage router outputs per ATTEMPT; commit them to the shared maps only
 	// after the transaction succeeds — appending inside the retriable closure
 	// leaked phantom/duplicate fineIDs into the wave-B router on retries
@@ -405,8 +455,10 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ou
 	if err != nil {
 		return err
 	}
+	mapsMu.Lock()
 	outIDs[cellID] = append(outIDs[cellID], stagedIDs...)
 	outVecs[cellID] = append(outVecs[cellID], stagedVecs...)
+	mapsMu.Unlock()
 	return nil
 }
 
