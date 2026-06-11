@@ -10,6 +10,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // Reply-direction ground truth: each vector is the EXACT server->client
@@ -147,6 +148,20 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 		if rkDefault || rkBatch {
 			t.Errorf("rkDefault/rkBatch = %v/%v, want false/false", rkDefault, rkBatch)
 		}
+		// The production parser does not surface `locked` — the Go client
+		// does not yet ENFORCE database locks on the read path the way C++
+		// does (rep.locked && !lockAware → database_locked,
+		// NativeAPI.actor.cpp:7425-7426); tracked in TODO.md. Pin the WIRE
+		// layer here so the field is provably decodable when that lands.
+		var r wire.Reader
+		if err := wire.ReadErrorOrInto(data, &r); err != nil {
+			t.Fatalf("ReadErrorOrInto: %v", err)
+		}
+		var reply types.GetReadVersionReply
+		reply.UnmarshalFromReader(&r)
+		if !reply.Locked {
+			t.Error("Locked = false, want true (C++ constructor sets r.locked = true)")
+		}
 	},
 	"CommitID_committed": func(t *testing.T, data []byte) {
 		var tx Transaction
@@ -173,8 +188,23 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 		assertFDBErrorCode(t, err, ErrNotCommitted)
 	},
 	"WatchValueReply_basic": func(t *testing.T, data []byte) {
+		// Production path: a non-error reply means "key changed".
 		if err := parseWatchValueReply(data); err != nil {
 			t.Fatalf("parseWatchValueReply: %v", err)
+		}
+		// The production parser discards the fields — pin the wire layer's
+		// decode of them too, so the vector proves more than crash-absence.
+		var r wire.Reader
+		if err := wire.ReadErrorOrInto(data, &r); err != nil {
+			t.Fatalf("ReadErrorOrInto: %v", err)
+		}
+		var reply types.WatchValueReply
+		reply.UnmarshalFromReader(&r)
+		if reply.Version != 424242 {
+			t.Errorf("Version = %d, want 424242", reply.Version)
+		}
+		if !reply.Cached {
+			t.Error("Cached = false, want true")
 		}
 	},
 	"SplitRangeReply_two_points": func(t *testing.T, data []byte) {

@@ -734,6 +734,23 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        `TestDifferential_PinnedRangeRetriesStaleVersion`). Reviewed clean by FDB-C++ dev + Torvalds +
        codex (per-commit deltas + full review) + @claude.
 
+- [ ] **GRV `locked` enforcement — the Go client silently reads LOCKED databases (C++ divergence,
+  found by the RFC-095 reply ground-truth net).** C++ enforces database locks CLIENT-side on every
+  real GRV fetch: `if (rep.locked && !trState->options.lockAware) throw database_locked()` —
+  `NativeAPI.actor.cpp:7425-7426`, in `extractReadVersion` (per-transaction, after the batched
+  reply). Both `LOCK_AWARE` and `READ_LOCK_AWARE` set `options.lockAware` (`:7077-7091`), so the
+  Go gate is `tx.lockAware || tx.readLockAware`. Go's `parseGetReadVersionReply` (grv.go) DISCARDS
+  `rep.locked` entirely — a database locked via the management API (backup/restore/DR) is silently
+  readable through the Go client where C++/Java refuse with 1038. Fix needs C++-faithful
+  placement, which is why it's not a drive-by: thread `locked` from the batched reply to each
+  waiting transaction and check at the per-txn consumption point (the `extractReadVersion`
+  analog), and decide the `grvCache` interaction by reading what C++ does on the cached path
+  (does `updateCachedReadVersion` run before or after the locked throw? mirror exactly). Pin with
+  an FDB e2e that actually locks the database (system-key write under ACCESS_SYSTEM_KEYS +
+  LOCK_AWARE) and asserts: non-lock-aware read → 1038; LOCK_AWARE and READ_LOCK_AWARE reads →
+  succeed. The wire-level decode of `locked` is already pinned by the
+  `GetReadVersionReply_locked` reply vector. fdb-client-review gates apply.
+
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
   FuzzApiCorrectness, …) are unrunnable for us (Sim2-only), but each scenario + invariant is
