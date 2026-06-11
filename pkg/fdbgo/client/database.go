@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -194,6 +195,14 @@ type database struct {
 	// Transaction defaults — applied to every new transaction.
 	// Matches C++ DatabaseContext::transactionDefaults.
 	txDefaults TransactionDefaults
+
+	// Operational counters — the C++ DatabaseContext CounterCollection subset.
+	// Exposed via Database.Metrics(). RFC-097.
+	metrics ClientMetrics
+
+	// Per-handle operational-event logger (WithLogger; nil-resolved to
+	// slog.Default() at open). RFC-097 / P1.2.
+	logger *slog.Logger
 
 	// Speculative second request (hedge) control.
 	// When true, read RPCs send a hedge request to a second server after
@@ -418,6 +427,15 @@ type Database struct {
 	db *database
 }
 
+// Metrics returns a point-in-time snapshot of this handle's operational
+// counters (RFC-097) — the C++ DatabaseContext TransactionMetrics subset.
+// Counters are monotonic; poll and diff for rates. This is the export hook:
+// Prometheus/OTel consumers are pull-based readers of exactly this shape
+// (see pkg/fdbgo/fdbmetrics for a ready-made scrape handler).
+func (d *Database) Metrics() ClientMetricsSnapshot {
+	return d.db.metrics.Snapshot()
+}
+
 // SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
 // When enabled (default), slow reads are rescued by sending a backup request
 // to a second server after max(10ms, 2×latency). Disable for debugging or
@@ -457,11 +475,17 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		return nil, err
 	}
 
+	logger := o.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
 		clusterFile:    cf,
 		dialFn:         o.dialFn,
 		tlsConfig:      tlsConfig,
+		logger:         logger,
 		connPool:       make(map[string]*transport.Conn),
 		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),

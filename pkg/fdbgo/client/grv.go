@@ -110,9 +110,10 @@ func (c *grvCache) update(v int64) {
 // database-locked flag. lastLocked is stored ONLY when the version CAS
 // accepts the reply — a late, stale reply (older version, locked=false) must
 // not overwrite fresher locked=true state (a fail-open hazard). The residual
-// CAS→Store interleaving window between two concurrently-accepted replies is
-// benign in both directions and strictly inside the staleness the cache
-// already accepts (maxVersionCacheLag). RFC-096.
+// CAS→Store interleaving window between two concurrently-accepted replies:
+// a spurious locked=true is genuinely benign (a retryable 1038 until the
+// next refresh); a missed locked=true is bounded by maxVersionCacheLag and
+// then corrected by the background refresher's next real fetch. RFC-096.
 func (c *grvCache) updateFromGRV(t time.Time, v int64, locked bool) {
 	for {
 		cur := c.version.Load()
@@ -306,6 +307,13 @@ func (b *grvBatcher) flush(db *database) {
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
 		// precedes :7425).
 		b.applyGRVReply(db, requestTime, version, locked, rkDefault, rkBatch, tagThrottleInfoBytes)
+		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
+		// batched reply serves len(batch) transactions. Cache hits never reach
+		// here (C++ parity: its cached path returns before the counters); the
+		// background refresher has no waiters and adds nothing. Waiters whose
+		// ctx expired mid-batch are still counted (C++ cancels abandoned
+		// futures before its counter; accepted edge noise). RFC-097.
+		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
 	}
 
 	// Adaptive batch window.

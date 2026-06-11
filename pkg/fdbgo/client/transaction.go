@@ -1111,6 +1111,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return nil
 	}
 
+	// C++ ++transactionsCommitStarted in commitMutations (:6808), AFTER the
+	// empty fast path (:6800-6806, not counted). Started-Completed =
+	// failed/in-flight (intentional asymmetry). RFC-097.
+	if tx.db != nil {
+		tx.db.metrics.transactionsCommitStarted.Add(1)
+	}
+
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
 	// read version exists before commit, even for write-only transactions.
 	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
@@ -1136,6 +1143,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
 	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
 		return err
+	}
+
+	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
+	if tx.db != nil {
+		tx.db.metrics.transactionsCommitCompleted.Add(1)
 	}
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
@@ -1292,6 +1304,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 			delay = tx.maxRetryDelay
 		}
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, delay); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1305,6 +1320,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1319,6 +1337,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// hot_shard and range_locked use the same 30s cap to avoid
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1344,6 +1365,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
