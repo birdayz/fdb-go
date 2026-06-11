@@ -233,3 +233,43 @@ func TestBuildGetReadVersionRequest_RoundTrip(t *testing.T) {
 			first, second, replyToken.First, replyToken.Second)
 	}
 }
+
+// TestGRVCache_LockedRidesTheCache pins the RFC-096 cached-path mechanism
+// deterministically (the e2e's warm-cache arm is timing-probabilistic — it
+// degrades to a fresh-fetch duplicate if maxVersionCacheLag expires between
+// arms; this unit test cannot): updateFromGRV stores the locked flag with the
+// version, tryCache returns it, and a STALE reply (older version) must not
+// overwrite fresher lock state (fail-open hazard — the Torvalds condition).
+func TestGRVCache_LockedRidesTheCache(t *testing.T) {
+	t.Parallel()
+	var c grvCache
+
+	c.updateFromGRV(time.Now(), 100, true)
+	v, locked, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 100 || !locked {
+		t.Fatalf("tryCache = (%d, %v, %v), want (100, true, true)", v, locked, ok)
+	}
+
+	// A late, stale reply (older version, locked=false) is rejected by the
+	// version CAS and must NOT clear the lock state.
+	c.updateFromGRV(time.Now(), 50, false)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 100 || !locked {
+		t.Fatalf("after stale reply: tryCache = (%d, %v, %v), want (100, true, true)", v, locked, ok)
+	}
+
+	// A fresher unlocked reply clears it.
+	c.updateFromGRV(time.Now(), 200, false)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 200 || locked {
+		t.Fatalf("after fresh unlock: tryCache = (%d, %v, %v), want (200, false, true)", v, locked, ok)
+	}
+
+	// The commit-path update() never touches lock state.
+	c.updateFromGRV(time.Now(), 300, true)
+	c.update(time.Now(), 400)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 400 || !locked {
+		t.Fatalf("after commit update: tryCache = (%d, %v, %v), want (400, true, true)", v, locked, ok)
+	}
+}
