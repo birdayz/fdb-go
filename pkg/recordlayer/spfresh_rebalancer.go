@@ -75,7 +75,7 @@ type spfreshTaskRef struct {
 // (≤ 0 = unlimited; the sweeper bounds it so a whale tenant's queue cannot
 // monopolize a fleet pass — codex MT P2). Returns the number of tasks acted
 // on; tasks under live foreign leases are skipped.
-func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int) (int, error) {
+func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int, timer *StoreTimer) (int, error) {
 	// Scan (snapshot — the queue is advisory; claims are the authority).
 	var refs []spfreshTaskRef
 	var legacyCellfin []int64
@@ -175,13 +175,17 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 			}
 			if !out.proceed {
 				if out.cleaned {
+					timer.Increment(CountSPFreshZombieCleans)
 					worked++
+				} else {
+					timer.Increment(CountSPFreshLeaseSkips)
 				}
 				continue // zombie cleaned or foreign lease
 			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
 				return worked, fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr)
 			}
+			timer.Increment(CountSPFreshSplits)
 			worked++
 		case spfreshTaskNPA:
 			wrote, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id)
@@ -189,7 +193,10 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
 			}
 			if wrote {
+				timer.Increment(CountSPFreshNPAs)
 				worked++
+			} else {
+				timer.Increment(CountSPFreshLeaseSkips)
 			}
 		case spfreshTaskMerge:
 			wrote, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
@@ -197,7 +204,10 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return worked, fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr)
 			}
 			if wrote {
+				timer.Increment(CountSPFreshMerges)
 				worked++
+			} else {
+				timer.Increment(CountSPFreshLeaseSkips)
 			}
 		case spfreshTaskCSplit:
 			wrote, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
@@ -205,7 +215,10 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return worked, fmt.Errorf("coarse split cell %d: %w", ref.id, cerr)
 			}
 			if wrote {
+				timer.Increment(CountSPFreshCSplits)
 				worked++
+			} else {
+				timer.Increment(CountSPFreshLeaseSkips)
 			}
 		}
 	}
@@ -218,7 +231,7 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 // Returns the total number of lifecycle actions taken.
 func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string) (int, error) {
 	const maxRounds = 32
-	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds, 0)
+	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds, 0, nil)
 	if err != nil {
 		return total, err
 	}
@@ -235,7 +248,7 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 // when a single scan finds a wide queue (a whale tenant with thousands of
 // independent task rows must not monopolize a fleet pass through one round).
 // An undrained queue is NOT an error there — the next sweep pass continues.
-func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds, maxActions int) (int, bool, error) {
+func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds, maxActions int, timer *StoreTimer) (int, bool, error) {
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -301,7 +314,7 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 				break // action budget spent: not drained
 			}
 		}
-		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit)
+		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit, timer)
 		if err != nil {
 			return total, false, err
 		}

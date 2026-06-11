@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -33,6 +34,10 @@ type spfreshSearcher struct {
 	c        int     // re-rank candidates
 	epsilon  float64 // SPANN Eq.(3) pruning ratio ε₂; ≤ 0 disables pruning
 	noRerank bool    // rank by RaBitQ estimates alone (skip the sidecar wave)
+
+	// timer is the context's StoreTimer (nil-receiver-safe; see
+	// spfresh_metrics.go for the event set).
+	timer *StoreTimer
 }
 
 func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *spfreshRoutingCache) *spfreshSearcher {
@@ -109,6 +114,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	if k <= 0 {
 		return nil, nil
 	}
+	defer s.timer.RecordSince(EventSPFreshSearch, time.Now())
 	routed, err := s.cache.route(tx, s.storage, query, s.w, s.kc)
 	if err != nil {
 		return nil, err
@@ -123,6 +129,8 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	// pruned tail is refetched below if the probed set starves the re-rank
 	// budget (RFC-094 §4 adaptive widening).
 	probe, pruned := spfreshPruneRouted(routed, s.epsilon)
+	s.timer.IncrementBy(CountSPFreshPostingsProbed, int64(len(probe)))
+	s.timer.IncrementBy(CountSPFreshPostingsPruned, int64(len(pruned)))
 
 	// One parallel burst: all posting range reads issued before any resolves.
 	// The fetch cap (4×Lmax+1 rows) bounds an unmaintained posting's cost to
@@ -159,6 +167,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			if kerr != nil {
 				return fmt.Errorf("spfresh search: posting %d: %w", f.routed.fineID, kerr)
 			}
+			s.timer.IncrementBy(CountSPFreshEntriesScanned, int64(len(kvs)))
 			for d := range query {
 				residual[d] = query[d] - f.routed.vec[d]
 			}
@@ -206,6 +215,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	// can't fill the re-rank budget, fetch the pruned tail too — one extra
 	// burst, only on starved queries, never beyond the kc cap.
 	if len(pruned) > 0 && len(best) < s.c {
+		s.timer.Increment(CountSPFreshStarvationWiden)
 		if err := fetchAndScore(pruned); err != nil {
 			return nil, err
 		}
@@ -214,6 +224,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	// Resolve forwarded children: one more parallel burst (depth 1; deeper
 	// chains are the caller's refresh signal — we treat children's own HDRs
 	// as absent entries here and rely on the next refresh, bounded per spec).
+	s.timer.IncrementBy(CountSPFreshForwardFollows, int64(len(forwards)))
 	if len(forwards) > 0 {
 		type fwdFetch struct {
 			routed spfreshRouted
@@ -281,6 +292,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	// disabled the estimates stand (the maintainer's record-read fallback
 	// arrives with the maintainer slice).
 	if s.config.Sidecar && !s.noRerank {
+		s.timer.IncrementBy(CountSPFreshRerankReads, int64(len(hits)))
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
 			futures[i] = tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(h.span))

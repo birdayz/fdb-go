@@ -471,6 +471,9 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	if alpha := os.Getenv("SIFT_ALPHA"); alpha != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshAlpha] = alpha
 	}
+	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))

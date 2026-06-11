@@ -68,7 +68,7 @@ var _ = Describe("SPFresh chunked cascade convergence", func() {
 
 		// Drain to quiescence with the plain rebalancer loop.
 		for round := 0; round < 200; round++ {
-			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "cascade", int64(round), 0)
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "cascade", int64(round), 0, nil)
 			Expect(rerr).NotTo(HaveOccurred())
 			if worked == 0 {
 				break
@@ -283,7 +283,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		// Reverting the repair leaves fatFine ACTIVE over Lmax forever with
 		// an empty queue — the 300k/1M recall collapse.
 		for round := 0; round < 100; round++ {
-			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "pauserepair", int64(round), 0)
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "pauserepair", int64(round), 0, nil)
 			Expect(rerr).NotTo(HaveOccurred())
 			if worked == 0 {
 				break

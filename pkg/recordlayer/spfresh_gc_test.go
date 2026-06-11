@@ -174,7 +174,7 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 
 		// A different owner's rebalancer reclaims the expired lease and
 		// completes the lifecycle (SEAL resumes with the SAME children).
-		worked, err := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "recovery-owner", 7, 0)
+		worked, err := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "recovery-owner", 7, 0, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(worked).To(BeNumerically(">", 0))
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

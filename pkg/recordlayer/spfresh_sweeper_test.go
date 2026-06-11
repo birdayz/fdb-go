@@ -74,6 +74,40 @@ func newSweeperTenant(name string, seedN int, build bool) (SPFreshTenant, subspa
 	return SPFreshTenant{StoreBuilder: storeBuilder, IndexName: name}, indexSubspace
 }
 
+// balloonSweeperTenant injects an oversized posting + its split trigger
+// directly (the cascade-test shape): real maintenance work whose drain needs
+// multiple rounds.
+func balloonSweeperTenant(sub subspace.Subspace, entries int) {
+	ctx := context.Background()
+	storage := newSPFreshStorage(sub, 1)
+	config := DefaultSPFreshConfig(2)
+	config.Lmax = 16
+	quantizer := newSPFreshQuantizer(config)
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		tx := rtx.Transaction()
+		mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+		Expect(merr).NotTo(HaveOccurred())
+		fine := mem[0]
+		cell, ferr := spfreshFindCentroidCell(tx, storage, fine)
+		Expect(ferr).NotTo(HaveOccurred())
+		row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, fine)
+		Expect(rerr).NotTo(HaveOccurred())
+		cvec, verr := row.vector()
+		Expect(verr).NotTo(HaveOccurred())
+		for i := 0; i < entries; i++ {
+			pk := tuple.Tuple{int64(50000 + i)}
+			v := []float64{float64(i%40) * 0.3, float64(i%37) * 0.3}
+			tx.Set(storage.postingKey(fine, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
+			tx.Set(storage.membershipKey(pk), encodeMembership([]int64{fine}))
+			tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			spfreshCounterAdd(tx, storage, spfreshCounterFine, fine, 1)
+		}
+		_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, fine)
+		return nil, terr
+	})
+	Expect(err).NotTo(HaveOccurred())
+}
+
 // The multi-tenant maintenance sweeper: discovery probe, per-tenant fairness
 // budget, pass continuation for undrained tenants, and isolation of tenant
 // failures.
@@ -82,38 +116,7 @@ var _ = Describe("SPFresh multi-tenant sweeper", func() {
 
 	newTenant := newSweeperTenant
 
-	// balloonTenant injects an oversized posting + its split trigger
-	// directly (the cascade-test shape): real maintenance work whose drain
-	// needs multiple rounds.
-	balloonTenant := func(sub subspace.Subspace, entries int) {
-		storage := newSPFreshStorage(sub, 1)
-		config := DefaultSPFreshConfig(2)
-		config.Lmax = 16
-		quantizer := newSPFreshQuantizer(config)
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			tx := rtx.Transaction()
-			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
-			Expect(merr).NotTo(HaveOccurred())
-			fine := mem[0]
-			cell, ferr := spfreshFindCentroidCell(tx, storage, fine)
-			Expect(ferr).NotTo(HaveOccurred())
-			row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, fine)
-			Expect(rerr).NotTo(HaveOccurred())
-			cvec, verr := row.vector()
-			Expect(verr).NotTo(HaveOccurred())
-			for i := 0; i < entries; i++ {
-				pk := tuple.Tuple{int64(50000 + i)}
-				v := []float64{float64(i%40) * 0.3, float64(i%37) * 0.3}
-				tx.Set(storage.postingKey(fine, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
-				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{fine}))
-				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
-				spfreshCounterAdd(tx, storage, spfreshCounterFine, fine, 1)
-			}
-			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, fine)
-			return nil, terr
-		})
-		Expect(err).NotTo(HaveOccurred())
-	}
+	balloonTenant := balloonSweeperTenant
 
 	It("probes, budgets fairly across tenants, and drains over passes", func() {
 		whale, whaleSub := newTenant("spf_sw_whale", 8, true)
@@ -235,13 +238,13 @@ var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
 
 		// limit=1: exactly ONE of the two splits runs — pre-fix the round
 		// executed the whole queue and a whale monopolized the pass.
-		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-1", 7, 1)
+		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-1", 7, 1, nil)
 		Expect(rerr).NotTo(HaveOccurred())
 		Expect(worked).To(Equal(1), "the per-pass budget must cap work inside a single round")
 
 		// Unlimited drains the rest.
 		for round := 0; round < 50; round++ {
-			worked, rerr = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-2", int64(round), 0)
+			worked, rerr = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-2", int64(round), 0, nil)
 			Expect(rerr).NotTo(HaveOccurred())
 			if worked == 0 {
 				break
@@ -276,7 +279,7 @@ var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-me", 7, 1)
+		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-me", 7, 1, nil)
 		Expect(rerr).NotTo(HaveOccurred())
 		Expect(worked).To(Equal(1), "only the zombie cleanup is work; the lease skip is free")
 

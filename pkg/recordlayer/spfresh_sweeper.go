@@ -38,6 +38,11 @@ type SPFreshSweepOptions struct {
 	// are reported, not errored — the next pass continues them. 0 means
 	// the default (64).
 	MaxActionsPerTenant int
+
+	// Timer collects SPFresh maintenance instrumentation (per-kind action
+	// counts, zombie cleanups, lease skips — see spfresh_metrics.go) across
+	// the pass. Nil disables recording.
+	Timer *StoreTimer
 }
 
 // SPFreshSweepResult summarizes one sweep pass.
@@ -78,7 +83,7 @@ func SweepSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFresh
 			continue
 		}
 		result.Worked++
-		tenantActions, drained, err := rebalanceSPFreshIndexRounds(ctx, db, tenant.StoreBuilder, tenant.IndexName, rounds, actions)
+		tenantActions, drained, err := rebalanceSPFreshIndexRounds(ctx, db, tenant.StoreBuilder, tenant.IndexName, rounds, actions, opts.Timer)
 		result.Actions += tenantActions
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sweep %q: %w", tenant.IndexName, err))

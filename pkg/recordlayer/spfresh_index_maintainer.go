@@ -37,6 +37,11 @@ type spfreshIndexMaintainer struct {
 	// discarded with it — uncommitted RYW state never reaches the global
 	// cache (see spfreshRoutingCache.cloneForWrite).
 	writeCache *spfreshRoutingCache
+
+	// timer is the context's StoreTimer (nil when uninstrumented — every
+	// recording method is nil-receiver-safe). The TEXT index's
+	// context.getTimer() idiom.
+	timer *StoreTimer
 }
 
 func newSPFreshIndexMaintainer(
@@ -44,6 +49,7 @@ func newSPFreshIndexMaintainer(
 	indexSubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
+	timer *StoreTimer,
 ) (*spfreshIndexMaintainer, error) {
 	config := parseSPFreshConfig(index)
 	if err := ValidateSPFreshConfig(config); err != nil {
@@ -60,6 +66,7 @@ func newSPFreshIndexMaintainer(
 	return &spfreshIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		config:                  config,
+		timer:                   timer,
 	}, nil
 }
 
@@ -524,6 +531,7 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	}
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)
+	searcher.timer = m.timer
 	if efSearch > 0 {
 		// The HNSW-style efSearch slot sets the fine-probe width DIRECTLY
 		// (094.4: sweeps need to tune DOWN as well as up).
