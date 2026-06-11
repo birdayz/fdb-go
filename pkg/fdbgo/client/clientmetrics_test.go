@@ -293,8 +293,12 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
+	// No local `defer db.Close()`: openTestDB registers Close via t.Cleanup,
+	// and the spoiler-join cleanup below is registered AFTER it — cleanups
+	// run LIFO, so the spoiler is joined BEFORE the handle closes on every
+	// exit path, including t.Fatal (Torvalds nit: a dying spoiler Transact
+	// must not race Close).
 	db := openTestDB(t, ctx)
-	defer db.Close()
 
 	key := []byte(t.Name() + "_key")
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -307,8 +311,11 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 	// Spoiler: continuously commit writes to key so the dummy's read+write
 	// conflict range keeps conflicting.
 	spoilCtx, spoilCancel := context.WithCancel(ctx)
-	defer spoilCancel()
 	spoilDone := make(chan struct{})
+	t.Cleanup(func() {
+		spoilCancel()
+		<-spoilDone
+	})
 	go func() {
 		defer close(spoilDone)
 		for spoilCtx.Err() == nil {
@@ -339,8 +346,6 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 			t.Fatal("dummy barrier retries never advanced TransactionsNotCommitted (count site missing?)")
 		}
 	}
-	spoilCancel()
-	<-spoilDone
 }
 
 // TestFDB_Metrics_OversizedCommitCountsStarted: C++ counts CommitStarted
