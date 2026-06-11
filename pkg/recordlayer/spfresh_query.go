@@ -39,18 +39,26 @@ func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *sp
 		config:  config,
 		cache:   cache,
 		quant:   newSPFreshQuantizer(config),
-		// Defaults from the 094.4 SIFT-100k sweep: w=16/kc=64/c=200 holds
-		// recall@10 = 0.999 at 1.6× lower latency than the 094.1 values
-		// (32/96/400, recall 1.0000). Per-query overrides ride the scan
-		// contract's High tuple (k, kc, w, c[, ε]) — e.g. 8/24/64 gives 0.974
-		// at ~10 ms p50 for latency-first callers.
-		w:  16,
+		// 094.5 freeze, from the SIFT-1M foreground-fill sweep: at kc=64,
+		// w=32 buys +0.8pp recall@10 over w=16 (0.952 vs 0.944) at EQUAL
+		// p50/QPS — the L1 hop is in-memory CPU, so probing more cells is
+		// free until kc gates the posting reads (the 100k sweep could not
+		// see this: w covered 26% of cells there vs 3% at 1M). Per-query
+		// overrides ride the scan contract's High tuple (k, kc, w, c[, ε])
+		// — e.g. 16/24/64 gives 0.826 at ~11 ms p50 for latency-first
+		// callers (w=16, not 8, for the same reason).
+		w:  32,
 		kc: 64,
 		c:  200,
 		// SPANN §4.2's published recall@10 setting. With pruning on, kc is a
 		// CAP, not a constant cost: the paper's Fig. 2 shows 80% of SIFT-1M
 		// queries need ~6 posting lists while 99% need 114 — Eq. (3) gives
 		// the easy majority the short probe and the hard tail the cap.
+		// MEASURED on SIFT-1M: ε=7.0 (true-distance ratio 8) never binds —
+		// recall and latency are identical with pruning on and off at kc
+		// 24–64 (distance concentration keeps the kc nearest centroids
+		// within the ratio). It stays ON: harmless here, and distributions
+		// with more distance spread are exactly where Eq. (3) pays.
 		epsilon: 7.0,
 	}
 }

@@ -308,3 +308,62 @@ Foreground fill summary (4 writers, one client process, fill incl. drain):
 | 100k | 481 vec/s | 0.988 @ 25.0ms p50 | 0.947 @ 9.9ms |
 | 300k | 242 vec/s | 0.987 @ 25.5ms p50 | 0.910 @ 9.4ms |
 | 1M | 205 vec/s | 0.950 @ 29.4ms p50 | 0.816 @ 11.1ms |
+
+### SPFresh 1M ε A/B + w-sweep + QPS (094.5 freeze run)
+
+Fresh 1M foreground fill (205 vec/s, 1h21m, 22,301 lifecycle actions), then
+16 sweep configs against the SAME production topology; SIFT_QPS=16 hammers
+each config with 800 one-query transactions (the serving shape).
+
+| w | kc | c | ε | recall@10 | p50 | p99 | QPS@16 |
+|---|----|----|---|-----------|------|------|--------|
+| 16 | 64 | 200 | off | 0.9440 | 27.9ms | 33.3ms | 134 |
+| 16 | 64 | 200 | 7.0 | 0.9440 | 27.6ms | 32.4ms | 134 |
+| 24 | 64 | 200 | 7.0 | 0.9500 | 28.1ms | 38.7ms | 132 |
+| **32** | **64** | **200** | **7.0** | **0.9520** | **27.9ms** | 33.2ms | **134** |
+| 8 | 24 | 64 | off | 0.8190 | 10.5ms | 17.3ms | 375 |
+| 8 | 24 | 64 | 7.0 | 0.8190 | 10.7ms | 17.9ms | 376 |
+| **16** | **24** | **64** | both | **0.8260** | **10.7ms** | 13.6ms | **374** |
+| 24 | 24 | 64 | both | 0.8230 | 10.8ms | 16.7ms | 371 |
+| 32 | 24 | 64 | both | 0.8220 | 11.2ms | 18.6ms | 365 |
+| 8 | 96 | 64 | 7.0 | 0.9360 | 38.1ms | 45.0ms | 127 |
+| 8 | 192 | 64 | 7.0 | 0.9480 | 74.9ms | 84.7ms | 66 |
+| 16 | 128 | 200 | 7.0 | 0.9730 | 52.0ms | 61.7ms | 80 |
+| 16 | 192 | 200 | 7.0 | 0.9870 | 77.1ms | 89.3ms | 59 |
+
+**Findings (vs the spfresh-reviewer's F1–F3 ranking):**
+
+1. **ε=7.0 is inert on SIFT-1M** — recall and latency identical with pruning
+   on/off at both budgets. The implementation is Eq.(3)-faithful (ratio
+   squared for d² space → true-distance ratio 8); SIFT's distance
+   concentration keeps the kc nearest centroids inside the ratio, so nothing
+   prunes. Stays default-ON (free here; distributions with spread are where
+   it pays), but it does NOT deliver F1's recall-per-ms on this dataset —
+   the kc-cap ladder costs full reads: 0.973 @ 52ms (kc=128), 0.987 @ 77ms
+   (kc=192).
+2. **F2 (routing starvation) is real but small**: at kc=24, w 8→16 buys
+   +0.7pp (0.819→0.826); w>16 buys nothing. The 1M fixed-probe decay is
+   dominated by F1 (kc tail coverage), confirmed by the kc ladder.
+3. **094.5 defaults frozen**: default **32/64/200/ε7** (0.952 @ 27.9ms p50,
+   134 QPS — +0.8pp over the old 16/64/200 for free), fast **16/24/64/ε7**
+   (0.826 @ 10.7ms p50, 374 QPS — +0.7pp over the old 8/24/64 for free).
+   The next recall lever at this scale is replication r=4 + RNG rule
+   (rebuild A/B pending), not more probes.
+
+### SPFresh RNG replication rule A/B (SIFT-100k foreground fill, r=2)
+
+SPANN §3.2.2's representative replication (skip a replica closer to an
+already-kept centroid than to the vector — spend the copy on a different
+direction) vs the prior ratio-only closure, same harness:
+
+| Metric | ratio-only | + RNG rule |
+|--------|-----------|------------|
+| Fill (4 writers, incl. drain) | 481 vec/s, 1,552 actions | **916 vec/s**, 1,206 actions |
+| fast 8/24/64 recall@10 | 0.9470 @ 9.9ms | **0.9530** @ 12.6ms |
+| engine default recall@10 | 0.9880 (16/64/200) | **0.9980** (32/64/200, sweep row 30.7ms) |
+
+Diverse replicas beat duplicate replicas on BOTH axes: recall up at every
+budget (the paper's Fig. 11 small-budget gap, confirmed) and fill nearly 2×
+— RNG-skipped duplicates mean fewer posting entries, fewer splits, less
+drain I/O. (Default rows differ in config — w moved 16→32 in the same
+change; the +0.6pp at the identical fast config is the clean comparison.)

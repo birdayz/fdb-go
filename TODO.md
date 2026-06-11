@@ -953,18 +953,21 @@ Paper-review verdict on the SIFT-1M fixed-probe recall decay (fast budget 0.947@
 0.816@1M; default holds 0.950): three causes, ranked by recall-per-ms. Full review in the
 PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
 
-- [ ] **1. Implement ε-pruning (SPANN §3.3; RFC-094 §217/§468 — specced, unbuilt).** Replace
-  fixed-kc nearest with centroid-distance-ratio pruning under a kc cap ≈128–192 (+ starvation
-  widening per RFC). SPANN Fig 2: 80% of queries need ~6 posting lists, 99% need 114 — fixed
-  kc=24 abandons the tail, and tail coverage shrinks with nlist (the measured slide). Read-side
-  only, no rebuild. Top item.
-- [ ] **2. 1M w-sweep at fixed kc (apportion F1 vs F2).** w∈{8,16,24,32} × kc=24 on a 1M build:
-  L1 covers 8/247 cells (3.2%) at 1M vs 26% at 100k and has no coarse closure — raising w is
-  near-free CPU. Likely outcome: default w≥16 at every budget.
-- [ ] **3. Replication r=4 + RNG rule (SPANN §3.2.2, Fig 5/11).** spfreshClosure ratio-tests
-  cands[1:r] only — no RNG diversity rule; paper runs up to 8 replicas and the gap is largest
-  at small latency budgets (our symptom). Needs rebuild + ~+50% entries; measure recall delta
-  at fast budget before/after.
+- [x] **1. Implement ε-pruning (SPANN §3.3; RFC-094 §217/§468).** Landed (SPANN Eq.3
+  query-aware ε-pruning, default-ON ε₂=7.0, kc as cap, starvation widening, per-query
+  override). The 1M ε A/B that pins the recall/latency claim on realistic data is the
+  in-flight sweep (item 2's run carries both).
+- [x] **2. 1M w-sweep + ε A/B + QPS — DONE, defaults frozen (094.5).** Full table in
+  VECTOR_BENCHMARK_RESULTS.md. ε=7.0 measured INERT on SIFT-1M (identical recall/latency
+  on/off — Eq.(3)-faithful, distance concentration; stays default-ON as it's free). F2 is
+  small (+0.7pp from w 8→16 at kc=24, w>16 nil); the decay is F1 kc-tail (0.973 @ kc=128,
+  0.987 @ kc=192, at 2-3× latency). Frozen: default 32/64/200/ε7 (0.952 @ 27.9ms, 134 QPS),
+  fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
+- [ ] **3. Replication r=4 + RNG rule (SPANN §3.2.2, Fig 5/11).** RNG diversity rule
+  IMPLEMENTED (closure scans past r with same-direction skip; candidate pools widened on
+  build/insert paths; pinned by Figure-5 unit test, insert FDB test, fuzz). Remaining:
+  the r=4 default decision — needs a rebuild A/B (~+50% entries); measure recall delta
+  at fast budget before/after, sequenced after the 1M sweep results.
 - [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 1.1% centroid ratio vs
   paper's 16%: coarser lists make each kc step blunter; Lmax=256 is FDB-reply-budget justified
   (RFC) so only move it with measurements.

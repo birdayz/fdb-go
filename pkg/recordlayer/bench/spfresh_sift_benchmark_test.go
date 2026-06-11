@@ -546,8 +546,8 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		name     string
 		kc, w, c int
 	}{
-		{"default(16/64/200)", 0, 0, 0},
-		{"fast(8/24/64)", 24, 8, 64},
+		{"default(32/64/200)", 0, 0, 0},
+		{"fast(16/24/64)", 24, 16, 64},
 	} {
 		latencies := make([]time.Duration, 0, len(queryVecs))
 		hits, total := 0, 0
