@@ -1097,6 +1097,15 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// Size the VALIDATED snapshot `muts` (via approximateCommitSize), not the live buffer:
 	// a Set racing this Commit on another goroutine appends beyond `muts` and is not in this
 	// commit, so GetApproximateSize() could fail a small commit for an unshipped mutation.
+	// C++ ++transactionsCommitStarted in commitMutations (:6808): AFTER the
+	// empty fast path (:6800-6806, not counted — the non-empty guard here is
+	// that fast path's condition) but BEFORE the size check (~:6835), so a
+	// persistently oversized commit shows up as Started-without-Completed.
+	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
+	if tx.db != nil && (len(muts) > 0 || nWriteConflicts > 0) {
+		tx.db.metrics.transactionsCommitStarted.Add(1)
+	}
+
 	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(muts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
@@ -1109,13 +1118,6 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		tx.hasCommitted = true
 		tx.postCommitReset()
 		return nil
-	}
-
-	// C++ ++transactionsCommitStarted in commitMutations (:6808), AFTER the
-	// empty fast path (:6800-6806, not counted). Started-Completed =
-	// failed/in-flight (intentional asymmetry). RFC-097.
-	if tx.db != nil {
-		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
 
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a

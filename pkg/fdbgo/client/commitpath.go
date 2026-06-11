@@ -138,6 +138,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	// the same backoff curve: start at defaultBackoff (10ms), double each retry,
 	// cap at DEFAULT_MAX_BACKOFF (1s).
 	backoff := defaultBackoff
+	dummyRetries := 0
 	for {
 		if ctx.Err() != nil {
 			return // caller gave up, don't block forever
@@ -177,6 +178,11 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
 			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
+				// Count the dummy's retries like C++: its errors route
+				// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
+				// the same per-code counters as any transaction. RFC-097.
+				dummyRetries++
+				tx.db.countRetryAndLog(fdbErr.Code, dummyRetries)
 				if backoffSleep(ctx, jitterBackoff(backoff)) != nil {
 					return // ctx cancelled — caller gave up
 				}

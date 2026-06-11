@@ -1,6 +1,9 @@
 # RFC-097: Client observability — transaction counters, export hook, slog events (P1.3)
 
-**Status:** draft — needs FDB-C++-dev + Torvalds ACK (client item; fdb-client-review gate)
+**Status:** ACCEPTED — FDB-C++-dev ACK (with counter-site corrections, folded);
+Torvalds NAK→ACK (adapter made in-scope, test traps fixed). Implementation reviewed:
+both NAK'd once more with real catches (dummy-retry counting; CommitStarted-vs-size-check
+ordering) — fixed and pinned; see Outcome.
 **Scope:** TODO-production.md P1.3 + the P1.2 remainder ("emit operational events through
 the slog path"). Client (`pkg/fdbgo`) only; record-layer events (online-indexer progress)
 are the P1.2 record-layer half and stay a separate item.
@@ -119,3 +122,29 @@ loggable event.
   handler whose level is `Info` (the Enabled guard works).
 - `-race` on the client package (concurrent Transact loops hammering the counters).
 - Revert-proof: removing an increment site reddens the corresponding assertion.
+
+## Outcome (implementation)
+
+Implemented as specified; two implementation-review catches folded in:
+
+1. **FDB-C++ NAK (real gap):** `commitDummyTransaction`'s retry loop bypasses
+   `OnError`, so dummy retries were uncounted — but C++ routes the dummy's
+   errors through `tr.onError` (`NativeAPI.actor.cpp:6341`), which ticks the
+   per-code counters. Fixed in the dummy loop; pinned by
+   `TestFDB_Metrics_DummyRetriesCounted` (spoiler-driven conflict on the
+   barrier's key, poll-until-counted — a missing site never converges).
+   Documented divergence kept: under a LOCKED database, Go counts GRV
+   completions for non-lock-aware waiters in the batch while C++'s
+   `database_locked` throw precedes its counters — per-waiter counting at the
+   consumption site is machinery a counter doesn't justify.
+2. **Torvalds NAK (real parity bug):** the `CommitStarted` increment sat after
+   Go's `transaction_too_large` check, but C++ counts Started (`:6808`) BEFORE
+   its size check (`~:6835`) — a persistently oversized commit would have been
+   invisible. Reordered (non-empty guard → counter → size check → read-only
+   fast path); pinned by `TestFDB_Metrics_OversizedCommitCountsStarted`
+   (Started +1, Completed +0 on a 13.5MB commit).
+
+Both reviewers verified everything else: per-code mapping exact, no double
+counting (1021 surfaces uncounted from commit(), counted once in OnError),
+all four OnError arms hooked counters-before-backoff, the adapter swap to the
+zero-dep text handler, test honesty incl. the revert-proof.

@@ -282,3 +282,97 @@ func TestFDB_Metrics_DummyCommitCounted(t *testing.T) {
 		t.Errorf("CommitCompleted delta = %d, want >= 1 (the dummy barrier commit)", d)
 	}
 }
+
+// TestFDB_Metrics_DummyRetriesCounted: the commit_unknown_result barrier's
+// retry loop must tick the per-code counters like C++, whose dummy routes
+// errors through tr.onError (NativeAPI.actor.cpp:6341). A spoiler goroutine
+// hammers the dummy's conflict key so its conflict-only commit keeps hitting
+// not_committed; poll until the conflict counter advances (a missing count
+// site never converges — red pre-fix; bounded, so no flake).
+func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v0"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Spoiler: continuously commit writes to key so the dummy's read+write
+	// conflict range keeps conflicting.
+	spoilCtx, spoilCancel := context.WithCancel(ctx)
+	defer spoilCancel()
+	spoilDone := make(chan struct{})
+	go func() {
+		defer close(spoilDone)
+		for spoilCtx.Err() == nil {
+			_, _ = db.Transact(spoilCtx, func(tx *Transaction) (any, error) {
+				tx.Set(key, []byte("spoil"))
+				return nil, nil
+			})
+		}
+	}()
+
+	base := db.Metrics()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		// Drive the barrier directly, exactly as the 1021 path does: a txn
+		// with key in both conflict sets. Each call commits a fresh
+		// conflict-only dummy; under the spoiler it conflicts and retries.
+		runCtx, runCancel := context.WithTimeout(ctx, 5*time.Second)
+		dummy := db.CreateTransaction()
+		dummy.Set(key, []byte("never-committed"))
+		dummy.addReadConflictForKey(key)
+		dummy.commitDummyTransaction(runCtx)
+		runCancel()
+
+		if db.Metrics().TransactionsNotCommitted > base.TransactionsNotCommitted {
+			break // a dummy retry was counted
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dummy barrier retries never advanced TransactionsNotCommitted (count site missing?)")
+		}
+	}
+	spoilCancel()
+	<-spoilDone
+}
+
+// TestFDB_Metrics_OversizedCommitCountsStarted: C++ counts CommitStarted
+// BEFORE its size check (NativeAPI.actor.cpp:6808 vs ~:6835), so a
+// persistently oversized commit is visible as Started-without-Completed.
+// Torvalds impl-review condition. Each mutation stays under the per-value
+// limit (100KB) so the DEFERRED 10MB size check is what fires (RFC-067
+// eager-vs-deferred ordering).
+func TestFDB_Metrics_OversizedCommitCountsStarted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	base := db.Metrics()
+	tx := db.CreateTransaction()
+	val := make([]byte, 90_000) // under VALUE_SIZE_LIMIT
+	for i := 0; i < 150; i++ {  // ~13.5MB total > 10MB TRANSACTION_SIZE_LIMIT
+		tx.Set([]byte(t.Name()+"_k"+string(rune('a'+i%26))+string(rune('a'+i/26))), val)
+	}
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("oversized commit succeeded, want transaction_too_large (2101)")
+	}
+	assertFDBErrorCode(t, err, 2101)
+
+	s := db.Metrics()
+	if d := s.TransactionsCommitStarted - base.TransactionsCommitStarted; d != 1 {
+		t.Errorf("CommitStarted delta = %d, want 1 (counted before the size check)", d)
+	}
+	if d := s.TransactionsCommitCompleted - base.TransactionsCommitCompleted; d != 0 {
+		t.Errorf("CommitCompleted delta = %d, want 0", d)
+	}
+}

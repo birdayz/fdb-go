@@ -310,9 +310,13 @@ func (b *grvBatcher) flush(db *database) {
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
-		// background refresher has no waiters and adds nothing. Waiters whose
-		// ctx expired mid-batch are still counted (C++ cancels abandoned
-		// futures before its counter; accepted edge noise). RFC-097.
+		// background refresher has no waiters and adds nothing. Two accepted
+		// edge divergences: waiters whose ctx expired mid-batch are still
+		// counted (C++ cancels abandoned futures before its counter), and
+		// under a LOCKED database non-lock-aware waiters are counted here
+		// while C++'s database_locked throw (:7425-7426) precedes its
+		// counters — fixing either would need per-waiter counting at the
+		// consumption site, machinery a counter doesn't justify. RFC-097.
 		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
 	}
 
