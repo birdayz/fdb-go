@@ -140,7 +140,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	// SIFT_SWEEP=w:kc:c[,w:kc:c...] additionally sweeps searcher parameters
 	// against the SAME built index (094.4 tuning) and logs one line each.
 	if sweep := os.Getenv("SIFT_SWEEP"); sweep != "" {
-		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep)
+		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep, "spf_data")
 	}
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
@@ -235,10 +235,11 @@ func bruteForceIDs(base [][]float64, query []float64, k int) []int64 {
 	return ids
 }
 
-// runSIFTSweep measures recall/latency for each w:kc:c configuration against
-// the already-built index (094.4 tuning; the knobs ride the scan contract's
-// High tuple). One log line per config.
-func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), base [][]float64, queries [][]float32, k int, sweep string) {
+// runSIFTSweep measures recall/latency for each w:kc:c[:eps] configuration
+// against the already-built index (094.4 tuning; the knobs ride the scan
+// contract's High tuple). One log line per config. idxName selects the index
+// (bulk build and foreground fill register under different names).
+func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), base [][]float64, queries [][]float32, k int, sweep, idxName string) {
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
@@ -285,7 +286,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 				if serr != nil {
 					return nil, serr
 				}
-				idx := store.GetMetaData().GetIndex("spf_data")
+				idx := store.GetMetaData().GetIndex(idxName)
 				maintainer, merr := store.GetIndexMaintainer(idx)
 				if merr != nil {
 					return nil, merr
@@ -359,7 +360,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 							if serr != nil {
 								return nil, serr
 							}
-							maintainer, merr := store.GetIndexMaintainer(store.GetMetaData().GetIndex("spf_data"))
+							maintainer, merr := store.GetIndexMaintainer(store.GetMetaData().GetIndex(idxName))
 							if merr != nil {
 								return nil, merr
 							}
@@ -603,5 +604,12 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 		t.Logf("READ %s: recall@%d=%.4f p50=%v p99=%v", cfg.name, k,
 			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+	}
+
+	// SIFT_SWEEP=w:kc:c[:eps],... sweeps searcher knobs against the
+	// foreground-filled index — the production topology, which is where the
+	// fixed-probe recall decay shows up (bulk-built indexes mask it).
+	if sweep := os.Getenv("SIFT_SWEEP"); sweep != "" {
+		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep, "spf_fill")
 	}
 }
