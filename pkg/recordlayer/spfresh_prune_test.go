@@ -11,8 +11,11 @@ import (
 )
 
 // SPANN Eq. (3) query-aware dynamic pruning (RFC-094 §4; paper §3.2.3): probe
-// list ij ⟺ Dist(q,c_ij) ≤ (1+ε)·Dist(q,c_i1), evaluated here in squared-
-// distance space, with the pruned tail kept for starvation widening.
+// list ij ⟺ Dist(q,c_ij) ≤ (1+ε)·Dist(q,c_i1). Dist is SPTAG's SQUARED L2
+// and the ratio applies to it DIRECTLY (the published ε₂=7.0 = an 8× d²
+// bound) — squaring the ratio was the calibration bug that made ε=7.0 inert
+// on the 1M sweep (paper-review catch). Pruned tail kept for starvation
+// widening.
 var _ = Describe("SPFresh ε-pruning", func() {
 	ctx := context.Background()
 
@@ -20,13 +23,21 @@ var _ = Describe("SPFresh ε-pruning", func() {
 		return spfreshRouted{fineID: fine, d2: d2, state: spfreshStateActive}
 	}
 
-	It("splits a routed list at the (1+ε)² squared-distance threshold", func() {
-		routed := []spfreshRouted{rt(1, 1.0), rt(2, 3.9), rt(3, 4.0), rt(4, 4.1), rt(5, 100)}
-		// ε=1 → ratio 2 → squared threshold 4·d1 = 4.0, boundary INCLUSIVE.
+	It("splits a routed list at the (1+ε) squared-distance threshold", func() {
+		routed := []spfreshRouted{rt(1, 1.0), rt(2, 1.9), rt(3, 2.0), rt(4, 2.1), rt(5, 100)}
+		// ε=1 → threshold (1+1)·d2(c1) = 2.0 ON d², boundary INCLUSIVE.
 		probe, pruned := spfreshPruneRouted(routed, 1.0)
 		Expect(probe).To(HaveLen(3))
 		Expect(pruned).To(HaveLen(2))
 		Expect(pruned[0].fineID).To(Equal(int64(4)))
+
+		// The published SPANN §4.2 point: ε=7 ⇒ 8× in d² (NOT 64× — the
+		// ratio is not squared again).
+		eight := []spfreshRouted{rt(1, 1.0), rt(2, 8.0), rt(3, 8.1), rt(4, 63.9)}
+		probe, pruned = spfreshPruneRouted(eight, 7.0)
+		Expect(probe).To(HaveLen(2), "8·d² is in, anything past it is out")
+		Expect(pruned).To(HaveLen(2))
+		Expect(pruned[0].fineID).To(Equal(int64(3)))
 
 		// ε ≤ 0 disables: everything probed.
 		probe, pruned = spfreshPruneRouted(routed, 0)

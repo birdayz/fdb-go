@@ -362,8 +362,31 @@ direction) vs the prior ratio-only closure, same harness:
 | fast 8/24/64 recall@10 | 0.9470 @ 9.9ms | **0.9530** @ 12.6ms |
 | engine default recall@10 | 0.9880 (16/64/200) | **0.9980** (32/64/200, sweep row 30.7ms) |
 
-Diverse replicas beat duplicate replicas on BOTH axes: recall up at every
-budget (the paper's Fig. 11 small-budget gap, confirmed) and fill nearly 2×
-— RNG-skipped duplicates mean fewer posting entries, fewer splits, less
-drain I/O. (Default rows differ in config — w moved 16→32 in the same
-change; the +0.6pp at the identical fast config is the clean comparison.)
+Diverse replicas beat duplicate replicas on recall (up at every budget — the
+paper's Fig. 11 small-budget gap, confirmed) and on fill throughput (nearly
+2× — RNG-skipped duplicates mean fewer posting entries, fewer splits, less
+drain I/O); fast-budget p50 came in 27% higher on this single run (9.9→12.6ms)
+— an unreplicated number on a 137s run, re-measured by the 1M re-pin below.
+(Default rows differ in config — w moved 16→32 in the same change; the
++0.6pp at the identical fast config is the clean comparison.)
+
+### CORRECTION (paper re-review): ε calibration + freeze provenance
+
+The paper-authors' re-review caught two defects in the freeze run above:
+
+1. **ε was mis-calibrated by an exponent.** Eq. (3)'s Dist is SPTAG's
+   SQUARED L2 and MaxDistRatio = 1+ε applies to it DIRECTLY: published
+   ε₂=7.0 means an 8× d² bound (true distance ≈2.83×). Our implementation
+   squared the ratio (64× in d²) — so the "ε is inert on SIFT-1M" finding
+   above measured a setting 8× looser than published; SPANN Fig. 2/12 were
+   measured at the published one. Fixed: the ratio now applies directly to
+   d². The ε A/B and the kc-as-cap ladder must be re-measured at the
+   corrected setting.
+2. **The 1M sweep topology was pre-RNG** (the fill deliberately measured
+   the then-committed HEAD while the RNG rule was still in review). The
+   frozen 0.952/0.826 therefore describe a topology the shipped write path
+   no longer produces.
+
+Both resolved by one 1M foreground refill on the shipped path (RNG on,
+corrected ε), re-sweeping ε on/off + kc-cap rows and reporting entries /
+effective replication / lifecycle actions — table below when it lands.

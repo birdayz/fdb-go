@@ -214,8 +214,12 @@ CPU  L1 scan (2.5k × fp16) → w = 32 cells (rev 3's w=16 probed 0.78% of cells
      with no coarse-boundary mitigation; w=32 doubles L2 work to ~1.5k distances,
      still < 0.5 ms total, and halves coarse-boundary loss — LanceDB r3; sweep
      w ∈ {16,32,64} in 094.1, coarse-level closure only if 64 still leaks).
-     L2 scan → k_c = 96 nearest ACTIVE fine centroids (adaptive → 192 under
-     ε-pruning starvation). L2 cell miss: one range read, one reply (≤ 77 KB).
+     L2 scan → the k_c CAP of nearest ACTIVE fine centroids; Eq. (3) ε-pruning
+     selects the probe set within the cap (ratio 1+ε applied directly to d² —
+     SPTAG's MaxDistRatio semantics), and starvation widening refetches the
+     pruned tail WITHIN the cap when the probed set can't fill the re-rank
+     budget (it never exceeds k_c). L2 cell miss: one range read, one reply
+     (≤ 77 KB).
 RT1  k_c parallel GetRange(POSTINGS/(fineID,*)), snapshot, Limit = 2×Lmax+1
      (fetch cap: an oversized posting degrades THIS query boundedly + metric).
      HDR FORWARD row (stale cache; split landed inside our refresh window):

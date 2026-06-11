@@ -437,6 +437,14 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	spfIdx.Options = map[string]string{
 		recordlayer.IndexOptionSPFreshNumDimensions: "128",
 	}
+	// SIFT_REPLICATION / SIFT_ALPHA override the closure knobs for the
+	// replication A/B runs (paper review F3: r=4 vs the r=2 default).
+	if rep := os.Getenv("SIFT_REPLICATION"); rep != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshReplication] = rep
+	}
+	if alpha := os.Getenv("SIFT_ALPHA"); alpha != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshAlpha] = alpha
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))

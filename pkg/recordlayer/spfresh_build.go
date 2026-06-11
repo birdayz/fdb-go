@@ -113,10 +113,12 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 	}
 	if k0 > len(sample) {
 		// The k > n clamp in spfreshKMeans would silently shrink the very
-		// topology K₀-from-totalN exists to protect: the dataset has outgrown
-		// the sample cap's design envelope (~2.5M records at defaults). Fail
-		// loudly — raising spfreshCoarseSampleCap is the fix, not building a
-		// coarse table sized by the sampling ratio.
+		// topology K₀-from-totalN exists to protect. This is the hard cliff
+		// — K0 = totalN·r/(avgFill·cellTarget) outruns the 250k sample at
+		// ~1.0B records at defaults — not the sample-QUALITY envelope
+		// (points-per-centroid thins long before that). Fail loudly —
+		// raising spfreshCoarseSampleCap is the fix, not building a coarse
+		// table sized by the sampling ratio.
 		return fmt.Errorf("spfresh build: K0 %d exceeds the %d-point training sample (totalN %d outgrew spfreshCoarseSampleCap %d)",
 			k0, len(sample), totalN, spfreshCoarseSampleCap)
 	}

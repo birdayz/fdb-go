@@ -50,31 +50,31 @@ func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *sp
 		w:  32,
 		kc: 64,
 		c:  200,
-		// SPANN §4.2's published recall@10 setting. With pruning on, kc is a
-		// CAP, not a constant cost: the paper's Fig. 2 shows 80% of SIFT-1M
-		// queries need ~6 posting lists while 99% need 114 — Eq. (3) gives
-		// the easy majority the short probe and the hard tail the cap.
-		// MEASURED on SIFT-1M: ε=7.0 (true-distance ratio 8) never binds —
-		// recall and latency are identical with pruning on and off at kc
-		// 24–64 (distance concentration keeps the kc nearest centroids
-		// within the ratio). It stays ON: harmless here, and distributions
-		// with more distance spread are exactly where Eq. (3) pays.
+		// SPANN §4.2's published recall@10 setting: SPTAG applies
+		// MaxDistRatio = 1+ε = 8 directly to SQUARED distances (see
+		// spfreshPruneRouted). With pruning on, kc is a CAP, not a constant
+		// cost: the paper's Fig. 2 shows 80% of SIFT-1M queries need ~6
+		// posting lists while 99% need 114 — Eq. (3) gives the easy
+		// majority the short probe and the hard tail the cap.
 		epsilon: 7.0,
 	}
 }
 
 // spfreshPruneRouted applies SPANN Eq. (3) query-aware dynamic pruning to a
 // d2-ascending routed list: probe list ij ⟺ Dist(q,c_ij) ≤ (1+ε)·Dist(q,c_i1).
-// d2 is SQUARED distance, so the threshold squares the ratio. The pruned tail
-// is returned for the starvation widening (RFC-094 §4 "k_c widens adaptively
-// under ε-pruning starvation") — the caller refetches it when the probed set
+// Eq. (3)'s Dist is SPTAG's distance — SQUARED L2 — and the reference
+// implementation applies MaxDistRatio = 1+ε directly to those squared values:
+// the published ε₂=7.0 operating point is an 8× bound in d²-space (true
+// distance ≈2.83×). Squaring the ratio here (an earlier reading of Eq. (3)
+// as true-distance) made ε=7.0 a 64× bound that never bound anything — the
+// paper review caught it via the inert 1M A/B. The pruned tail is returned
+// for the starvation widening — the caller refetches it when the probed set
 // can't fill the re-rank budget.
 func spfreshPruneRouted(routed []spfreshRouted, epsilon float64) (probe, pruned []spfreshRouted) {
 	if epsilon <= 0 || len(routed) <= 1 {
 		return routed, nil
 	}
-	ratio := 1 + epsilon
-	threshold := ratio * ratio * routed[0].d2
+	threshold := (1 + epsilon) * routed[0].d2
 	cut := len(routed)
 	for i := 1; i < len(routed); i++ {
 		if routed[i].d2 > threshold {

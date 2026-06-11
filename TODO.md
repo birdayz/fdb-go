@@ -965,9 +965,17 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
 - [ ] **3. Replication r=4 + RNG rule (SPANN §3.2.2, Fig 5/11).** RNG diversity rule
   IMPLEMENTED (closure scans past r with same-direction skip; candidate pools widened on
-  build/insert paths; pinned by Figure-5 unit test, insert FDB test, fuzz). Remaining:
-  the r=4 default decision — needs a rebuild A/B (~+50% entries); measure recall delta
-  at fast budget before/after, sequenced after the 1M sweep results.
+  build/insert paths; pinned by Figure-5 unit test, insert FDB test, fuzz). 100k A/B at
+  r=2: fast recall 0.947→0.953, fill 481→916 vec/s. Remaining: the r=4 default decision —
+  rebuild A/B (~+50% entries), recall delta at fast budget. Paper re-review conditions
+  for that run: **sweep α alongside r** (α=1.2 is a 1.44× d² bound vs the paper's ε₁=10
+  ≈ 11×; at r=4 the tight ratio bound starves RNG diversity before the scan reaches
+  different-direction lists) and widen the closure pool with r (max(4r,8) is narrower
+  than SPTAG's 8× headroom). ALSO PENDING (paper re-review NAK on the freeze): ε was
+  mis-calibrated (ratio squared = 64× in d² vs the published 8×; FIXED — applies
+  directly to d² now) and the 1M sweep topology was pre-RNG — one 1M refill re-pins
+  the frozen defaults + re-runs the ε A/B + kc-cap ladder at the published setting,
+  reporting entries/effective ρ/actions.
 - [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 1.1% centroid ratio vs
   paper's 16%: coarser lists make each kc step blunter; Lmax=256 is FDB-reply-budget justified
   (RFC) so only move it with measurements.
