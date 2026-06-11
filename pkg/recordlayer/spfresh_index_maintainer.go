@@ -697,12 +697,24 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return err
 	}
 
-	// Sample scan (§8 step 1): all records at current scale; reservoir
-	// sampling caps this at production scale.
+	// Sample scan (§8 step 1) with RESERVOIR SAMPLING (algorithm R,
+	// deterministic via the build seed): the coarse k-means only needs a
+	// representative sample — training it on every record made the build's
+	// clustering cost O(N²·r/(avgFill·cellTarget)·d), unbounded in practice
+	// at SIFT-1M. K₀ still derives from the FULL count (totalN below). The
+	// cap keeps ≥ ~30 sample points per coarse centroid up to ~2.5M records;
+	// beyond that, raise the cap or move to hierarchical sampling (§8).
 	var sample [][]float64
+	totalN := 0
+	rng := &splittableRandom{seed: splitMixLong(seed), gamma: goldenGamma}
 	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, spfreshScanBatchSize, nil, func(batch []spfreshBuildInput) error {
 		for _, in := range batch {
-			sample = append(sample, in.vec)
+			if totalN < spfreshCoarseSampleCap {
+				sample = append(sample, in.vec)
+			} else if j := int(uint64(rng.nextLong()) % uint64(totalN+1)); j < spfreshCoarseSampleCap {
+				sample[j] = in.vec
+			}
+			totalN++
 		}
 		return nil
 	}); err != nil {
@@ -767,7 +779,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// the coarse table commits (the interleaving contract — see the function
 	// comment). Records saved post-coarse may be staged twice (by themselves
 	// and by this scan); the Sets are idempotent.
-	if berr := builder.coarsePass(ctx, sample, seed); berr != nil {
+	if berr := builder.coarsePass(ctx, sample, totalN, seed); berr != nil {
 		return berr
 	}
 	// The staging writes ride INSIDE each scan transaction: the scan's REAL

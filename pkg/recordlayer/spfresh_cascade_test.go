@@ -368,3 +368,33 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// Reservoir sampling (build §8 step 1): the coarse k-means trains on a
+// SAMPLE, but K₀ must cover the FULL dataset — deriving it from the sample
+// would shrink the topology by the sampling ratio and overfill every cell.
+var _ = Describe("SPFresh build sampling", func() {
+	ctx := context.Background()
+
+	It("K₀ derives from the full count, not the sample size", func() {
+		config := DefaultSPFreshConfig(2)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-sample").Sub("k0"), 1)
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-k0")
+
+		// A 4-vector sample standing in for a 100k-record dataset.
+		sample := [][]float64{{0, 0}, {1, 1}, {50, 50}, {51, 51}}
+		const totalN = 100_000
+		Expect(builder.coarsePass(ctx, sample, totalN, 7)).To(Succeed())
+
+		avgFill := (2 * config.Lmax) / 3
+		wantK0 := (totalN*config.Replication + avgFill*config.CellTarget - 1) / (avgFill * config.CellTarget)
+		// k-means clamps k to len(sample) points, but the CELL ID allocation
+		// must have been sized for the full dataset... the clamp bounds the
+		// CENTROIDS to the sample; what must hold is that k0 ≥ the full-count
+		// formula was requested. With 4 sample points the clamp yields 4
+		// cells — so assert through the formula path instead: a sample-sized
+		// dataset yields sample-sized k0, and the SAME sample with a large
+		// totalN must not yield FEWER cells than it.
+		Expect(len(builder.cellIDs)).To(Equal(min(wantK0, len(sample))),
+			"k0 must be computed from totalN (clamped only by available sample points)")
+	})
+})

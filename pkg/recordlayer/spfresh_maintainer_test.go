@@ -469,7 +469,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 		for i := range inputs {
 			sample[i] = inputs[i].vec
 		}
-		Expect(bld.coarsePass(ctx, sample, 42)).To(Succeed())
+		Expect(bld.coarsePass(ctx, sample, len(sample), 42)).To(Succeed())
 
 		// WINDOW 2 — post-coarse, pre-finalize: the save STAGES itself.
 		save(100, 11, 12)
@@ -603,7 +603,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 				// The coarse pass commits AFTER our read version, BEFORE our
 				// commit (a separate transaction).
 				bld := newSPFreshBuilder(sharedDB, storage, config, "racer")
-				Expect(bld.coarsePass(ctx, [][]float64{{1, 1}, {2, 2}, {100, 100}}, 7)).To(Succeed())
+				Expect(bld.coarsePass(ctx, [][]float64{{1, 1}, {2, 2}, {100, 100}}, 3, 7)).To(Succeed())
 			}
 			sawCoarse = len(ids) > 0
 			// Any write makes this a committing transaction.
@@ -659,7 +659,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		storage := newSPFreshStorage(indexSubspace, 1)
 		config := parseSPFreshConfig(idx)
 		bld := newSPFreshBuilder(sharedDB, storage, config, "ghost-build")
-		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 7)).To(Succeed())
+		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 3, 7)).To(Succeed())
 
 		// Assignment scan in batches of 3; mid-FIRST-batch a delete of record
 		// 2 commits. The staging writes ride INSIDE the scan tx, whose REAL
@@ -719,7 +719,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		// routes on must equal the stored row's decode, or a boundary vector
 		// double-stages into different cells on the two paths.
 		sample := [][]float64{{1.0005, 0}, {1.0005, 0}, {500, 500}, {500, 500}}
-		Expect(bld.coarsePass(ctx, sample, 7)).To(Succeed())
+		Expect(bld.coarsePass(ctx, sample, len(sample), 7)).To(Succeed())
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			ids, rows, lerr := spfreshLoadAllCoarse(rtx.Transaction(), storage)

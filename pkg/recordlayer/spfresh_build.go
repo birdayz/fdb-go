@@ -68,7 +68,7 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 	for i := range inputs {
 		sample[i] = inputs[i].vec
 	}
-	if err := b.coarsePass(ctx, sample, seed); err != nil {
+	if err := b.coarsePass(ctx, sample, len(inputs), seed); err != nil {
 		return err
 	}
 	for lo := 0; lo < len(inputs); lo += b.stagingBatch {
@@ -80,18 +80,23 @@ func (b *spfreshBuilder) build(ctx context.Context, inputs []spfreshBuildInput, 
 	return b.finalize(ctx, seed)
 }
 
-// coarsePass is §8 steps 1+2: coarse k-means over the sample (all inputs at
-// test scale; reservoir sampling at production scale is the maintainer's
-// record-scan concern) and the COARSE/cellfin row writes. Committing the
-// coarse table BEFORE the assignment scan is what closes the lost-record
-// window: from this point on a foreground write can always route itself.
+// coarsePass is §8 steps 1+2: coarse k-means over the SAMPLE (the maintainer
+// reservoir-samples its record scan past spfreshCoarseSampleCap) and the
+// COARSE/cellfin row writes. totalN is the FULL dataset size: K₀ must cover
+// every record, not just the sample — deriving it from a capped sample would
+// shrink the topology by the sampling ratio. Committing the coarse table
+// BEFORE the assignment scan is what closes the lost-record window: from
+// this point on a foreground write can always route itself.
 // K₀ = N·r / (avgFill · cellTarget); avgFill ≈ ⅔·Lmax (RFC-094 §8).
-func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, seed int64) error {
+func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, totalN int, seed int64) error {
 	if len(sample) == 0 {
 		return fmt.Errorf("spfresh build: no inputs")
 	}
+	if totalN < len(sample) {
+		totalN = len(sample)
+	}
 	avgFill := (2 * b.config.Lmax) / 3
-	k0 := (len(sample)*b.config.Replication + avgFill*b.config.CellTarget - 1) / (avgFill * b.config.CellTarget)
+	k0 := (totalN*b.config.Replication + avgFill*b.config.CellTarget - 1) / (avgFill * b.config.CellTarget)
 	if k0 < 1 {
 		k0 = 1
 	}

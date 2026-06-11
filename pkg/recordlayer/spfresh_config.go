@@ -245,3 +245,10 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	}
 	return config
 }
+
+// spfreshCoarseSampleCap bounds the coarse-k-means training sample in
+// BuildSPFreshIndex (reservoir sampling past the cap; K₀ still derives from
+// the full record count). 250k keeps ≥ ~30 sample points per coarse centroid
+// up to ~2.5M records — raise it (or add hierarchical sampling, §8) beyond
+// that. Var, not const: scale tests tighten it.
+var spfreshCoarseSampleCap = 250_000
