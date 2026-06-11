@@ -99,6 +99,26 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 		assertFDBErrorCode(t, err, ErrDatabaseLocked)
 	}
 
+	// Arm 2b: the SAME handle that committed the lock transaction must also
+	// converge to 1038 for plain reads (codex P1: the lock commit advances
+	// the cached version but must not RENEW freshness with stale
+	// locked=false metadata — TestGRVCache_CommitUpdateDoesNotExtendFreshness
+	// pins that channel deterministically; this arm pins the end-to-end
+	// property). Bounded poll: within maxVersionCacheLag of the handle's
+	// last real GRV the pre-lock cache entry may legitimately serve.
+	armDeadline := time.Now().Add(10 * time.Second)
+	for {
+		sameHandle := db.CreateTransaction()
+		if _, err := sameHandle.Get(ctx, key); err != nil {
+			assertFDBErrorCode(t, err, ErrDatabaseLocked)
+			break
+		}
+		if time.Now().After(armDeadline) {
+			t.Fatal("plain reads on the lock-committing handle still succeeding 10s after lock")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	// Arm 3: LOCK_AWARE reads succeed (C++ options.lockAware exemption).
 	lockAware := db2.CreateTransaction()
 	lockAware.SetLockAware(true)

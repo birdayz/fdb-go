@@ -82,22 +82,28 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool, bool) {
 	return v, c.lastLocked.Load(), true
 }
 
-// update updates the cache with a new version.
+// update advances the cached version from a successful commit.
 // Monotonic: only accepts versions >= current cached version.
-// Called after a successful commit (which carries no lock information —
-// lastLocked is deliberately untouched; a lock-aware transaction CAN commit
-// on a locked database). GRV replies go through updateFromGRV instead.
-func (c *grvCache) update(t time.Time, v int64) {
+//
+// It deliberately does NOT advance the freshness clock (lastTime) and does
+// NOT touch lock state: a commit proves nothing about either. C++ DOES
+// extend lastGrvTime here (NativeAPI.actor.cpp:6657 → :357-359), but its
+// cache is opt-in and entirely fail-open by contract (no lock check on
+// hits); with Go's ALWAYS-ON, enforcement-carrying cache, commit-extended
+// freshness would let a handle that locks the database and keeps committing
+// serve post-lock versions with stale locked=false metadata indefinitely
+// (codex P1, RFC-096). Invariant: cache freshness == recency of the last
+// ACCEPTED real GRV reply (updateFromGRV is the only lastTime writer).
+func (c *grvCache) update(v int64) {
 	for {
 		cur := c.version.Load()
 		if v < cur {
-			return // don't go backwards
+			return
 		}
 		if c.version.CompareAndSwap(cur, v) {
-			break
+			return
 		}
 	}
-	c.updateTime(t)
 }
 
 // updateFromGRV updates the cache from a real GRV reply: version plus the

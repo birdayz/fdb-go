@@ -1139,8 +1139,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
+	// Advances the VERSION only — not freshness, not lock state (see
+	// grvCache.update; a commit must not extend how long stale lock
+	// metadata can be served).
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(time.Now(), tx.committedVersion)
+		tx.db.grvCache.update(tx.committedVersion)
 	}
 
 	tx.hasCommitted = true
