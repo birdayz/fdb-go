@@ -1,8 +1,11 @@
-// gen_v5.cpp — v5 code generator: composable primitives + two-pass direct-write serialization.
-// Compiles against real FDB headers via extract.h. Outputs Go files to a directory.
+// gen_v5.cpp — v5 code generator: two-pass serialization mirroring C++
+// flat_buffers (Pass 1: PrecomputeSize, Pass 2: WriteToBuffer).
+// Compiles against real FDB headers via extract.h. Outputs Go files +
+// the ground-truth test vectors (testdata.json) to a directory.
 //
-// Key differences from v4 (main.cpp's GoEmitter):
-// - measureEndOff + writeDirect + two-pass MarshalFDB (measure then write)
+// Key differences from v4 (the original GoEmitter):
+// - precomputeSize + writeToBuffer two-pass MarshalFDB, 1:1 with C++
+//   detail::save / SaveVisitorLambda (flat_buffers.h)
 // - No MarshalInto, no WriteXxx helpers, no MarshalXxx helpers
 // - ParseXxxStringVector uses sub-slicing instead of make+copy
 
@@ -80,12 +83,22 @@ struct GoEmitterV5 {
         }
         fprintf(f, "}\n");
 
-        // FileID.
-        if (fileId > 0) fprintf(f, "const %sFileID uint32 = %u\n", typeName, fileId);
+        // FileID (+ MaxAlign when adjacent). Interface-style types (FileID but
+        // no closure) get one grouped const block; top-level types get separate
+        // decls with blank lines between them (the committed gofmt'ed layout —
+        // regen must be churn-free against the committed files).
+        int maxAlign = computeMaxAlign(fields);
+        bool groupedConst = (fileId > 0 && closure.empty());
+        if (groupedConst) {
+            fprintf(f, "\nconst (\n\t%sFileID uint32 = %u\n\t%sMaxAlign = %d\n)\n",
+                    typeName, fileId, typeName, maxAlign);
+        } else if (fileId > 0) {
+            fprintf(f, "\nconst %sFileID uint32 = %u\n", typeName, fileId);
+        }
 
         // VTable closure.
         if (!closure.empty()) {
-            fprintf(f, "var %sVTableClosure = []wire.VTable{\n", typeName);
+            fprintf(f, "\nvar %sVTableClosure = []wire.VTable{\n", typeName);
             for (auto& cvt : closure) {
                 fprintf(f, "\t{");
                 for (size_t i = 0; i < cvt.size(); i++) {
@@ -98,15 +111,19 @@ struct GoEmitterV5 {
         }
 
         // MessageTemplate.
-        int maxAlign = computeMaxAlign(fields);
         if (isTopLevel) {
-            fprintf(f, "var %sTemplate = wire.NewMessageTemplate(\n", typeName);
+            fprintf(f, "\nvar %sTemplate = wire.NewMessageTemplate(\n", typeName);
             fprintf(f, "\t%sFileID, %sVTable, %d, %sVTableClosure,\n)\n",
                     typeName, typeName, maxAlign, typeName);
         }
 
-        // MaxAlign constant.
-        fprintf(f, "const %sMaxAlign = %d\n", typeName, maxAlign);
+        // MaxAlign constant (unless folded into the grouped const above).
+        if (!groupedConst) {
+            if (fileId > 0)
+                fprintf(f, "\nconst %sMaxAlign = %d\n", typeName, maxAlign);
+            else
+                fprintf(f, "const %sMaxAlign = %d\n", typeName, maxAlign);
+        }
 
         fprintf(f, "\n");
 
@@ -158,6 +175,14 @@ struct GoEmitterV5 {
         // (e.g. KeyRangeRef's single-key-range "(end, empty)" trick).
         // Caught by FuzzSplitRangeRequest_RoundTrip 2026-04-25.
         bool hasCustomSerialize = (strcmp(typeName, "KeyRangeRef") == 0);
+
+        if (hasCustomSerialize) {
+            // hasCustomSerialize only matches KeyRangeRef today; keep the file
+            // name literal until a second custom type exists.
+            fprintf(f, "// UnmarshalFromReader / UnmarshalFDB are defined in keyrangeref_custom.go to\n");
+            fprintf(f, "// invert the C++ single-key-range serialize optimization. The generator\n");
+            fprintf(f, "// (cmd/fdb-schema-extract/main.cpp) skips them when hasCustomSerialize is true.\n\n");
+        }
 
         // UnmarshalFromReader.
         if (!hasCustomSerialize) {
@@ -275,261 +300,6 @@ private:
                 break;
             }
         }
-    }
-
-    // ---- blobSize — total bytes for a self-contained blob ----
-
-    void emitBlobSize(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) blobSize() int {\n", typeName);
-        fprintf(f, "\tvt := %sVTable\n", typeName);
-        fprintf(f, "\tvtBytes := len(vt) * 2\n");
-        fprintf(f, "\tobjPos := (vtBytes + 3) &^ 3\n");
-        fprintf(f, "\toolPos := (objPos + int(vt[1]) + 3) &^ 3\n");
-        fprintf(f, "\toolSize := 0\n");
-
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue;
-            auto gn = fieldGoName(fd);
-            switch (fd.kind) {
-            case FieldKind::DynamicSize:
-                fprintf(f, "\tif m.%s != nil { oolSize += (4 + len(m.%s) + 3) &^ 3 }\n", gn.c_str(), gn.c_str());
-                break;
-            case FieldKind::VectorLike:
-                fprintf(f, "\tif m.%s != nil { oolSize += (len(m.%s) + 3) &^ 3 }\n", gn.c_str(), gn.c_str());
-                break;
-            case FieldKind::VectorOfStruct:
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
-                fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tvecSize = (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\toolSize += (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t}\n");
-                break;
-            case FieldKind::Variant:
-                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    auto& alt = fd.variantAlts[a];
-                    fprintf(f, "\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar)
-                        fprintf(f, "\t\toolSize += (%d + 3) &^ 3\n", alt.size);
-                    else
-                        fprintf(f, "\t\toolSize += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
-                }
-                fprintf(f, "\t}\n");
-                break;
-            default:
-                break;
-            }
-        }
-
-        fprintf(f, "\treturn (oolPos + oolSize + 3) &^ 3\n");
-        fprintf(f, "}\n\n");
-    }
-
-    // ---- writeBlob — write self-contained blob at buf[pos:] ----
-
-    void emitWriteBlob(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) writeBlob(buf []byte, pos int) int {\n", typeName);
-        fprintf(f, "\tvt := %sVTable\n", typeName);
-        // Check if any fields reference obj.
-        bool blobNeedsObj = false;
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue;
-            if (fd.kind == FieldKind::Scalar || fd.kind == FieldKind::DynamicSize ||
-                fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::VectorOfStruct ||
-                fd.kind == FieldKind::Variant)
-                blobNeedsObj = true;
-        }
-        if (blobNeedsObj)
-            fprintf(f, "\tobj := wire.WriteBlobVTable(buf, pos, vt)\n");
-        else
-            fprintf(f, "\t_ = wire.WriteBlobVTable(buf, pos, vt)\n");
-        fprintf(f, "\tvtBytes := len(vt) * 2\n");
-        fprintf(f, "\tobjPos := pos + (vtBytes+3)&^3\n");
-        fprintf(f, "\toolPos := (objPos + int(vt[1]) + 3) &^ 3\n");
-        fprintf(f, "\tcurOOL := oolPos\n");
-
-        // Write inline scalars.
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue;
-            if (fd.kind != FieldKind::Scalar) continue;
-            auto gn = fieldGoName(fd);
-            auto slot = std::string(typeName) + "Slot" + gn;
-            const char* goType = fd.scalar.goType;
-
-            if (strcmp(goType, "bool") == 0) {
-                fprintf(f, "\tif m.%s { obj[int(vt[%s+2])] = 1 }\n", gn.c_str(), slot.c_str());
-            } else if (strcmp(goType, "uint8") == 0) {
-                fprintf(f, "\tobj[int(vt[%s+2])] = m.%s\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int8") == 0) {
-                fprintf(f, "\tobj[int(vt[%s+2])] = byte(m.%s)\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "[16]byte") == 0) {
-                fprintf(f, "\tcopy(obj[int(vt[%s+2]):], m.%s[:])\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint16") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint16(obj[int(vt[%s+2]):], m.%s)\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int16") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint16(obj[int(vt[%s+2]):], uint16(m.%s))\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint32") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint32(obj[int(vt[%s+2]):], m.%s)\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int32") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint32(obj[int(vt[%s+2]):], uint32(m.%s))\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], m.%s)\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], uint64(m.%s))\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "float64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], math.Float64bits(m.%s))\n", slot.c_str(), gn.c_str());
-            }
-        }
-
-        // Write OOL fields.
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue;
-            auto gn = fieldGoName(fd);
-            auto slot = std::string(typeName) + "Slot" + gn;
-
-            if (fd.kind == FieldKind::DynamicSize) {
-                fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
-                fprintf(f, "\t\tbinary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.%s)))\n", gn.c_str());
-                fprintf(f, "\t\tcopy(buf[curOOL+4:], m.%s)\n", gn.c_str());
-                fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+2]), objPos, curOOL)\n", slot.c_str());
-                fprintf(f, "\t\tcurOOL += (4 + len(m.%s) + 3) &^ 3\n", gn.c_str());
-                fprintf(f, "\t}\n");
-            } else if (fd.kind == FieldKind::VectorLike) {
-                fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
-                fprintf(f, "\t\tcopy(buf[curOOL:], m.%s)\n", gn.c_str());
-                fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+2]), objPos, curOOL)\n", slot.c_str());
-                fprintf(f, "\t\tcurOOL += (len(m.%s) + 3) &^ 3\n", gn.c_str());
-                fprintf(f, "\t}\n");
-            } else if (fd.kind == FieldKind::VectorOfStruct) {
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tvecStart := curOOL\n");
-                fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
-                fprintf(f, "\t\tbinary.LittleEndian.PutUint32(buf[curOOL:], uint32(n))\n");
-                fprintf(f, "\t\tblobPos := curOOL + 4 + n*4\n");
-                fprintf(f, "\t\tfor i, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tblobPos = (blobPos + 3) &^ 3\n");
-                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fd.elementGoType);
-                fprintf(f, "\t\t\tbinary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))\n");
-                fprintf(f, "\t\t\tblobPos += elem.writeBlob(buf, blobPos)\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+2]), objPos, vecStart)\n", slot.c_str());
-                fprintf(f, "\t\tcurOOL = (blobPos + 3) &^ 3\n");
-                fprintf(f, "\t}\n");
-            } else if (fd.kind == FieldKind::Variant) {
-                fprintf(f, "\tobj[int(vt[%s+2])] = m.%sTag\n", slot.c_str(), gn.c_str());
-                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    auto& alt = fd.variantAlts[a];
-                    fprintf(f, "\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar) {
-                        fprintf(f, "\t\tvar tmp [%d]byte\n", alt.size);
-                        emitScalarPut(alt.goType, "tmp[:]", gn, a);
-                        fprintf(f, "\t\tcopy(buf[curOOL:], tmp[:])\n");
-                    } else {
-                        fprintf(f, "\t\tcopy(buf[curOOL:], m.%sAlt%zu)\n", gn.c_str(), a);
-                    }
-                    fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+1+2]), objPos, curOOL)\n", slot.c_str());
-                    if (alt.kind == FieldKind::Scalar)
-                        fprintf(f, "\t\tcurOOL += (%d + 3) &^ 3\n", alt.size);
-                    else
-                        fprintf(f, "\t\tcurOOL += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
-                }
-                fprintf(f, "\t}\n");
-            }
-        }
-
-        fprintf(f, "\treturn curOOL - pos\n");
-        fprintf(f, "}\n\n");
-    }
-
-    // Helper: emit binary.LittleEndian.PutXxx for scalar variant alternative into a temp buffer.
-    void emitScalarPut(const char* goType, const char* dst, const std::string& fieldName, size_t altIdx) {
-        if (strcmp(goType, "uint32") == 0)
-            fprintf(f, "\t\tbinary.LittleEndian.PutUint32(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
-        else if (strcmp(goType, "int32") == 0)
-            fprintf(f, "\t\tbinary.LittleEndian.PutUint32(%s, uint32(m.%sAlt%zu))\n", dst, fieldName.c_str(), altIdx);
-        else if (strcmp(goType, "uint64") == 0)
-            fprintf(f, "\t\tbinary.LittleEndian.PutUint64(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
-        else if (strcmp(goType, "int64") == 0)
-            fprintf(f, "\t\tbinary.LittleEndian.PutUint64(%s, uint64(m.%sAlt%zu))\n", dst, fieldName.c_str(), altIdx);
-        else if (strcmp(goType, "uint16") == 0)
-            fprintf(f, "\t\tbinary.LittleEndian.PutUint16(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
-        else if (strcmp(goType, "uint8") == 0 || strcmp(goType, "int8") == 0)
-            fprintf(f, "\t\t%s[0] = byte(m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
-    }
-
-    // ---- measureEndOff ----
-
-    void emitMeasureEndOff(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) measureEndOff(endOff int) int {\n", typeName);
-
-        bool hasBody = false;
-        // Step 1: OOL fields (DynamicSize, VectorLike, VectorOfStruct, Variant, Optional).
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue;
-            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
-                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant &&
-                fd.kind != FieldKind::Optional) continue;
-            auto gn = fieldGoName(fd);
-            if (fd.kind == FieldKind::DynamicSize) {
-                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-            } else if (fd.kind == FieldKind::Optional) {
-                if (fd.nestedGoType && fd.nestedGoType[0]) {
-                    // Optional<struct>: recurse.
-                    fprintf(f, "\tif m.Has%s { endOff = m.%s.measureEndOff(endOff) }\n", gn.c_str(), gn.c_str());
-                } else {
-                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                    fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-                    fprintf(f, "\t}\n");
-                }
-            } else if (fd.kind == FieldKind::VectorLike) {
-                // C++ visitDynamicSize: all dynamic types use [len(4)][data][pad].
-                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-            } else if (fd.kind == FieldKind::VectorOfStruct) {
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
-                fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tvecSize = (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\tendOff += (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t}\n");
-            } else { // Variant
-                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    auto& alt = fd.variantAlts[a];
-                    fprintf(f, "\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar)
-                        fprintf(f, "\t\tendOff += (%d + 3) &^ 3\n", alt.size);
-                    else
-                        fprintf(f, "\t\tendOff += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
-                }
-                fprintf(f, "\t}\n");
-            }
-            hasBody = true;
-        }
-
-        // Step 2: Nested structs in FORWARD serialization order.
-        // C++ ObjectWriter processes fields in serialize() order, writing from end of buffer.
-        // Our DirectWriter also writes from end, so same forward order gives same layout.
-        for (auto& fd : fields) {
-            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0]) {
-                auto gn = fieldGoName(fd);
-                fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
-                hasBody = true;
-            }
-        }
-
-        // Step 3: Own object.
-        fprintf(f, "\tendOff = wire.MeasureObject(endOff, %sVTable, %sMaxAlign)\n", typeName, typeName);
-        hasBody = true;
-
-        fprintf(f, "\treturn endOff\n");
-        if (!hasBody) (void)hasBody; // suppress unused warning in generator
-        fprintf(f, "}\n\n");
     }
 
     // ---- precomputeSize (Pass 1 of two-pass, C++ SaveVisitorLambda with PrecomputeSize) ----
@@ -756,10 +526,14 @@ private:
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::VectorOfStruct:
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n",
+                // Unconditional: C++ SaveVisitorLambda writes the member's
+                // RelativeOffset for EVERY dynamic member (flat_buffers.h:964)
+                // — an empty vector points at the shared 4-byte empty blob
+                // (save(VectorLike), flat_buffers.h:1212/1230), never slot 0.
+                // The old `if len > 0` guard produced byte-divergent commits
+                // (caught by TestGroundTruthMarshal on the empty-CR vectors).
+                fprintf(f, "\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n",
                         (safeParam(gn) + "Off").c_str(), slot.c_str());
-                fprintf(f, "\t}\n");
                 break;
             default: break; // Scalar: already written inline
             }
@@ -771,217 +545,11 @@ private:
         fprintf(f, "}\n\n");
     }
 
-    // ---- writeDirect ----
-
-    void emitWriteDirect(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) writeDirect(dw *wire.DirectWriter) int {\n", typeName);
-
-        // Collect fields by kind for ordered emission.
-        std::vector<const FieldDesc*> oolFields;     // DynamicSize + VectorLike + VectorOfStruct
-        std::vector<const FieldDesc*> nestedFields;   // NestedStruct (registered only)
-        std::vector<const FieldDesc*> scalarFields;   // Scalar
-        for (auto& fd : fields) {
-            if (fd.size == 0) continue; // Arena
-            switch (fd.kind) {
-            case FieldKind::DynamicSize:
-            case FieldKind::VectorLike:
-            case FieldKind::VectorOfStruct:
-                oolFields.push_back(&fd);
-                break;
-            case FieldKind::NestedStruct:
-                if (fd.nestedGoType && fd.nestedGoType[0])
-                    nestedFields.push_back(&fd);
-                break;
-            case FieldKind::Scalar:
-                scalarFields.push_back(&fd);
-                break;
-            case FieldKind::Variant:
-                oolFields.push_back(&fd);
-                break;
-            case FieldKind::Optional:
-                oolFields.push_back(&fd);
-                break;
-            default:
-                break;
-            }
-        }
-
-        // Step 1: OOL writes.
-        for (auto* fdp : oolFields) {
-            auto gn = fieldGoName(*fdp);
-            auto varName = safeParam(gn) + "OOL";
-            if (fdp->kind == FieldKind::DynamicSize) {
-                // C++ always visits dynamic_size fields, even empty ones.
-                // WriteBytesOOL writes [len(4)][data][pad] — for nil, just [0x00000000].
-                fprintf(f, "\t%s := dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
-            } else if (fdp->kind == FieldKind::VectorOfStruct) {
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
-                fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tvecSize = (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\tvecSize = (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t\tvar vecBuf []byte\n");
-                fprintf(f, "\t\t%s, vecBuf = dw.ReserveRawOOL(vecSize)\n", varName.c_str());
-                fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
-                fprintf(f, "\t\tbinary.LittleEndian.PutUint32(vecBuf, uint32(n))\n");
-                fprintf(f, "\t\tblobOff := 4 + n*4\n");
-                fprintf(f, "\t\tfor i, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tblobOff = (blobOff + 3) &^ 3\n");
-                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fdp->elementGoType);
-                fprintf(f, "\t\t\tbinary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))\n");
-                fprintf(f, "\t\t\tblobOff += elem.writeBlob(vecBuf, blobOff)\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t}\n");
-            } else if (fdp->kind == FieldKind::VectorLike) {
-                // C++ visitDynamicSize: all dynamic types write [len(4)][data][pad].
-                fprintf(f, "\t%s := dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
-            } else if (fdp->kind == FieldKind::Optional) {
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                if (fdp->nestedGoType && fdp->nestedGoType[0]) {
-                    fprintf(f, "\t\t%s = m.%s.writeDirect(dw)\n", varName.c_str(), gn.c_str());
-                } else {
-                    fprintf(f, "\t\t%s = dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
-                }
-                fprintf(f, "\t}\n");
-            } else { // Variant
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
-                for (size_t a = 0; a < fdp->variantAlts.size(); a++) {
-                    auto& alt = fdp->variantAlts[a];
-                    fprintf(f, "\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar) {
-                        fprintf(f, "\t\tvar tmp [%d]byte\n", alt.size);
-                        emitScalarPut(alt.goType, "tmp[:]", gn, a);
-                        fprintf(f, "\t\t%s = dw.WriteRawOOL(tmp[:])\n", varName.c_str());
-                    } else {
-                        fprintf(f, "\t\tif m.%sAlt%zu != nil {\n", gn.c_str(), a);
-                        fprintf(f, "\t\t\t%s = dw.WriteRawOOL(m.%sAlt%zu)\n", varName.c_str(), gn.c_str(), a);
-                        fprintf(f, "\t\t}\n");
-                    }
-                }
-                fprintf(f, "\t}\n");
-            }
-        }
-
-        // Step 2: Nested structs in FORWARD serialization order.
-        for (auto* fdp : nestedFields) {
-            auto gn = fieldGoName(*fdp);
-            auto varName = safeParam(gn) + "Pos";
-            fprintf(f, "\t%s := m.%s.writeDirect(dw)\n", varName.c_str(), gn.c_str());
-        }
-
-        // Step 3: Write object.
-        bool needsObj = !scalarFields.empty() || !oolFields.empty() || !nestedFields.empty();
-        if (needsObj)
-            fprintf(f, "\tobjPos, obj := dw.WriteObject(%sVTable, %sMaxAlign)\n", typeName, typeName);
-        else
-            fprintf(f, "\tobjPos, _ := dw.WriteObject(%sVTable, %sMaxAlign)\n", typeName, typeName);
-
-        // Declare vt local if any field references vtable offsets.
-        bool needsVtLocal = needsObj;
-        if (needsVtLocal) {
-            fprintf(f, "\tvt := %sVTable\n", typeName);
-        }
-
-        // Step 3a: Inline scalars.
-        for (auto* fdp : scalarFields) {
-            auto gn = fieldGoName(*fdp);
-            auto slot = std::string(typeName) + "Slot" + gn;
-            const char* goType = fdp->scalar.goType;
-
-            if (strcmp(goType, "bool") == 0) {
-                fprintf(f, "\tif m.%s {\n", gn.c_str());
-                fprintf(f, "\t\tobj[int(vt[%s+2])] = 1\n", slot.c_str());
-                fprintf(f, "\t}\n");
-            } else if (strcmp(goType, "uint8") == 0) {
-                fprintf(f, "\tobj[int(vt[%s+2])] = m.%s\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int8") == 0) {
-                fprintf(f, "\tobj[int(vt[%s+2])] = byte(m.%s)\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "[16]byte") == 0) {
-                fprintf(f, "\tcopy(obj[int(vt[%s+2]):], m.%s[:])\n", slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint16") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint16(obj[int(vt[%s+2]):], m.%s)\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int16") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint16(obj[int(vt[%s+2]):], uint16(m.%s))\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint32") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint32(obj[int(vt[%s+2]):], m.%s)\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int32") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint32(obj[int(vt[%s+2]):], uint32(m.%s))\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "uint64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], m.%s)\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "int64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], uint64(m.%s))\n",
-                        slot.c_str(), gn.c_str());
-            } else if (strcmp(goType, "float64") == 0) {
-                fprintf(f, "\tbinary.LittleEndian.PutUint64(obj[int(vt[%s+2]):], math.Float64bits(m.%s))\n",
-                        slot.c_str(), gn.c_str());
-            }
-        }
-
-        // Step 3b: Variant tags (inline) + OOL RelOffs.
-        for (auto* fdp : oolFields) {
-            auto gn = fieldGoName(*fdp);
-            auto slot = std::string(typeName) + "Slot" + gn;
-            auto varName = safeParam(gn) + "OOL";
-            if (fdp->kind == FieldKind::Variant) {
-                // Write tag inline, patch value RelOff at slot+1.
-                fprintf(f, "\tobj[int(vt[%s+2])] = m.%sTag\n", slot.c_str(), gn.c_str());
-                fprintf(f, "\tif m.%sTag > 0 {\n", gn.c_str());
-                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+1+2]), objPos, %s)\n",
-                        slot.c_str(), varName.c_str());
-                fprintf(f, "\t}\n");
-            } else if (fdp->kind == FieldKind::VectorOfStruct) {
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
-                        slot.c_str(), varName.c_str());
-                fprintf(f, "\t}\n");
-            } else if (fdp->kind == FieldKind::Optional) {
-                // Presence tag at slot N, value RelOff at slot N+1.
-                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                fprintf(f, "\t\tobj[int(vt[%s+2])] = 1\n", slot.c_str());
-                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+1+2]), objPos, %s)\n",
-                        slot.c_str(), varName.c_str());
-                fprintf(f, "\t}\n");
-            } else {
-                // DynamicSize/VectorLike: C++ always writes, always patches reloff.
-                fprintf(f, "\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
-                        slot.c_str(), varName.c_str());
-            }
-        }
-
-        // Step 3c: Patch nested RelOffs.
-        for (auto* fdp : nestedFields) {
-            auto gn = fieldGoName(*fdp);
-            auto slot = std::string(typeName) + "Slot" + gn;
-            auto varName = safeParam(gn) + "Pos";
-            fprintf(f, "\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
-                    slot.c_str(), varName.c_str());
-        }
-
-        fprintf(f, "\treturn objPos\n");
-        fprintf(f, "}\n\n");
-    }
-
-    // ---- MarshalFDB — two-pass direct-write (top-level only) ----
-
     // ---- MarshalFDB — two-pass: PrecomputeSize + WriteToBuffer ----
     // Matches C++ detail::save (flat_buffers.h:1311) + save_with_vtables (flat_buffers.h:804).
     //
     // Pass 1 (PrecomputeSize): walk all fields, compute buffer size + record positions.
     // Pass 2 (WriteToBuffer): walk fields AGAIN in same order, write bytes at recorded positions.
-
-    // ---- MarshalFDB — C++ detail::save (flat_buffers.h:1311) + save_with_vtables (flat_buffers.h:804) ----
-    // Clean: calls precomputeSize (Pass 1) then writeToBuffer (Pass 2).
-
     void emitMarshalFDB(const char* typeName, const std::vector<FieldDesc>& fields, int maxAlign) {
         fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
         fprintf(f, "\tt := %sTemplate\n", typeName);
@@ -1103,11 +671,20 @@ private:
         fprintf(f, "// Parse%sStringVector decodes a VectorRef<%s, VecSerStrategy::String>.\n", typeName, typeName);
         fprintf(f, "// Each element's DynamicSize fields are inline: [len(4)][data] per field.\n");
         fprintf(f, "func Parse%sStringVector(data []byte) []%s {\n", typeName, typeName);
+        int nDynFields = 0;
+        for (auto& fd : fields)
+            if (fd.size > 0 && fd.kind == FieldKind::DynamicSize) nDynFields++;
         fprintf(f, "\tif len(data) < 4 { return nil }\n");
         fprintf(f, "\tcount := binary.LittleEndian.Uint32(data[0:4])\n");
         fprintf(f, "\tif count == 0 { return nil }\n");
+        fprintf(f, "\t// Cap allocation to prevent OOM from crafted count values.\n");
+        fprintf(f, "\t// Minimum %d bytes per element (4-byte length prefix per field).\n", 4 * nDynFields);
+        fprintf(f, "\tmaxCount := uint32((len(data) - 4) / %d)\n", 4 * nDynFields);
+        fprintf(f, "\tif maxCount == 0 { maxCount = 1 }\n");
+        fprintf(f, "\tallocCount := count\n");
+        fprintf(f, "\tif allocCount > maxCount { allocCount = maxCount }\n");
         fprintf(f, "\tpos := 4\n");
-        fprintf(f, "\tresult := make([]%s, 0, count)\n", typeName);
+        fprintf(f, "\tresult := make([]%s, 0, allocCount)\n", typeName);
         fprintf(f, "\tfor i := uint32(0); i < count; i++ {\n");
         fprintf(f, "\t\tvar elem %s\n", typeName);
         for (auto& fd : fields) {
@@ -1120,6 +697,20 @@ private:
             fprintf(f, "\t\t\tif n < 0 || pos+n > len(data) { break }\n");
             fprintf(f, "\t\t\telem.%s = data[pos:pos+n:pos+n]\n", gn.c_str());
             fprintf(f, "\t\t\tpos += n\n");
+            fprintf(f, "\t\t}\n");
+        }
+        if (strcmp(typeName, "KeyRangeRef") == 0) {
+            fprintf(f, "\t\t// Apply the same single-key-optimization inversion as\n");
+            fprintf(f, "\t\t// UnmarshalFromReader (see keyrangeref_custom.go). Without this, a\n");
+            fprintf(f, "\t\t// vector element written by C++'s optimization (begin+\\x00 == end →\n");
+            fprintf(f, "\t\t// emit (end, empty)) would parse with Begin/End swapped.\n");
+            fprintf(f, "\t\t// Note: after inversion, elem.Begin and elem.End share the same\n");
+            fprintf(f, "\t\t// backing array (the original wire buffer). Same zero-copy\n");
+            fprintf(f, "\t\t// convention as the rest of this function.\n");
+            fprintf(f, "\t\tif len(elem.End) == 0 && len(elem.Begin) > 0 {\n");
+            fprintf(f, "\t\t\tfirst := elem.Begin\n");
+            fprintf(f, "\t\t\telem.Begin = first[:len(first)-1]\n");
+            fprintf(f, "\t\t\telem.End = first\n");
             fprintf(f, "\t\t}\n");
         }
         fprintf(f, "\t\tresult = append(result, elem)\n");
@@ -1219,19 +810,42 @@ wait:
 // Serialize a message using C++ ObjectWriter and emit JSON test vector.
 // This is the AUTHORITATIVE serialization — if our Go output differs,
 // our Go code is wrong.
-// Emit the reply token from a ReplyPromise (16 bytes as hex).
+
+// Pre-bind a promise to a fixed endpoint token so serialization never assigns
+// deterministicRandom()->randomUniqueID(): ReplyPromise(const Endpoint&)
+// (fdbrpc.h:158) pre-binds via FlowReceiver(remoteEndpoint, false), and
+// getEndpoint() then returns the endpoint untouched instead of taking the lazy
+// random path (FlowTransport.actor.cpp:1901-1909). The low bit of first() must
+// be CLEAR for a reply token: non-stream tokens clear TOKEN_STREAM_FLAG
+// (FlowTransport.actor.cpp:1905-1908). This makes testdata.json byte-stable
+// across regenerations.
+template <class T>
+void pinReply(ReplyPromise<T>& rp, uint64_t first, uint64_t second) {
+    if (first & 1) {
+        fprintf(stderr, "pinReply: low bit of first() must be clear (TOKEN_STREAM_FLAG)\n");
+        abort();
+    }
+    rp = ReplyPromise<T>(Endpoint({}, UID(first, second)));
+}
+
+// Emit the reply token from a ReplyPromise, as 32 hex chars in BUFFER ORDER:
+// UID serializes via scalar_traits<UID> (flow IRandom.h) — native(-little)-
+// endian first() at offset 0, second() at offset 8. The Go test copies these
+// bytes verbatim into ReplyPromise.Token.
 template <class T>
 std::string getReplyToken(const ReplyPromise<T>& rp) {
     auto& ep = rp.getEndpoint().token;
+    uint64_t parts[2] = { ep.first(), ep.second() };
     char buf[33];
-    snprintf(buf, sizeof(buf), "%016llx%016llx",
-        (unsigned long long)ep.first(), (unsigned long long)ep.second());
+    for (int i = 0; i < 16; i++)
+        snprintf(buf + 2 * i, 3, "%02x", (unsigned)((parts[i / 8] >> (8 * (i % 8))) & 0xff));
     return buf;
 }
 
 template <class T>
-void emitTestVector(FILE* out, const char* name, T& msg) {
+void emitTestVector(FILE* out, const char* name, T& msg, const std::string& replyToken) {
     static_assert(requires { T::file_identifier; }, "Type must have file_identifier");
+    fprintf(stderr, "VEC request %s\n", name);
     ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
     wr.serialize(T::file_identifier, msg);
     auto bytes = wr.toStringRef();
@@ -1241,6 +855,38 @@ void emitTestVector(FILE* out, const char* name, T& msg) {
 
     fprintf(out, "  {\n");
     fprintf(out, "    \"name\": \"%s\",\n", name);
+    fprintf(out, "    \"kind\": \"request\",\n");
+    fprintf(out, "    \"file_id\": %u,\n", T::file_identifier);
+    fprintf(out, "    \"reply_token\": \"%s\",\n", replyToken.c_str());
+    fprintf(out, "    \"size\": %d,\n", len);
+    fprintf(out, "    \"hex\": \"");
+    for (int i = 0; i < len; i++)
+        fprintf(out, "%02x", data[i]);
+    fprintf(out, "\"\n");
+    fprintf(out, "  }");
+}
+
+// Serialize a reply exactly as the server's networkSender puts it on the wire:
+// ErrorOr<EnsureTable<T>> (networksender.actor.h:38) via
+// ObjectWriter(AssumeVersion(...)) — reply payloads carry NO 8-byte version
+// prefix (FlowTransport.actor.cpp:1932). The Go test feeds these bytes to the
+// client's production parse functions (wire.ReadErrorOrInto + the typed
+// parsers) and asserts the deliberately-set field values below.
+template <class T>
+void emitReplyVector(FILE* out, const char* name, const T& reply) {
+    static_assert(requires { T::file_identifier; }, "Type must have file_identifier");
+    fprintf(stderr, "VEC reply %s\n", name);
+    ObjectWriter wr(AssumeVersion(currentProtocolVersion()));
+    ErrorOr<EnsureTable<T>> v{ EnsureTable<T>(reply) };
+    wr.serialize(v);
+    auto bytes = wr.toStringRef();
+
+    const uint8_t* data = bytes.begin();
+    int len = bytes.size();
+
+    fprintf(out, "  {\n");
+    fprintf(out, "    \"name\": \"%s\",\n", name);
+    fprintf(out, "    \"kind\": \"reply\",\n");
     fprintf(out, "    \"file_id\": %u,\n", T::file_identifier);
     fprintf(out, "    \"size\": %d,\n", len);
     fprintf(out, "    \"hex\": \"");
@@ -1278,7 +924,8 @@ void generateTestVectors(const char* outDir) {
         req.reverse = false;
         req.tenant.tenantId = -1;
         req.minTenantVersion = -1;
-        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_basic", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 2, 0x2000000000000000ULL + 1);
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_basic", req, getReplyToken(req.reply));
     }
     {
         GetKeyServerLocationsRequest req;
@@ -1288,7 +935,8 @@ void generateTestVectors(const char* outDir) {
         req.reverse = true;
         req.tenant.tenantId = -1;
         req.minTenantVersion = -1;
-        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_with_end", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 4, 0x2000000000000000ULL + 2);
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_with_end", req, getReplyToken(req.reply));
     }
     {
         GetKeyServerLocationsRequest req;
@@ -1296,7 +944,8 @@ void generateTestVectors(const char* outDir) {
         req.limit = 0;
         req.tenant.tenantId = 0;
         req.minTenantVersion = 0;
-        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_empty", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 6, 0x2000000000000000ULL + 3);
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_empty", req, getReplyToken(req.reply));
     }
 
     // --- GetValueRequest ---
@@ -1305,7 +954,8 @@ void generateTestVectors(const char* outDir) {
         req.key = "my_key"_sr;
         req.version = 12345678;
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "GetValueRequest_basic", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 8, 0x2000000000000000ULL + 4);
+        comma(); emitTestVector(out, "GetValueRequest_basic", req, getReplyToken(req.reply));
     }
 
     // --- GetKeyRequest ---
@@ -1314,7 +964,8 @@ void generateTestVectors(const char* outDir) {
         req.sel = KeySelectorRef("selector_key"_sr, true, 1);
         req.version = 99999;
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "GetKeyRequest_basic", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 10, 0x2000000000000000ULL + 5);
+        comma(); emitTestVector(out, "GetKeyRequest_basic", req, getReplyToken(req.reply));
     }
 
     // --- GetKeyValuesRequest ---
@@ -1326,7 +977,8 @@ void generateTestVectors(const char* outDir) {
         req.limit = 1000;
         req.limitBytes = 0x7fffffff;
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "GetKeyValuesRequest_basic", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 12, 0x2000000000000000ULL + 6);
+        comma(); emitTestVector(out, "GetKeyValuesRequest_basic", req, getReplyToken(req.reply));
     }
 
     // --- CommitTransactionRequest ---
@@ -1340,7 +992,8 @@ void generateTestVectors(const char* outDir) {
         req.transaction.read_conflict_ranges.push_back(
             req.arena, KeyRangeRef("key1"_sr, "key1\x00"_sr));
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "CommitTransactionRequest_single_set", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 14, 0x2000000000000000ULL + 7);
+        comma(); emitTestVector(out, "CommitTransactionRequest_single_set", req, getReplyToken(req.reply));
     }
     {
         CommitTransactionRequest req;
@@ -1357,13 +1010,15 @@ void generateTestVectors(const char* outDir) {
                     KeyRef(req.arena, key + '\0')));
         }
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "CommitTransactionRequest_three_sets", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 16, 0x2000000000000000ULL + 8);
+        comma(); emitTestVector(out, "CommitTransactionRequest_three_sets", req, getReplyToken(req.reply));
     }
     {
         CommitTransactionRequest req;
         req.transaction.read_snapshot = 0;
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "CommitTransactionRequest_empty", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 18, 0x2000000000000000ULL + 9);
+        comma(); emitTestVector(out, "CommitTransactionRequest_empty", req, getReplyToken(req.reply));
     }
     {
         // 3 system key mutations + lock_aware — matches tenant CRUD pattern
@@ -1372,7 +1027,11 @@ void generateTestVectors(const char* outDir) {
         req.flags = CommitTransactionRequest::FLAG_IS_LOCK_AWARE;
         req.transaction.lock_aware = true;
         std::string lastId = std::string("\xff/tenant/lastId", 16);
-        std::string mapKey = std::string("\xff/tenant/map/\x1c\x00\x00\x00\x00\x00\x00\x00\x03", 24);
+        // 22, not 24: the literal is exactly 22 chars (\xff + "/tenant/map/" +
+        // \x1c + 7×\x00 + \x03); a longer count reads past the literal's NUL —
+        // an out-of-bounds read that baked a nondeterministic byte into the
+        // vector.
+        std::string mapKey = std::string("\xff/tenant/map/\x1c\x00\x00\x00\x00\x00\x00\x00\x03", 22);
         std::string nameIdx = std::string("\xff/tenant/nameIndex/test-tenant-crud", 35);
         uint8_t idVal[8] = {3,0,0,0,0,0,0,0};
         req.transaction.mutations.push_back(
@@ -1385,7 +1044,8 @@ void generateTestVectors(const char* outDir) {
             req.arena, MutationRef(MutationRef::SetValue,
                 KeyRef(req.arena, nameIdx), ValueRef(req.arena, StringRef(idVal, 8))));
         req.tenantInfo.tenantId = -1;
-        comma(); emitTestVector(out, "CommitTransactionRequest_3_system_keys", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 20, 0x2000000000000000ULL + 10);
+        comma(); emitTestVector(out, "CommitTransactionRequest_3_system_keys", req, getReplyToken(req.reply));
     }
 
     // --- GetReadVersionRequest ---
@@ -1396,7 +1056,138 @@ void generateTestVectors(const char* outDir) {
         req.priority = TransactionPriority::DEFAULT;
         // Debug blocks removed — see CRASH_BUG.md for findings
 
-        comma(); emitTestVector(out, "GetReadVersionRequest_causal_risky", req);
+        pinReply(req.reply, 0x1000000000000000ULL + 22, 0x2000000000000000ULL + 11);
+        comma(); emitTestVector(out, "GetReadVersionRequest_causal_risky", req, getReplyToken(req.reply));
+    }
+
+    // ============================================================
+    // Reply vectors — the direction the Go client PARSES in production.
+    // Serialized as ErrorOr<EnsureTable<T>> with AssumeVersion (the exact
+    // server->client payload bytes). Field values are deliberate non-defaults;
+    // the Go test (reply_ground_truth_test.go) asserts these exact literals.
+    // ============================================================
+
+    // --- GetValueReply ---
+    {
+        GetValueReply r;
+        r.penalty = 1.5;
+        r.value = "ground_truth_value"_sr;
+        r.cached = true;
+        comma(); emitReplyVector(out, "GetValueReply_present", r);
+    }
+    {
+        GetValueReply r; // value absent (key not found)
+        r.penalty = 1.0;
+        r.cached = false;
+        comma(); emitReplyVector(out, "GetValueReply_missing", r);
+    }
+
+    // --- GetKeyReply ---
+    {
+        GetKeyReply r;
+        r.penalty = 2.0;
+        r.sel = KeySelector(KeySelectorRef("resolved_key"_sr, true, 3));
+        r.cached = false;
+        comma(); emitReplyVector(out, "GetKeyReply_basic", r);
+    }
+
+    // --- GetKeyValuesReply ---
+    {
+        GetKeyValuesReply r;
+        r.penalty = 1.25;
+        // Shallow append, not push_back_deep/append_deep: data is a
+        // VecSerStrategy::String vector and the *_deep fills go through the
+        // preserializer add(), which no-ops at _cached_size==0
+        // (Arena.h:889-893) and leaves a stale cache that trips the save()
+        // assert (Arena.h:1507). Shallow append() invalidates the cache
+        // (Arena.h:1081), so serializedSize() recomputes it. The refs point at
+        // static string literals — safe for the serialization lifetime.
+        KeyValueRef rows[2] = { KeyValueRef("alpha"_sr, "value_a"_sr),
+                                KeyValueRef("beta"_sr, "value_b"_sr) };
+        r.data.append(r.arena, rows, 2);
+        r.version = 7654321;
+        r.more = true;
+        r.cached = false;
+        comma(); emitReplyVector(out, "GetKeyValuesReply_two_rows", r);
+    }
+    {
+        GetKeyValuesReply r; // empty range, exhausted
+        r.penalty = 1.0;
+        r.version = 1111111;
+        r.more = false;
+        comma(); emitReplyVector(out, "GetKeyValuesReply_empty", r);
+    }
+
+    // --- GetReadVersionReply ---
+    {
+        GetReadVersionReply r;
+        r.version = 0x123456789aLL;
+        r.locked = true;
+        r.metadataVersion = "metadata_version_x"_sr;
+        r.midShardSize = 250000;
+        comma(); emitReplyVector(out, "GetReadVersionReply_locked", r);
+    }
+
+    // --- CommitID (commit reply) ---
+    {
+        CommitID r(0x0abcdef012LL, 7, Optional<Value>("metadata_version_y"_sr));
+        comma(); emitReplyVector(out, "CommitID_committed", r);
+    }
+    {
+        // Conflict shape: invalidVersion + conflicting range indices.
+        Standalone<VectorRef<int>> ckr;
+        ckr.push_back(ckr.arena(), 0);
+        ckr.push_back(ckr.arena(), 2);
+        CommitID r(invalidVersion, 0, Optional<Value>(), Optional<Standalone<VectorRef<int>>>(ckr));
+        comma(); emitReplyVector(out, "CommitID_conflict", r);
+    }
+
+    // --- WatchValueReply ---
+    {
+        WatchValueReply r;
+        r.version = 424242;
+        r.cached = true;
+        comma(); emitReplyVector(out, "WatchValueReply_basic", r);
+    }
+
+    // --- SplitRangeReply ---
+    {
+        SplitRangeReply r;
+        r.splitPoints.push_back_deep(r.splitPoints.arena(), "split_a"_sr);
+        r.splitPoints.push_back_deep(r.splitPoints.arena(), "split_b"_sr);
+        comma(); emitReplyVector(out, "SplitRangeReply_two_points", r);
+    }
+
+    // --- StorageMetrics (the WaitMetrics / GetEstimatedRangeSizeBytes reply) ---
+    {
+        StorageMetrics m;
+        m.bytes = 123456789;
+        m.bytesWrittenPerKSecond = 1024;
+        m.iosPerKSecond = 77;
+        m.bytesReadPerKSecond = 2048;
+        m.opsReadPerKSecond = 55;
+        comma(); emitReplyVector(out, "StorageMetrics_basic", m);
+    }
+
+    // --- GetKeyServerLocationsReply ---
+    {
+        GetKeyServerLocationsReply r;
+        // SSI serializes only uniqueID, locality, getValue (+tssPairID,
+        // acceptingRequests); the other streams are derived from getValue's
+        // endpoint on deserialize. Pin getValue's STREAM endpoint (low bit of
+        // first() SET — TOKEN_STREAM_FLAG, FlowTransport.actor.cpp:1905) and
+        // uniqueID so this vector is regen-stable too.
+        StorageServerInterface ssi(UID(0x5151515151515151ULL, 0x6262626262626262ULL));
+        // Serializing a RequestStream asserts a valid primary address
+        // (fdbrpc.h:972), so the pinned endpoint needs a real-looking one.
+        NetworkAddressList ssiAddr;
+        ssiAddr.address = NetworkAddress::parse("10.1.2.3:4500");
+        ssi.getValue = PublicRequestStream<GetValueRequest>(
+            Endpoint(ssiAddr, UID(0x7373737373737373ULL, 0x8484848484848484ULL)));
+        std::vector<StorageServerInterface> servers{ ssi };
+        r.results.emplace_back(KeyRangeRef(KeyRef(r.arena, "range_begin"_sr), KeyRef(r.arena, "range_end"_sr)),
+                               servers);
+        comma(); emitReplyVector(out, "GetKeyServerLocationsReply_one_range", r);
     }
 
     fprintf(out, "\n]\n");

@@ -111,7 +111,7 @@ func ParseKeyValueRefStringVector(data []byte) []KeyValueRef {
 		return nil
 	}
 	// Cap allocation to prevent OOM from crafted count values.
-	// Minimum 8 bytes per KV pair (4-byte key length + 4-byte value length).
+	// Minimum 8 bytes per element (4-byte length prefix per field).
 	maxCount := uint32((len(data) - 4) / 8)
 	if maxCount == 0 {
 		maxCount = 1

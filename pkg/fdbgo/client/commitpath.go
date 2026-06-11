@@ -438,6 +438,15 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 	}
 	var reply types.CommitID
 	reply.UnmarshalFromReader(&r)
+	// A conflict can arrive IN-BAND: with report_conflicting_keys set, the
+	// proxy replies CommitID{version: invalidVersion, conflictingKRIndices}
+	// instead of an ErrorOr not_committed (CommitProxyServer.actor.cpp:
+	// 2448-2466). C++ maps that shape to not_committed (NativeAPI.actor.cpp:
+	// 6653 success-gate, :6726 throw). Without this check a conflict-shaped
+	// CommitID would read as a SUCCESSFUL commit at version -1.
+	if reply.Version == InvalidVersion {
+		return &wire.FDBError{Code: ErrNotCommitted}
+	}
 	tx.committedVersion = reply.Version
 	tx.txnBatchId = reply.TxnBatchId
 	return nil

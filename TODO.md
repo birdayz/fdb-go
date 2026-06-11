@@ -8,6 +8,25 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
+### [ ] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
+
+**A red flake reproduced on UNMODIFIED master — real concurrency bug in the 094.3
+writer-vs-rebalancer stack (PR #282), NOT noise.** Spec: `SPFresh churn: writers vs
+rebalancer — invariants and recall hold after concurrent churn across every lifecycle`
+(`spfresh_churn_test.go:309`). Fingerprint: `live record NNNNN not findable at its own
+vector after churn: got [...six other ids...]; membership=[393217] fine 393217@cell 2
+state=0` — a live record's posting ends up in a fine cell with `state=0` and the
+post-churn search misses it. Repro: `bazelisk test //pkg/recordlayer:recordlayer_test
+--test_arg="--ginkgo.focus=SPFresh churn" --runs_per_test=10 --nocache_test_results`
+→ failed run 8/10 on master `60d69bc3` (2026-06-11); also seen once under a full
+`just test` (4-container load). Independent of the RFC-095 wire branch (zero
+recordlayer files in that diff; 18/18 green focused+full runs there — the flake is
+load/seed-dependent both sides). Root-cause in the rebalancer lifecycle (split/merge
+visibility vs concurrent insert — likely the record lands in a cell that is
+concurrently demoted/trimmed without membership re-check), fix, and pin with a
+deterministic interleaving regression. Until fixed this randomly reddens ANY
+pre-commit `just test`.
+
 ### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 
 **Symptom (fixed).** A 3-way *indexed chain* join planned through the RFC-042 L3
@@ -840,11 +859,23 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   (wire-neutral, lands on current HNSW) to bank the query win, then prototype **SPFresh** as the
   native index.
 
-- [ ] **fdbgo/wire: `TestPrecomputeSize_GetReadVersionRequest` never runs in CI and fails when run.**
-  The test reads `pkg/fdbgo/wire/types/testdata.json` and `t.Skipf`s when absent; the bazel
-  target doesn't declare the file as a data dep, so `just test`/CI silently SKIP it (a no-skip-rule
-  violation hiding a red test). Under plain `go test ./pkg/fdbgo/wire` the file exists and the test
-  fails: `SIZE MISMATCH: Go=160 C++=168 (delta=-8)`. Likely the hand-modeled C++ PrecomputeSize
-  mirror in the test is stale rather than a live serializer bug (GRV requests work against real
-  FDB constantly), but it must be dispositioned: fix the model or the serializer, add the data dep
-  so it RUNS in bazel, and remove the skip. Found while fuzzing the SPFresh codecs (094.1).
+- [x] **fdbgo/wire: `TestPrecomputeSize_GetReadVersionRequest` never runs in CI and fails when run.**
+  — DONE (RFC-095, wire ground-truth net repair). The hand test was stale (it omitted the 8-byte
+  fake-root object C++ `save_helper` allocates) — deleted; the production serializer is pinned
+  byte-exactly instead. The repair went much further than the original item; the net was dead on
+  every axis and, once running, caught **three real bugs**: (1) generated marshal omitted the
+  RelativeOffset for EMPTY vector-of-struct fields where C++ writes the shared-empty offset
+  (`flat_buffers.h:964` unconditional write) — Go commit-request bytes diverged from libfdb_c;
+  (2) `parseSplitRangeReply` decoded ZERO split points from every real reply (splitPoints is a
+  FlatBuffers offset-vector, not an inline blob) — production `GetRangeSplitPoints` never worked,
+  the e2e tolerated empty; (3) `parseCommitReply` read a conflict-shaped
+  `CommitID{version: invalidVersion}` as a SUCCESSFUL commit (C++ throws not_committed,
+  `NativeAPI.actor.cpp:6726`; latent — proxy only sends that shape under report_conflicting_keys).
+  (`parseWaitMetricsReply`'s envelope-`UnmarshalFDB` was originally claimed as a 4th bug; Torvalds'
+  mutation probe disproved it — correct by layout, ErrorOr's value offset coincides with FakeRoot's
+  field 0; the rewrite to the canonical `ReadErrorOrInto` walk stands as hygiene only.)
+  Also: extractor pins reply-promise tokens (deterministic vectors), emits reply-direction vectors
+  for all 9 reply types the client parses (field-value asserted against the PRODUCTION parsers in
+  `client/reply_ground_truth_test.go`), generator now reproduces the hand-fixes that lived in
+  DO-NOT-EDIT files (KeyRangeRef swap-inversion, OOM cap), bazel data deps added + every skip in
+  the net is now a Fatalf, orphan `wire/conformance_test.go` + dead justfile recipes deleted.

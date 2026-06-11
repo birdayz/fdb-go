@@ -55,8 +55,18 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 	if count == 0 {
 		return nil
 	}
+	// Cap allocation to prevent OOM from crafted count values.
+	// Minimum 8 bytes per element (4-byte length prefix per field).
+	maxCount := uint32((len(data) - 4) / 8)
+	if maxCount == 0 {
+		maxCount = 1
+	}
+	allocCount := count
+	if allocCount > maxCount {
+		allocCount = maxCount
+	}
 	pos := 4
-	result := make([]KeyRangeRef, 0, count)
+	result := make([]KeyRangeRef, 0, allocCount)
 	for i := uint32(0); i < count; i++ {
 		var elem KeyRangeRef
 		if pos+4 > len(data) {
