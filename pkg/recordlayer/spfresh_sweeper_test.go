@@ -13,73 +13,74 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
+// newSweeperTenant builds one tenant store with a 2-d SPFresh index for the
+// sweeper specs: optionally seeded and bulk-built.
+func newSweeperTenant(name string, seedN int, build bool) (SPFreshTenant, subspace.Subspace) {
+	ctx := context.Background()
+	ks := specSubspace()
+	idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
+	idx.Type = IndexTypeVectorSPFresh
+	idx.Options = map[string]string{
+		IndexOptionSPFreshNumDimensions: "2",
+		IndexOptionSPFreshLmax:          "16",
+		IndexOptionSPFreshCellTarget:    "4",
+		IndexOptionSPFreshCellMax:       "8",
+	}
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.AddIndex("Order", idx)
+	md, err := builder.Build()
+	Expect(err).NotTo(HaveOccurred())
+	storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+		return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+	}
+	var indexSubspace subspace.Subspace
+	_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, serr := storeBuilder(rtx)
+		Expect(serr).NotTo(HaveOccurred())
+		indexSubspace = store.indexSubspace(idx)
+		_, serr = store.MarkIndexDisabled(name)
+		return nil, serr
+	})
+	Expect(err).NotTo(HaveOccurred())
+	if seedN > 0 {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			for i := 0; i < seedN; i++ {
+				if _, serr := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(int32(i % 3)), Quantity: proto.Int32(int32(i % 2)),
+				}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	if build {
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, name, 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.MarkIndexReadable(name)
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	return SPFreshTenant{StoreBuilder: storeBuilder, IndexName: name}, indexSubspace
+}
+
 // The multi-tenant maintenance sweeper: discovery probe, per-tenant fairness
 // budget, pass continuation for undrained tenants, and isolation of tenant
 // failures.
 var _ = Describe("SPFresh multi-tenant sweeper", func() {
 	ctx := context.Background()
 
-	spfIndex := func(name string) *Index {
-		idx := NewIndex(name, Concat(Field("price"), Field("quantity")))
-		idx.Type = IndexTypeVectorSPFresh
-		idx.Options = map[string]string{
-			IndexOptionSPFreshNumDimensions: "2",
-			IndexOptionSPFreshLmax:          "16",
-			IndexOptionSPFreshCellTarget:    "4",
-			IndexOptionSPFreshCellMax:       "8",
-		}
-		return idx
-	}
-	newTenant := func(name string, seedN int, build bool) (SPFreshTenant, subspace.Subspace) {
-		ks := specSubspace()
-		idx := spfIndex(name)
-		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
-		builder.AddIndex("Order", idx)
-		md, err := builder.Build()
-		Expect(err).NotTo(HaveOccurred())
-		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
-			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-		}
-		var indexSubspace subspace.Subspace
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, serr := storeBuilder(rtx)
-			Expect(serr).NotTo(HaveOccurred())
-			indexSubspace = store.indexSubspace(idx)
-			_, serr = store.MarkIndexDisabled(name)
-			return nil, serr
-		})
-		Expect(err).NotTo(HaveOccurred())
-		if seedN > 0 {
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, serr := storeBuilder(rtx)
-				Expect(serr).NotTo(HaveOccurred())
-				for i := 0; i < seedN; i++ {
-					if _, serr := store.SaveRecord(&gen.Order{
-						OrderId: proto.Int64(int64(i + 1)),
-						Price:   proto.Int32(int32(i % 3)), Quantity: proto.Int32(int32(i % 2)),
-					}); serr != nil {
-						return nil, serr
-					}
-				}
-				return nil, nil
-			})
-			Expect(err).NotTo(HaveOccurred())
-		}
-		if build {
-			Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, name, 42)).To(Succeed())
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, serr := storeBuilder(rtx)
-				Expect(serr).NotTo(HaveOccurred())
-				_, serr = store.MarkIndexReadable(name)
-				return nil, serr
-			})
-			Expect(err).NotTo(HaveOccurred())
-		}
-		return SPFreshTenant{StoreBuilder: storeBuilder, IndexName: name}, indexSubspace
-	}
+	newTenant := newSweeperTenant
 
 	// balloonTenant injects an oversized posting + its split trigger
 	// directly (the cascade-test shape): real maintenance work whose drain
@@ -195,5 +196,91 @@ var _ = Describe("SPFresh multi-tenant sweeper", func() {
 		Expect(err.Error()).To(ContainSubstring("no_such_index"))
 		Expect(res.Worked).To(Equal(1), "the good tenant must still be swept")
 		Expect(res.Actions).To(BeNumerically(">", 0))
+	})
+})
+
+// The two codex MT-review findings, pinned.
+var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
+	ctx := context.Background()
+
+	It("the action budget caps work WITHIN one round (whale with a wide queue)", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-budget").Sub("wide"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		// Two independent oversized postings → TWO split tasks in one scan.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{25, 25}))
+			for f, cvec := range map[int64][]float64{10: {0, 0}, 11: {50, 50}} {
+				spfreshSaveCentroid(tx, storage, 1, f, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cvec))
+				for i := 0; i < config.Lmax+2; i++ {
+					pk := tuple.Tuple{f*100000 + int64(i)}
+					v := []float64{cvec[0] + float64(i%5)*0.3, cvec[1] + float64(i%7)*0.3}
+					tx.Set(storage.postingKey(f, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
+					tx.Set(storage.membershipKey(pk), encodeMembership([]int64{f}))
+					tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+				}
+				spfreshCounterSet(tx, storage, spfreshCounterFine, f, int64(config.Lmax+2))
+				if _, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskSplit, f); terr != nil {
+					return nil, terr
+				}
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, 2)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// limit=1: exactly ONE of the two splits runs — pre-fix the round
+		// executed the whole queue and a whale monopolized the pass.
+		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-1", 7, 1)
+		Expect(rerr).NotTo(HaveOccurred())
+		Expect(worked).To(Equal(1), "the per-pass budget must cap work inside a single round")
+
+		// Unlimited drains the rest.
+		for round := 0; round < 50; round++ {
+			worked, rerr = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-2", int64(round), 0)
+			Expect(rerr).NotTo(HaveOccurred())
+			if worked == 0 {
+				break
+			}
+		}
+		Expect(worked).To(BeZero())
+	})
+
+	It("legacy leaked Cellfin rows: probe ignores them, rebalancer clears them", func() {
+		good, _ := newSweeperTenant("spf_sw_legacy", 8, true)
+
+		// Plant a leaked build-bookkeeping row the way pre-cleanup builds
+		// left them (kind=Cellfin in the READABLE generation's task space).
+		var storage *spfreshStorage
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := good.StoreBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			idx := store.GetMetaData().GetIndex(good.IndexName)
+			gen0, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), 0))
+			Expect(gerr).NotTo(HaveOccurred())
+			storage = newSPFreshStorage(store.indexSubspace(idx), gen0)
+			rtx.Transaction().Set(storage.taskKey(spfreshTaskCellfin, 0), encodeTaskRow(spfreshTaskRow{childA: 1, childB: 2}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The probe must NOT report the tenant busy for build garbage —
+		// pre-fix the sweeper revisited it every pass for zero actions.
+		Expect(SPFreshHasPendingMaintenance(ctx, sharedDB, good.StoreBuilder, good.IndexName)).To(BeFalse())
+
+		// And the rebalancer self-heals: one invocation clears the row.
+		_, err = RebalanceSPFreshIndex(ctx, sharedDB, good.StoreBuilder, good.IndexName)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskCellfin, 0)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(data).To(BeNil(), "the rebalancer must clear legacy Cellfin bookkeeping on sight")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

@@ -68,7 +68,7 @@ var _ = Describe("SPFresh chunked cascade convergence", func() {
 
 		// Drain to quiescence with the plain rebalancer loop.
 		for round := 0; round < 200; round++ {
-			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "cascade", int64(round))
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "cascade", int64(round), 0)
 			Expect(rerr).NotTo(HaveOccurred())
 			if worked == 0 {
 				break
@@ -130,7 +130,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 		// RebalanceSPFreshIndex now mints a unique owner per invocation.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, cerr := spfreshTaskClaim(rtx.Transaction(), storage, spfreshTaskSplit, 42, "exec-B", spfreshLeaseDeadline(), spfreshNowMs())
-			Expect(cerr).To(MatchError(errSPFreshNotFound), "a live foreign lease must exclude other claimers")
+			Expect(cerr).To(MatchError(errSPFreshLeaseHeld), "a live foreign lease must exclude other claimers")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -182,7 +182,7 @@ var _ = Describe("SPFresh lease exclusion + mint guard (300k fill bugs)", func()
 			Expect(cerr).NotTo(HaveOccurred())
 			// The second invocation cannot touch the first's live lease.
 			_, cerr = spfreshTaskClaim(tx, storage, spfreshTaskSplit, 7, b, spfreshLeaseDeadline(), spfreshNowMs())
-			Expect(cerr).To(MatchError(errSPFreshNotFound))
+			Expect(cerr).To(MatchError(errSPFreshLeaseHeld))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -283,7 +283,7 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		// Reverting the repair leaves fatFine ACTIVE over Lmax forever with
 		// an empty queue — the 300k/1M recall collapse.
 		for round := 0; round < 100; round++ {
-			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "pauserepair", int64(round))
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "pauserepair", int64(round), 0)
 			Expect(rerr).NotTo(HaveOccurred())
 			if worked == 0 {
 				break

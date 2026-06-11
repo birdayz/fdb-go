@@ -55,8 +55,8 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			return nil
 		}
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskMerge, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				return nil // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
 		}

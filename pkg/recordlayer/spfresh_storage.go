@@ -465,10 +465,16 @@ func spfreshTaskSetIfAbsent(tx fdb.Transaction, s *spfreshStorage, kind, id int6
 	return true, nil
 }
 
+// errSPFreshLeaseHeld marks a claim refused because a LIVE foreign lease owns
+// the task. Distinct from errSPFreshNotFound (row absent): callers that skip
+// both still can, but code reasoning about "the task is gone" must not
+// conflate it with "another executor is mid-lifecycle" (Torvalds MT review).
+var errSPFreshLeaseHeld = errors.New("spfresh: task lease held by another owner")
+
 // spfreshTaskClaim REAL-reads and claims a task row: unclaimed, lease-expired,
 // or already-ours rows are (re)claimed with the new lease; a live foreign
-// lease returns errSPFreshNotFound (nothing to do here). Absent rows error
-// with errSPFreshNotFound too — enqueue first.
+// lease returns errSPFreshLeaseHeld (someone else is mid-lifecycle). Absent
+// rows return errSPFreshNotFound — enqueue first.
 func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, owner string, leaseDeadlineMs, nowMs int64) (spfreshTaskRow, error) {
 	key := s.taskKey(kind, id)
 	data, err := tx.Get(key).Get()
@@ -483,7 +489,7 @@ func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, own
 		return spfreshTaskRow{}, err
 	}
 	if row.owner != "" && row.owner != owner && row.leaseDeadlineMs > nowMs {
-		return spfreshTaskRow{}, errSPFreshNotFound // live foreign lease
+		return spfreshTaskRow{}, errSPFreshLeaseHeld
 	}
 	row.owner = owner
 	row.leaseDeadlineMs = leaseDeadlineMs

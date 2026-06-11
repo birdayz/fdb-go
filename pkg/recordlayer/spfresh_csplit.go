@@ -59,8 +59,8 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		row, cerr := spfreshTaskClaim(tx, s, spfreshTaskCSplit, cellID, owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				return nil // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
 		}

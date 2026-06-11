@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // The multi-tenant maintenance sweeper (RFC-094 §6 deployment shape, scaled
@@ -27,12 +28,16 @@ type SPFreshTenant struct {
 
 // SPFreshSweepOptions tunes one sweep pass.
 type SPFreshSweepOptions struct {
-	// MaxRoundsPerTenant is the per-tenant fairness budget: at most this
-	// many scan-and-act rounds per tenant per pass, so a whale tenant's
-	// split backlog cannot starve the other tenants in the pass. Undrained
-	// tenants are reported, not errored — the next pass continues them.
-	// 0 means the default (8).
+	// MaxRoundsPerTenant bounds the scan-and-act rounds per tenant per
+	// pass. 0 means the default (8).
 	MaxRoundsPerTenant int
+	// MaxActionsPerTenant is the per-tenant fairness budget: at most this
+	// many lifecycle actions per pass, ENFORCED WITHIN a round too — a
+	// whale tenant whose single scan finds thousands of independent task
+	// rows must not monopolize the pass (codex MT P2). Undrained tenants
+	// are reported, not errored — the next pass continues them. 0 means
+	// the default (64).
+	MaxActionsPerTenant int
 }
 
 // SPFreshSweepResult summarizes one sweep pass.
@@ -54,11 +59,15 @@ func SweepSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFresh
 	if rounds <= 0 {
 		rounds = 8
 	}
+	actions := opts.MaxActionsPerTenant
+	if actions <= 0 {
+		actions = 64
+	}
 	var result SPFreshSweepResult
 	var errs []error
 	for _, tenant := range tenants {
 		if ctx.Err() != nil {
-			return result, ctx.Err()
+			return result, errors.Join(append(errs, ctx.Err())...)
 		}
 		pending, err := SPFreshHasPendingMaintenance(ctx, db, tenant.StoreBuilder, tenant.IndexName)
 		if err != nil {
@@ -69,8 +78,8 @@ func SweepSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFresh
 			continue
 		}
 		result.Worked++
-		actions, drained, err := rebalanceSPFreshIndexRounds(ctx, db, tenant.StoreBuilder, tenant.IndexName, rounds)
-		result.Actions += actions
+		tenantActions, drained, err := rebalanceSPFreshIndexRounds(ctx, db, tenant.StoreBuilder, tenant.IndexName, rounds, actions)
+		result.Actions += tenantActions
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sweep %q: %w", tenant.IndexName, err))
 			continue
@@ -112,15 +121,32 @@ func SPFreshHasPendingMaintenance(ctx context.Context, db *FDBDatabase, storeBui
 			return gerr
 		}
 		s := newSPFreshStorage(indexSubspace, gen)
-		r, rerr := fdb.PrefixRange(s.tasks.Bytes())
-		if rerr != nil {
-			return rerr
+		// One limit-1 range per LIVE task kind, issued in parallel.
+		// Deliberately NOT one range over the whole tasks prefix: legacy
+		// Cellfin (build bookkeeping) rows leaked by pre-cleanup builds
+		// would read as pending forever — the rebalancer skips that kind,
+		// so the sweeper would revisit the tenant every pass for zero
+		// actions (codex MT P2). The rebalancer also clears such rows on
+		// sight; this filter covers tenants nobody has rebalanced yet.
+		kinds := []int64{spfreshTaskSplit, spfreshTaskMerge, spfreshTaskCSplit, spfreshTaskNPA}
+		futures := make([]fdb.RangeResult, 0, len(kinds))
+		for _, kind := range kinds {
+			r, rerr := fdb.PrefixRange(s.tasks.Pack(tuple.Tuple{kind}))
+			if rerr != nil {
+				return rerr
+			}
+			futures = append(futures, tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: 1}))
 		}
-		kvs, kerr := tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
-		if kerr != nil {
-			return kerr
+		for _, f := range futures {
+			kvs, kerr := f.GetSliceWithError()
+			if kerr != nil {
+				return kerr
+			}
+			if len(kvs) > 0 {
+				pending = true
+				return nil
+			}
 		}
-		pending = len(kvs) > 0
 		return nil
 	})
 	return pending, err

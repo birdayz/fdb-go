@@ -69,15 +69,19 @@ type spfreshTaskRef struct {
 	cellID int64
 }
 
-// spfreshRebalanceOnce scans the task queue once and runs every actionable
-// task, in lifecycle order (splits before NPA before merges — splits enqueue
-// NPAs; merges of split children respect the cooldown anyway). Returns the
-// number of tasks acted on; tasks under live foreign leases are skipped.
-func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64) (int, error) {
+// spfreshRebalanceOnce scans the task queue once and runs actionable tasks,
+// in lifecycle order (splits before NPA before merges — splits enqueue NPAs;
+// merges of split children respect the cooldown anyway), up to `limit` tasks
+// (≤ 0 = unlimited; the sweeper bounds it so a whale tenant's queue cannot
+// monopolize a fleet pass — codex MT P2). Returns the number of tasks acted
+// on; tasks under live foreign leases are skipped.
+func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int) (int, error) {
 	// Scan (snapshot — the queue is advisory; claims are the authority).
 	var refs []spfreshTaskRef
+	var legacyCellfin []int64
 	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		refs = refs[:0]
+		legacyCellfin = legacyCellfin[:0]
 		tx := rtx.Transaction()
 		r, rerr := fdb.PrefixRange(s.tasks.Bytes())
 		if rerr != nil {
@@ -98,7 +102,15 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return fmt.Errorf("spfresh rebalance: malformed task key elements")
 			}
 			if kind == spfreshTaskCellfin {
-				continue // build machinery, not a rebalancer concern
+				// Build machinery, not a rebalancer concern. Rows in the
+				// READABLE generation are LEAKED bookkeeping from builds
+				// that flipped before the flip learned to clear them — an
+				// in-flight build's rows live under its own unpublished
+				// generation, never here. Self-heal: clear on sight, or the
+				// pending-work probe reports this tenant busy forever
+				// (codex MT P2).
+				legacyCellfin = append(legacyCellfin, id)
+				continue
 			}
 			ref := spfreshTaskRef{kind: kind, id: id}
 			if kind == spfreshTaskSplit || kind == spfreshTaskMerge {
@@ -122,6 +134,16 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 	if err != nil {
 		return 0, err
 	}
+	if len(legacyCellfin) > 0 {
+		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			for _, id := range legacyCellfin {
+				rtx.Transaction().Clear(s.taskKey(spfreshTaskCellfin, id))
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+	}
 
 	// Lifecycle execution order (NOT the kind constants): splits first, then
 	// the NPAs they enqueue, then merges, then coarse splits. Within a kind,
@@ -136,6 +158,9 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 
 	worked := 0
 	for _, ref := range refs {
+		if limit > 0 && worked >= limit {
+			break // per-pass budget spent: the caller schedules the rest
+		}
 		switch ref.kind {
 		case spfreshTaskSplit:
 			out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
@@ -175,7 +200,7 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 // Returns the total number of lifecycle actions taken.
 func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string) (int, error) {
 	const maxRounds = 32
-	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds)
+	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds, 0)
 	if err != nil {
 		return total, err
 	}
@@ -185,12 +210,14 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 	return total, nil
 }
 
-// rebalanceSPFreshIndexRounds is the round-budgeted core: up to maxRounds
-// scan-and-act passes, reporting whether the queue drained. The multi-tenant
-// sweeper uses small budgets for fairness (a whale tenant's backlog must not
-// starve other tenants' maintenance); an undrained queue is NOT an error
-// there — the next sweep pass continues it.
-func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds int) (int, bool, error) {
+// rebalanceSPFreshIndexRounds is the budgeted core: up to maxRounds
+// scan-and-act passes and (when maxActions > 0) at most maxActions lifecycle
+// actions TOTAL, reporting whether the queue drained. The multi-tenant
+// sweeper uses small budgets for fairness — the action budget caps work even
+// when a single scan finds a wide queue (a whale tenant with thousands of
+// independent task rows must not monopolize a fleet pass through one round).
+// An undrained queue is NOT an error there — the next sweep pass continues.
+func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds, maxActions int) (int, bool, error) {
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -249,7 +276,14 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 	total := 0
 	drained := false
 	for round := 0; round < maxRounds; round++ {
-		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919)
+		limit := 0
+		if maxActions > 0 {
+			limit = maxActions - total
+			if limit <= 0 {
+				break // action budget spent: not drained
+			}
+		}
+		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit)
 		if err != nil {
 			return total, false, err
 		}

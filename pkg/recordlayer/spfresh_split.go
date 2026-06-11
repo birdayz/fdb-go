@@ -46,8 +46,8 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 		tx := rtx.Transaction()
 		row, err := spfreshTaskClaim(tx, s, spfreshTaskSplit, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if err != nil {
-			if errors.Is(err, errSPFreshNotFound) {
-				return nil // task gone or foreign live lease: nothing to do here
+			if errors.Is(err, errSPFreshNotFound) || errors.Is(err, errSPFreshLeaseHeld) {
+				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return err
 		}

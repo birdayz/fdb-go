@@ -72,9 +72,10 @@ func newSPFreshIndexMaintainer(
 // background goroutine). Evicting a live pointer is safe: holders keep
 // their snapshot; the next spfreshCacheFor reloads from FDB.
 var (
-	spfreshCaches      sync.Map     // string(subspace bytes)+gen -> *spfreshRoutingCache
-	spfreshCacheCount  atomic.Int64 // approximate map size (eviction trigger)
-	spfreshCacheSweeps atomic.Int64 // spfreshCacheFor calls since last sweep
+	spfreshCaches        sync.Map     // string(subspace bytes)+gen -> *spfreshRoutingCache
+	spfreshCacheCount    atomic.Int64 // approximate map size (eviction trigger)
+	spfreshCacheForCalls atomic.Int64 // spfreshCacheFor call counter (sweep stride)
+	spfreshCacheSweepMu  sync.Mutex   // single sweeper at a time (TryLock gate)
 
 	// Eviction policy. Vars, not consts: the many-tenant soak tightens them.
 	spfreshCacheIdleTTLMs   int64 = 15 * 60 * 1000 // idle eviction horizon
@@ -105,12 +106,18 @@ func spfreshCacheFor(indexSubspace subspace.Subspace, generation int64) *spfresh
 
 // spfreshMaybeEvictCaches amortizes idle/over-cap eviction over cache hits:
 // a full map sweep every spfreshCacheSweepEveryN calls, or immediately while
-// the map is over its cap.
+// the map is over its cap. At most ONE goroutine sweeps at a time — while
+// over cap, every cache hit qualifies, and without the gate they would all
+// run the full Range+sort concurrently until the first sweep lands.
 func spfreshMaybeEvictCaches(nowMs int64) {
-	if spfreshCacheSweeps.Add(1)%spfreshCacheSweepEveryN != 0 &&
+	if spfreshCacheForCalls.Add(1)%spfreshCacheSweepEveryN != 0 &&
 		spfreshCacheCount.Load() <= spfreshCacheMaxEntries {
 		return
 	}
+	if !spfreshCacheSweepMu.TryLock() {
+		return // a concurrent sweep is already running
+	}
+	defer spfreshCacheSweepMu.Unlock()
 	spfreshSweepCaches(nowMs)
 }
 

@@ -197,7 +197,7 @@ var _ = Describe("SPFresh storage primitives", func() {
 
 			// A different owner cannot steal a live lease...
 			_, cerr = spfreshTaskClaim(tx, s, spfreshTaskSplit, 5, "owner-B", 9_999_999_999_999, 2_000)
-			Expect(cerr).To(MatchError(errSPFreshNotFound))
+			Expect(cerr).To(MatchError(errSPFreshLeaseHeld))
 			// ...but the SAME owner re-claims (commit_unknown retry), childIDs intact...
 			row, cerr = spfreshTaskClaim(tx, s, spfreshTaskSplit, 5, "owner-A", 9_999_999_999_999, 2_000)
 			Expect(cerr).NotTo(HaveOccurred())

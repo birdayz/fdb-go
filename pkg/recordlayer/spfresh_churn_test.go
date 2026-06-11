@@ -167,7 +167,7 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 			storage := newSPFreshStorage(indexSubspace, 1)
 			config := parseSPFreshConfig(idx)
 			for !writersDone.Load() {
-				if _, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "churn-rebalancer", 7); rerr != nil {
+				if _, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "churn-rebalancer", 7, 0); rerr != nil {
 					errs <- fmt.Errorf("rebalancer: %w", rerr)
 					return
 				}

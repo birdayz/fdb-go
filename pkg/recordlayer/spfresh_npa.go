@@ -45,8 +45,8 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		zombie = false
 		tx := rtx.Transaction()
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskNPA, parentID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				zombie = true // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				zombie = true // task gone, or another executor is mid-lifecycle
 				return nil
 			}
 			return cerr
