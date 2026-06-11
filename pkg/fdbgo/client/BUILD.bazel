@@ -68,6 +68,7 @@ go_test(
         "loadbalance_test.go",
         "locality_test.go",
         "locality_unit2_test.go",
+        "locked_database_test.go",
         "multishard_test.go",
         "nil_shard_end_test.go",
         "parse_fuzz_test.go",

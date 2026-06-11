@@ -734,22 +734,32 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        `TestDifferential_PinnedRangeRetriesStaleVersion`). Reviewed clean by FDB-C++ dev + Torvalds +
        codex (per-commit deltas + full review) + @claude.
 
-- [ ] **GRV `locked` enforcement — the Go client silently reads LOCKED databases (C++ divergence,
-  found by the RFC-095 reply ground-truth net).** C++ enforces database locks CLIENT-side on every
-  real GRV fetch: `if (rep.locked && !trState->options.lockAware) throw database_locked()` —
-  `NativeAPI.actor.cpp:7425-7426`, in `extractReadVersion` (per-transaction, after the batched
-  reply). Both `LOCK_AWARE` and `READ_LOCK_AWARE` set `options.lockAware` (`:7077-7091`), so the
-  Go gate is `tx.lockAware || tx.readLockAware`. Go's `parseGetReadVersionReply` (grv.go) DISCARDS
-  `rep.locked` entirely — a database locked via the management API (backup/restore/DR) is silently
-  readable through the Go client where C++/Java refuse with 1038. Fix needs C++-faithful
-  placement, which is why it's not a drive-by: thread `locked` from the batched reply to each
-  waiting transaction and check at the per-txn consumption point (the `extractReadVersion`
-  analog), and decide the `grvCache` interaction by reading what C++ does on the cached path
-  (does `updateCachedReadVersion` run before or after the locked throw? mirror exactly). Pin with
-  an FDB e2e that actually locks the database (system-key write under ACCESS_SYSTEM_KEYS +
-  LOCK_AWARE) and asserts: non-lock-aware read → 1038; LOCK_AWARE and READ_LOCK_AWARE reads →
-  succeed. The wire-level decode of `locked` is already pinned by the
-  `GetReadVersionReply_locked` reply vector. fdb-client-review gates apply.
+- [x] **GRV `locked` enforcement — DONE (RFC-096, FDB-C++ + Torvalds ACK on RFC; found by the
+  RFC-095 reply ground-truth net).** The Go client silently read LOCKED databases where C++/Java
+  refuse with `database_locked` (1038): `parseGetReadVersionReply` discarded `rep.locked`. Now
+  enforced per C++ (`NativeAPI.actor.cpp:7425-7426`): `locked` threads from the batched GRV reply
+  to every waiting transaction; the per-txn check at the `extractReadVersion` analog
+  (transaction.go ensureReadVersion) returns 1038 unless `lockAware || readLockAware` (both C++
+  options set `options.lockAware`, `:7077-7091`). The shared cache updates BEFORE the check (C++
+  `:7409` precedes `:7425`), and — because Go's GRV cache is ALWAYS-ON unlike C++'s opt-in
+  USE_GRV_CACHE (divergence filed below) — `locked` rides the cache (`grvCache.lastLocked`,
+  stored only on version-CAS acceptance so a stale reply can't fail-open; Torvalds condition) and
+  cache hits flow through the same per-txn check. Pinned by
+  `TestFDB_DatabaseLocked_ReadPathEnforcement` (dedicated container; real `\xff/dbLocked` lock
+  via the C++ `lockDatabase` mechanics; arms: fresh-fetch 1038, warm-cache 1038, LOCK_AWARE ok,
+  READ_LOCK_AWARE ok, unlock+poll recovery) — revert-proven red without the check — plus the
+  production-parser `locked` assert in the `GetReadVersionReply_locked` reply vector.
+
+- [ ] **GRV cache is ALWAYS-ON in Go; opt-in (USE_GRV_CACHE) in C++ (divergence, filed by
+  RFC-096).** C++ serves cached read versions only when the app sets `USE_GRV_CACHE`
+  (`NativeAPI.actor.cpp:7505` gate; default false, `:6148`; the `DEBUG_USE_GRV_CACHE_CHANCE`
+  knob is -1.0 = never). Go's `grvCache.tryCache` serves every DEFAULT/BATCH transaction and a
+  background refresher keeps it perpetually warm — i.e. Go gives every app C++'s opt-in behavior
+  by default. Observable consequences beyond perf: staleness windows C++ default apps never see
+  (RFC-096 had to carry `locked` through the cache to compensate — revisit that check's shape if
+  this closes). Closing means adding the `USE_GRV_CACHE` transaction/database option and gating
+  `tryCache` + the refresher on it, matching `:7504-7518` exactly. Needs its own RFC (perf
+  implications: today's cache is why Go GRV latency is flat under load); fdb-client-review gates.
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

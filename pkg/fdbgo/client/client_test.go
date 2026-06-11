@@ -610,7 +610,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			t.Parallel()
 			var c grvCache
 			tt.setup(&c)
-			v, ok := c.tryCache(tt.priority)
+			v, _, ok := c.tryCache(tt.priority)
 			if ok != tt.wantOK {
 				t.Fatalf("tryCache ok: got %v, want %v", ok, tt.wantOK)
 			}

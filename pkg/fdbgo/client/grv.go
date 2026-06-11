@@ -33,22 +33,33 @@ type grvCache struct {
 	lastProxyContact atomic.Int64 // UnixNano
 	lastRkDefault    atomic.Int64 // ratekeeper throttle
 	lastRkBatch      atomic.Int64
+	// lastLocked is the database-locked flag from the most recent GRV reply
+	// accepted by the version CAS. C++ never lock-checks ITS cached path —
+	// but C++'s cache is opt-in (USE_GRV_CACHE, default off,
+	// NativeAPI.actor.cpp:7505/:6148), so every default C++ transaction
+	// reaches extractReadVersion's locked check (:7425). This cache is
+	// ALWAYS-ON (a filed divergence; see TODO.md), so `locked` must ride it
+	// or enforcement would fire roughly once per warm handle, ever. Stored
+	// only on version-CAS acceptance (updateFromGRV) so a late stale reply
+	// cannot overwrite fresher lock state. RFC-096.
+	lastLocked atomic.Bool
 }
 
-// tryCache returns the cached version if it's fresh enough.
+// tryCache returns the cached version (and the database-locked flag stored
+// with it) if it's fresh enough.
 // priority determines which ratekeeper throttle to check:
 // BATCH checks lastRkBatch, DEFAULT checks lastRkDefault.
 // Matches C++ DatabaseContext::getConsistentReadVersion throttle checks.
-func (c *grvCache) tryCache(priority uint32) (int64, bool) {
+func (c *grvCache) tryCache(priority uint32) (int64, bool, bool) {
 	v := c.version.Load()
 	if v == 0 {
-		return 0, false
+		return 0, false, false
 	}
 
 	now := time.Now().UnixNano()
 	lastTime := c.lastTime.Load()
 	if time.Duration(now-lastTime) > maxVersionCacheLag {
-		return 0, false // stale
+		return 0, false, false // stale
 	}
 
 	// Check ratekeeper throttle cooldown for the requesting priority.
@@ -60,20 +71,22 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 	case grvPriorityBatch:
 		lastThrottle = c.lastRkBatch.Load()
 	case grvPrioritySystemImmediate:
-		return 0, false // SYSTEM_IMMEDIATE must always contact proxy
+		return 0, false, false // SYSTEM_IMMEDIATE must always contact proxy
 	default:
 		lastThrottle = c.lastRkDefault.Load()
 	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
-		return 0, false // throttled — must contact proxy
+		return 0, false, false // throttled — must contact proxy
 	}
 
-	return v, true
+	return v, c.lastLocked.Load(), true
 }
 
 // update updates the cache with a new version.
 // Monotonic: only accepts versions >= current cached version.
-// Called after GRV response and after successful commit.
+// Called after a successful commit (which carries no lock information —
+// lastLocked is deliberately untouched; a lock-aware transaction CAN commit
+// on a locked database). GRV replies go through updateFromGRV instead.
 func (c *grvCache) update(t time.Time, v int64) {
 	for {
 		cur := c.version.Load()
@@ -84,7 +97,32 @@ func (c *grvCache) update(t time.Time, v int64) {
 			break
 		}
 	}
-	// Update time only if strictly newer (matching C++).
+	c.updateTime(t)
+}
+
+// updateFromGRV updates the cache from a real GRV reply: version plus the
+// database-locked flag. lastLocked is stored ONLY when the version CAS
+// accepts the reply — a late, stale reply (older version, locked=false) must
+// not overwrite fresher locked=true state (a fail-open hazard). The residual
+// CAS→Store interleaving window between two concurrently-accepted replies is
+// benign in both directions and strictly inside the staleness the cache
+// already accepts (maxVersionCacheLag). RFC-096.
+func (c *grvCache) updateFromGRV(t time.Time, v int64, locked bool) {
+	for {
+		cur := c.version.Load()
+		if v < cur {
+			return // stale reply — don't go backwards, don't touch lock state
+		}
+		if c.version.CompareAndSwap(cur, v) {
+			break
+		}
+	}
+	c.lastLocked.Store(locked)
+	c.updateTime(t)
+}
+
+// updateTime advances lastTime only if strictly newer (matching C++).
+func (c *grvCache) updateTime(t time.Time) {
 	tNano := t.UnixNano()
 	for {
 		cur := c.lastTime.Load()
@@ -181,22 +219,27 @@ type grvRequest struct {
 
 type grvResult struct {
 	version int64
+	locked  bool // database-locked flag from the GRV reply (RFC-096)
 	err     error
 }
 
-// getReadVersion returns a read version, using the cache if fresh.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
+// getReadVersion returns a read version, using the cache if fresh. The
+// second return is the database-locked flag from the reply (or from the
+// cache entry) — the per-transaction lock check happens at the consumption
+// site (the C++ extractReadVersion analog), NOT here: one batched reply
+// fans out to transactions with different lock-awareness.
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, bool, error) {
 	// Fast path: serve from cache if fresh and not throttled.
 	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
 	isImmediate := b.priority == grvPrioritySystemImmediate
 	if !isImmediate {
-		if v, ok := db.grvCache.tryCache(b.priority); ok {
+		if v, locked, ok := db.grvCache.tryCache(b.priority); ok {
 			// Start background refresher on first cache hit.
 			b.refreshOnce.Do(func() {
 				db.wg.Add(1)
 				go b.backgroundRefresher(db)
 			})
-			return v, nil
+			return v, locked, nil
 		}
 	}
 
@@ -212,9 +255,9 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 
 	select {
 	case result := <-req.reply:
-		return result.version, result.err
+		return result.version, result.locked, result.err
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return 0, false, ctx.Err()
 	}
 }
 
@@ -249,11 +292,14 @@ func (b *grvBatcher) flush(db *database) {
 	flags := b.priority | optionBits
 
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
+	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
-		b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+		// Unconditional, even when locked: C++ updates the shared cache
+		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
+		// precedes :7425).
+		b.applyGRVReply(db, requestTime, version, locked, rkDefault, rkBatch, tagThrottleInfoBytes)
 	}
 
 	// Adaptive batch window.
@@ -267,7 +313,7 @@ func (b *grvBatcher) flush(db *database) {
 	}
 	b.mu.Unlock()
 
-	result := grvResult{version: version, err: err}
+	result := grvResult{version: version, locked: locked, err: err}
 	for _, req := range batch {
 		req.reply <- result
 	}
@@ -352,10 +398,16 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
 			// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
 			// its tryCache always returns false (refreshOnce never fires).
-			version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
+			version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
 			refreshCancel()
 			if err == nil {
-				b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+				// The refresher stores `locked` into the cache and otherwise
+				// ignores it — functionally equivalent to C++'s background
+				// updater, whose non-lock-aware txn THROWS 1038 on a locked
+				// DB after the cache update (:7409 precedes :7425) and is
+				// caught by its own onError loop. Nothing surfaces to users
+				// from a background refresh either way. RFC-096.
+				b.applyGRVReply(db, requestTime, version, locked, rkDefault, rkBatch, tagThrottleInfoBytes)
 				// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 				grvDelay = (grvDelay + time.Since(requestTime)) / 2
 			}
@@ -369,8 +421,8 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 // version cache, proxy contact time, minAcceptableReadVersion, ratekeeper
 // throttle state, and tag throttle info.
 // Called from both flush() (batched request) and backgroundRefresher().
-func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
-	db.grvCache.update(requestTime, version)
+func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, locked bool, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
+	db.grvCache.updateFromGRV(requestTime, version, locked)
 	db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 
@@ -402,7 +454,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
 	var backoff time.Duration
 
 	for {
@@ -428,7 +480,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			case <-ctx.Done():
 				timer.Stop()
-				return 0, false, false, nil, 0, ctx.Err()
+				return 0, false, false, false, nil, 0, ctx.Err()
 			}
 		}
 
@@ -457,7 +509,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				replyHandle.Cancel()
 				replyHandle.Release()
 				if ctx.Err() != nil {
-					return 0, false, false, nil, 0, ctx.Err()
+					return 0, false, false, false, nil, 0, ctx.Err()
 				}
 				db.failMon.markFailed(proxy.Address)
 				continue
@@ -490,7 +542,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			backoff = 0
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, false, false, nil, 0, ctx.Err()
+			return 0, false, false, false, nil, 0, ctx.Err()
 		}
 	}
 }
@@ -518,13 +570,17 @@ func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount
 }
 
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.
-// Returns (version, rkDefaultThrottled, rkBatchThrottled, tagThrottleInfo, proxyTagThrottledDuration, error).
-func parseGetReadVersionReply(data []byte) (int64, bool, bool, []byte, float64, error) {
+// Returns (version, locked, rkDefaultThrottled, rkBatchThrottled,
+// tagThrottleInfo, proxyTagThrottledDuration, error). `locked` is the
+// database-locked flag the proxy reports unconditionally
+// (GrvProxyServer.actor.cpp:673); enforcement is client-side, per
+// transaction (RFC-096).
+func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return 0, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
+		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
 	}
 	var reply types.GetReadVersionReply
 	reply.UnmarshalFromReader(&r)
-	return reply.Version, reply.RkDefaultThrottled, reply.RkBatchThrottled, reply.TagThrottleInfo, reply.ProxyTagThrottledDuration, nil
+	return reply.Version, reply.Locked, reply.RkDefaultThrottled, reply.RkBatchThrottled, reply.TagThrottleInfo, reply.ProxyTagThrottledDuration, nil
 }
