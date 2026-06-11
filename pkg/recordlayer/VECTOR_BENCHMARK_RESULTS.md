@@ -470,3 +470,38 @@ production topology with the full perf stack: default 0.996 @ 15.4ms p50,
 fast **0.949 @ 6.08ms p50**. (An earlier contended run of the same shape
 measured fast 0.963 @ 7.66ms — the number quoted in the perf-pass commit
 message; both are under the §9 target, the quiet-box row is canonical.)
+
+### SPFresh 1M clean fill A/B (burst fix + full perf stack) — and the ingest-rate/recall trade
+
+Same harness, quiet box, GOMAXPROCS=16: **FILL 1M in 31m26s = 530 vec/s**
+(4 writers, 11,761 lifecycle actions; topology 186 cells / 5,835 fines /
+1,009,151 entries, ρ ≈ 1.01) — **2.6× the pre-RNG 205 vec/s** and 4.8× the
+un-fixed sequential-verification 110. The speculative-burst fence is the
+whole story: verification costs one round trip regardless of diversity-scan
+depth.
+
+Query side at 1M with the perf stack (this topology):
+
+| Config | recall@10 | p50 | p99 | QPS@16 |
+|--------|-----------|-----|-----|--------|
+| default 32/64/200/ε7 | 0.9250 | 17.9ms | 22.0ms | 141 |
+| fast 16/24/64/ε7 | 0.7910 | 6.8ms | 10.6ms | 392 |
+| kc=128 cap | 0.9730 | 32.5ms | 52.7ms | 90 |
+| kc=192 cap | 0.9870 | 47.2ms | 55.1ms | 64 |
+
+p50 down 25–32% at every operating point vs the pre-perf-pass binary on
+the slower-filled topology (default 23.9→17.9ms, fast 9.3→6.8ms, kc=192
+69→47ms).
+
+**The honest finding: recall at fixed probes depends on the INGEST RATE
+the topology was built under.** The 110 vec/s fill read 0.961/0.993/0.998
+(default/kc128/kc192); this 530 vec/s fill reads 0.925/0.973/0.987 — same
+code, similar lifecycle-action counts. At 5× the write rate the rebalancer
+lags the writers, vectors are closure-assigned against a staler topology,
+and NPA repairs only split neighborhoods, not global drift. Max-rate
+ingest costs ~3.5pp recall at default probes. Operationally: ingest at the
+rate your recall target tolerates, raise kc afterward (0.987 @ 47ms holds
+even on the fast-filled topology), or run the assignment-refinement sweep
+(TODO) after bulk ingest phases. The α-led replication sweep (TODO item 3)
+also lifts this floor — diverse replicas make assignment placement less
+critical.

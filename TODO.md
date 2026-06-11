@@ -981,3 +981,13 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   Fig. 12's pruning win was measured at 16% centroid ratio, and at 100k granularity our
   corrected ε already binds (0.990 at −15% latency). If this item moves Lmax/granularity
   toward Fig. 9's regime, re-measure ε there.
+- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery).** Measured at 1M:
+  a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
+  same code, similar action counts. Writers outrunning the rebalancer assign vectors
+  against a lagging topology; NPA repairs split neighborhoods only, not global drift.
+  A maintenance op that re-runs the closure for sampled/flagged vectors against the
+  CONVERGED topology (an online analog of the bulk build's wave B; SPFresh §3.3's
+  reassignment generalized beyond splits) would recover the gap after bulk-ingest
+  phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
+  the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
+  the fast-filled topology). The α-sweep (item 3) also lifts this floor.
