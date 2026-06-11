@@ -275,6 +275,19 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	sawInFlight := false
 	work := append([]spfreshRouted(nil), routed...)
 	seen := make(map[int64]bool, len(work))
+	// Speculative verification burst: the loop REAL-reads candidate rows as
+	// its lifecycle fence, and reading them one-by-one serialized up to
+	// spfreshClosurePool() round trips inside the user's save transaction —
+	// the RNG diversity scan made this the fill bottleneck (916→615 vec/s
+	// at 100k when the pool widened). Issue the likely candidates as ONE
+	// snapshot burst; a read conflict key is added only for rows the loop
+	// actually examines (snapshot read + explicit conflict key ≡ the
+	// serializable read: same read version, same data, same conflict
+	// surface — speculative rows the cutoffs never reach contribute none).
+	specFuts := make(map[int64]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
+	for i := 0; i < len(work) && i < spfreshClosurePool(m.config.Replication); i++ {
+		specFuts[work[i].fineID] = m.tx.Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
+	}
 	for examined := 0; len(work) > 0 && examined < 4*(len(routed)+2); examined++ {
 		cand := work[0]
 		work = work[1:]
@@ -302,7 +315,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		if len(verified) >= spfreshClosurePool(m.config.Replication) {
 			break
 		}
-		row, rerr := spfreshReadCentroidForWrite(m.tx, storage, cand.cellID, cand.fineID)
+		row, rerr := m.spfreshConsumeCentroidRead(storage, specFuts, cand.cellID, cand.fineID)
 		if rerr != nil {
 			if errors.Is(rerr, errSPFreshNotFound) {
 				continue
@@ -381,6 +394,9 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		return fmt.Errorf("spfresh index %q: no ACTIVE fine centroid among %d routed candidates: %w", m.index.Name, len(routed), errSPFreshStaleRoute)
 	}
 	kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha)
+
+	// (Speculative futures the cutoffs never examined are simply dropped:
+	// snapshot reads, no conflict ranges, already paid for by the burst.)
 
 	// Same-pk serialization point: an existing copy-set means this is an
 	// update — clear the old keys derived from THIS read (a split moving the
@@ -672,4 +688,30 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	}
 	return fmt.Sprintf("members=%d sampled=%d ok=%d membershipWithoutEntry=%d targetStates=%v%s",
 		len(pks), sampled, ok, missingEntry, targetStates, examples)
+}
+
+// spfreshConsumeCentroidRead resolves a candidate centroid row from the
+// speculative snapshot burst when one was issued, adding the read conflict
+// key the lifecycle fence requires (snapshot + explicit conflict key is
+// exactly the serializable read spfreshReadCentroidForWrite performs — same
+// read version, same data, same conflict surface). Candidates without a
+// burst future (forward children discovered mid-walk) fall back to the
+// direct serializable read.
+func (m *spfreshIndexMaintainer) spfreshConsumeCentroidRead(storage *spfreshStorage, futs map[int64]fdb.FutureByteSlice, cellID, fineID int64) (spfreshCentroidRow, error) {
+	fut, ok := futs[fineID]
+	if !ok {
+		return spfreshReadCentroidForWrite(m.tx, storage, cellID, fineID)
+	}
+	delete(futs, fineID)
+	data, err := fut.Get()
+	if err != nil {
+		return spfreshCentroidRow{}, fmt.Errorf("spfresh: read centroid (%d,%d): %w", cellID, fineID, err)
+	}
+	if cerr := m.tx.AddReadConflictKey(storage.centroidKey(cellID, fineID)); cerr != nil {
+		return spfreshCentroidRow{}, cerr
+	}
+	if data == nil {
+		return spfreshCentroidRow{}, errSPFreshNotFound
+	}
+	return decodeCentroidRow(data)
 }

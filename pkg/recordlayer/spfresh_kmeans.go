@@ -270,14 +270,31 @@ func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, work
 
 // spfreshSquaredDistance is squared L2 — the k-means objective and the routing
 // comparator (monotone in true L2, so nearest-centroid selection never needs
-// the sqrt).
+// the sqrt). Four independent accumulator lanes break the loop-carried
+// dependency the scalar form serializes on (Go does not auto-vectorize; this
+// kernel is the single largest flat CPU cost in build and routing profiles).
+// The lane-summed float order differs from the scalar form only in last-ulp
+// rounding, and is itself fixed per length — determinism per (vectors, k,
+// seed) is unchanged.
 func spfreshSquaredDistance(a, b []float64) float64 {
-	var sum float64
-	for i := range a {
-		d := a[i] - b[i]
-		sum += d * d
+	b = b[:len(a)] // one bounds check; lets the compiler drop the per-lane ones
+	var s0, s1, s2, s3 float64
+	i := 0
+	for ; i+4 <= len(a); i += 4 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		s0 += d0 * d0
+		s1 += d1 * d1
+		s2 += d2 * d2
+		s3 += d3 * d3
 	}
-	return sum
+	for ; i < len(a); i++ {
+		d := a[i] - b[i]
+		s0 += d * d
+	}
+	return (s0 + s1) + (s2 + s3)
 }
 
 // spfreshCandidate is a (id, squared-distance) pair used by routing and

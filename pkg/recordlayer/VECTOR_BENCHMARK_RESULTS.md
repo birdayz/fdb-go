@@ -390,3 +390,74 @@ The paper-authors' re-review caught two defects in the freeze run above:
 Both resolved by one 1M foreground refill on the shipped path (RNG on,
 corrected ε), re-sweeping ε on/off + kc-cap rows and reporting entries /
 effective replication / lifecycle actions — table below when it lands.
+
+### SPFresh profile-driven perf pass (post-094.5-freeze)
+
+Same harness throughout (100k bulk build, 400 queries, default 32/64/200/ε7,
+GOMAXPROCS=8); recall@10 pinned at 0.9900 in every row:
+
+| Stage | Build | Query p50 | p99 |
+|-------|-------|-----------|-----|
+| pre-pass | 7,161 vec/s | 21.1ms | 30.2ms |
+| + span posting scan (zero per-entry tuple decode/boxing) | — | 19.2ms | 27.5ms |
+| + 4-lane distance kernel + reflection-free sorts | 10,034 vec/s | 17.8ms | 24.5ms |
+| + RaBitQ 2-bit fast unpack | **10,704 vec/s** | **15.1ms** | **21.0ms** |
+
+Fast budget at the corrected ε (16/24/64/ε7): **p50 5.74ms, p99 7.98ms @
+recall 0.9263** — under the RFC §9 <8ms target; the recalibrated Eq.(3)
+pruning now binds (default keeps 0.990 recall at −15% latency; the fast
+point trades ~5pp recall for ~2× latency, the Fig. 12 shape).
+
+Kernels (128 dims): spfreshSquaredDistance 83→50 ns (4 accumulator lanes;
+the single largest flat CPU cost in build+routing), Scorer.Score 165→108 ns
+(fused 2-bit unpack+dot, bit-identical to Distance — pinned by the
+differential; landed after the table row above, so even 15.1ms is
+conservative). Allocation profile: the postingPK/mergeHit per-entry columns
+(~3.7GB across the run) are gone; the remaining query-path allocations are
+fdbgo client-layer (snapshot/RYW caches, range materialization) — gated
+behind the FDB C++-parity review, tracked as a follow-up.
+
+Build speedup vs the pre-branch baseline (1,524 vec/s single-thread
+k-means): **7.0×**.
+
+### SPFresh 1M re-pin (shipped write path: RNG closure + corrected ε)
+
+The paper re-review's two conditions, one run: fresh 1M foreground fill on
+the RNG write path with ε applied to d² directly. Topology: **165 cells,
+6,228 fine centroids, 1,044,243 entries (effective ρ ≈ 1.04)**, 12,554
+lifecycle actions, every posting ≤Lmax but one ≤4Lmax. The RNG rule nearly
+halved the index: 1.95M → 1.04M entries, 11,336 → 6,228 lists vs the
+ratio-only closure.
+
+| Config | recall@10 | p50 | p99 | QPS@16 |
+|--------|-----------|-----|-----|--------|
+| default 32/64/200, ε off | 0.9610 | 24.1ms | 34.5ms | 149 |
+| **default 32/64/200, ε 7** | **0.9610** | **23.9ms** | 27.1ms | **148** |
+| fast 16/24/64, ε off | 0.8300 | 9.2ms | 11.1ms | 422 |
+| **fast 16/24/64, ε 7** | **0.8300** | **9.3ms** | 13.8ms | **421** |
+| kc=128 cap, ε 7 | 0.9930 | 45.4ms | 54.8ms | 91 |
+| kc=192 cap, ε 7 | 0.9980 | 69.2ms | 80.4ms | 64 |
+| kc=192 cap, ε 3 | 0.9980 | 68.7ms | 76.6ms | 64 |
+| kc=192 cap, ε 15 | 0.9980 | 68.6ms | 75.5ms | 64 |
+
+**Re-pinned freeze (same knobs, better numbers):** default 0.961 @ 23.9ms /
+148 QPS (+0.9pp, −14% p50, +10% QPS vs the pre-RNG topology); fast 0.830 @
+9.3ms / 421 QPS. The kc-tail ladder gained the most from the leaner
+topology: 0.993 @ 45ms and 0.998 @ 69ms (were 0.973/0.987 at higher cost) —
+kc now covers 2× the list fraction.
+
+**ε verdict, measured at the PUBLISHED setting (8× in d², SPTAG semantics):
+genuinely inert on SIFT-1M.** ε ∈ {0,3,7,15} are indistinguishable at every
+budget and at the kc=192 cap. The mis-scaling explained nothing here — the
+distance concentration conclusion stands at the corrected operating point.
+Stays default-ON (free; spread-out distributions are where Eq. (3) pays).
+
+**Fill: 110 vec/s — a real regression with a known cause.** This run's
+binary predates the speculative-burst fix: the RNG diversity scan
+REAL-reads up to spfreshClosurePool(r)=16 candidate rows SEQUENTIALLY per
+insert (vs ~2-3 pre-RNG), and 1M-density routing keeps more candidates
+inside the ratio bound. ρ dropping to 1.04 means writes went DOWN — the
+verification round trips are the cost. (The run was also contended by
+concurrent profiling for ~1h.) The burst fix (one snapshot burst + explicit
+conflict keys on examined rows — semantics-identical) is in the next
+commit; the clean fill A/B follows it.

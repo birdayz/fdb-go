@@ -1,8 +1,10 @@
 package recordlayer
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -91,11 +93,14 @@ type spfreshSearchResult struct {
 	Distance   float64
 }
 
-// spfreshApproxHit is an approximate candidate before re-rank.
+// spfreshApproxHit is an approximate candidate before re-rank. span is the
+// posting key's flat-packed pk suffix (see postingPKSpan) — the dedup key,
+// the sidecar-key suffix, and the deterministic tie-break; it is decoded to
+// a tuple only for the final k winners. Hot-loop entries (~kc·Lavg per
+// query) never box a tuple.
 type spfreshApproxHit struct {
-	pk    tuple.Tuple
-	pkKey string
-	est   float64
+	span string
+	est  float64
 }
 
 // search returns the k nearest neighbors of query. The routing cache must be
@@ -129,8 +134,11 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	}
 
 	// Residual distance estimation per posting; min-estimate dedup across
-	// closure replicas (RFC-094 §4/§7).
-	best := make(map[string]*spfreshApproxHit)
+	// closure replicas (RFC-094 §4/§7). best is keyed by the raw pk span —
+	// the map insert copies the span to an owned string ONCE per distinct pk
+	// (a lookup with the string(span) conversion never allocates); nothing in
+	// the hot loop decodes a tuple.
+	best := make(map[string]float64)
 	residual := make([]float64, len(query))
 	var forwards []spfreshRouted // stale-cache HDR redirects, resolved after the burst
 	fetchAndScore := func(rts []spfreshRouted) error {
@@ -158,8 +166,9 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			// codes (the per-code allocation path dominated estimate CPU —
 			// 094.4).
 			score := s.quant.scorer(residual, s.config.NumDimensions)
+			prefixLen := len(s.storage.postings.Pack(tuple.Tuple{f.routed.fineID}))
 			for _, kv := range kvs {
-				pk, isEntry, perr := s.storage.postingPK(kv.Key)
+				span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
 				if perr != nil {
 					return perr
 				}
@@ -182,7 +191,9 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 				if derr != nil {
 					return derr
 				}
-				s.mergeHit(best, pk, est)
+				if cur, ok := best[string(span)]; !ok || est < cur {
+					best[string(span)] = est
+				}
 			}
 		}
 		return nil
@@ -224,8 +235,9 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 				residual[d] = query[d] - f.routed.vec[d]
 			}
 			score := s.quant.scorer(residual, s.config.NumDimensions)
+			prefixLen := len(s.storage.postings.Pack(tuple.Tuple{f.routed.fineID}))
 			for _, kv := range kvs {
-				pk, isEntry, perr := s.storage.postingPK(kv.Key)
+				span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
 				if perr != nil || !isEntry {
 					continue // chain depth 2: next refresh handles it
 				}
@@ -233,7 +245,9 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 				if derr != nil {
 					return nil, derr
 				}
-				s.mergeHit(best, pk, est)
+				if cur, ok := best[string(span)]; !ok || est < cur {
+					best[string(span)] = est
+				}
 			}
 		}
 	}
@@ -242,16 +256,16 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		return nil, nil
 	}
 
-	// Top-C by estimate.
-	hits := make([]*spfreshApproxHit, 0, len(best))
-	for _, h := range best {
-		hits = append(hits, h)
+	// Top-C by estimate; deterministic span tie-break.
+	hits := make([]spfreshApproxHit, 0, len(best))
+	for span, est := range best {
+		hits = append(hits, spfreshApproxHit{span: span, est: est})
 	}
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].est != hits[j].est {
-			return hits[i].est < hits[j].est
+	slices.SortFunc(hits, func(a, b spfreshApproxHit) int {
+		if c := cmp.Compare(a.est, b.est); c != 0 {
+			return c
 		}
-		return hits[i].pkKey < hits[j].pkKey
+		return strings.Compare(a.span, b.span)
 	})
 	cTop := s.c
 	if cTop < k {
@@ -261,15 +275,16 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		hits = hits[:cTop]
 	}
 
-	// Exact re-rank from the fp16 sidecar (parallel point reads). With the
-	// sidecar disabled the estimates stand (the maintainer's record-read
-	// fallback arrives with the maintainer slice).
-	results := make([]spfreshSearchResult, 0, len(hits))
+	// Exact re-rank from the fp16 sidecar (parallel point reads; the sidecar
+	// key is built straight from the span — no decode). With the sidecar
+	// disabled the estimates stand (the maintainer's record-read fallback
+	// arrives with the maintainer slice).
 	if s.config.Sidecar && !s.noRerank {
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
-			futures[i] = tx.Snapshot().Get(s.storage.sidecarKey(h.pk))
+			futures[i] = tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(h.span))
 		}
+		kept := hits[:0]
 		for i, h := range hits {
 			data, gerr := futures[i].Get()
 			if gerr != nil {
@@ -282,38 +297,32 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			if derr != nil {
 				return nil, derr
 			}
-			results = append(results, spfreshSearchResult{
-				PrimaryKey: h.pk,
-				Distance:   spfreshMetricDistance(s.config.Metric, query, vec),
-			})
+			h.est = spfreshMetricDistance(s.config.Metric, query, vec)
+			kept = append(kept, h)
 		}
-	} else {
-		for _, h := range hits {
-			results = append(results, spfreshSearchResult{PrimaryKey: h.pk, Distance: h.est})
-		}
+		hits = kept
+		slices.SortFunc(hits, func(a, b spfreshApproxHit) int {
+			if c := cmp.Compare(a.est, b.est); c != 0 {
+				return c
+			}
+			return strings.Compare(a.span, b.span)
+		})
+	}
+	if k < len(hits) {
+		hits = hits[:k]
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].Distance != results[j].Distance {
-			return results[i].Distance < results[j].Distance
+	// Decode pk tuples for the k winners only (~k decodes per query vs one
+	// per scanned posting entry before the span rewrite).
+	results := make([]spfreshSearchResult, 0, len(hits))
+	for _, h := range hits {
+		pk, derr := tuple.Unpack([]byte(h.span))
+		if derr != nil {
+			return nil, fmt.Errorf("spfresh search: decode winner pk: %w", derr)
 		}
-		return string(results[i].PrimaryKey.Pack()) < string(results[j].PrimaryKey.Pack())
-	})
-	if k < len(results) {
-		results = results[:k]
+		results = append(results, spfreshSearchResult{PrimaryKey: pk, Distance: h.est})
 	}
 	return results, nil
-}
-
-func (s *spfreshSearcher) mergeHit(best map[string]*spfreshApproxHit, pk tuple.Tuple, est float64) {
-	key := string(pk.Pack())
-	if h, ok := best[key]; ok {
-		if est < h.est {
-			h.est = est
-		}
-		return
-	}
-	best[key] = &spfreshApproxHit{pk: pk, pkKey: key, est: est}
 }
 
 // resolveForward point-reads the children's centroid rows using the cellID

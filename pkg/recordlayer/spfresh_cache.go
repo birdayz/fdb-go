@@ -1,10 +1,11 @@
 package recordlayer
 
 import (
+	"cmp"
 	"container/list"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -433,11 +434,11 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 		}
 	}
 
-	sort.Slice(routed, func(i, j int) bool {
-		if routed[i].d2 != routed[j].d2 {
-			return routed[i].d2 < routed[j].d2
+	slices.SortFunc(routed, func(a, b spfreshRouted) int {
+		if c := cmp.Compare(a.d2, b.d2); c != 0 {
+			return c
 		}
-		return routed[i].fineID < routed[j].fineID
+		return cmp.Compare(a.fineID, b.fineID)
 	})
 	if writeBudget {
 		// Separate budgets per state, one sorted pass: up to kc ACTIVE and

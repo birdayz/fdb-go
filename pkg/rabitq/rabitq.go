@@ -248,6 +248,29 @@ func unpackComponentsInto(data []byte, result []int, numExBits int) error {
 	if len(data) < expectedBytes {
 		return fmt.Errorf("rabitq: truncated encoded vector data: got %d bytes, need %d", len(data), expectedBytes)
 	}
+	// Fast path for the production default (numExBits=1 ⇒ 2 bits/component
+	// ⇒ exactly 4 components per byte, high bits first). Bit-identical to
+	// the generic loop — pinned by the differential fuzz — and assigns
+	// every slot, so it needs no zeroing pass.
+	if bitsPerComponent == 2 && numDimensions%4 == 0 {
+		for i, b := range data[:numDimensions/4] {
+			j := i * 4
+			result[j] = int(b >> 6)
+			result[j+1] = int(b >> 4 & 3)
+			result[j+2] = int(b >> 2 & 3)
+			result[j+3] = int(b & 3)
+		}
+		return nil
+	}
+	unpackComponentsGenericInto(data, result, bitsPerComponent)
+	return nil
+}
+
+// unpackComponentsGenericInto is the any-width bit loop; the fast path's
+// differential fuzz runs both on the same inputs. data must already be
+// length-validated.
+func unpackComponentsGenericInto(data []byte, result []int, bitsPerComponent int) {
+	numDimensions := len(result)
 	// The bit loop ACCUMULATES via |= — the buffer must start zeroed, and a
 	// reused Scorer buffer arrives dirty (re-scoring the SAME code is
 	// idempotent under OR, which is exactly how the original differential
@@ -288,7 +311,6 @@ func unpackComponentsInto(data []byte, result []int, numExBits int) error {
 			currentByte = data[pos]
 		}
 	}
-	return nil
 }
 
 // --- RaBitQ Quantizer ---
@@ -702,17 +724,34 @@ func (s *Scorer) Score(data []byte, numDimensions int) (float64, error) {
 	}
 	fAddEx := math.Float64frombits(binary.BigEndian.Uint64(data[1:]))
 	fRescaleEx := math.Float64frombits(binary.BigEndian.Uint64(data[9:]))
-	if cap(s.buf) < numDimensions {
-		s.buf = make([]int, numDimensions)
-	}
-	comps := s.buf[:numDimensions]
-	if err := unpackComponentsInto(data[25:], comps, s.numExBits); err != nil {
-		return 0, err
-	}
 	cb := float64(int(1)<<s.numExBits) - 0.5
 	var dotProduct float64
-	for i := 0; i < numDimensions && i < len(s.query); i++ {
-		dotProduct += s.query[i] * (float64(comps[i]) - cb)
+	if packed := data[25:]; s.numExBits == 1 && numDimensions%4 == 0 &&
+		len(s.query) >= numDimensions && len(packed) >= numDimensions/4 {
+		// Fused unpack+dot for the production default (2 bits/component ⇒
+		// 4 components per byte, high bits first): skips the int-buffer
+		// round trip. The adds are SEQUENTIAL in ascending dimension order —
+		// bit-identical to the buffered loop below (Go never reassociates
+		// floats), pinned by TestScorerMatchesDistance.
+		q := s.query
+		for i, bb := range packed[:numDimensions/4] {
+			j := i * 4
+			dotProduct += q[j] * (float64(bb>>6) - cb)
+			dotProduct += q[j+1] * (float64(bb>>4&3) - cb)
+			dotProduct += q[j+2] * (float64(bb>>2&3) - cb)
+			dotProduct += q[j+3] * (float64(bb&3) - cb)
+		}
+	} else {
+		if cap(s.buf) < numDimensions {
+			s.buf = make([]int, numDimensions)
+		}
+		comps := s.buf[:numDimensions]
+		if err := unpackComponentsInto(data[25:], comps, s.numExBits); err != nil {
+			return 0, err
+		}
+		for i := 0; i < numDimensions && i < len(s.query); i++ {
+			dotProduct += s.query[i] * (float64(comps[i]) - cb)
+		}
 	}
 	euclideanSquare := fAddEx + s.gAdd + fRescaleEx*dotProduct
 	var d float64

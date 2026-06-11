@@ -250,6 +250,13 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 	if amortize < 1 {
 		amortize = 1
 	}
+	// Ground truth once per query, not once per (config, query): brute force
+	// over the base set dominated multi-config sweep wall-clock (~26% of the
+	// profile) and is identical across configs.
+	wants := make([][]int64, len(queries))
+	for qi, qv := range queries {
+		wants[qi] = bruteForceIDs(base, float32sToFloat64s(qv), k)
+	}
 	for _, cfg := range strings.Split(sweep, ",") {
 		parts := strings.Split(cfg, ":")
 		if len(parts) != 3 && len(parts) != 4 {
@@ -291,7 +298,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 				if merr != nil {
 					return nil, merr
 				}
-				for _, qv := range batch {
+				for bi, qv := range batch {
 					query := float32sToFloat64s(qv)
 					qStart := time.Now()
 					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
@@ -310,9 +317,8 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 						got = append(got, res.GetValue().Key[0].(int64))
 					}
 					batchLat = append(batchLat, time.Since(qStart))
-					want := bruteForceIDs(base, query, k)
 					wantSet := make(map[int64]bool, k)
-					for _, id := range want {
+					for _, id := range wants[lo+bi] {
 						wantSet[id] = true
 					}
 					for _, id := range got {

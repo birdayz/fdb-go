@@ -447,3 +447,17 @@ func TestSPFreshBuilderFineIDPool(t *testing.T) {
 		t.Fatal("an over-block claim must error, not refill forever")
 	}
 }
+
+func BenchmarkSPFreshSquaredDistance(b *testing.B) {
+	rng := rand.New(rand.NewSource(3))
+	x := make([]float64, 128)
+	y := make([]float64, 128)
+	for i := range x {
+		x[i], y[i] = rng.NormFloat64(), rng.NormFloat64()
+	}
+	var sink float64
+	for i := 0; i < b.N; i++ {
+		sink += spfreshSquaredDistance(x, y)
+	}
+	_ = sink
+}

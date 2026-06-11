@@ -660,3 +660,73 @@ func TestScorerMatchesDistance(t *testing.T) {
 		}
 	}
 }
+
+// FuzzUnpackComponentsFastPath pins the 2-bit fast path bit-identical to the
+// generic loop on the same inputs (the production default numExBits=1 shape).
+func FuzzUnpackComponentsFastPath(f *testing.F) {
+	f.Add([]byte{0xB1, 0x00, 0xFF, 0x6C}, uint8(16))
+	f.Fuzz(func(t *testing.T, data []byte, dimsRaw uint8) {
+		dims := (int(dimsRaw)%64 + 1) * 4 // %4 == 0, 4..256
+		need := dims / 4
+		if len(data) < need {
+			return
+		}
+		fast := make([]int, dims)
+		if err := unpackComponentsInto(data, fast, 1); err != nil {
+			t.Fatalf("fast path errored on valid input: %v", err)
+		}
+		generic := make([]int, dims)
+		unpackComponentsGenericInto(data, generic, 2)
+		for i := range fast {
+			if fast[i] != generic[i] {
+				t.Fatalf("component %d: fast %d != generic %d", i, fast[i], generic[i])
+			}
+		}
+	})
+}
+
+func BenchmarkScorerScore(b *testing.B) {
+	q := NewQuantizer(MetricEuclidean, 1)
+	vec := make([]float64, 128)
+	query := make([]float64, 128)
+	for i := range vec {
+		vec[i] = float64(i%17)/8 - 1
+		query[i] = float64(i%13)/6 - 1
+	}
+	code := q.Encode(vec)
+	s := q.NewScorer(query)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.Score(code, 128); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// TestScorerFusedPathMatchesDistance forces the fused 2-bit unpack+dot shape
+// (exBits=1, dims%4==0) that the random-dims differential only hits by
+// chance, across the production dimension counts.
+func TestScorerFusedPathMatchesDistance(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(11))
+	q := NewQuantizer(MetricEuclidean, 1)
+	for _, dims := range []int{4, 64, 128, 256} {
+		for trial := 0; trial < 50; trial++ {
+			vec := make([]float64, dims)
+			query := make([]float64, dims)
+			for i := range vec {
+				vec[i] = rng.NormFloat64() * 3
+				query[i] = rng.NormFloat64() * 3
+			}
+			code := q.Encode(vec)
+			want, werr := q.Distance(query, code, dims)
+			got, gerr := q.NewScorer(query).Score(code, dims)
+			if (werr == nil) != (gerr == nil) {
+				t.Fatalf("dims=%d trial=%d: error mismatch: %v vs %v", dims, trial, werr, gerr)
+			}
+			if werr == nil && got != want {
+				t.Fatalf("dims=%d trial=%d: fused Score=%v Distance=%v", dims, trial, got, want)
+			}
+		}
+	}
+}
