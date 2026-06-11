@@ -1,0 +1,141 @@
+# SPFresh Operations Runbook
+
+Operating the FDB-native SPFresh vector index (RFC-094) in production: how to
+deploy it, what to watch, which knob to turn when, and what to do when a
+signal goes bad. Numbers referenced here come from
+`VECTOR_BENCHMARK_RESULTS.md` (SIFT-1M, single-node testcontainer — re-derive
+on your hardware before treating them as SLOs).
+
+## 1. Deployment shapes
+
+SPFresh maintenance is **caller-driven**: nothing runs unless something calls
+it. Pick one of:
+
+- **In-process on writers** (RFC-094 §6, the benchmark shape): each writer
+  process loops `RebalanceSPFreshIndex` beside its write load. Simple; the
+  rebalancer competes with your writers for process CPU.
+- **Sweeper fleet** (multi-tenant): dedicated workers loop
+  `SweepSPFreshIndexes(ctx, db, tenants, opts)` over the tenant list on a
+  cadence (seconds to minutes). Concurrent sweepers are safe by construction
+  (unique lease owners, task-level exclusion) — shard the tenant list to
+  waste fewer scans, or run the same list everywhere. Per-tenant failures are
+  isolated and reported in the joined error; the pass continues.
+- **Bulk build**: load records with the index DISABLED, `BuildSPFreshIndex`,
+  `MarkIndexReadable`. Crash-safe: rerunning takes over a dead build's token
+  and its cellfin state machine resumes idempotently. A build that died
+  pre-flip leaves the token held — rerun `BuildSPFreshIndex`; never write
+  around it.
+
+Budgets: `SPFreshSweepOptions.MaxRoundsPerTenant` (default 8) and
+`MaxActionsPerTenant` (default 64) bound a pass. Undrained tenants are
+reported, not errored — the next pass continues them. Cleanup writes consume
+budget; foreign-lease skips do not.
+
+## 2. Metrics
+
+Set a `StoreTimer` on the `FDBRecordContext` (`rtx.SetTimer(timer)`) for
+query/write instrumentation, and `SPFreshSweepOptions.Timer` for maintenance.
+Scrape with `timer.Snapshot()` and export however you export everything else.
+Event reference (`spfresh_metrics.go`):
+
+| Event | Meaning | Healthy looks like |
+|---|---|---|
+| `spfresh_search` (timed) | per-search latency | p50 tracks your sweep table for the configured (w,kc,c) |
+| `spfresh_postings_probed` / `_pruned` | Eq.(3) pruning split per search | probed ≈ kc on SIFT-like data (pruning binds only at fine granularity) |
+| `spfresh_entries_scanned` | posting entries estimated per search | ≈ probed × Lavg; a climb means oversized postings (check topology hist) |
+| `spfresh_rerank_reads` | sidecar point reads per search | ≈ min(C, candidates) |
+| `spfresh_starvation_widenings` | pruned-tail refetches | ~0; sustained >0 means ε too tight for the data |
+| `spfresh_forward_follows` | stale-cache split redirects | bursts during heavy churn, then decays; sustained high → raise cache refresh rate |
+| `spfresh_insert` (timed) | per-insert latency inside the save tx | single-digit ms |
+| `spfresh_insert_fence_reads` | candidate state reads per insert | ~2-4/insert typical; near the pool cap (16) constantly means dense same-direction routing |
+| `spfresh_insert_replicas` | copy-set size per insert | ≈ effective ρ (~1.0-1.2) |
+| `spfresh_stale_route_retries` | insert re-route attempts | ~0; spikes during splits of hot cells are normal, sustained means cache thrash |
+| `spfresh_splits` / `_merges` / `_csplits` / `_npas` | lifecycle actions | proportional to write volume (§5.2.2: actions track entries written) |
+| `spfresh_zombie_cleans` | stale task cleanups | small; a flood follows crashes or mass merges |
+| `spfresh_lease_skips` | tasks skipped under another executor's live lease | ~0 with sharded sweepers; high means overlapping sweepers duplicating scans |
+
+## 3. Tuning
+
+**Per-query** (no redeploy): the scan contract's `High` tuple is
+`(k, kc, w, c[, ε])`. Frozen defaults (SIFT-1M): default 32/64/200/ε7 —
+0.96 recall@10; fast 16/24/64/ε7 — 0.83 @ ~9ms. Recall ladder: kc 128 →
+~0.99 @ ~45ms, kc 192 → ~0.998 @ ~69ms (pre-perf-stack numbers; the shipped
+binary is 25-32% faster).
+
+**Per-index** (set at CREATE; immutable): `spfreshLmax` (split threshold,
+256 default — reply-budget sized), `spfreshReplication`/`spfreshAlpha`
+(closure; r=2/α=1.2 — measured: raising either does ~nothing on SIFT-like
+data at default granularity), `spfreshSidecar` (exact re-rank source; leave
+on — disabling collapses recall ~0.999→0.69 for no real savings).
+
+**The ingest-rate/recall trade** (measured, the one operational surprise):
+recall at fixed probes depends on the ingest rate the topology was built
+under — 530 vec/s fills read ~0.93 default where 110 vec/s fills read ~0.96.
+Writers outrunning the rebalancer assign vectors against a lagging topology.
+If steady-state recall matters more than ingest speed: throttle bulk ingest
+phases, or raise kc afterward (the kc=192 point holds ~0.99 even on
+fast-filled topologies), or use the bulk build for initial loads.
+
+## 4. Playbooks
+
+**Recall dropped.**
+1. `SPFreshDebugTopology` — oversized postings in the hist (`>Lmax`,
+   `4Lmax+`)? Maintenance is behind: check the sweeper is running, raise its
+   cadence/budgets; watch `spfresh_splits` start moving.
+2. Hist clean? Check whether a bulk-ingest phase just ran (ingest-rate
+   trade above) — raise kc per-query as the stopgap.
+3. `spfresh_starvation_widenings` sustained — ε too aggressive for this
+   data; raise ε or disable per-query (5th tuple element 0).
+4. `SPFreshDebugIntegrity(…, n)` — sampled membership⊆postings violations
+   mean a real bug: stop, capture topology+integrity output, file it.
+
+**Task queue growing / `spfresh_lease_skips` high.**
+Sweeper underprovisioned or overlapping. One sweeper per tenant shard;
+raise `MaxActionsPerTenant` before adding workers (budget, not parallelism,
+is usually the limit). Skips with NO other sweeper running mean leases from
+a crashed worker — they expire on their own (lease deadline); a flood of
+`spfresh_zombie_cleans` right after is the cleanup happening.
+
+**Inserts erroring `did not converge after cache reloads`.**
+Every routed candidate failed the state fence three times — extreme churn on
+a hot region (mass splits mid-insert). The error is retryable: the caller's
+transaction retry re-runs with a fresh cache. Sustained occurrences mean the
+rebalancer can't keep up with a hot-spot write pattern: raise sweeper
+budgets; check one cell isn't absorbing all writes (topology dump).
+
+**`transaction_too_large` on saves.**
+A ballooned posting pushed the insert tx over limits — should not happen
+within the 4×Lmax envelope (the chunked drain holds it); if seen, the
+cascade stalled: topology hist will show `4Lmax+` rows; run/fix maintenance
+and capture the topology output.
+
+**Build appears stuck.**
+`BuildSPFreshIndex` reruns take over a dead build (token + cellfin resume).
+A build that finished but didn't flip (crash in the gap) re-flips on rerun.
+Writers during a build error with "a bulk build is in flight" — that is the
+designed fence, not a bug.
+
+**Generation bumped unexpectedly / queries miss fresh writes.**
+Builds flip generations; foreground writes target the readable generation
+with a REAL-read fence, so a mid-write flip aborts and retries the write
+into the new generation. Queries refresh routing on an amortized changelog
+timer — sustained `spfresh_forward_follows` means the refresh interval is
+too long for your churn.
+
+## 5. Diagnostics (opt-in, off the hot path)
+
+- `SPFreshDebugTopology(rtx, store, index)` — generation, cells, ACTIVE
+  fines, entry count (→ effective ρ = entries/records), task backlog by
+  kind, posting-size histogram. O(index) — never call it on a serving path.
+- `SPFreshDebugIntegrity(rtx, store, index, n)` — n sampled pks:
+  membership ⊆ postings and all targets ACTIVE.
+- `SPFreshEnableAudit()` / `SPFreshDisableAudit()` — per-lifecycle-step
+  stderr trace for debugging a specific incident.
+
+## 6. Known limits
+
+- Bulk build at ≥1M is currently slower than the foreground fill (wave-B
+  flat-scan, TODO #6) — prefer foreground fills for big loads until fixed.
+- Scale validated to 1M vectors; 10M soak pending.
+- Single FDB cluster; multi-tenant via the sweeper; cross-cluster is out of
+  scope.

@@ -87,7 +87,7 @@ var _ = Describe("SPFresh NPA reassignment", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", bFine))).To(Succeed())
+		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", bFine, nil))).To(Succeed())
 
 		// The boundary's copy-set now includes the nearer child; its posting
 		// entry exists there; the task row is gone. Re-running is a no-op.
@@ -122,7 +122,7 @@ var _ = Describe("SPFresh NPA reassignment", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", bFine))).To(Succeed(), "re-run on a cleared task is a no-op")
+		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", bFine, nil))).To(Succeed(), "re-run on a cleared task is a no-op")
 		// Membership/posting invariant across the WHOLE index after NPA:
 		// every membership entry has its posting row.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -151,7 +151,7 @@ var _ = Describe("SPFresh NPA reassignment", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", 12345))).To(Succeed())
+		Expect(errOnly(spfreshNPARun(ctx, sharedDB, storage, config, "npa-test", 12345, nil))).To(Succeed())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskNPA, 12345)).Get()
 			Expect(gerr).NotTo(HaveOccurred())

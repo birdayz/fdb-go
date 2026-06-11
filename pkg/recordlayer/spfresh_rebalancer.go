@@ -156,6 +156,11 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		return refs[i].id < refs[j].id
 	})
 
+	// One routing cache per round for the NPA arm (lazily loaded): the
+	// per-task full reload was O(fines) × one NPA per split — the dominant
+	// maintenance CPU at fine granularity. Round staleness is the same
+	// tolerated staleness as the plan phase's snapshot reads.
+	var npaRouting *spfreshRoutingCache
 	// worked counts COMMITTED WRITES — lifecycle actions and zombie-cleanup
 	// clears (both make progress and cost real transactions). Foreign-lease
 	// and task-gone skips write nothing and consume no budget: a tenant whose
@@ -188,7 +193,15 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 			timer.Increment(CountSPFreshSplits)
 			worked++
 		case spfreshTaskNPA:
-			wrote, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id)
+			if npaRouting == nil {
+				npaRouting = newSPFreshRoutingCache(0)
+				if lerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+					return npaRouting.fullReload(rtx.Transaction(), s, s.generation)
+				}); lerr != nil {
+					return worked, fmt.Errorf("NPA routing load: %w", lerr)
+				}
+			}
+			wrote, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
 			if nerr != nil {
 				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
 			}

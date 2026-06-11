@@ -531,3 +531,16 @@ properties, exactly the paper re-review's rider on the Lmax item. r stays
 2 (r=4 also costs ~20% fill throughput for nothing); the recall ladder
 beyond ~0.94 at 1M runs through granularity (Lmax), the refinement sweep,
 and kc.
+
+### Lmax=128 granularity probe, attempt 1 — killed; found the NPA reload bomb
+
+The α-sweep's verdict points at granularity, so: 1M foreground fill at
+Lmax=128. KILLED at 1h44m with the fill still incomplete at sustained
+~7.5-core CPU (Lmax=256 fills finish in 31-40 min): halving Lmax doubles
+the split count AND doubled the per-NPA cost, because **spfreshNPARun did a
+full O(fines) routing reload per task** — one reload per split, each over
+2× the fines. Fixed: the rebalancer now loads ONE routing cache per round
+and shares it across that round's NPAs (round staleness is the same
+tolerated staleness as the plan phase's snapshot reads; move transactions
+re-verify every pk). The probe reruns with the fix; this section gets the
+real Lmax=128 numbers then.

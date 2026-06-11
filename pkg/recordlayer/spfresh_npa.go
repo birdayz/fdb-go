@@ -31,7 +31,16 @@ const spfreshNPABatch = 64
 // errSPFreshNotFound-free semantics: a missing/zombie task is a clean no-op.
 // wrote reports whether any write committed (lifecycle work or a stale-task
 // clear) — false only for budget-free skips (task gone / foreign live lease).
-func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64) (wrote bool, err error) {
+//
+// routing is an optional pre-loaded cache shared across a rebalance round:
+// loading the full routing table PER TASK was the maintenance-CPU bomb at
+// fine granularity (one O(fines) reload × one NPA per split — the Lmax=128
+// probe burned 9+ CPU-hours at 1M before this). Round-level staleness is
+// tolerated by the same argument as the per-task snapshot staleness below:
+// the plan only chooses CANDIDATES; the move transaction re-verifies every
+// pk against authoritative state. nil loads a fresh cache (direct callers,
+// tests).
+func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64, routing *spfreshRoutingCache) (wrote bool, err error) {
 	// Claim + plan: resolve the children and the neighborhood, and collect
 	// move CANDIDATES (snapshot reads — staleness here only affects which pks
 	// get considered; the move tx re-verifies everything per pk).
@@ -72,9 +81,12 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		childA, childB = a, b
 
 		// Neighborhood: the K_n nearest fine centroids around each child.
-		cache := newSPFreshRoutingCache(0)
-		if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
-			return rerr
+		cache := routing
+		if cache == nil || !cache.ready(s.generation) {
+			cache = newSPFreshRoutingCache(0)
+			if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
+				return rerr
+			}
 		}
 		neighbors := map[int64]bool{}
 		for _, childID := range []int64{childA, childB} {
