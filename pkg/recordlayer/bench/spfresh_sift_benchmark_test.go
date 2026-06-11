@@ -438,18 +438,27 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	batchSize := siftEnvInt("SIFT_BATCH_SIZE", 200)
 	writers := siftEnvInt("SIFT_WRITERS", 4)
 
-	siftDir := resolveSIFTDir()
-	baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
-	if err != nil {
-		t.Fatalf("load base vectors: %v", err)
-	}
-	queryVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_query.fvecs"), numQueries)
-	if err != nil {
-		t.Fatalf("load query vectors: %v", err)
-	}
-	baseF64 := make([][]float64, n)
-	for i, v := range baseVecs {
-		baseF64[i] = float32sToFloat64s(v)
+	var baseF64 [][]float64
+	var queryVecs [][]float32
+	if os.Getenv("SIFT_SYNTHETIC") == "1" {
+		// Scales past the SIFT-1M file (the 10M soak): a deterministic
+		// SIFT-shaped Gaussian mixture, no dataset download.
+		baseF64, queryVecs = synthesizeClusteredVectors(n, numQueries, 128, 424242)
+		t.Logf("SYNTHETIC dataset: N=%d (Gaussian mixture, 128-D)", n)
+	} else {
+		siftDir := resolveSIFTDir()
+		baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
+		if err != nil {
+			t.Fatalf("load base vectors: %v", err)
+		}
+		queryVecs, err = LoadFVecs(filepath.Join(siftDir, "sift_query.fvecs"), numQueries)
+		if err != nil {
+			t.Fatalf("load query vectors: %v", err)
+		}
+		baseF64 = make([][]float64, n)
+		for i, v := range baseVecs {
+			baseF64[i] = float32sToFloat64s(v)
+		}
 	}
 	recordlayer.SPFreshEnableAudit()
 	defer recordlayer.SPFreshDisableAudit()

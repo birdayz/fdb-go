@@ -9,6 +9,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh StoreTimer instrumentation: the operator-facing counters must move
@@ -103,8 +104,43 @@ var _ = Describe("SPFresh StoreTimer instrumentation", func() {
 		Expect(total).To(BeNumerically(">", 0))
 		perKind := mtimer.GetCount(CountSPFreshSplits) + mtimer.GetCount(CountSPFreshMerges) +
 			mtimer.GetCount(CountSPFreshCSplits) + mtimer.GetCount(CountSPFreshNPAs) +
-			mtimer.GetCount(CountSPFreshZombieCleans)
+			mtimer.GetCount(CountSPFreshZombieCleans) + mtimer.GetCount(CountSPFreshCSplitDefers)
 		Expect(perKind).To(Equal(int64(total)),
 			"per-kind counters must decompose exactly the sweep's action count")
+	})
+
+	// Torvalds 094.4 r4: per-kind action counters must count ACTIONS — a
+	// merge-task cleanup clear is a zombie clean, not a merge; a csplit
+	// pause-window defer-bump is a deferral, not a coarse split.
+	It("attributes cleanup clears and defer-bumps to their own counters", func() {
+		config := DefaultSPFreshConfig(2)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-attr").Sub("kinds"), 1)
+		timer := NewStoreTimer()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			// A merge task whose centroid exists nowhere: the handler clears
+			// it — a cleanup write, not a merge.
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskMerge, 77)
+			Expect(terr).NotTo(HaveOccurred())
+			// A csplit task on a cell holding a SEALED row: the handler bumps
+			// the defer count — a deferral, not a coarse split.
+			spfreshSaveCentroid(tx, storage, 1, 10, encodeCentroidRowRaw(spfreshStateSealed, 0, 0, 0, vectorcodec.Serialize([]float64{1, 0})))
+			spfreshSaveCentroid(tx, storage, 1, 11, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{2, 0}))
+			_, terr = spfreshTaskSetIfAbsent(tx, storage, spfreshTaskCSplit, 1)
+			Expect(terr).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "attr-test", 7, 0, timer)
+		Expect(rerr).NotTo(HaveOccurred())
+		Expect(worked).To(Equal(2), "both writes consume budget")
+		Expect(timer.GetCount(CountSPFreshMerges)).To(BeZero(), "a cleanup clear is not a merge")
+		Expect(timer.GetCount(CountSPFreshCSplits)).To(BeZero(), "a defer-bump is not a coarse split")
+		Expect(timer.GetCount(CountSPFreshZombieCleans)).To(Equal(int64(1)))
+		Expect(timer.GetCount(CountSPFreshCSplitDefers)).To(Equal(int64(1)))
 	})
 })

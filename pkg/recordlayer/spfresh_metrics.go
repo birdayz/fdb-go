@@ -36,5 +36,6 @@ var (
 	CountSPFreshCSplits      = Event{"spfresh_csplits", "SPFresh Coarse Splits"}
 	CountSPFreshNPAs         = Event{"spfresh_npas", "SPFresh NPA Reassignments"}
 	CountSPFreshZombieCleans = Event{"spfresh_zombie_cleans", "SPFresh Zombie Cleanups"}
+	CountSPFreshCSplitDefers = Event{"spfresh_csplit_defers", "SPFresh Coarse Split Deferrals"}
 	CountSPFreshLeaseSkips   = Event{"spfresh_lease_skips", "SPFresh Lease Skips"}
 )

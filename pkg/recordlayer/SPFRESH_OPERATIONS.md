@@ -47,18 +47,20 @@ Event reference (`spfresh_metrics.go`):
 | `spfresh_starvation_widenings` | pruned-tail refetches | ~0; sustained >0 means ε too tight for the data |
 | `spfresh_forward_follows` | stale-cache split redirects | bursts during heavy churn, then decays; sustained high → raise cache refresh rate |
 | `spfresh_insert` (timed) | per-insert latency inside the save tx | single-digit ms |
-| `spfresh_insert_fence_reads` | candidate state reads per insert | ~2-4/insert typical; near the pool cap (16) constantly means dense same-direction routing |
+| `spfresh_insert_fence_reads` | candidate state reads per insert | low single digits (design expectation — meter your own baseline); pinned at the pool cap (16) means dense same-direction routing |
 | `spfresh_insert_replicas` | copy-set size per insert | ≈ effective ρ (~1.0-1.2) |
 | `spfresh_stale_route_retries` | insert re-route attempts | ~0; spikes during splits of hot cells are normal, sustained means cache thrash |
-| `spfresh_splits` / `_merges` / `_csplits` / `_npas` | lifecycle actions | proportional to write volume (§5.2.2: actions track entries written) |
-| `spfresh_zombie_cleans` | stale task cleanups | small; a flood follows crashes or mass merges |
-| `spfresh_lease_skips` | tasks skipped under another executor's live lease | ~0 with sharded sweepers; high means overlapping sweepers duplicating scans |
+| `spfresh_splits` / `_merges` / `_csplits` / `_npas` | lifecycle ACTIONS only (cleanup clears are excluded) | proportional to write volume (§5.2.2: actions track entries written) |
+| `spfresh_zombie_cleans` | cleanup writes across all kinds: stale/zombie/cooldown/no-target task clears | small; a flood follows crashes or mass merges |
+| `spfresh_csplit_defers` | coarse-split pause-window defer bumps | bursts while a hotspot cell's fine splits run; sustained means a stuck SEALED row |
+| `spfresh_lease_skips` | tasks skipped: another executor's live lease OR already completed (task gone) | ~0 with sharded sweepers; high means overlapping sweepers duplicating scans |
 
 ## 3. Tuning
 
 **Per-query** (no redeploy): the scan contract's `High` tuple is
 `(k, kc, w, c[, ε])`. Frozen defaults (SIFT-1M): default 32/64/200/ε7 —
-0.96 recall@10; fast 16/24/64/ε7 — 0.83 @ ~9ms. Recall ladder: kc 128 →
+0.96 recall@10; fast 16/24/64/ε7 — 0.79–0.83 @ ~9ms (the fast budget is the most
+sensitive to the ingest-rate trade below; both ends measured). Recall ladder: kc 128 →
 ~0.99 @ ~45ms, kc 192 → ~0.998 @ ~69ms (pre-perf-stack numbers; the shipped
 binary is 25-32% faster).
 
@@ -66,7 +68,8 @@ binary is 25-32% faster).
 256 default — reply-budget sized), `spfreshReplication`/`spfreshAlpha`
 (closure; r=2/α=1.2 — measured: raising either does ~nothing on SIFT-like
 data at default granularity), `spfreshSidecar` (exact re-rank source; leave
-on — disabling collapses recall ~0.999→0.69 for no real savings).
+on — disabling collapsed recall ~0.999→0.69 in the 094.4 slice-2 A/B; see
+the provenance note in VECTOR_BENCHMARK_RESULTS.md).
 
 **The ingest-rate/recall trade** (measured, the one operational surprise):
 recall at fixed probes depends on the ingest rate the topology was built

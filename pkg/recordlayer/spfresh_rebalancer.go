@@ -69,6 +69,26 @@ type spfreshTaskRef struct {
 	cellID int64
 }
 
+// spfreshTaskOutcome classifies one lifecycle-handler invocation for budget
+// and metrics attribution (Torvalds 094.4 r4: lumping cleanup writes into
+// the per-kind action counters made the operator metrics lie):
+//
+//	Skipped  — wrote nothing: task gone or foreign live lease. Budget-free.
+//	Cleaned  — committed a cleanup write (zombie/cooldown/no-target clear).
+//	Deferred — csplit's pause-window defer-count bump (a write, not a split).
+//	Acted    — the lifecycle action itself.
+//
+// Cleaned/Deferred/Acted all consume action budget: they are committed
+// writes that make progress.
+type spfreshTaskOutcome uint8
+
+const (
+	spfreshOutcomeSkipped spfreshTaskOutcome = iota
+	spfreshOutcomeCleaned
+	spfreshOutcomeDeferred
+	spfreshOutcomeActed
+)
+
 // spfreshRebalanceOnce scans the task queue once and runs actionable tasks,
 // in lifecycle order (splits before NPA before merges — splits enqueue NPAs;
 // merges of split children respect the cooldown anyway), up to `limit` tasks
@@ -201,41 +221,48 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 					return worked, fmt.Errorf("NPA routing load: %w", lerr)
 				}
 			}
-			wrote, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
+			out, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
 			if nerr != nil {
 				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
 			}
-			if wrote {
-				timer.Increment(CountSPFreshNPAs)
-				worked++
-			} else {
-				timer.Increment(CountSPFreshLeaseSkips)
-			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshNPAs)
 		case spfreshTaskMerge:
-			wrote, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
+			out, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
 			if merr != nil {
 				return worked, fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr)
 			}
-			if wrote {
-				timer.Increment(CountSPFreshMerges)
-				worked++
-			} else {
-				timer.Increment(CountSPFreshLeaseSkips)
-			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshMerges)
 		case spfreshTaskCSplit:
-			wrote, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
+			out, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
 			if cerr != nil {
 				return worked, fmt.Errorf("coarse split cell %d: %w", ref.id, cerr)
 			}
-			if wrote {
-				timer.Increment(CountSPFreshCSplits)
-				worked++
-			} else {
-				timer.Increment(CountSPFreshLeaseSkips)
-			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshCSplits)
 		}
 	}
 	return worked, nil
+}
+
+// spfreshMeterOutcome attributes one handler outcome to the right counter
+// (Torvalds 094.4 r4: per-kind action counters must count ACTIONS — cleanup
+// clears go to ZombieCleans, csplit defer-bumps to CSplitDefers, skips to
+// LeaseSkips) and returns the budget charge: every committed write consumes
+// budget, skips are free.
+func spfreshMeterOutcome(timer *StoreTimer, out spfreshTaskOutcome, acted Event) int {
+	switch out {
+	case spfreshOutcomeActed:
+		timer.Increment(acted)
+		return 1
+	case spfreshOutcomeCleaned:
+		timer.Increment(CountSPFreshZombieCleans)
+		return 1
+	case spfreshOutcomeDeferred:
+		timer.Increment(CountSPFreshCSplitDefers)
+		return 1
+	default:
+		timer.Increment(CountSPFreshLeaseSkips)
+		return 0
+	}
 }
 
 // RebalanceSPFreshIndex drains the index's task queue to quiescence: scan,

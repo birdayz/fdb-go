@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"os"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -175,4 +176,55 @@ func deserializeToFloat64(data []byte) ([]float64, error) {
 		result[i] = math.Float64frombits(bits)
 	}
 	return result, nil
+}
+
+// synthesizeClusteredVectors generates a deterministic SIFT-shaped Gaussian
+// mixture for scales past the SIFT-1M file (the 10M soak): m = n/5000
+// cluster centers (≥64) uniform in the SIFT byte range, points = center +
+// N(0, 12) clamped to [0, 255], queries drawn from the same mixture. Base
+// vectors are produced as float64 directly (no float32 intermediate — at
+// 10M × 128-D the intermediate alone is 5 GB).
+func synthesizeClusteredVectors(n, numQueries, dims int, seed int64) ([][]float64, [][]float32) {
+	rng := rand.New(rand.NewSource(seed))
+	m := n / 5000
+	if m < 64 {
+		m = 64
+	}
+	centers := make([][]float64, m)
+	for i := range centers {
+		c := make([]float64, dims)
+		for d := range c {
+			c[d] = rng.Float64() * 255
+		}
+		centers[i] = c
+	}
+	point := func(out []float64) {
+		c := centers[rng.Intn(m)]
+		for d := range out {
+			v := c[d] + rng.NormFloat64()*12
+			if v < 0 {
+				v = 0
+			} else if v > 255 {
+				v = 255
+			}
+			out[d] = v
+		}
+	}
+	base := make([][]float64, n)
+	flat := make([]float64, n*dims) // one backing array: allocator-friendly at 10M
+	for i := range base {
+		base[i] = flat[i*dims : (i+1)*dims : (i+1)*dims]
+		point(base[i])
+	}
+	queries := make([][]float32, numQueries)
+	qbuf := make([]float64, dims)
+	for i := range queries {
+		point(qbuf)
+		q := make([]float32, dims)
+		for d, v := range qbuf {
+			q[d] = float32(v)
+		}
+		queries[i] = q
+	}
+	return base, queries
 }

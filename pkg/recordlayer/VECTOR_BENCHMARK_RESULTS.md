@@ -514,10 +514,15 @@ own §4.2 closure regime.
 
 | r | α² bound | effective ρ | fill | default | fast | kc=128 | kc=192 |
 |---|----------|------------|------|---------|------|--------|--------|
-| 2 | 1.44× | 1.009 | 530 vec/s | 0.925 | 0.830 | 0.973 | 0.987 |
+| 2 | 1.44× | 1.009 | 530 vec/s | 0.925 | 0.791 | 0.973 | 0.987 |
 | 4 | 1.44× | 1.010 | 413 vec/s | 0.933 | 0.806 | 0.979 | 0.986 |
 | 4 | 4× | 1.032 | 419 vec/s | 0.939 | 0.813 | 0.981 | 0.991 |
 | 4 | 11× | 1.020 | 415 vec/s | 0.933 | 0.789 | 0.978 | 0.989 |
+
+(The r=2 fast cell read 0.830 in an earlier revision — that number belongs
+to the 110 vec/s topology, not the 530 vec/s fill this row cites; the
+ingest-rate/recall trade applies to the FAST budget hardest. Torvalds r4
+catch.)
 
 **Verdict: closure replication is structurally unavailable on SIFT-1M at
 Lmax=256 granularity.** Even at the paper's own 11× admission bound the RNG
@@ -544,3 +549,12 @@ and shares it across that round's NPAs (round staleness is the same
 tolerated staleness as the plan phase's snapshot reads; move transactions
 re-verify every pk). The probe reruns with the fix; this section gets the
 real Lmax=128 numbers then.
+
+### Provenance note: the sidecar A/B (094.4 slice 2)
+
+The "estimates-only collapses recall 0.999 → 0.69" sidecar verdict quoted in
+SPFRESH_OPERATIONS.md was measured during the 094.4 slice-2 scorer work
+(SIFT-100k bulk topology, default config, sidecar re-rank disabled via the
+noRerank path) and recorded at the time only in the PR #283 description —
+this section is its in-repo record. Re-derive before relying on the exact
+figure; the direction (re-rank is load-bearing) is not in doubt.

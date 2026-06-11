@@ -485,3 +485,28 @@ func TestSPFreshBuildRouterAssignWideningIsBounded(t *testing.T) {
 		t.Fatalf("bounded widening must stop at 4x base and accept under-replication: got %v", ids)
 	}
 }
+
+func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
+	t.Parallel()
+	// The 4×base cap must actually be SCANNED, not just respected as an
+	// upper bound: with the diverse in-ratio candidate at sorted index 40 —
+	// inside (2·base, 4·base] for base 16 — only the third pool (64) reaches
+	// it. A silent regression of the cap to 2×base would miss it and this
+	// test, together with the >4×base negative, pins the boundary from both
+	// sides (Torvalds 094.4 r4).
+	r := &spfreshBuildRouter{}
+	for i := 0; i < 40; i++ {
+		r.ids = append(r.ids, int64(i+1))
+		r.cells = append(r.cells, 10)
+		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.0001, 0})
+	}
+	const diverse = int64(999)
+	r.ids = append(r.ids, diverse)
+	r.cells = append(r.cells, 20)
+	r.vecs = append(r.vecs, []float64{-1.05, 0}) // sorted index 40, in-ratio at α=1.2
+
+	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
+	if len(ids) != 2 || ids[1] != diverse {
+		t.Fatalf("the widening must scan through 4x base (pool 64) and find index-40 diverse candidate: got %v", ids)
+	}
+}

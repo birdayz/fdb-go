@@ -42,13 +42,14 @@ const (
 	spfreshCSplitPausing byte = 1 // defer limit hit: fine-split issuance paused
 )
 
-// wrote reports whether any write committed (the split, a defer-count bump,
-// or a zombie/degenerate task clear) — false only for the budget-free skip
-// when the task is gone or another executor holds the lease.
-func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID int64, seed int64) (wrote bool, err error) {
-	skipped := false
-	err = spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-		skipped = false
+// The returned outcome attributes the invocation: Acted for the split,
+// Deferred for the pause-window defer-count bump, Cleaned for zombie/
+// degenerate task clears, Skipped (no write) when the task is gone or
+// another executor holds the lease.
+func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID int64, seed int64) (spfreshTaskOutcome, error) {
+	outcome := spfreshOutcomeSkipped
+	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		outcome = spfreshOutcomeCleaned
 		tx := rtx.Transaction()
 		coarse, err := spfreshReadCoarseForWrite(tx, s, cellID)
 		if err != nil {
@@ -65,7 +66,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		row, cerr := spfreshTaskClaim(tx, s, spfreshTaskCSplit, cellID, owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if cerr != nil {
 			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
-				skipped = true
+				outcome = spfreshOutcomeSkipped
 				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
@@ -98,6 +99,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 					row.state = spfreshCSplitPausing
 				}
 				tx.Set(s.taskKey(spfreshTaskCSplit, cellID), encodeTaskRow(row))
+				outcome = spfreshOutcomeDeferred
 				return nil
 			case spfreshStateActive:
 				rows = append(rows, r)
@@ -217,9 +219,13 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		tx.Clear(s.counterKey(spfreshCounterCell, cellID))
 		tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 		deltas = append(deltas, spfreshDelta{op: spfreshOpForwardCell, ids: []int64{cellID, cellA, cellB}})
+		outcome = spfreshOutcomeActed
 		return spfreshAppendDeltas(tx, s, deltas)
 	})
-	return err == nil && !skipped, err
+	if err != nil {
+		return spfreshOutcomeSkipped, err
+	}
+	return outcome, nil
 }
 
 // spfreshCSplitPaused reports whether fine-split issuance for the cell is

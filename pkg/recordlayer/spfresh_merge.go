@@ -33,14 +33,14 @@ import (
 //
 // commit_unknown retry: FORWARD centroid ⇒ no-op (the committed tx cleared
 // the task too).
-// wrote reports whether any write committed (the merge itself or a
-// zombie/cooldown/no-target task clear) — false only for the budget-free
-// skip when the task is gone or another executor holds the lease.
-func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID, fineID int64) (wrote bool, err error) {
+// The returned outcome attributes the invocation: Acted for the merge
+// itself, Cleaned for zombie/cooldown/no-target task clears, Skipped (no
+// write) when the task is gone or another executor holds the lease.
+func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID, fineID int64) (spfreshTaskOutcome, error) {
 	quantizer := newSPFreshQuantizer(config)
-	skipped := false
-	err = spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-		skipped = false
+	outcome := spfreshOutcomeSkipped
+	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		outcome = spfreshOutcomeCleaned
 		tx := rtx.Transaction()
 		cent, err := spfreshReadCentroidForWrite(tx, s, cellID, fineID)
 		if err != nil {
@@ -61,7 +61,7 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		}
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskMerge, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
 			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
-				skipped = true
+				outcome = spfreshOutcomeSkipped
 				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
@@ -196,11 +196,15 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		// The cell lost a fine centroid.
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, -1)
 		tx.Clear(s.taskKey(spfreshTaskMerge, fineID))
+		outcome = spfreshOutcomeActed
 		return spfreshAppendDeltas(tx, s, []spfreshDelta{
 			{op: spfreshOpForwardFine, ids: []int64{fineID, tgtA, tgtB}},
 		})
 	})
-	return err == nil && !skipped, err
+	if err != nil {
+		return spfreshOutcomeSkipped, err
+	}
+	return outcome, nil
 }
 
 // spfreshMergeTarget is one drain destination: an ACTIVE sibling centroid.
