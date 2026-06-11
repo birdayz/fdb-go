@@ -284,10 +284,28 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	// actually examines (snapshot read + explicit conflict key ≡ the
 	// serializable read: same read version, same data, same conflict
 	// surface — speculative rows the cutoffs never reach contribute none).
-	specFuts := make(map[int64]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
+	// Keyed by (cellID, fineID) — the exact key the future was issued for —
+	// so the consumed data and the conflict key can never diverge: a
+	// candidate surfacing at a DIFFERENT cell than the burst read simply
+	// misses the map and takes the direct serializable read (Torvalds 094.4
+	// F13: a conflict fence must be locally correct, not correct via
+	// lifecycle-wide arguments about where a fineID can appear).
+	specFuts := make(map[spfreshSpecKey]fdb.FutureByteSlice, spfreshClosurePool(m.config.Replication))
 	for i := 0; i < len(work) && i < spfreshClosurePool(m.config.Replication); i++ {
-		specFuts[work[i].fineID] = m.tx.Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
+		specFuts[spfreshSpecKey{work[i].cellID, work[i].fineID}] = m.tx.Snapshot().Get(storage.centroidKey(work[i].cellID, work[i].fineID))
 	}
+	// Drain whatever the cutoffs never consumed before this attempt returns
+	// (consumed entries are deleted from the map): a pending future must not
+	// outlive the attempt — Transact may reset and retry this transaction,
+	// and an old-attempt read resolving into the retry's state is exactly
+	// the cross-attempt contamination the RYW machinery cannot guard
+	// (codex 094.4 r3). The burst already paid the round trip, so draining
+	// resolved futures costs nothing on the happy path.
+	defer func() {
+		for _, fut := range specFuts {
+			_, _ = fut.Get()
+		}
+	}()
 	for examined := 0; len(work) > 0 && examined < 4*(len(routed)+2); examined++ {
 		cand := work[0]
 		work = work[1:]
@@ -697,12 +715,16 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 // read version, same data, same conflict surface). Candidates without a
 // burst future (forward children discovered mid-walk) fall back to the
 // direct serializable read.
-func (m *spfreshIndexMaintainer) spfreshConsumeCentroidRead(storage *spfreshStorage, futs map[int64]fdb.FutureByteSlice, cellID, fineID int64) (spfreshCentroidRow, error) {
-	fut, ok := futs[fineID]
+// spfreshSpecKey identifies a speculative centroid read by the exact
+// (cellID, fineID) key it was issued for.
+type spfreshSpecKey struct{ cellID, fineID int64 }
+
+func (m *spfreshIndexMaintainer) spfreshConsumeCentroidRead(storage *spfreshStorage, futs map[spfreshSpecKey]fdb.FutureByteSlice, cellID, fineID int64) (spfreshCentroidRow, error) {
+	fut, ok := futs[spfreshSpecKey{cellID, fineID}]
 	if !ok {
 		return spfreshReadCentroidForWrite(m.tx, storage, cellID, fineID)
 	}
-	delete(futs, fineID)
+	delete(futs, spfreshSpecKey{cellID, fineID})
 	data, err := fut.Get()
 	if err != nil {
 		return spfreshCentroidRow{}, fmt.Errorf("spfresh: read centroid (%d,%d): %w", cellID, fineID, err)

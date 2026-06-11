@@ -135,9 +135,10 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 
 	// Residual distance estimation per posting; min-estimate dedup across
 	// closure replicas (RFC-094 §4/§7). best is keyed by the raw pk span —
-	// the map insert copies the span to an owned string ONCE per distinct pk
-	// (a lookup with the string(span) conversion never allocates); nothing in
-	// the hot loop decodes a tuple.
+	// lookups with the string(span) conversion never allocate; assignments
+	// (first insert AND min-improvement updates, bounded by the replica
+	// count per pk) copy the span to an owned string. Nothing in the hot
+	// loop decodes a tuple.
 	best := make(map[string]float64)
 	residual := make([]float64, len(query))
 	var forwards []spfreshRouted // stale-cache HDR redirects, resolved after the burst

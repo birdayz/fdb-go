@@ -461,3 +461,12 @@ verification round trips are the cost. (The run was also contended by
 concurrent profiling for ~1h.) The burst fix (one snapshot burst + explicit
 conflict keys on examined rows — semantics-identical) is in the next
 commit; the clean fill A/B follows it.
+
+Clean-machine fill A/B (100k, burst fix, quiet box): **705 vec/s** — +46%
+over pre-RNG (481), recovering most of the diversity-scan cost; the
+residual gap to the shallow-scan 916 is the read volume the leaner ρ≈1.04
+topology buys (half the index, better recall, +13% QPS). Reads on the same
+production topology with the full perf stack: default 0.996 @ 15.4ms p50,
+fast **0.949 @ 6.08ms p50**. (An earlier contended run of the same shape
+measured fast 0.963 @ 7.66ms — the number quoted in the perf-pass commit
+message; both are under the §9 target, the quiet-box row is canonical.)

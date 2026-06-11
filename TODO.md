@@ -963,19 +963,21 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   small (+0.7pp from w 8→16 at kc=24, w>16 nil); the decay is F1 kc-tail (0.973 @ kc=128,
   0.987 @ kc=192, at 2-3× latency). Frozen: default 32/64/200/ε7 (0.952 @ 27.9ms, 134 QPS),
   fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
-- [ ] **3. Replication r=4 + RNG rule (SPANN §3.2.2, Fig 5/11).** RNG diversity rule
-  IMPLEMENTED (closure scans past r with same-direction skip; candidate pools widened on
-  build/insert paths; pinned by Figure-5 unit test, insert FDB test, fuzz). 100k A/B at
-  r=2: fast recall 0.947→0.953, fill 481→916 vec/s. Remaining: the r=4 default decision —
-  rebuild A/B (~+50% entries), recall delta at fast budget. Paper re-review conditions
-  for that run: **sweep α alongside r** (α=1.2 is a 1.44× d² bound vs the paper's ε₁=10
-  ≈ 11×; at r=4 the tight ratio bound starves RNG diversity before the scan reaches
-  different-direction lists) and widen the closure pool with r (max(4r,8) is narrower
-  than SPTAG's 8× headroom). ALSO PENDING (paper re-review NAK on the freeze): ε was
-  mis-calibrated (ratio squared = 64× in d² vs the published 8×; FIXED — applies
-  directly to d² now) and the 1M sweep topology was pre-RNG — one 1M refill re-pins
-  the frozen defaults + re-runs the ε A/B + kc-cap ladder at the published setting,
-  reporting entries/effective ρ/actions.
-- [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 1.1% centroid ratio vs
-  paper's 16%: coarser lists make each kc step blunter; Lmax=256 is FDB-reply-budget justified
-  (RFC) so only move it with measurements.
+- [ ] **3. α-led replication sweep (SPANN §3.2.2/§4.3.1, Fig 5/11) — RNG rule landed,
+  α is now the primary knob.** RNG diversity rule IMPLEMENTED and ACK'd (closure scans
+  past r with same-direction skip; speculative-burst insert verification; pinned by
+  Figure-5 unit test, insert FDB test, fuzz). Measured at 1M: effective ρ ≈ 1.04 — the
+  rule produced diversity BY ELIMINATION at α=1.2 (1.44× d² bound vs the paper's ε₁=10
+  ≈ 11×): Fig. 5's "assign to the different-direction list" half almost never fires.
+  Paper ACK rider: **ρ=1.04 at r=2 proves the r cap is not binding — an r=4 A/B at
+  α=1.2 is a predicted null.** Sweep α² toward {2, 4, 11} with r raised alongside so
+  the cap doesn't re-bind; target ρ ≈ 1.2–1.5 DIVERSE replicas (§4.3.1's own regime is
+  ρ≈1.2, +20% data); measure fast-budget recall and give the sweep a write-cost budget
+  line (fill 705 vec/s at 100k post-burst-fix; 110 → re-measure at 1M).
+- [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 0.6% centroid ratio
+  (post-RNG: 6,228 lists at 1M) vs paper's 16%: coarser lists make each kc step blunter;
+  Lmax=256 is FDB-reply-budget justified (RFC) so only move it with measurements. Paper
+  ACK rider: ε-inertness on SIFT-1M is a GRANULARITY property, not an Eq.(3) property —
+  Fig. 12's pruning win was measured at 16% centroid ratio, and at 100k granularity our
+  corrected ε already binds (0.990 at −15% latency). If this item moves Lmax/granularity
+  toward Fig. 9's regime, re-measure ε there.
