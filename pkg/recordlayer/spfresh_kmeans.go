@@ -23,14 +23,25 @@ const spfreshKMeansChunk = 4096
 // spfreshParallelChunks runs fn over [0,n) in fixed-size chunks across
 // NumCPU workers. fn must only write chunk-local or index-disjoint state.
 func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
-	chunks := (n + spfreshKMeansChunk - 1) / spfreshKMeansChunk
+	spfreshParallelChunksSized(n, spfreshKMeansChunk, 0, fn)
+}
+
+// spfreshParallelChunksSized is the parameterized core. workers == 0 means
+// NumCPU; tests pin worker-count invariance — the actual cross-machine
+// determinism guarantee — by comparing workers=1 against the parallel run at
+// the SAME chunk size (chunk boundaries fix the float-reduction order, so
+// chunk size itself is NOT invariant and must match).
+func spfreshParallelChunksSized(n, chunkSize, workers int, fn func(chunk, lo, hi int)) {
+	chunks := (n + chunkSize - 1) / chunkSize
 	if chunks <= 1 {
 		if n > 0 {
 			fn(0, 0, n)
 		}
 		return
 	}
-	workers := runtime.NumCPU()
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
 	if workers > chunks {
 		workers = chunks
 	}
@@ -45,8 +56,8 @@ func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
 				if c >= chunks {
 					return
 				}
-				lo := c * spfreshKMeansChunk
-				hi := lo + spfreshKMeansChunk
+				lo := c * chunkSize
+				hi := lo + chunkSize
 				if hi > n {
 					hi = n
 				}
@@ -66,10 +77,21 @@ func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
 // vectors must be non-empty and share one dimensionality. k is clamped to
 // [1, len(vectors)].
 func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansWorkers(vectors, k, seed, maxIters, 0)
+}
+
+// spfreshKMeansWorkers is the worker-count-parameterized core (0 = NumCPU).
+// The FIXED chunk size pins the float-accumulation order of the parallel
+// reductions, so any two runs with the same (vectors, k, seed) are
+// bit-identical regardless of worker count — pinned by the workers=1 vs
+// parallel comparison test.
+func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, workers int) (centroids [][]float64, assign []int) {
 	n := len(vectors)
 	if n == 0 {
 		return nil, nil
 	}
+	const chunkSize = spfreshKMeansChunk
+	chunked := func(fn func(chunk, lo, hi int)) { spfreshParallelChunksSized(n, chunkSize, workers, fn) }
 	if k < 1 {
 		k = 1
 	}
@@ -86,7 +108,7 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	centroids = append(centroids, append([]float64(nil), vectors[first]...))
 
 	d2 := make([]float64, n) // squared distance to nearest chosen centroid
-	spfreshParallelChunks(n, func(_, lo, hi int) {
+	chunked(func(_, lo, hi int) {
 		for i := lo; i < hi; i++ {
 			d2[i] = spfreshSquaredDistance(vectors[i], centroids[0])
 		}
@@ -114,7 +136,7 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		}
 		c := append([]float64(nil), vectors[idx]...)
 		centroids = append(centroids, c)
-		spfreshParallelChunks(n, func(_, lo, hi int) {
+		chunked(func(_, lo, hi int) {
 			for i := lo; i < hi; i++ {
 				if d := spfreshSquaredDistance(vectors[i], c); d < d2[i] {
 					d2[i] = d
@@ -130,11 +152,24 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	for i := range sums {
 		sums[i] = make([]float64, dims)
 	}
-	numChunks := (n + spfreshKMeansChunk - 1) / spfreshKMeansChunk
+	numChunks := (n + chunkSize - 1) / chunkSize
+	// Partial-reduction buffers live OUTSIDE the iteration loop: at the
+	// coarse-1M shape (62 chunks × k≈3k × 128 dims) reallocating them every
+	// Lloyd iteration churned ~190MB per iteration through the allocator.
+	// Zeroed at chunk start each iteration instead; per-cluster rows are
+	// still allocated lazily (most chunks see a small subset of clusters)
+	// and zeroing is unconditional once allocated — a row whose cluster
+	// skips an iteration must not leak stale sums into a later one.
+	partialCounts := make([][]int, numChunks)
+	partialSums := make([][][]float64, numChunks)
+	for chunk := range partialCounts {
+		partialCounts[chunk] = make([]int, k)
+		partialSums[chunk] = make([][]float64, k)
+	}
 	for iter := 0; iter < maxIters; iter++ {
 		// Assignment: index-disjoint writes, order-independent — parallel.
 		var changedFlag atomic.Bool
-		spfreshParallelChunks(n, func(_, lo, hi int) {
+		chunked(func(_, lo, hi int) {
 			chunkChanged := false
 			for i := lo; i < hi; i++ {
 				v := vectors[i]
@@ -159,11 +194,17 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the
 		// float addition order is fixed by the constant chunk size —
 		// deterministic on any machine, any worker count.
-		partialCounts := make([][]int, numChunks)
-		partialSums := make([][][]float64, numChunks)
-		spfreshParallelChunks(n, func(chunk, lo, hi int) {
-			pc := make([]int, k)
-			ps := make([][]float64, k)
+		chunked(func(chunk, lo, hi int) {
+			pc := partialCounts[chunk]
+			ps := partialSums[chunk]
+			for c := range pc {
+				pc[c] = 0
+				if ps[c] != nil {
+					for d := range ps[c] {
+						ps[c][d] = 0
+					}
+				}
+			}
 			for i := lo; i < hi; i++ {
 				c := assign[i]
 				pc[c]++
@@ -174,8 +215,6 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 					ps[c][d] += x
 				}
 			}
-			partialCounts[chunk] = pc
-			partialSums[chunk] = ps
 		})
 		for c := range sums {
 			counts[c] = 0
@@ -214,7 +253,7 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		}
 	}
 	// Final assignment against the converged centroids.
-	spfreshParallelChunks(n, func(_, lo, hi int) {
+	chunked(func(_, lo, hi int) {
 		for i := lo; i < hi; i++ {
 			v := vectors[i]
 			best, bestD := 0, math.Inf(1)
@@ -242,10 +281,14 @@ func spfreshSquaredDistance(a, b []float64) float64 {
 }
 
 // spfreshCandidate is a (id, squared-distance) pair used by routing and
-// closure assignment.
+// closure assignment. vec is the candidate's centroid vector when the caller
+// has it — required for the closure's RNG diversity test, which compares
+// centroid-to-centroid distances (nil degrades the closure to the pure ratio
+// rule; see spfreshRNGAccept).
 type spfreshCandidate struct {
-	id int64
-	d2 float64
+	id  int64
+	d2  float64
+	vec []float64
 }
 
 // spfreshNearestK returns the k nearest candidates by squared distance,
@@ -269,7 +312,7 @@ func spfreshNearestK(query []float64, ids []int64, vecs [][]float64, k int) []sp
 	}
 	out := make([]spfreshCandidate, 0, min(k, len(ids))+1)
 	for i := range ids {
-		c := spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i])}
+		c := spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i]), vec: vecs[i]}
 		if len(out) == k && !less(c, out[k-1]) {
 			continue // common case after warmup: not in the top k
 		}
@@ -284,28 +327,69 @@ func spfreshNearestK(query []float64, ids []int64, vecs [][]float64, k int) []sp
 	return out
 }
 
-// spfreshClosure applies SPANN's RNG closure rule (RFC-094 §5): from the
-// r-nearest candidates (ascending), keep candidate c_i iff
+// spfreshClosure applies SPANN's closure assignment (RFC-094 §5) with the
+// §3.2.2 RNG representative-replication rule (Figure 5). Scanning candidates
+// ascending by distance, keep candidate c iff
 //
-//	dist(v, c_i) <= alpha * dist(v, c_1)
+//  1. ratio:	dist(v, c) <= alpha * dist(v, c_1)	(boundary test, Eq. 2)
+//  2. RNG:	dist(v, c)  < dist(s, c) for every already-kept s	(diversity)
 //
-// — in squared-distance space the threshold is alpha² · d2(c_1). alpha > 1
-// admits boundary replicas; alpha == 1 degenerates to r == 1 (the rev-3 RFC
-// bug, rejected at config validation when r > 1). Always returns at least the
-// nearest candidate.
+// — in squared-distance space the ratio threshold is alpha² · d2(c_1).
+// The RNG rule skips a replica that sits closer to an already-kept centroid
+// than to the vector itself: such posting lists are near-duplicates in the
+// same direction and both get recalled by the router anyway (SPANN Fig. 5 —
+// better to spend the copy on a list in a different direction). Because RNG
+// can skip, the scan runs past index r until r diverse replicas are kept or
+// the ratio bound breaks (candidates are ascending, so the first ratio
+// failure ends the scan). alpha > 1 admits boundary replicas; alpha == 1
+// degenerates to r == 1 (the rev-3 RFC bug, rejected at config validation
+// when r > 1). Always returns at least the nearest candidate.
 func spfreshClosure(cands []spfreshCandidate, r int, alpha float64) []spfreshCandidate {
 	if len(cands) == 0 {
 		return nil
 	}
-	if r > len(cands) {
-		r = len(cands)
-	}
 	threshold := alpha * alpha * cands[0].d2
 	out := cands[:1:1]
-	for _, c := range cands[1:r] {
-		if c.d2 <= threshold {
-			out = append(out, c)
+	for _, c := range cands[1:] {
+		if len(out) >= r {
+			break
 		}
+		if c.d2 > threshold {
+			break // ascending order: every later candidate fails the ratio test too
+		}
+		if !spfreshRNGAccept(c, out) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// spfreshClosurePool is the candidate-pool width that gives the closure's
+// RNG rule room to skip same-direction replicas: a pool of exactly r would
+// turn every RNG rejection into a silently smaller copy-set (under-
+// replication instead of diversity).
+func spfreshClosurePool(r int) int {
+	return max(4*r, 8)
+}
+
+// spfreshRNGAccept is SPANN §3.2.2's RNG test: candidate c is a useful
+// replica only if the vector is strictly closer to c than every already-kept
+// centroid is (SPTAG rejects on equality; squared distances preserve the
+// comparison). A candidate without a centroid vector falls open to accepted —
+// the closure then degrades to the pure ratio rule rather than failing, since
+// replica diversity is a recall optimization, not a correctness requirement.
+func spfreshRNGAccept(c spfreshCandidate, kept []spfreshCandidate) bool {
+	if c.vec == nil {
+		return true
+	}
+	for _, s := range kept {
+		if s.vec == nil {
+			continue
+		}
+		if spfreshSquaredDistance(s.vec, c.vec) <= c.d2 {
+			return false
+		}
+	}
+	return true
 }

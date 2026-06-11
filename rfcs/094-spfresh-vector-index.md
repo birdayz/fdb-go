@@ -249,11 +249,16 @@ as the HNSW scan).
 ## 5. Write path
 
 **Insert(pk, v):**
-1. Route on cache. Closure (SPANN): keep fine centroid c_i of the r nearest iff
-   `dist(v, c_i) ≤ α · dist(v, c_1)`, **α = 1.2 default** — rev 3's α = 1.0
-   admitted only c_1, silently making r = 1 and invalidating the sizing and
-   recall math built on r ≈ 2 (LanceDB r3 #5 + codex r3 #1, found independently).
-   r = 2 cap, config-immutable.
+1. Route on cache. Closure (SPANN): scanning candidates ascending by distance,
+   keep fine centroid c iff `dist(v, c) ≤ α · dist(v, c_1)` (boundary ratio,
+   **α = 1.2 default** — rev 3's α = 1.0 admitted only c_1, silently making
+   r = 1 and invalidating the sizing and recall math built on r ≈ 2; LanceDB
+   r3 #5 + codex r3 #1, found independently) AND `dist(v, c) < dist(s, c)` for
+   every already-kept s (the §3.2.2 RNG representative-replication rule,
+   Figure 5 — a replica closer to a kept centroid than to v duplicates that
+   centroid's posting list; spend the copy on a different direction instead).
+   RNG skips scan past index r until r diverse replicas are kept or the ratio
+   bound breaks. r = 2 cap, config-immutable.
 2. One transaction:
    - **real reads** of `CENTROIDS/(cell, c_i)` — ACTIVE required; SEALED/FORWARD
      **or absent** (the row moved in a coarse split — fineID still valid but we

@@ -111,7 +111,7 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 
 		// Deferrals accumulate; at the limit the guard pauses issuance.
 		for i := 0; i < spfreshCSplitDeferLimit; i++ {
-			Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+			Expect(errOnly(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7))).To(Succeed())
 		}
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -128,9 +128,9 @@ var _ = Describe("SPFresh rebalancer + coarse splits", func() {
 
 		// Complete the fine split; the coarse split can now proceed.
 		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "csplit-test", cellID, fineID, 7)).To(Succeed())
-		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+		Expect(errOnly(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7))).To(Succeed())
 		// Idempotent re-run on the FORWARD cell.
-		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7)).To(Succeed())
+		Expect(errOnly(spfreshCoarseSplit(ctx, sharedDB, storage, config, "csplit-test", cellID, 7))).To(Succeed())
 
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()

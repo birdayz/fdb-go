@@ -1,9 +1,11 @@
 package recordlayer
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"sort"
+	"sync"
 	"testing"
 )
 
@@ -115,13 +117,148 @@ func TestSPFreshClosureRule(t *testing.T) {
 	}
 
 	// r caps admission regardless of alpha.
-	many := []spfreshCandidate{{1, 1}, {2, 1.01}, {3, 1.02}, {4, 1.03}}
+	many := []spfreshCandidate{{id: 1, d2: 1}, {id: 2, d2: 1.01}, {id: 3, d2: 1.02}, {id: 4, d2: 1.03}}
 	if got = spfreshClosure(many, 2, 2.0); len(got) != 2 {
 		t.Fatalf("r=2 must cap: got %+v", got)
 	}
 
 	if got = spfreshClosure(nil, 2, 1.2); got != nil {
 		t.Fatal("empty candidates must return nil")
+	}
+}
+
+func TestSPFreshClosureRNGRule(t *testing.T) {
+	t.Parallel()
+	// SPANN §3.2.2 Figure 5: x at the origin; blue is nearest; yellow sits
+	// just past blue in the SAME direction (its posting list near-duplicates
+	// blue's); grey is farther from x than yellow but in the OPPOSITE
+	// direction. The RNG rule spends the replica on grey, not yellow.
+	x := []float64{0, 0}
+	mk := func(id int64, vec ...float64) spfreshCandidate {
+		return spfreshCandidate{id: id, d2: spfreshSquaredDistance(x, vec), vec: vec}
+	}
+	blue := mk(1, 1, 0)     // d2 = 1
+	yellow := mk(2, 1.3, 0) // d2 = 1.69; d2(blue, yellow) = 0.09 <= 1.69 → RNG-skipped
+	grey := mk(3, -1.4, 0)  // d2 = 1.96; d2(blue, grey) = 5.76 > 1.96 → kept
+	cands := []spfreshCandidate{blue, yellow, grey}
+
+	got := spfreshClosure(cands, 3, 1.5) // ratio threshold 2.25 admits all three
+	if len(got) != 2 || got[0].id != 1 || got[1].id != 3 {
+		t.Fatalf("figure-5 closure: got %+v, want ids [1 3]", got)
+	}
+
+	// Lookahead past index r: with r=2 the old cands[1:r] scan would stop at
+	// yellow and return blue alone; the RNG scan must reach grey.
+	got = spfreshClosure(cands, 2, 1.5)
+	if len(got) != 2 || got[1].id != 3 {
+		t.Fatalf("RNG lookahead past r: got %+v, want ids [1 3]", got)
+	}
+
+	// r still caps when candidates are all diverse.
+	diverse := []spfreshCandidate{mk(1, 1, 0), mk(2, 0, 1.05), mk(3, -1.1, 0)}
+	if got = spfreshClosure(diverse, 2, 2.0); len(got) != 2 || got[0].id != 1 || got[1].id != 2 {
+		t.Fatalf("r cap over diverse candidates: got %+v, want ids [1 2]", got)
+	}
+
+	// Equality rejects (SPTAG's <= rule): the candidate is exactly as close
+	// to the kept centroid as to the vector.
+	eq := []spfreshCandidate{mk(1, 1, 0), mk(2, 0.5, 1)} // d2(x,c2) = d2(c1,c2) = 1.25
+	if got = spfreshClosure(eq, 2, 2.0); len(got) != 1 || got[0].id != 1 {
+		t.Fatalf("RNG equality must reject: got %+v, want ids [1]", got)
+	}
+
+	// The ratio bound still ends the scan before RNG is consulted.
+	farDiverse := []spfreshCandidate{mk(1, 1, 0), mk(2, -3, 0)} // d2 = 9 > 1.44
+	if got = spfreshClosure(farDiverse, 2, 1.2); len(got) != 1 {
+		t.Fatalf("ratio bound must end scan: got %+v", got)
+	}
+
+	// A candidate without a centroid vector falls open to the ratio rule.
+	mixed := []spfreshCandidate{mk(1, 1, 0), {id: 2, d2: 1.21}}
+	if got = spfreshClosure(mixed, 2, 1.2); len(got) != 2 {
+		t.Fatalf("nil-vec candidate must fall open: got %+v", got)
+	}
+}
+
+// FuzzSPFreshClosure pins the closure invariants under arbitrary candidate
+// geometry: the nearest candidate is always kept, the result is capped at r,
+// every kept replica passes the ratio bound, kept replicas are pairwise
+// RNG-diverse, and the selection is deterministic.
+func FuzzSPFreshClosure(f *testing.F) {
+	f.Add([]byte{16, 0, 240, 0, 0, 16, 200, 30}, uint8(2), uint8(2))
+	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, uint8(4), uint8(15))
+	f.Fuzz(func(t *testing.T, raw []byte, rRaw, alphaRaw uint8) {
+		r := int(rRaw)%8 + 1
+		alpha := 1.0 + float64(alphaRaw)/64 // [1.0, ~5.0), finite
+		var cands []spfreshCandidate
+		for i := 0; i+1 < len(raw) && len(cands) < 32; i += 2 {
+			vec := []float64{float64(int8(raw[i])) / 16, float64(int8(raw[i+1])) / 16}
+			cands = append(cands, spfreshCandidate{
+				id:  int64(len(cands)),
+				d2:  spfreshSquaredDistance([]float64{0, 0}, vec),
+				vec: vec,
+			})
+		}
+		spfreshSortCandidates(cands)
+		got := spfreshClosure(cands, r, alpha)
+		if len(cands) == 0 {
+			if got != nil {
+				t.Fatalf("empty in, non-nil out: %+v", got)
+			}
+			return
+		}
+		if len(got) == 0 || got[0].id != cands[0].id {
+			t.Fatalf("nearest candidate must always be kept: got %+v, cands %+v", got, cands)
+		}
+		if len(got) > r {
+			t.Fatalf("r=%d exceeded: %d kept", r, len(got))
+		}
+		threshold := alpha * alpha * cands[0].d2
+		for j, c := range got {
+			if j == 0 {
+				continue
+			}
+			if c.d2 > threshold {
+				t.Fatalf("kept candidate %d violates ratio bound: d2=%g threshold=%g", c.id, c.d2, threshold)
+			}
+			if c.d2 < got[j-1].d2 {
+				t.Fatalf("kept candidates must stay ascending: %+v", got)
+			}
+			for _, s := range got[:j] {
+				if spfreshSquaredDistance(s.vec, c.vec) <= c.d2 {
+					t.Fatalf("kept candidates %d and %d violate RNG diversity", s.id, c.id)
+				}
+			}
+		}
+		again := spfreshClosure(cands, r, alpha)
+		if len(again) != len(got) {
+			t.Fatalf("nondeterministic closure: %d vs %d kept", len(got), len(again))
+		}
+		for j := range got {
+			if again[j].id != got[j].id {
+				t.Fatalf("nondeterministic closure at %d: %v vs %v", j, again[j].id, got[j].id)
+			}
+		}
+	})
+}
+
+func TestSPFreshBuildRouterAssignRNGPool(t *testing.T) {
+	t.Parallel()
+	// Three same-direction fines stacked beyond the nearest plus one diverse
+	// fine. With rep=2 the copy-set must be {nearest, diverse}: a candidate
+	// pool of exactly rep would only ever see the same-direction duplicate
+	// and RNG-skip it, silently shrinking the copy-set to 1.
+	r := &spfreshBuildRouter{
+		ids:   []int64{1, 2, 3, 4},
+		cells: []int64{10, 10, 10, 20},
+		vecs:  [][]float64{{1, 0}, {1.2, 0}, {1.3, 0}, {-1.5, 0}},
+	}
+	ids, fvecs := r.assign([]float64{0, 0}, 2, 2.0)
+	if len(ids) != 2 || ids[0] != 1 || ids[1] != 4 {
+		t.Fatalf("assign copy-set: got %v, want [1 4]", ids)
+	}
+	if len(fvecs) != 2 || fvecs[1][0] != -1.5 {
+		t.Fatalf("assign fine vectors must track the kept candidates: got %v", fvecs)
 	}
 }
 
@@ -207,9 +344,82 @@ func TestSPFreshNearestKMatchesFullSort(t *testing.T) {
 			t.Fatalf("k=%d: got %d candidates, want %d", k, len(got), len(ref))
 		}
 		for i := range ref {
-			if got[i] != ref[i] {
+			if got[i].id != ref[i].id || got[i].d2 != ref[i].d2 {
 				t.Fatalf("k=%d: candidate %d = %+v, want %+v", k, i, got[i], ref[i])
 			}
 		}
+	}
+}
+
+// errOnly adapts (T, error) returns for single-value Expect assertions.
+func errOnly[T any](_ T, err error) error { return err }
+
+// TestSPFreshKMeansWorkerCountInvariance pins the actual cross-machine
+// determinism guarantee: at the FIXED chunk size, worker count must not change
+// a single bit of the result (chunk boundaries fix the float-reduction order;
+// workers only decide who computes each chunk). A same-process double-run
+// can't catch a worker-count dependence — this comparison can.
+func TestSPFreshKMeansWorkerCountInvariance(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(11))
+	vecs := make([][]float64, 3*spfreshKMeansChunk/2+57) // multiple chunks, uneven tail
+	for i := range vecs {
+		vecs[i] = []float64{rng.NormFloat64(), rng.NormFloat64(), rng.NormFloat64()}
+	}
+	cSeq, aSeq := spfreshKMeansWorkers(vecs, 16, 5, 25, 1)
+	cPar, aPar := spfreshKMeansWorkers(vecs, 16, 5, 25, 0)
+	for i := range aSeq {
+		if aSeq[i] != aPar[i] {
+			t.Fatalf("assignment %d differs between workers=1 and parallel", i)
+		}
+	}
+	for i := range cSeq {
+		for d := range cSeq[i] {
+			if cSeq[i][d] != cPar[i][d] {
+				t.Fatalf("centroid %d dim %d differs between workers=1 and parallel: %v vs %v",
+					i, d, cSeq[i][d], cPar[i][d])
+			}
+		}
+	}
+}
+
+// TestSPFreshBuilderFineIDPool pins the wave-A ID pool's doling: concurrent
+// claims hand out disjoint consecutive ranges from the pre-claimed block
+// without touching the allocator key, and an over-block request fails loudly
+// instead of looping on refills.
+func TestSPFreshBuilderFineIDPool(t *testing.T) {
+	t.Parallel()
+	b := &spfreshBuilder{idNext: 1000, idEnd: 1000 + spfreshIDBlockSize}
+	const claimers, perClaim = 16, 5
+	starts := make([]int64, claimers)
+	var wg sync.WaitGroup
+	for g := 0; g < claimers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			s, err := b.claimFineIDs(context.Background(), perClaim)
+			if err != nil {
+				t.Errorf("claim %d: %v", g, err)
+				return
+			}
+			starts[g] = s
+		}(g)
+	}
+	wg.Wait()
+	seen := map[int64]bool{}
+	for _, s := range starts {
+		for i := int64(0); i < perClaim; i++ {
+			if seen[s+i] {
+				t.Fatalf("ID %d doled twice", s+i)
+			}
+			seen[s+i] = true
+		}
+	}
+	if len(seen) != claimers*perClaim {
+		t.Fatalf("doled %d unique IDs, want %d", len(seen), claimers*perClaim)
+	}
+
+	if _, err := b.claimFineIDs(context.Background(), spfreshIDBlockSize+1); err == nil {
+		t.Fatal("an over-block claim must error, not refill forever")
 	}
 }

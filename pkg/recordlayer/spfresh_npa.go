@@ -29,7 +29,9 @@ const spfreshNPABatch = 64
 
 // spfreshNPARun claims and executes one NPA task. Returns
 // errSPFreshNotFound-free semantics: a missing/zombie task is a clean no-op.
-func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64) error {
+// wrote reports whether any write committed (lifecycle work or a stale-task
+// clear) — false only for budget-free skips (task gone / foreign live lease).
+func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64) (wrote bool, err error) {
 	// Claim + plan: resolve the children and the neighborhood, and collect
 	// move CANDIDATES (snapshot reads — staleness here only affects which pks
 	// get considered; the move tx re-verifies everything per pk).
@@ -39,14 +41,15 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 	}
 	var cands []candidate
 	var childA, childB int64
-	zombie := false
-	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+	skipped := false // no write at all: task gone or foreign live lease
+	stale := false   // stale task cleared: a write, but no move pass to run
+	err = spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		cands = cands[:0]
-		zombie = false
+		skipped, stale = false, false
 		tx := rtx.Transaction()
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskNPA, parentID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
 			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
-				zombie = true // task gone, or another executor is mid-lifecycle
+				skipped = true // task gone, or another executor is mid-lifecycle
 				return nil
 			}
 			return cerr
@@ -59,7 +62,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		}
 		if hdr == nil {
 			tx.Clear(s.taskKey(spfreshTaskNPA, parentID))
-			zombie = true
+			stale = true
 			return nil
 		}
 		cellID, a, b, derr := decodePostingHDR(hdr)
@@ -131,8 +134,11 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		}
 		return nil
 	})
-	if err != nil || zombie {
-		return err
+	if err != nil || skipped {
+		return false, err
+	}
+	if stale {
+		return true, nil
 	}
 
 	// Move pass: per-pk atomic closure re-evaluation, batched.
@@ -210,7 +216,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 					if !ci.ok {
 						continue
 					}
-					pool = append(pool, spfreshCandidate{id: id, d2: spfreshSquaredDistance(cand.vec, ci.vec)})
+					pool = append(pool, spfreshCandidate{id: id, d2: spfreshSquaredDistance(cand.vec, ci.vec), vec: ci.vec})
 					vecsByID[id] = ci.vec
 				}
 				if len(pool) == 0 {
@@ -254,12 +260,12 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("spfresh NPA: move batch at %d: %w", lo, err)
+			return true, fmt.Errorf("spfresh NPA: move batch at %d: %w", lo, err)
 		}
 	}
 
 	// Done: clear the task.
-	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+	return true, spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		rtx.Transaction().Clear(s.taskKey(spfreshTaskNPA, parentID))
 		return nil
 	})

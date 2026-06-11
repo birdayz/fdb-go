@@ -380,21 +380,87 @@ var _ = Describe("SPFresh build sampling", func() {
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-sample").Sub("k0"), 1)
 		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-k0")
 
-		// A 4-vector sample standing in for a 100k-record dataset.
-		sample := [][]float64{{0, 0}, {1, 1}, {50, 50}, {51, 51}}
+		// 60 sample points standing in for a 100k-record dataset: K₀ from
+		// totalN is 25 cells; K₀ derived from the sample would be 1. The
+		// sample can host the full-count topology, so the build must produce
+		// exactly the totalN-derived count.
+		sample := make([][]float64, 60)
+		for i := range sample {
+			sample[i] = []float64{float64(i * 3), float64(i % 7)}
+		}
 		const totalN = 100_000
 		Expect(builder.coarsePass(ctx, sample, totalN, 7)).To(Succeed())
 
 		avgFill := (2 * config.Lmax) / 3
 		wantK0 := (totalN*config.Replication + avgFill*config.CellTarget - 1) / (avgFill * config.CellTarget)
-		// k-means clamps k to len(sample) points, but the CELL ID allocation
-		// must have been sized for the full dataset... the clamp bounds the
-		// CENTROIDS to the sample; what must hold is that k0 ≥ the full-count
-		// formula was requested. With 4 sample points the clamp yields 4
-		// cells — so assert through the formula path instead: a sample-sized
-		// dataset yields sample-sized k0, and the SAME sample with a large
-		// totalN must not yield FEWER cells than it.
-		Expect(len(builder.cellIDs)).To(Equal(min(wantK0, len(sample))),
-			"k0 must be computed from totalN (clamped only by available sample points)")
+		Expect(len(builder.cellIDs)).To(Equal(wantK0),
+			"k0 must be computed from totalN, not the sample size")
+	})
+
+	It("a sample too small for the full-count topology fails loudly", func() {
+		config := DefaultSPFreshConfig(2)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-sample").Sub("k0small"), 1)
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-k0-small")
+
+		// 4 points cannot host the 25 cells a 100k dataset needs: letting
+		// the k>n clamp shrink the topology to 4 cells would silently undo
+		// exactly what K₀-from-totalN protects (every cell ~25× overfull).
+		// The build must refuse and name the sample-cap remedy.
+		sample := [][]float64{{0, 0}, {1, 1}, {50, 50}, {51, 51}}
+		err := builder.coarsePass(ctx, sample, 100_000, 7)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("exceeds the 4-point training sample"))
+	})
+})
+
+// Codex 094.4 review: the insert path stopped verifying candidates once
+// Replication of them were ACTIVE, so the closure's RNG rule could only ever
+// SHRINK the copy-set — a same-direction duplicate next to the nearest
+// centroid silently under-replicated the record instead of spending the copy
+// on a diverse replica the queue already held.
+var _ = Describe("SPFresh insert closure RNG diversity", func() {
+	ctx := context.Background()
+
+	It("keeps scanning past a same-direction duplicate for a diverse replica", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Alpha = 1.5 // ratio bound must admit the diverse replica (d2 1.96 <= 2.25)
+		sub := specSubspace().Sub("spfresh-rng").Sub("insert")
+		storage := newSPFreshStorage(sub, 1)
+		idx := &Index{Name: "spf_rng_insert"}
+
+		// SPANN Figure 5 at the origin: blue nearest, yellow just past blue
+		// in the SAME direction, grey farther but OPPOSITE.
+		const blue, yellow, grey = int64(10), int64(11), int64(12)
+		vecs := map[int64][]float64{
+			blue:   {1, 0},
+			yellow: {1.3, 0},
+			grey:   {-1.4, 0},
+		}
+		pk := tuple.Tuple{int64(777)}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			var routed []spfreshRouted
+			for _, id := range []int64{blue, yellow, grey} {
+				spfreshSaveCentroid(tx, storage, 1, id, encodeCentroidRow(spfreshStateActive, 0, 0, 0, vecs[id]))
+				routed = append(routed, spfreshRouted{
+					cellID: 1, fineID: id, state: spfreshStateActive,
+					vec: vecs[id], d2: spfreshSquaredDistance([]float64{0, 0}, vecs[id]),
+				})
+			}
+			m := &spfreshIndexMaintainer{
+				standardIndexMaintainer: standardIndexMaintainer{index: idx, indexSubspace: sub, tx: tx},
+				config:                  config,
+			}
+			Expect(m.spfreshInsertRouted(storage, routed, pk, []float64{0, 0})).To(Succeed())
+
+			ids, merr := spfreshReadMembership(tx, storage, pk)
+			Expect(merr).NotTo(HaveOccurred())
+			Expect(ids).To(ConsistOf(blue, grey),
+				"the copy-set must skip the same-direction duplicate AND reach the diverse replica past index r")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

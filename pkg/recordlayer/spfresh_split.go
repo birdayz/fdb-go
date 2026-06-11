@@ -25,8 +25,10 @@ import (
 // spfreshSealOutcome reports what SEAL decided.
 type spfreshSealOutcome struct {
 	proceed bool // false: zombie/no-op (task deleted, or foreign live lease)
-	childA  int64
-	childB  int64
+	cleaned bool // a cleanup WRITE committed (zombie clear / lease release) —
+	// counts against action budgets, unlike a pure foreign-lease skip
+	childA int64
+	childB int64
 }
 
 // spfreshSealFine is §6 step 1, one tiny transaction: claim the split task,
@@ -74,12 +76,14 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 						row.owner = ""
 						row.leaseDeadlineMs = 0
 						tx.Set(s.taskKey(spfreshTaskSplit, fineID), encodeTaskRow(row))
+						out.cleaned = true
 						return nil
 					} else if !errors.Is(ferr, errSPFreshNotFound) {
 						return ferr
 					}
 				}
 				tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
+				out.cleaned = true
 				return nil // truly gone (or pre-seal): next probe re-files it
 			}
 			return err
@@ -87,6 +91,7 @@ func spfreshSealFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, ow
 		switch cent.state {
 		case spfreshStateForward, spfreshStateDead:
 			tx.Clear(s.taskKey(spfreshTaskSplit, fineID))
+			out.cleaned = true
 			return nil // zombie task
 		case spfreshStateSealed:
 			if row.childA == 0 {

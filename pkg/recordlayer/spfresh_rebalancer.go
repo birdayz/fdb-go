@@ -156,6 +156,12 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		return refs[i].id < refs[j].id
 	})
 
+	// worked counts COMMITTED WRITES — lifecycle actions and zombie-cleanup
+	// clears (both make progress and cost real transactions). Foreign-lease
+	// and task-gone skips write nothing and consume no budget: a tenant whose
+	// queue head is live-leased by another executor must not have its whole
+	// action budget burned on skips while actionable tasks behind it starve
+	// (codex 094.4).
 	worked := 0
 	for _, ref := range refs {
 		if limit > 0 && worked >= limit {
@@ -168,6 +174,9 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return worked, fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr)
 			}
 			if !out.proceed {
+				if out.cleaned {
+					worked++
+				}
 				continue // zombie cleaned or foreign lease
 			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
@@ -175,20 +184,29 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 			}
 			worked++
 		case spfreshTaskNPA:
-			if nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id); nerr != nil {
+			wrote, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id)
+			if nerr != nil {
 				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
 			}
-			worked++
+			if wrote {
+				worked++
+			}
 		case spfreshTaskMerge:
-			if merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id); merr != nil {
+			wrote, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
+			if merr != nil {
 				return worked, fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr)
 			}
-			worked++
+			if wrote {
+				worked++
+			}
 		case spfreshTaskCSplit:
-			if cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id); cerr != nil {
+			wrote, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
+			if cerr != nil {
 				return worked, fmt.Errorf("coarse split cell %d: %w", ref.id, cerr)
 			}
-			worked++
+			if wrote {
+				worked++
+			}
 		}
 	}
 	return worked, nil

@@ -47,6 +47,17 @@ type spfreshBuilder struct {
 
 	cellIDs   []int64     // coarse cell ids (parallel to coarseVecs)
 	coarseVec [][]float64 // coarse centroid vectors
+
+	// Fine-ID pool for the wave-A fan-out. Claiming an allocator block
+	// inside each per-cell transaction put a REAL RMW on the single META
+	// allocator key into every k-means-length transaction: with 8 workers
+	// every overlapping pair conflicted, commits serialized at ~1 per tx
+	// lifetime, and each abort redid the per-cell clustering. The pool
+	// claims blocks in their own tiny standalone transactions instead;
+	// doling sub-ranges is mutex-local.
+	idMu   sync.Mutex
+	idNext int64 // next undoled ID; pool is [idNext, idEnd)
+	idEnd  int64
 }
 
 func newSPFreshBuilder(db *FDBDatabase, storage *spfreshStorage, config SPFreshConfig, owner string) *spfreshBuilder {
@@ -99,6 +110,15 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 	k0 := (totalN*b.config.Replication + avgFill*b.config.CellTarget - 1) / (avgFill * b.config.CellTarget)
 	if k0 < 1 {
 		k0 = 1
+	}
+	if k0 > len(sample) {
+		// The k > n clamp in spfreshKMeans would silently shrink the very
+		// topology K₀-from-totalN exists to protect: the dataset has outgrown
+		// the sample cap's design envelope (~2.5M records at defaults). Fail
+		// loudly — raising spfreshCoarseSampleCap is the fix, not building a
+		// coarse table sized by the sampling ratio.
+		return fmt.Errorf("spfresh build: K0 %d exceeds the %d-point training sample (totalN %d outgrew spfreshCoarseSampleCap %d)",
+			k0, len(sample), totalN, spfreshCoarseSampleCap)
 	}
 	coarse, _ := spfreshKMeans(sample, k0, seed, 25)
 	// Roundtrip the centroids through fp16 BEFORE anything routes on them:
@@ -229,6 +249,33 @@ func (b *spfreshBuilder) stageInTx(rtx *FDBRecordContext, batch []spfreshBuildIn
 // the sequential walk over ~3k cells dominated the build wall-clock long
 // after the coarse k-means was parallelized.
 const spfreshBuildCellWorkers = 8
+
+// claimFineIDs returns n consecutive fine IDs from the builder's pool,
+// refilling it with a standalone one-key transaction when it runs dry.
+// Attempt-fresh semantics are preserved: a retried wave-A transaction doles
+// fresh IDs and the skipped ones are never reused (the ID space outlasts the
+// waste — 2^63 across 2^16-sized blocks).
+func (b *spfreshBuilder) claimFineIDs(ctx context.Context, n int) (int64, error) {
+	b.idMu.Lock()
+	defer b.idMu.Unlock()
+	if int64(n) > spfreshIDBlockSize {
+		return 0, fmt.Errorf("spfresh build: %d fine IDs exceed one allocator block (%d)", n, spfreshIDBlockSize)
+	}
+	if b.idNext+int64(n) > b.idEnd {
+		var start int64
+		if err := spfreshRun(ctx, b.db, func(rtx *FDBRecordContext) error {
+			var cerr error
+			start, cerr = spfreshClaimIDBlock(rtx.Transaction(), b.storage)
+			return cerr
+		}); err != nil {
+			return 0, err
+		}
+		b.idNext, b.idEnd = start, start+spfreshIDBlockSize
+	}
+	start := b.idNext
+	b.idNext += int64(n)
+	return start, nil
+}
 
 // forEachCellParallel runs fn over the builder's cells with bounded
 // concurrency, stopping at the first error (in-flight cells finish; their
@@ -437,7 +484,7 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ma
 			keep = []int{0}
 		}
 
-		start, err := spfreshClaimIDBlock(tx, b.storage)
+		start, err := b.claimFineIDs(ctx, len(keep))
 		if err != nil {
 			return err
 		}
@@ -488,18 +535,15 @@ func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int
 }
 
 // assign returns the closure copy-set (fineIDs) and the fine vectors for
-// residual encoding.
+// residual encoding. The candidate pool is wider than the replica target so
+// the closure's RNG rule has same-direction candidates to skip — a pool of
+// exactly rep would make every RNG rejection silently shrink the copy-set.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
-	cands := spfreshNearestK(vec, r.ids, r.vecs, rep)
+	cands := spfreshNearestK(vec, r.ids, r.vecs, spfreshClosurePool(rep))
 	kept := spfreshClosure(cands, rep, alpha)
 	for _, c := range kept {
-		for i, id := range r.ids {
-			if id == c.id {
-				ids = append(ids, id)
-				fvecs = append(fvecs, r.vecs[i])
-				break
-			}
-		}
+		ids = append(ids, c.id)
+		fvecs = append(fvecs, c.vec)
 	}
 	return ids, fvecs
 }

@@ -70,9 +70,9 @@ var _ = Describe("SPFresh merge lifecycle", func() {
 			return nil, terr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID)).To(Succeed())
+		Expect(errOnly(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID))).To(Succeed())
 		// Idempotent: a commit_unknown-style re-run no-ops on the FORWARD row.
-		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID)).To(Succeed())
+		Expect(errOnly(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID))).To(Succeed())
 
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
@@ -152,7 +152,7 @@ var _ = Describe("SPFresh merge lifecycle", func() {
 			return nil, terr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, out.childA)).To(Succeed())
+		Expect(errOnly(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, out.childA))).To(Succeed())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			cent, cerr := spfreshReadCentroidForWrite(tx, storage, cellID, out.childA)
@@ -194,7 +194,7 @@ var _ = Describe("SPFresh merge lifecycle", func() {
 			return nil, terr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID)).To(Succeed())
+		Expect(errOnly(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-test", cellID, fineID))).To(Succeed())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			cent, cerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)

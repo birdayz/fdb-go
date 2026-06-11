@@ -88,6 +88,12 @@ const (
 	spfreshTaskNPA int64 = 4
 )
 
+// spfreshLiveTaskKinds is every kind the rebalancer executes — the sweeper's
+// pending probe scans EXACTLY these. A new task kind MUST be added here, or
+// tenants whose only pending work is the new kind are silently never swept.
+// Cellfin is deliberately absent: build bookkeeping, not live maintenance.
+var spfreshLiveTaskKinds = []int64{spfreshTaskSplit, spfreshTaskMerge, spfreshTaskCSplit, spfreshTaskNPA}
+
 // spfreshHDR is the reserved posting/centroid header key element: tuple nil
 // (encodes as 0x00), which sorts strictly before every legal pk encoding —
 // sound because the record layer rejects null primary-key components, so no pk

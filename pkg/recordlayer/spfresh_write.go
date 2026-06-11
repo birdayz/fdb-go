@@ -282,7 +282,24 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 			continue
 		}
 		seen[cand.fineID] = true
-		if len(verified) >= m.config.Replication && cand.d2 >= verified[m.config.Replication-1].d2 {
+		// Closure-driven cutoffs. The RNG diversity rule may have to look
+		// PAST the first Replication candidates for a different-direction
+		// replica, so "Replication verified" is not enough to stop (a pool
+		// of exactly r turns every RNG skip into silent under-replication —
+		// codex 094.4). The queue is ascending at every pop, so:
+		//  1. done: r diverse replicas kept and the head can no longer
+		//     enter the kept set;
+		//  2. ratio: the head already fails the closure's ratio bound
+		//     against the nearest verified candidate — everything after
+		//     fails it too (no REAL read needed to know);
+		//  3. cap: stop spending REAL centroid reads hunting diversity.
+		if kept := spfreshClosure(verified, m.config.Replication, m.config.Alpha); len(kept) >= m.config.Replication && cand.d2 >= kept[len(kept)-1].d2 {
+			break
+		}
+		if len(verified) > 0 && cand.d2 > m.config.Alpha*m.config.Alpha*verified[0].d2 {
+			break
+		}
+		if len(verified) >= spfreshClosurePool(m.config.Replication) {
 			break
 		}
 		row, rerr := spfreshReadCentroidForWrite(m.tx, storage, cand.cellID, cand.fineID)
@@ -332,7 +349,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		if verr != nil {
 			return verr
 		}
-		nc := spfreshCandidate{id: cand.fineID, d2: cand.d2}
+		nc := spfreshCandidate{id: cand.fineID, d2: cand.d2, vec: cvec}
 		at := len(verified)
 		for i := range verified {
 			if nc.d2 < verified[i].d2 {

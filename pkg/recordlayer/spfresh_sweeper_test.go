@@ -250,6 +250,49 @@ var _ = Describe("SPFresh sweeper budgets and legacy bookkeeping", func() {
 		Expect(worked).To(BeZero())
 	})
 
+	// Codex 094.4: a LIVE foreign lease at the head of the queue used to
+	// consume the action budget without doing anything — at limit=1 the
+	// actionable task behind it never ran and the pass over-reported work.
+	It("foreign-leased tasks consume no action budget; cleanups do", func() {
+		config := DefaultSPFreshConfig(2)
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-budget").Sub("lease"), 1)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{0, 0}))
+			// Merge task 5: ACTIVE centroid, live foreign lease — the head
+			// of the merge queue (id order).
+			spfreshSaveCentroid(tx, storage, 1, 5, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{1, 0}))
+			_, terr := spfreshTaskSetIfAbsent(tx, storage, spfreshTaskMerge, 5)
+			Expect(terr).NotTo(HaveOccurred())
+			_, cerr := spfreshTaskClaim(tx, storage, spfreshTaskMerge, 5, "foreign-owner", spfreshLeaseDeadline(), spfreshNowMs())
+			Expect(cerr).NotTo(HaveOccurred())
+			// Merge task 7: no centroid anywhere — a zombie whose cleanup
+			// clear IS budgeted work.
+			_, terr = spfreshTaskSetIfAbsent(tx, storage, spfreshTaskMerge, 7)
+			Expect(terr).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "budget-me", 7, 1)
+		Expect(rerr).NotTo(HaveOccurred())
+		Expect(worked).To(Equal(1), "only the zombie cleanup is work; the lease skip is free")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			t5, g5 := tx.Get(storage.taskKey(spfreshTaskMerge, 5)).Get()
+			Expect(g5).NotTo(HaveOccurred())
+			Expect(t5).NotTo(BeNil(), "the live-foreign-leased task must survive untouched")
+			t7, g7 := tx.Get(storage.taskKey(spfreshTaskMerge, 7)).Get()
+			Expect(g7).NotTo(HaveOccurred())
+			Expect(t7).To(BeNil(), "the zombie BEHIND the leased head must be cleaned within the same limit=1 budget")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("legacy leaked Cellfin rows: probe ignores them, rebalancer clears them", func() {
 		good, _ := newSweeperTenant("spf_sw_legacy", 8, true)
 

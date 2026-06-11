@@ -128,7 +128,7 @@ func SPFreshHasPendingMaintenance(ctx context.Context, db *FDBDatabase, storeBui
 		// so the sweeper would revisit the tenant every pass for zero
 		// actions (codex MT P2). The rebalancer also clears such rows on
 		// sight; this filter covers tenants nobody has rebalanced yet.
-		kinds := []int64{spfreshTaskSplit, spfreshTaskMerge, spfreshTaskCSplit, spfreshTaskNPA}
+		kinds := spfreshLiveTaskKinds
 		futures := make([]fdb.RangeResult, 0, len(kinds))
 		for _, kind := range kinds {
 			r, rerr := fdb.PrefixRange(s.tasks.Pack(tuple.Tuple{kind}))
