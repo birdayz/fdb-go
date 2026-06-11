@@ -88,8 +88,8 @@ func TestClientMetrics_SlogEvents(t *testing.T) {
 	// Warn handler: sees 1021, not 1020.
 	warnH := &capturingHandler{level: slog.LevelWarn}
 	dbWarn := &database{logger: slog.New(warnH)}
-	dbWarn.countRetryAndLog(ErrCommitUnknownResult, 1)
-	dbWarn.countRetryAndLog(ErrNotCommitted, 1)
+	dbWarn.countRetryAndLog(context.Background(), ErrCommitUnknownResult, 1)
+	dbWarn.countRetryAndLog(context.Background(), ErrNotCommitted, 1)
 	if got := warnH.count(); got != 1 {
 		t.Fatalf("warn-level handler captured %d records, want 1 (only the 1021 Warn)", got)
 	}
@@ -113,8 +113,8 @@ func TestClientMetrics_SlogEvents(t *testing.T) {
 	// Debug handler: sees both.
 	debugH := &capturingHandler{level: slog.LevelDebug}
 	dbDebug := &database{logger: slog.New(debugH)}
-	dbDebug.countRetryAndLog(ErrNotCommitted, 1)
-	dbDebug.countRetryAndLog(ErrCommitUnknownResult, 2)
+	dbDebug.countRetryAndLog(context.Background(), ErrNotCommitted, 1)
+	dbDebug.countRetryAndLog(context.Background(), ErrCommitUnknownResult, 2)
 	if got := debugH.count(); got != 2 {
 		t.Fatalf("debug-level handler captured %d records, want 2", got)
 	}

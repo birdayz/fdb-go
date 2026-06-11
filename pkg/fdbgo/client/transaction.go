@@ -1307,7 +1307,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		}
 		tx.retryCount++
 		if tx.db != nil {
-			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
 		if cerr := backoffSleep(ctx, delay); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -1323,7 +1323,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
 		if tx.db != nil {
-			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -1340,7 +1340,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
 		if tx.db != nil {
-			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
@@ -1368,7 +1368,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		tx.conflictMu.Unlock()
 		tx.retryCount++
 		if tx.db != nil {
-			tx.db.countRetryAndLog(fdbErr.Code, tx.retryCount)
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))

@@ -16,7 +16,7 @@ import (
 // WriteText renders a single snapshot wherever an io.Writer goes.
 func ExampleWriteText() {
 	var buf bytes.Buffer
-	fdbmetrics.WriteText(&buf, client.ClientMetricsSnapshot{TransactionsNotCommitted: 2})
+	_ = fdbmetrics.WriteText(&buf, client.ClientMetricsSnapshot{TransactionsNotCommitted: 2})
 	for _, line := range strings.Split(buf.String(), "\n") {
 		if strings.HasPrefix(line, "fdb_client_transactions_not_committed_total") {
 			fmt.Println(line)

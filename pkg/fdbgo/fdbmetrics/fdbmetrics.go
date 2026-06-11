@@ -36,7 +36,9 @@ type MetricsSource interface {
 func Handler(src MetricsSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		WriteText(w, src.Metrics())
+		// A write error here means the scraper hung up mid-response —
+		// nothing actionable; the next scrape retries.
+		_ = WriteText(w, src.Metrics())
 	})
 }
 
@@ -109,8 +111,13 @@ var counters = []counterDef{
 }
 
 // WriteText renders one snapshot in the Prometheus text exposition format.
-func WriteText(w io.Writer, s client.ClientMetricsSnapshot) {
+// Returns the first writer error (the exposition itself cannot fail).
+func WriteText(w io.Writer, s client.ClientMetricsSnapshot) error {
 	for _, c := range counters {
-		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", c.name, c.help, c.name, c.name, c.get(s))
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n",
+			c.name, c.help, c.name, c.name, c.get(s)); err != nil {
+			return err
+		}
 	}
+	return nil
 }

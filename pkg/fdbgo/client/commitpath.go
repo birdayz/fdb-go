@@ -182,7 +182,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 				// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
 				// the same per-code counters as any transaction. RFC-097.
 				dummyRetries++
-				tx.db.countRetryAndLog(fdbErr.Code, dummyRetries)
+				tx.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
 				if backoffSleep(ctx, jitterBackoff(backoff)) != nil {
 					return // ctx cancelled — caller gave up
 				}

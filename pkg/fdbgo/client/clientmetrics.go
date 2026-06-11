@@ -143,15 +143,15 @@ func (m *ClientMetrics) Snapshot() ClientMetricsSnapshot {
 // write), everything else at Debug (a conflict storm at Warn would melt the
 // log — the COUNTER is the storm signal; rates belong on dashboards). The
 // Enabled guard keeps the disabled-level hot path at one branch.
-func logRetryEvent(logger *slog.Logger, code int, retryCount int) {
+func logRetryEvent(ctx context.Context, logger *slog.Logger, code int, retryCount int) {
 	level := slog.LevelDebug
 	if code == ErrCommitUnknownResult {
 		level = slog.LevelWarn
 	}
-	if !logger.Enabled(context.Background(), level) {
+	if !logger.Enabled(ctx, level) {
 		return
 	}
-	logger.Log(context.Background(), level, "fdb client transaction retry",
+	logger.Log(ctx, level, "fdb client transaction retry",
 		"fdb_error_code", code,
 		"retry_count", retryCount,
 	)
@@ -160,9 +160,9 @@ func logRetryEvent(logger *slog.Logger, code int, retryCount int) {
 // countRetryAndLog is the single per-retry hook used by OnError's retryable
 // arms: counter + (guarded) operational event. nil-logger-safe for
 // hand-constructed test databases.
-func (db *database) countRetryAndLog(code, retryCount int) {
+func (db *database) countRetryAndLog(ctx context.Context, code, retryCount int) {
 	db.metrics.countRetry(code)
 	if db.logger != nil {
-		logRetryEvent(db.logger, code, retryCount)
+		logRetryEvent(ctx, db.logger, code, retryCount)
 	}
 }
