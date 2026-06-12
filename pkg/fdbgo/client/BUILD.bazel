@@ -98,6 +98,7 @@ go_test(
         "transaction_concurrent_unit_test.go",
         "transaction_options_test.go",
         "transaction_unit_test.go",
+        "unreadable_test.go",
     ],
     args = [
         "-test.parallel=4",

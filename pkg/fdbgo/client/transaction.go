@@ -28,6 +28,7 @@ const (
 	ErrFutureVersion             = 1009 // future_version
 	ErrWrongShardServer          = 1001 // wrong_shard_server (1062 is change_feed_cancelled — do not confuse)
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
+	ErrAccessedUnreadable        = 1036 // accessed_unreadable — read of a pending versionstamped key (NOT retryable; RFC-098)
 	ErrProcessBehind             = 1037 // process_behind
 	ErrDatabaseLocked            = 1038 // database_locked
 	ErrClusterVersionChanged     = 1039 // cluster_version_changed (MAYBE_COMMITTED)
@@ -238,6 +239,27 @@ type Transaction struct {
 	// like rywDisabled (FDB transactions are not for concurrent use).
 	rywPoisonErr error
 
+	// readErr: the first error returned by a TRACKED read of this transaction —
+	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
+	// before any commit work (ReadYourWrites.actor.cpp:1358-1359), and an errored
+	// read future stays in the AndFuture forever (add() keeps errored futures,
+	// isReady() only pops successful ones — flow/genericactors.actor.h:1912-1942),
+	// so a failed read — even one whose error the caller caught and swallowed —
+	// fails a later Commit with that same error until the transaction is reset
+	// (resetRyow() reading = AndFuture(), :2715). Tracked reads mirror C++'s
+	// reading.add sites: get (:1691), getKey (:1707), getRange (:1767),
+	// getAddressesForKey (:1849), watch setup (:1290). NOT tracked, matching C++:
+	// getEstimatedRangeSizeBytes / getRangeSplitPoints (waitOrError, no
+	// reading.add) and eager validation errors (key_outside_legal_range etc.
+	// return before a read future exists). Context cancellation is also excluded:
+	// a per-read ctx has no C++ analogue (C++ cancellation is whole-transaction
+	// via resetPromise), so it must not poison a commit libfdb_c would allow.
+	//
+	// readErrMu guards it: pipelined read futures and watch setup resolve on
+	// other goroutines (unlike rywPoisonErr, which only the option path writes).
+	readErrMu sync.Mutex
+	readErr   error
+
 	// hadRead: set when any read is ISSUED (getValue / getRange / GetPipelined — the chokes
 	// every read funnels through, which GetReadVersion and Commit do NOT). Together with a
 	// non-empty write map it is the Go analog of C++'s
@@ -336,8 +358,11 @@ type Snapshot struct {
 // Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
+	// Snapshot reads are tracked in C++ ryw->reading exactly like regular reads
+	// (reading.add runs for Snapshot::True too) — a failed snapshot read poisons
+	// a later Commit the same way.
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, s.tx.trackReadError(err)
 	}
 	// Same system key check as regular Get.
 	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
@@ -347,9 +372,11 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// through, for ALL reads incl. snapshot), then the snapshot-RYW counter. Both map to a
 	// storage read here (a snapshot read adds no conflict either way).
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
-		return s.tx.getValue(ctx, key)
+		v, err := s.tx.getValue(ctx, key)
+		return v, s.tx.trackReadError(err)
 	}
-	return s.tx.ryw.get(ctx, key, s.tx.getValue)
+	v, err := s.tx.ryw.get(ctx, key, s.tx.getValue)
+	return v, s.tx.trackReadError(err)
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
@@ -359,14 +386,15 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 // (snapshotRYWDisableCount > 0) the write map is bypassed (snapshot cache only).
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, s.tx.trackReadError(err)
 	}
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
 	// includeWrites mirrors C++ :400-402: consult the RYW write map only when readYourWrites is
 	// NOT disabled AND snapshot RYW is net-enabled (count <= 0).
-	return s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
+	k, err := s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
+	return k, s.tx.trackReadError(err)
 }
 
 // GetRange reads a range without adding a read conflict range.
@@ -374,16 +402,18 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, err
+		return nil, false, s.tx.trackReadError(err)
 	}
 	maxKey := s.tx.maxReadKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
-		return s.tx.getRange(ctx, begin, end, limit, false)
+		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, false)
+		return kvs, more, s.tx.trackReadError(err)
 	}
-	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
+	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
+	return kvs, more, s.tx.trackReadError(err)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
@@ -391,16 +421,18 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, err
+		return nil, false, s.tx.trackReadError(err)
 	}
 	maxKey := s.tx.maxReadKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
-		return s.tx.getRange(ctx, begin, end, limit, true)
+		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, true)
+		return kvs, more, s.tx.trackReadError(err)
 	}
-	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
+	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
+	return kvs, more, s.tx.trackReadError(err)
 }
 
 // GetReadVersion returns the read version for this transaction via its snapshot view.
@@ -419,6 +451,22 @@ func (tx *Transaction) checkCancelled() error {
 		return &wire.FDBError{Code: 1025} // transaction_cancelled
 	}
 	return nil
+}
+
+// trackReadError records err as this transaction's first failed read (see the
+// readErr field — the C++ ryw->reading analogue, which fails a later Commit
+// with the same error). Returns err unchanged so read tails can
+// `return v, tx.trackReadError(err)`.
+func (tx *Transaction) trackReadError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	tx.readErrMu.Lock()
+	if tx.readErr == nil {
+		tx.readErr = err
+	}
+	tx.readErrMu.Unlock()
+	return err
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
@@ -484,8 +532,10 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 
 // Get reads a single key. Returns nil if the key doesn't exist.
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
+	// GRV failures are tracked: in C++ the read version is acquired INSIDE the
+	// read future that reading.add records, so a failed GRV poisons commit too.
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, tx.trackReadError(err)
 	}
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
@@ -497,9 +547,11 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 		tx.addReadConflictForKey(key)
 	}
 	if tx.rywDisabled {
-		return tx.getValue(ctx, key)
+		v, err := tx.getValue(ctx, key)
+		return v, tx.trackReadError(err)
 	}
-	return tx.ryw.get(ctx, key, tx.getValue)
+	v, err := tx.ryw.get(ctx, key, tx.getValue)
+	return v, tx.trackReadError(err)
 }
 
 // GetPipelined sends a GetValue request and returns a PendingGet that can be
@@ -526,6 +578,27 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 
 	// Check RYW cache.
 	tx.ryw.mu.Lock()
+	// Unreadable gate (RFC-098) — mirrors rywCache.get(): a sticky-unreadable
+	// entry (versionstamped op anywhere in its history, even if a later plain
+	// Set resolved the value) or a key inside an SVK candidate stamp range
+	// throws 1036 BEFORE any cache hit or server send. Without this, the
+	// pipelined path returned the folded value (sticky case) or read through
+	// to storage (SVK range case) — both silent wrong answers vs libfdb_c.
+	// Under BYPASS_UNREADABLE a resolved entry's value IS the bypass answer
+	// (returned below); unresolved chains take ErrNeedFullRYW into ryw.get(),
+	// which owns the bypass resolution.
+	if !tx.ryw.bypassUnreadable {
+		if entry, ok := tx.ryw.writes[string(key)]; (ok && entry.unreadable) || tx.ryw.isUnreadableLocked(key) {
+			tx.ryw.mu.Unlock()
+			// Tracked: in C++ this 1036 is thrown from inside the read future
+			// (RYWIterator), so it lands in ryw->reading and poisons commit.
+			// The transient locate/send failures below are NOT tracked — the
+			// caller re-drives them through the full read path, which records
+			// its own final outcome (one C++ read future = GetPipelined +
+			// Resolve/re-drive together).
+			return nil, nil, tx.trackReadError(&wire.FDBError{Code: ErrAccessedUnreadable})
+		}
+	}
 	if entry, ok := tx.ryw.writes[string(key)]; ok {
 		if !entry.hasAtomics {
 			if entry.absent {
@@ -614,7 +687,7 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 			p.replyHandle.Cancel()
 			p.replyHandle.Release()
 			putTimer(p.timer)
-			return p.tx.getValue(p.ctx, p.key)
+			return p.resolveFull()
 		}
 	}
 	defer putTimer(p.timer)
@@ -626,29 +699,41 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 			// retrying so server selection avoids it, matching sendGetValue. Then
 			// re-drive through the full read path.
 			p.tx.db.handleConnError(p.addr)
-			return p.tx.getValue(p.ctx, p.key)
+			return p.resolveFull()
 		}
 		val, _, err := parseGetValueReply(resp.Body)
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId)
-			return p.tx.getValue(p.ctx, p.key)
+			return p.resolveFull()
 		}
-		return val, err
+		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
+		// C++ read future; this is its final outcome.
+		return val, p.tx.trackReadError(err)
 	case <-p.timer.C:
 		p.replyHandle.Cancel()
-		return p.tx.getValue(p.ctx, p.key)
+		return p.resolveFull()
 	case <-p.ctx.Done():
 		p.replyHandle.Cancel()
 		return nil, p.ctx.Err()
 	}
 }
 
+// resolveFull re-drives a pipelined get through the full read path and records
+// its final outcome in the transaction's read-error tracking (see readErr) —
+// the re-drive, not the transient failure that triggered it, is what the C++
+// read future would have resolved to.
+func (p *PendingGet) resolveFull() ([]byte, error) {
+	v, err := p.tx.getValue(p.ctx, p.key)
+	return v, p.tx.trackReadError(err)
+}
+
 // GetKey resolves a key selector to the actual key in the database.
 func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, err
+		return nil, tx.trackReadError(err)
 	}
 	// C++ RYW::getKey: if (key.getKey() > getMaxReadKey()) → key_outside_legal_range
+	// Eager validation — NOT tracked (C++ returns it before the read future exists).
 	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
@@ -663,7 +748,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		resolved, err = tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, tx.maxReadKey(), true, tx.getRange)
 	}
 	if err != nil {
-		return nil, err
+		return nil, tx.trackReadError(err)
 	}
 	// Read-conflict range: getKey conflicts over the RANGE between the selector base
 	// and the resolved key (C++ addConflictRange(GetKeyReq), ReadYourWrites.actor.cpp:230),
@@ -800,7 +885,7 @@ func (tx *Transaction) GetRangeReverse(ctx context.Context, begin, end []byte, l
 
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, err
+		return nil, false, tx.trackReadError(err)
 	}
 	// C++ RYW::getRange: if (begin > maxKey || end > maxKey) → key_outside_legal_range
 	maxKey := tx.maxReadKey()
@@ -815,9 +900,11 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	}
 
 	if tx.rywDisabled {
-		return tx.getRange(ctx, begin, end, limit, reverse)
+		kvs, more, err := tx.getRange(ctx, begin, end, limit, reverse)
+		return kvs, more, tx.trackReadError(err)
 	}
-	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
+	kvs, more, err := tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
+	return kvs, more, tx.trackReadError(err)
 }
 
 // Set writes a key-value pair.
@@ -936,8 +1023,74 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	}
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
+		if op == MutSetVersionstampedKey {
+			// SVK is RANGE-unreadable in the RYW model (RFC-098; C++
+			// ReadYourWrites.actor.cpp:2263-2277): the entire candidate stamp
+			// range [key@minStamp, key@\xff…) becomes unreadable, and the
+			// pending entry is stored at the key TRANSFORMED with the
+			// min-bound stamp (Atomic.h:289) — keeping the 4-byte offset
+			// suffix, exactly as C++ mutates k in place and inserts it
+			// suffix-and-all. The COMMIT mutation (tx.mutations above) keeps
+			// the user's original placeholder key; only the local read model
+			// uses the transform. A malformed key (no room for offset/stamp)
+			// falls through as a plain entry at the user key — the commit
+			// path's eager validation reports client_invalid_operation,
+			// matching C++ which throws from getVersionstampKeyRange before
+			// touching the write map.
+			minVersion := int64(0)
+			tx.readVersionMu.Lock()
+			if tx.hasReadVersion {
+				minVersion = tx.readVersion // C++ tr.getCachedReadVersion().orDefault(0)
+			}
+			tx.readVersionMu.Unlock()
+			if rangeBegin, rangeEnd, transformed, ok := versionstampKeyRange(key, minVersion, tx.maxReadKey()); ok {
+				tx.ryw.addUnreadableRange(rangeBegin, rangeEnd)
+				tx.ryw.atomic(op, transformed, operand)
+				return
+			}
+		}
 		tx.ryw.atomic(op, key, operand)
 	}
+}
+
+// versionstampKeyRange ports C++ getVersionstampKeyRange + the in-place key
+// transform (Atomic.h:258-300): key carries a trailing 4-byte LE offset of
+// the 10-byte placeholder. Returns the candidate stamp range
+// [key@stamp(minVersion,0), key@\xff×10 + \x00) clamped to maxKey, and the
+// key transformed with the min-bound stamp (suffix preserved). ok=false on a
+// malformed key (validated again by the commit path's eager checks).
+func versionstampKeyRange(key []byte, minVersion int64, maxKey []byte) (begin, end, transformed []byte, ok bool) {
+	if len(key) < 4 {
+		return nil, nil, nil, false
+	}
+	pos := int(int32(binary.LittleEndian.Uint32(key[len(key)-4:])))
+	if pos < 0 || pos+10 > len(key)-4 {
+		return nil, nil, nil, false
+	}
+	// begin = key[:len-4] with placeVersionstamp(minVersion, 0) at pos.
+	begin = append([]byte(nil), key[:len(key)-4]...)
+	placeVersionstamp(begin[pos:], minVersion, 0)
+	// end = key[:len-3] with trailing byte 0x00 and \xff×10 at pos
+	// (Atomic.h:277-284: substr(0, size-3) then last byte = 0).
+	end = append([]byte(nil), key[:len(key)-3]...)
+	end[len(end)-1] = 0x00
+	for i := 0; i < 10; i++ {
+		end[pos+i] = 0xff
+	}
+	if bytes.Compare(end, maxKey) > 0 {
+		end = append([]byte(nil), maxKey...)
+	}
+	// transformed = full key (suffix INCLUDED) with the min-bound stamp.
+	transformed = append([]byte(nil), key...)
+	placeVersionstamp(transformed[pos:], minVersion, 0)
+	return begin, end, transformed, true
+}
+
+// placeVersionstamp writes the 10-byte versionstamp: 8-byte BIG-endian
+// version + 2-byte BIG-endian transaction number (Atomic.h:243-256).
+func placeVersionstamp(dst []byte, version int64, txnNumber uint16) {
+	binary.BigEndian.PutUint64(dst[:8], uint64(version))
+	binary.BigEndian.PutUint16(dst[8:10], txnNumber)
 }
 
 // Commit sends mutations to a commit proxy.
@@ -964,6 +1117,20 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
+	}
+	// C++ commit() waits on ryw->reading before ANY commit work — before the
+	// RYW-disabled branch, the read-only fast path, and the size checks
+	// (ReadYourWrites.actor.cpp:1358-1359): a read that failed earlier fails the
+	// commit with that same error, even if the caller swallowed it (the errored
+	// future stays in the AndFuture until reset). Checked after checkTimeout: a
+	// fired timebomb sits in resetPromise, which the C++ commit wrapper surfaces
+	// before the actor's wait(reading). Returns without resetting — the caller
+	// drives OnError/Reset, which clears it (resetRyow :2715).
+	tx.readErrMu.Lock()
+	readErr := tx.readErr
+	tx.readErrMu.Unlock()
+	if readErr != nil {
+		return readErr
 	}
 
 	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
@@ -1513,7 +1680,9 @@ func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]st
 	}
 	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 	if err != nil {
-		return nil, fmt.Errorf("locate key: %w", err)
+		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
+		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.
+		return nil, tx.trackReadError(fmt.Errorf("locate key: %w", err))
 	}
 	addrs := make([]string, len(loc.Servers))
 	for i, s := range loc.Servers {
@@ -1900,6 +2069,9 @@ func (tx *Transaction) postCommitReset() {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.readErrMu.Lock()
+	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
+	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// committedVersion and txnBatchId preserved intentionally.
 }
@@ -1929,6 +2101,9 @@ func (tx *Transaction) reset() {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.readErrMu.Lock()
+	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
+	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
 	// onError does NOT update creationTime, so the timeout is an overall
@@ -1993,4 +2168,14 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	}
 	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(cap)))
 	return delay
+}
+
+// SetBypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE
+// (ReadYourWrites.actor.cpp:2611-2613): reads of keys with pending
+// versionstamped writes return the write-map value with the placeholder
+// bytes as written instead of failing with accessed_unreadable (1036);
+// SVK's unmodified-unreadable candidate range reads through to storage.
+// RFC-098.
+func (tx *Transaction) SetBypassUnreadable(v bool) {
+	tx.ryw.setBypassUnreadable(v)
 }

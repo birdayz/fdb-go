@@ -760,6 +760,13 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   this closes). Closing means adding the `USE_GRV_CACHE` transaction/database option and gating
   `tryCache` + the refresher on it, matching `:7504-7518` exactly. Needs its own RFC (perf
   implications: today's cache is why Go GRV latency is flat under load); fdb-client-review gates.
+  **DEMONSTRATED wrong-answer (RFC-098 differential, full-suite run): a Go transaction served a
+  cached version OLDER than a libfdb_c-committed seed — the seed keys were invisible (GetKey
+  resolved past them; a limited GetRange saw 0 of 2 rows). libfdb_c's default (real GRV per txn)
+  guarantees external causality; Go's always-on cache silently does not. The differential tests
+  now seed through the Go client to stay deterministic
+  (`pkg/fdbgo/bench/differential_unreadable_test.go`, getkey subtest comment) — those comments
+  are removable when this closes. Upgraded from perf-flavored divergence to correctness bug.**
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,

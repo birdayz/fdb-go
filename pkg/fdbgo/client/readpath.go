@@ -812,8 +812,10 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 
 	// Read current value so we can send it with the watch request.
 	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
+	// Tracked (C++ ryw->reading): the watch actor's done future is reading.add'd
+	// (ReadYourWrites.actor.cpp:1290), so a failed watch-setup read poisons commit.
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
-	return value, readVersion, err
+	return value, readVersion, tx.trackReadError(err)
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
