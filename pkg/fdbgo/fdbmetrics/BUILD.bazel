@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fdbmetrics",
+    srcs = ["fdbmetrics.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbmetrics",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/fdbgo/client"],
+)
+
+go_test(
+    name = "fdbmetrics_test",
+    srcs = [
+        "example_test.go",
+        "fdbmetrics_test.go",
+    ],
+    embed = [":fdbmetrics"],
+    deps = ["//pkg/fdbgo/client"],
+)

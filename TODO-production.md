@@ -466,15 +466,27 @@ heavy deps" principles; an OTel/Prometheus adapter ships as a separate optional 
   of bare `log.Printf`. This makes the library's diagnostics pluggable via the *standard* Go
   mechanism — apps call `slog.SetDefault` with their own handler (JSON, levels, collector) — with
   zero record-layer-specific logging API to learn. (`seriousLogf` stays a test-capture seam.)
-- [ ] **Emit operational events** (retry attempt / `commit_conflict` 1020 / `commit_unknown_result`
-  / online-indexer progress) through the same slog path. This shares its source with P1.3's
-  counters (one event → both a log line and a metric), so it lands together with P1.3. Builds on
-  the `PlanGenerationLogger` hook (RFC-034).
+- [~] **Emit operational events** — CLIENT half DONE (RFC-097, with P1.3): retry events
+  (per-code, incl. 1020) at Debug + `commit_unknown_result` at Warn flow through a per-handle
+  logger (`client.WithLogger`, nil → `slog.Default()` — tests never mutate process globals),
+  `Enabled`-guarded so the disabled-level hot path is one branch; same source as the counters.
+  REMAINING: the record-layer half (online-indexer progress events; builds on the
+  `PlanGenerationLogger` hook, RFC-034).
 
-### [ ] P1.3 — Observability: conflict/retry metrics + export hook · M
-`StoreTimer` is in-memory `atomic.Int64` only, no export, no commit-conflict/retry counters.
-Add `commit`/`commit_conflict(1020)`/`retry`/`commit_unknown_result` events; a `Snapshot()`→sink
-export hook; ship a Prometheus/OTel adapter as a separate optional package + example.
+### [x] P1.3 — Observability: conflict/retry metrics + export hook · M — DONE (RFC-097)
+`ClientMetrics` on every `Database` handle: the C++ `DatabaseContext` TransactionMetrics
+subset with C++ names and 1:1 increment sites (commit started `commitMutations`-style —
+read-only fast path NOT counted, matching `NativeAPI.actor.cpp:6800-6808`; per-code retry
+counters at the OnError arms `:7749-:7772`; GRV completions per real batched reply,
+cache hits excluded, `:7428-7440`) + a Go-only `transactionRetries` aggregate.
+Export hook = `Database.Metrics()` poll (monotonic snapshot; Prometheus/OTel are
+pull-based consumers of exactly this shape). Shipped adapter: `pkg/fdbgo/fdbmetrics` —
+zero-dependency Prometheus **text-exposition** `http.Handler` + runnable example
+(deliberately not a `prometheus.Collector`: no client_golang dep for 14 counters; a
+Collector over `Metrics()` is documented as trivial). Pinned by counter-delta FDB tests
+(clean commit, read-only zero-delta, forced conflict, dummy-barrier commits counted) —
+conflict wiring revert-proven — plus the per-code mapping unit table, slog-event level
+tests via a per-handle capturing handler, and `-race` green.
 
 ### [ ] P1.4 — ~~retry/ctx bounds~~ → **PROMOTED to P0.4.**
 

@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/tls"
+	"log/slog"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
@@ -17,6 +18,7 @@ type Option func(*openOptions)
 type openOptions struct {
 	dialFn    DialFunc
 	tlsConfig *tls.Config
+	logger    *slog.Logger
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -51,4 +53,13 @@ func WithDialFunc(fn DialFunc) Option {
 // string without ":tls".
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(o *openOptions) { o.tlsConfig = cfg }
+}
+
+// WithLogger sets the per-handle logger for the client's operational events
+// (transaction retries, commit_unknown_result — RFC-097). nil (the default)
+// uses slog.Default(), so zero-config apps keep the standard integration
+// point (slog.SetDefault); the per-handle option exists for multi-tenant
+// hosts and for tests, which must never mutate process-global state.
+func WithLogger(logger *slog.Logger) Option {
+	return func(o *openOptions) { o.logger = logger }
 }

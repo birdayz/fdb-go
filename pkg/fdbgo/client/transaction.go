@@ -1097,6 +1097,15 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// Size the VALIDATED snapshot `muts` (via approximateCommitSize), not the live buffer:
 	// a Set racing this Commit on another goroutine appends beyond `muts` and is not in this
 	// commit, so GetApproximateSize() could fail a small commit for an unshipped mutation.
+	// C++ ++transactionsCommitStarted in commitMutations (:6808): AFTER the
+	// empty fast path (:6800-6806, not counted — the non-empty guard here is
+	// that fast path's condition) but BEFORE the size check (~:6835), so a
+	// persistently oversized commit shows up as Started-without-Completed.
+	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
+	if tx.db != nil && (len(muts) > 0 || nWriteConflicts > 0) {
+		tx.db.metrics.transactionsCommitStarted.Add(1)
+	}
+
 	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(muts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
@@ -1136,6 +1145,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
 	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
 		return err
+	}
+
+	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
+	if tx.db != nil {
+		tx.db.metrics.transactionsCommitCompleted.Add(1)
 	}
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
@@ -1292,6 +1306,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 			delay = tx.maxRetryDelay
 		}
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, delay); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1305,6 +1322,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1319,6 +1339,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		// hot_shard and range_locked use the same 30s cap to avoid
 		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
@@ -1344,6 +1367,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		}
 		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr

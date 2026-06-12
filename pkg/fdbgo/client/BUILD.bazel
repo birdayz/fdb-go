@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "client",
     srcs = [
+        "clientmetrics.go",
         "commitpath.go",
         "coordinator.go",
         "database.go",
@@ -45,6 +46,7 @@ go_test(
         "boundary_test.go",
         "c_binding_port_test.go",
         "client_test.go",
+        "clientmetrics_test.go",
         "commit_dummy_regression_test.go",
         "commit_path_grv_ctx_test.go",
         "commitpath_test.go",
