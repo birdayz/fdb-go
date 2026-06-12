@@ -549,7 +549,65 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 	if epsilonSet {
 		searcher.epsilon = epsilon // ≤ 0 disables pruning
 	}
-	return searcher.search(m.tx, query, k)
+	results, serr := searcher.search(m.tx, query, k)
+	if serr != nil {
+		return nil, serr
+	}
+	// Read-path envelope repair: a capped posting read is proof the posting is
+	// past the split-dispatch envelope with its tail invisible to queries —
+	// the split trigger was lost (every lifecycle that can balloon a posting
+	// re-files on its own, but the cap-hit signal is the regression net for
+	// the whole class). Re-file from here so the envelope heals from reads
+	// instead of trusting every lifecycle forever.
+	if ferr := m.spfreshFileSplitsForCapped(storage, searcher.capped); ferr != nil {
+		return nil, fmt.Errorf("spfresh index %q: read-path split re-file: %w", m.index.Name, ferr)
+	}
+	return results, nil
+}
+
+// spfreshFileSplitsForCapped re-files split tasks for postings whose search
+// fetch hit the 4×Lmax+1 cap. Conflict discipline: queries stay conflict-free
+// in every steady state — the task-row gate is a SNAPSHOT read, so once a
+// split is pending (the whole heal window) queries take no conflict ranges
+// here; only the one query that actually files pays spfreshTaskSetIfAbsent's
+// REAL read + write (the same Set-if-absent the insert-path probe uses — a
+// live claim must not be clobbered). The insert path's csplit starvation
+// guard applies unchanged: issuance stays paused for cells with a pausing
+// coarse split (the csplit move re-files for oversized rows it relocates —
+// the pause-window repair), so the read path cannot re-introduce the
+// fine-split/csplit starvation the pause exists to prevent. A cap-hit on a
+// FORWARD parent files a task the seal step's zombie rule deletes — no
+// special case needed.
+func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStorage, capped []spfreshRouted) error {
+	seen := make(map[int64]bool, len(capped))
+	for _, rt := range capped {
+		if seen[rt.fineID] {
+			continue
+		}
+		seen[rt.fineID] = true
+		data, gerr := m.tx.Snapshot().Get(storage.taskKey(spfreshTaskSplit, rt.fineID)).Get()
+		if gerr != nil {
+			return gerr
+		}
+		if data != nil {
+			continue // already pending: zero conflict surface taken
+		}
+		paused, perr := spfreshCSplitPaused(m.tx.Snapshot(), storage, rt.cellID)
+		if perr != nil {
+			return perr
+		}
+		if paused {
+			continue
+		}
+		filed, terr := spfreshTaskSetIfAbsent(m.tx, storage, spfreshTaskSplit, rt.fineID)
+		if terr != nil {
+			return terr
+		}
+		if filed {
+			m.timer.Increment(CountSPFreshReadPathSplitFiles)
+		}
+	}
+	return nil
 }
 
 // spfreshScanBatchSize is the records-per-transaction limit of the build's

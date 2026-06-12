@@ -40,8 +40,13 @@ const (
 	// IndexOptionSPFreshRaBitQNumExBits is the RaBitQ extended-bits parameter
 	// for posting residual codes.
 	IndexOptionSPFreshRaBitQNumExBits = "spfreshRaBitQNumExBits"
-	// IndexOptionSPFreshSidecar enables the fp16 SIDECAR subspace (re-rank
-	// source). Default true; disabling falls back to source-record reads.
+	// IndexOptionSPFreshSidecar enables the fp16 SIDECAR subspace. Default
+	// true — and currently REQUIRED: the sidecar is not just the query
+	// re-rank source, every rebalancer lifecycle reads it (split 2-means,
+	// chunked drain, merge drain, GC re-home), so disabling it would brick
+	// maintenance permanently. ValidateSPFreshConfig rejects false until a
+	// source-record fallback exists for all of those paths. The option stays
+	// (the wire layout reserves the choice); only the value is constrained.
 	IndexOptionSPFreshSidecar = "spfreshSidecar"
 )
 
@@ -176,6 +181,16 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	if c.NumExBits < 0 || c.NumExBits > 8 {
 		return fmt.Errorf("spfresh: raBitQNumExBits must be in [0, 8], got %d", c.NumExBits)
 	}
+	// The sidecar is load-bearing for MAINTENANCE, not just re-rank: split
+	// 2-means, the chunked drain, merge drains, and GC re-homes all read the
+	// fp16 vectors from it and hard-error when a vector is missing. With the
+	// sidecar disabled, the first posting to cross Lmax files a split task
+	// that fails forever and the tenant's whole maintenance pass halts — a
+	// bricked index, not a degraded one. Reject until a source-record
+	// fallback exists for every lifecycle reader.
+	if !c.Sidecar {
+		return fmt.Errorf("spfresh: sidecar=false is not supported — split/merge/GC lifecycles require the fp16 sidecar (no source-record fallback is implemented)")
+	}
 	// One posting = one range reply (RFC-094 §3): Lmax entries must fit the
 	// reply byte budget, or the constant-round-trip query claim is false.
 	if got := c.Lmax * c.postingEntryBytes(); got > spfreshReplyByteBudget {
@@ -187,8 +202,10 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 		return fmt.Errorf("spfresh: cellTarget (%d) * centroid row bytes (%d) = %d exceeds the %d-byte range-reply budget — one L2 cell must fit one reply",
 			c.CellTarget, c.centroidRowBytes(), got, spfreshReplyByteBudget)
 	}
-	// Splits are single-transaction by spec — chunking is forbidden (RFC-094
-	// §6): the 4×Lmax inline-split worst case must fit the tx byte budget.
+	// The in-envelope split is single-transaction (RFC-094 §6): the 4×Lmax
+	// worst case must fit the tx byte budget. Postings found PAST the
+	// envelope take the chunked multi-tx drain — this bound is what makes
+	// the single-tx path safe, not a ban on chunking.
 	if got := 4 * c.Lmax * c.postingEntryBytes() * 3; got > spfreshTxByteBudget {
 		return fmt.Errorf("spfresh: worst-case split (4*lmax entries, read+rewrite) = %d bytes exceeds the %d-byte single-transaction budget",
 			got, spfreshTxByteBudget)

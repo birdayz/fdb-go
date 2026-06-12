@@ -38,6 +38,13 @@ type spfreshSearcher struct {
 	// timer is the context's StoreTimer (nil-receiver-safe; see
 	// spfresh_metrics.go for the event set).
 	timer *StoreTimer
+
+	// capped collects postings whose fetch returned exactly the 4×Lmax+1 cap
+	// — past the split-dispatch envelope, tail invisible to this query. The
+	// maintainer re-files their split tasks after the search (the read-path
+	// envelope repair): the cap equals the dispatch envelope precisely so a
+	// cap-hit is PROOF a split trigger was lost, never a healthy state.
+	capped []spfreshRouted
 }
 
 func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *spfreshRoutingCache) *spfreshSearcher {
@@ -168,6 +175,10 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 				return fmt.Errorf("spfresh search: posting %d: %w", f.routed.fineID, kerr)
 			}
 			s.timer.IncrementBy(CountSPFreshEntriesScanned, int64(len(kvs)))
+			if len(kvs) == limit {
+				s.timer.Increment(CountSPFreshCappedPostingReads)
+				s.capped = append(s.capped, f.routed)
+			}
 			for d := range query {
 				residual[d] = query[d] - f.routed.vec[d]
 			}
@@ -242,6 +253,10 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			kvs, kerr := f.future.GetSliceWithError()
 			if kerr != nil {
 				return nil, fmt.Errorf("spfresh search: forwarded posting %d: %w", f.routed.fineID, kerr)
+			}
+			if len(kvs) == limit {
+				s.timer.Increment(CountSPFreshCappedPostingReads)
+				s.capped = append(s.capped, f.routed)
 			}
 			for d := range query {
 				residual[d] = query[d] - f.routed.vec[d]

@@ -107,7 +107,37 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 				tombstones = append(tombstones, r)
 			}
 		}
+		// Repair the PAUSING window on EVERY task-clearing exit, not just the
+		// acting split: while this csplit deferred, the starvation guard
+		// suppressed every fine-split PROBE for the cell — postings that
+		// crossed Lmax in that window have NO task, and post-quiescence
+		// nothing re-probes them (the 300k/1M fills ended with an empty queue
+		// and 4k-entry postings; recall collapsed). Clearing the csplit task
+		// lifts the pause, so the re-file must land in the SAME transaction —
+		// including the degenerate exits (cell drained below 2 by merges,
+		// identical-vector 2-means, one-sided partition), which un-pause
+		// without splitting anything (Torvalds final-gauntlet B2). `rows`
+		// holds ACTIVE rows ONLY (the state switch above defers on SEALED and
+		// diverts FORWARD/DEAD to tombstones), so this can never file a
+		// childless task beside an in-flight split's SEALED row.
+		refileOversized := func() error {
+			for _, r := range rows {
+				cnt, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, r.fineID)
+				if cerr != nil {
+					return cerr
+				}
+				if cnt > int64(config.Lmax) {
+					if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, r.fineID); terr != nil {
+						return terr
+					}
+				}
+			}
+			return nil
+		}
 		if len(rows) < 2 {
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil // nothing to split (merges drained it since the trigger)
 		}
@@ -123,7 +153,11 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		cents, assign := spfreshKMeans(vecs, 2, seed, 25)
 		if len(cents) < 2 {
-			// Degenerate (identical vectors): nothing meaningful to split.
+			// Degenerate (identical vectors): nothing meaningful to split —
+			// but clearing un-pauses the cell, so repair first.
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil
 		}
@@ -136,6 +170,9 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			partition[c]++
 		}
 		if partition[0] == 0 || partition[1] == 0 {
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil
 		}
@@ -143,6 +180,10 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		start, aerr := spfreshClaimIDBlock(tx, s)
 		if aerr != nil {
 			return aerr
+		}
+		// The acting split clears the task below too: same repair, same tx.
+		if rerr := refileOversized(); rerr != nil {
+			return rerr
 		}
 		cellA, cellB := start, start+1
 		cells := []int64{cellA, cellB}
@@ -154,25 +195,6 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			spfreshAudit("cmove", cellID, r.fineID, r.row.state)
 			spfreshSaveCentroid(tx, s, cells[c], r.fineID, encodeCentroidRowRaw(r.row.state, r.row.epoch, r.row.childA, r.row.childB, r.row.vecBytes))
 			counts[c]++
-			// Repair the PAUSING window: while this csplit deferred, the
-			// starvation guard suppressed every fine-split PROBE for the
-			// cell — postings that crossed Lmax in that window have NO task,
-			// and post-quiescence nothing re-probes them (the 300k/1M fills
-			// ended with an empty queue and 4k-entry postings; recall
-			// collapsed). Re-file triggers for any oversized posting as part
-			// of completing the split that caused the pause. `rows` holds
-			// ACTIVE rows ONLY (the state switch above defers on SEALED and
-			// diverts FORWARD/DEAD to tombstones), so this can never file a
-			// childless task beside an in-flight split's SEALED row.
-			cnt, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, r.fineID)
-			if cerr != nil {
-				return cerr
-			}
-			if cnt > int64(config.Lmax) {
-				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, r.fineID); terr != nil {
-					return terr
-				}
-			}
 		}
 		// Tombstones ride to their nearest new cell (GC discovery), without
 		// counting toward the ACTIVE-centroid cell counters.

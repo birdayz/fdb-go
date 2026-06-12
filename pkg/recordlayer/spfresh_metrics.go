@@ -23,6 +23,14 @@ var (
 	CountSPFreshRerankReads     = Event{"spfresh_rerank_reads", "SPFresh Rerank Reads"}
 	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings"}
 	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows"}
+	// Capped posting reads: a search's posting fetch returned exactly the
+	// 4×Lmax+1 cap — the posting is PAST the split-dispatch envelope and its
+	// tail is invisible to queries. Nonzero means a split trigger was lost
+	// (the read path re-files it; see CountSPFreshReadPathSplitFiles).
+	CountSPFreshCappedPostingReads = Event{"spfresh_capped_posting_reads", "SPFresh Capped Posting Reads"}
+	// Split tasks re-filed from the read path after a capped read found an
+	// over-envelope posting with no pending split.
+	CountSPFreshReadPathSplitFiles = Event{"spfresh_readpath_split_files", "SPFresh Read-Path Split Files"}
 
 	// Write path.
 	EventSPFreshInsert           = Event{"spfresh_insert", "SPFresh Insert"}

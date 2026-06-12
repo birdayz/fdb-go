@@ -279,6 +279,7 @@ go_test(
         "spfresh_metrics_test.go",
         "spfresh_npa_test.go",
         "spfresh_prune_test.go",
+        "spfresh_readheal_test.go",
         "spfresh_rebalancer_test.go",
         "spfresh_split_test.go",
         "spfresh_storage_test.go",

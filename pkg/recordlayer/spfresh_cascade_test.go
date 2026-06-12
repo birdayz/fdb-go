@@ -309,6 +309,227 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Torvalds final-gauntlet B2: the pause-window repair must run on the
+	// DEGENERATE task-clearing exits too — a csplit that finds its cell
+	// drained below 2 ACTIVE rows (merges won the race) or its 2-means
+	// degenerate clears the task, un-pausing the cell, and without the
+	// repair an oversized posting whose trigger the pause suppressed stays
+	// live-but-truncated forever (the master churn flake's orphan shape).
+	It("csplit cleared on a merge-drained cell still re-files the oversized survivor's split", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-csplit").Sub("drained"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		// ONE ACTIVE fine left in the cell (merges drained the rest during
+		// the pause), ballooned past Lmax, NO split task; the csplit task is
+		// PAUSING. The handler takes the len(rows)<2 exit.
+		const fatFine = int64(10)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{25, 25}))
+			cvec := []float64{0, 0}
+			spfreshSaveCentroid(tx, storage, 1, fatFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cvec))
+			for i := 0; i < config.Lmax+4; i++ {
+				pk := tuple.Tuple{int64(30000 + i)}
+				v := []float64{float64(i%9) * 0.4, float64(i%7) * 0.4}
+				tx.Set(storage.postingKey(fatFine, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{fatFine}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, fatFine, int64(config.Lmax+4))
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, 1)
+			tx.Set(storage.taskKey(spfreshTaskCSplit, 1), encodeTaskRow(spfreshTaskRow{state: spfreshCSplitPausing}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		for round := 0; round < 100; round++ {
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "drainedrepair", int64(round), 0, nil)
+			Expect(rerr).NotTo(HaveOccurred())
+			if worked == 0 {
+				break
+			}
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// The csplit task is gone (cleared), and the repaired split ran:
+			// fatFine is no longer an ACTIVE posting over Lmax.
+			data, gerr := tx.Get(storage.taskKey(spfreshTaskCSplit, 1)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(data).To(BeNil(), "degenerate csplit must clear its task")
+			cell, ferr := spfreshFindCentroidCell(tx, storage, fatFine)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, fatFine)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(row.state).NotTo(Equal(spfreshStateActive),
+				"queue quiesced with the drained cell's survivor still ACTIVE over Lmax — the degenerate-exit repair did not fire")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("csplit cleared on degenerate 2-means still re-files oversized splits", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-csplit").Sub("degen2means"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		// TWO ACTIVE fines with IDENTICAL centroid vectors (2-means cannot
+		// produce two centers), one ballooned past Lmax with NO split task.
+		const fatFine, twinFine = int64(10), int64(11)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{25, 25}))
+			cvec := []float64{3, 3}
+			spfreshSaveCentroid(tx, storage, 1, fatFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cvec))
+			spfreshSaveCentroid(tx, storage, 1, twinFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cvec))
+			for i := 0; i < config.Lmax+4; i++ {
+				pk := tuple.Tuple{int64(40000 + i)}
+				v := []float64{float64(i%9) * 0.4, float64(i%7) * 0.4}
+				tx.Set(storage.postingKey(fatFine, pk), quantizer.Encode([]float64{v[0] - cvec[0], v[1] - cvec[1]}))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{fatFine}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, fatFine, int64(config.Lmax+4))
+			spfreshCounterSet(tx, storage, spfreshCounterFine, twinFine, 1)
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, 2)
+			tx.Set(storage.taskKey(spfreshTaskCSplit, 1), encodeTaskRow(spfreshTaskRow{state: spfreshCSplitPausing}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		for round := 0; round < 100; round++ {
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "degenrepair", int64(round), 0, nil)
+			Expect(rerr).NotTo(HaveOccurred())
+			if worked == 0 {
+				break
+			}
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cell, ferr := spfreshFindCentroidCell(tx, storage, fatFine)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, fatFine)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(row.state).NotTo(Equal(spfreshStateActive),
+				"queue quiesced with the identical-twin cell's posting still ACTIVE over Lmax — the degenerate-2-means repair did not fire")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// A chunked drain that lost its lease can resume through the SINGLE-TX
+	// split path once the parent has shrunk back under the 4×Lmax envelope.
+	// The committed children hold entries whose RaBitQ codes are residuals
+	// against the committed centroid vectors — the resume must pin that
+	// geometry (no 2-means recompute, no centroid overwrite) and ADD to the
+	// children's counters rather than resetting them, or every drained entry
+	// decodes against the wrong center and the counters lie (codex P1
+	// follow-on; found while moving the HDR write into the chunked planner).
+	It("single-tx resume of a partially-drained chunked split pins the children's geometry", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-split").Sub("chunkresume"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		const parent, childA, childB = int64(10), int64(11), int64(12)
+		centA := []float64{1, 1}
+		centB := []float64{9, 9}
+		// 5 entries already drained into each child (residuals vs the
+		// committed centers), 10 remaining in the SEALED parent clustered
+		// near (2,2) and (8,8) — a fresh 2-means over the remainder would
+		// produce visibly different centers, so an overwrite cannot pass.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{5, 5}))
+			spfreshSaveCentroid(tx, storage, 1, parent, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{0, 0}))
+			spfreshSaveCentroid(tx, storage, 1, childA, encodeCentroidRow(spfreshStateActive, 0, 0, 0, centA))
+			spfreshSaveCentroid(tx, storage, 1, childB, encodeCentroidRow(spfreshStateActive, 0, 0, 0, centB))
+			tx.Set(storage.postingHDRKey(parent), encodePostingHDR(1, childA, childB))
+			for i := 0; i < 5; i++ {
+				pkA, pkB := tuple.Tuple{int64(60000 + i)}, tuple.Tuple{int64(60100 + i)}
+				vA := []float64{1, float64(i) * 0.25}
+				vB := []float64{9, 9 - float64(i)*0.25}
+				tx.Set(storage.postingKey(childA, pkA), quantizer.Encode([]float64{vA[0] - centA[0], vA[1] - centA[1]}))
+				tx.Set(storage.membershipKey(pkA), encodeMembership([]int64{childA}))
+				tx.Set(storage.sidecarKey(pkA), vectorcodec.SerializeHalf(vA))
+				tx.Set(storage.postingKey(childB, pkB), quantizer.Encode([]float64{vB[0] - centB[0], vB[1] - centB[1]}))
+				tx.Set(storage.membershipKey(pkB), encodeMembership([]int64{childB}))
+				tx.Set(storage.sidecarKey(pkB), vectorcodec.SerializeHalf(vB))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, childA, 5)
+			spfreshCounterSet(tx, storage, spfreshCounterFine, childB, 5)
+			for i := 0; i < 10; i++ {
+				pk := tuple.Tuple{int64(61000 + i)}
+				v := []float64{2, float64(i) * 0.5}
+				if i >= 5 {
+					v = []float64{8, 8 - float64(i-5)*0.5}
+				}
+				tx.Set(storage.postingKey(parent, pk), quantizer.Encode(v)) // residual vs (0,0)
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{parent}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, parent, 10)
+			// The chunked planner already counted the cell's net +1.
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, 3)
+			tx.Set(storage.taskKey(spfreshTaskSplit, parent),
+				encodeTaskRow(spfreshTaskRow{state: spfreshSplitTaskSealed, childA: childA, childB: childB}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "chunkresume-owner", 1, parent, 7)).To(Succeed())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			rowA, raErr := spfreshReadCentroidForWrite(tx, storage, 1, childA)
+			Expect(raErr).NotTo(HaveOccurred())
+			rowB, rbErr := spfreshReadCentroidForWrite(tx, storage, 1, childB)
+			Expect(rbErr).NotTo(HaveOccurred())
+			vA, _ := rowA.vector()
+			vB, _ := rowB.vector()
+			Expect(vA).To(Equal(centA), "resume overwrote child A's committed centroid — drained entries now decode against the wrong center")
+			Expect(vB).To(Equal(centB), "resume overwrote child B's committed centroid")
+			cntA, _ := spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, childA)
+			cntB, _ := spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, childB)
+			Expect(cntA+cntB).To(Equal(int64(20)), "resume must ADD the remainder to the drained counts, not reset them")
+			parentRow, prErr := spfreshReadCentroidForWrite(tx, storage, 1, parent)
+			Expect(prErr).NotTo(HaveOccurred())
+			Expect(parentRow.state).To(Equal(spfreshStateForward))
+			cellCnt, _ := spfreshCounterReadSnapshot(tx, storage, spfreshCounterCell, 1)
+			Expect(cellCnt).To(Equal(int64(3)), "the planner already counted the net +1 — the resume must not double-count")
+			// Every entry's membership names the posting that holds it.
+			for _, base := range []int64{60000, 60100, 61000} {
+				count := 5
+				if base == 61000 {
+					count = 10
+				}
+				for i := 0; i < count; i++ {
+					pk := tuple.Tuple{base + int64(i)}
+					mem, mErr := spfreshReadMembership(tx, storage, pk)
+					Expect(mErr).NotTo(HaveOccurred())
+					for _, fid := range mem {
+						data, gErr := tx.Get(storage.postingKey(fid, pk)).Get()
+						Expect(gErr).NotTo(HaveOccurred())
+						Expect(data).NotTo(BeNil(), "pk %v membership names posting %d with no entry", pk, fid)
+					}
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("seal zombie-clear preserves a sealed task whose row moved cells", func() {
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-seal").Sub("relocate"), 1)
 		const fine = int64(10)
