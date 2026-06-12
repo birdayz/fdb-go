@@ -558,3 +558,49 @@ SPFRESH_OPERATIONS.md was measured during the 094.4 slice-2 scorer work
 noRerank path) and recorded at the time only in the PR #283 description —
 this section is its in-repo record. Re-derive before relying on the exact
 figure; the direction (re-rank is load-bearing) is not in doubt.
+
+### LanceDB head-to-head (SIFT-1M, same machine, same query/groundtruth files)
+
+Date 2026-06-13, 24-core Ryzen 9 3900X / 64 GB. LanceDB 0.30.0 (Node SDK
+@lancedb/lancedb, native Rust core), local directory store on NVMe,
+IVF_PQ 1000 partitions × 16 sub-vectors, L2; `refineFactor=10` re-ranks
+from exact vectors (their analog of our fp16 sidecar re-rank — without it
+PQ error caps recall at ~0.57). k=10, 100 SIFT queries, exact groundtruth;
+QPS measured with 16 concurrent requesters. Harness: /tmp/lancedb-bench
+shape recorded here — batched `add` of 10k rows, then `createIndex`.
+
+| System / config | ingest (vec/s) | recall@10 | p50 | p99 | QPS@16 | storage |
+|---|---|---|---|---|---|---|
+| LanceDB IVF_PQ np=20 rf=10 | 40,143 (89,465 raw + 13.7s index) | 0.948 | 5.3ms | 7.9ms | 927 | 518 MB |
+| LanceDB IVF_PQ np=128 rf=10 | " | 0.986 | 8.8ms | 10.0ms | 847 | " |
+| SPFresh fast 16/24/64/ε7 | 530 (production write path) | 0.830 | 9.3ms | — | 421 | FDB ssd |
+| SPFresh default 32/64/200/ε7 | " | 0.961 | 23.9ms | — | 148 | " |
+| SPFresh kc=192 ladder | " | ~0.987 | ~47ms | — | — | " |
+
+LanceDB is ~75× faster at ingest and ~4–6× at matched-recall queries.
+That gap is architectural, not implementation slack, and it buys exactly
+what this index exists for:
+
+- **LanceDB is an embedded, single-process file store.** One writer, no
+  transactions across records, queries served from process-local mmap'd
+  columnar files; the ANN index is a BATCH build (updates accumulate and
+  require reindex/compaction to become ANN-visible — freshness is manual).
+- **SPFresh-on-FDB is a multi-tenant transactional index on a shared
+  cluster.** Every insert is ACID with the record write (one conflict
+  surface, no dual-write divergence), concurrent multi-writer ingest with
+  zero coordination, search visibility within the cache-refresh window of
+  a commit (no reindex, LIRE rebalancing keeps recall flat under churn —
+  the 6-wave churn soak holds 1.0), per-tenant isolation on one cluster,
+  and reads that scale out with stateless clients against distributed
+  storage. None of that exists in the embedded column.
+- Same-machine caveat: SPFresh numbers include FDB server CPU inside the
+  same box (testcontainer); a production deployment puts storage servers
+  on separate hardware and client-side QPS scales with client count
+  (stateless snapshot reads — the 20-tenant soak's aggregate behavior).
+
+Read the table as the price of transactional freshness on shared
+infrastructure: ~5× query latency at matched recall and two orders of
+magnitude on bulk ingest. When the workload is a single process building a
+static index once, use an embedded library; when records mutate
+transactionally across many writers and tenants, the embedded library is
+not in the running.
