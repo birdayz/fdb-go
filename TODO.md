@@ -939,7 +939,7 @@ real fleet at it; 3–4 harden it.
 - [x] **4. Many-tenant aggregate soak.** DONE (TestSPFreshMultiTenantSoak: 20 tenants × 2k vectors, 4 interleaved writers + 2 concurrent sweepers → 1,093 vec/s AGGREGATE — multi-tenancy spreads the conflict surface, beating single-tenant fill 2–5×; worst tenant recall@10 = 1.0000; fleet drained, every probe quiet). Every number so far is single-tenant. Pin the new
   dimension: N small indexes churning concurrently on one cluster (fill + churn + recall sampling
   per tenant), watching aggregate conflict rate and sweeper lag.
-- [ ] **5. Concurrent-reader QPS measurement.** All read benchmarks to date are single-threaded
+- [x] **5. Concurrent-reader QPS measurement.** DONE (SIFT_QPS=G hammer phase in the sweep harness, commit b0432b61; measured at 1M for all 16 sweep configs — frozen defaults 134 QPS@16, fast 374 QPS; post-RNG topology 148/421). All read benchmarks to date were single-threaded
   latency (25.5ms p50 ⇒ ~39 QPS/thread default, ~106 QPS/thread fast). Queries are stateless
   snapshot reads off the in-process routing cache and should scale near-linearly with client
   cores/processes until storage-server read bandwidth (~100–300KB/query). Add a G-goroutine
