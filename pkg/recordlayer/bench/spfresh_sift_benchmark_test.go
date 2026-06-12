@@ -160,7 +160,11 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	// SIFT_SWEEP=w:kc:c[,w:kc:c...] additionally sweeps searcher parameters
 	// against the SAME built index (094.4 tuning) and logs one line each.
 	if sweep := os.Getenv("SIFT_SWEEP"); sweep != "" {
-		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep, "spf_data")
+		qf := make([][]float64, len(queryVecs))
+		for i, qv := range queryVecs {
+			qf[i] = float32sToFloat64s(qv)
+		}
+		runSIFTSweep(t, ctx, storeBuilder, bruteForceIDsStreaming(sliceSource{base: baseF64}, qf, k), queryVecs, k, sweep, "spf_data")
 	}
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
@@ -259,7 +263,7 @@ func bruteForceIDs(base [][]float64, query []float64, k int) []int64 {
 // against the already-built index (094.4 tuning; the knobs ride the scan
 // contract's High tuple). One log line per config. idxName selects the index
 // (bulk build and foreground fill register under different names).
-func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), base [][]float64, queries [][]float32, k int, sweep, idxName string) {
+func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), wants [][]int64, queries [][]float32, k int, sweep, idxName string) {
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
@@ -269,13 +273,6 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 	amortize := siftEnvInt("SIFT_AMORTIZE", 1)
 	if amortize < 1 {
 		amortize = 1
-	}
-	// Ground truth once per query, not once per (config, query): brute force
-	// over the base set dominated multi-config sweep wall-clock (~26% of the
-	// profile) and is identical across configs.
-	wants := make([][]int64, len(queries))
-	for qi, qv := range queries {
-		wants[qi] = bruteForceIDs(base, float32sToFloat64s(qv), k)
 	}
 	for _, cfg := range strings.Split(sweep, ",") {
 		parts := strings.Split(cfg, ":")
@@ -438,13 +435,18 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	batchSize := siftEnvInt("SIFT_BATCH_SIZE", 200)
 	writers := siftEnvInt("SIFT_WRITERS", 4)
 
-	var baseF64 [][]float64
+	var src vectorSource
 	var queryVecs [][]float32
 	if os.Getenv("SIFT_SYNTHETIC") == "1" {
 		// Scales past the SIFT-1M file (the 10M soak): a deterministic
-		// SIFT-shaped Gaussian mixture, no dataset download.
-		baseF64, queryVecs = synthesizeClusteredVectors(n, numQueries, 128, 424242)
-		t.Logf("SYNTHETIC dataset: N=%d (Gaussian mixture, 128-D)", n)
+		// SIFT-shaped Gaussian mixture, STREAMED — vectors regenerate per
+		// index on demand. Materializing the float64 dataset (10.24 GB at
+		// 10M) OOM-killed the harness twice; only the mixture centers
+		// (~2 MB) live in memory.
+		s := newSynthSource(n, 128, 424242)
+		src = s
+		queryVecs = queriesFromSource(s, numQueries, 424242)
+		t.Logf("SYNTHETIC dataset: N=%d (Gaussian mixture, 128-D, streaming)", n)
 	} else {
 		siftDir := resolveSIFTDir()
 		baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
@@ -455,10 +457,11 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load query vectors: %v", err)
 		}
-		baseF64 = make([][]float64, n)
+		baseF64 := make([][]float64, n)
 		for i, v := range baseVecs {
 			baseF64[i] = float32sToFloat64s(v)
 		}
+		src = sliceSource{base: baseF64}
 	}
 	recordlayer.SPFreshEnableAudit()
 	defer recordlayer.SPFreshDisableAudit()
@@ -509,6 +512,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			vbuf := make([]float64, src.dimensions())
 			lo, hi := w*per, (w+1)*per
 			if w == writers-1 {
 				hi = n
@@ -521,8 +525,9 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 						return nil, serr
 					}
 					for i := b; i < be; i++ {
+						src.at(i, vbuf)
 						if _, serr := store.SaveRecord(&gen.Order{
-							OrderId: proto.Int64(int64(i)), VectorData: recordlayer.SerializeVector(baseF64[i]),
+							OrderId: proto.Int64(int64(i)), VectorData: recordlayer.SerializeVector(vbuf),
 						}); serr != nil {
 							return nil, serr
 						}
@@ -584,6 +589,17 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		t.Fatalf("topology dump: %v", err)
 	}
 
+	// Ground truth for ALL queries in one streaming pass over the source
+	// (O(queries × k) memory at any scale), shared by the read points and
+	// the sweep below.
+	queriesF64 := make([][]float64, len(queryVecs))
+	for i, qv := range queryVecs {
+		queriesF64[i] = float32sToFloat64s(qv)
+	}
+	gtStart := time.Now()
+	wants := bruteForceIDsStreaming(src, queriesF64, k)
+	t.Logf("ground truth: %d queries in %v (streaming)", len(queryVecs), time.Since(gtStart))
+
 	// Reads + recall on the grown index, tuned default and fast points.
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
@@ -597,9 +613,9 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	} {
 		latencies := make([]time.Duration, 0, len(queryVecs))
 		hits, total := 0, 0
-		for _, qv := range queryVecs {
+		for qi, qv := range queryVecs {
 			query := float32sToFloat64s(qv)
-			want := bruteForceIDs(baseF64, query, k)
+			want := wants[qi]
 			qStart := time.Now()
 			var got []int64
 			_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -656,6 +672,6 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	// foreground-filled index — the production topology, which is where the
 	// fixed-probe recall decay shows up (bulk-built indexes mask it).
 	if sweep := os.Getenv("SIFT_SWEEP"); sweep != "" {
-		runSIFTSweep(t, ctx, storeBuilder, baseF64, queryVecs, k, sweep, "spf_fill")
+		runSIFTSweep(t, ctx, storeBuilder, wants, queryVecs, k, sweep, "spf_fill")
 	}
 }
