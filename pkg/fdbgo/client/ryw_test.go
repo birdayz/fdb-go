@@ -1287,6 +1287,11 @@ func TestRYWGetRange_V2AtomicOnPresentEmpty(t *testing.T) {
 // ops; Get reads absent (nil) and GetRange omits it (Go's approximation of C++
 // unreadable), consistently. Pre-fix the normalization made it a phantom {k, ""}.
 func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
+	// FLIPPED by RFC-098: this test previously pinned the documented
+	// absent-approximation (Get→nil, GetRange→omit). Reads reaching a
+	// pending versionstamped key now fail with accessed_unreadable (1036),
+	// matching C++ (RYWIterator.cpp:45-46/:75-76). Same name and setup so
+	// the diff shows the deliberate semantic change.
 	t.Parallel()
 	c := &rywCache{}
 	val := make([]byte, 14) // value w/ room for stamp+offset; unresolved client-side anyway
@@ -1297,24 +1302,12 @@ func TestRYW_VersionstampedAbsentNoPhantom(t *testing.T) {
 		return nil, false, nil
 	}
 
-	// GetRange must omit the unresolved versionstamped key (no phantom).
-	result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
-	if err != nil {
-		t.Fatalf("getRange: %v", err)
-	}
-	for _, kv := range result {
-		if string(kv.Key) == "vsk" {
-			t.Fatalf("versionstamped-pending absent key must NOT appear in GetRange (phantom): %v", result)
-		}
-	}
-	// Get must also read absent (nil).
-	got, err := c.get(context.Background(), []byte("vsk"), absent)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("versionstamped-pending absent key: Get must be nil (absent), got %x", got)
-	}
+	// A scan whose iteration reaches the pending key fails with 1036.
+	_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+	assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+	// Get fails with 1036.
+	_, err = c.get(context.Background(), []byte("vsk"), absent)
+	assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 }
 
 // TestRYW_VersionstampedOverClearedOrPlainNoPhantom pins the codex re-review
@@ -1339,24 +1332,16 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 		return []KeyValue{{Key: []byte("vsk"), Value: []byte("storage")}}, false, nil
 	}
 
-	assertAbsent := func(t *testing.T, c *rywCache) {
+	// FLIPPED by RFC-098: previously asserted the absent-approximation; reads
+	// reaching the pending versionstamped key now fail with 1036 whatever the
+	// base state (storage-present here — proving the error comes from the
+	// txn's pending op, not storage).
+	assertUnreadable := func(t *testing.T, c *rywCache) {
 		t.Helper()
-		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, withStorageRange)
-		if err != nil {
-			t.Fatalf("getRange: %v", err)
-		}
-		for _, kv := range result {
-			if string(kv.Key) == "vsk" {
-				t.Fatalf("versionstamp over cleared/plain must NOT appear in GetRange (phantom): %v", result)
-			}
-		}
-		got, err := c.get(context.Background(), []byte("vsk"), withStorage)
-		if err != nil {
-			t.Fatalf("get: %v", err)
-		}
-		if got != nil {
-			t.Fatalf("versionstamp over cleared/plain: Get must be nil (absent), got %x", got)
-		}
+		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, withStorageRange)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+		_, err = c.get(context.Background(), []byte("vsk"), withStorage)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 	}
 
 	// (1) Cleared earlier in the txn, then versionstamped (codex's exact repro).
@@ -1365,17 +1350,17 @@ func TestRYW_VersionstampedOverClearedOrPlainNoPhantom(t *testing.T) {
 		c := &rywCache{}
 		c.clear([]byte("vsk"))
 		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
-		assertAbsent(t, c)
+		assertUnreadable(t, c)
 	})
 
-	// (2) Pending plain Set, then versionstamped — must read absent (unreadable in
-	// C++), NOT the stale pre-stamp value.
+	// (2) Pending plain Set, then versionstamped — unreadable, NOT the stale
+	// pre-stamp value and NOT absent.
 	t.Run("plain_set_then_versionstamp", func(t *testing.T) {
 		t.Parallel()
 		c := &rywCache{}
 		c.set([]byte("vsk"), []byte("pending"))
 		c.atomic(MutSetVersionstampedKey, []byte("vsk"), val)
-		assertAbsent(t, c)
+		assertUnreadable(t, c)
 	})
 }
 
@@ -1398,24 +1383,14 @@ func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
 	absentRange := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
-	assertAbsent := func(t *testing.T, c *rywCache) {
+	// FLIPPED by RFC-098: stickiness now surfaces as accessed_unreadable
+	// (1036) instead of the absent-approximation.
+	assertUnreadable := func(t *testing.T, c *rywCache) {
 		t.Helper()
-		result, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
-		if err != nil {
-			t.Fatalf("getRange: %v", err)
-		}
-		for _, kv := range result {
-			if string(kv.Key) == "vsk" {
-				t.Fatalf("versionstamp poisons the entry: a trailing SetValue must NOT make it readable (C++ keeps it unreadable); got %v", result)
-			}
-		}
-		got, err := c.get(context.Background(), []byte("vsk"), absent)
-		if err != nil {
-			t.Fatalf("get: %v", err)
-		}
-		if got != nil {
-			t.Fatalf("versionstamp-then-SetValue must read absent (C++ unreadable), got %x", got)
-		}
+		_, _, err := c.getRange(context.Background(), []byte("a"), []byte("z"), 10, false, absentRange)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+		_, err = c.get(context.Background(), []byte("vsk"), absent)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
 	}
 
 	// versionstamp THEN an overwriting SetValue atomic — stays unreadable.
@@ -1424,7 +1399,7 @@ func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
 		c := &rywCache{}
 		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
 		c.atomic(MutSetValue, []byte("vsk"), []byte("final"))
-		assertAbsent(t, c)
+		assertUnreadable(t, c)
 	})
 
 	// SetValue THEN versionstamp — also unreadable (the versionstamp poisons it).
@@ -1433,6 +1408,18 @@ func TestRYW_VersionstampUnreadableIsSticky(t *testing.T) {
 		c := &rywCache{}
 		c.atomic(MutSetValue, []byte("vsk"), []byte("first"))
 		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
-		assertAbsent(t, c)
+		assertUnreadable(t, c)
+	})
+
+	// RFC-098 addition: a PLAIN Set (tx.Set, not an atomic) after the stamp
+	// also keeps the entry unreadable — C++ WriteMap.cpp:125 gates the
+	// stack-replacing SetValue fast path on !it.is_unreadable(); pre-RFC-098
+	// Go's set() wholesale-replaced the entry and LOST the signal.
+	t.Run("versionstamp_then_plain_set", func(t *testing.T) {
+		t.Parallel()
+		c := &rywCache{}
+		c.atomic(MutSetVersionstampedValue, []byte("vsk"), val)
+		c.set([]byte("vsk"), []byte("plain"))
+		assertUnreadable(t, c)
 	})
 }

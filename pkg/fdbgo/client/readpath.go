@@ -812,6 +812,13 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 
 	// Read current value so we can send it with the watch request.
 	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
+	// NOT tracked in readErr: the C++ watch actor reading.add's its `done`
+	// future (ReadYourWrites.actor.cpp:1290), but every error path sends
+	// done.send(Void()) BEFORE rethrowing (:1299-1302, :1325-1329) — done
+	// completes successfully, so a failed watch read never poisons commit;
+	// reading only barriers on watch-setup completion (codex P2 on RFC-098,
+	// resolved the opposite way the finding suggested: the C++ source shows
+	// watch errors are deliberately excluded).
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
 	return value, readVersion, err
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"sort"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // Read-your-writes key-selector resolution — a faithful port of C++
@@ -54,6 +56,13 @@ const (
 	// in the resolution direction to the first present (segKV) key — exactly C++ getKey =
 	// getRangeValue/getRangeValueBack(limit=1) over RYWIterator (RFC-058).
 	segPhantom
+	// segUnreadable: the segment holds a pending versionstamped write (sticky
+	// entry flag, an unresolved versionstamp chain) or lies inside an SVK
+	// candidate stamp range (RFC-098). C++ RYWIterator type()/kv() THROW
+	// accessed_unreadable when the walk reaches such a segment
+	// (RYWIterator.cpp:45-46/:75-76) unless BYPASS_UNREADABLE is set — the
+	// resolution aborts with 1036 (keySelResult.stoppedUnreadable).
+	segUnreadable
 )
 
 // allKeysBegin is the empty key — the absolute start of the keyspace (C++ allKeys.begin).
@@ -63,6 +72,21 @@ var allKeysBegin = []byte{}
 // Caller holds c.mu.
 func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 	if includeWrites {
+		// Unreadable gate (RFC-098): reaching a pending-versionstamp segment or
+		// an SVK candidate range during resolution throws in C++ (the cursor
+		// classifies it segUnreadable; getKeyRYW surfaces 1036). Checked before
+		// every other classification, like C++'s type() throw at the top.
+		// The entry flag is the single source of truth: atomic() sets it for
+		// every versionstamped op, so a chainHasVersionstamp re-check would be
+		// dead code (same gate shape as rywCache.get and GetPipelined).
+		if !c.bypassUnreadable {
+			if entry, ok := c.writes[string(p)]; ok && entry.unreadable {
+				return segUnreadable
+			}
+			if c.isUnreadableLocked(p) {
+				return segUnreadable
+			}
+		}
 		if entry, ok := c.writes[string(p)]; ok {
 			// p is a pending write key (single-key segment [p, p+\x00)). getKey classifies
 			// by SEGMENT TYPE (C++ RYWIterator type()), NOT by resolved value — the resolved
@@ -84,9 +108,15 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 			}
 			_, cleared, unresolved := resolveAtomics(base, entry.atomics)
 			if unresolved {
-				// Versionstamp in the chain: unreadable client-side, folded to absent per
-				// #234 (a distinct axis, deliberately out of RFC-058 scope).
-				return segEmpty
+				// Versionstamp in the chain. !bypass is classified segUnreadable by
+				// the gate above; this branch is live only under BYPASS_UNREADABLE:
+				// the bypass value (operand as written) is a present key → is_kv,
+				// unless the chain bypass-resolves to cleared (a CAC after the
+				// stamp) → phantom. RFC-098.
+				if _, clr := resolveAtomicsBypass(base, entry.atomics); clr {
+					return segPhantom
+				}
+				return segKV
 			}
 			if cleared {
 				// DEPENDENT_WRITE over a known base, cleared by a matched CompareAndClear:
@@ -209,6 +239,21 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, includeWrites bool) [][]b
 				add(c.cleared[j].end)
 			}
 		}
+		// SVK candidate stamp ranges are segments of their own (C++ inserts
+		// explicit boundary nodes via addUnmodifiedAndUnreadableRange,
+		// WriteMap.cpp:205-242). Without these edges the range's head [begin,
+		// entry) — which contains no write-map key — is swallowed into the
+		// unknown segment that starts BELOW the range, and a selector walk
+		// crosses it where libfdb_c throws (FDB-C++ review on RFC-098). Same
+		// sorted/coalesced lo-1..lo+1 window argument as cleared above.
+		un := len(c.unreadableRanges)
+		ulo := sort.Search(un, func(i int) bool { return bytes.Compare(c.unreadableRanges[i].end, p) > 0 })
+		for j := ulo - 1; j <= ulo+1; j++ {
+			if j >= 0 && j < un {
+				add(c.unreadableRanges[j].begin)
+				add(c.unreadableRanges[j].end)
+			}
+		}
 	}
 	es := c.serverCache.entries
 	n := len(es)
@@ -259,21 +304,23 @@ func (c *rywCache) prevBoundaryLocked(x, hi []byte, includeWrites bool) []byte {
 
 // keySelResult is the outcome of resolveKeySelectorFromCache.
 type keySelResult struct {
-	key            []byte // the transformed firstGreaterOrEqual key (resolved, or adjoining the stop)
-	offset         int32
-	readToBegin    bool
-	readThroughEnd bool
-	stoppedUnknown bool   // walk halted on an unknown segment (need a server read)
-	unknownBegin   []byte // begin of that unknown segment (server-read lower bound)
-	unknownEnd     []byte // end of that unknown segment (server-read upper bound)
+	key               []byte // the transformed firstGreaterOrEqual key (resolved, or adjoining the stop)
+	offset            int32
+	readToBegin       bool
+	readThroughEnd    bool
+	stoppedUnknown    bool   // walk halted on an unknown segment (need a server read)
+	stoppedUnreadable bool   // walk reached a pending-versionstamp segment — accessed_unreadable (RFC-098)
+	unknownBegin      []byte // begin of that unknown segment (server-read lower bound)
+	unknownEnd        []byte // end of that unknown segment (server-read upper bound)
 }
 
 // resolveKeySelectorFromCache is the faithful port of ReadYourWrites.actor.cpp:409.
 // It transforms (key, orEqual, offset) toward firstGreaterOrEqual form (offset→1) by
 // stepping over KNOWN segments, sets readToBegin/readThroughEnd if it walks off the
-// ends of fully-known data, or stops at an unknown segment (leaving key as an
-// equivalent FGE selector adjoining it). Versionstamp keys are segEmpty (absent), so
-// there is no "unreadable stop" — the only halt is an unknown segment.
+// ends of fully-known data, stops at an unknown segment (leaving key as an
+// equivalent FGE selector adjoining it), or stops with stoppedUnreadable when the
+// walk reaches a pending-versionstamp segment (RFC-098 — C++ RYWIterator type()
+// throws 1036 there).
 func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, offset int32, maxKey []byte, backward bool) keySelResult {
 	// removeOrEqual: if orEqual, key = keyAfter(key); orEqual = false.
 	if orEqual {
@@ -315,7 +362,7 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 	// Forward walk toward FGE form. A phantom (matched CompareAndClear) is is_kv → it
 	// COUNTS toward the offset, exactly like a present key (C++ resolveKeySelectorFromCache
 	// counts it.is_kv(), which is true for a CAC-cleared DEPENDENT/INDEPENDENT segment).
-	for offset > 1 && cur.valid() && cur.typ != segUnknown && bytes.Compare(cur.end, maxKey) < 0 {
+	for offset > 1 && cur.valid() && cur.typ != segUnknown && cur.typ != segUnreadable && bytes.Compare(cur.end, maxKey) < 0 {
 		if cur.typ == segKV || cur.typ == segPhantom {
 			offset--
 		}
@@ -327,7 +374,7 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 	}
 	// Backward walk. Phantoms count here too (C++ lands on an is_kv phantom; the directional
 	// skip below moves off it to the first present key).
-	for offset < 1 && cur.valid() && cur.typ != segUnknown && !bytes.Equal(cur.begin, allKeysBegin) {
+	for offset < 1 && cur.valid() && cur.typ != segUnknown && cur.typ != segUnreadable && !bytes.Equal(cur.begin, allKeysBegin) {
 		if cur.typ == segKV || cur.typ == segPhantom {
 			offset++
 			if offset == 1 {
@@ -343,7 +390,7 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 	}
 
 	// Terminal clamps — only valid on fully-known data (not an unknown stop).
-	known := cur.valid() && cur.typ != segUnknown
+	known := cur.valid() && cur.typ != segUnknown && cur.typ != segUnreadable
 	if known && offset < 1 {
 		return keySelResult{key: allKeysBegin, offset: 1, readToBegin: true}
 	}
@@ -399,6 +446,10 @@ func resolveKeySelectorFromCache(cur *rywSegCursor, key []byte, orEqual bool, of
 		return keySelResult{key: maxKey, offset: 1, readThroughEnd: true}
 	}
 	switch cur.typ {
+	case segUnreadable:
+		// The resolution reached a pending-versionstamp segment — C++ throws
+		// accessed_unreadable from RYWIterator type()/kv() (RFC-098).
+		return keySelResult{stoppedUnreadable: true}
 	case segUnknown:
 		// Read the FULL unknown segment [begin, end) — the FGE-form key may sit at the
 		// segment's END (backward resolution), so reading [key, end) could be empty.
@@ -460,6 +511,11 @@ func (c *rywCache) getKeyRYW(
 		offset = res.offset
 
 		switch {
+		case res.stoppedUnreadable:
+			// The resolution reached a pending-versionstamp segment or an SVK
+			// candidate stamp range: C++ throws accessed_unreadable from the
+			// RYWIterator (RFC-098).
+			return nil, &wire.FDBError{Code: ErrAccessedUnreadable}
 		case res.readToBegin:
 			return append([]byte(nil), allKeysBegin...), nil
 		case res.readThroughEnd:

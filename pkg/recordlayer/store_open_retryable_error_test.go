@@ -73,18 +73,27 @@ var _ = Describe("StoreOpen_RetryableReadError", func() {
 	It("keeps the fdb.Error type when wrapping a failed store-open read", func() {
 		ks := specSubspace()
 
-		// Drive exactly one attempt (swallow so the forever-failing read isn't
-		// retried), and assert the error the open returned still carries the FDB
-		// type that the retry classifier (errors.As) needs.
+		// Poison only the FIRST attempt, capture the open error it produced, and
+		// RETURN it so the loop retries cleanly. Swallowing it (return nil, nil)
+		// is not an option: a failed read poisons the transaction's commit with
+		// the same error (RFC-098 — C++ commit() waits on ryw->reading, so
+		// libfdb_c behaves identically), and since 1009 is retryable the
+		// swallow-then-commit shape retries the still-poisoning closure forever.
 		var openErr error
+		attempts := 0
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			attempts++
+			if attempts > 1 {
+				return nil, nil // clean retry — proves the captured error was retryable
+			}
 			rtx.Transaction().SetReadVersion(absurdReadVersion)
 			_, openErr = NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).
 				CreateOrOpen()
-			return nil, nil
+			return nil, openErr
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(attempts).To(BeNumerically(">=", 2), "the wrapped 1009 should have been classified retryable")
 		Expect(openErr).To(HaveOccurred())
 
 		var fe fdb.Error

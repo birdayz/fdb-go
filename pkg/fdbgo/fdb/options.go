@@ -147,6 +147,7 @@ func (o TransactionOptions) SetRawAccess() error {
 }
 
 func (o TransactionOptions) SetBypassUnreadable() error {
+	o.tx.inner.SetBypassUnreadable(true)
 	return nil
 }
 

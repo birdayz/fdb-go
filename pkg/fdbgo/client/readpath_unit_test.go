@@ -286,12 +286,15 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 // PendingGet.Resolve (RFC-010 #3): a cancelled context returns ctx.Err()
 // directly — it does NOT re-drive through getValue (no point retrying a
 // cancelled read), unlike the wrong-shard/transport/timeout arms. Deterministic:
-// flushed=true skips the Flush, and the cancel arm never dereferences tx/conn.
+// flushed=true skips the Flush; the cancel arm never re-drives through conn.
+// tx is a zero Transaction: Resolve only touches it for the gen-guarded
+// readErr deregistration (mutex zero value, nil-map delete — both no-ops).
 func TestPendingGet_Resolve_ContextCancelled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	p := &PendingGet{
+		tx:          &Transaction{},
 		flushed:     true,                          // skip conn.Flush (no conn needed)
 		ctx:         ctx,                           // already cancelled
 		replyCh:     make(chan transport.Response), // never fires
