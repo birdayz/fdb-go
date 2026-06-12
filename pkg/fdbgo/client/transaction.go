@@ -255,10 +255,30 @@ type Transaction struct {
 	// a per-read ctx has no C++ analogue (C++ cancellation is whole-transaction
 	// via resetPromise), so it must not poison a commit libfdb_c would allow.
 	//
-	// readErrMu guards it: pipelined read futures and watch setup resolve on
-	// other goroutines (unlike rywPoisonErr, which only the option path writes).
+	// Watch setup failures are NOT tracked: the C++ watch actor sends
+	// done.send(Void()) in every error path before rethrowing
+	// (ReadYourWrites.actor.cpp:1299-1302, :1325-1329), so the done future in
+	// reading completes SUCCESSFULLY — a failed watch read never poisons
+	// commit; reading only barriers on watch-setup completion.
+	//
+	// readErrMu guards readErr, readGen and pendingReads: pipelined read
+	// futures resolve on other goroutines (unlike rywPoisonErr, which only the
+	// option path writes).
 	readErrMu sync.Mutex
 	readErr   error
+	// readGen is the read-tracking incarnation, bumped on every reset. C++
+	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
+	// old incarnation that fails AFTER a reset must not poison the new one.
+	// PendingGet captures the gen at issue; trackReadErrorGen drops stale
+	// recordings.
+	readGen uint64
+	// pendingReads is the set of issued-but-unresolved pipelined reads of the
+	// CURRENT incarnation. C++ commit() waits on ryw->reading (:1358) — a
+	// completion barrier for in-flight reads, not just a sample of past
+	// failures — so Commit drains these (Resolve is idempotent/memoized)
+	// before checking readErr. Cleared on reset: C++ detaches old reads with
+	// the AndFuture swap.
+	pendingReads map[*PendingGet]struct{}
 
 	// hadRead: set when any read is ISSUED (getValue / getRange / GetPipelined — the chokes
 	// every read funnels through, which GetReadVersion and Commit do NOT). Together with a
@@ -456,16 +476,31 @@ func (tx *Transaction) checkCancelled() error {
 // trackReadError records err as this transaction's first failed read (see the
 // readErr field — the C++ ryw->reading analogue, which fails a later Commit
 // with the same error). Returns err unchanged so read tails can
-// `return v, tx.trackReadError(err)`.
+// `return v, tx.trackReadError(err)`. Synchronous reads run inside the current
+// incarnation by construction; asynchronous resolvers must use
+// trackReadErrorGen with their captured generation instead.
 func (tx *Transaction) trackReadError(err error) error {
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
+	return tx.trackReadErrLocked(err, tx.readGen)
+}
+
+// trackReadErrorGen is trackReadError for reads issued under generation gen:
+// the recording is dropped if the transaction has been reset since (C++ swaps
+// the reading AndFuture on resetRyow, detaching in-flight reads).
+func (tx *Transaction) trackReadErrorGen(err error, gen uint64) error {
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
+	return tx.trackReadErrLocked(err, gen)
+}
+
+func (tx *Transaction) trackReadErrLocked(err error, gen uint64) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	tx.readErrMu.Lock()
-	if tx.readErr == nil {
+	if gen == tx.readGen && tx.readErr == nil {
 		tx.readErr = err
 	}
-	tx.readErrMu.Unlock()
 	return err
 }
 
@@ -648,7 +683,19 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(DefaultRPCTimeout)
-		return nil, &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
+		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}
+		// Register under the current read incarnation: Commit drains
+		// outstanding pipelined reads (the C++ wait(reading) completion
+		// barrier) and a post-reset late Resolve must not poison the next
+		// incarnation.
+		tx.readErrMu.Lock()
+		p.gen = tx.readGen
+		if tx.pendingReads == nil {
+			tx.pendingReads = make(map[*PendingGet]struct{})
+		}
+		tx.pendingReads[p] = struct{}{}
+		tx.readErrMu.Unlock()
+		return nil, p, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -664,6 +711,15 @@ type PendingGet struct {
 	ctx         context.Context
 	timer       *time.Timer
 	flushed     bool
+	gen         uint64 // read incarnation at issue (see Transaction.readGen)
+
+	// Resolve is idempotent: the first caller (the future's .Get(), or
+	// Commit's drain — whichever runs first) does the work; later callers get
+	// the memo. mu also serializes the reply-channel consumption.
+	mu      sync.Mutex
+	done    bool
+	memoVal []byte
+	memoErr error
 }
 
 // Resolve blocks until the response arrives or timeout, then applies the SAME
@@ -678,6 +734,24 @@ type PendingGet struct {
 // Flushes the write buffer on first call to ensure the request reaches the
 // server (batched with any other deferred frames on the same connection).
 func (p *PendingGet) Resolve() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.done {
+		return p.memoVal, p.memoErr
+	}
+	val, err := p.resolve()
+	p.done = true
+	p.memoVal, p.memoErr = val, err
+	// Completed — drop from the incarnation's outstanding set so Commit's
+	// drain doesn't re-touch it. trackReadError already ran (gen-guarded) on
+	// whichever path produced the outcome.
+	p.tx.readErrMu.Lock()
+	delete(p.tx.pendingReads, p)
+	p.tx.readErrMu.Unlock()
+	return val, err
+}
+
+func (p *PendingGet) resolve() ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
 		if err := p.conn.Flush(); err != nil {
@@ -708,7 +782,7 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		}
 		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
 		// C++ read future; this is its final outcome.
-		return val, p.tx.trackReadError(err)
+		return val, p.tx.trackReadErrorGen(err, p.gen)
 	case <-p.timer.C:
 		p.replyHandle.Cancel()
 		return p.resolveFull()
@@ -724,7 +798,7 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 // read future would have resolved to.
 func (p *PendingGet) resolveFull() ([]byte, error) {
 	v, err := p.tx.getValue(p.ctx, p.key)
-	return v, p.tx.trackReadError(err)
+	return v, p.tx.trackReadErrorGen(err, p.gen)
 }
 
 // GetKey resolves a key selector to the actual key in the database.
@@ -1123,12 +1197,26 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	// C++ commit() waits on ryw->reading before ANY commit work — before the
 	// RYW-disabled branch, the read-only fast path, and the size checks
-	// (ReadYourWrites.actor.cpp:1358-1359): a read that failed earlier fails the
-	// commit with that same error, even if the caller swallowed it (the errored
-	// future stays in the AndFuture until reset). Checked after checkTimeout: a
-	// fired timebomb sits in resetPromise, which the C++ commit wrapper surfaces
-	// before the actor's wait(reading). Returns without resetting — the caller
-	// drives OnError/Reset, which clears it (resetRyow :2715).
+	// (ReadYourWrites.actor.cpp:1358-1359). That wait is a COMPLETION BARRIER
+	// for in-flight reads, not just a sample of past failures: drain any
+	// outstanding pipelined reads first (Resolve is idempotent — a later
+	// future .Get() returns the memo), so a read whose reply is still in
+	// flight fails this commit exactly as it would fail libfdb_c's. Then a
+	// read that failed earlier fails the commit with that same error, even if
+	// the caller swallowed it (the errored future stays in the AndFuture until
+	// reset). Checked after checkTimeout: a fired timebomb sits in
+	// resetPromise, which the C++ commit wrapper surfaces before the actor's
+	// wait(reading). Returns without resetting — the caller drives
+	// OnError/Reset, which clears it (resetRyow :2715).
+	tx.readErrMu.Lock()
+	drain := make([]*PendingGet, 0, len(tx.pendingReads))
+	for p := range tx.pendingReads {
+		drain = append(drain, p)
+	}
+	tx.readErrMu.Unlock()
+	for _, p := range drain {
+		p.Resolve() //nolint:errcheck // outcome lands in readErr via its tracked tail
+	}
 	tx.readErrMu.Lock()
 	readErr := tx.readErr
 	tx.readErrMu.Unlock()
@@ -2074,6 +2162,8 @@ func (tx *Transaction) postCommitReset() {
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
 	tx.readErrMu.Lock()
 	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
+	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
+	tx.pendingReads = nil
 	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// committedVersion and txnBatchId preserved intentionally.
@@ -2106,6 +2196,8 @@ func (tx *Transaction) reset() {
 	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
 	tx.readErrMu.Lock()
 	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
+	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
+	tx.pendingReads = nil
 	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:

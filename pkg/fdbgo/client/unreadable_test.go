@@ -107,6 +107,84 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 	c.mu.Unlock()
 }
 
+// TestRYW_BypassIndependentChainSkipsStorage pins the C++ read-dispatch parity
+// for BYPASS_UNREADABLE point reads: an INDEPENDENT pending-versionstamp chain
+// (bottom op is the versionstamped overwrite) is an is_kv() entry in C++ —
+// served from the write map with NO storage read (RYWIterator.cpp:74-84), so a
+// storage error can neither surface nor poison the transaction on this path.
+// A DEPENDENT chain (RMW bottom) reads storage under bypass in C++ too — the
+// parity is pinned in BOTH directions. Red pre-fix: the bypass path called
+// serverGet before resolving the chain, even when the chain discards the base.
+func TestRYW_BypassIndependentChainSkipsStorage(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	op := svvOperand()
+	noStorage := func(context.Context, []byte) ([]byte, error) {
+		return nil, fmt.Errorf("storage read issued on a write-map-served bypass path")
+	}
+
+	// [SVV]: independent — no storage read, value is the operand as written.
+	c := &rywCache{}
+	c.setBypassUnreadable(true)
+	c.atomic(MutSetVersionstampedValue, []byte("k"), op)
+	got, err := c.get(ctx, []byte("k"), noStorage)
+	if err != nil {
+		t.Fatalf("bypass get of independent SVV chain: %v", err)
+	}
+	if !bytes.Equal(got, op) {
+		t.Fatalf("bypass get = %q, want operand %q", got, op)
+	}
+
+	// [SVV, AppendIfFits]: RMW above the stamp folds over the operand — the
+	// bottom is still the overwrite, so storage stays untouched.
+	c2 := &rywCache{}
+	c2.setBypassUnreadable(true)
+	c2.atomic(MutSetVersionstampedValue, []byte("k"), op)
+	c2.atomic(MutAppendIfFits, []byte("k"), []byte("x"))
+	got2, err := c2.get(ctx, []byte("k"), noStorage)
+	if err != nil {
+		t.Fatalf("bypass get of SVV+AppendIfFits chain: %v", err)
+	}
+	if want := append(append([]byte(nil), op...), 'x'); !bytes.Equal(got2, want) {
+		t.Fatalf("bypass get = %q, want %q", got2, want)
+	}
+
+	// [AddValue, SVV]: DEPENDENT bottom — C++ reads storage under bypass too
+	// (is_kv() false for a dependent entry); the stamp then overwrites the base.
+	c3 := &rywCache{}
+	c3.setBypassUnreadable(true)
+	c3.atomic(MutAddValue, []byte("k"), []byte{1})
+	c3.atomic(MutSetVersionstampedValue, []byte("k"), op)
+	served := false
+	got3, err := c3.get(ctx, []byte("k"), func(context.Context, []byte) ([]byte, error) {
+		served = true
+		return []byte{5}, nil
+	})
+	if err != nil {
+		t.Fatalf("bypass get of dependent Add+SVV chain: %v", err)
+	}
+	if !served {
+		t.Fatal("dependent chain must read storage under bypass (C++ is_kv()=false)")
+	}
+	if !bytes.Equal(got3, op) {
+		t.Fatalf("bypass get = %q, want operand %q (stamp overwrites the base)", got3, op)
+	}
+
+	// SVV → plain Set: the fold resolves the value but keeps the sticky flag;
+	// bypass returns the folded value from the write map, no storage read.
+	c4 := &rywCache{}
+	c4.setBypassUnreadable(true)
+	c4.atomic(MutSetVersionstampedValue, []byte("k"), op)
+	c4.set([]byte("k"), []byte("plain"))
+	got4, err := c4.get(ctx, []byte("k"), noStorage)
+	if err != nil {
+		t.Fatalf("bypass get of folded sticky entry: %v", err)
+	}
+	if string(got4) != "plain" {
+		t.Fatalf("bypass get of folded entry = %q, want \"plain\"", got4)
+	}
+}
+
 func TestFDB_Unreadable_Matrix(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -389,6 +467,98 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		assertFDBErrorCode(t, tx.Commit(ctx), ErrAccessedUnreadable)
 	})
 
+	t.Run("commit_drains_inflight_pipelined_read", func(t *testing.T) {
+		// C++ wait(ryw->reading) at commit (:1358) is a COMPLETION BARRIER —
+		// AndFuture::getFuture() is waitForAll (genericactors.actor.h:1907),
+		// which waits for in-flight read futures and propagates their errors —
+		// not just a sample of already-recorded failures. A pipelined read
+		// whose failing reply the caller never resolved must fail this commit
+		// exactly as it fails libfdb_c's. The read fails server-side with
+		// future_version (1009): the read version is a real GRV bumped 50M
+		// versions — past storage's MAX_READ_TRANSACTION_LIFE_VERSIONS (~5M)
+		// window so storage rejects immediately, but under the client's eager
+		// validateVersion bound (10^15) so the request actually goes out —
+		// and the error is observable ONLY through the drain.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		tx := db.CreateTransaction()
+		rv, err := tx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("baseline GRV: %v", err)
+		}
+		tx.SetReadVersion(rv + 50_000_000)
+		k := append(append([]byte(nil), pfx...), []byte("drain1")...)
+		other := append(append([]byte(nil), pfx...), []byte("drain1-other")...)
+		v, pending, err := tx.GetPipelined(ctx, k)
+		if err != nil || pending == nil {
+			t.Fatalf("GetPipelined = (%x, %v, %v), want a pending server read", v, pending, err)
+		}
+		// Deliberately NOT resolved — the reply stays in flight.
+		tx.Set(other, []byte("v"))
+		assertFDBErrorCode(t, tx.Commit(ctx), ErrFutureVersion)
+	})
+
+	t.Run("late_resolve_does_not_poison_next_incarnation", func(t *testing.T) {
+		// C++ resetRyow swaps reading = AndFuture() (:2715): reads issued
+		// under the previous incarnation are detached, so a late failing
+		// Resolve must not poison the reset transaction. PendingGet captures
+		// readGen at issue; trackReadErrorGen drops stale recordings.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		tx := db.CreateTransaction()
+		rv, err := tx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("baseline GRV: %v", err)
+		}
+		tx.SetReadVersion(rv + 50_000_000)
+		k := append(append([]byte(nil), pfx...), []byte("stale1")...)
+		other := append(append([]byte(nil), pfx...), []byte("stale1-other")...)
+		_, pending, err := tx.GetPipelined(ctx, k)
+		if err != nil || pending == nil {
+			t.Fatalf("GetPipelined = (_, %v, %v), want a pending server read", pending, err)
+		}
+		tx.Reset()
+		if _, err := pending.Resolve(); err == nil {
+			t.Fatal("stale resolve at a future read version did not surface its error")
+		}
+		tx.Set(other, []byte("v"))
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("late resolve poisoned the next incarnation: %v", err)
+		}
+	})
+
+	t.Run("watch_setup_error_does_not_poison_commit", func(t *testing.T) {
+		// The C++ watch actor's done future is reading.add'd
+		// (ReadYourWrites.actor.cpp:1290), but EVERY error path sends
+		// done.send(Void()) BEFORE rethrowing (:1299-1302, :1325-1329): a
+		// failed watch-setup read completes `reading` successfully and never
+		// poisons commit. Tracking it in readErr was itself a divergence —
+		// removed. No Reset between the failure and the commit: with the old
+		// tracking this commit reported the watch's 1009. The failure flows
+		// through the watch's value read (a real GRV bumped past storage's
+		// window → server-side 1009), the exact site that used to track.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		tx := db.CreateTransaction()
+		rv, err := tx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("baseline GRV: %v", err)
+		}
+		tx.SetReadVersion(rv + 50_000_000)
+		k := append(append([]byte(nil), pfx...), []byte("watch1")...)
+		if _, _, err := tx.WatchSetup(ctx, k); err == nil {
+			t.Fatal("watch setup at a future read version did not fail")
+		}
+		// Read-only commit: the readErr gate precedes the read-only fast
+		// path, so a poison would surface here even with nothing to send.
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("watch-setup failure poisoned commit: %v", err)
+		}
+	})
+
 	t.Run("getkey_crosses_svk_range_1036", func(t *testing.T) {
 		// Documenting row for the FDB-C++ boundary catch: this shape passes
 		// even WITHOUT the boundCandidatesLocked unreadableRanges fix (the
@@ -484,6 +654,89 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		inside = append(inside, 0x00, 0x00, 0x01)
 		_, err := tx.GetKey(ctx, inside, false, 0) // lastLessThan(inside)
 		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+	})
+
+	t.Run("commit_drains_inflight_pipelined_read", func(t *testing.T) {
+		// codex P2 on RFC-098: C++ commit() waits on ryw->reading — a
+		// COMPLETION BARRIER for in-flight reads, not a sample of recorded
+		// failures. A pipelined read whose (failing) reply is never resolved
+		// by the caller must still fail the commit. A read version ~20s in
+		// the future passes the client-side validateVersion (only >10^15 is
+		// rejected) but exceeds the server's 5s MVCC window, so the storage
+		// server replies future_version (1009) ON THE WIRE — an async failure
+		// only the commit-time drain can observe.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		seedTx := db.CreateTransaction()
+		v, err := seedTx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("GetReadVersion: %v", err)
+		}
+		tx := db.CreateTransaction()
+		tx.SetReadVersion(v + 200_000_000) // ~20s ahead at 10^7 versions/s
+		k := append(append([]byte(nil), pfx...), []byte("pending1")...)
+		if _, pending, perr := tx.GetPipelined(ctx, k); perr != nil || pending == nil {
+			t.Fatalf("GetPipelined: pending=%v err=%v, want an in-flight read", pending, perr)
+		}
+		// No Resolve: the failing reply is in flight. Commit must drain it.
+		other := append(append([]byte(nil), pfx...), []byte("pending1-w")...)
+		tx.Set(other, []byte("v"))
+		assertFDBErrorCode(t, tx.Commit(ctx), ErrFutureVersion)
+	})
+
+	t.Run("late_resolve_does_not_poison_next_incarnation", func(t *testing.T) {
+		// codex P2 on RFC-098: a read issued before a reset that fails AFTER
+		// it must not poison the next incarnation — C++ detaches in-flight
+		// reads by swapping the reading AndFuture on resetRyow (:2715). The
+		// generation guard drops the stale recording; Resolve still returns
+		// the error to its own caller.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		seedTx := db.CreateTransaction()
+		v, err := seedTx.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("GetReadVersion: %v", err)
+		}
+		tx := db.CreateTransaction()
+		tx.SetReadVersion(v + 200_000_000) // server-side future_version (see drain test)
+		k := append(append([]byte(nil), pfx...), []byte("pending2")...)
+		_, pending, perr := tx.GetPipelined(ctx, k)
+		if perr != nil || pending == nil {
+			t.Fatalf("GetPipelined: pending=%v err=%v, want an in-flight read", pending, perr)
+		}
+		tx.Reset()
+		if _, rerr := pending.Resolve(); rerr == nil {
+			t.Fatal("late Resolve of the far-future read should fail (1009)")
+		}
+		other := append(append([]byte(nil), pfx...), []byte("pending2-w")...)
+		tx.Set(other, []byte("v"))
+		if cerr := tx.Commit(ctx); cerr != nil {
+			t.Fatalf("commit after Reset poisoned by a detached read: %v", cerr)
+		}
+	})
+
+	t.Run("watch_setup_error_does_not_poison_commit", func(t *testing.T) {
+		// The C++ watch actor sends done.send(Void()) in EVERY error path
+		// before rethrowing (ReadYourWrites.actor.cpp:1299-1302, :1325-1329):
+		// the reading entry completes successfully, so a failed watch-setup
+		// read never poisons commit (codex P2 resolved the opposite way — the
+		// C++ source deliberately excludes watch errors).
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		tx := db.CreateTransaction()
+		k := append(append([]byte(nil), pfx...), []byte("watch1")...)
+		tx.Atomic(MutSetVersionstampedValue, k, svvOperand())
+		if _, _, werr := tx.WatchSetup(ctx, k); werr == nil {
+			t.Fatal("watch setup on a pending-stamp key should fail (1036)")
+		}
+		other := append(append([]byte(nil), pfx...), []byte("watch1-w")...)
+		tx.Set(other, []byte("v"))
+		if cerr := tx.Commit(ctx); cerr != nil {
+			t.Fatalf("commit poisoned by a watch-setup failure: %v", cerr)
+		}
 	})
 
 	t.Run("getrange_reach_semantics", func(t *testing.T) {

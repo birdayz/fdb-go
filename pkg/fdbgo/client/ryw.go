@@ -381,10 +381,6 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 			copy(atomics, entry.atomics)
 			c.mu.Unlock()
 
-			base, err := serverGet(ctx, key)
-			if err != nil {
-				return nil, err
-			}
 			if chainHasVersionstamp(atomics) {
 				// Reachable only under bypassUnreadable (gated above). Resolve the chain
 				// treating versionstamped ops as plain sets of their operand as written —
@@ -392,11 +388,37 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 				// the SVV/SVK mutation like an independent SetValue, RYWIterator.cpp:433-449).
 				// Transient: do NOT cache — the entry must stay unresolved for commit, and a
 				// later non-bypass read must still throw.
+				if isUnresolvedVersionstamp(atomics[0].typ) {
+					// INDEPENDENT chain: the bottom op is the versionstamped overwrite,
+					// so the storage value can never contribute (resolveAtomicsBypass
+					// replaces the base at the first versionstamped op). C++ serves this
+					// entirely from the write map — an independent unreadable entry is
+					// is_kv() under bypass (RYWIterator.cpp:74-84) — with NO storage
+					// read: issuing one added latency and let a storage error surface
+					// (and poison commit) on a path libfdb_c never reads.
+					val, cleared := resolveAtomicsBypass(nil, atomics)
+					if cleared {
+						return nil, nil
+					}
+					return val, nil
+				}
+				// DEPENDENT chain (RMW bottom, e.g. Add before the stamp): C++ reads
+				// storage under bypass too — is_kv() is false for a dependent entry,
+				// so the read actor falls through to the storage get + op fold.
+				base, err := serverGet(ctx, key)
+				if err != nil {
+					return nil, err
+				}
 				val, cleared := resolveAtomicsBypass(base, atomics)
 				if cleared {
 					return nil, nil
 				}
 				return val, nil
+			}
+
+			base, err := serverGet(ctx, key)
+			if err != nil {
+				return nil, err
 			}
 			base, cleared, unresolved := resolveAtomics(base, atomics)
 			// Re-lock to cache result.

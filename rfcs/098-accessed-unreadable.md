@@ -310,3 +310,48 @@ Pinned by matrix rows `getkey_from_inside_svk_range_head_1036` (red→green),
 (entry/cleared-edge adjacent shapes, green before and after — they document
 why the simpler shapes did NOT reproduce), and the differential row
 `getkey_from_inside_svk_range_head` (go==cgo).
+
+### codex P2 findings: the reading wait is a completion barrier; watch errors never poison
+
+codex (gpt-5.5 xhigh, PR #287) flagged two gaps in the reading port. Resolution
+against the C++ source went one each way:
+
+1. **In-flight pipelined reads (confirmed, fixed).** C++ `wait(reading)` at
+   commit (:1358) is a COMPLETION BARRIER: it waits for outstanding read
+   futures and propagates their errors; and `resetRyow` swaps the AndFuture,
+   detaching in-flight reads from the next incarnation. Go's check only
+   sampled already-recorded errors, so (a) a pipelined read whose failing
+   reply was never resolved let Commit succeed where libfdb_c fails, and (b)
+   a post-reset late `Resolve` wrote a stale error into the REUSED
+   transaction. Fixed: `PendingGet` is registered per read incarnation
+   (`Transaction.readGen`, bumped on every reset) and `Resolve` is
+   idempotent/memoized; Commit drains the incarnation's outstanding reads
+   before sampling readErr; `trackReadErrorGen` drops stale recordings.
+   Pinned by matrix rows `commit_drains_inflight_pipelined_read` (server-side
+   future_version reply observed only by the drain) and
+   `late_resolve_does_not_poison_next_incarnation` — both revert-proven red.
+
+2. **Watch failures (refuted — fixed the opposite way).** codex asked for
+   ensureReadVersion failures in WatchSetup to poison too. The C++ watch
+   actor's `done` future IS reading.add'd (:1290), but every error path sends
+   `done.send(Void())` BEFORE rethrowing (:1299-1302, :1325-1329) — done
+   completes successfully, so watch failures NEVER poison commit; reading
+   only barriers on watch-setup completion. The original port's tracking in
+   WatchSetup was itself a divergence and is REMOVED. Pinned by
+   `watch_setup_error_does_not_poison_commit` (revert-proven red against the
+   tracking).
+
+3. **Bypass reads of independent chains did a storage read C++ never issues
+   (confirmed, fixed).** A second codex pass (posted on the PR) caught the
+   BYPASS_UNREADABLE point-read path resolving the pending chain only AFTER
+   `serverGet`. C++ serves an INDEPENDENT chain (bottom op is the
+   versionstamped overwrite) entirely from the write map — the entry is
+   is_kv() under bypass (RYWIterator.cpp:74-84) — with no storage read, so
+   Go's extra read added latency and let a storage error surface (and
+   poison) on a path libfdb_c never reads. Independence is judged by the
+   BOTTOM op, mirroring C++ OperationStack dependence: a DEPENDENT chain
+   (RMW bottom, e.g. Add-then-SVV) keeps the storage read in both clients.
+   The resolved value is provably unchanged (resolveAtomicsBypass replaces
+   the base at the first versionstamped op). Pinned by
+   `TestRYW_BypassIndependentChainSkipsStorage` (both directions plus the
+   folded-sticky-entry case) — revert-proven red.
