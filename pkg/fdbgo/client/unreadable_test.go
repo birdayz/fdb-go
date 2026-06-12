@@ -390,13 +390,11 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 	})
 
 	t.Run("getkey_crosses_svk_range_1036", func(t *testing.T) {
-		// FDB-C++ review catch: getKey selector resolution must classify the
-		// SVK candidate range as its own (unreadable) segment even when the
-		// walk's window has no other boundary nearby — C++ inserts explicit
-		// boundary nodes via addUnmodifiedAndUnreadableRange (WriteMap.cpp:
-		// 205-242) and getKey visits every segment (RYWIterator.cpp:45-46).
-		// Without unreadableRanges edges in boundCandidatesLocked, the span is
-		// swallowed into a neighboring unknown segment and the walk crosses it.
+		// Documenting row for the FDB-C++ boundary catch: this shape passes
+		// even WITHOUT the boundCandidatesLocked unreadableRanges fix (the
+		// pending entry's own write-key boundary stops the walk) — the actual
+		// red→green pin is getkey_from_inside_svk_range_head_1036. Kept
+		// because it covers 1036 through the forward stop-at-entry path.
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
