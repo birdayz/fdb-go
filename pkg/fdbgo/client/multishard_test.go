@@ -391,7 +391,7 @@ func testMultiShard_SnapshotRead(t *testing.T, ctx context.Context, env *multiSh
 
 	// tx1: snapshot-read the full range across all shards.
 	tx1 := env.db.CreateTransaction()
-	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 
@@ -463,7 +463,7 @@ func testMultiShard_ConflictDetection(t *testing.T, ctx context.Context, env *mu
 
 	// tx1: read the key (adds read conflict range).
 	tx1 := env.db.CreateTransaction()
-	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 	_, err = tx1.Get(ctx, key)
@@ -698,7 +698,7 @@ func testMultiShard_Versionstamp(t *testing.T, ctx context.Context, env *multiSh
 	g := gomega.NewWithT(t)
 
 	tx := env.db.CreateTransaction()
-	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx.SetReadVersion(rv)
 
@@ -728,7 +728,7 @@ func testMultiShard_ReadWriteConflictRanges(t *testing.T, ctx context.Context, e
 
 	// tx1: add explicit read conflict on a range spanning multiple shards.
 	tx1 := env.db.CreateTransaction()
-	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 

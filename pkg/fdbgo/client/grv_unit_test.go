@@ -19,7 +19,7 @@ import (
 func TestGRVCache_TryCacheBeforeUpdate(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	if v, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
 		t.Errorf("got (%d, %v), want (0, false)", v, ok)
 	}
 }
@@ -27,8 +27,8 @@ func TestGRVCache_TryCacheBeforeUpdate(t *testing.T) {
 func TestGRVCache_UpdateThenTryCacheReturnsValue(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.update(time.Now(), 9999)
-	v, ok := c.tryCache(grvPriorityDefault)
+	c.updateFromGRV(time.Now(), 9999, false)
+	v, _, ok := c.tryCache(grvPriorityDefault)
 	if !ok || v != 9999 {
 		t.Errorf("got (%d, %v), want (9999, true)", v, ok)
 	}
@@ -40,7 +40,7 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 	// Stamp the cache as updated 1 second ago (way past maxVersionCacheLag = 100ms).
 	c.version.Store(1234)
 	c.lastTime.Store(time.Now().Add(-time.Second).UnixNano())
-	if v, ok := c.tryCache(grvPriorityDefault); ok {
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
 		t.Errorf("stale entry returned: got (%d, true), want stale-miss", v)
 	}
 }
@@ -48,8 +48,8 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 func TestGRVCache_SystemImmediateBypass(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.update(time.Now(), 9999)
-	if _, ok := c.tryCache(grvPrioritySystemImmediate); ok {
+	c.updateFromGRV(time.Now(), 9999, false)
+	if _, _, ok := c.tryCache(grvPrioritySystemImmediate); ok {
 		t.Error("SYSTEM_IMMEDIATE must always miss the cache (must contact proxy)")
 	}
 }
@@ -57,9 +57,9 @@ func TestGRVCache_SystemImmediateBypass(t *testing.T) {
 func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.update(time.Now(), 100)
-	c.update(time.Now(), 50) // older — must be rejected
-	v, _ := c.tryCache(grvPriorityDefault)
+	c.updateFromGRV(time.Now(), 100, false)
+	c.updateFromGRV(time.Now(), 50, false) // older — must be rejected
+	v, _, _ := c.tryCache(grvPriorityDefault)
 	if v != 100 {
 		t.Errorf("got %d, want 100 (older update must be ignored)", v)
 	}
@@ -68,9 +68,9 @@ func TestGRVCache_UpdateMonotonicNoBackwards(t *testing.T) {
 func TestGRVCache_Invalidate(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.update(time.Now(), 100)
+	c.updateFromGRV(time.Now(), 100, false)
 	c.invalidate()
-	if v, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok || v != 0 {
 		t.Errorf("got (%d, %v), want (0, false) after invalidate", v, ok)
 	}
 }
@@ -78,14 +78,14 @@ func TestGRVCache_Invalidate(t *testing.T) {
 func TestGRVCache_BatchPriorityRkThrottle(t *testing.T) {
 	t.Parallel()
 	c := &grvCache{}
-	c.update(time.Now(), 100)
+	c.updateFromGRV(time.Now(), 100, false)
 	// Mark BATCH priority as throttled less than grvCacheRKCooldown ago.
 	c.lastRkBatch.Store(time.Now().UnixNano())
-	if _, ok := c.tryCache(grvPriorityBatch); ok {
+	if _, _, ok := c.tryCache(grvPriorityBatch); ok {
 		t.Error("BATCH priority must miss cache while ratekeeper throttled")
 	}
 	// DEFAULT priority should NOT be affected by BATCH throttle.
-	if _, ok := c.tryCache(grvPriorityDefault); !ok {
+	if _, _, ok := c.tryCache(grvPriorityDefault); !ok {
 		t.Error("DEFAULT priority should not be affected by lastRkBatch")
 	}
 }
@@ -231,5 +231,75 @@ func TestBuildGetReadVersionRequest_RoundTrip(t *testing.T) {
 	if first != replyToken.First || second != replyToken.Second {
 		t.Errorf("reply token: got {%x,%x}, want {%x,%x}",
 			first, second, replyToken.First, replyToken.Second)
+	}
+}
+
+// TestGRVCache_LockedRidesTheCache pins the RFC-096 cached-path mechanism
+// deterministically (the e2e's warm-cache arm is timing-probabilistic — it
+// degrades to a fresh-fetch duplicate if maxVersionCacheLag expires between
+// arms; this unit test cannot): updateFromGRV stores the locked flag with the
+// version, tryCache returns it, and a STALE reply (older version) must not
+// overwrite fresher lock state (fail-open hazard — the Torvalds condition).
+func TestGRVCache_LockedRidesTheCache(t *testing.T) {
+	t.Parallel()
+	var c grvCache
+
+	c.updateFromGRV(time.Now(), 100, true)
+	v, locked, ok := c.tryCache(grvPriorityDefault)
+	if !ok || v != 100 || !locked {
+		t.Fatalf("tryCache = (%d, %v, %v), want (100, true, true)", v, locked, ok)
+	}
+
+	// A late, stale reply (older version, locked=false) is rejected by the
+	// version CAS and must NOT clear the lock state.
+	c.updateFromGRV(time.Now(), 50, false)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 100 || !locked {
+		t.Fatalf("after stale reply: tryCache = (%d, %v, %v), want (100, true, true)", v, locked, ok)
+	}
+
+	// A fresher unlocked reply clears it.
+	c.updateFromGRV(time.Now(), 200, false)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 200 || locked {
+		t.Fatalf("after fresh unlock: tryCache = (%d, %v, %v), want (200, false, true)", v, locked, ok)
+	}
+
+	// The commit-path update() never touches lock state.
+	c.updateFromGRV(time.Now(), 300, true)
+	c.update(400)
+	v, locked, ok = c.tryCache(grvPriorityDefault)
+	if !ok || v != 400 || !locked {
+		t.Fatalf("after commit update: tryCache = (%d, %v, %v), want (400, true, true)", v, locked, ok)
+	}
+}
+
+// TestGRVCache_CommitUpdateDoesNotExtendFreshness pins the codex P1 fix
+// (RFC-096): a commit advances the cached VERSION but must not renew the
+// freshness clock — freshness means "recency of the last accepted real GRV
+// reply" (updateFromGRV is the only lastTime writer). Pre-fix, the commit
+// path advanced lastTime, so a handle that locked the database and kept
+// committing could serve post-lock versions with stale locked=false
+// metadata from its own warm cache indefinitely.
+func TestGRVCache_CommitUpdateDoesNotExtendFreshness(t *testing.T) {
+	t.Parallel()
+	var c grvCache
+	// A real GRV reply older than maxVersionCacheLag — the cache is stale.
+	c.updateFromGRV(time.Now().Add(-2*maxVersionCacheLag), 100, false)
+	// A commit "now" advances the version…
+	c.update(200)
+	// …but must NOT have renewed freshness: tryCache misses, forcing the
+	// next read through a real GRV (which carries real lock state).
+	if v, _, ok := c.tryCache(grvPriorityDefault); ok {
+		t.Fatalf("tryCache hit (%d) after stale GRV + fresh commit, want miss (commit must not extend freshness)", v)
+	}
+	if got := c.version.Load(); got != 200 {
+		t.Fatalf("version = %d, want 200 (commit still advances the version)", got)
+	}
+	// Monotonicity of the commit path itself: a backwards version is rejected
+	// (FDB-C++ review nit — previously only updateFromGRV's rejection was pinned).
+	c.update(150)
+	if got := c.version.Load(); got != 200 {
+		t.Fatalf("version = %d after backwards commit update, want 200", got)
 	}
 }

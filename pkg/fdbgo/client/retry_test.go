@@ -31,7 +31,7 @@ func TestOnError_ResetsRYWCache(t *testing.T) {
 
 	// tx1: Set key, then force a conflict so we get a retryable error.
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestOnError_PreservesReadVersionBehavior(t *testing.T) {
 
 	// tx1: read the key at a fixed read version.
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestConflictDetectionAcrossRetry(t *testing.T) {
 
 	// tx1 reads key (establishes read conflict).
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

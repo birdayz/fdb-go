@@ -138,29 +138,20 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 		}
 	},
 	"GetReadVersionReply_locked": func(t *testing.T, data []byte) {
-		version, rkDefault, rkBatch, _, _, err := parseGetReadVersionReply(data)
+		version, locked, rkDefault, rkBatch, _, _, err := parseGetReadVersionReply(data)
 		if err != nil {
 			t.Fatalf("parseGetReadVersionReply: %v", err)
 		}
 		if version != 0x123456789a {
 			t.Errorf("version = %#x, want 0x123456789a", version)
 		}
+		// `locked` feeds the per-transaction database_locked enforcement
+		// (RFC-096; C++ NativeAPI.actor.cpp:7425-7426).
+		if !locked {
+			t.Error("locked = false, want true (C++ constructor sets r.locked = true)")
+		}
 		if rkDefault || rkBatch {
 			t.Errorf("rkDefault/rkBatch = %v/%v, want false/false", rkDefault, rkBatch)
-		}
-		// The production parser does not surface `locked` — the Go client
-		// does not yet ENFORCE database locks on the read path the way C++
-		// does (rep.locked && !lockAware → database_locked,
-		// NativeAPI.actor.cpp:7425-7426); tracked in TODO.md. Pin the WIRE
-		// layer here so the field is provably decodable when that lands.
-		var r wire.Reader
-		if err := wire.ReadErrorOrInto(data, &r); err != nil {
-			t.Fatalf("ReadErrorOrInto: %v", err)
-		}
-		var reply types.GetReadVersionReply
-		reply.UnmarshalFromReader(&r)
-		if !reply.Locked {
-			t.Error("Locked = false, want true (C++ constructor sets r.locked = true)")
 		}
 	},
 	"CommitID_committed": func(t *testing.T, data []byte) {

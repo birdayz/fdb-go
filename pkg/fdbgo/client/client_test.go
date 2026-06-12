@@ -610,7 +610,7 @@ func TestGrvCache_TryCache(t *testing.T) {
 			t.Parallel()
 			var c grvCache
 			tt.setup(&c)
-			v, ok := c.tryCache(tt.priority)
+			v, _, ok := c.tryCache(tt.priority)
 			if ok != tt.wantOK {
 				t.Fatalf("tryCache ok: got %v, want %v", ok, tt.wantOK)
 			}
@@ -627,19 +627,19 @@ func TestGrvCache_UpdateMonotonic(t *testing.T) {
 	var c grvCache
 
 	// First update: version advances to 200.
-	c.update(time.Now(), 200)
+	c.updateFromGRV(time.Now(), 200, false)
 	if v := c.version.Load(); v != 200 {
 		t.Fatalf("after update(200): got %d, want 200", v)
 	}
 
 	// Backwards update: version must stay at 200.
-	c.update(time.Now(), 100)
+	c.updateFromGRV(time.Now(), 100, false)
 	if v := c.version.Load(); v != 200 {
 		t.Fatalf("after update(100): got %d, want 200 (should not go backwards)", v)
 	}
 
 	// Forward update: version advances to 300.
-	c.update(time.Now(), 300)
+	c.updateFromGRV(time.Now(), 300, false)
 	if v := c.version.Load(); v != 300 {
 		t.Fatalf("after update(300): got %d, want 300", v)
 	}

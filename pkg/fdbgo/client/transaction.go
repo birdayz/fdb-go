@@ -443,10 +443,21 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	tx.readVersionMu.Lock()
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return err
+		}
+		// Database-lock enforcement — the C++ extractReadVersion analog
+		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
+		// from transactions that are not lock-aware. Both LOCK_AWARE and
+		// READ_LOCK_AWARE set C++'s options.lockAware (:7077-7091). Checked
+		// BEFORE the version is adopted, like C++'s throw. database_locked
+		// (1038) is OnError-retryable, so a Run loop retries (refetching a
+		// GRV) until the lock is released or the budget ends — same as C++.
+		if locked && !(tx.lockAware || tx.readLockAware) {
+			tx.readVersionMu.Unlock()
+			return &wire.FDBError{Code: ErrDatabaseLocked}
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
@@ -462,7 +473,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
 			// Bootstrap: fetch a version to establish the minimum.
 			flags := tx.grvFlags()
-			_, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err
@@ -1128,8 +1139,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
+	// Advances the VERSION only — not freshness, not lock state (see
+	// grvCache.update; a commit must not extend how long stale lock
+	// metadata can be served).
 	if tx.committedVersion > 0 {
-		tx.db.grvCache.update(time.Now(), tx.committedVersion)
+		tx.db.grvCache.update(tx.committedVersion)
 	}
 
 	tx.hasCommitted = true
