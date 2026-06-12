@@ -73,6 +73,7 @@ go_test(
         "parse_fuzz_test.go",
         "readpath_test.go",
         "readpath_unit_test.go",
+        "reply_ground_truth_test.go",
         "retry_adversarial_test.go",
         "retry_test.go",
         "rpc_test.go",
@@ -99,6 +100,7 @@ go_test(
         "-test.parallel=4",
         "-test.timeout=3600s",
     ],
+    data = ["//pkg/fdbgo/wire/types:testdata.json"],
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",

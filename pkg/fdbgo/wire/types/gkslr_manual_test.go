@@ -17,18 +17,23 @@ import (
 // TestManualMarshal_GetKeyServerLocationsRequest_basic does a full two-pass
 // serialization matching C++ detail::save (flat_buffers.h:1311).
 func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
-	// Load C++ ground truth
+	// Load C++ ground truth. Fatal on absence: testdata.json is a committed
+	// artifact declared as a bazel data dep (no-skip rule).
 	data, err := os.ReadFile("testdata.json")
 	if err != nil {
-		t.Skip("testdata.json not found")
+		t.Fatalf("testdata.json not found (missing bazel data dep?): %v", err)
 	}
 	var vecs []testVectorEntry
-	json.Unmarshal(data, &vecs)
+	if err := json.Unmarshal(data, &vecs); err != nil {
+		t.Fatalf("parse testdata.json: %v", err)
+	}
 	var cppBytes []byte
+	var replyTok [16]byte
 	for _, v := range vecs {
 		if v.Name == "GetKeyServerLocationsRequest_basic" {
 			cppBytes, _ = hex.DecodeString(v.Hex)
 			cppBytes = cppBytes[8:] // strip version prefix
+			replyTok = vectorReplyToken(t, v)
 		}
 	}
 	if cppBytes == nil {
@@ -42,7 +47,8 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	reverse := false
 	tenantId := int64(-1)
 	minTenantVersion := int64(-1)
-	// Reply token: zeros (Go) vs random (C++). We'll mask this later.
+	// Reply token: pinned in the vector (the extractor pre-binds the promise
+	// to a fixed endpoint), written into the reply object in pass 2 below.
 	// SpanContext: all zeros (default).
 
 	// --- VTables (from generated code, extracted by C++ extractor) ---
@@ -154,8 +160,11 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	t.Logf("Total size: %d (Go) vs %d (C++ without prefix)", totalSize, len(cppBytes))
 
 	if totalSize != len(cppBytes) {
-		t.Errorf("SIZE MISMATCH: Go=%d C++=%d (delta=%d)", totalSize, len(cppBytes), totalSize-len(cppBytes))
-		t.Logf("Note: C++ raw size is %d (with 8-byte IncludeVersion prefix)", len(cppBytes)+8)
+		// Fatal: the pass-2 byte-compare below indexes cppBytes by buf's
+		// length — comparing differently-sized buffers is meaningless and
+		// would panic on the longer side.
+		t.Fatalf("SIZE MISMATCH: Go=%d C++=%d (delta=%d; C++ raw size with 8-byte IncludeVersion prefix is %d)",
+			totalSize, len(cppBytes), totalSize-len(cppBytes), len(cppBytes)+8)
 	}
 
 	// ====== PASS 2: WriteToBuffer ======
@@ -174,7 +183,8 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 
 	// --- Field: reply (nested struct) ---
 	replyW := wb.GetMessageWriter(int(replyVT[1]), true)
-	// UID token is all zeros (16 bytes at object offset 4 in ReplyPromise)
+	// Token: the vector's pinned 16-byte UID at the slot-0 field offset.
+	replyW.WriteScalar(replyTok[:], int(replyVT[ReplyPromiseSlotToken+2]))
 	// soffset: distance from reply object to its vtable
 	// C++ line 972-975: vtable_offset = writer.vtable_start - vtableset->getOffset(&vtable)
 	//                   relative = vtable_offset - start
@@ -268,25 +278,20 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	t.Logf("Go  hex: %s", hex.EncodeToString(buf))
 	t.Logf("C++ hex: %s", hex.EncodeToString(cppBytes))
 
-	// Compare (ignoring reply token bytes = 16 bytes of known difference)
+	// BYTE-IDENTITY, zero tolerance: with the reply token pinned there is no
+	// legitimate source of difference left.
 	mismatches := 0
+	shown := 0
 	for i := 0; i < len(buf); i++ {
 		if buf[i] != cppBytes[i] {
+			if shown < 5 {
+				t.Errorf("byte %d: Go=0x%02x C++=0x%02x", i, buf[i], cppBytes[i])
+				shown++
+			}
 			mismatches++
 		}
 	}
-	t.Logf("Total byte mismatches: %d", mismatches)
-	if mismatches <= 16 {
-		t.Logf("Only %d mismatches (likely just reply token) — LAYOUT CORRECT!", mismatches)
-	} else {
-		// Show first 5 mismatches
-		shown := 0
-		for i := 0; i < len(buf) && shown < 5; i++ {
-			if buf[i] != cppBytes[i] {
-				t.Logf("  byte %d: Go=0x%02x C++=0x%02x", i, buf[i], cppBytes[i])
-				shown++
-			}
-		}
-		t.Errorf("Too many mismatches: %d (expected <=16 for reply token)", mismatches)
+	if mismatches > shown {
+		t.Errorf("... and %d more byte mismatches", mismatches-shown)
 	}
 }

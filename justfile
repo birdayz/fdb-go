@@ -291,26 +291,11 @@ generate-wire-types:
     BAZEL_BIN=$(bazelisk info bazel-bin)
     rm -f pkg/fdbgo/wire/types/*_generated.go
     tar xf "$BAZEL_BIN/cmd/fdb-schema-extract/wire_types.tar" -C pkg/fdbgo/wire/types/ --strip-components=1
+    # The emitter writes compact Go; the committed files are gofmt'ed. Without
+    # this step every regen shows pure-formatting churn.
+    gofmt -w pkg/fdbgo/wire/types/*_generated.go
     just gazelle
     echo "Generated: $(ls pkg/fdbgo/wire/types/*_generated.go | wc -l) files"
-
-# Regenerate FDB wire schema JSON files (Bazel, sandboxed)
-wire-schema:
-    bazelisk build //cmd/fdb-wire-schema-generator:gen_schema
-    rm -rf pkg/fdbgo/wire/schema
-    cp -r bazel-bin/cmd/fdb-wire-schema-generator/schema pkg/fdbgo/wire/schema
-    @echo "Updated: $$(ls pkg/fdbgo/wire/schema/*.json | wc -l) schemas"
-
-# Regenerate FDB test vectors (Docker, real FDB ObjectWriter)
-wire-testvecs:
-    bazelisk build //cmd/fdb-wire-schema-generator:gen_schema
-    bash cmd/fdb-wire-schema-generator/docker_build.sh \
-        $$(bazelisk info output_base)/external/foundationdb+ \
-        bazel-bin/cmd/fdb-wire-schema-generator/generated_messages.cpp \
-        /tmp/testvecs_docker
-    rm -f pkg/fdbgo/wire/testdata/[A-Z]*.json
-    cp /tmp/testvecs_docker/*.json pkg/fdbgo/wire/testdata/
-    @echo "Updated: $$(ls pkg/fdbgo/wire/testdata/[A-Z]*.json | wc -l) test vectors"
 
 # Run FDB binding tester (stack machine conformance via Bazel + testcontainers).
 binding-test:

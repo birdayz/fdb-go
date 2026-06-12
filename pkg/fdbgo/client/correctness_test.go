@@ -888,18 +888,41 @@ func TestGetRangeSplitPoints(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// GetRangeSplitPoints should not error. With small data the result
-	// may be nil/empty (everything fits in one chunk), which is fine.
-	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 50000)
-	})
-	if err != nil {
-		t.Fatalf("GetRangeSplitPoints: %v", err)
+	// ~100KB seeded at 50KB chunks ⇒ the server returns split points inside
+	// the range. The byte sample is keyed on deterministic key hashes (the
+	// sampled SET is fixed for fixed key names), but its propagation into the
+	// storage server's metrics is ASYNC after commit — an immediate call can
+	// legitimately see an empty sample. Poll until points appear. Do NOT
+	// weaken this back to "empty is fine": that tolerance masked a parser
+	// that decoded ZERO split points from EVERY reply, forever (splitPoints
+	// is a FlatBuffers offset-vector, not an inline blob — see
+	// parseSplitRangeReply); a broken parser never converges here.
+	var points [][]byte
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 50000)
+		})
+		if err != nil {
+			t.Fatalf("GetRangeSplitPoints: %v", err)
+		}
+		points = result.([][]byte)
+		if len(points) > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	points := result.([][]byte)
 	t.Logf("split points: %d", len(points))
 	for i, p := range points {
 		t.Logf("  split[%d]: %q", i, p)
+	}
+	if len(points) == 0 {
+		t.Fatal("expected at least one split point for ~100KB at 50KB chunks (after byte-sample propagation), got none")
+	}
+	for i, p := range points {
+		if !bytes.HasPrefix(p, []byte(pfx)) {
+			t.Errorf("split[%d] = %q outside the seeded range", i, p)
+		}
 	}
 }
 

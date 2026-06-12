@@ -176,7 +176,12 @@ func TestFieldOffset_CorruptedVTable(t *testing.T) {
 
 	r, err := NewReader(buf[:36])
 	if err != nil {
-		t.Skipf("NewReader failed (expected for crafted data): %v", err)
+		// NewReader rejecting the malformed buffer outright is one valid
+		// defense; the FieldPresent bounds check below is the other. Either
+		// way the property under test (no panic on a lying vtable) holds —
+		// this is a pass, not a skip.
+		t.Logf("NewReader rejected crafted data: %v", err)
+		return
 	}
 
 	// Accessing a high slot should NOT panic even though vtable claims it exists.

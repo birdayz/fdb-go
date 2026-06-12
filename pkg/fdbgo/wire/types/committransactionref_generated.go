@@ -280,15 +280,9 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	if m.Lock_aware {
 		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2]))
 	}
-	if len(m.ReadConflictRanges) > 0 {
-		selfW.WriteRelativeOffset(readConflictRangesOff, int(vt[CommitTransactionRefSlotReadConflictRanges+2]))
-	}
-	if len(m.WriteConflictRanges) > 0 {
-		selfW.WriteRelativeOffset(writeConflictRangesOff, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]))
-	}
-	if len(m.Mutations) > 0 {
-		selfW.WriteRelativeOffset(mutationsOff, int(vt[CommitTransactionRefSlotMutations+2]))
-	}
+	selfW.WriteRelativeOffset(readConflictRangesOff, int(vt[CommitTransactionRefSlotReadConflictRanges+2]))
+	selfW.WriteRelativeOffset(writeConflictRangesOff, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]))
+	selfW.WriteRelativeOffset(mutationsOff, int(vt[CommitTransactionRefSlotMutations+2]))
 	if m.HasRead_conflict_ranges_disabled {
 		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+2]))
 		selfW.WriteRelativeOffset(read_conflict_ranges_disabledOff, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+1+2]))

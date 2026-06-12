@@ -220,15 +220,30 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return nil, fmt.Errorf("SplitRange: %w", err)
 	}
-	var reply types.SplitRangeReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, fmt.Errorf("unmarshal SplitRangeReply: %w", err)
+	// splitPoints is a C++ VectorRef<KeyRef> with the DEFAULT FlatBuffers
+	// strategy: [count][RelativeOffset]* with each offset → [len][data] —
+	// NOT a VecSerStrategy::String inline blob. The old parse read the slot
+	// as a dynamic blob (landing on the count word) and decoded ZERO split
+	// points from every real reply; the only e2e test tolerated an empty
+	// result. Pinned by the SplitRangeReply_two_points reply ground-truth
+	// vector (real C++ ObjectWriter bytes).
+	count, err := r.ReadVectorCount(types.SplitRangeReplySlotSplitPoints)
+	if err != nil {
+		return nil, fmt.Errorf("SplitRange: %w", err)
 	}
-	// SplitPoints is a serialized VectorRef<KeyRef> (VecSerStrategy::String).
-	return types.ParseKeyRefStringVector(reply.SplitPoints), nil
+	points := make([][]byte, 0, count)
+	for i := 0; i < count; i++ {
+		p, err := r.ReadVectorBytes(types.SplitRangeReplySlotSplitPoints, i)
+		if err != nil {
+			return nil, fmt.Errorf("SplitRange: %w", err)
+		}
+		points = append(points, p)
+	}
+	return points, nil
 }
 
 func isOperationFailed(err error) bool {
@@ -238,12 +253,19 @@ func isOperationFailed(err error) bool {
 
 // parseWaitMetricsReply parses the ErrorOr-wrapped StorageMetrics reply.
 func parseWaitMetricsReply(data []byte) (int64, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return 0, fmt.Errorf("WaitMetrics: %w", err)
 	}
+	// Hygiene, not a bug fix: the old UnmarshalFDB(data) on the full ErrorOr
+	// payload happened to parse correctly — the ErrorOr union stores its
+	// value RelativeOffset at object offset 4, exactly where FakeRoot keeps
+	// its field 0, so NewReader's root walk lands on the inner table by
+	// layout coincidence (proven by mutation: reverting this stays green).
+	// Parse from the envelope-positioned reader anyway so every reply parser
+	// uses the one canonical ReadErrorOrInto walk instead of leaning on that
+	// coincidence. Covered by the StorageMetrics_basic vector.
 	var metrics types.StorageMetrics
-	if err := metrics.UnmarshalFDB(data); err != nil {
-		return 0, fmt.Errorf("unmarshal StorageMetrics: %w", err)
-	}
+	metrics.UnmarshalFromReader(&r)
 	return metrics.Bytes, nil
 }

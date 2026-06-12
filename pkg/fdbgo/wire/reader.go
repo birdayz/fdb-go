@@ -467,6 +467,45 @@ func (r *Reader) ReadVectorElementReader(vtableSlot, index int) (*Reader, error)
 	return r.readerAtObject(elemObjPos)
 }
 
+// ReadVectorBytes reads the i-th element of a vector of length-prefixed byte
+// strings — C++ VectorRef<KeyRef>/VectorRef<StringRef> with the default
+// FlatBuffers strategy (flat_buffers.h save(VectorLike): [uint32 count]
+// [RelativeOffset]*, each offset → [uint32 len][data]). NOT the
+// VecSerStrategy::String inline format, which is a single dynamic blob.
+func (r *Reader) ReadVectorBytes(vtableSlot, index int) ([]byte, error) {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 || int(off)+4 > len(r.object) {
+		return nil, fmt.Errorf("wire: vector field not present (slot %d)", vtableSlot)
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return nil, fmt.Errorf("wire: vector RelativeOffset is 0 (slot %d)", vtableSlot)
+	}
+	vecStart := r.objPos + int(off) + int(relOffset)
+	if vecStart+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vector start out of bounds")
+	}
+	count := int(binary.LittleEndian.Uint32(r.data[vecStart:]))
+	if index < 0 || index >= count {
+		return nil, fmt.Errorf("wire: vector index %d out of range [0, %d)", index, count)
+	}
+	elemRelOffPos := vecStart + 4 + index*4
+	if elemRelOffPos+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vector element offset out of bounds")
+	}
+	elemRelOff := binary.LittleEndian.Uint32(r.data[elemRelOffPos:])
+	target := elemRelOffPos + int(elemRelOff)
+	if target+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vector element out of bounds")
+	}
+	length := int(binary.LittleEndian.Uint32(r.data[target:]))
+	dataStart := target + 4
+	if length < 0 || dataStart+length > len(r.data) {
+		return nil, fmt.Errorf("wire: vector element data out of bounds")
+	}
+	return r.data[dataStart : dataStart+length], nil
+}
+
 // readerAtObject creates a sub-Reader positioned at a FlatBuffers object within the same buffer.
 // Unlike NewReader, this does NOT expect a FakeRoot wrapper or root footer.
 // The object starts with a vtable soffset (int32), followed by fields.
