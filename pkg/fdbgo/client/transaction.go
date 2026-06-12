@@ -1033,10 +1033,13 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 			// suffix-and-all. The COMMIT mutation (tx.mutations above) keeps
 			// the user's original placeholder key; only the local read model
 			// uses the transform. A malformed key (no room for offset/stamp)
-			// falls through as a plain entry at the user key — the commit
-			// path's eager validation reports client_invalid_operation,
-			// matching C++ which throws from getVersionstampKeyRange before
-			// touching the write map.
+			// falls through as a plain entry at the user key and the COMMIT
+			// path's validation reports client_invalid_operation — the same
+			// error C++ raises, but at a different time: C++ throws EAGERLY
+			// from getVersionstampKeyRange inside atomicOp() (before touching
+			// the write map), while Go's void Atomic() defers all mutation
+			// validation to Commit (pre-existing design, see the commit-path
+			// checks).
 			minVersion := int64(0)
 			tx.readVersionMu.Lock()
 			if tx.hasReadVersion {

@@ -288,3 +288,25 @@ identically on this shape — the test's assumption was the divergence. Fixed
 by capturing the open error on attempt 1 and RETURNING it (clean attempt 2
 proves the wrapped error stayed retryable — a strictly stronger pin of the
 original regression than the errors.As assertion alone).
+
+### FDB-C++ implementation-review catch: selector walks need unreadableRanges boundaries
+
+`boundCandidatesLocked` (the merged-segment boundary source for getKey
+resolution) drew bounds from write keys, cleared ranges, and snapshot-cache
+entries — but not from `unreadableRanges`. The SVK candidate range's HEAD
+`[begin, entry)` (begin = key@stamp(minVersion); the pending entry sits 4
+suffix bytes above it) contains no write-map key, so without a boundary at
+`begin` that head is swallowed into the unknown segment starting BELOW the
+range — and a reverse selector anchored inside the head escapes downward to a
+storage key where libfdb_c throws 1036 (C++ gets the boundary for free:
+addUnmodifiedAndUnreadableRange inserts explicit range nodes, WriteMap.cpp:
+205-242, and RYWIterator type() throws at :45-46). Red repro:
+`lastLessThan(begin+ε)` resolved to the storage key below the range.
+
+Fix: contribute the `unreadableRanges` lo-1..lo+1 window's begin/end to the
+boundary candidates (same sorted/coalesced window argument as `cleared`).
+Pinned by matrix rows `getkey_from_inside_svk_range_head_1036` (red→green),
+`getkey_crosses_svk_range_1036` / `getkey_crosses_emptied_svk_range_1036`
+(entry/cleared-edge adjacent shapes, green before and after — they document
+why the simpler shapes did NOT reproduce), and the differential row
+`getkey_from_inside_svk_range_head` (go==cgo).

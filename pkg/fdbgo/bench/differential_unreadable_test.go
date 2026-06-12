@@ -232,6 +232,34 @@ func TestDifferential_Unreadable(t *testing.T) {
 		}
 	})
 
+	t.Run("getkey_from_inside_svk_range_head", func(t *testing.T) {
+		// FDB-C++ review catch on RFC-098: the SVK candidate range's head
+		// [begin, pending entry) holds no write-map key; a reverse selector
+		// anchored inside it must still classify the unreadable range (Go
+		// needed explicit unreadableRanges boundaries in the selector walk;
+		// libfdb_c gets them from addUnmodifiedAndUnreadableRange's nodes).
+		t.Parallel()
+		hPfx := pfx + "gkh/"
+		svkPfx := []byte(hPfx + "b")
+		// minVersion 0 on a fresh txn → range begin B = svkPfx + 10 zero
+		// bytes; the entry sits at B + 4 suffix bytes. Anchor inside (B, entry).
+		inside := append(append([]byte(nil), svkPfx...), make([]byte, 10)...)
+		inside = append(inside, 0x00, 0x00, 0x01)
+		goCode := goErrCode(func(tx gofdb.Transaction) error {
+			tx.SetVersionstampedKey(gofdb.Key(unreadableSVKKey(svkPfx)), []byte("v"))
+			_, err := tx.GetKey(gofdb.KeySelector{Key: gofdb.Key(inside), OrEqual: false, Offset: 0}).Get()
+			return err
+		})
+		cCode := cgoErrCode(func(tx cgofdb.Transaction) error {
+			tx.SetVersionstampedKey(cgofdb.Key(unreadableSVKKey(svkPfx)), []byte("v"))
+			_, err := tx.GetKey(cgofdb.KeySelector{Key: cgofdb.Key(inside), OrEqual: false, Offset: 0}).Get()
+			return err
+		})
+		if goCode != cCode || goCode != errAccessedUnreadable {
+			t.Fatalf("lastLessThan(inside SVK range head): go=%d cgo=%d, want both %d", goCode, cCode, errAccessedUnreadable)
+		}
+	})
+
 	t.Run("getrange_reach", func(t *testing.T) {
 		// A limited scan that stops BEFORE the pending key succeeds with the rows
 		// before it; an unlimited scan reaches it → 1036; reverse hits it first even

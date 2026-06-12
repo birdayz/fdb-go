@@ -389,6 +389,105 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		assertFDBErrorCode(t, tx.Commit(ctx), ErrAccessedUnreadable)
 	})
 
+	t.Run("getkey_crosses_svk_range_1036", func(t *testing.T) {
+		// FDB-C++ review catch: getKey selector resolution must classify the
+		// SVK candidate range as its own (unreadable) segment even when the
+		// walk's window has no other boundary nearby — C++ inserts explicit
+		// boundary nodes via addUnmodifiedAndUnreadableRange (WriteMap.cpp:
+		// 205-242) and getKey visits every segment (RYWIterator.cpp:45-46).
+		// Without unreadableRanges edges in boundCandidatesLocked, the span is
+		// swallowed into a neighboring unknown segment and the walk crosses it.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		gPfx := append(append([]byte(nil), pfx...), []byte("gkx/")...)
+		a := append(append([]byte(nil), gPfx...), 'a')
+		c := append(append([]byte(nil), gPfx...), 'c')
+		if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			tx.Set(a, []byte("va"))
+			tx.Set(c, []byte("vc"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		svkPfx := append(append([]byte(nil), gPfx...), 'b')
+		tx := db.CreateTransaction()
+		tx.Atomic(MutSetVersionstampedKey, svkKey(svkPfx), []byte("v"))
+		// Forward: fGT(a) must stop on the candidate range, not resolve to c.
+		_, err := tx.GetKey(ctx, a, true, 1)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+		// Reverse: lastLessThan(c) walks down across the range.
+		_, err = tx.GetKey(ctx, c, false, 0)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+	})
+
+	t.Run("getkey_crosses_emptied_svk_range_1036", func(t *testing.T) {
+		// Same as above but the range's only write ENTRY is cleared away
+		// (clear subtracts only its own span from the unreadable ranges), so
+		// the remaining unreadable span contains NO write-map key at all —
+		// the pure missing-boundary shape.
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		gPfx := append(append([]byte(nil), pfx...), []byte("gke/")...)
+		a := append(append([]byte(nil), gPfx...), 'a')
+		c := append(append([]byte(nil), gPfx...), 'c')
+		if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			tx.Set(a, []byte("va"))
+			tx.Set(c, []byte("vc"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		svkPfx := append(append([]byte(nil), gPfx...), 'b')
+		tx := db.CreateTransaction()
+		tx.Atomic(MutSetVersionstampedKey, svkKey(svkPfx), []byte("v"))
+		// Clear ONLY the entry's vicinity at the start of the candidate range:
+		// the entry vanishes, [svkPfx+\x01, range end) stays unreadable.
+		clearEnd := append(append([]byte(nil), svkPfx...), 0x01)
+		tx.ClearRange(svkPfx, clearEnd)
+		_, err := tx.GetKey(ctx, a, true, 1)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+		_, err = tx.GetKey(ctx, c, false, 0)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+	})
+
+	t.Run("getkey_from_inside_svk_range_head_1036", func(t *testing.T) {
+		// FDB-C++ review catch (boundCandidatesLocked omits unreadableRanges
+		// edges): the candidate range BEGIN B = key@stamp(minVersion) precedes
+		// the pending entry T = B + 4 suffix bytes, so the head sub-span [B, T)
+		// contains no write-map key and — without a boundary at B — is swallowed
+		// into the unknown segment that starts BELOW the range. A reverse
+		// selector anchored inside [B, T) then escapes downward and resolves to
+		// a storage key, where libfdb_c classifies the unreadable range node and
+		// throws (WriteMap addUnmodifiedAndUnreadableRange boundary nodes;
+		// RYWIterator.cpp:45-46).
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		gPfx := append(append([]byte(nil), pfx...), []byte("gkh/")...)
+		a := append(append([]byte(nil), gPfx...), 'a')
+		if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			tx.Set(a, []byte("va"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		svkPfx := append(append([]byte(nil), gPfx...), 'b')
+		tx := db.CreateTransaction()
+		tx.Atomic(MutSetVersionstampedKey, svkKey(svkPfx), []byte("v"))
+		// Fresh tx, no read version → minVersion 0 → B = svkPfx + 10 zero
+		// bytes; the entry sits at T = B + LE32(len(svkPfx)). Anchor strictly
+		// inside (B, T).
+		inside := append(append([]byte(nil), svkPfx...), make([]byte, 10)...)
+		inside = append(inside, 0x00, 0x00, 0x01)
+		_, err := tx.GetKey(ctx, inside, false, 0) // lastLessThan(inside)
+		assertFDBErrorCode(t, err, ErrAccessedUnreadable)
+	})
+
 	t.Run("getrange_reach_semantics", func(t *testing.T) {
 		// A limited scan that stops BEFORE the pending key does not throw
 		// (C++ :685 limit-break precedes the :692 throw); reaching it does.
