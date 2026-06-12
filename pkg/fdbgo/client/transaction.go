@@ -482,28 +482,39 @@ func (tx *Transaction) checkCancelled() error {
 // incarnation by construction; asynchronous resolvers must use
 // trackReadErrorGen with their captured generation instead.
 func (tx *Transaction) trackReadError(err error) error {
+	// Nil/ctx check BEFORE the lock: every successful read funnels through
+	// here — taking readErrMu on the hot path would serialize concurrent
+	// pipelined reads on the mutex that also guards pendingReads.
+	if !isTrackableReadError(err) {
+		return err
+	}
 	tx.readErrMu.Lock()
 	defer tx.readErrMu.Unlock()
-	return tx.trackReadErrLocked(err, tx.readGen)
+	if tx.readErr == nil {
+		tx.readErr = err
+	}
+	return err
 }
 
 // trackReadErrorGen is trackReadError for reads issued under generation gen:
 // the recording is dropped if the transaction has been reset since (C++ swaps
 // the reading AndFuture on resetRyow, detaching in-flight reads).
 func (tx *Transaction) trackReadErrorGen(err error, gen uint64) error {
-	tx.readErrMu.Lock()
-	defer tx.readErrMu.Unlock()
-	return tx.trackReadErrLocked(err, gen)
-}
-
-func (tx *Transaction) trackReadErrLocked(err error, gen uint64) error {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !isTrackableReadError(err) {
 		return err
 	}
+	tx.readErrMu.Lock()
+	defer tx.readErrMu.Unlock()
 	if gen == tx.readGen && tx.readErr == nil {
 		tx.readErr = err
 	}
 	return err
+}
+
+// isTrackableReadError: ctx cancellation has no C++ analogue (cancellation is
+// whole-transaction via resetPromise) and must not poison commit.
+func isTrackableReadError(err error) bool {
+	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {

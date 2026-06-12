@@ -170,6 +170,19 @@ func TestRYW_BypassIndependentChainSkipsStorage(t *testing.T) {
 		t.Fatalf("bypass get = %q, want operand %q (stamp overwrites the base)", got3, op)
 	}
 
+	// [SVK]: the transformed-key entry is independent too (the param is the
+	// value — set-like, same predicate) — no storage read.
+	c5 := &rywCache{}
+	c5.setBypassUnreadable(true)
+	c5.atomic(MutSetVersionstampedKey, []byte("tk"), []byte("svk-value"))
+	got5, err := c5.get(ctx, []byte("tk"), noStorage)
+	if err != nil {
+		t.Fatalf("bypass get of independent SVK chain: %v", err)
+	}
+	if string(got5) != "svk-value" {
+		t.Fatalf("bypass get = %q, want \"svk-value\"", got5)
+	}
+
 	// SVV → plain Set: the fold resolves the value but keeps the sticky flag;
 	// bypass returns the folded value from the write map, no storage read.
 	c4 := &rywCache{}
