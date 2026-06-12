@@ -31,12 +31,13 @@ type spfreshIndexMaintainer struct {
 	standardIndexMaintainer
 	config SPFreshConfig
 
-	// writeCache is the TX-LOCAL routing cache for this maintainer's write
-	// path (one maintainer per store per transaction): seeded from the
-	// process-global cache, reloaded only through THIS transaction, and
-	// discarded with it — uncommitted RYW state never reaches the global
-	// cache (see spfreshRoutingCache.cloneForWrite).
-	writeCache *spfreshRoutingCache
+	// rctx is the record context this maintainer lives in. The TX-LOCAL
+	// routing cache (write path AND same-tx reads) lives in its session,
+	// keyed by index subspace, so a write through one store instance and a
+	// search through another in the same transaction share it — and the
+	// process-global cache is never touched through a transaction carrying
+	// uncommitted SPFresh topology (see txWriteCache).
+	rctx *FDBRecordContext
 
 	// timer is the context's StoreTimer (nil when uninstrumented — every
 	// recording method is nil-receiver-safe). The TEXT index's
@@ -49,6 +50,7 @@ func newSPFreshIndexMaintainer(
 	indexSubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
+	rctx *FDBRecordContext,
 	timer *StoreTimer,
 ) (*spfreshIndexMaintainer, error) {
 	config := parseSPFreshConfig(index)
@@ -66,8 +68,35 @@ func newSPFreshIndexMaintainer(
 	return &spfreshIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		config:                  config,
+		rctx:                    rctx,
 		timer:                   timer,
 	}, nil
+}
+
+// txWriteCache returns the transaction-local SPFresh routing cache for this
+// index, or nil if this transaction has not written to it. Lives in the
+// record context's session (keyed by index subspace) so a SaveRecord through
+// one store instance and a ScanByDistance through another in the SAME
+// transaction find the same cache — the maintainer instance is not the unit
+// of transaction state, the context is.
+func (m *spfreshIndexMaintainer) txWriteCache() *spfreshRoutingCache {
+	if m.rctx == nil {
+		return nil
+	}
+	if v := m.rctx.Session(m.writeCacheSessionKey()); v != nil {
+		return v.(*spfreshRoutingCache)
+	}
+	return nil
+}
+
+func (m *spfreshIndexMaintainer) setTxWriteCache(c *spfreshRoutingCache) {
+	if m.rctx != nil {
+		m.rctx.PutSession(m.writeCacheSessionKey(), c)
+	}
+}
+
+func (m *spfreshIndexMaintainer) writeCacheSessionKey() string {
+	return "spfresh-writecache/" + string(m.indexSubspace.Bytes())
 }
 
 // spfreshCaches holds the per-process routing caches, one per (index
@@ -513,21 +542,38 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 		return nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
-	cache := spfreshCacheFor(m.indexSubspace, gen)
-
-	// Queries pay ZERO cache-maintenance I/O on the common path (RFC-094 §4 —
-	// the per-query changelog read was the rev-2-NAK'd hot-key anti-pattern,
-	// and it cost ~half the measured p50 at SIFT-100k). With the 094.3
-	// rebalancer the topology changes WITHIN a generation, so the cache
-	// additionally refreshes on an amortized timer: one changelog read per
-	// interval per process, not per query; between refreshes queries ride the
-	// searcher's posting-HDR forward tolerance.
-	if !cache.ready(gen) {
-		if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
-			return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
+	var cache *spfreshRoutingCache
+	if wc := m.txWriteCache(); wc != nil && wc.ready(gen) {
+		// This transaction already wrote to this index: route on the
+		// TX-LOCAL cache. Two reasons, both load-bearing: (a) RYW gives a
+		// same-transaction INSERT→SELECT the inserted record; (b) the
+		// process-global cache must NEVER be loaded or refreshed through a
+		// transaction carrying uncommitted SPFresh topology — RYW would
+		// publish phantom bootstrap cells / minted centroids globally, and
+		// an abort leaves every later query routing on a topology that does
+		// not exist (for a §6b cold-start index there is no generation flip
+		// to ever flush it). The write path has guarded against this since
+		// cloneForWrite; this is the read-side half (Torvalds final-gauntlet
+		// S1). No refresh either: the changelog range may contain this tx's
+		// own unresolved versionstamped deltas.
+		cache = wc
+	} else {
+		cache = spfreshCacheFor(m.indexSubspace, gen)
+		// Queries pay ZERO cache-maintenance I/O on the common path (RFC-094
+		// §4 — the per-query changelog read was the rev-2-NAK'd hot-key
+		// anti-pattern, and it cost ~half the measured p50 at SIFT-100k).
+		// With the 094.3 rebalancer the topology changes WITHIN a
+		// generation, so the cache additionally refreshes on an amortized
+		// timer: one changelog read per interval per process, not per query;
+		// between refreshes queries ride the searcher's posting-HDR forward
+		// tolerance.
+		if !cache.ready(gen) {
+			if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
+				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
+			}
+		} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
+			return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 		}
-	} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
-		return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 	}
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)

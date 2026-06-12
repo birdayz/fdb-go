@@ -2,7 +2,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"testing"
 
@@ -111,9 +110,11 @@ func TestFDB_VectorSearch_SPFreshE2E(t *testing.T) {
 		for _, r := range results {
 			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
 		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		// UNSORTED on purpose: BY_DISTANCE output order is part of the
+		// contract — d²(1)=0.02 < d²(2)=1.62 at this query, so the rows must
+		// arrive [1 2] exactly (Graefe merge-HEAD F3).
 		if ids[0] != 1 || ids[1] != 2 {
-			t.Errorf("K-NN ids = %v, want [1 2] (nearest to (0.9,0.1,0.0))", ids)
+			t.Errorf("K-NN ids = %v, want [1 2] IN DISTANCE ORDER (nearest to (0.9,0.1,0.0))", ids)
 		}
 		return nil, nil
 	})

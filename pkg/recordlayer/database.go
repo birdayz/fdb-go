@@ -414,6 +414,34 @@ type FDBRecordContext struct {
 	// Set once during construction, nil means no instrumentation.
 	// Atomic for race-detector cleanliness (concurrent reads from goroutines).
 	timer atomic.Pointer[StoreTimer]
+
+	// Session storage — matches Java's FDBRecordContext session
+	// (getSession/putSessionIfAbsent): transaction-scoped values shared by
+	// index maintainers across store instances opened in the same context.
+	// SPFresh keeps its tx-local routing cache here so a same-transaction
+	// write-then-search pairs up even when the statements open separate
+	// stores.
+	sessionMu sync.Mutex
+	session   map[string]any
+}
+
+// Session returns the transaction-scoped value stored under key, or nil.
+// Matches Java's FDBRecordContext.getSession.
+func (rc *FDBRecordContext) Session(key string) any {
+	rc.sessionMu.Lock()
+	defer rc.sessionMu.Unlock()
+	return rc.session[key]
+}
+
+// PutSession stores a transaction-scoped value under key. Matches Java's
+// FDBRecordContext session storage; values die with the context.
+func (rc *FDBRecordContext) PutSession(key string, value any) {
+	rc.sessionMu.Lock()
+	defer rc.sessionMu.Unlock()
+	if rc.session == nil {
+		rc.session = make(map[string]any)
+	}
+	rc.session[key] = value
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.

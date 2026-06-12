@@ -166,8 +166,13 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 			defer GinkgoRecover()
 			storage := newSPFreshStorage(indexSubspace, 1)
 			config := parseSPFreshConfig(idx)
-			for !writersDone.Load() {
-				if _, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "churn-rebalancer", 7, 0, nil); rerr != nil {
+			// Unique owner per invocation — the deployment shape
+			// (spfreshRebalanceOwner mints one per RebalanceSPFreshIndex
+			// call); a fixed owner string would exercise the same-owner
+			// lease reclaim instead of real exclusion.
+			for round := int64(0); !writersDone.Load(); round++ {
+				owner := fmt.Sprintf("churn-rebalancer-%d", round)
+				if _, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, owner, 7, 0, nil); rerr != nil {
 					errs <- fmt.Errorf("rebalancer: %w", rerr)
 					return
 				}

@@ -271,7 +271,15 @@ func parseVectorIndexOptions(ctx antlrgen.IVectorIndexOptionsContext, indexName,
 				opts[recordlayer.IndexOptionVectorMetric] = metric
 			}
 		case oc.RABITQ_NUM_EX_BITS() != nil:
-			opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
+			// Both methods support it; each reads its own option namespace
+			// (the residual quantizer for SPFresh, the node codes for HNSW) —
+			// routing it to the hnsw key made the loud SPFRESH rejection
+			// below swallow a knob SPFresh actually has (Torvalds S2).
+			if method == "SPFRESH" {
+				opts[recordlayer.IndexOptionSPFreshRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
+			} else {
+				opts[recordlayer.IndexOptionHNSWRaBitQNumExBits] = oc.GetRabitQNumExBits().GetText()
+			}
 		case oc.SAMPLE_VECTOR_STATS_PROBABILITY() != nil:
 			opts[recordlayer.IndexOptionHNSWSampleVectorStatsProbability] = oc.GetStatsProbability().GetText()
 		case oc.STATS_THRESHOLD() != nil:

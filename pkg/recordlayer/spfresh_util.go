@@ -21,5 +21,13 @@ func spfreshNowMs() int64 { return time.Now().UnixMilli() }
 // the same in-tree RaBitQ the HNSW index uses, applied to residuals here
 // (RFC-094 §7).
 func spfreshNewRaBitQ(config SPFreshConfig) VectorQuantizer {
-	return rabitq.NewQuantizer(rabitq.Metric(config.Metric), config.NumExBits)
+	m := rabitq.Metric(config.Metric)
+	if config.Metric == VectorMetricEuclideanSquare {
+		// rabitq has no square variant — its Euclidean estimator IS squared
+		// L2 (same ordering); only the exact re-rank differs (no sqrt),
+		// which vectorDistance handles. The raw int cast would otherwise
+		// feed rabitq an enum value it does not define.
+		m = rabitq.MetricEuclidean
+	}
+	return rabitq.NewQuantizer(m, config.NumExBits)
 }

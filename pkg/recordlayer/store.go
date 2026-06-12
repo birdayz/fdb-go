@@ -1124,7 +1124,7 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 	case IndexTypeVectorSPFresh:
 		// Go-only FDB-native vector index (RFC-094); all data under the
 		// primary index subspace, generation-prefixed.
-		return newSPFreshIndexMaintainer(index, idxSubspace, tx, store, store.context.Timer())
+		return newSPFreshIndexMaintainer(index, idxSubspace, tx, store, store.context, store.context.Timer())
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store), nil
 	}

@@ -188,6 +188,18 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 	// action budget burned on skips while actionable tasks behind it starve
 	// (codex 094.4).
 	worked := 0
+	// A failed task is SKIPPED, counted, and surfaced at the end — never
+	// allowed to halt the pass: the scan order is deterministic (kind+id),
+	// so returning on the first handler error would park a poisoned task at
+	// the queue head and silently starve everything behind it on every pass,
+	// with an operator signal identical to "sweeper down" (Torvalds
+	// final-gauntlet S5). The errors still fail the pass loudly; the work
+	// behind the poison still happens.
+	var taskErrs []error
+	fail := func(err error) {
+		timer.Increment(CountSPFreshTaskErrors)
+		taskErrs = append(taskErrs, err)
+	}
 	for _, ref := range refs {
 		if limit > 0 && worked >= limit {
 			break // per-pass budget spent: the caller schedules the rest
@@ -196,7 +208,8 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		case spfreshTaskSplit:
 			out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
 			if serr != nil {
-				return worked, fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr)
+				fail(fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr))
+				continue
 			}
 			if !out.proceed {
 				if out.cleaned {
@@ -208,7 +221,8 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				continue // zombie cleaned or foreign lease
 			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
-				return worked, fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr)
+				fail(fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr))
+				continue
 			}
 			timer.Increment(CountSPFreshSplits)
 			worked++
@@ -218,29 +232,34 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				if lerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 					return npaRouting.fullReload(rtx.Transaction(), s, s.generation)
 				}); lerr != nil {
-					return worked, fmt.Errorf("NPA routing load: %w", lerr)
+					// Not a task failure: the shared cache is broken — every
+					// NPA would fail identically. Abort the pass.
+					return worked, errors.Join(append(taskErrs, fmt.Errorf("NPA routing load: %w", lerr))...)
 				}
 			}
 			out, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
 			if nerr != nil {
-				return worked, fmt.Errorf("NPA %d: %w", ref.id, nerr)
+				fail(fmt.Errorf("NPA %d: %w", ref.id, nerr))
+				continue
 			}
 			worked += spfreshMeterOutcome(timer, out, CountSPFreshNPAs)
 		case spfreshTaskMerge:
 			out, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
 			if merr != nil {
-				return worked, fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr)
+				fail(fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr))
+				continue
 			}
 			worked += spfreshMeterOutcome(timer, out, CountSPFreshMerges)
 		case spfreshTaskCSplit:
 			out, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
 			if cerr != nil {
-				return worked, fmt.Errorf("coarse split cell %d: %w", ref.id, cerr)
+				fail(fmt.Errorf("coarse split cell %d: %w", ref.id, cerr))
+				continue
 			}
 			worked += spfreshMeterOutcome(timer, out, CountSPFreshCSplits)
 		}
 	}
-	return worked, nil
+	return worked, errors.Join(taskErrs...)
 }
 
 // spfreshMeterOutcome attributes one handler outcome to the right counter

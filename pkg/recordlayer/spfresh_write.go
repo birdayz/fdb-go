@@ -74,25 +74,30 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 		return nil, err
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
-	if m.writeCache == nil || !m.writeCache.ready(gen) {
-		// The write path routes on a TX-LOCAL cache only (kept on the
-		// maintainer, which lives one transaction): loading the process-
-		// global cache through a WRITING transaction publishes uncommitted
-		// RYW state — minted centroids, bootstrap cells — and an abort
-		// leaves every other writer routing on phantoms (caught by the
+	writeCache := m.txWriteCache()
+	if writeCache == nil || !writeCache.ready(gen) {
+		// The write path routes on a TX-LOCAL cache only (kept in the record
+		// context's session, which lives one transaction): loading the
+		// process-global cache through a WRITING transaction publishes
+		// uncommitted RYW state — minted centroids, bootstrap cells — and an
+		// abort leaves every other writer routing on phantoms (caught by the
 		// concurrent foreground-fill benchmark). Seed L1 from the global
-		// cache when it's warm; otherwise load from this tx.
+		// cache when it's warm; otherwise load from this tx. Same-tx
+		// searches route on this cache too (RYW; Torvalds final-gauntlet
+		// S1), which is why it lives on the context, not the maintainer:
+		// another store instance in this transaction must find it.
 		global := spfreshCacheFor(m.indexSubspace, gen)
 		if !bootstrapped && global.ready(gen) {
-			m.writeCache = global.cloneForWrite()
+			writeCache = global.cloneForWrite()
 		} else {
-			m.writeCache = newSPFreshRoutingCache(0)
-			if err := m.writeCache.fullReload(m.tx, storage, gen); err != nil {
+			writeCache = newSPFreshRoutingCache(0)
+			if err := writeCache.fullReload(m.tx, storage, gen); err != nil {
 				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, err)
 			}
 		}
+		m.setTxWriteCache(writeCache)
 	}
-	return &spfreshWriteContext{storage: storage, cache: m.writeCache}, nil
+	return &spfreshWriteContext{storage: storage, cache: writeCache}, nil
 }
 
 // spfreshInsert indexes one (pk, vector): route on cache → closure copy-set →
@@ -246,6 +251,12 @@ func (m *spfreshIndexMaintainer) spfreshFirstCentroid(storage *spfreshStorage, v
 	// record until the next changelog refresh (codex 094.4 P2). Same-process
 	// only by design; other processes converge via the addFine delta above.
 	spfreshCacheFor(m.indexSubspace, storage.generation).evictCell(cellID)
+	// The TX-LOCAL cache cached the same empty cell while routing this very
+	// insert — a same-transaction search routes on it (RYW), so it must
+	// reload the cell and see the minted centroid.
+	if wc := m.txWriteCache(); wc != nil {
+		wc.evictCell(cellID)
+	}
 	return []spfreshRouted{{cellID: cellID, fineID: fineID, state: spfreshStateActive, vec: rt, d2: 0}}, nil
 }
 

@@ -233,6 +233,13 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 			config.Metric = VectorMetricCosine
 		case "DOT_PRODUCT_METRIC":
 			config.Metric = VectorMetricInnerProduct
+		case "EUCLIDEAN_SQUARE_METRIC":
+			// The DDL accepts it for USING SPFRESH (same metric grammar as
+			// HNSW), so the maintainer must honor it — a silent fall-through
+			// to Euclidean made the candidate advertise squared distances
+			// while re-rank returned true L2 (Graefe merge-HEAD F1). Same
+			// kNN ordering; only the reported distance differs.
+			config.Metric = VectorMetricEuclideanSquare
 		}
 	}
 	parseInt := func(key string, dst *int) {

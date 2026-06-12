@@ -46,4 +46,10 @@ var (
 	CountSPFreshZombieCleans = Event{"spfresh_zombie_cleans", "SPFresh Zombie Cleanups"}
 	CountSPFreshCSplitDefers = Event{"spfresh_csplit_defers", "SPFresh Coarse Split Deferrals"}
 	CountSPFreshLeaseSkips   = Event{"spfresh_lease_skips", "SPFresh Lease Skips"}
+	// Task handler errors in a rebalance pass: the pass SKIPS the failed
+	// task and continues (a poisoned task at the deterministic queue head
+	// must not starve everything behind it), then surfaces the joined
+	// errors. Nonzero here with a stable queue depth = a poisoned task; the
+	// runbook's "task queue growing" playbook keys off it.
+	CountSPFreshTaskErrors = Event{"spfresh_task_errors", "SPFresh Task Errors"}
 )

@@ -67,9 +67,14 @@ binary is 25-32% faster).
 **Per-index** (set at CREATE; immutable): `spfreshLmax` (split threshold,
 256 default — reply-budget sized), `spfreshReplication`/`spfreshAlpha`
 (closure; r=2/α=1.2 — measured: raising either does ~nothing on SIFT-like
-data at default granularity), `spfreshSidecar` (exact re-rank source; leave
-on — disabling collapsed recall ~0.999→0.69 in the 094.4 slice-2 A/B; see
-the provenance note in VECTOR_BENCHMARK_RESULTS.md).
+data at default granularity), `spfreshSidecar` (exact re-rank source;
+REQUIRED on — validation rejects `false`: every rebalancer lifecycle reads
+it, and the estimates-only A/B collapsed recall ~0.999→0.69; see the
+provenance note in VECTOR_BENCHMARK_RESULTS.md). Where to set them: the Go
+metadata API (`Index.Options`) accepts every `spfresh*` key; the SQL DDL
+(`CREATE VECTOR INDEX … USING SPFRESH OPTIONS(…)`) exposes `METRIC` and
+`RABITQ_NUM_EX_BITS` — the structural knobs (Lmax, replication, alpha, …)
+have no DDL tokens yet and take their RFC defaults from SQL.
 
 **The ingest-rate/recall trade** (measured, the one operational surprise):
 recall at fixed probes depends on the ingest rate the topology was built
@@ -132,8 +137,11 @@ too long for your churn.
   kind, posting-size histogram. O(index) — never call it on a serving path.
 - `SPFreshDebugIntegrity(rtx, store, index, n)` — n sampled pks:
   membership ⊆ postings and all targets ACTIVE.
-- `SPFreshEnableAudit()` / `SPFreshDisableAudit()` — per-lifecycle-step
-  stderr trace for debugging a specific incident.
+- `SPFreshEnableAudit()` / `SPFreshDisableAudit()` — records per-fineID
+  lifecycle steps in an in-memory map (unbounded while enabled — incident
+  debugging only); read a centroid's history with
+  `SPFreshAuditTrail(fineID)`. Nothing is printed; disable releases the
+  memory.
 
 ## 6. Known limits
 

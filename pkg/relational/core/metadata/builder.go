@@ -203,6 +203,16 @@ func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, part
 // "HNSW" (graph, Java-compatible wire format) or "SPFRESH" (RFC-094
 // centroid+posting-list, Go-native). SPFresh does not support PARTITION BY.
 func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	// The method is case-sensitive everywhere downstream (buildVectorIndex
+	// treats anything that is not "SPFRESH" as HNSW), so an unknown or
+	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
+	// …) silently building an HNSW index is exactly the kind of quiet
+	// misroute a schema author cannot debug (Graefe merge-HEAD F2).
+	if method != "HNSW" && method != "SPFRESH" {
+		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"vector index %q: unknown method %q (want HNSW or SPFRESH)", indexName, method))
+		return b
+	}
 	if method == "SPFRESH" && len(partitionColumns) > 0 {
 		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"vector index %q: PARTITION BY is not supported with USING SPFRESH", indexName))

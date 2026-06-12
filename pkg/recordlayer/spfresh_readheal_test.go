@@ -2,10 +2,13 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
@@ -275,6 +278,97 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		Expect(ids).To(ContainElement(int64(7)), "the SEALED parent's residual entries must score in the same burst")
 		Expect(timer.GetCount(CountSPFreshForwardFollows)).To(BeNumerically(">=", 1),
 			"the HDR path must actually have been exercised — if this is 0 the cache refreshed and the test pinned nothing")
+	})
+
+	// Torvalds final-gauntlet S1: a same-transaction INSERT→SELECT must (a)
+	// see the uncommitted record (RYW via the tx-local cache) and (b) never
+	// load the process-global routing cache through the writing transaction —
+	// an aborted bootstrap would otherwise publish phantom topology globally,
+	// and for a §6b cold-start index no generation flip ever flushes it: the
+	// next REAL bootstrap mints different IDs and every query routes into a
+	// cell that does not exist, permanently.
+	It("same-tx insert+search rides the tx-local cache; an abort never poisons the global cache", func() {
+		ks := specSubspace()
+		idx := NewIndex("spf_sametx", Concat(Field("price"), Field("quantity")))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "2",
+			IndexOptionSPFreshLmax:          "16",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		type sbd interface {
+			ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+		}
+		scanIDs := func(rtx *FDBRecordContext, store *FDBRecordStore, q []float64, k int) []int64 {
+			maintainer, merr := store.GetIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			cursor := maintainer.(sbd).ScanByDistance(TupleRange{
+				Low:  tuple.Tuple{SerializeVector(q)},
+				High: tuple.Tuple{int64(k)},
+			}, nil, ScanProperties{})
+			var ids []int64
+			for {
+				res, cerr := cursor.OnNext(context.Background())
+				Expect(cerr).NotTo(HaveOccurred())
+				if !res.HasNext() {
+					break
+				}
+				ids = append(ids, res.GetValue().Key[0].(int64))
+			}
+			return ids
+		}
+
+		// tx1: first insert bootstraps generation 1 IN-TX (uncommitted), the
+		// same-tx search must see the record via RYW — then the tx ABORTS.
+		var indexSubspace subspace.Subspace
+		sentinel := errors.New("abort the bootstrap on purpose")
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			indexSubspace = store.indexSubspace(idx)
+			if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)}); serr != nil {
+				return nil, serr
+			}
+			ids := scanIDs(rtx, store, []float64{10, 10}, 2)
+			Expect(ids).To(ContainElement(int64(1)), "a same-tx search must see the uncommitted insert (RYW on the tx-local cache)")
+			return nil, sentinel
+		})
+		Expect(err).To(MatchError(sentinel))
+
+		// The aborted transaction must not have published its phantom
+		// topology: the global cache for the generation it minted is unloaded.
+		Expect(spfreshCacheFor(indexSubspace, 1).ready(1)).To(BeFalse(),
+			"the global routing cache was loaded through an aborted writing transaction — phantom topology published")
+
+		// tx2: the REAL bootstrap commits a different record; tx3 must find
+		// it (with the poison, routing aims at the aborted tx's phantom cell
+		// and the record is invisible forever).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(33), Quantity: proto.Int32(44)})
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			ids := scanIDs(rtx, store, []float64{33, 44}, 2)
+			Expect(ids).To(ContainElement(int64(2)), "post-abort queries must route on the REAL topology, not the aborted transaction's phantoms")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("honors the csplit pause: a capped read in a pausing cell files nothing", func() {

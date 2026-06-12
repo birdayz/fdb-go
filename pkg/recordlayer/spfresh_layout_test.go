@@ -204,6 +204,14 @@ func TestParseSPFreshConfig(t *testing.T) {
 		c.Alpha != 1.5 || c.Sidecar {
 		t.Fatalf("parse mismatch: %+v", c)
 	}
+	// EUCLIDEAN_SQUARE_METRIC must map (the DDL accepts it for USING
+	// SPFRESH; a silent Euclidean fallback made the planner candidate
+	// advertise squared distances while re-rank returned true L2 — Graefe
+	// merge-HEAD F1).
+	idx.Options[IndexOptionSPFreshMetric] = "EUCLIDEAN_SQUARE_METRIC"
+	if c := parseSPFreshConfig(idx); c.Metric != VectorMetricEuclideanSquare {
+		t.Fatalf("EUCLIDEAN_SQUARE_METRIC parsed to %v, want VectorMetricEuclideanSquare", c.Metric)
+	}
 	// Absent options take RFC defaults.
 	if c.CellTarget != spfreshDefaultCellTarget || c.Replication != spfreshDefaultReplication ||
 		c.Kn != spfreshDefaultKn || c.LminRatio != spfreshDefaultLminRatio {

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
 )
 
 // TestVectorDDL_PartitionedIndexShape drives the full DDL parse path
@@ -178,5 +180,48 @@ func TestVectorDDL_SPFreshErrors(t *testing.T) {
 		if _, err := buildSchemaTemplateFromDDL(ddl); err == nil {
 			t.Errorf("%s: DDL accepted, want loud rejection", name)
 		}
+	}
+}
+
+// TestSPFreshCandidateGate_PartitionedMetadata: the planner's candidate gate
+// must refuse a partitioned SPFresh index even when the metadata was
+// constructed DIRECTLY (bypassing the DDL and schema-builder rejections) —
+// the maintainer cannot execute grouped scans, and an unexecutable candidate
+// is worse than no candidate (Graefe merge-HEAD re-review).
+func TestSPFreshCandidateGate_PartitionedMetadata(t *testing.T) {
+	t.Parallel()
+	opts := map[string]string{
+		recordlayer.IndexOptionSPFreshNumDimensions: "3",
+		recordlayer.IndexOptionSPFreshMetric:        "EUCLIDEAN_METRIC",
+	}
+
+	partitioned := recordlayer.NewIndex("V_PART", recordlayer.KeyWithValue(
+		recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("embedding")), 1))
+	partitioned.Type = recordlayer.IndexTypeVectorSPFresh
+	partitioned.Options = opts
+	if c := tryVectorIndexCandidate(partitioned, nil); c != nil {
+		t.Fatalf("partitioned SPFresh metadata must yield NO planner candidate, got %v", c)
+	}
+
+	// Control: the unpartitioned twin (through the schema builder, which
+	// supplies real record-type metadata) yields a candidate.
+	b := metadata.NewSchemaTemplateBuilder().SetName("vt")
+	b.AddTable("DOCS", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 2),
+	}, []string{"ID"})
+	b.AddVectorIndexUsing("SPFRESH", "DOCS", "V_OK", "EMBEDDING", nil,
+		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	idx := md.GetIndex("V_OK")
+	if idx == nil {
+		t.Fatal("index V_OK not in metadata")
+	}
+	if c := tryVectorIndexCandidate(idx, md); c == nil {
+		t.Fatal("unpartitioned SPFresh index must yield a planner candidate")
 	}
 }
