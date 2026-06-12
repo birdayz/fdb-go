@@ -313,8 +313,22 @@ func spfreshSplitFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			// insert probes, so once writes stop the topology would freeze
 			// with oversized postings (entries beyond the 4×Lmax read cap
 			// become invisible to queries — caught by the 100k foreground
-			// fill at recall 0.87, 187 fines where ~1100 were needed).
-			if counts[i] > int64(config.Lmax) {
+			// fill at recall 0.87, 187 fines where ~1100 were needed). On a
+			// chunked resume the trigger must gate on the child's TOTAL
+			// (drained + remainder, via the counter read — RYW covers the add
+			// above), not the remainder alone: a child at 0.9·Lmax drained +
+			// 0.5·Lmax remainder is over the envelope with no other trigger
+			// site left once writes stop (Torvalds re-review S-NEW; the
+			// chunked finalize already did this right).
+			trigger := counts[i]
+			if childrenExist {
+				count, cterr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, childID)
+				if cterr != nil {
+					return cterr
+				}
+				trigger = count
+			}
+			if trigger > int64(config.Lmax) {
 				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, childID); terr != nil {
 					return terr
 				}

@@ -104,6 +104,15 @@ is usually the limit). Skips with NO other sweeper running mean leases from
 a crashed worker — they expire on their own (lease deadline); a flood of
 `spfresh_zombie_cleans` right after is the cleanup happening.
 
+**`spfresh_task_errors` nonzero with stable queue depth.**
+A poisoned task: its handler fails every pass (the pass skips it, finishes
+the rest, and surfaces the joined error — the rest of the queue still
+drains). Expect `spfresh_lease_skips` to climb alongside it: each failed
+attempt burns one lease TTL in skips before the next executor retries. The
+error text names the task kind + id; capture it with
+`SPFreshDebugTopology` + `SPFreshAuditTrail(fineID)` and file it — a task
+that can never complete is a bug, not an operational condition.
+
 **Inserts erroring `did not converge after cache reloads`.**
 Every routed candidate failed the state fence three times — extreme churn on
 a hot region (mass splits mid-insert). The error is retryable: the caller's

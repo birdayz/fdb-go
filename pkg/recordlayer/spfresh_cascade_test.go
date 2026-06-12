@@ -530,6 +530,91 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Torvalds re-review S-NEW: on a chunked resume the child re-trigger
+	// must gate on the child's TOTAL (drained + remainder via the counter
+	// read), not the remainder alone — a child at 0.9·Lmax drained +
+	// 0.5·Lmax remainder is over the envelope with no other trigger site
+	// once writes stop.
+	It("single-tx resume re-triggers a child whose TOTAL crosses Lmax", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-split").Sub("resumetrigger"), 1)
+		quantizer := newSPFreshQuantizer(config)
+
+		const parent, childA, childB = int64(10), int64(11), int64(12)
+		centA := []float64{1, 1}
+		centB := []float64{50, 50}
+		// Child A: 15 drained entries (0.9·Lmax). Parent: 8 remaining near
+		// child A — remainder ≤ Lmax, total 23 > Lmax. Child B stays far and
+		// empty.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSetGeneration(tx, storage, 1)
+			spfreshSaveCoarse(tx, storage, 1, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{5, 5}))
+			spfreshSaveCentroid(tx, storage, 1, parent, encodeCentroidRow(spfreshStateSealed, 0, 0, 0, []float64{0, 0}))
+			spfreshSaveCentroid(tx, storage, 1, childA, encodeCentroidRow(spfreshStateActive, 0, 0, 0, centA))
+			spfreshSaveCentroid(tx, storage, 1, childB, encodeCentroidRow(spfreshStateActive, 0, 0, 0, centB))
+			tx.Set(storage.postingHDRKey(parent), encodePostingHDR(1, childA, childB))
+			for i := 0; i < 15; i++ {
+				pk := tuple.Tuple{int64(62000 + i)}
+				v := []float64{1, float64(i) * 0.2}
+				tx.Set(storage.postingKey(childA, pk), quantizer.Encode([]float64{v[0] - centA[0], v[1] - centA[1]}))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{childA}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, childA, 15)
+			spfreshCounterSet(tx, storage, spfreshCounterFine, childB, 0)
+			for i := 0; i < 8; i++ {
+				pk := tuple.Tuple{int64(63000 + i)}
+				v := []float64{2, float64(i) * 0.2}
+				tx.Set(storage.postingKey(parent, pk), quantizer.Encode(v)) // residual vs (0,0)
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{parent}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+			}
+			spfreshCounterSet(tx, storage, spfreshCounterFine, parent, 8)
+			spfreshCounterSet(tx, storage, spfreshCounterCell, 1, 3)
+			tx.Set(storage.taskKey(spfreshTaskSplit, parent),
+				encodeTaskRow(spfreshTaskRow{state: spfreshSplitTaskSealed, childA: childA, childB: childB}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "resumetrigger-owner", 1, parent, 7)).To(Succeed())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			taskA, gerr := tx.Get(storage.taskKey(spfreshTaskSplit, childA)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(taskA).NotTo(BeNil(),
+				"child A totals 23 > Lmax (15 drained + 8 remainder) — the resume must file its split even though the remainder alone is under Lmax")
+			taskB, gerr := tx.Get(storage.taskKey(spfreshTaskSplit, childB)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(taskB).To(BeNil(), "child B is empty — no trigger")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// And the filed task drains the child back inside the envelope.
+		for round := 0; round < 100; round++ {
+			worked, rerr := spfreshRebalanceOnce(ctx, sharedDB, storage, config, fmt.Sprintf("resumetrigger-%d", round), int64(round), 0, nil)
+			Expect(rerr).NotTo(HaveOccurred())
+			if worked == 0 {
+				break
+			}
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cell, ferr := spfreshFindCentroidCell(tx, storage, childA)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cell, childA)
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(row.state).NotTo(Equal(spfreshStateActive),
+				"queue quiesced with child A still ACTIVE over Lmax — the resume trigger did not fire or did not drain")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("seal zombie-clear preserves a sealed task whose row moved cells", func() {
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-seal").Sub("relocate"), 1)
 		const fine = int64(10)
