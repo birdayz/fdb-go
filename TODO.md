@@ -8,24 +8,23 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
-### [ ] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
+### [x] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
 
-**A red flake reproduced on UNMODIFIED master — real concurrency bug in the 094.3
-writer-vs-rebalancer stack (PR #282), NOT noise.** Spec: `SPFresh churn: writers vs
-rebalancer — invariants and recall hold after concurrent churn across every lifecycle`
-(`spfresh_churn_test.go:309`). Fingerprint: `live record NNNNN not findable at its own
-vector after churn: got [...six other ids...]; membership=[393217] fine 393217@cell 2
-state=0` — a live record's posting ends up in a fine cell with `state=0` and the
-post-churn search misses it. Repro: `bazelisk test //pkg/recordlayer:recordlayer_test
---test_arg="--ginkgo.focus=SPFresh churn" --runs_per_test=10 --nocache_test_results`
-→ failed run 8/10 on master `60d69bc3` (2026-06-11); also seen once under a full
-`just test` (4-container load). Independent of the RFC-095 wire branch (zero
-recordlayer files in that diff; 18/18 green focused+full runs there — the flake is
-load/seed-dependent both sides). Root-cause in the rebalancer lifecycle (split/merge
-visibility vs concurrent insert — likely the record lands in a cell that is
-concurrently demoted/trimmed without membership re-check), fix, and pin with a
-deterministic interleaving regression. Until fixed this randomly reddens ANY
-pre-commit `just test`.
+**ROOT-CAUSED + FIXED on the 094.4 branch (PR #283): the csplit pause-window orphan.**
+The fingerprint (`membership=[393217] fine 393217@cell 2 state=0` — membership and
+posting entry both present, centroid ACTIVE, search still misses) is the capped-read
+truncation shape: the query path fetches postings with a 4×Lmax+1 cap
+(`spfresh_query.go`), while the invariant checks read uncapped. On master, a posting
+that ballooned past the cap while a pending coarse split PAUSED fine-split issuance
+(`spfreshCSplitPaused` skip in the insert probe) never got its split task re-filed —
+it survived quiescence oversized, and any record whose entry sorted past the cap was
+live-but-unfindable. Fixed by the pause-window repair (csplit move re-files split
+tasks for moved oversized ACTIVE rows, commit a55fec70), pinned deterministically in
+`spfresh_cascade_test.go` ("csplit move re-files split tasks…"). Verified: 45/45
+focused runs green on the branch vs ~1-in-8 red on master. The churn test now also
+asserts post-quiescence that every ACTIVE posting is within the 4×Lmax envelope (the
+search-visibility bound) and its failure diag includes posting size vs cap + sidecar
+presence, so either silent-miss shape self-diagnoses on any recurrence.
 
 ### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 

@@ -227,7 +227,15 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Counters reconcile to exact posting sizes after quiescence.
+		// Counters reconcile to exact posting sizes after quiescence, and every
+		// ACTIVE posting is within the 4×Lmax search-visibility envelope: the
+		// query path reads postings with a 4×Lmax+1 fetch cap, so an oversized
+		// posting surviving quiescence makes its tail entries UNFINDABLE while
+		// every membership/posting invariant still holds — exactly the shape of
+		// the pre-094.4 csplit pause-window flake (split tasks for ballooned
+		// postings were never re-filed after a pause; the capped read then
+		// truncated live records out of search results).
+		config := parseSPFreshConfig(idx)
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
@@ -244,6 +252,8 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 					count, cterr := spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, r.fineID)
 					Expect(cterr).NotTo(HaveOccurred())
 					Expect(count).To(Equal(int64(len(entries))), "fine counter drift on posting %d after quiescence", r.fineID)
+					Expect(len(entries)).To(BeNumerically("<=", 4*config.Lmax),
+						"posting %d holds %d entries after quiescence — beyond the 4×Lmax search fetch cap, its tail is invisible to queries", r.fineID, len(entries))
 				}
 			}
 			return nil, nil
@@ -304,7 +314,13 @@ var _ = Describe("SPFresh churn: writers vs rebalancer", func() {
 							diag += fmt.Sprintf(" fine %d@cell %d: row err %v", fid, cell, rerr)
 							continue
 						}
-						diag += fmt.Sprintf(" fine %d@cell %d state=%d", fid, cell, row.state)
+						// Posting size vs the 4×Lmax fetch cap and sidecar
+						// presence distinguish the two silent-miss shapes: a
+						// capped read truncating the entry vs a re-rank drop.
+						entries, eerr := spfreshLoadPostingForSplit(rtx.Transaction(), storage, fid)
+						sidecar, _ := rtx.Transaction().Get(storage.sidecarKey(tuple.Tuple{id})).Get()
+						diag += fmt.Sprintf(" fine %d@cell %d state=%d posting=%d(err=%v) cap=%d sidecar=%v",
+							fid, cell, row.state, len(entries), eerr, 4*config.Lmax+1, sidecar != nil)
 					}
 					Fail(fmt.Sprintf("live record %d not findable at its own vector after churn: got %v; %s", id, got, diag))
 				}
