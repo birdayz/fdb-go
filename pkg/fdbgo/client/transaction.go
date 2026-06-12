@@ -408,6 +408,8 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, s.tx.trackReadError(err)
 	}
+	// Eager validation — NOT tracked (C++ returns before a read future
+	// exists), matching Transaction.GetKey.
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
@@ -1141,7 +1143,9 @@ func versionstampKeyRange(key []byte, minVersion int64, maxKey []byte) (begin, e
 		return nil, nil, nil, false
 	}
 	pos := int(int32(binary.LittleEndian.Uint32(key[len(key)-4:])))
-	if pos < 0 || pos+10 > len(key)-4 {
+	// pos > len-14 (not pos+10 > len-4): the subtraction form can't overflow
+	// for any int32 pos on a 32-bit int.
+	if pos < 0 || pos > len(key)-4-10 {
 		return nil, nil, nil, false
 	}
 	// begin = key[:len-4] with placeVersionstamp(minVersion, 0) at pos.

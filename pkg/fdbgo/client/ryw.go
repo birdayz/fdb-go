@@ -48,7 +48,12 @@ type rywCache struct {
 	// range from the RYW view. Go keeps them: under !bypass both models throw 1036 for
 	// any read in the range, so the difference is only observable under
 	// BYPASS_UNREADABLE for the obscure write-then-SVK-over-it interleaving (Go returns
-	// the pending write, C++ reads storage).
+	// the pending write, C++ reads storage). It is ALSO theoretically visible in
+	// committed bytes: C++'s span-wipe (WriteMap.cpp:228-236) drops a prior Set
+	// inside the candidate range from the write-map flush
+	// (ReadYourWrites.actor.cpp:2041), so C++ never commits that Set while Go
+	// does. Pathological (the wiped Set was user-issued and silently lost by
+	// C++); keeping it is the saner behavior and stays deliberate.
 	unreadableRanges []rywRange
 
 	// unreadableKeys is the sorted index of write-map keys whose entries carry
@@ -304,9 +309,9 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	// whose value is the unstamped operand — surfacing a phantom present key in
 	// pre-commit Get/GetRange, whatever the base state (storage-absent, locally
 	// cleared, or a pending plain Set). Always record it as an UNRESOLVED atomic so
-	// every read path hits the isUnresolvedVersionstamp gate and treats the key as
-	// absent (C++ marks it is_unreadable; we approximate as absent — consistent
-	// across Get/GetRange). The mutation still commits via tx.mutations.
+	// every read path hits the unreadable gate and throws accessed_unreadable
+	// (1036), matching C++ is_unreadable (RFC-098) — unless BYPASS_UNREADABLE
+	// resolves the operand as written. The mutation still commits via tx.mutations.
 	if !isUnresolvedVersionstamp(op) {
 		if exists && !entry.hasAtomics {
 			// Site B: fold over an existing resolved entry (plain Set or a prior fold). C++
@@ -1517,22 +1522,20 @@ func (c *rywCache) firstUnreadableInLocked(begin, end []byte) []byte {
 
 // lastUnreadableInLocked returns the (exclusive) end of the last unreadable
 // range intersecting [begin, end), or nil — the reverse-scan counterpart of
-// firstUnreadableInLocked. Caller holds c.mu.
+// firstUnreadableInLocked, using the same binary search (ranges are sorted
+// and non-overlapping, so only the last range with r.begin < end can
+// intersect). Caller holds c.mu.
 func (c *rywCache) lastUnreadableInLocked(begin, end []byte) []byte {
-	for i := len(c.unreadableRanges) - 1; i >= 0; i-- {
-		r := c.unreadableRanges[i]
-		if bytes.Compare(r.begin, end) >= 0 {
-			continue
-		}
-		if bytes.Compare(r.end, begin) <= 0 {
-			return nil
-		}
-		if bytes.Compare(r.end, end) < 0 {
-			return r.end
-		}
-		return end
+	i := sort.Search(len(c.unreadableRanges), func(i int) bool {
+		return bytes.Compare(c.unreadableRanges[i].begin, end) >= 0
+	}) - 1
+	if i < 0 || bytes.Compare(c.unreadableRanges[i].end, begin) <= 0 {
+		return nil
 	}
-	return nil
+	if bytes.Compare(c.unreadableRanges[i].end, end) < 0 {
+		return c.unreadableRanges[i].end
+	}
+	return end
 }
 
 // chainHasVersionstamp reports whether an unresolved atomic chain contains a
@@ -1601,7 +1604,10 @@ func (c *rywCache) unreadableScanCapLocked(begin, end []byte, reverse bool) []by
 	}
 	cap_ = c.lastUnreadableInLocked(begin, end)
 	// Largest unreadable entry key in [begin, end); its exclusive upper bound
-	// (key+\x00) becomes the reverse scan's begin cap.
+	// (key+\x00) becomes the reverse scan's begin cap. Only the LARGEST key
+	// matters: a reverse scan iterates downward from end, so the highest
+	// unreadable key is the first one it can reach — any lower entries sit
+	// behind it (the forward path symmetrically needs only the smallest).
 	if i := sort.SearchStrings(c.unreadableKeys, string(end)) - 1; i >= 0 && c.unreadableKeys[i] >= string(begin) {
 		kb := append([]byte(c.unreadableKeys[i]), 0)
 		if cap_ == nil || string(kb) > string(cap_) {
