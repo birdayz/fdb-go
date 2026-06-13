@@ -1031,7 +1031,17 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
   the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
   the fast-filled topology). The α-sweep (item 3) also lifts this floor.
-- [ ] **6. Wave B should route two-level, not flat-scan the fine table.** (Original staging
+- [x] **6. Wave B should route two-level, not flat-scan the fine table — DONE (RFC-099
+  + RFC-101 prune).** `spfreshBuildRouter.assign` (spfresh_build.go:615) routes to the
+  w_b nearest coarse cells via `spfreshNearestK` then `gatherTopK` over only those
+  cells' fines, with an EXACT RFC-101 triangle-inequality prune (`spfreshPruneLowerBound`)
+  — no global fine scan. waveB (build.go:748) calls it. PROFILED (BenchmarkSPFreshBuildAssign,
+  1M-scale topology 245×25≈6,100 fines, /tmp/assign.prof): 88µs/vector ⇒ ~88s
+  single-threaded for the whole 1M assign phase vs the item's ~15–20 min flat scan;
+  hot path is gatherTopK(73%)/nearestK(23%) two-level routing, NOT a flat fine scan.
+  The residual cost is the distance kernel itself (spfreshSquaredDistance 66% flat) —
+  a different lever (RFC-100 float32 distance / k-means, per the BenchmarkSPFreshKMeans
+  note), not this item. Original (now-superseded) investigation below. (Original staging
   theory was WRONG — 5,000 staging txs fit in ~80s; measured.) The real 1M bulk cost:
   waveB assign() runs nearestK over ALL ~11.7k fines (12MB, cache-resident it is not)
   up to 3 bounded pool passes per staged vector — memory-bandwidth-bound, ~15-20 min
