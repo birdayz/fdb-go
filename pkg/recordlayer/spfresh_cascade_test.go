@@ -625,9 +625,15 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		storage := newSPFreshStorage(sub, 1)
 
 		// Poison: an undecodable task row at the head of the deterministic
-		// scan order (kind split, id 1 — below any allocated fineID).
+		// scan order (kind split, id 1 — below any allocated fineID). Guard
+		// the assumption: if ID allocation ever hands a real fine the id 1,
+		// the poison would silently collide with its task key.
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			rtx.Transaction().Set(storage.taskKey(spfreshTaskSplit, 1), []byte("garbage"))
+			tx := rtx.Transaction()
+			_, ferr := spfreshFindCentroidCell(tx, storage, 1)
+			Expect(ferr).To(MatchError(errSPFreshNotFound),
+				"fine id 1 exists — the poison id collides with a real task key; pick an unallocated id")
+			tx.Set(storage.taskKey(spfreshTaskSplit, 1), []byte("garbage"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -382,7 +382,7 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 		// the pre-pass topology until an amortized refresh.
 		total += worked
 		if err != nil {
-			refreshErr := spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total)
+			refreshErr := spfreshRefreshAfterRebalance(ctx, db, s, total)
 			return total, false, errors.Join(err, refreshErr)
 		}
 		if worked == 0 {
@@ -393,9 +393,9 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 	// GC: retired topology past the cooldown horizon (the same window that
 	// guards split↔merge oscillation guards stale readers' grace period).
 	if _, err := spfreshGCSweep(ctx, db, s, config, int64(config.CooldownSec)*1000); err != nil {
-		return total, drained, errors.Join(err, spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total))
+		return total, drained, errors.Join(err, spfreshRefreshAfterRebalance(ctx, db, s, total))
 	}
-	return total, drained, spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total)
+	return total, drained, spfreshRefreshAfterRebalance(ctx, db, s, total)
 }
 
 // spfreshRefreshAfterRebalance eagerly reloads the process-local routing
@@ -403,11 +403,11 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 // action; other processes converge via the amortized query-path refresh. It
 // runs on the error exits too: committed lifecycle work changed the topology
 // regardless of how the pass ended.
-func spfreshRefreshAfterRebalance(ctx context.Context, db *FDBDatabase, s *spfreshStorage, indexSubspace subspace.Subspace, gen int64, total int) error {
+func spfreshRefreshAfterRebalance(ctx context.Context, db *FDBDatabase, s *spfreshStorage, total int) error {
 	if total == 0 {
 		return nil
 	}
 	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-		return spfreshCacheFor(indexSubspace, gen).fullReload(rtx.Transaction(), s, gen)
+		return spfreshCacheFor(s.index, s.generation).fullReload(rtx.Transaction(), s, s.generation)
 	})
 }
