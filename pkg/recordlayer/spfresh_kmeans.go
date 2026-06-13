@@ -198,6 +198,7 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 		partialCounts[chunk] = make([]int, k)
 		partialSums[chunk] = make([][]float64, k)
 	}
+	converged := false
 	for iter := 0; iter < maxIters; iter++ {
 		// Assignment: index-disjoint writes, order-independent — parallel.
 		// changed is the per-iteration reassignment count (an order-independent
@@ -223,8 +224,13 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 		// Converged: stop when <= convergeThresh points were reassigned. With
 		// convergeThresh==0 this is the exact "no change" stop (splits, tests).
 		// With the build fraction it also trims the long micro-refinement tail
-		// at high k that doesn't move recall (RFC-102).
+		// at high k that doesn't move recall (RFC-102). On this break `assign` is
+		// already current for `centroids` (the assignment phase above ran against
+		// them and no centroid update follows), so the final pass below is
+		// skipped — re-running it would give back one full O(n·k) Lloyd
+		// assignment, the exact work this early-stop exists to save (codex).
 		if iter > 0 && changed.Load() <= convergeThresh {
+			converged = true
 			break
 		}
 		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the
@@ -288,19 +294,24 @@ func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers
 			}
 		}
 	}
-	// Final assignment against the converged centroids.
-	chunked(func(_, lo, hi int) {
-		for i := lo; i < hi; i++ {
-			v := vectors[i]
-			best, bestD := 0, math.Inf(1)
-			for c := range centroids {
-				if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-					best, bestD = c, d
+	// Final assignment against the final centroids — needed only when the loop
+	// exhausted maxIters without converging (the last iteration updated centroids
+	// after assigning, so `assign` is stale for them). On an early-stop break
+	// `assign` is already current for `centroids`, so this is skipped.
+	if !converged {
+		chunked(func(_, lo, hi int) {
+			for i := lo; i < hi; i++ {
+				v := vectors[i]
+				best, bestD := 0, math.Inf(1)
+				for c := range centroids {
+					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+						best, bestD = c, d
+					}
 				}
+				assign[i] = best
 			}
-			assign[i] = best
-		}
-	})
+		})
+	}
 	return centroids, assign
 }
 

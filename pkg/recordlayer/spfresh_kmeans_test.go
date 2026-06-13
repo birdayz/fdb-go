@@ -532,6 +532,22 @@ func TestSPFreshKMeansBuildConvergeFraction(t *testing.T) {
 	if !diff {
 		t.Fatalf("convergeFraction=0.10 produced the SAME assignment as exact — the early-stop never engaged (regression is vacuous)")
 	}
+
+	// (5) the final-assignment pass is skipped on early-stop (codex perf fix), so
+	// assign MUST already be current: every point at its nearest centroid. This
+	// pins that skipping the pass left no stale assignment.
+	cB, aB := spfreshKMeansBuild(vecs, 16, 5, 25)
+	for i := range aB {
+		best, bestD := 0, math.Inf(1)
+		for c := range cB {
+			if d := spfreshSquaredDistance(vecs[i], cB[c]); d < bestD {
+				best, bestD = c, d
+			}
+		}
+		if aB[i] != best {
+			t.Fatalf("point %d assigned to %d but nearest centroid is %d — final-pass skip left a stale assignment", i, aB[i], best)
+		}
+	}
 }
 
 // TestSPFreshBuilderFineIDPool pins the wave-A ID pool's doling: concurrent
