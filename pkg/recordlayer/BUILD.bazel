@@ -84,6 +84,7 @@ go_library(
         "spfresh_npa.go",
         "spfresh_query.go",
         "spfresh_rebalancer.go",
+        "spfresh_refine.go",
         "spfresh_split.go",
         "spfresh_storage.go",
         "spfresh_sweeper.go",

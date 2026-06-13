@@ -89,19 +89,29 @@ bounds wasted work.
   optimal) index moves nothing — the closure set a vector already has IS the one
   re-eval computes against the same topology. (Pinned by a test: refine a bulk
   index, assert zero moves + unchanged recall.)
-- **Recall recovery is the headline claim and MUST be measured, not assumed**
-  (see Validation). The hypothesis: re-running closure restores replication and
-  thereby recall toward the bulk baseline.
+- **Recall recovery — MEASURED (see Validation).** The `refine-all` prototype
+  recovers fast-fill recall to the bulk baseline (0.8675/0.9735 → 0.9225/0.9885
+  vs bulk 0.9205/0.9880). The production op delivers the same recovery
+  incrementally under a per-round budget.
 
 ## Validation (de-risk before the production op)
 
-1. **Prototype "refine-all" first.** A one-shot pass refining EVERY vector of a
-   drifted fast-fill index, then re-measure recall. This validates the core
-   hypothesis (does re-assignment recover recall?) before building the budgeted
-   online machinery. Success = fast-fill recall climbs from 0.8720/0.9685 toward
-   the bulk 0.9205/0.9880; replication climbs 1.0 → ~1.2×. **If it does not
-   recover, the drift is partly structural (cell count, not just assignment) and
-   the design must add re-splitting — stop and rethink before building the op.**
+1. **Prototype "refine-all" — DONE, hypothesis CONFIRMED.** A one-shot pass
+   (`spfreshRefineAll`) refining every vector of a drifted 300k fast-fill index
+   recovers recall **to the bulk baseline** (SIFT-300k, table in
+   VECTOR_BENCHMARK_RESULTS.md):
+
+   | 300k fast fill (8 writers) | PRE-refine | POST-refine | bulk (ideal) |
+   |---|---|---|---|
+   | recall default (32/64/200) | 0.9735 | **0.9885** | 0.9880 |
+   | recall fast (16/24/64) | 0.8675 | **0.9225** | 0.9205 |
+
+   122k/300k pks moved in 3m24s. Decisively, recall recovered **even though the
+   topology stayed coarse** (57 vs the bulk's 74 cells; replication 1.0→1.09×,
+   not the bulk's 1.20×): the drift was **assignment quality, recoverable by
+   re-routing**, NOT granularity. So the production op needs no re-splitting —
+   restoring assignment suffices. (The residual cell-count gap doesn't cost
+   recall, consistent with item-4's negative.)
 2. **Then the budgeted online op:** fast-fill, run the rebalancer (now including
    refinement) to quiescence, assert recall recovers to within ~0.5 pp of bulk.
 3. **Convergence/idempotence:** refine a bulk index → zero moves, recall flat.

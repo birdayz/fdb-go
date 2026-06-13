@@ -272,6 +272,20 @@ the topology refines. RFC-104 designs an online refinement op to recover it
 (validate-first: prototype "refine-all" → measure recovery before building the
 budgeted op).
 
+**Recovery CONFIRMED (RFC-104 `refine-all` prototype).** One full refinement pass
+over the drifted fast-fill index recovers recall to the bulk baseline:
+
+| 300k fast fill (8 writers) | PRE-refine | POST-refine | bulk (ideal) |
+|---|---|---|---|
+| recall default (32/64/200) | 0.9735 | **0.9885** | 0.9880 |
+| recall fast (16/24/64) | 0.8675 | **0.9225** | 0.9205 |
+
+122k/300k pks moved (3m24s). Recall recovered **even though the topology stayed
+coarse** (57 vs 74 cells; replication 1.0→1.09×, not 1.20×) — the drift is
+**assignment quality, recoverable by re-routing**, not granularity. Run:
+`...TestSPFreshForegroundFillBenchmark ... --test_env=SIFT_REFINE` with
+`SIFT_REFINE=1`. Next: the budgeted online op (round-robin membership cursor).
+
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 
 Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):

@@ -638,68 +638,93 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
-	for _, cfg := range []struct {
-		name     string
-		kc, w, c int
-	}{
-		{"default(32/64/200)", 0, 0, 0},
-		{"fast(16/24/64)", 24, 16, 64},
-	} {
-		latencies := make([]time.Duration, 0, len(queryVecs))
-		hits, total := 0, 0
-		for qi, qv := range queryVecs {
-			query := float32sToFloat64s(qv)
-			want := wants[qi]
-			qStart := time.Now()
-			var got []int64
-			_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				store, serr := storeBuilder(rtx)
-				if serr != nil {
-					return nil, serr
-				}
-				maintainer, merr := store.GetIndexMaintainer(spfIdx)
-				if merr != nil {
-					return nil, merr
-				}
-				high := tuple.Tuple{int64(k)}
-				if cfg.kc > 0 {
-					high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
-				}
-				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
-					High: high,
-				}, nil, recordlayer.ScanProperties{})
-				got = got[:0]
-				for {
-					res, cerr := cursor.OnNext(ctx)
-					if cerr != nil {
-						return nil, cerr
+	readRecall := func(phase string) {
+		for _, cfg := range []struct {
+			name     string
+			kc, w, c int
+		}{
+			{"default(32/64/200)", 0, 0, 0},
+			{"fast(16/24/64)", 24, 16, 64},
+		} {
+			latencies := make([]time.Duration, 0, len(queryVecs))
+			hits, total := 0, 0
+			for qi, qv := range queryVecs {
+				query := float32sToFloat64s(qv)
+				want := wants[qi]
+				qStart := time.Now()
+				var got []int64
+				_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, serr := storeBuilder(rtx)
+					if serr != nil {
+						return nil, serr
 					}
-					if !res.HasNext() {
-						break
+					maintainer, merr := store.GetIndexMaintainer(spfIdx)
+					if merr != nil {
+						return nil, merr
 					}
-					got = append(got, res.GetValue().Key[0].(int64))
+					high := tuple.Tuple{int64(k)}
+					if cfg.kc > 0 {
+						high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
+					}
+					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+						High: high,
+					}, nil, recordlayer.ScanProperties{})
+					got = got[:0]
+					for {
+						res, cerr := cursor.OnNext(ctx)
+						if cerr != nil {
+							return nil, cerr
+						}
+						if !res.HasNext() {
+							break
+						}
+						got = append(got, res.GetValue().Key[0].(int64))
+					}
+					return nil, nil
+				})
+				if qerr != nil {
+					t.Fatalf("query: %v", qerr)
 				}
-				return nil, nil
-			})
-			if qerr != nil {
-				t.Fatalf("query: %v", qerr)
-			}
-			latencies = append(latencies, time.Since(qStart))
-			wantSet := make(map[int64]bool, k)
-			for _, id := range want {
-				wantSet[id] = true
-			}
-			for _, id := range got {
-				if wantSet[id] {
-					hits++
+				latencies = append(latencies, time.Since(qStart))
+				wantSet := make(map[int64]bool, k)
+				for _, id := range want {
+					wantSet[id] = true
 				}
-				total++
+				for _, id := range got {
+					if wantSet[id] {
+						hits++
+					}
+					total++
+				}
 			}
+			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+			t.Logf("READ %s %s: recall@%d=%.4f p50=%v p99=%v", phase, cfg.name, k,
+				float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
 		}
-		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-		t.Logf("READ %s: recall@%d=%.4f p50=%v p99=%v", cfg.name, k,
-			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+	}
+	readRecall("PRE-refine")
+
+	// RFC-104 validation: refine every vector against the converged topology and
+	// re-measure — does re-assignment recover the ingest recall-drift?
+	if os.Getenv("SIFT_REFINE") == "1" {
+		rstart := time.Now()
+		moved, rerr := recordlayer.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+		if rerr != nil {
+			t.Fatalf("refine: %v", rerr)
+		}
+		t.Logf("REFINE: moved %d pks in %v", moved, time.Since(rstart))
+		if _, terr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			t.Logf("TOPOLOGY post-refine: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
+			return nil, nil
+		}); terr != nil {
+			t.Fatalf("post-refine topology: %v", terr)
+		}
+		readRecall("POST-refine")
 	}
 
 	// SIFT_SWEEP=w:kc:c[:eps],... sweeps searcher knobs against the
