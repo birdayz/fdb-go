@@ -1,7 +1,10 @@
 # RFC-104: GRV cache is opt-in (`USE_GRV_CACHE`, default off) — match libfdb_c
 
-**Status:** Accepted — FDB C++ dev + Torvalds + codex ACK on r2 (2026-06-13). §4 resolved to
-option (a) (match C++: cached path fail-opens, commit advances `lastTime`, `lastLocked` removed).
+**Status:** Implemented — RFC ACK (FDB C++ dev + Torvalds + codex) + implementation ACK (same
+three) on 2026-06-13. §4 resolved to option (a) (match C++: cached path fail-opens, commit advances
+`lastTime`, `lastLocked` removed). Implementation surfaced + fixed a deeper divergence:
+`updateMinAcceptable` tracked the MAX read version; C++ tracks the `std::min` (smallest-seen floor)
+— fixed, which also resolved what TODO.md filed as "RFC-056 item 2 read-version staleness".
 **Item:** Client launch-readiness #1 (TODO.md). Closes the "GRV cache is ALWAYS-ON in Go;
 opt-in in C++" divergence filed by RFC-096. Gate: `fdb-client-engineer` (FDB C++ dev + Torvalds
 + codex), C++ (libfdb_c 7.3.75) is the spec.

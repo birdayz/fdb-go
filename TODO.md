@@ -16,7 +16,9 @@ last** (it's a pre-launch safety net, not a blocker for adoption). Driven one at
 `fdb-client-engineer` skill (RFC → FDB-C-dev + Torvalds + codex review → implement → review-clean),
 each on its own stacked branch.
 
-1. **[ ] GRV cache parity — `USE_GRV_CACHE` opt-in (default off), client correctness.** `M` ·
+1. **[x] GRV cache parity — `USE_GRV_CACHE` opt-in (default off), client correctness.** DONE
+   (RFC-104; also fixed the `updateMinAcceptable` MAX→MIN divergence = the filed "RFC-056 item 2").
+   `M` ·
    fdb-client-review. Go's `grvCache` is ALWAYS-ON; C++ serves cached read versions only when the
    app sets `USE_GRV_CACHE` (gate `NativeAPI.actor.cpp:7505`, default false `:6148`). Demonstrated
    wrong answer: a Go txn served a cached version OLDER than a libfdb_c-committed seed → seed keys
