@@ -6,25 +6,56 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+## Client launch-readiness — prioritized stack (2026-06-13)
+
+The pure-Go FDB client (`pkg/fdbgo`) is the launch target. The RFC-010 wire-correctness audit
+is essentially complete (14/15 + 1 false positive; RFC-050/051/052/072 + RYW RFC-055/056/057/058/
+065/098 all Implemented; read-path reply-timeout shipped in PR #288). The items below are the
+remaining launch-readiness work, ordered by priority — **Go-code correctness first, escape hatch
+last** (it's a pre-launch safety net, not a blocker for adoption). Driven one at a time via the
+`fdb-client-engineer` skill (RFC → FDB-C-dev + Torvalds + codex review → implement → review-clean),
+each on its own stacked branch.
+
+1. **[ ] GRV cache parity — `USE_GRV_CACHE` opt-in (default off), client correctness.** `M` ·
+   fdb-client-review. Go's `grvCache` is ALWAYS-ON; C++ serves cached read versions only when the
+   app sets `USE_GRV_CACHE` (gate `NativeAPI.actor.cpp:7505`, default false `:6148`). Demonstrated
+   wrong answer: a Go txn served a cached version OLDER than a libfdb_c-committed seed → seed keys
+   invisible. Add the `USE_GRV_CACHE` tx/db option; gate `tryCache` + the background refresher on
+   it; match `:7504-7518`. Revisit RFC-096's cache-carried `locked` check if this closes. (Full
+   detail in the "GRV cache is ALWAYS-ON" entry below.)
+2. **[ ] Retry-predicate fidelity — `fdb.IsRetryable` vs `client.isRetryable`.** `S` ·
+   fdb-client-review. The two predicates list different code sets. The fix is NOT naive unification:
+   in C++ `fdb_error_predicate(RETRYABLE)` ≠ `Transaction::onError`'s set (1039 predicate-retryable
+   but not onError-retried; 1006 the reverse). Make each match its OWN C++ predicate, share the
+   per-code facts, pin both against the C++ source.
+3. **[ ] Resource limits / backpressure (multi-tenant launch safety).** `M` · query-engine-gated
+   (Graefe + Torvalds + codex). Only `MaterializationLimitExceededError` exists. Add a statement
+   timeout, a max-rows / result-size cap, and a per-query memory budget for streaming intermediates.
+   Surface as errors, not crashes. (TODO-production P1.9.)
+4. **[ ] Make CI gates real.** `M` · Torvalds + codex. The 1M stress test runs in NO workflow; the
+   23 `pkg/fdbgo` fuzz targets (incl. `FuzzDifferential*`) are never given fuzz time; `-race` is not
+   a PR gate for the client itself (only `//pkg/relational/...`). Add a scheduled stress job, extend
+   the nightly fuzz loop to `//pkg/fdbgo/...`, add `//pkg/fdbgo/...` to the PR race job. (TODO-prod P1.6.)
+5. **[ ] CI reproducibility — off the single Hetzner box.** `M/L` · Torvalds + codex. All jobs run on
+   one self-hosted Hetzner runner → unreproducible green + bus-factor. Provide a containerized/
+   ephemeral runner OR document the requirement and pin tool/image versions with checksums. (TODO-prod P1.8.)
+6. **[ ] libfdb_c escape hatch (Backend interface + CGo-backed impl).** `L` · fdb-client-review.
+   **De-prioritized: just-before-launch safety net, not a blocker.** Define a `Database`/`Transaction`
+   `Backend` interface; add a libfdb_c-backed impl; switch via config. (TODO-production P2.2.)
+
 ## Known gaps
 
-### [ ] fdbgo/client: read-path RPC reply timeout leaks a non-retryable `context.DeadlineExceeded` to applications (C++ divergence)
+### [x] fdbgo/client: read-path RPC reply timeout is retryable, not a terminal leak (C++ divergence) — FIXED (PR #288)
 
-`waitReply` (pkg/fdbgo/client/rpc.go:32) returns raw `context.DeadlineExceeded`
-after `DefaultRPCTimeout` (5s, transaction.go:53) when a storage server is slow
-to reply. That Go error is not an `fdb.Error`, so `OnError`/`db.Run` treats it
-as terminal and surfaces it to the APPLICATION — the 10M SPFresh soak died at
-4.9M records on exactly this (`route insert: load cell N: context deadline
-exceeded`) when the single-container storage server stalled ~5s under
-sustained 740 vec/s × 4-writer load. libfdb_c has NO per-request read timeout:
-`getValue`/`getKeyValues` retry transparently against alternatives (with
-backoff) until the read version expires → `transaction_too_old` (1007), which
-IS retryable — a slow-but-alive storage server never produces a terminal
-application error in the C client. Fix in the client read path (retry the
-request on reply timeout instead of returning; the commit path differs —
-`commit_unknown_result` rules apply there), through the fdb-client-review
-gate (C++ is the spec: NativeAPI.actor.cpp getValue/getKeyValues retry
-loops). Found by the 10M SPFresh soak, 2026-06-13.
+Shipped in PR #288 (merge `48106b7d`). `waitReply` (rpc.go) now returns an internal
+`errReplyTimeout` sentinel (distinct from caller-ctx cancellation); the three read paths
+(`getValue`/`getKey`/`getRange`) re-send on it (bounded by `maxReadTimeoutRetries=10`) and on
+exhaustion surface a RETRYABLE `transaction_too_old` (1007) — matching libfdb_c's `loadBalance`,
+which has NO per-read client timeout (re-sends a slow-but-alive server until reply or read-version
+aging). `getKey` uses three separate budgets (timeout / shard / progress). The commit path keeps
+its own `commit_unknown_result` semantics. Found by the 10M SPFresh soak (died at 4.9M records on
+the old terminal leak). Pinned by `readpath_timeout_test.go` (deterministic via a reply-dropping
+dialer). Gates: FDB C++ dev + Torvalds + codex + @claude all ACK on the final HEAD.
 
 ### [x] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
 
@@ -451,8 +482,8 @@ close the testing/conformance gaps its prevention plan (P5/P7) calls for.
 ### RFC-010 audit findings (the original 15 — correctness fires)
 
 The execution list for the Codex source audit (`TODO_client.md`); full detail + C-conformance
-reasoning per item in `rfcs/010-native-client-correctness.md`. **12 landed, 2 open, 1 false positive.**
-Each open item is gated by *why it isn't trivially done*, not by another item.
+reasoning per item in `rfcs/010-native-client-correctness.md`. **14 landed, 0 open, 1 false positive**
+(#6 conn-shutdown via RFC-050, #11 TLS via RFC-051 closed the last two; updated 2026-06-13).
 
 - [x] **#1** inline `LoadBalancedReply.error` decoded on read parsers (Phase 0)
 - [x] **#2** `ErrWrongShardServer` 1062 → 1001 + anti-self-confirming fault test (Phase 0)
