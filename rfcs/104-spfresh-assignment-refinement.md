@@ -51,34 +51,52 @@ point the foreground write path uses, so a concurrent update/delete of the pk
 aborts one side at the resolver and the loser's retry sees truth. The only new
 piece is the **candidate set**: the global population instead of an NPA.
 
+### Scheduling — a SEPARATE periodic op, NOT the quiescence drain
+
+Refinement does NOT live in `spfreshRebalanceOnce` / the quiescence drain (codex
+r1 P1): that drain defines done as `worked == 0`, and the multi-tenant sweeper
+only invokes it for indexes that already have task rows — so a drifted-but-task-
+drained index would be **skipped**, and a continuous cursor would make a direct
+drain **never quiesce**. Instead refinement is its own budgeted maintenance op,
+`RefineSPFreshIndex(ctx, db, storeBuilder, indexName, budget)`, run on its own
+cadence by the deployment's maintenance loop (beside the rebalancer loop — the §6
+shape already runs one). Each call advances the cursor by up to `budget` pks and
+returns the move count; it does NOT drain to quiescence. Cadence × budget trades
+recovery latency against maintenance CPU.
+
 ### Candidate selection — round-robin membership cursor
 
-A persistent cursor over the MEMBERSHIP keyspace (pk-ordered) advances each round,
-refining a budget of `B` pks per round, wrapping at the end. One full sweep
-covers every live vector exactly once; the cursor is stored (a META key) so it
-survives process restarts and is shared across executors via the lease. This is
-uniform coverage without RNG (deterministic), and it self-throttles: an
-already-correct vector's closure re-eval is a no-op (no write), so a converged
-index costs only reads.
+A persistent cursor over the MEMBERSHIP keyspace (pk-ordered) advances each call,
+refining up to `budget` pks, wrapping at the end — uniform exact-once coverage,
+no RNG (deterministic), preferred over random sampling. It is a **META row
+carrying `(generation, last-pk)`** and is **generation-scoped** (codex r1 P2):
+META survives a generation flip but membership lives under the generation prefix,
+so a rebuild/retrain resets the cursor (its recorded generation no longer
+matches — start from the beginning). Concurrent executors accept **benign
+double-coverage** — two advancing the same cursor merely re-process a range,
+harmless because every move is idempotent (`spfreshSameIDSet` no-op on re-eval);
+no lease/claim row is needed (simpler than split/NPA's claim — Torvalds/Graefe).
+The cursor `Set` is idempotent under commit_unknown (re-advancing past an
+already-processed pk just re-no-ops it). A partial final batch wraps to the start.
 
-Each candidate: load the pk's full vector from the **fp16 SIDECAR** (the exact
-re-rank store), route it two-level (the `spfreshBuildRouter` / query router — w
-nearest cells then closure over their fines), compute the new copy-set, compare
-to the stored membership, and move on change.
+Each candidate: load the pk's full vector from the **fp16 SIDECAR**, route it
+two-level against the **current** topology (`cache.route`, the cache reloaded +
+re-validated against `s.generation` once per call — abort/reload on a flip,
+codex/Torvalds P2), compute the closure copy-set over a pool **the width of the
+bulk build's** (`4·spfreshClosurePool(Replication)` — a narrower pool drops
+replicas the wide build placed and REGRESSES a converged index, codex r1 P2),
+compare to the stored membership, and move on change. The move tx **REAL-reads
+each kept fine's centroid state and rejects non-ACTIVE** — the topology lifecycle
+fence NPA uses (`spfreshReadCentroidForWrite`; `cache.route` returns
+ACTIVE+SEALED, the move filters to ACTIVE) — so a refine-move never deposits a
+posting into a fine that seals/splits concurrently (Graefe/codex r1 P1). Budget
+bounds per-call cost (the NPA `spfreshNPABatch` shape); the routing cache is
+loaded once per call and reused read-only across the move batches.
 
-### Budget, trigger, lifecycle
-
-A new task/op `spfreshRefine` in `spfreshRebalanceOnce`'s priority order, LOWER
-priority than split/NPA/merge (structural repair first, refinement fills in).
-Budget `B` pks/round bounds the per-round cost (like NPA's `spfreshNPABatch`).
-The routing cache is loaded once per round and shared (the NPA round-cache
-pattern — per-task reload was the fine-granularity CPU bomb). The op is
-**continuous**: it always has work (the cursor never "completes"), but a
-converged index is all no-op reads, so the steady-state cost is one bounded
-read-sweep per round. A future refinement: skip cheaply by tracking a
-per-vector "assigned-against topology epoch" and only re-evaluating vectors
-older than the current epoch — deferred; the no-op-on-converged property already
-bounds wasted work.
+The op self-throttles: an already-correct vector's re-eval is a no-op (no write),
+so a converged index costs only reads. A future optimization skips even those
+cheaply by tracking a per-vector "assigned-against topology epoch"; deferred —
+budget already bounds the steady-state read-sweep cost.
 
 ## Determinism, idempotence, recall
 
@@ -112,12 +130,19 @@ bounds wasted work.
    re-routing**, NOT granularity. So the production op needs no re-splitting —
    restoring assignment suffices. (The residual cell-count gap doesn't cost
    recall, consistent with item-4's negative.)
-2. **Then the budgeted online op:** fast-fill, run the rebalancer (now including
-   refinement) to quiescence, assert recall recovers to within ~0.5 pp of bulk.
-3. **Convergence/idempotence:** refine a bulk index → zero moves, recall flat.
-4. **Concurrency:** `-race`; refinement moves interleaved with foreground
-   updates/deletes of the same pk (the per-pk REAL-read fence handles it — pin a
-   regression where a refine-move races a delete).
+2. **Then the budgeted online op:** fast-fill, run `RefineSPFreshIndex` on a
+   cadence until the cursor stops moving, assert recall recovers to within
+   ~0.5 pp of bulk (the prototype proves the ceiling; this proves the budgeted
+   path; Paper).
+3. **No regression on a converged index (gates the `kc` width):** refine a
+   BULK-built index → **ZERO moves, recall flat**. A too-narrow pool would move
+   replicas off the converged bulk assignment — this test is what pins
+   `kc = 4·spfreshClosurePool(Replication)`, swept across Replication ∈ {2,3,4}
+   (codex r1 P2).
+4. **Concurrency:** `-race`; refinement moves interleaved with (a) foreground
+   update/delete of the same pk (the per-pk MEMBERSHIP fence) AND (b) a
+   SEAL/SPLIT of the TARGET fine — the move's REAL centroid-state read rejecting
+   non-ACTIVE is the fence (Graefe/codex r1 P1); pin both as regressions.
 5. **Cost:** the steady-state no-op read-sweep cost on a converged 300k/1M index
    (must be a bounded fraction of maintenance CPU, like NPA).
 

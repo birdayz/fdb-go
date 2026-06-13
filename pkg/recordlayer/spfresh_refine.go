@@ -91,10 +91,12 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 	//    the vector — discovering fines the insertion-time topology rejected —
 	//    not from current ∪ split-children).
 	quantizer := newSPFreshQuantizer(config)
-	kc := config.BuildAssignCells * 2
-	if kc < 64 {
-		kc = 64
-	}
+	// Match the BULK build's closure-pool width (4·spfreshClosurePool) — a
+	// narrower pool re-evaluates a converged index with too few candidates and
+	// drops replicas the wide build placed (codex r1 P2), regressing recall.
+	// (=64 for the default Replication=2, which the validation used; 96/128 for
+	// r=3/4.)
+	kc := 4 * spfreshClosurePool(config.Replication)
 	moved := 0
 	for lo := 0; lo < len(pks); lo += spfreshRefineMoveBatch {
 		hi := min(lo+spfreshRefineMoveBatch, len(pks))
