@@ -122,6 +122,16 @@ codex's r3 review (after the leaf-cursor/buffered-path round above) found three 
    so a many-small-prefix skip-scan can't bypass the cap. ctx is unit-tested; the scan-limit logic
    mirrors the FDB-tested index/aggregate pattern.
 
+Round-3 follow-ups (codex r4): the pre-materialized DML mutation loop re-checks the
+statement deadline ONCE after collection and before any mutation (a deadline that already
+expired aborts with zero records changed; the loop then runs atomically — checking mid-loop
+would reintroduce the partial-mutation hazard), `innerCursor` is now `Close()`d in DELETE/
+UPDATE (was leaked, matching INSERT/NLJ), and the multidim cross-prefix shared budget covers
+`ScannedBytesLimit` + `TimeLimit` in addition to records (each per-prefix cursor would
+otherwise reset a fresh byte/time counter). The cross-prefix budget is pinned by a real-data
+FDB test (20 single-point prefixes, `ScannedRowsLimit=5` + fail → `ScanLimitReachedError`;
+revert-proof) and a deadline-aborted DML by an explicit-tx 1ns-timeout test.
+
 ## Test plan (yamsql + executor unit + FDB integration)
 
 - **Scan-limit wiring (parity):** a scenario sets `OptExecutionScannedRowsLimit` + `FailOnScanLimitReached`,

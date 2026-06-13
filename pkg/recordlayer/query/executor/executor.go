@@ -1852,6 +1852,7 @@ func executeDelete(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
 
 	// Pre-materialize the full target set BEFORE deleting anything. A resource-limit
 	// cut-off (CollectAllBounded → errIfBufferTruncated → 54F01) must abort the DELETE
@@ -1861,6 +1862,16 @@ func executeDelete(
 	// cap is the memory backstop.
 	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "DELETE target set")
 	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline AFTER collection and BEFORE any mutation: if the
+	// deadline already passed (collection itself is ctx-gated, but the window after it
+	// is not), abort with ZERO records changed (codex RFC-106a). The mutation loop then
+	// runs to completion uninterrupted — checking ctx mid-loop would reintroduce the
+	// partial-mutation hazard pre-materialization exists to prevent; the loop only
+	// stages local writes over a tx-bounded target set.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
@@ -2021,6 +2032,7 @@ func executeUpdate(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
 
 	transforms := p.GetTransforms()
 
@@ -2029,6 +2041,12 @@ func executeUpdate(
 	// staged in an explicit transaction (codex RFC-106a; see executeDelete).
 	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "UPDATE target set")
 	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline after collection, before any mutation — abort
+	// with ZERO records changed if already expired (codex RFC-106a; see executeDelete).
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 

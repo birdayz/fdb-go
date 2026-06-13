@@ -502,6 +502,46 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 	}
 }
 
+// TestFDB_RFC106a_DMLDeadlineAbortsCleanly pins the codex r4 follow-up: a DML
+// statement whose deadline has expired must abort with ZERO mutations, not stage
+// the whole target set and return success. The target set is collected under the
+// statement ctx (ctx-gated) and re-checked before any mutation, so a 1ns timeout
+// aborts before a single delete. Driven in an explicit tx + commit-after-error to
+// prove no partial writes become durable.
+func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_dmldeadline", "dmldeadline",
+		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+	const rows = 30
+
+	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	for i := 0; i < rows; i++ {
+		if _, err := seed.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetStatementTimeout(1 * time.Nanosecond) // already expired at execution
+	})
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	_, derr := tx.ExecContext(ctx, "DELETE FROM t")
+	wantExecLimit(t, derr)
+	_ = tx.Commit()
+
+	n, cerr := drainIDs(ctx, seed, "SELECT id FROM t")
+	if cerr != nil {
+		t.Fatalf("count after timed-out DELETE: %v", cerr)
+	}
+	if n != rows {
+		t.Fatalf("a deadline-aborted DELETE must leave all %d rows intact, got %d", rows, n)
+	}
+}
+
 // drainPairs runs sql scanning two columns (int, int), returning the row count.
 func drainPairs(ctx context.Context, conn *sql.Conn, sqlText string) (int, error) {
 	r, err := conn.QueryContext(ctx, sqlText)

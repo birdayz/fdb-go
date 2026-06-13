@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"math"
 	"math/big"
 
@@ -1111,6 +1112,54 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(found).To(HaveKey(coordPair{200, 20}))
 			Expect(found).To(HaveKey(coordPair{300, 30}))
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan honors the aggregate scanned-records budget (RFC-106a)", func() {
+		ks := specSubspace()
+
+		// PrefixSize=1: price is the partition prefix; coord_x/coord_y are the 2
+		// R-tree dims. Distinct prices → distinct R-tree partitions, so an
+		// unbounded-prefix scan must skip-scan across them (prefixSkipScanCursor).
+		dimExpr := Dimensions(Concat(Field("price"), Field("coord_x"), Field("coord_y")), 1, 2)
+		mdIdx := NewMultidimensionalIndex("md_prefix_skip", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const partitions = 20 // 20 distinct prices → 20 small (1-point) prefixes
+		const scanLimit = 5
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := 0; i < partitions; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i)),
+					Price:   proto.Int32(int32(i)), // distinct prefix per record
+					CoordX:  proto.Int64(int64(i * 10)),
+					CoordY:  proto.Int64(int64(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Unbounded-prefix scan with a small aggregate scan budget + fail. Each
+			// prefix holds 1 point (< scanLimit), so WITHOUT the shared budget the
+			// skip-scan reads all 20 cleanly; WITH it, totalScanned (per-prefix scans
+			// + findNextPrefix enumeration reads) trips ScanLimitReached at the cap.
+			scan := ForwardScan()
+			scan.ExecuteProperties = scan.ExecuteProperties.WithScannedRecordsLimit(scanLimit)
+			scan.ExecuteProperties.FailOnScanLimitReached = true
+
+			_, scanErr := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, scan))
+			var sle *ScanLimitReachedError
+			Expect(errors.As(scanErr, &sle)).To(BeTrue(),
+				"the cross-prefix scan budget must trip ScanLimitReachedError, got: %v", scanErr)
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
