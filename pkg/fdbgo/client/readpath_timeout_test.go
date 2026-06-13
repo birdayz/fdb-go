@@ -113,7 +113,14 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 	}{
 		{"getValue", func(tx *Transaction) error { _, e := tx.Get(ctx, k1); return e }},
 		{"getRange", func(tx *Transaction) error { _, _, e := tx.GetRange(ctx, k1, k3, 100); return e }},
-		{"getKey", func(tx *Transaction) error { _, e := tx.GetKey(ctx, k1, false, 1); return e }}, // firstGreaterOrEqual(k1)
+		// Call the RAW tx.getKey, NOT public GetKey: with RYW enabled (the
+		// default) GetKey resolves the selector via tx.ryw.getKeyRYW → tx.getRange
+		// (transaction.go:842), which would re-exercise the range path and leave
+		// the getKey three-budget timeout loop (the part of the fix unique to this
+		// path) untested (codex). The raw call hits sendGetKey directly. tx's read
+		// version is already set via SetReadVersion, so skipping GetKey's
+		// ensureReadVersion is fine.
+		{"getKey", func(tx *Transaction) error { _, e := tx.getKey(ctx, k1, false, 1); return e }}, // firstGreaterOrEqual(k1)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
