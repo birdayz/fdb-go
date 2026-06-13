@@ -1165,6 +1165,54 @@ var _ = Describe("MultidimensionalIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("prefix skip-scan honors the aggregate scanned-BYTES budget (RFC-106a)", func() {
+		ks := specSubspace()
+
+		// Same prefix-partitioned shape as the records test, but the shared budget
+		// is a BYTE cap. Each prefix is one small point; per-prefix byte counters
+		// reset, so only the cross-prefix totalBytesScanned (per-prefix point reads
+		// + findNextPrefix enumeration reads) trips the cap.
+		dimExpr := Dimensions(Concat(Field("price"), Field("coord_x"), Field("coord_y")), 1, 2)
+		mdIdx := NewMultidimensionalIndex("md_prefix_skip_bytes", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const partitions = 20
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := 0; i < partitions; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i)),
+					Price:   proto.Int32(int32(i)),
+					CoordX:  proto.Int64(int64(i * 10)),
+					CoordY:  proto.Int64(int64(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// A small byte cap (one prefix's point + enumeration read is already
+			// tens of bytes) trips the cross-prefix byte budget. The skip-scan
+			// cannot resume cross-prefix, so an aggregate budget stop is a terminal
+			// ScanLimitReachedError regardless of FailOnScanLimitReached.
+			scan := ForwardScan()
+			scan.ExecuteProperties = scan.ExecuteProperties.WithScannedBytesLimit(40)
+
+			_, scanErr := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, scan))
+			var sle *ScanLimitReachedError
+			Expect(errors.As(scanErr, &sle)).To(BeTrue(),
+				"the cross-prefix byte budget must trip ScanLimitReachedError, got: %v", scanErr)
+			Expect(sle.Reason).To(Equal(ByteLimitReached))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("delete record clears index entry", func() {
 		ks := specSubspace()
 

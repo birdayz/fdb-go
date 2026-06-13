@@ -678,19 +678,26 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 		// Aggregate scan budgets across all prefixes (RFC-106a). Without these a
 		// skip-scan over many small prefixes — each under the per-prefix limit —
 		// would never trip the cap because each per-prefix cursor resets its own
-		// counter. records → noNextOrFail (54F01 in fail mode); bytes likewise;
-		// time → paginate (per Java, time limits never fail).
+		// counter.
+		//
+		// These stops are ALWAYS a terminal error, even when FailOnScanLimitReached
+		// is off (codex): cross-prefix resume is unsupported (see the type comment),
+		// so the skip-scan cannot hand back a valid continuation — a paginating
+		// no-next here carries empty bytes, which a resuming caller reads as "no
+		// continuation" and restarts from the first prefix (an infinite re-scan).
+		// Erroring is the only honest option; a bound-prefix scan (single
+		// rtreeScanCursor) still paginates these limits normally.
 		scanLimit := c.scanProperties.ExecuteProperties.ScannedRecordsLimit
 		if scanLimit > 0 && c.totalScanned >= scanLimit {
-			return noNextOrFail[*IndexEntry](c.scanProperties.ExecuteProperties, ScanLimitReached, &BytesContinuation{bytes: []byte{}})
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
 		}
 		bytesLimit := c.scanProperties.ExecuteProperties.ScannedBytesLimit
 		if bytesLimit > 0 && c.totalScanned > 0 && c.totalBytesScanned >= bytesLimit {
-			return noNextOrFail[*IndexEntry](c.scanProperties.ExecuteProperties, ByteLimitReached, &BytesContinuation{bytes: []byte{}})
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
 		}
 		timeLimit := c.scanProperties.ExecuteProperties.TimeLimit
 		if timeLimit > 0 && c.totalScanned > 0 && time.Since(c.startTime) >= timeLimit {
-			return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: []byte{}}), nil
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: TimeLimitReached}
 		}
 
 		// If we have an active per-prefix cursor, delegate to it.
@@ -819,6 +826,10 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	if len(kvs) == 0 {
 		return nil, false, nil
 	}
+	// The enumeration read counts against the shared byte budget too, not just
+	// the record budget (codex RFC-106a) — otherwise many-prefix overhead bypasses
+	// ScannedBytesLimit. (The caller adds 1 to totalScanned for the record count.)
+	c.totalBytesScanned += int64(len(kvs[0].Key) + len(kvs[0].Value))
 
 	// Unpack the key relative to the index subspace.
 	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))

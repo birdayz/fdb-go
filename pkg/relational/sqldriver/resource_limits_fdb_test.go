@@ -502,12 +502,15 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC106a_DMLDeadlineAbortsCleanly pins the codex r4 follow-up: a DML
-// statement whose deadline has expired must abort with ZERO mutations, not stage
-// the whole target set and return success. The target set is collected under the
-// statement ctx (ctx-gated) and re-checked before any mutation, so a 1ns timeout
-// aborts before a single delete. Driven in an explicit tx + commit-after-error to
-// prove no partial writes become durable.
+// TestFDB_RFC106a_DMLDeadlineAbortsCleanly pins the guarantee that a DML statement
+// whose deadline has expired aborts with ZERO mutations — never stages the target
+// set and returns success. The PRIMARY guard is the ctx-gated collection phase
+// (CollectAllBounded checks ctx.Err() before each OnNext), which this 1ns-timeout
+// case exercises; the explicit pre-mutation-loop re-check in executeDelete is
+// defensive-in-depth for the (non-deterministically reproducible) window after
+// collection and is intentionally NOT what this test pins. Driven in an explicit
+// tx + commit-after-error to prove no partial writes become durable (Torvalds:
+// honest scope — this pins atomic abort, not the specific defensive line).
 func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_dmldeadline", "dmldeadline",

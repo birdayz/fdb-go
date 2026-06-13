@@ -1903,6 +1903,7 @@ func executeInsert(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
 
 	// Materialize the inner rows BEFORE writing any record so that
 	// INSERT … SELECT reading the target table doesn't re-scan its own
@@ -1912,8 +1913,13 @@ func executeInsert(
 	// still re-read across page boundaries — that extreme case is a known
 	// limitation, RFC-035.)
 	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "INSERT source")
-	innerCursor.Close()
 	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline after collection, before any write — abort
+	// with ZERO records inserted if already expired (codex RFC-106a; see executeDelete).
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
