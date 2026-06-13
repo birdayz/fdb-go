@@ -429,6 +429,13 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 		return nil, errSPFreshEmptyRouting
 	}
 
+	// w is the cell-reachability bound: a query reaches only the entries in its
+	// w nearest cells. The bulk build's w_b (SPFreshConfig.BuildAssignCells,
+	// RFC-099) defaults to this same width so the build places replicas only in
+	// cells a query will probe. ε-pruning and starvation-widening narrow/un-narrow
+	// WITHIN this w-cell set; they never probe beyond it. INVARIANT: if a future
+	// change makes routing escalate w past its nearest-w set (adaptive widening),
+	// w_b must mirror that escalation or the build will place unreachable replicas.
 	cells := spfreshNearestK(query, ids, vecs, w)
 
 	var routed []spfreshRouted

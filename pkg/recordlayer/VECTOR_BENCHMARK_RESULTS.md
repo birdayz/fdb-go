@@ -618,22 +618,27 @@ path. Build-time only; no wire/format change.
 | assign micro-bench (6,100 fines) | 501 µs/vec | **136 µs/vec (3.7×)** |
 
 At 500k only ~60 coarse cells form, so w_b prunes modestly; the full-build win
-grows with scale (1M ≈ 245 cells ⇒ w_b scans ≈ 20% of the fines ⇒ ~5× fewer
-assignment distances — the dominant 1M build cost). Recall is unchanged because
+grows with scale. The coarse cell count is `ceil(N·Replication / (⅔·Lmax·CellTarget))`
+(RFC-094 §8); at 1M with defaults (Replication=2, Lmax=256, CellTarget=48) that
+is 245 cells, so the default w_b=32 scans ≈ 32/245 ≈ 13% of cells ⇒ ~7.7× fewer
+assignment distances — the dominant 1M build cost. Recall is unchanged because
 two-level assignment uses the same candidate set a query probes.
 
-**Binding-regime A/B** (200k, CellTarget=4 ⇒ ~150 cells, so w_b actually binds
-— reproduces the 1M pruning ratio at low N without a 1M build):
+**Binding-regime A/B** (200k, CellTarget=4 ⇒ **589 cells** by the formula above
+and confirmed empirically by the `TOPOLOGY: cells=589` log, so w_b actually
+binds hard — reproduces, and exceeds, the 1M pruning ratio at low N without a
+1M build):
 
 | w_b | cells gathered | recall@10 | build |
 |---|---|---|---|
-| flat (100000) | all ~150 | 0.9835 | 4,255 vec/s |
-| 48 | ~48 (32%) | 0.9835 | 5,080 vec/s |
-| 32 (= w_q, default) | ~32 (21%) | **0.9835** | 5,104 vec/s |
+| flat (100000) | all 589 | 0.9870 | 4,261 vec/s |
+| 48 | 48 (8.1%) | 0.9870 | 5,104 vec/s |
+| 32 (= w_q, default) | 32 (5.4%) | **0.9870** | 5,116 vec/s |
 
-Recall is identical even when w_b=32 gathers only 21% of cells — the closure's
-α-bounded replicas span only a few cells, so recall is insensitive to w_b above
-a small floor. The default w_b is tied to the query probe width w_q (=32): the
-build assigns over exactly the neighborhood a query navigates (SPANN §3.2.1),
-and a larger w_b only wastes work placing replicas a query for that vector never
-reaches (codex).
+Recall@10 is **identical (0.9870)** even when w_b=32 gathers only **5.4%** of
+cells — the closure's α-bounded replicas span only a few cells, so recall is
+insensitive to w_b above a small floor. The default w_b is tied to the query
+probe width w_q (=32): the build assigns over exactly the neighborhood a query
+navigates (SPANN §3.2.1), and a larger w_b only wastes work placing replicas a
+query for that vector never reaches (codex). Reproduce with
+`SPFRESH_BENCH=1 SIFT_N=200000 SIFT_CELL_TARGET=4 SIFT_BUILD_W={100000,48,32}`.

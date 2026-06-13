@@ -96,17 +96,20 @@ is a pure code rollback; existing indexes are unaffected (build-time only).
 - **500k real-SIFT bulk build A/B** (flat w_b=100000 vs two-level w_b=48):
   build **6,776 → 9,266 vec/s = 1.37×**, recall@10 **0.9755 → 0.9755 (identical,
   zero regression)**. At 500k only ~60 cells form so w_b=48 prunes modestly; the
-  full-build win grows with scale (at 1M ~245 cells ⇒ w_b=48 scans ≈ 20% of the
-  fines ⇒ ~5× fewer assignment distances, the dominant build cost).
+  full-build win grows with scale (at 1M, 245 cells by the formula above ⇒ the
+  default w_b=32 scans ≈ 32/245 ≈ 13% of cells ⇒ ~7.7× fewer assignment
+  distances, the dominant build cost).
 
-- **Binding-regime A/B** (200k real-SIFT, CellTarget=4 ⇒ ~150 coarse cells so
-  w_b actually prunes hard, reproducing the 1M pruning ratio without a 1M
-  build): recall@10 **0.9835 identical** at w_b ∈ {flat=100000, 48, 32}, even
-  though w_b=32 gathers only **32/150 ≈ 21%** of cells. Build rate
-  4,255 → 5,104 vec/s flat→w_b=32. This is the load-bearing validation Graefe
-  and the paper review asked for: recall holds where w_b BINDS, confirming the
-  closure's α-bounded replicas span only a few cells, so recall is insensitive
-  to w_b above a small floor.
+- **Binding-regime A/B** (200k real-SIFT, CellTarget=4 ⇒ **589 coarse cells** —
+  by the formula `ceil(N·r / (⅔·Lmax·CellTarget))` and confirmed by the
+  `TOPOLOGY: cells=589` log — so w_b prunes hard, reproducing and exceeding the
+  1M pruning ratio without a 1M build): recall@10 **0.9870 identical** at
+  w_b ∈ {flat=100000, 48, 32}, even though w_b=32 gathers only **32/589 ≈ 5.4%**
+  of cells (w_b=48 ≈ 8.1%). Build rate 4,261 → 5,116 vec/s flat→w_b=32. This is
+  the load-bearing validation Graefe and the paper review asked for: recall
+  holds where w_b BINDS HARD, confirming the closure's α-bounded replicas span
+  only a few cells, so recall is insensitive to w_b above a small floor.
+  Reproduce: `SPFRESH_BENCH=1 SIFT_N=200000 SIFT_CELL_TARGET=4 SIFT_BUILD_W={100000,48,32}`.
 
 Two-level routing matches the query path, so assignment quality is unchanged
 while the work per vector drops. The headline lever toward the 10× bulk-import

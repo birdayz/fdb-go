@@ -207,9 +207,15 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	// default ties it to the query probe width (build mirrors query), and
 	// recall is empirically insensitive to its exact value above a small floor
 	// (the closure's α-bounded replicas span only a few cells — RFC-099 binding
-	// A/B). A smaller-than-query w_b is permitted (it only narrows the build's
+	// A/B: recall@10 identical at w_b ∈ {flat, 48, 32} where 32 gathers 5.4% of
+	// cells). A smaller-than-query w_b is permitted (it only narrows the build's
 	// candidate cells, never places an unreachable replica); a larger one only
-	// wastes build work. So the bound is just ≥ 1.
+	// wastes build work. So the bound is just ≥ 1. CAVEAT (the one regime that
+	// can bite): w_b < Replication gathers fewer cells than the closure wants
+	// diverse replicas, so it can under-replicate — a recall cost, never lost
+	// records, exactly like the insert-path widening cap. Operators forcing
+	// w_b below Replication should expect reduced recall; the default (= w_q ≫
+	// Replication) is the safe value.
 	if c.BuildAssignCells < 1 {
 		return fmt.Errorf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)
 	}
