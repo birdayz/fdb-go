@@ -618,16 +618,18 @@ path. Build-time only; no wire/format change.
 | assign micro-bench (6,100 fines) | 501 µs/vec | **136 µs/vec (3.7×)** |
 
 At 500k only ~60 coarse cells form, so w_b prunes modestly; the full-build win
-grows with scale. The coarse cell count is `ceil(N·Replication / (⅔·Lmax·CellTarget))`
-(RFC-094 §8); at 1M with defaults (Replication=2, Lmax=256, CellTarget=48) that
-is 245 cells, so the default w_b=32 scans ≈ 32/245 ≈ 13% of cells ⇒ ~7.7× fewer
-assignment distances — the dominant 1M build cost. Recall is unchanged because
-two-level assignment uses the same candidate set a query probes.
+grows with scale. `coarsePass` computes the coarse cell count as
+`K₀ = ⌈N·Replication / (avgFill·CellTarget)⌉` with `avgFill = (2·Lmax)/3` in
+**integer** arithmetic (= 170 at Lmax=256, RFC-094 §8); at 1M with defaults
+(Replication=2, Lmax=256, CellTarget=48) that is 246 cells, so the default
+w_b=32 scans ≈ 32/246 ≈ 13% of cells ⇒ ~7.7× fewer assignment distances — the
+dominant 1M build cost. Recall is unchanged because two-level assignment uses
+the same candidate set a query probes.
 
-**Binding-regime A/B** (200k, CellTarget=4 ⇒ **589 cells** by the formula above
-and confirmed empirically by the `TOPOLOGY: cells=589` log, so w_b actually
-binds hard — reproduces, and exceeds, the 1M pruning ratio at low N without a
-1M build):
+**Binding-regime A/B** (200k, CellTarget=4 ⇒ **589 cells** by that formula
+(avgFill=170: ⌈400000/680⌉ = 589) and confirmed empirically by the
+`TOPOLOGY: cells=589` log, so w_b actually binds hard — reproduces, and exceeds,
+the 1M pruning ratio at low N without a 1M build):
 
 | w_b | cells gathered | recall@10 | build |
 |---|---|---|---|

@@ -96,12 +96,13 @@ is a pure code rollback; existing indexes are unaffected (build-time only).
 - **500k real-SIFT bulk build A/B** (flat w_b=100000 vs two-level w_b=48):
   build **6,776 → 9,266 vec/s = 1.37×**, recall@10 **0.9755 → 0.9755 (identical,
   zero regression)**. At 500k only ~60 cells form so w_b=48 prunes modestly; the
-  full-build win grows with scale (at 1M, 245 cells by the formula above ⇒ the
-  default w_b=32 scans ≈ 32/245 ≈ 13% of cells ⇒ ~7.7× fewer assignment
+  full-build win grows with scale (at 1M, 246 cells by the formula below ⇒ the
+  default w_b=32 scans ≈ 32/246 ≈ 13% of cells ⇒ ~7.7× fewer assignment
   distances, the dominant build cost).
 
 - **Binding-regime A/B** (200k real-SIFT, CellTarget=4 ⇒ **589 coarse cells** —
-  by the formula `ceil(N·r / (⅔·Lmax·CellTarget))` and confirmed by the
+  by `coarsePass`'s K₀ = ⌈N·r / (avgFill·CellTarget)⌉ with avgFill = (2·Lmax)/3
+  in integer arithmetic (=170 at Lmax=256): ⌈400000/680⌉=589, confirmed by the
   `TOPOLOGY: cells=589` log — so w_b prunes hard, reproducing and exceeding the
   1M pruning ratio without a 1M build): recall@10 **0.9870 identical** at
   w_b ∈ {flat=100000, 48, 32}, even though w_b=32 gathers only **32/589 ≈ 5.4%**
