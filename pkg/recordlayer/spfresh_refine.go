@@ -303,16 +303,28 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 	}
 
 	moved := 0
+	// The budget bounds WORK (pks re-evaluated), not moves: a converged or
+	// low-move index does few moves but must still return promptly and advance
+	// the cursor incrementally — otherwise the first call on a large quiescent
+	// index would walk the entire membership keyspace before returning (codex
+	// rfc104-impl P1). `moved` is only the reported move count.
+	processed := 0
 	wrapped := false
-	for moved < budget {
-		want := min(spfreshRefineMoveBatch, budget-moved)
+	for processed < budget {
+		want := min(spfreshRefineMoveBatch, budget-processed)
 		var pks []tuple.Tuple
 		var lastRel []byte
 		short := false
+		// Re-evaluated per ATTEMPT: spfreshRun auto-retries the body on conflict,
+		// so a counter mutated inside the closure would tally aborted attempts.
+		// Fold into the outer `moved` only after the commit succeeds (codex
+		// rfc104-impl P1 — the spfreshRefineAll prototype already does this).
+		batchMoved := 0
 		if rerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 			pks = pks[:0]
 			lastRel = nil
 			short = false
+			batchMoved = 0
 			tx := rtx.Transaction()
 			kvs, kerr := tx.Snapshot().GetRange(
 				fdb.KeyRange{Begin: begin, End: mr.End},
@@ -339,7 +351,7 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 					return perr
 				}
 				if m {
-					moved++
+					batchMoved++
 				}
 			}
 			next := spfreshRefineCursor{generation: s.generation}
@@ -353,6 +365,9 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}); rerr != nil {
 			return moved, wrapped, fmt.Errorf("spfresh refine round: %w", rerr)
 		}
+		// Commit succeeded: fold in the committed attempt's moves and pks once.
+		moved += batchMoved
+		processed += len(pks)
 		if short {
 			wrapped = true
 			break // wrapped to start; stop this round here (next round resumes at the head)
