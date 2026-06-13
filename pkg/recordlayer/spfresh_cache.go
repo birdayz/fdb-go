@@ -164,6 +164,50 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	return nil
 }
 
+// fullReloadTxLocal is the TX-LOCAL variant: it loads L1 from the coarse
+// rows (RYW: a bootstrap or mint committed earlier in THIS transaction is
+// visible — exactly what a same-transaction route needs) and SKIPS the
+// changelog entirely. A tx-local cache dies with its transaction and is
+// never incrementally refreshed, so the delta scan that anchors the cursor
+// is not just useless here — it is FORBIDDEN: the same transaction may have
+// appended versionstamped changelog deltas (the §6b bootstrap, the
+// first-centroid mint), and a range read over a pending versionstamped key
+// is accessed_unreadable (1036) per the C++ client semantics the fdbgo
+// client enforces (RFC-098). The cursor anchors at the bare changelog
+// prefix purely to satisfy ready()'s loaded check.
+func (c *spfreshRoutingCache) fullReloadTxLocal(tx fdb.ReadTransaction, s *spfreshStorage, generation int64) error {
+	ids, rows, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return err
+	}
+	coarseIDs := make([]int64, 0, len(ids))
+	coarseVecs := make([][]float64, 0, len(ids))
+	coarseFwd := make(map[int64][2]int64)
+	for i, id := range ids {
+		switch rows[i].state {
+		case spfreshStateActive:
+			vec, verr := rows[i].vector()
+			if verr != nil {
+				return verr
+			}
+			coarseIDs = append(coarseIDs, id)
+			coarseVecs = append(coarseVecs, vec)
+		case spfreshStateForward:
+			coarseFwd[id] = [2]int64{rows[i].childA, rows[i].childB}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation = generation
+	c.cursor = fdb.Key(s.changelog.Bytes())
+	c.coarseIDs = coarseIDs
+	c.coarseVecs = coarseVecs
+	c.coarseFwd = coarseFwd
+	c.cells = make(map[int64]*spfreshCachedCell)
+	c.lru.Init()
+	return nil
+}
+
 // ready reports whether the cache is loaded for the given generation — the
 // query path's zero-I/O check (RFC-094 §4: queries never pay a cache-
 // maintenance round trip; refresh runs on the maintainer's timer in 094.3,

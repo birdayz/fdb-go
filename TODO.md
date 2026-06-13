@@ -8,6 +8,24 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
+### [ ] fdbgo/client: read-path RPC reply timeout leaks a non-retryable `context.DeadlineExceeded` to applications (C++ divergence)
+
+`waitReply` (pkg/fdbgo/client/rpc.go:32) returns raw `context.DeadlineExceeded`
+after `DefaultRPCTimeout` (5s, transaction.go:53) when a storage server is slow
+to reply. That Go error is not an `fdb.Error`, so `OnError`/`db.Run` treats it
+as terminal and surfaces it to the APPLICATION — the 10M SPFresh soak died at
+4.9M records on exactly this (`route insert: load cell N: context deadline
+exceeded`) when the single-container storage server stalled ~5s under
+sustained 740 vec/s × 4-writer load. libfdb_c has NO per-request read timeout:
+`getValue`/`getKeyValues` retry transparently against alternatives (with
+backoff) until the read version expires → `transaction_too_old` (1007), which
+IS retryable — a slow-but-alive storage server never produces a terminal
+application error in the C client. Fix in the client read path (retry the
+request on reply timeout instead of returning; the commit path differs —
+`commit_unknown_result` rules apply there), through the fdb-client-review
+gate (C++ is the spec: NativeAPI.actor.cpp getValue/getKeyValues retry
+loops). Found by the 10M SPFresh soak, 2026-06-13.
+
 ### [x] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
 
 **ROOT-CAUSED + FIXED on the 094.4 branch (PR #283): the csplit pause-window orphan.**

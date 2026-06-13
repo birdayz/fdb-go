@@ -91,7 +91,7 @@ func (m *spfreshIndexMaintainer) spfreshResolveForWrite() (*spfreshWriteContext,
 			writeCache = global.cloneForWrite()
 		} else {
 			writeCache = newSPFreshRoutingCache(0)
-			if err := writeCache.fullReload(m.tx, storage, gen); err != nil {
+			if err := writeCache.fullReloadTxLocal(m.tx, storage, gen); err != nil {
 				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, err)
 			}
 		}
@@ -119,7 +119,7 @@ func (m *spfreshIndexMaintainer) spfreshInsert(wc *spfreshWriteContext, pk tuple
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			m.timer.Increment(CountSPFreshStaleRouteRetry)
-			if rerr := wc.cache.fullReload(m.tx, wc.storage, wc.storage.generation); rerr != nil {
+			if rerr := wc.cache.fullReloadTxLocal(m.tx, wc.storage, wc.storage.generation); rerr != nil {
 				return fmt.Errorf("spfresh index %q: stale-route reload: %w", m.index.Name, rerr)
 			}
 		}
