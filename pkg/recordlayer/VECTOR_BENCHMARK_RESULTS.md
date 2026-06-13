@@ -204,6 +204,32 @@ Run: `SPFRESH_BENCH=1 SIFT_N=100000 bazelisk test //pkg/recordlayer/bench:bench_
 --test_arg="--test.run=TestSPFreshSIFTBenchmark" --test_output=streamed
 --test_env=SPFRESH_BENCH --test_env=SIFT_N`
 
+### SPFresh RFC-103: parallel staging scan (SIFT-100k build A/B)
+
+The bulk build's staging record-scan is sharded into S disjoint primary-key
+sub-ranges scanned concurrently. The synchronous pure-Go FDB client makes a
+serial scan latency-bound (one round-trip per batch); the S-way concurrency hides
+that latency. Same binary, same SIFT-100k data, S=1 (serial) vs S=8 (sharded),
+two runs each:
+
+| staging | build (100k) | vec/sec | recall@10 |
+|---|---|---|---|
+| **S=1** (serial) | 8.37 / 8.21 s | ~12,060 | 0.9940 |
+| **S=8** (sharded) | 6.84 / 6.89 s | ~14,560 | **0.9940** |
+
+**~17% faster build (+21% vec/sec), recall byte-identical.** Recall is unchanged
+because the staged SET is shard-count-invariant (pinned by the byte-identical
+staging+sidecar determinism test). The win is latency-bound: this single-node
+testcontainer has a sub-millisecond round-trip, so localhost **understates** it —
+staging was ~37% of the serial build, and S=8 roughly halves it; a real
+multi-node cluster (higher RTT, more batches per shard) gains more.
+
+Run (S=8 needs `SIFT_SHARD_SAFE=1` so the metadata's RecordTypeKey-prefixed PKs
+pass RFC-103's prefix-safety gate; the default bare-PK metadata is shard-unsafe →
+S=1): `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SHARD_SAFE=1 bazelisk test
+//pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshSIFTBenchmark"
+--test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SIFT_SHARD_SAFE`
+
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 
 Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):
