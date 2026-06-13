@@ -1,13 +1,14 @@
 # RFC-105: Retry-predicate fidelity — pin each predicate to its C++ analog, kill drift
 
-**Status:** Draft
+**Status:** Accepted — FDB C++ dev ACK (Q1: keep 1039), Torvalds (table dropped → tests-only),
+codex (dead 4th predicate deleted), all addressed on r2 (2026-06-13).
 **Item:** Client launch-readiness #2 (TODO.md) — TODO-production P3.3 ("de-duplicate the two retry
 predicates"). Gate: `fdb-client-engineer` (FDB C++ dev + Torvalds + codex). C++ (libfdb_c 7.3.75)
 is the spec.
 
 ## Problem
 
-The Go client has **three** hand-maintained retry-decision sites, each with its own duplicated
+The Go client has **four** hand-maintained retry-decision sites, each with its own duplicated
 code list:
 
 1. **`fdb.IsRetryable`** (`fdb/error.go`) — the public facade predicate, the analog of C++
@@ -17,6 +18,11 @@ code list:
 3. **`client.isRetryable`** (`commitpath.go:216`, used at `:180`) — the `commitDummyTransaction`
    retry (the `commit_unknown_result` idempotency barrier, RFC-090), whose errors "route through
    `tr.onError`" (its own comment) — so it should equal #2's retryable set.
+4. **`wire.FDBError.Retryable()`** (`wire/reader.go`) — a FOURTH list (the predicate's 12 codes ∪
+   {`1006` all_alternatives_failed, `1200`, `1235`, `1242`} — note it has `1006` and LACKS `1079`,
+   so it equals neither #1 nor #2). **It has ZERO production callers** (only its own test) — dead
+   code that nonetheless carries a divergent classification (`1006`/all_alternatives_failed is not
+   retryable in either C++ predicate). Found by codex.
 
 P3.3 flagged this as "drift risk; single source." Investigation (against `/tmp/fdbsrc` 7.3.75)
 found **no current divergence** — the lists happen to be correct today — but:
@@ -49,10 +55,18 @@ found **no current divergence** — the lists happen to be correct today — but
 
 ### Two questions the duplication hides
 
-- **Q1 — `cluster_version_changed` (1039) in Go's `OnError`.** Go's `OnError` retries 1039 (as
-  MAYBE_COMMITTED self-conflicting, `transaction.go:1644`); C++ `onError` does NOT (returns `e`).
-  Is Go's retry a correct improvement (1039 *is* `fdb_error_predicate`-retryable, and the
-  self-conflicting barrier makes a retry safe) or a divergence to remove? **FDB C++ dev rules.**
+- **Q1 — `cluster_version_changed` (1039) in Go's `OnError`. RESOLVED: KEEP (FDB C++ dev ruling).**
+  Go's `OnError` retries 1039; C++ `NativeAPI::onError` returns `e` for it — but that is NOT because
+  libfdb_c gives up on 1039. C++ retries 1039 one layer up, in
+  `MultiVersionTransaction::onError` (`MultiVersionTransaction.actor.cpp:1740-1761`): it swaps to
+  the new-version connection (`updateTransaction(true)`) and returns `Void()` = retry, even catching
+  a 1039 thrown by the inner onError and converting it to a retry. `NativeAPI::onError` returns `e`
+  precisely because the MVC layer above it owns the version-switch retry. **Go has no separate MVC
+  layer — `OnError` is the only retry site — so folding 1039 into `OnError` reproduces the
+  *aggregate* libfdb_c behavior (1039 ⇒ retry), and the self-conflicting deep-copy is the correct
+  idempotency barrier (1039 is MAYBE_COMMITTED).** Removing it would make Go *less* faithful. The
+  test must annotate 1039 with the `MultiVersionTransaction.actor.cpp:1740` citation so no one
+  "fixes" it to the literal NativeAPI behavior.
 - **Q2 — the Go-only / forward-compat codes.** `OnError`/`client.isRetryable` retry
   `all_proxies_unreachable` (1200, Go-internal Layer-2 error — NOT C++ 1200),
   `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242)
@@ -63,36 +77,42 @@ found **no current divergence** — the lists happen to be correct today — but
   also retries more than the predicate, e.g. 1079); the *predicate* does not. This split is the
   point and must be pinned by tests so it isn't "fixed" into a divergence later.
 
-## Proposed change (no behavior change — hardening + de-drift)
+## Proposed change (NO refactor — delete dead code + pin with tests)
 
-1. **Single source of truth for the per-code classification.** Add one table/helper (in
-   `pkg/fdbgo/client`) that classifies each error code into its C++ retry attributes:
-   its `fdb_error_predicate` membership (none / MAYBE_COMMITTED / RETRYABLE_NOT_COMMITTED) and its
-   `onError` backoff class (none / version-delay / exp-backoff / resource-30s / maybe-committed-
-   self-conflict), each row carrying the `/tmp/fdbsrc` citation. The Go-only/forward-compat codes
-   (1039-in-onError, 1079, 1200, 1235, 1242) are rows with an explicit `goExtension` reason.
-2. **Derive all three sites from it** so no code list is duplicated:
-   - `OnError`'s switch dispatches on the `onError` backoff class (keeps the exact current behavior
-     incl. the self-conflicting deep-copy for the maybe-committed class).
-   - `client.isRetryable` = "the code's `onError` class is retryable" (it must equal `OnError`'s
-     retryable set — the dummy uses `onError`; cross-checked by a test).
-   - `fdb.IsRetryable` = "the code is in `fdb_error_predicate(RETRYABLE)`" — derived from the
-     predicate column. (`fdb/error.go` calls a small exported helper; no list duplicated there.)
-3. **Pin to C++ with regression tests** (the real drift sentinel):
+Torvalds NAK'd the original "single source-of-truth table": `OnError` doesn't dispatch on a
+boolean — its MAYBE_COMMITTED arm does a `conflictMu`-locked deep-copy of write→read conflicts
+split around the backoff sleep (`transaction.go:1644-1673`), tied to `conflictBuf` lifetime. A
+table "dispatching on backoff class" would force restructuring that subtle, working code (CLAUDE.md
+#5/#10). The drift problem's actual cure is **tests**, not an abstraction. Revised plan:
+
+1. **Delete the dead 4th predicate** `wire.FDBError.Retryable()` + its test (`wire/fdberror_test.go`).
+   Zero production callers, and it carries a divergent classification (`1006`/all_alternatives_failed
+   retryable — wrong per C++). Removing it cuts the drift surface 4→3 and resolves codex's
+   import-cycle concern (no shared table needed). (If a reviewer wants it kept as a public
+   convenience, the fallback is to pin it to `fdb_error_predicate` exactly and drop the `1006`
+   wire-addition — but delete is cleaner for unused code.)
+2. **Keep the three real switches AS-IS** (`fdb.IsRetryable`, `OnError`, `client.isRetryable`) —
+   they are correct today and already carry inline C++ citations. No restructuring.
+3. **Add C++-pinned regression tests** (the drift sentinel — Torvalds' counter-proposal):
    - `fdb.IsRetryable` returns true for EXACTLY the 12 `fdb_error_predicate` codes and false for a
-     sampling of non-retryable ones (1006, 1031, 2000, …) — a table mirroring `fdb_c.cpp:78-94`.
-   - `OnError`/`client.isRetryable` retryable set = the documented 16-code Go-onError set; a test
-     asserts `client.isRetryable(c) == onErrorClassRetryable(c)` for all codes (they cannot drift
-     apart).
-   - The `goExtension` rows are asserted present with their reason, so a future reader can't delete
-     them as "not in C++" without seeing why.
+     sampling of non-retryable ones (1006, 1031, 1025, 2000, …) — a table mirroring
+     `bindings/c/fdb_c.cpp:78-94`. Flip a code → red.
+   - A tiny **`onErrorRetryable(code) bool` helper derived from `OnError`'s own switch** (a single
+     `switch` returning true for the retryable arms — NOT a parallel list; it shares the case labels
+     conceptually and is kept adjacent to `OnError` so they move together). Test: it returns true
+     for exactly the documented 16-code Go-onError set, false otherwise.
+   - Cross-check test: `client.isRetryable(c) == onErrorRetryable(c)` for ALL codes — pins that the
+     dummy-commit predicate and the loop can never drift apart (the dummy routes through onError).
+   - The Go-extension rows (1039, 1079, 1200, 1235, 1242) are asserted retryable-in-onError with
+     their documented reason, so a future reader can't "fix" them to a literal NativeAPI port and
+     silently break (esp. 1039 — see Q1).
 
 ## Wire-compat impact
 
-**None.** No bytes change; no observable retry behavior changes (the lists are already correct).
-This is purely internal de-duplication + test pinning. The one *possible* behavior change is Q1
-(1039 in `OnError`) — if the FDB C++ dev rules it should be removed, that is a deliberate,
-separately-tested change; otherwise behavior is identical.
+**None.** No bytes change; no observable retry behavior changes — the three real predicates' lists
+are already correct (verified vs C++) and stay as-is. The only code removed is the unused, never-
+called `wire.FDBError.Retryable()` (dead code; no caller's behavior changes). Q1 resolved to KEEP
+1039, so the retry loop is unchanged. This is purely dead-code removal + test pinning.
 
 ## Test plan
 
@@ -102,7 +122,14 @@ separately-tested change; otherwise behavior is identical.
 - `-race` on `//pkg/fdbgo/client` (the predicates are pure functions; trivially safe, but the
   package is touched).
 
-## Open question for review
+## Review status
 
-Q1 (retry 1039 in `OnError`): keep (Go-correct improvement, self-conflicting-safe) or remove (match
-C++ `onError` literally)? FDB C++ dev decides; I'll implement the ruling.
+- **FDB C++ dev: ACK.** Verified both predicate lists member-for-member vs `/tmp/fdbsrc` 7.3.75.
+  Q1 ruled **KEEP 1039** (C++ retries it in the MVC layer, `MultiVersionTransaction.actor.cpp:1740`);
+  Q2 agreed (forward-compat/Go-only codes stay out of `fdb.IsRetryable`). Nit: cite the MVC layer on
+  the 1039 row — folded in above.
+- **Torvalds: NAK→addressed.** Dropped the source-of-truth table (it would force restructuring the
+  `OnError` self-conflict deep-copy); kept the three switches as-is; tests-only drift sentinel +
+  the `onErrorRetryable` helper derived from the switch.
+- **codex: P2→addressed.** The dead 4th predicate `wire.FDBError.Retryable()` is deleted (was the
+  import-cycle hazard); no shared table remains.
