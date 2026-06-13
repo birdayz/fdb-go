@@ -68,7 +68,10 @@ func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry],
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks
 	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && atomic.LoadInt64(&c.bytesScanned) >= executeProps.ScannedBytesLimit {
-		result := NewResultNoNext[*IndexEntry](ByteLimitReached, c.limitContinuation())
+		result, err := noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		c.lastResult = &result
 		return result, nil
 	}
@@ -86,7 +89,10 @@ func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry],
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks
 	// recordScanLimiter with usedInitialPass guard.
 	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
-		result := NewResultNoNext[*IndexEntry](ScanLimitReached, c.limitContinuation())
+		result, err := noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		c.lastResult = &result
 		return result, nil
 	}

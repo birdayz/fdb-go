@@ -130,6 +130,87 @@ type EmbeddedConnection struct {
 	// duration exceeds this many microseconds. Defaults to the canonical
 	// api.OptLogSlowQueryThresholdMicros value (see New).
 	slowQueryThresholdMicros int64
+
+	// options carries the per-connection api.Options that drive
+	// per-statement resource governance (RFC-106a): the scan-limit options
+	// (OptExecutionScannedRowsLimit / OptExecutionScannedBytesLimit /
+	// OptExecutionTimeLimit, all per-page) and OptMaxRows (statement-wide
+	// returned-row cap). nil means "use option defaults" (effectively
+	// unlimited — see api.DefaultOptionValues). Mirrors Java's
+	// EmbeddedRelationalConnection.getOptions().
+	options *api.Options
+
+	// failOnScanLimitReached, when true, makes a leaf cursor that hits its
+	// scanned-records / scanned-bytes limit return a ScanLimitReachedError
+	// (SQLSTATE 54F01) instead of paginating across pages. Default false
+	// (paginate; unchanged). Mirrors Java's
+	// ExecuteProperties.setFailOnScanLimitReached(true). Go-local config
+	// (there is no api.OptionName for it in Java's enum).
+	failOnScanLimitReached bool
+
+	// statementTimeout is a wall-clock deadline spanning the WHOLE
+	// statement (all pages of one Execute). 0 = off. Go-only read-path
+	// extension stored as a connection-local config rather than an
+	// api.OptionName (api.OptionName mirrors Java's enum exactly; Java has
+	// no such option). PER-REQUEST: one Execute is bounded; a continuation
+	// resumed by a NEW request starts fresh (see cascadesPlan.Execute).
+	statementTimeout time.Duration
+
+	// maxResultBytes caps the cumulative tuple-encoded size of returned
+	// rows across one statement (all pages of one Execute). 0 = off.
+	// Go-only read-path extension (a non-exact egress ceiling — the
+	// estimate is the cheap encoded length, not exact heap).
+	maxResultBytes int64
+}
+
+// Options returns the connection's api.Options, or api.NoOptions() when
+// none have been set. Used by the execution path to read the per-page
+// scan-limit options and the statement-wide MAX_ROWS cap (RFC-106a).
+func (c *EmbeddedConnection) Options() *api.Options {
+	if c.options == nil {
+		return api.NoOptions()
+	}
+	return c.options
+}
+
+// SetOptions installs the per-connection api.Options (RFC-106a scan-limit
+// + MAX_ROWS wiring). Passing nil resets to defaults. Not safe to call
+// concurrently with query execution on the same connection (matches
+// database/sql's per-Conn threading contract).
+func (c *EmbeddedConnection) SetOptions(o *api.Options) {
+	c.options = o
+}
+
+// SetFailOnScanLimitReached toggles the Java setFailOnScanLimitReached(true)
+// behavior (RFC-106a): when true a leaf cursor hitting a scan/byte limit
+// errors (54F01) instead of paginating. Default false.
+func (c *EmbeddedConnection) SetFailOnScanLimitReached(v bool) {
+	c.failOnScanLimitReached = v
+}
+
+// SetStatementTimeout sets the per-Execute wall-clock deadline (RFC-106a).
+// A non-positive duration disables it. PER-REQUEST semantics: it bounds a
+// single Execute (all its pages); a continuation resumed by a new request
+// starts a fresh deadline. There is intentionally no `SET statement_timeout
+// = …` SQL path — the parser grammar has no generic SET <var> = <val> rule
+// (only SET TRANSACTION), so a grammar change would be required; this
+// connection-field setter is the Go-local config instead (RFC-106a §3).
+func (c *EmbeddedConnection) SetStatementTimeout(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	c.statementTimeout = d
+}
+
+// SetMaxResultBytes sets the statement-wide returned-row byte cap
+// (RFC-106a §5). A non-positive value disables it. The accounted size is
+// the cheap tuple-encoded length of each returned row, not exact heap — a
+// non-exact egress ceiling.
+func (c *EmbeddedConnection) SetMaxResultBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	c.maxResultBytes = n
 }
 
 // SetPlanLogger installs a planning-metrics logger (RFC-034). Passing nil

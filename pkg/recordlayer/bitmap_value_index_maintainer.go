@@ -557,10 +557,7 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 
 	// Check byte limit.
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		return NewResultNoNext[*IndexEntry](
-			ByteLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
 	if !c.iterator.Advance() {

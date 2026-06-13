@@ -172,20 +172,14 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Continuation points to the last RETURNED record, so resumption starts after it.
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks limits pre-read.
 	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned >= executeProps.ScannedRecordsLimit {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			ScanLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
 	// Check byte limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
 	// Java's tryRecordScan() calls byteScanLimiter.hasBytesRemaining() before the read.
 	// Allow at least one record (free initial pass — usedInitialPass in Java).
 	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			ByteLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*FDBStoredRecord[proto.Message]](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
 	// Read the next complete record (handles unsplit, split, and version-skip)

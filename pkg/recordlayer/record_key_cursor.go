@@ -67,11 +67,17 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 
 	// Scan limit
 	if ep.ScannedRecordsLimit > 0 && c.keysScanned >= ep.ScannedRecordsLimit {
+		if ep.FailOnScanLimitReached {
+			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
+		}
 		return c.noNextWithCont(ScanLimitReached), nil
 	}
 
 	// Byte limit
 	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.bytesScanned > ep.ScannedBytesLimit {
+		if ep.FailOnScanLimitReached {
+			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
+		}
 		return c.noNextWithCont(ByteLimitReached), nil
 	}
 

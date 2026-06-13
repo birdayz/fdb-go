@@ -796,6 +796,22 @@ func (p *cascadesPlan) Explain() string {
 // and cleanup. Matches Java's ExecuteProperties.setTimeLimit pattern.
 const txPageTimeLimit = 4 * time.Second
 
+// Execute runs the planned query. RFC-106a per-statement resource
+// governance applies here:
+//
+//   - Statement timeout (§4): when the connection sets statementTimeout>0,
+//     the whole-statement ctx is wrapped in context.WithTimeout. Every
+//     cursor gates on ctx.Err() (CollectAllBounded, the sort/hash buffers),
+//     so the deadline bounds the work with no per-operator plumbing. The
+//     cancel func is tied to the RESULT-SET lifetime (paginatingRows.Close),
+//     not this function's return, because the ctx must stay live for the
+//     whole iteration across pages.
+//
+//     PER-REQUEST, not per-logical-statement (Graefe Q1): one Execute() is
+//     bounded. A continuation resumed by a NEW request (a fresh Execute on a
+//     new plan) starts a fresh deadline — there is no cross-continuation
+//     wall-clock, matching Java's per-ExecuteState TimeScanLimiter (reset on
+//     every resume). The per-tx FDB timeout is unaffected.
 func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	c := p.conn
 	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
@@ -805,6 +821,14 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 
 	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
 
+	// Statement timeout: bound this whole Execute (all its pages). cancel
+	// is carried on the paginatingRows so it fires on Close (the result-set
+	// lifetime), not when Execute returns.
+	var cancel context.CancelFunc
+	if c.statementTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, c.statementTimeout)
+	}
+
 	// Each fetchPage creates a fresh cursor hierarchy from the plan +
 	// continuation. The continuation carries all intermediate state
 	// (aggregate accumulators, sort buffers) serialized as protobuf.
@@ -813,6 +837,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 
 	pr := &paginatingRows{
 		ctx:              ctx,
+		cancel:           cancel,
 		conn:             c,
 		ss:               ss,
 		plan:             p.physicalPlan,
@@ -820,6 +845,8 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		scalarSubqueries: p.scalarSubqueries,
 		sqlLimit:         p.sqlLimit,
 		sqlOffset:        p.sqlOffset,
+		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
+		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
 		respectActiveTx:  p.IsUpdate(),
 	}
@@ -827,6 +854,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// Eagerly fetch the first page so execution errors (type mismatches,
 	// plan failures) surface at QueryContext time, not during row iteration.
 	if err := pr.fetchPage(); err != nil {
+		pr.Close()
 		return query.Result{}, err
 	}
 
@@ -872,6 +900,7 @@ func (r *paginatingRows) countAll() (int64, error) {
 // cursor persists across transactions — this matches Java's architecture.
 type paginatingRows struct {
 	ctx              context.Context
+	cancel           context.CancelFunc // statement-timeout cancel; nil when no timeout
 	conn             *EmbeddedConnection
 	ss               subspace.Subspace
 	plan             plans.RecordQueryPlan
@@ -884,6 +913,20 @@ type paginatingRows struct {
 	sqlOffset int64
 	emitted   int64
 	skipped   int64
+
+	// maxRows is the statement-wide returned-row cap from
+	// api.OptMaxRows (RFC-106a §3) — JDBC setMaxRows semantics: a TOTAL
+	// cap across all pages, NOT a per-page size. math.MaxInt32 (the option
+	// default) means effectively unlimited. Independent of sqlLimit (the
+	// SQL LIMIT clause); whichever caps first stops iteration.
+	maxRows int64
+
+	// maxResultBytes is the statement-wide returned-row byte cap from the
+	// connection's Go-local config (RFC-106a §5). 0 = off. resultBytes
+	// accumulates the cheap tuple-encoded size of each emitted row; when it
+	// would exceed maxResultBytes the next emit errors (54F01).
+	maxResultBytes int64
+	resultBytes    int64
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -914,6 +957,14 @@ func (r *paginatingRows) Columns() []string {
 
 func (r *paginatingRows) Close() error {
 	r.closed = true
+	// Release the statement-timeout context (RFC-106a §4). The deadline
+	// must live for the whole result-set lifetime, so cancel fires here on
+	// Close — not when Execute returns. Idempotent: cancel is safe to call
+	// repeatedly and Close may be invoked more than once.
+	if r.cancel != nil {
+		r.cancel()
+		r.cancel = nil
+	}
 	return nil
 }
 
@@ -983,8 +1034,15 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	if r.closed {
 		return io.EOF
 	}
-	// LIMIT exhausted — stop early.
+	// SQL LIMIT exhausted — stop early.
 	if r.sqlLimit >= 0 && r.emitted >= r.sqlLimit {
+		return io.EOF
+	}
+	// MAX_ROWS statement-wide cap (RFC-106a §3): a TOTAL returned-row
+	// budget across ALL pages, independent of the SQL LIMIT. math.MaxInt32
+	// (the option default) is effectively unlimited. Like LIMIT, this is a
+	// clean stop (io.EOF), not an error — JDBC setMaxRows semantics.
+	if r.maxRows > 0 && r.emitted >= r.maxRows {
 		return io.EOF
 	}
 
@@ -998,10 +1056,49 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 			r.skipped++
 			continue
 		}
+		// Result-size byte cap (RFC-106a §5): accumulate the cheap
+		// tuple-encoded size of each row that is actually returned to the
+		// caller (post-OFFSET). Erroring BEFORE the copy means the row that
+		// would breach the cap is not handed back — a hard egress ceiling.
+		if r.maxResultBytes > 0 {
+			r.resultBytes += estimateRowBytes(row)
+			if r.resultBytes > r.maxResultBytes {
+				return api.NewErrorf(api.ErrCodeExecutionLimitReached,
+					"result size limit exceeded: %d bytes returned exceeds cap %d",
+					r.resultBytes, r.maxResultBytes)
+			}
+		}
 		copy(dest, row)
 		r.emitted++
 		return nil
 	}
+}
+
+// estimateRowBytes returns a cheap encoded-length estimate of a result
+// row for the RFC-106a §5 result-size cap. It is intentionally NOT exact
+// heap size — a non-exact egress ceiling. Per-value cost:
+//
+//   - []byte / string: the byte length
+//   - numbers / bool / time: a fixed 8-byte estimate
+//   - nil: 1 byte (the encoded null marker)
+//
+// Fast and allocation-free; good enough to bound how many bytes a single
+// statement streams back to the client.
+func estimateRowBytes(row []driver.Value) int64 {
+	var n int64
+	for _, v := range row {
+		switch x := v.(type) {
+		case nil:
+			n++
+		case []byte:
+			n += int64(len(x))
+		case string:
+			n += int64(len(x))
+		default:
+			n += 8
+		}
+	}
+	return n
 }
 
 func (r *paginatingRows) nextRow() ([]driver.Value, error) {
@@ -1044,6 +1141,70 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 	row := r.buf[r.bufPos]
 	r.bufPos++
 	return row, nil
+}
+
+// optInt64 reads an option as an int64, accepting either an int or an
+// int64 stored value (the option-default map uses both — MAX_ROWS /
+// scanned-rows are int, scanned-bytes / time are int64). Returns fallback
+// when the option is absent or of an unexpected type.
+func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
+	switch v := opts.Get(name).(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case int32:
+		return int64(v)
+	default:
+		return fallback
+	}
+}
+
+// executeProps builds the per-page ExecuteProperties for one fetchPage
+// from the connection's api.Options (RFC-106a). All of these are PER-PAGE
+// (a fresh cursor + transaction per page), matching Java's
+// ExecuteProperties.setScannedRecordsLimit / setScannedBytesLimit /
+// setTimeLimit. The statement-wide MAX_ROWS cap and the result-size byte
+// cap are NOT here — they are enforced across pages in paginatingRows.Next.
+//
+// Defaults are inert: with no options set, OptExecutionScannedRowsLimit
+// defaults to MaxInt32 and OptExecutionScannedBytesLimit to MaxInt64 — both
+// sentinels that mean "no limit", so the produced ScannedRecordsLimit /
+// ScannedBytesLimit are left 0 (the recordlayer "unlimited" value). This
+// keeps the no-option path identical to the pre-RFC behavior.
+func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
+	props := recordlayer.DefaultExecuteProperties()
+
+	opts := r.conn.Options()
+
+	// Per-page time limit. The connection option (if set) is intersected
+	// with the per-transaction floor so the FDB 5s hard wall is never
+	// exceeded. txPageTimeLimit always applies; a smaller user limit wins.
+	timeLimit := txPageTimeLimit
+	if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
+		if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
+			timeLimit = ut
+		}
+	}
+	props = props.WithTimeLimit(timeLimit)
+
+	// Per-page scanned-records limit. MaxInt32 is the "no limit" sentinel
+	// (api default) — only wire a real (smaller) limit through.
+	if rows := optInt64(opts, api.OptExecutionScannedRowsLimit, math.MaxInt32); rows > 0 && rows < math.MaxInt32 {
+		props = props.WithScannedRecordsLimit(int(rows))
+	}
+
+	// Per-page scanned-bytes limit. MaxInt64 is the "no limit" sentinel.
+	if bytesLimit := optInt64(opts, api.OptExecutionScannedBytesLimit, math.MaxInt64); bytesLimit > 0 && bytesLimit < math.MaxInt64 {
+		props = props.WithScannedBytesLimit(bytesLimit)
+	}
+
+	// FailOnScanLimitReached: when set, a leaf cursor that hits its scan /
+	// byte limit errors (54F01) instead of paginating (Java's
+	// setFailOnScanLimitReached(true)). Default off.
+	props.FailOnScanLimitReached = r.conn.failOnScanLimitReached
+
+	return props
 }
 
 // fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
@@ -1093,7 +1254,7 @@ func (r *paginatingRows) fetchPage() error {
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}
 
-		props := recordlayer.DefaultExecuteProperties().WithTimeLimit(txPageTimeLimit)
+		props := r.executeProps()
 		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, props)
 		if execErr != nil {
 			return nil, translateExecError(execErr)
@@ -1145,6 +1306,14 @@ func translateExecError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Statement timeout (RFC-106a §4): the per-Execute context deadline
+	// fired. Cursors gate on ctx.Err() and surface context.DeadlineExceeded;
+	// map it to 54F01. Checked first so it wins over any FDB-error string
+	// matching further down. Note: this is the STATEMENT deadline, distinct
+	// from the per-transaction FDB 1031 timeout (translateFDBError).
+	if errors.Is(err, context.DeadlineExceeded) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, "statement timeout")
+	}
 	var typeMismatch *predicates.TypeMismatchError
 	if errors.As(err, &typeMismatch) {
 		return api.NewError(api.ErrCodeDatatypeMismatch,
@@ -1153,6 +1322,25 @@ func translateExecError(err error) error {
 	var depthExceeded *executor.RecursiveCTEDepthExceededError
 	if errors.As(err, &depthExceeded) {
 		return api.NewError(api.ErrCodeExecutionLimitReached, depthExceeded.Error())
+	}
+	// Eager-buffer caps (RFC-106a): in-memory materialization and sort
+	// buffers throw Go error structs that, like the recursive-CTE depth
+	// cap above, are per-statement resource limits — surface them as
+	// 54F01 (ErrCodeExecutionLimitReached) rather than letting them fall
+	// through as a generic internal error.
+	var matLimit *executor.MaterializationLimitExceededError
+	if errors.As(err, &matLimit) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, matLimit.Error())
+	}
+	var sortLimit *executor.SortBufferExceededError
+	if errors.As(err, &sortLimit) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, sortLimit.Error())
+	}
+	// Leaf-cursor scan limit hit with FailOnScanLimitReached set
+	// (RFC-106a parity): Java throws ScanLimitReachedException (54F01).
+	var scanLimit *recordlayer.ScanLimitReachedError
+	if errors.As(err, &scanLimit) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, scanLimit.Error())
 	}
 	var aggTypeMismatch *executor.AggregateTypeMismatchError
 	if errors.As(err, &aggTypeMismatch) {
