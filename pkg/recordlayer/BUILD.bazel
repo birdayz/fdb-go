@@ -287,6 +287,7 @@ go_test(
         "spfresh_prune_test.go",
         "spfresh_readheal_test.go",
         "spfresh_rebalancer_test.go",
+        "spfresh_refine_test.go",
         "spfresh_split_test.go",
         "spfresh_storage_test.go",
         "spfresh_stress_test.go",

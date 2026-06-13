@@ -282,9 +282,19 @@ over the drifted fast-fill index recovers recall to the bulk baseline:
 
 122k/300k pks moved (3m24s). Recall recovered **even though the topology stayed
 coarse** (57 vs 74 cells; replication 1.0→1.09×, not 1.20×) — the drift is
-**assignment quality, recoverable by re-routing**, not granularity. Run:
-`...TestSPFreshForegroundFillBenchmark ... --test_env=SIFT_REFINE` with
-`SIFT_REFINE=1`. Next: the budgeted online op (round-robin membership cursor).
+**assignment quality, recoverable by re-routing**, not granularity.
+
+**Budgeted production op (`RefineSPFreshIndex`, `SIFT_REFINE=2`) — also recovers
++ CONVERGES.** Looping the budgeted op (budget 10k/call) until one full cursor
+cycle moves nothing: **14 calls, converged**, recall default 0.9680→0.9875
+(≈bulk 0.9880), fast 0.8570→0.9030. The default budget recovers to within 0.05pp
+of bulk; the fast budget recovers most of the drift but sits ~1.75pp under
+bulk-fast (the incremental cursor co-evolves with the rebalancer's splits, so it
+converges slightly less optimally than the one-shot at the tightest probe — in
+production both loops run continuously). A converged BULK index refines to ZERO
+moves (pinned by `TestRecordLayer` "SPFresh refinement", gating
+`kc=4·spfreshClosurePool`). Run: `...TestSPFreshForegroundFillBenchmark ...
+--test_env=SIFT_REFINE` with `SIFT_REFINE=1` (one-shot) or `=2` (budgeted).
 
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 

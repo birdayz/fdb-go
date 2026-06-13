@@ -705,15 +705,40 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	}
 	readRecall("PRE-refine")
 
-	// RFC-104 validation: refine every vector against the converged topology and
+	// RFC-104 validation: refine vectors against the converged topology and
 	// re-measure — does re-assignment recover the ingest recall-drift?
-	if os.Getenv("SIFT_REFINE") == "1" {
+	// SIFT_REFINE=1 = one-shot prototype (refine-all); =2 = the budgeted production
+	// op (loop RefineSPFreshIndex until one full cursor cycle moves nothing).
+	if rv := os.Getenv("SIFT_REFINE"); rv == "1" || rv == "2" {
 		rstart := time.Now()
-		moved, rerr := recordlayer.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
-		if rerr != nil {
-			t.Fatalf("refine: %v", rerr)
+		var moved int
+		if rv == "1" {
+			m, rerr := recordlayer.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+			if rerr != nil {
+				t.Fatalf("refine: %v", rerr)
+			}
+			moved = m
+		} else {
+			budget := siftEnvInt("SIFT_REFINE_BUDGET", 10000)
+			cycleMoves, calls := 0, 0
+			for {
+				m, wrapped, rerr := recordlayer.RefineSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill", budget)
+				if rerr != nil {
+					t.Fatalf("refine round: %v", rerr)
+				}
+				moved += m
+				cycleMoves += m
+				calls++
+				if wrapped {
+					if cycleMoves == 0 {
+						break // one full cursor cycle with zero moves = converged
+					}
+					cycleMoves = 0
+				}
+			}
+			t.Logf("REFINE budgeted: %d calls (budget %d)", calls, budget)
 		}
-		t.Logf("REFINE: moved %d pks in %v", moved, time.Since(rstart))
+		t.Logf("REFINE(mode=%s): moved %d pks in %v", rv, moved, time.Since(rstart))
 		if _, terr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			if serr != nil {
