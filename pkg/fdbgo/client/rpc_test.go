@@ -37,9 +37,15 @@ func TestWaitReply_Timeout(t *testing.T) {
 	t.Parallel()
 	ch := make(chan transport.Response) // never sends
 
+	// The internal RPC reply timeout is the errReplyTimeout sentinel, NOT a
+	// caller deadline: the read paths re-send on it (libfdb_c has no per-read
+	// client timeout) and it must never be confused with ctx cancellation.
 	_, err := waitReply(ch, context.Background(), 10*time.Millisecond)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	if !isReplyTimeout(err) {
+		t.Fatalf("expected errReplyTimeout, got %v", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("reply timeout must not be a context.DeadlineExceeded (it is not a caller deadline)")
 	}
 }
 

@@ -75,6 +75,7 @@ go_test(
         "nil_shard_end_test.go",
         "parse_fuzz_test.go",
         "readpath_test.go",
+        "readpath_timeout_test.go",
         "readpath_unit_test.go",
         "reply_ground_truth_test.go",
         "retry_adversarial_test.go",

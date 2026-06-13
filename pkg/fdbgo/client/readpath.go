@@ -24,7 +24,24 @@ var (
 const (
 	wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
 	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
+	// maxReadTimeoutRetries bounds the re-send of a read whose RPC reply
+	// timed out (errReplyTimeout). libfdb_c re-sends indefinitely (bounded by
+	// the transaction's read-version validity, ~5s MVCC window); a re-send of
+	// our read with the same read version converges to a server-side
+	// transaction_too_old once the window passes, so a small cap is a safety
+	// backstop against a wedged connection, not the primary bound. On
+	// exhaustion the read path surfaces a RETRYABLE transaction_too_old.
+	maxReadTimeoutRetries = 10
 )
+
+// readRPCTimeout is the per-RPC reply timeout for this transaction's reads:
+// the transaction's override when set (test-only), else DefaultRPCTimeout.
+func (tx *Transaction) readRPCTimeout() time.Duration {
+	if tx.rpcTimeoutOverride > 0 {
+		return tx.rpcTimeoutOverride
+	}
+	return DefaultRPCTimeout
+}
 
 // sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
@@ -50,6 +67,7 @@ var allKeysEnd = []byte{0xFF, 0xFF}
 // re-issue the request with the updated selector.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
+	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
@@ -74,6 +92,20 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 
 		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
 		if err != nil {
+			// Reply timeout (slow-but-alive server): re-send, bounded, then a
+			// RETRYABLE transaction_too_old — same contract as getValue/
+			// getRange. errReplyTimeout must never escape.
+			if isReplyTimeout(err) {
+				timeoutRetries++
+				if timeoutRetries > maxReadTimeoutRetries {
+					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+				}
+				attempts--
+				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				tx.db.locCache.invalidate(selectorKey, tx.tenantId)
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
@@ -95,7 +127,12 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 		orEqual = replyOrEqual
 		offset = replyOffset
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	// Wrong-shard retry budget exhausted: surface a RETRYABLE
+	// transaction_too_old rather than terminal all_alternatives_failed — the
+	// read path must never propagate all_alternatives_failed to the
+	// application (it retries reads; client_test pins 1006 as non-retryable
+	// at OnError precisely because the read path absorbs it).
+	return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 }
 
 // sendGetKey sends a GetKeyRequest and returns the full KeySelector from the reply.
@@ -172,7 +209,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	}
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -233,10 +270,14 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 // getValue sends a GetValueRequest to the appropriate storage server.
 // Returns the value (nil if key not found), or an error.
 // wrong_shard_server is retried locally with cache invalidation.
-// Other FDB errors (transaction_too_old, etc.) are returned to the caller
-// for handling by the Transact retry loop.
+// A reply timeout (errReplyTimeout — a slow-but-alive storage server) is
+// re-sent without invalidating the location, matching libfdb_c's loadBalance
+// (no per-read client timeout; re-send until the server replies or the read
+// version ages to transaction_too_old). Other FDB errors (transaction_too_old,
+// etc.) are returned to the caller for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
+	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 		if err != nil {
@@ -250,6 +291,22 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		if err == nil {
 			return val, nil
 		}
+		// Reply timeout: the location is fine, the server was slow. Re-send
+		// (no invalidate, no attempt-count charge) up to a bounded cap, then
+		// surface a RETRYABLE transaction_too_old so the Transact loop retries
+		// the whole transaction with a fresh read version — the observable
+		// libfdb_c outcome. errReplyTimeout itself must never escape.
+		if isReplyTimeout(err) {
+			timeoutRetries++
+			if timeoutRetries > maxReadTimeoutRetries {
+				return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+			}
+			attempts-- // a slow server is not a wrong-shard attempt
+			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(key, tx.tenantId)
@@ -261,7 +318,11 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		// Other FDB error → bubble up for Transact retry.
 		return nil, err
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	// Exhausted the wrong-shard retry budget on all_alternatives_failed:
+	// surface a RETRYABLE transaction_too_old (libfdb_c never propagates
+	// all_alternatives_failed to the application — it retries the read; a
+	// bounded client surfaces the transaction-level retry instead).
+	return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
@@ -320,7 +381,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	}
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -351,6 +412,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				return nil, err
 			}
+		}
+		// Preserve a reply timeout so getValue re-sends without a pointless
+		// cache invalidation (the location is fine, the server was slow);
+		// only a genuine no-reachable-server outcome flattens to 1006.
+		if isReplyTimeout(result.err) {
+			return nil, result.err
 		}
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
@@ -383,7 +450,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		return nil, err
 	}
 	getValueBufPool.Put(poolBuf)
-	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	resp, err := waitReply(replyCh, ctx, tx.readRPCTimeout())
 	if err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 		replyHandle.Cancel()
@@ -417,6 +484,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	curBegin := begin
 	curEnd := end
 	relocateRetries := 0
+	timeoutRetries := 0
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range. C++ getKeyRangeLocations
@@ -453,10 +521,32 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			for remaining > 0 {
 				kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
 				if err != nil {
+					// Reply timeout (a slow-but-alive server): the location is
+					// fine — re-send the SAME shard (no relocate), matching
+					// libfdb_c (no per-read client timeout; re-send until the
+					// server replies or the read version ages to
+					// transaction_too_old). Bounded; on exhaustion surface a
+					// RETRYABLE transaction_too_old so the Transact loop retries
+					// with a fresh read version. errReplyTimeout never escapes.
+					if isReplyTimeout(err) {
+						timeoutRetries++
+						if timeoutRetries > maxReadTimeoutRetries {
+							return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}
+						}
+						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+							return nil, false, err
+						}
+						continue // re-send same shard
+					}
 					if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 						relocateRetries++
 						if relocateRetries > maxRelocateRetries {
-							return nil, false, fmt.Errorf("getRange: exceeded %d relocate retries: %w", maxRelocateRetries, err)
+							// Surface a RETRYABLE transaction_too_old (not the
+							// terminal all_alternatives_failed): the read path
+							// absorbs all_alternatives_failed and lets the
+							// transaction retry with a fresh locate, matching
+							// libfdb_c's internal retry of the read.
+							return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}
 						}
 						// C++ invalidates just the stale shard's range:
 						// cx->invalidateCache(locations[shard].range).
@@ -607,7 +697,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	}
 
 	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks

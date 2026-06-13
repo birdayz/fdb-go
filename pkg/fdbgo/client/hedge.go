@@ -128,7 +128,9 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 	case <-timer.C:
 		inflight.replyHandle.Cancel()
 		inflight.replyHandle.Release()
-		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: context.DeadlineExceeded}
+		// Internal reply timeout, distinct from a caller deadline: the read
+		// path re-sends (libfdb_c loadBalance has no per-read client timeout).
+		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
 	case <-ctx.Done():
 		inflight.replyHandle.Cancel()
 		inflight.replyHandle.Release()
@@ -160,8 +162,10 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 		a.replyHandle.Release()
 		b.replyHandle.Cancel()
 		b.replyHandle.Release()
-		// No winner — both started requests must still be ended by the caller.
-		return hedgeResult{err: context.DeadlineExceeded, others: []rpcAccount{accountOf(a), accountOf(b)}}
+		// No winner before the internal reply timeout — both alternatives were
+		// slow. Retryable internal signal, not a caller deadline (the read path
+		// re-sends). Both started requests must still be ended by the caller.
+		return hedgeResult{err: errReplyTimeout, others: []rpcAccount{accountOf(a), accountOf(b)}}
 	case <-ctx.Done():
 		a.replyHandle.Cancel()
 		a.replyHandle.Release()
