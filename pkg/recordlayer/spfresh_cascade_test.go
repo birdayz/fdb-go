@@ -615,6 +615,33 @@ var _ = Describe("SPFresh sealed-row lifecycle edges", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// codex delta P2: a pass that skips a poisoned task but commits work
+	// behind it must ACCOUNT that work and refresh the process-local cache
+	// before surfacing the error — returning (0, err) reported committed
+	// splits as nothing and left routing on the pre-pass topology.
+	It("a poisoned task neither hides committed work nor skips the cache refresh", func() {
+		tenant, sub := newSweeperTenant("spf_poison", 8, true)
+		balloonSweeperTenant(sub, 80) // real work: a split cascade
+		storage := newSPFreshStorage(sub, 1)
+
+		// Poison: an undecodable task row at the head of the deterministic
+		// scan order (kind split, id 1 — below any allocated fineID).
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(storage.taskKey(spfreshTaskSplit, 1), []byte("garbage"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		total, rerr := RebalanceSPFreshIndex(ctx, sharedDB, tenant.StoreBuilder, tenant.IndexName)
+		Expect(rerr).To(HaveOccurred(), "the poisoned task must surface in the joined error")
+		Expect(total).To(BeNumerically(">", 0),
+			"the balloon's split committed behind the poison — reporting 0 hides real work (codex delta P2)")
+		// The eager refresh ran on the error path: the global cache routes on
+		// the post-split topology.
+		Expect(spfreshCacheFor(sub, 1).ready(1)).To(BeTrue(),
+			"the process-local cache must be refreshed when a pass committed work, error or not")
+	})
+
 	It("seal zombie-clear preserves a sealed task whose row moved cells", func() {
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-seal").Sub("relocate"), 1)
 		const fine = int64(10)

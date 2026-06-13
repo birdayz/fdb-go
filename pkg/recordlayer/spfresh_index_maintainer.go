@@ -638,7 +638,21 @@ func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStor
 		if data != nil {
 			continue // already pending: zero conflict surface taken
 		}
-		paused, perr := spfreshCSplitPaused(m.tx.Snapshot(), storage, rt.cellID)
+		// The pause check must run against the fine's CURRENT cell, not the
+		// cell the (possibly stale) cache routed through: a completed coarse
+		// split may have moved the fine into a cell whose own csplit is now
+		// PAUSING, and checking the old cell would file a split straight
+		// through the starvation guard (codex delta P2). Snapshot resolve —
+		// rare path (cap-hit only), and a fine that is gone entirely gets
+		// nothing filed (its lifecycle already retired it).
+		cellID, cerr := spfreshFindCentroidCellSnapshot(m.tx, storage, rt.fineID)
+		if cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) {
+				continue
+			}
+			return cerr
+		}
+		paused, perr := spfreshCSplitPaused(m.tx.Snapshot(), storage, cellID)
 		if perr != nil {
 			return perr
 		}

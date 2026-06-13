@@ -303,6 +303,29 @@ func spfreshFindCentroidCell(tx fdb.Transaction, s *spfreshStorage, fineID int64
 	return 0, errSPFreshNotFound
 }
 
+// spfreshFindCentroidCellSnapshot is the QUERY-PATH variant: it resolves the
+// fine's CURRENT cell with snapshot reads only — no conflict ranges. The
+// read-path split re-file uses it for the csplit-pause check (the routed
+// cellID can be stale after a completed coarse split; codex delta P2) while
+// keeping queries conflict-free except for the one Set-if-absent that
+// actually files.
+func spfreshFindCentroidCellSnapshot(tx fdb.Transaction, s *spfreshStorage, fineID int64) (int64, error) {
+	ids, _, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	for _, cellID := range ids {
+		data, gerr := tx.Snapshot().Get(s.centroidKey(cellID, fineID)).Get()
+		if gerr != nil {
+			return 0, gerr
+		}
+		if data != nil {
+			return cellID, nil
+		}
+	}
+	return 0, errSPFreshNotFound
+}
+
 // spfreshSortCandidates orders by d2 ascending with id tie-breaks.
 func spfreshSortCandidates(cands []spfreshCandidate) {
 	for i := 1; i < len(cands); i++ {

@@ -371,6 +371,70 @@ var _ = Describe("SPFresh read-path envelope repair", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// codex delta P2: the pause check must resolve the fine's CURRENT cell —
+	// a stale routed cellID (the fine moved in a completed coarse split)
+	// would look up the pause on the OLD cell and file straight through the
+	// starvation guard.
+	It("honors the csplit pause on the fine's CURRENT cell, not the stale routed cell", func() {
+		tenant, sub := newSweeperTenant("spf_stalecell", 8, true)
+		storage := newSPFreshStorage(sub, 1)
+
+		// Fabricate: fine 7777 lives in cell 9999 whose csplit is PAUSING;
+		// the (stale) route claims it lives in cell 1.
+		const movedFine, currentCell, staleCell = int64(7777), int64(9999), int64(1)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			spfreshSaveCoarse(tx, storage, currentCell, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{99, 99}))
+			spfreshSaveCentroid(tx, storage, currentCell, movedFine, encodeCentroidRow(spfreshStateActive, 0, 0, 0, []float64{99, 99}))
+			tx.Set(storage.taskKey(spfreshTaskCSplit, currentCell),
+				encodeTaskRow(spfreshTaskRow{state: spfreshCSplitPausing}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		timer := NewStoreTimer()
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.SetTimer(timer)
+			store, serr := tenant.StoreBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			idx := store.GetMetaData().GetIndex(tenant.IndexName)
+			maintainer, merr := store.GetIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			m := maintainer.(*spfreshIndexMaintainer)
+			return nil, m.spfreshFileSplitsForCapped(storage, []spfreshRouted{{cellID: staleCell, fineID: movedFine}})
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(timer.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(0)),
+			"the fine's CURRENT cell is pausing — filing via the stale routed cell bypasses the starvation guard")
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			data, gerr := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, movedFine)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(data).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Control: lift the pause — the same call files.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Clear(storage.taskKey(spfreshTaskCSplit, currentCell))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		timer2 := NewStoreTimer()
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.SetTimer(timer2)
+			store, serr := tenant.StoreBuilder(rtx)
+			Expect(serr).NotTo(HaveOccurred())
+			idx := store.GetMetaData().GetIndex(tenant.IndexName)
+			maintainer, merr := store.GetIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			m := maintainer.(*spfreshIndexMaintainer)
+			return nil, m.spfreshFileSplitsForCapped(storage, []spfreshRouted{{cellID: staleCell, fineID: movedFine}})
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(timer2.GetCount(CountSPFreshReadPathSplitFiles)).To(Equal(int64(1)))
+	})
+
 	It("honors the csplit pause: a capped read in a pausing cell files nothing", func() {
 		tenant, sub := newSweeperTenant("spf_readheal_pause", 8, true)
 		_, targetVec, fine, cell := balloonWithoutTrigger(sub, 84)

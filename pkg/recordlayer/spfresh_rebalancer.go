@@ -374,10 +374,17 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 			}
 		}
 		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit, timer)
-		if err != nil {
-			return total, false, err
-		}
+		// A pass can return COMMITTED WORK alongside a joined task error
+		// (poisoned tasks are skipped, the rest of the queue still drains —
+		// codex delta P2): account the work and run the eager cache refresh
+		// below before surfacing the error, or splits committed behind the
+		// poison are reported as zero and the process-local cache routes on
+		// the pre-pass topology until an amortized refresh.
 		total += worked
+		if err != nil {
+			refreshErr := spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total)
+			return total, false, errors.Join(err, refreshErr)
+		}
 		if worked == 0 {
 			drained = true
 			break
@@ -386,17 +393,21 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 	// GC: retired topology past the cooldown horizon (the same window that
 	// guards split↔merge oscillation guards stale readers' grace period).
 	if _, err := spfreshGCSweep(ctx, db, s, config, int64(config.CooldownSec)*1000); err != nil {
-		return total, drained, err
+		return total, drained, errors.Join(err, spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total))
 	}
-	if total > 0 {
-		// The rebalancer just changed the topology it routes on: refresh the
-		// process-local cache eagerly (the §4 "maintainer timer" action —
-		// other processes converge via the amortized query-path refresh).
-		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-			return spfreshCacheFor(indexSubspace, gen).fullReload(rtx.Transaction(), s, gen)
-		}); err != nil {
-			return total, drained, err
-		}
+	return total, drained, spfreshRefreshAfterRebalance(ctx, db, s, indexSubspace, gen, total)
+}
+
+// spfreshRefreshAfterRebalance eagerly reloads the process-local routing
+// cache after a rebalance that committed work — the §4 "maintainer timer"
+// action; other processes converge via the amortized query-path refresh. It
+// runs on the error exits too: committed lifecycle work changed the topology
+// regardless of how the pass ended.
+func spfreshRefreshAfterRebalance(ctx context.Context, db *FDBDatabase, s *spfreshStorage, indexSubspace subspace.Subspace, gen int64, total int) error {
+	if total == 0 {
+		return nil
 	}
-	return total, drained, nil
+	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		return spfreshCacheFor(indexSubspace, gen).fullReload(rtx.Transaction(), s, gen)
+	})
 }
