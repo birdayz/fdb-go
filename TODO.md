@@ -996,8 +996,20 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   FDB-reply-budget floor — granularity is structurally bounded, recall is **probe-bound
   not granularity-bound** (like item 3's α-sweep, this lever is spent). The remaining
   recall headroom is assignment-quality (item 5), not cell size.
-- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery). RFC-104 written;
-  drift re-confirmed + root-caused, prototype-validation next.** SIFT-300k A/B (full table
+- [x] **5. Assignment-refinement (RFC-104) — DONE: drift root-caused, refinement
+  VALIDATED, budgeted production op shipped & impl-reviewed CLEAN (codex/Torvalds/
+  Graefe/Paper ACK).** `RefineSPFreshIndex` (pkg/recordlayer/spfresh_refine.go): an
+  online closure re-evaluation against the converged topology — generation-scoped
+  round-robin membership cursor, budget bounds pks re-evaluated (not moves),
+  per-pk REAL-membership + ACTIVE-state move fences (NPA's), kc=4·spfreshClosurePool
+  (matches the bulk router's max pool, gated by the converged→zero-moves spec for
+  r∈{2,4}). Measured: one-shot recovers fast-fill recall to the bulk baseline
+  (default 0.9680→0.9875 ≈ bulk 0.9880; fast 0.8570→0.9030); the budgeted op
+  converges (14 calls) + recovers; a converged bulk index refines to ZERO moves
+  (no-regress). Codex's r1 NAK (budget bounded moves not pks; retry double-count)
+  fixed in 1c1af82d, each bug pinned by an FDB regression proven to fail on the
+  pre-fix code (budget-bounds, retryOnceTransactor double-count, lifecycle-fence
+  A/B). Original investigation/measurements below. SIFT-300k A/B (full table
   in VECTOR_BENCHMARK_RESULTS.md): fast fill (8 writers, 533 vec/s) vs bulk build of the
   SAME data — recall fast 0.8720 vs 0.9205 (−4.9pp), default 0.9685 vs 0.9880 (−1.9pp);
   the fill topology is under-developed (55 cells/1755 fines/**1.00× replication** vs
