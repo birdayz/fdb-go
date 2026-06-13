@@ -90,9 +90,19 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshCellMax] = cm
 	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	// SIFT_SHARD_SAFE=1 gives all record types a RecordTypeKey prefix, which
+	// satisfies RFC-103's parallel-staging gate (PrimaryKeyHasRecordTypePrefix)
+	// so the bulk build shards the staging scan (S=8); the default bare PKs are
+	// shard-UNSAFE and build serially (S=1) — the A/B baseline.
+	if os.Getenv("SIFT_SHARD_SAFE") == "1" {
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))
+	} else {
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	}
 	builder.AddIndex("Order", spfIdx)
 	md, err := builder.Build()
 	if err != nil {
@@ -213,7 +223,11 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 				if !res.HasNext() {
 					break
 				}
-				got = append(got, res.GetValue().Key[0].(int64))
+				// order_id is the LAST primary-key element — robust to a
+				// RecordTypeKey prefix (SIFT_SHARD_SAFE=1) where Key[0] is the
+				// type key, not the id.
+				key := res.GetValue().Key
+				got = append(got, key[len(key)-1].(int64))
 			}
 			return nil, nil
 		})

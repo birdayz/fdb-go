@@ -698,6 +698,29 @@ func spfreshScanRecordBatches(
 	inTx func(rtx *FDBRecordContext, batch []spfreshBuildInput) error,
 	post func(batch []spfreshBuildInput) error,
 ) error {
+	return spfreshScanRecordRange(ctx, db, storeBuilder, index, indexSubspace,
+		nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, batchSize, inTx, post)
+}
+
+// spfreshScanRecordRange is spfreshScanRecordBatches bounded to one half-open
+// primary-key sub-range [low, high) — the unit of RFC-103 parallel staging. The
+// high bound is held CONSTANT across every continuation-resumed batch; only the
+// low end advances (lowEP -> EndpointTypeContinuation once a batch has been
+// read), so a resumed batch can never escape its shard's range. ScanRecords
+// forces highEP=TreeEnd on a continuation (store.go); a sharded scan must NOT.
+// low/high nil with TreeStart/TreeEnd endpoints reproduces the full-range scan.
+func spfreshScanRecordRange(
+	ctx context.Context,
+	db *FDBDatabase,
+	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
+	index *Index,
+	indexSubspace subspace.Subspace,
+	low, high tuple.Tuple,
+	lowEP, highEP EndpointType,
+	batchSize int,
+	inTx func(rtx *FDBRecordContext, batch []spfreshBuildInput) error,
+	post func(batch []spfreshBuildInput) error,
+) error {
 	scanBatch := batchSize
 	var continuation []byte
 	for first := true; first || continuation != nil; first = false {
@@ -733,7 +756,14 @@ func spfreshScanRecordBatches(
 				IsolationLevel:   isolation,
 				ReturnedRowLimit: scanBatch,
 			}}
-			cursor := store.ScanRecords(continuation, props)
+			// Hold the shard's high bound across every batch; advance only the
+			// low end via the continuation (the per-shard fence is the read
+			// conflict range over [low, high), which must not grow on resume).
+			scanLowEP := lowEP
+			if continuation != nil {
+				scanLowEP = EndpointTypeContinuation
+			}
+			cursor := store.ScanRecordsInRange(low, high, scanLowEP, highEP, continuation, props)
 			defer func() { _ = cursor.Close() }()
 			for {
 				result, cerr := cursor.OnNext(ctx)
@@ -767,7 +797,7 @@ func spfreshScanRecordBatches(
 					if terr != nil {
 						return terr
 					}
-					batchInputs = append(batchInputs, spfreshBuildInput{pk: trimmedPK, vec: vec})
+					batchInputs = append(batchInputs, spfreshBuildInput{pk: trimmedPK, fullPK: entry.primaryKey, vec: vec})
 				}
 			}
 			if inTx != nil && len(batchInputs) > 0 {
@@ -788,6 +818,150 @@ func spfreshScanRecordBatches(
 	return nil
 }
 
+// spfreshShardRange is one half-open primary-key sub-range of the record
+// keyspace, scanned by a single staging shard (RFC-103). low/high are full
+// record PKs; the endpoint types tile the keyspace gaplessly with ±∞ ends.
+type spfreshShardRange struct {
+	low, high     tuple.Tuple
+	lowEP, highEP EndpointType
+}
+
+// spfreshShardRanges tiles the record keyspace into half-open PK ranges around
+// the boundaries: [TreeStart, b₀) [b₀, b₁) … [b_{n-1}, TreeEnd). Boundaries must
+// be sorted ascending and distinct (the sampler guarantees it). Empty
+// boundaries ⇒ a single full-range shard (today's serial scan). The ±∞ ends keep
+// the union equal to the whole record range, so the per-shard delete fences
+// (read-conflict ranges) cover every key with no gap and no overlap.
+func spfreshShardRanges(boundaries []tuple.Tuple) []spfreshShardRange {
+	if len(boundaries) == 0 {
+		return []spfreshShardRange{{lowEP: EndpointTypeTreeStart, highEP: EndpointTypeTreeEnd}}
+	}
+	ranges := make([]spfreshShardRange, 0, len(boundaries)+1)
+	ranges = append(ranges, spfreshShardRange{high: boundaries[0], lowEP: EndpointTypeTreeStart, highEP: EndpointTypeRangeExclusive})
+	for i := 0; i+1 < len(boundaries); i++ {
+		ranges = append(ranges, spfreshShardRange{low: boundaries[i], high: boundaries[i+1], lowEP: EndpointTypeRangeInclusive, highEP: EndpointTypeRangeExclusive})
+	}
+	ranges = append(ranges, spfreshShardRange{low: boundaries[len(boundaries)-1], lowEP: EndpointTypeRangeInclusive, highEP: EndpointTypeTreeEnd})
+	return ranges
+}
+
+// spfreshStageRecordsSharded runs the staging scan over the shard ranges. A
+// single full-range shard runs inline (byte-identical to the pre-RFC-103 serial
+// scan). Multiple shards run concurrently, one goroutine each (their count is
+// bounded by the small fan-out); the first error cancels the rest — so they tear
+// down their in-flight tx instead of finishing a 5 s scan — and the call waits
+// for every goroutine before returning. A failed shard re-runs the WHOLE staging
+// pass on the build's retry; staging Sets are idempotent (same (cell, recordPK)
+// key, same fp16 value), so a shard that committed before the failure is
+// harmlessly re-Set. The shard goroutines share only immutable builder state
+// (storage/token/config and the post-coarse frozen coarseVec/cellIDs nearestCell
+// reads); the wave-A fine-ID allocator is untouched here, so there is no shared
+// mutable state.
+func spfreshStageRecordsSharded(
+	ctx context.Context,
+	db *FDBDatabase,
+	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
+	index *Index,
+	indexSubspace subspace.Subspace,
+	batchSize int,
+	inTx func(rtx *FDBRecordContext, batch []spfreshBuildInput) error,
+	ranges []spfreshShardRange,
+) error {
+	if len(ranges) == 1 {
+		r := ranges[0]
+		return spfreshScanRecordRange(ctx, db, storeBuilder, index, indexSubspace, r.low, r.high, r.lowEP, r.highEP, batchSize, inTx, nil)
+	}
+	// storeBuilder was only ever called serially before sharding; the fan-out
+	// now calls it from S goroutines. A caller that closes over a REUSABLE
+	// StoreBuilder (SetContext mutates it) would race, so serialize the cheap
+	// store construction behind a mutex — each call binds a fresh store to its
+	// own transaction. The scans themselves still run fully concurrently
+	// (codex impl review P2).
+	var sbMu sync.Mutex
+	safeStoreBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+		sbMu.Lock()
+		defer sbMu.Unlock()
+		return storeBuilder(rtx)
+	}
+	shardCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+	for _, r := range ranges {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := spfreshScanRecordRange(shardCtx, db, safeStoreBuilder, index, indexSubspace, r.low, r.high, r.lowEP, r.highEP, batchSize, inTx, nil); err != nil {
+				errOnce.Do(func() {
+					firstErr = err
+					cancel()
+				})
+			}
+		}()
+	}
+	wg.Wait()
+	return firstErr
+}
+
+// spfreshBoundarySampleCap bounds the PK reservoir the boundary sampler keeps;
+// the S-1 quantile boundaries are drawn from it. Far more than enough for the
+// handful of shards the staging fan-out uses.
+const spfreshBoundarySampleCap = 4096
+
+// spfreshPKSampler captures evenly-count-spaced full record PKs in scan order to
+// derive staging shard boundaries (RFC-103). It is fed by the already-serial
+// sample scan (zero extra I/O) and keeps ≤ 2·cap PKs via systematic decimation:
+// when the buffer fills it drops every other entry and doubles the stride, so
+// the retained PKs stay evenly spaced by record count. The sample scan learns
+// totalN only as it goes, so the resulting quantiles are APPROXIMATE; that only
+// affects shard balance, never correctness (the staged set is shard-count- and
+// split-quality-invariant).
+type spfreshPKSampler struct {
+	pks    []tuple.Tuple
+	stride int
+	seen   int
+	cap    int
+}
+
+func newSPFreshPKSampler(capN int) *spfreshPKSampler {
+	return &spfreshPKSampler{stride: 1, cap: capN}
+}
+
+func (s *spfreshPKSampler) observe(pk tuple.Tuple) {
+	if s.seen%s.stride == 0 {
+		s.pks = append(s.pks, pk)
+		if len(s.pks) >= 2*s.cap {
+			w := 0
+			for i := 0; i < len(s.pks); i += 2 {
+				s.pks[w] = s.pks[i]
+				w++
+			}
+			s.pks = s.pks[:w]
+			s.stride *= 2
+		}
+	}
+	s.seen++
+}
+
+// boundaries returns up to shards-1 interior PK boundaries, evenly spaced by
+// record count and strictly ascending. The records are scanned in ascending key
+// order and PKs are unique, so the retained reservoir is strictly ascending and
+// the distinct quantile indices yield strictly ascending, distinct boundaries.
+// Fewer than `shards` candidates ⇒ no boundaries ⇒ a single serial shard.
+func (s *spfreshPKSampler) boundaries(shards int) []tuple.Tuple {
+	if shards <= 1 || len(s.pks) < shards {
+		return nil
+	}
+	out := make([]tuple.Tuple, 0, shards-1)
+	for i := 1; i < shards; i++ {
+		// Copy, don't alias the sampler's internal buffer — the boundaries
+		// outlive the sampler and a future caller might mutate them (@claude).
+		out = append(out, append(tuple.Tuple(nil), s.pks[i*len(s.pks)/shards]...))
+	}
+	return out
+}
+
 // BuildSPFreshIndex bulk-builds an SPFresh index over the store's existing
 // records (RFC-094 §8) and flips it readable. The §8 step order is the
 // foreground-interleaving contract: the COARSE table commits BEFORE the
@@ -797,10 +971,28 @@ func spfreshScanRecordBatches(
 // versions. Double coverage (a save the scan also reads) is harmless —
 // staging writes are idempotent Sets on the same key.
 func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, seed int64) error {
+	return buildSPFreshIndex(ctx, db, storeBuilder, indexName, seed, spfreshBuildStagingShards)
+}
+
+// spfreshBuildStagingShards is the default fan-out for the parallel staging scan
+// (RFC-103): S disjoint record-PK sub-ranges scanned concurrently to hide the
+// synchronous pure-Go client's per-batch round-trip latency. Tests pin S=1 vs
+// S=8 (buildSPFreshIndex) for the byte-identical-staged-set determinism check.
+const spfreshBuildStagingShards = 8
+
+// buildSPFreshIndex is BuildSPFreshIndex with an explicit staging shard count.
+func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, seed int64, shards int) error {
 	// Resolve the index once.
 	var index *Index
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
+	// shardSafe gates the parallel staging fan-out (RFC-103): a shard boundary
+	// is a record PK, and a cut tears a split record only if some record's PK is
+	// that boundary minus an integer suffix. Fixed-arity indexed PKs can't be,
+	// and ALL record types carrying a RecordTypeKey prefix (or a single type)
+	// makes every type's keyspace disjoint — so no boundary lands in a foreign
+	// record's chunks. The collision-prone no-type-prefix store degrades to S=1.
+	var shardSafe bool
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		store, serr := storeBuilder(rtx)
 		if serr != nil {
@@ -818,6 +1010,8 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 			return verr
 		}
 		indexSubspace = store.indexSubspace(index)
+		md := store.GetMetaData()
+		shardSafe = len(md.RecordTypes()) == 1 || md.PrimaryKeyHasRecordTypePrefix()
 		return nil
 	}); err != nil {
 		return err
@@ -833,8 +1027,20 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	var sample [][]float64
 	totalN := 0
 	rng := &splittableRandom{seed: splitMixLong(seed), gamma: goldenGamma}
+	// Piggy-back staging shard-boundary capture on the serial sample scan
+	// (RFC-103): it already visits every record in PK order, so collecting
+	// count-quantile full PKs here costs no extra I/O. Only when sharding can
+	// actually run.
+	canShard := shards > 1 && shardSafe
+	var boundarySampler *spfreshPKSampler
+	if canShard {
+		boundarySampler = newSPFreshPKSampler(spfreshBoundarySampleCap)
+	}
 	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, spfreshScanBatchSize, nil, func(batch []spfreshBuildInput) error {
 		for _, in := range batch {
+			if boundarySampler != nil {
+				boundarySampler.observe(in.fullPK)
+			}
 			if totalN < spfreshCoarseSampleCap {
 				sample = append(sample, in.vec)
 			} else if j := int(uint64(rng.nextLong()) % uint64(totalN+1)); j < spfreshCoarseSampleCap {
@@ -913,7 +1119,21 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// batch is BYTE-bounded, not just row-bounded — a staging batch writes
 	// fp16 STAGING + SIDECAR per record, and 1000 records × 4096 dims would
 	// blow the 10 MB transaction limit (codex 094.2 r1 P2).
-	if berr := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, config.stagingScanBatch(), builder.stageInTx, nil); berr != nil {
+	//
+	// RFC-103: shard the staging scan into S disjoint half-open PK sub-ranges
+	// scanned concurrently — the synchronous client makes a serial scan
+	// latency-bound (one round-trip per batch). Boundaries are count-quantile
+	// record PKs captured on the serial sample scan above; each shard keeps its
+	// own SERIALIZABLE delete fence over its disjoint sub-range. Sharding is
+	// gated (canShard) on a prefix-safe keyspace; S=1, an unsafe keyspace, or
+	// too few records all degrade to the single serial scan.
+	var stagingShards []spfreshShardRange
+	if canShard {
+		stagingShards = spfreshShardRanges(boundarySampler.boundaries(shards))
+	} else {
+		stagingShards = spfreshShardRanges(nil)
+	}
+	if berr := spfreshStageRecordsSharded(ctx, db, storeBuilder, index, indexSubspace, config.stagingScanBatch(), builder.stageInTx, stagingShards); berr != nil {
 		return berr
 	}
 	if berr := builder.finalize(ctx, seed); berr != nil {
