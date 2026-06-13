@@ -86,10 +86,13 @@ codex/Torvalds P2), compute the closure copy-set over a pool **the width of the
 bulk build's** (`4·spfreshClosurePool(Replication)` — a narrower pool drops
 replicas the wide build placed and REGRESSES a converged index, codex r1 P2),
 compare to the stored membership, and move on change. The move tx **REAL-reads
-each kept fine's centroid state and rejects non-ACTIVE** — the topology lifecycle
-fence NPA uses (`spfreshReadCentroidForWrite`; `cache.route` returns
+each kept NEW copy's centroid state and rejects non-ACTIVE** — the topology
+lifecycle fence NPA uses (`spfreshReadCentroidForWrite`; `cache.route` returns
 ACTIVE+SEALED, the move filters to ACTIVE) — so a refine-move never deposits a
-posting into a fine that seals/splits concurrently (Graefe/codex r1 P1). Budget
+posting into a fine that seals/splits concurrently (Graefe/codex r1 P1). **The
+committed prototype now implements this fence** (a no-op on the drained
+validation run, so the measured recovery is unchanged); existing kept copies get
+no new write, so they skip re-verification. Budget
 bounds per-call cost (the NPA `spfreshNPABatch` shape); the routing cache is
 loaded once per call and reused read-only across the move batches.
 
@@ -131,7 +134,8 @@ budget already bounds the steady-state read-sweep cost.
    restoring assignment suffices. (The residual cell-count gap doesn't cost
    recall, consistent with item-4's negative.)
 2. **Then the budgeted online op:** fast-fill, run `RefineSPFreshIndex` on a
-   cadence until the cursor stops moving, assert recall recovers to within
+   cadence until **one full cursor cycle yields zero moves** (converged — a
+   wrapping cursor never "stops", codex r2 P3), assert recall recovers to within
    ~0.5 pp of bulk (the prototype proves the ceiling; this proves the budgeted
    path; Paper).
 3. **No regression on a converged index (gates the `kc` width):** refine a

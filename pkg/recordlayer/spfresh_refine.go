@@ -137,15 +137,45 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 				}
 				pool := make([]spfreshCandidate, 0, len(routed))
 				vecByID := make(map[int64][]float64, len(routed))
+				cellByID := make(map[int64]int64, len(routed))
 				for _, r := range routed {
 					pool = append(pool, spfreshCandidate{id: r.fineID, d2: r.d2, vec: r.vec})
 					vecByID[r.fineID] = r.vec
+					cellByID[r.fineID] = r.cellID
 				}
 				spfreshSortCandidates(pool)
 				kept := spfreshClosure(pool, config.Replication, config.Alpha)
-				newSet := make([]int64, 0, len(kept))
+				closed := make([]int64, 0, len(kept))
 				for _, k := range kept {
-					newSet = append(newSet, k.id)
+					closed = append(closed, k.id)
+				}
+				// Topology lifecycle fence (Graefe/codex r1 P1): cache.route
+				// returns ACTIVE+SEALED candidates, so a kept NEW copy must be
+				// REAL-read ACTIVE in the move tx — else a refine-move could
+				// deposit a posting into a fine that seals/splits concurrently
+				// (NPA's fence, spfresh_npa.go). Existing copies (already in
+				// `current`) get no new write, so they skip re-verification.
+				curSet := make(map[int64]bool, len(current))
+				for _, id := range current {
+					curSet[id] = true
+				}
+				newSet := make([]int64, 0, len(closed))
+				for _, id := range closed {
+					if curSet[id] {
+						newSet = append(newSet, id)
+						continue
+					}
+					row, ferr := spfreshReadCentroidForWrite(tx, s, cellByID[id], id)
+					if ferr != nil {
+						if errors.Is(ferr, errSPFreshNotFound) {
+							continue // fine gone (split/GC): drop this new copy
+						}
+						return ferr
+					}
+					if row.state != spfreshStateActive {
+						continue // sealing/splitting: don't write into it
+					}
+					newSet = append(newSet, id)
 				}
 				if spfreshSameIDSet(current, newSet) {
 					continue // already optimal: idempotent no-op
@@ -160,12 +190,8 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 						spfreshCounterAdd(tx, s, spfreshCounterFine, id, -1)
 					}
 				}
-				cur := make(map[int64]bool, len(current))
-				for _, id := range current {
-					cur[id] = true
-				}
 				for _, id := range newSet {
-					if !cur[id] {
+					if !curSet[id] {
 						residual := make([]float64, len(vec))
 						for d := range vec {
 							residual[d] = vec[d] - vecByID[id][d]
