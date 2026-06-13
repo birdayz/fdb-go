@@ -80,6 +80,7 @@ go_test(
         "readpath_unit_test.go",
         "reply_ground_truth_test.go",
         "retry_adversarial_test.go",
+        "retry_predicate_pin_test.go",
         "retry_test.go",
         "rpc_test.go",
         "ryw_adversarial_test.go",

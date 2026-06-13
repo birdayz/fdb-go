@@ -1589,6 +1589,17 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		return err
 	}
 
+	// Single source of WHETHER to retry (RFC-105 — derive, don't mirror):
+	// onErrorRetryable is the one onError-retryable predicate, also used by
+	// commitDummyTransaction, so the two can never drift. A code it rejects errors
+	// out here; the switch below only refines the BACKOFF CLASS for retryable
+	// codes (its default arm covers the RETRYABLE_NOT_COMMITTED majority), so a
+	// retryable code can never be silently dropped by a missing case.
+	if !onErrorRetryable(fdbErr.Code) {
+		tx.state.Store(int32(txStateErrored))
+		return err
+	}
+
 	switch fdbErr.Code {
 	case ErrTransactionTooOld, ErrFutureVersion:
 		// Version-related: fixed delay, no backoff growth.
@@ -1602,22 +1613,6 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
 		if cerr := backoffSleep(ctx, delay); cerr != nil {
-			tx.state.Store(int32(txStateErrored))
-			return cerr
-		}
-		tx.reset()
-		return nil
-
-	case ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
-		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
-		ErrBlobGranuleRequestFailed, ErrAllProxiesUnreachable:
-		// RETRYABLE_NOT_COMMITTED: exponential backoff.
-		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
-		tx.retryCount++
-		if tx.db != nil {
-			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
-		}
-		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
@@ -1673,8 +1668,22 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		return nil
 
 	default:
-		tx.state.Store(int32(txStateErrored))
-		return err
+		// RETRYABLE_NOT_COMMITTED (not_committed, database_locked, process_behind,
+		// the throttles, blob_granule, all_proxies): exponential backoff. The guard
+		// above guarantees this arm is reached only by an onError-retryable code, so
+		// "default = retry" can never mis-retry a non-retryable error, and a future
+		// retryable code added to onErrorRetryable is handled here by default.
+		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
+		tx.retryCount++
+		if tx.db != nil {
+			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
+		}
+		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+			tx.state.Store(int32(txStateErrored))
+			return cerr
+		}
+		tx.reset()
+		return nil
 	}
 }
 
