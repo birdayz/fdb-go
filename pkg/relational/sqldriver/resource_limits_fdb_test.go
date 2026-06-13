@@ -269,3 +269,56 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 		t.Fatalf("no-cap returned %d rows, want %d", got, rows)
 	}
 }
+
+// TestFDB_RFC106a_ScalarSubqueryHonorsLimit pins the codex P2: an uncorrelated
+// scalar subquery must respect the statement's scan limit, not bypass it with
+// DefaultExecuteProperties. Isolation uses TWO tables so the outer scan can
+// never trip the limit on its own (a single-table WHERE id < (subquery) fails
+// to isolate — the planner folds the subquery value into a range scan over the
+// outer):
+//
+//	Small: 1 row   — the outer table; scans ≤1 no matter how the predicate plans
+//	Big:   50 rows — the subquery's COUNT(*) source; full scan >> limit
+//
+//	control: SELECT id FROM Small                              — scans 1 → OK
+//	subject: SELECT id FROM Small WHERE id < (SELECT COUNT(*) FROM Big)
+//
+// The ONLY scan that exceeds the limit in the subject is the COUNT(*) over Big.
+// With the limit reaching the subquery it errors 54F01; before the fix the
+// subquery used DefaultExecuteProperties and the subject succeeded like the
+// control (revert-proof: drop the props thread → subject goes green).
+func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_ssqlimit", "ssqlimit",
+		"CREATE TABLE Big (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const bigRows = 50
+	const scanLimit = 5 // COUNT(*) over 50 rows >> 5; Small has a single row
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+		ec.SetFailOnScanLimitReached(true)
+	})
+	// Seed via INSERTs (point writes — unaffected by the scan limit).
+	for i := 0; i < bigRows; i++ {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("INSERT INTO Big (id) VALUES (%d)", i)); err != nil {
+			t.Fatalf("INSERT Big row %d: %v", i, err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO Small (id) VALUES (0)"); err != nil {
+		t.Fatalf("INSERT Small: %v", err)
+	}
+
+	// control: the outer (Small, 1 row) alone stays under the limit → no error.
+	if _, err := drainIDs(ctx, conn, "SELECT id FROM Small"); err != nil {
+		t.Fatalf("control (1-row outer) must not trip the scan limit, got: %v", err)
+	}
+
+	// subject: same outer + a COUNT(*) subquery over Big that scans all rows → 54F01.
+	_, err := drainIDs(ctx, conn,
+		"SELECT id FROM Small WHERE id < (SELECT COUNT(*) FROM Big)")
+	wantExecLimit(t, err)
+}

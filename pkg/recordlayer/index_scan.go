@@ -434,9 +434,16 @@ func newIndexCursor(
 }
 
 // OnNext returns the next IndexEntry or indicates why iteration stopped.
-func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
+	}
+
+	// Honor a statement deadline (RFC-106a): draining an already-fetched range
+	// batch must still return on ctx cancellation/timeout (codex), not run to the
+	// per-page time limit. context.DeadlineExceeded → 54F01 "statement timeout".
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	if c.iterator == nil {

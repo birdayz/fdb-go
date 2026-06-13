@@ -21,9 +21,12 @@ func EvaluateScalarSubquery(
 	plan plans.RecordQueryPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
 ) (any, error) {
-	cursor, err := ExecutePlan(ctx, plan, store, evalCtx, nil,
-		recordlayer.DefaultExecuteProperties())
+	// props carries the statement's scan limits (RFC-106a) so an uncorrelated
+	// subquery respects the same cap as the outer plan (codex). ctx carries the
+	// statement timeout.
+	cursor, err := ExecutePlan(ctx, plan, store, evalCtx, nil, props)
 	if err != nil {
 		return nil, err
 	}

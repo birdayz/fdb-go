@@ -73,8 +73,9 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		return c.noNextWithCont(ScanLimitReached), nil
 	}
 
-	// Byte limit
-	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.bytesScanned > ep.ScannedBytesLimit {
+	// Byte limit. Use >= to match the other leaf cursors (index_scan,
+	// key_value_cursor): stop AT the limit, not one key past it (codex RFC-106a).
+	if ep.ScannedBytesLimit > 0 && c.keysScanned > 0 && c.bytesScanned >= ep.ScannedBytesLimit {
 		if ep.FailOnScanLimitReached {
 			return RecordCursorResult[tuple.Tuple]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
 		}

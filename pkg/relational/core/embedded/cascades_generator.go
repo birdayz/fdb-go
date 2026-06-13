@@ -1178,8 +1178,10 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	opts := r.conn.Options()
 
 	// Per-page time limit. The connection option (if set) is intersected
-	// with the per-transaction floor so the FDB 5s hard wall is never
-	// exceeded. txPageTimeLimit always applies; a smaller user limit wins.
+	// with the per-transaction CAP (txPageTimeLimit, 4s) so the FDB 5s hard
+	// wall is never exceeded: the 4s cap is the ceiling and a smaller user
+	// limit only narrows it — a larger user value can never raise the page
+	// budget past the cap (Graefe review).
 	timeLimit := txPageTimeLimit
 	if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 		if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
@@ -1242,19 +1244,26 @@ func (r *paginatingRows) fetchPage() error {
 		}
 
 		evalCtx := executor.EmptyEvaluationContext()
+		// Compute the statement's execution props BEFORE evaluating scalar
+		// subqueries so the configured scan limits apply to them too (codex
+		// RFC-106a): an uncorrelated subquery must not scan past the statement
+		// cap while the outer plan would fail/paginate. (The statement timeout
+		// already reaches them via r.ctx.)
+		props := r.executeProps()
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
 			for _, ssq := range r.scalarSubqueries {
-				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.plan, store, evalCtx)
+				result, ssqErr := executor.EvaluateScalarSubquery(r.ctx, ssq.plan, store, evalCtx, props)
 				if ssqErr != nil {
-					return nil, ssqErr
+					// Route the subquery error through the same translation as the
+					// outer plan so a subquery scan-limit/deadline hit surfaces as
+					// 54F01, not a raw *ScanLimitReachedError (codex RFC-106a).
+					return nil, translateExecError(ssqErr)
 				}
 				scalarResults[ssq.alias] = result
 			}
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}
-
-		props := r.executeProps()
 		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, props)
 		if execErr != nil {
 			return nil, translateExecError(execErr)

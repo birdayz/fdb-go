@@ -48,8 +48,10 @@ maps, recursive-CTE/DFS/union/DML slices — is RFC-106b.)
 3. **Statement timeout (Go-only extension).** A wall-clock deadline spanning the WHOLE statement
    (all pages of one `Execute`). **Stored in a Go-LOCAL execution config, NOT a new `api.OptionName`**
    (codex P2: `api.OptionName` mirrors Java's enum exactly; a Go-only name would break parity). It is
-   surfaced via a Go-local `SET statement_timeout = …` handled engine-side / a driver/connection
-   field — distinct from the Java-backed `Options` map. Implement by wrapping the statement ctx in
+   set via a Go-local connection field + `SetStatementTimeout` setter — distinct from the Java-backed
+   `Options` map. (A `SET statement_timeout = …` SQL path is NOT shipped — the ANTLR grammar has no
+   generic `SET <var> = <val>` rule; that is a future grammar-regen, disclosed at the setter.)
+   Implement by wrapping the statement ctx in
    `context.WithTimeout` at `cascadesPlan.Execute` (`cascades_generator.go:798`); every cursor already
    gates on `ctx.Err()` (verified: `CollectAllBounded:2638`, sort `429/523`, hash `780/850`), so the
    deadline bounds the work with zero per-operator plumbing. Map the deadline → 54F01 ("statement
