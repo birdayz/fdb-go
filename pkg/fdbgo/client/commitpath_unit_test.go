@@ -392,7 +392,7 @@ func TestJitterBackoff_ZeroAndNegative(t *testing.T) {
 // onErrorRetryable — error-code → onError retry decision (RFC-105 single source).
 // ============================================================================
 
-func TestIsRetryable_RetryableSet(t *testing.T) {
+func TestOnErrorRetryable_RetryableSet(t *testing.T) {
 	t.Parallel()
 	// Every code in this list MUST return true. If a future commit
 	// silently drops one (typo in the switch case label), this test
@@ -412,7 +412,7 @@ func TestIsRetryable_RetryableSet(t *testing.T) {
 	}
 }
 
-func TestIsRetryable_NotRetryableSet(t *testing.T) {
+func TestOnErrorRetryable_NotRetryableSet(t *testing.T) {
 	t.Parallel()
 	// A representative set of non-retryable codes. The function's
 	// default case returns false, so we sanity-check that codes NOT

@@ -1,7 +1,9 @@
 # RFC-105: Retry-predicate fidelity — pin each predicate to its C++ analog, kill drift
 
-**Status:** Accepted — FDB C++ dev ACK (Q1: keep 1039), Torvalds (table dropped → tests-only),
-codex (dead 4th predicate deleted), all addressed on r2 (2026-06-13).
+**Status:** Implemented — RFC ACK + implementation ACK (FDB C++ dev, Torvalds, codex) on
+2026-06-13. Q1: kept 1039 in OnError (C++ retries it in the MVC layer). No behavior change:
+deleted the dead 4th predicate, single-sourced onErrorRetryable (OnError guards on it), added
+exhaustive C++-pinned drift tests.
 **Item:** Client launch-readiness #2 (TODO.md) — TODO-production P3.3 ("de-duplicate the two retry
 predicates"). Gate: `fdb-client-engineer` (FDB C++ dev + Torvalds + codex). C++ (libfdb_c 7.3.75)
 is the spec.

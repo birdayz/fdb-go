@@ -212,7 +212,6 @@ func jitterBackoff(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * factor)
 }
 
-// isRetryable returns true if the FDB error code is retryable.
 // onErrorRetryable reports whether OnError retries `code`. It is the SINGLE
 // source of the Go client's onError-retryable set — called by both
 // Transaction.OnError (as its retryability guard) and commitDummyTransaction's

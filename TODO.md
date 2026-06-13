@@ -25,7 +25,9 @@ each on its own stacked branch.
    invisible. Add the `USE_GRV_CACHE` tx/db option; gate `tryCache` + the background refresher on
    it; match `:7504-7518`. Revisit RFC-096's cache-carried `locked` check if this closes. (Full
    detail in the "GRV cache is ALWAYS-ON" entry below.)
-2. **[ ] Retry-predicate fidelity — `fdb.IsRetryable` vs `client.isRetryable`.** `S` ·
+2. **[x] Retry-predicate fidelity — `fdb.IsRetryable` vs `client.isRetryable`.** DONE (RFC-105):
+   no bug — pinned each to its C++ analog + deleted the dead 4th predicate `wire.FDBError.Retryable`.
+   `S` ·
    fdb-client-review. The two predicates list different code sets. The fix is NOT naive unification:
    in C++ `fdb_error_predicate(RETRYABLE)` ≠ `Transaction::onError`'s set (1039 predicate-retryable
    but not onError-retried; 1006 the reverse). Make each match its OWN C++ predicate, share the
