@@ -564,6 +564,138 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	}
 }
 
+// TestSPFreshPruneSlackCoversRoundoff is the regression for codex's P2: the
+// triangle bound is built from two SEPARATELY-rounded sqrts (d(v,c), d(c,f)), so
+// the squared bound (d(v,c)-d(c,f))² can land a few ulps ABOVE the true d(v,f)²
+// on large near-collinear coordinates. gatherTopK skips a fine only when
+// lb*lb > worst*(1+spfreshPruneSlack); for that skip to be EXACT (never drop a
+// fine whose true distance is <= worst) the slack must exceed the worst relative
+// overshoot of lb*lb over the true squared distance. This drives collinear
+// large-magnitude triples (where the triangle inequality is equality and the
+// bound is tightest, maximizing roundoff sensitivity), confirms the overshoot is
+// real (>0), and asserts spfreshPruneSlack comfortably covers the worst case.
+// Set spfreshPruneSlack to 0 (the pre-fix behavior) and this fails.
+func TestSPFreshPruneSlackCoversRoundoff(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(7777))
+	maxOver := 0.0
+	sawOvershoot := false
+	for trial := 0; trial < 500000; trial++ {
+		// Sweep dims up to >128 (SIFT is 128-D; more terms accumulate more
+		// squared-distance roundoff) and magnitude up to ~1e9 (arbitrary float64
+		// vectors the index accepts; real SIFT is uint8 0..255 and exact).
+		dims := 1 + rng.Intn(160)
+		dir := make([]float64, dims)
+		var nn float64
+		for d := range dir {
+			dir[d] = rng.NormFloat64()
+			nn += dir[d] * dir[d]
+		}
+		if nn == 0 {
+			continue
+		}
+		nn = math.Sqrt(nn)
+		q := make([]float64, dims)
+		mag := math.Pow(10, 4+rng.Float64()*5) // 1e4 .. 1e9
+		for d := range q {
+			q[d] = rng.NormFloat64() * mag
+		}
+		scale := (rng.Float64()*99 + 1) * mag * 0.1
+		tf := rng.Float64() // fine at fraction tf along q->c, collinear (between)
+		c := make([]float64, dims)
+		f := make([]float64, dims)
+		for d := range dir {
+			u := dir[d] / nn
+			c[d] = q[d] + u*scale
+			f[d] = q[d] + u*scale*tf
+		}
+		d2qc := spfreshSquaredDistance(q, c)
+		d2cf := spfreshSquaredDistance(c, f)
+		d2qf := spfreshSquaredDistance(q, f)
+		lb := math.Sqrt(d2qc) - math.Sqrt(d2cf)
+		if lb <= 0 || d2qf <= 0 {
+			continue
+		}
+		if boundSq := lb * lb; boundSq > d2qf {
+			sawOvershoot = true
+			if over := (boundSq - d2qf) / d2qf; over > maxOver {
+				maxOver = over
+			}
+		}
+	}
+	if !sawOvershoot {
+		t.Fatalf("search observed no roundoff overshoot — the regression is vacuous")
+	}
+	t.Logf("max relative bound overshoot over true d²: %.3e (spfreshPruneSlack=%.0e)", maxOver, spfreshPruneSlack)
+	if maxOver >= spfreshPruneSlack {
+		t.Fatalf("spfreshPruneSlack=%.0e too small: observed roundoff overshoot %.3e can cause a wrong skip in gatherTopK",
+			spfreshPruneSlack, maxOver)
+	}
+}
+
+// TestSPFreshGatherTopKExactLargeCoords is the behavioral large-magnitude guard:
+// gatherTopK must stay byte-identical to the flat scan even when coordinates are
+// large (~1e6) and fines cluster tightly near the pool boundary — the regime
+// where the sqrt-rounded bound binds at the ulp scale (see codex's P2 and
+// TestSPFreshPruneSlackCoversRoundoff). Exercises gatherTopK end-to-end.
+func TestSPFreshGatherTopKExactLargeCoords(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(909))
+	for trial := 0; trial < 3000; trial++ {
+		dims := 2 + rng.Intn(8)
+		// One cell, many fines tightly clustered around a far, large center, so
+		// their query-distances differ by ~the spread — comparable to the sqrt
+		// roundoff at this magnitude, which is exactly where the bound can flip.
+		base := (rng.Float64()*9 + 1) * 1e6 // 1e6..1e7
+		spread := rng.Float64()*1e-2 + 1e-3
+		nFines := 4 + rng.Intn(12)
+		ids := make([]int64, nFines)
+		cells := make([]int64, nFines)
+		vecs := make([][]float64, nFines)
+		center := make([]float64, dims)
+		for d := range center {
+			center[d] = base + rng.NormFloat64()*base*0.01
+		}
+		for i := 0; i < nFines; i++ {
+			ids[i] = int64(i + 1)
+			cells[i] = 1
+			v := make([]float64, dims)
+			for d := range v {
+				v[d] = center[d] + rng.NormFloat64()*spread
+			}
+			vecs[i] = v
+		}
+		r := newTwoLevelTestRouter(ids, cells, vecs)
+		for sub := 0; sub < 6; sub++ {
+			q := make([]float64, dims)
+			for d := range q {
+				// Query far from the cluster, also large, so d(q,centroid) is
+				// large and the sqrt roundoff is maximal.
+				q[d] = rng.NormFloat64() * base
+			}
+			pool := 1 + rng.Intn(nFines)
+			cellsK := spfreshNearestK(q, r.coarseIDs, r.coarseVecs, len(r.coarseIDs))
+			got := r.gatherTopK(q, cellsK, pool)
+			var fIDs []int64
+			var fVecs [][]float64
+			for _, c := range cellsK {
+				fIDs = append(fIDs, r.cellFineIDs[c.id]...)
+				fVecs = append(fVecs, r.cellFineVecs[c.id]...)
+			}
+			want := spfreshNearestK(q, fIDs, fVecs, pool)
+			if len(got) != len(want) {
+				t.Fatalf("trial %d/%d: len got=%d want=%d (pool=%d base=%g)", trial, sub, len(got), len(want), pool, base)
+			}
+			for i := range got {
+				if got[i].id != want[i].id || got[i].d2 != want[i].d2 {
+					t.Fatalf("trial %d/%d pos %d: got (id=%d d2=%.6f) want (id=%d d2=%.6f) pool=%d base=%g — ROUNDOFF SKIP",
+						trial, sub, i, got[i].id, got[i].d2, want[i].id, want[i].d2, pool, base)
+				}
+			}
+		}
+	}
+}
+
 // randomTopology builds a random (ids, cell-assignment, vecs) topology for the
 // RFC-101 exactness fuzz: nFines fines spread over up to nCells cells.
 func randomTopology(rng *rand.Rand, dims, nFines, nCells int) (ids, cells []int64, vecs [][]float64) {
