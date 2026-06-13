@@ -230,6 +230,29 @@ S=1): `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SHARD_SAFE=1 bazelisk test
 //pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshSIFTBenchmark"
 --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SIFT_SHARD_SAFE`
 
+### SPFresh Lmax granularity A/B (SIFT-500k) — NEGATIVE (recall-at-scale item 4)
+
+Tested the spfresh-reviewer's "biggest recall lever": finer cells (smaller Lmax →
+more, smaller posting lists) for a better recall ladder. Falsified — finer
+granularity LOWERS recall at every fixed probe budget:
+
+| SIFT-500k | Lmax=256 (default) | Lmax=128 (finer) |
+|---|---|---|
+| cells / active fines | 123 / 5,736 | 246 / 10,266 |
+| build | 50.0 s | 57.9 s (slower) |
+| recall fast (16/24/64) | **0.8985** @ 6.9 ms | 0.8690 @ 4.3 ms |
+| recall default (32/64/200) | **0.9745** @ 13.7 ms | 0.9630 @ 10.9 ms |
+
+At a FIXED w/kc/c probe, smaller lists ⇒ the probe covers fewer total candidates
+⇒ recall drops (just faster, and a slower build). Exploiting finer granularity
+needs MORE probes (latency cost); reaching the paper's 16% centroid ratio would
+need Lmax ≈ 16, far under the FDB-reply-budget floor. So granularity is
+structurally bounded and recall is **probe-bound, not granularity-bound** — like
+the α-replication sweep (item 3), this lever is spent; default Lmax=256 dominates.
+Run: add `SIFT_LMAX=128` to the build-bench env. The recall headroom that remains
+is the assignment-quality axis (item 5: drift recovery under ingest), not coarser
+or finer cells.
+
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 
 Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):

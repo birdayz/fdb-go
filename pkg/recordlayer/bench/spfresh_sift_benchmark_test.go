@@ -89,6 +89,12 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	if cm := os.Getenv("SIFT_CELL_MAX"); cm != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshCellMax] = cm
 	}
+	// SIFT_LMAX sweeps the posting-list cap (granularity): a smaller Lmax forms
+	// MORE, finer cells — the spfresh-reviewer's biggest recall lever at scale —
+	// traded against the FDB reply budget (a query reads more, smaller lists).
+	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	// SIFT_SHARD_SAFE=1 gives all record types a RecordTypeKey prefix, which
 	// satisfies RFC-103's parallel-staging gate (PrimaryKeyHasRecordTypePrefix)

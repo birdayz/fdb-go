@@ -988,13 +988,14 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   rejects every other centroid as same-direction). Full table + geometry in
   VECTOR_BENCHMARK_RESULTS.md. The recall ladder beyond ~0.94 at 1M is granularity
   (item 4), the refinement sweep (item 5), and kc.
-- [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 0.6% centroid ratio
-  (post-RNG: 6,228 lists at 1M) vs paper's 16%: coarser lists make each kc step blunter;
-  Lmax=256 is FDB-reply-budget justified (RFC) so only move it with measurements. Paper
-  ACK rider: ε-inertness on SIFT-1M is a GRANULARITY property, not an Eq.(3) property —
-  Fig. 12's pruning win was measured at 16% centroid ratio, and at 100k granularity our
-  corrected ε already binds (0.990 at −15% latency). If this item moves Lmax/granularity
-  toward Fig. 9's regime, re-measure ε there.
+- [x] **4. Revisit Lmax=128 — DONE, measured NEGATIVE (Lmax=256 stays).** SIFT-500k A/B
+  (full table in VECTOR_BENCHMARK_RESULTS.md): Lmax=128 (2× cells/fines) LOWERS recall at
+  every fixed probe budget (fast 0.8985→0.8690, default 0.9745→0.9630) — just faster
+  queries + a slower build. At a fixed w/kc/c probe, smaller lists cover fewer total
+  candidates ⇒ recall drops. Reaching the paper's 16% ratio needs Lmax≈16, far under the
+  FDB-reply-budget floor — granularity is structurally bounded, recall is **probe-bound
+  not granularity-bound** (like item 3's α-sweep, this lever is spent). The remaining
+  recall headroom is assignment-quality (item 5), not cell size.
 - [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery).** Measured at 1M:
   a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
   same code, similar action counts. Writers outrunning the rebalancer assign vectors
