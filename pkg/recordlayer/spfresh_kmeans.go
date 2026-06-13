@@ -321,27 +321,67 @@ func spfreshNearestK(query []float64, ids []int64, vecs [][]float64, k int) []sp
 	if k <= 0 || len(ids) == 0 {
 		return nil
 	}
-	less := func(a, b spfreshCandidate) bool {
-		if a.d2 != b.d2 {
-			return a.d2 < b.d2
-		}
-		return a.id < b.id
-	}
 	out := make([]spfreshCandidate, 0, min(k, len(ids))+1)
 	for i := range ids {
 		c := spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i]), vec: vecs[i]}
-		if len(out) == k && !less(c, out[k-1]) {
+		if len(out) == k && !spfreshCandLess(c, out[k-1]) {
 			continue // common case after warmup: not in the top k
 		}
-		pos := sort.Search(len(out), func(j int) bool { return less(c, out[j]) })
-		out = append(out, spfreshCandidate{})
-		copy(out[pos+1:], out[pos:])
-		out[pos] = c
-		if len(out) > k {
-			out = out[:k]
-		}
+		spfreshInsertCandidate(&out, c, k)
 	}
 	return out
+}
+
+// spfreshCandLess is the canonical candidate order — ascending squared distance,
+// ties broken by ascending id. Shared by spfreshNearestK and the bound-pruned
+// two-level top-k (RFC-101) so both produce byte-identical result slices for the
+// same set of offered candidates.
+func spfreshCandLess(a, b spfreshCandidate) bool {
+	if a.d2 != b.d2 {
+		return a.d2 < b.d2
+	}
+	return a.id < b.id
+}
+
+// spfreshInsertCandidate inserts c into the ascending top-k slice *out (cap k),
+// the exact insertion spfreshNearestK uses. Caller has already rejected c when
+// the slice is full and c is not better than the current worst.
+func spfreshInsertCandidate(out *[]spfreshCandidate, c spfreshCandidate, k int) {
+	s := *out
+	pos := sort.Search(len(s), func(j int) bool { return spfreshCandLess(c, s[j]) })
+	s = append(s, spfreshCandidate{})
+	copy(s[pos+1:], s[pos:])
+	s[pos] = c
+	if len(s) > k {
+		s = s[:k]
+	}
+	*out = s
+}
+
+// spfreshBoundedTopK keeps the k smallest candidates in spfreshCandLess order.
+// Insertion semantics are identical to spfreshNearestK, so a bound-pruned scan
+// that offers the same NON-pruned candidates yields the same result slice
+// (RFC-101 exactness). worst() is the current prune threshold (k-th best d2).
+type spfreshBoundedTopK struct {
+	k   int
+	out []spfreshCandidate
+}
+
+func newSpfreshBoundedTopK(k int) spfreshBoundedTopK {
+	return spfreshBoundedTopK{k: k, out: make([]spfreshCandidate, 0, k+1)}
+}
+
+func (t *spfreshBoundedTopK) full() bool { return len(t.out) == t.k }
+
+// worst returns the current k-th best squared distance. Valid only when full().
+func (t *spfreshBoundedTopK) worst() float64 { return t.out[len(t.out)-1].d2 }
+
+func (t *spfreshBoundedTopK) offer(id int64, d2 float64, vec []float64) {
+	c := spfreshCandidate{id: id, d2: d2, vec: vec}
+	if len(t.out) == t.k && !spfreshCandLess(c, t.out[t.k-1]) {
+		return
+	}
+	spfreshInsertCandidate(&t.out, c, t.k)
 }
 
 // spfreshClosure applies SPANN's closure assignment (RFC-094 §5) with the

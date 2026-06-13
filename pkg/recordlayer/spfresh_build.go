@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -524,16 +525,50 @@ type spfreshBuildRouter struct {
 	coarseVecs   [][]float64
 	cellFineIDs  map[int64][]int64
 	cellFineVecs map[int64][][]float64
+	// RFC-101 prune metadata, derived once from the maps above:
+	// cellFineDist[cellID][j] is the L2 distance from the cell's coarse centroid
+	// to its j-th fine (same order as cellFineVecs); cellRadius[cellID] is the
+	// max over those. The triangle inequality d(v,f) >= |d(v,c) - d(c,f)| then
+	// lets assign skip whole cells / individual fines that cannot enter the
+	// pool — EXACT, so the returned top-k (and the assignment) is unchanged.
+	cellFineDist map[int64][]float64
+	cellRadius   map[int64]float64
 	w            int
 }
 
 func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int64][][]float64) *spfreshBuildRouter {
-	return &spfreshBuildRouter{
+	r := &spfreshBuildRouter{
 		coarseIDs:    b.cellIDs,
 		coarseVecs:   b.coarseVec,
 		cellFineIDs:  fineIDs,
 		cellFineVecs: fineVecs,
 		w:            b.config.BuildAssignCells,
+	}
+	r.precomputePrune()
+	return r
+}
+
+// precomputePrune derives the RFC-101 cell-centroid→fine L2 distances and per-cell
+// radii from the router's coarse + fine maps. One pass over all fines (~6,100 at
+// 1M), amortized over every per-vector assign. coarseVecs[i] is the centroid for
+// coarseIDs[i] (the cell a query and the build both route on — same primitive).
+func (r *spfreshBuildRouter) precomputePrune() {
+	r.cellFineDist = make(map[int64][]float64, len(r.coarseIDs))
+	r.cellRadius = make(map[int64]float64, len(r.coarseIDs))
+	for i, cid := range r.coarseIDs {
+		cvec := r.coarseVecs[i]
+		fvs := r.cellFineVecs[cid]
+		fd := make([]float64, len(fvs))
+		maxR := 0.0
+		for j, fv := range fvs {
+			d := math.Sqrt(spfreshSquaredDistance(cvec, fv))
+			fd[j] = d
+			if d > maxR {
+				maxR = d
+			}
+		}
+		r.cellFineDist[cid] = fd
+		r.cellRadius[cid] = maxR
 	}
 }
 
@@ -562,24 +597,14 @@ func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int
 // §3.3) and does NOT re-closure globally, so query-reachability — not NPA — is
 // the justification.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
-	// Two-level: gather the fines of the w_b nearest coarse cells. With fewer
-	// than w_b cells (small index) this is every fine — identical to a flat
-	// scan, so small indexes are unaffected.
+	// Two-level: the w_b nearest coarse cells (ascending d²). With fewer than
+	// w_b cells (small index) this is every cell — identical to a flat scan, so
+	// small indexes are unaffected.
 	cells := spfreshNearestK(vec, r.coarseIDs, r.coarseVecs, r.w)
-	n := 0
-	for _, c := range cells {
-		n += len(r.cellFineIDs[c.id])
-	}
-	gIDs := make([]int64, 0, n)
-	gVecs := make([][]float64, 0, n)
-	for _, c := range cells {
-		gIDs = append(gIDs, r.cellFineIDs[c.id]...)
-		gVecs = append(gVecs, r.cellFineVecs[c.id]...)
-	}
 
 	base := spfreshClosurePool(rep)
 	for pool := base; ; pool *= 2 {
-		cands := spfreshNearestK(vec, gIDs, gVecs, pool)
+		cands := r.gatherTopK(vec, cells, pool)
 		kept := spfreshClosure(cands, rep, alpha)
 		if len(kept) >= rep || len(cands) < pool || pool >= 4*base ||
 			(len(cands) > 0 && cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2) {
@@ -590,6 +615,39 @@ func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids 
 			return ids, fvecs
 		}
 	}
+}
+
+// gatherTopK returns the `pool` nearest fines across the given cells, pruned by
+// the L2 triangle inequality. EXACT: byte-identical to spfreshNearestK over a
+// flat gather of the same cells' fines — it offers candidates in the same order
+// (cell-ascending, then cellFineVecs order) and only skips fines whose lower
+// bound already exceeds the pool-th best actual distance, so they could not have
+// been in the pool. The prune activates only once the pool is full, so it never
+// prevents the pool from filling when enough fines exist (⇒ the `len < pool`
+// widening termination in assign is unchanged). cells must be ascending by d².
+func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate, pool int) []spfreshCandidate {
+	top := newSpfreshBoundedTopK(pool)
+	for _, cell := range cells {
+		fvs := r.cellFineVecs[cell.id]
+		fids := r.cellFineIDs[cell.id]
+		fd := r.cellFineDist[cell.id]
+		dvc := math.Sqrt(cell.d2)
+		if top.full() {
+			// No fine in this cell can be closer than d(v,c) - radius(c).
+			if lb := dvc - r.cellRadius[cell.id]; lb > 0 && lb*lb > top.worst() {
+				continue
+			}
+		}
+		for j, fv := range fvs {
+			if top.full() {
+				if lb := dvc - fd[j]; lb > 0 && lb*lb > top.worst() {
+					continue
+				}
+			}
+			top.offer(fids[j], spfreshSquaredDistance(vec, fv), fv)
+		}
+	}
+	return top.out
 }
 
 // waveB claims the cell, REAL-reads its full staging range (the conflict

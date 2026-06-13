@@ -644,3 +644,29 @@ probe width w_q (=32): the build assigns over exactly the neighborhood a query
 navigates (SPANN §3.2.1), and a larger w_b only wastes work placing replicas a
 query for that vector never reaches (codex). Reproduce with
 `SPFRESH_BENCH=1 SIFT_N=200000 SIFT_CELL_TARGET=4 SIFT_BUILD_W={100000,48,32}`.
+
+### SPFresh bulk-build: assign triangle-inequality bound pruning (RFC-101)
+
+Within the w_b cells (RFC-099), wave-B's fine scan is ~85 % of assign's CPU (a
+profile shows `spfreshSquaredDistance` at 64.6 % flat). RFC-101 prunes that scan
+with the L2 triangle inequality — using the `d(v, cell)` the coarse routing
+already computed — to skip whole cells / fines that cannot enter the pool.
+**EXACT** (byte-identical pool ⇒ identical assignment ⇒ identical recall), and it
+also eliminates the per-vector gather allocation.
+
+| metric | flat gather (RFC-099) | bound-pruned (RFC-101) |
+|---|---|---|
+| assign micro-bench (245 cells × 25 fines, 128-D, w_b=32) | 97.2 µs | **84.0 µs (1.16×)** |
+| assign bytes/op | 30,019 | **3,011 (10× fewer)** |
+| assign allocs/op | 9 | **7** |
+| 200k SIFT build (default CellTarget, 50 cells) | 10,889 vec/s | **11,492 vec/s (1.055×)** |
+| 200k SIFT recall@10 | 0.9940 | **0.9940 (identical — exact)** |
+
+The distance-pruning is **dimensionality-limited**: at 128-D the distance
+distribution concentrates, so triangle-inequality skips (like Elkan/Hamerly) are
+modest — 1.16× on assign, ~5 % end-to-end at 200k (w_b gathers 64 % of 50 cells;
+binds harder at 1M's 246 cells). The robust, scale-independent win is the **10×
+allocation reduction** (less GC churn over 1M+ assigns) plus exactness. Exactness
+is pinned by 700 byte-identical fuzz trials (`TestSPFreshGatherTopKExactVsFlat`,
+`TestSPFreshAssignExactVsFlat`). No pure-Go path gives an order-of-magnitude here
+(the kernel is at the scalar floor, RFC-100); that needs SIMD/GPU.

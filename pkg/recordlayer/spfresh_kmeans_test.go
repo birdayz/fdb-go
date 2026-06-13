@@ -275,13 +275,15 @@ func newTwoLevelTestRouter(ids, cells []int64, vecs [][]float64) *spfreshBuildRo
 		coarseIDs = append(coarseIDs, c)
 		coarseVecs = append(coarseVecs, mean)
 	}
-	return &spfreshBuildRouter{
+	r := &spfreshBuildRouter{
 		coarseIDs:    coarseIDs,
 		coarseVecs:   coarseVecs,
 		cellFineIDs:  cellFineIDs,
 		cellFineVecs: cellFineVecs,
 		w:            spfreshDefaultBuildAssignCells,
 	}
+	r.precomputePrune()
+	return r
 }
 
 func TestSPFreshBuildRouterAssignRNGPool(t *testing.T) {
@@ -559,5 +561,136 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
 	if len(ids) != 2 || ids[1] != diverse {
 		t.Fatalf("the widening must scan through 4x base (pool 64) and find index-40 diverse candidate: got %v", ids)
+	}
+}
+
+// randomTopology builds a random (ids, cell-assignment, vecs) topology for the
+// RFC-101 exactness fuzz: nFines fines spread over up to nCells cells.
+func randomTopology(rng *rand.Rand, dims, nFines, nCells int) (ids, cells []int64, vecs [][]float64) {
+	ids = make([]int64, nFines)
+	cells = make([]int64, nFines)
+	vecs = make([][]float64, nFines)
+	for i := 0; i < nFines; i++ {
+		ids[i] = int64(i + 1)
+		cells[i] = int64(rng.Intn(nCells) + 1)
+		v := make([]float64, dims)
+		for d := range v {
+			v[d] = rng.NormFloat64() * 3
+		}
+		vecs[i] = v
+	}
+	return ids, cells, vecs
+}
+
+// TestSPFreshGatherTopKExactVsFlat is the load-bearing RFC-101 test: the
+// bound-pruned two-level top-k must return a BYTE-IDENTICAL pool (same ids, same
+// squared distances, same order) as a flat spfreshNearestK over the gathered
+// cells' fines, for every topology / probe width / pool size. Pruning that ever
+// changed the pool would change the closure copy-set and thus recall — this
+// fails closed on any such divergence.
+func TestSPFreshGatherTopKExactVsFlat(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(101))
+	for trial := 0; trial < 400; trial++ {
+		dims := 2 + rng.Intn(48)
+		nFines := 1 + rng.Intn(400)
+		nCells := 1 + rng.Intn(nFines)
+		ids, cells, vecs := randomTopology(rng, dims, nFines, nCells)
+		r := newTwoLevelTestRouter(ids, cells, vecs)
+		for sub := 0; sub < 4; sub++ {
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64() * 3
+			}
+			w := 1 + rng.Intn(len(r.coarseIDs))
+			pool := 1 + rng.Intn(2*nFines+1) // includes pool > total fines
+			cellsK := spfreshNearestK(q, r.coarseIDs, r.coarseVecs, w)
+
+			got := r.gatherTopK(q, cellsK, pool)
+
+			// Flat reference: gather the same cells' fines, plain top-k.
+			var fIDs []int64
+			var fVecs [][]float64
+			for _, c := range cellsK {
+				fIDs = append(fIDs, r.cellFineIDs[c.id]...)
+				fVecs = append(fVecs, r.cellFineVecs[c.id]...)
+			}
+			want := spfreshNearestK(q, fIDs, fVecs, pool)
+
+			if len(got) != len(want) {
+				t.Fatalf("trial %d/%d: len got=%d want=%d (w=%d pool=%d cells=%d fines=%d)",
+					trial, sub, len(got), len(want), w, pool, len(cellsK), len(fIDs))
+			}
+			for i := range got {
+				if got[i].id != want[i].id || got[i].d2 != want[i].d2 {
+					t.Fatalf("trial %d/%d pos %d: got (id=%d d2=%g) want (id=%d d2=%g) w=%d pool=%d",
+						trial, sub, i, got[i].id, got[i].d2, want[i].id, want[i].d2, w, pool)
+				}
+			}
+		}
+	}
+}
+
+// TestSPFreshAssignExactVsFlat exercises the full assign() (including the
+// bounded-widening pool loop) against a flat reference that gathers all the
+// w_b cells' fines and runs the identical closure/widening — proving the prune
+// does not change the chosen copy-set or the widening termination.
+func TestSPFreshAssignExactVsFlat(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(202))
+	// flatAssign is the pre-RFC-101 assign: gather then spfreshNearestK.
+	flatAssign := func(r *spfreshBuildRouter, vec []float64, rep int, alpha float64) ([]int64, [][]float64) {
+		cells := spfreshNearestK(vec, r.coarseIDs, r.coarseVecs, r.w)
+		var gIDs []int64
+		var gVecs [][]float64
+		for _, c := range cells {
+			gIDs = append(gIDs, r.cellFineIDs[c.id]...)
+			gVecs = append(gVecs, r.cellFineVecs[c.id]...)
+		}
+		base := spfreshClosurePool(rep)
+		for pool := base; ; pool *= 2 {
+			cands := spfreshNearestK(vec, gIDs, gVecs, pool)
+			kept := spfreshClosure(cands, rep, alpha)
+			if len(kept) >= rep || len(cands) < pool || pool >= 4*base ||
+				(len(cands) > 0 && cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2) {
+				var ids []int64
+				var fv [][]float64
+				for _, c := range kept {
+					ids = append(ids, c.id)
+					fv = append(fv, c.vec)
+				}
+				return ids, fv
+			}
+		}
+	}
+	for trial := 0; trial < 300; trial++ {
+		dims := 2 + rng.Intn(32)
+		nFines := 1 + rng.Intn(300)
+		nCells := 1 + rng.Intn(nFines)
+		ids, cells, vecs := randomTopology(rng, dims, nFines, nCells)
+		r := newTwoLevelTestRouter(ids, cells, vecs)
+		r.w = 1 + rng.Intn(len(r.coarseIDs))
+		for sub := 0; sub < 3; sub++ {
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64() * 3
+			}
+			rep := 1 + rng.Intn(4)
+			alpha := 1.0 + rng.Float64()
+			gotIDs, gotVecs := r.assign(q, rep, alpha)
+			wantIDs, wantVecs := flatAssign(r, q, rep, alpha)
+			if len(gotIDs) != len(wantIDs) {
+				t.Fatalf("trial %d/%d: len ids got=%d want=%d (w=%d rep=%d alpha=%g)",
+					trial, sub, len(gotIDs), len(wantIDs), r.w, rep, alpha)
+			}
+			for i := range gotIDs {
+				if gotIDs[i] != wantIDs[i] {
+					t.Fatalf("trial %d/%d pos %d: id got=%d want=%d", trial, sub, i, gotIDs[i], wantIDs[i])
+				}
+			}
+			if len(gotVecs) != len(wantVecs) {
+				t.Fatalf("trial %d/%d: len vecs got=%d want=%d", trial, sub, len(gotVecs), len(wantVecs))
+			}
+		}
 	}
 }

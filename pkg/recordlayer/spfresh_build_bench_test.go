@@ -52,6 +52,7 @@ func BenchmarkSPFreshBuildAssign(b *testing.B) {
 		cellFineVecs: fineVecs,
 		w:            DefaultSPFreshConfig(dims).BuildAssignCells,
 	}
+	router.precomputePrune() // RFC-101 prune metadata (cell→fine L2 + radii)
 
 	// A stream of query-like vectors near random cell centers.
 	queries := make([][]float64, 256)
