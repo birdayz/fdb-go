@@ -80,15 +80,47 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	return spfreshKMeansWorkers(vectors, k, seed, maxIters, 0)
 }
 
-// spfreshKMeansWorkers is the worker-count-parameterized core (0 = NumCPU).
-// The FIXED chunk size pins the float-accumulation order of the parallel
-// reductions, so any two runs with the same (vectors, k, seed) are
-// bit-identical regardless of worker count — pinned by the workers=1 vs
-// parallel comparison test.
+// spfreshKMeansWorkers is the worker-count-parameterized core (0 = NumCPU) with
+// EXACT convergence (stop only when no point changes cluster) — the behavior
+// splits/csplit and the determinism tests rely on. The FIXED chunk size pins the
+// float-accumulation order of the parallel reductions, so any two runs with the
+// same (vectors, k, seed) are bit-identical regardless of worker count.
 func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, workers int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansCore(vectors, k, seed, maxIters, workers, 0)
+}
+
+// spfreshKMeansBuildConvergeFraction is the bulk-build coarse/wave-A k-means
+// early-stop threshold: stop once fewer than this fraction of points are
+// reassigned in an iteration. At high k (e.g. 246 coarse cells at 1M) Lloyd
+// never reaches exact zero within maxIters — it micro-refines a long tail of
+// <1% reassignments that does NOT move recall (RFC-102 A/B: recall@10 flat at
+// 0.995–0.997 from 4 to 25 iterations on SIFT-100k). Stopping that tail is a
+// build speedup at zero recall cost. Build-path only: splits/csplit (k=2,
+// foreground/rebalance) keep EXACT convergence (fraction 0) so their clustering
+// stays bit-identical — the foreground update path has no recall A/B harness.
+const spfreshKMeansBuildConvergeFraction = 0.01
+
+// spfreshKMeansBuild is the bulk-build variant: exact-EXCEPT it early-stops the
+// long micro-refinement tail via spfreshKMeansBuildConvergeFraction. Used only by
+// coarsePass and waveA — the recall-A/B-validated build path.
+func spfreshKMeansBuild(vectors [][]float64, k int, seed int64, maxIters int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansCore(vectors, k, seed, maxIters, 0, spfreshKMeansBuildConvergeFraction)
+}
+
+// spfreshKMeansCore runs Lloyd with k-means++ seeding. convergeFraction is the
+// early-stop threshold: stop when the number of reassigned points in an
+// iteration is <= floor(convergeFraction·n). 0 ⇒ exact convergence (stop only on
+// zero change). The reassignment COUNT is an order-independent sum, so the stop
+// decision is deterministic and GOMAXPROCS-invariant (same fixed-chunk reduction
+// order as before).
+func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers int, convergeFraction float64) (centroids [][]float64, assign []int) {
 	n := len(vectors)
 	if n == 0 {
 		return nil, nil
+	}
+	convergeThresh := int64(0)
+	if convergeFraction > 0 {
+		convergeThresh = int64(convergeFraction * float64(n))
 	}
 	const chunkSize = spfreshKMeansChunk
 	chunked := func(fn func(chunk, lo, hi int)) { spfreshParallelChunksSized(n, chunkSize, workers, fn) }
@@ -168,9 +200,11 @@ func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, work
 	}
 	for iter := 0; iter < maxIters; iter++ {
 		// Assignment: index-disjoint writes, order-independent — parallel.
-		var changedFlag atomic.Bool
+		// changed is the per-iteration reassignment count (an order-independent
+		// sum), used for the convergence test below.
+		var changed atomic.Int64
 		chunked(func(_, lo, hi int) {
-			chunkChanged := false
+			chunkChanged := int64(0)
 			for i := lo; i < hi; i++ {
 				v := vectors[i]
 				best, bestD := 0, math.Inf(1)
@@ -180,15 +214,17 @@ func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, work
 					}
 				}
 				if assign[i] != best {
-					chunkChanged = true
+					chunkChanged++
 					assign[i] = best
 				}
 			}
-			if chunkChanged {
-				changedFlag.Store(true)
-			}
+			changed.Add(chunkChanged)
 		})
-		if iter > 0 && !changedFlag.Load() {
+		// Converged: stop when <= convergeThresh points were reassigned. With
+		// convergeThresh==0 this is the exact "no change" stop (splits, tests).
+		// With the build fraction it also trims the long micro-refinement tail
+		// at high k that doesn't move recall (RFC-102).
+		if iter > 0 && changed.Load() <= convergeThresh {
 			break
 		}
 		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the

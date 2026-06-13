@@ -123,7 +123,7 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 		return fmt.Errorf("spfresh build: K0 %d exceeds the %d-point training sample (totalN %d outgrew spfreshCoarseSampleCap %d)",
 			k0, len(sample), totalN, spfreshCoarseSampleCap)
 	}
-	coarse, _ := spfreshKMeans(sample, k0, seed, 25)
+	coarse, _ := spfreshKMeansBuild(sample, k0, seed, 25)
 	// Roundtrip the centroids through fp16 BEFORE anything routes on them:
 	// the COARSE rows store fp16, so foreground writers route on the
 	// roundtripped vectors — if the builder's own staging routed on the raw
@@ -468,7 +468,7 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ma
 		if k < 1 {
 			k = 1
 		}
-		cents, assign := spfreshKMeans(vecs, k, seed+cellID, 25)
+		cents, assign := spfreshKMeansBuild(vecs, k, seed+cellID, 25)
 
 		// Sub-Lmin fold: clusters below the merge threshold fold into their
 		// nearest sibling (or build completion dumps a pile of merge tasks on

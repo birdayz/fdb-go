@@ -454,6 +454,86 @@ func TestSPFreshKMeansWorkerCountInvariance(t *testing.T) {
 	}
 }
 
+// TestSPFreshKMeansBuildConvergeFraction pins RFC-102: the build k-means
+// convergence-fraction early-stop is (1) deterministic run-to-run, (2)
+// GOMAXPROCS-invariant, (3) exact (fraction 0) for the split/csplit path — i.e.
+// spfreshKMeans is unchanged — while (4) a non-zero fraction actually trims a
+// long-tail (oscillating) high-k run, proving the parameter has effect.
+func TestSPFreshKMeansBuildConvergeFraction(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(101))
+	vecs := make([][]float64, 3*spfreshKMeansChunk/2+57)
+	for i := range vecs {
+		vecs[i] = []float64{rng.NormFloat64(), rng.NormFloat64(), rng.NormFloat64()}
+	}
+
+	// (1) deterministic run-to-run.
+	c1, a1 := spfreshKMeansBuild(vecs, 16, 5, 25)
+	c2, a2 := spfreshKMeansBuild(vecs, 16, 5, 25)
+	for i := range a1 {
+		if a1[i] != a2[i] {
+			t.Fatalf("build k-means assignment %d differs across identical runs", i)
+		}
+	}
+	for i := range c1 {
+		for d := range c1[i] {
+			if c1[i][d] != c2[i][d] {
+				t.Fatalf("build k-means centroid %d dim %d differs across identical runs", i, d)
+			}
+		}
+	}
+
+	// (2) GOMAXPROCS-invariant (workers=1 vs parallel) with the fraction.
+	cSeq, aSeq := spfreshKMeansCore(vecs, 16, 5, 25, 1, spfreshKMeansBuildConvergeFraction)
+	cPar, aPar := spfreshKMeansCore(vecs, 16, 5, 25, 0, spfreshKMeansBuildConvergeFraction)
+	for i := range aSeq {
+		if aSeq[i] != aPar[i] {
+			t.Fatalf("build k-means assignment %d differs between workers=1 and parallel", i)
+		}
+	}
+	for i := range cSeq {
+		for d := range cSeq[i] {
+			if cSeq[i][d] != cPar[i][d] {
+				t.Fatalf("build k-means centroid %d dim %d differs between workers=1 and parallel", i, d)
+			}
+		}
+	}
+
+	// (3) fraction 0 == the exact split/csplit path: spfreshKMeans (which splits
+	// call) must be byte-identical to spfreshKMeansCore(...,0). This is what keeps
+	// the foreground rebalance clustering bit-identical (no recall A/B there).
+	cEx, aEx := spfreshKMeans(vecs, 16, 5, 25)
+	cZero, aZero := spfreshKMeansCore(vecs, 16, 5, 25, 0, 0)
+	for i := range aEx {
+		if aEx[i] != aZero[i] {
+			t.Fatalf("spfreshKMeans (split path) diverged from fraction-0 core at %d", i)
+		}
+	}
+	for i := range cEx {
+		for d := range cEx[i] {
+			if cEx[i][d] != cZero[i][d] {
+				t.Fatalf("spfreshKMeans (split path) centroid %d dim %d diverged from fraction-0 core", i, d)
+			}
+		}
+	}
+
+	// (4) the fraction has effect: on this multi-chunk run a large fraction must
+	// stop earlier and yield a different (still valid) clustering than exact.
+	// (k-means with random data oscillates a small tail forever, so exact runs
+	// the full 25 iters while a 10% fraction stops early.)
+	_, aLoose := spfreshKMeansCore(vecs, 16, 5, 25, 0, 0.10)
+	diff := false
+	for i := range aEx {
+		if aEx[i] != aLoose[i] {
+			diff = true
+			break
+		}
+	}
+	if !diff {
+		t.Fatalf("convergeFraction=0.10 produced the SAME assignment as exact — the early-stop never engaged (regression is vacuous)")
+	}
+}
+
 // TestSPFreshBuilderFineIDPool pins the wave-A ID pool's doling: concurrent
 // claims hand out disjoint consecutive ranges from the pre-claimed block
 // without touching the allocator key, and an over-block request fails loudly

@@ -670,3 +670,32 @@ allocation reduction** (less GC churn over 1M+ assigns) plus exactness. Exactnes
 is pinned by 700 byte-identical fuzz trials (`TestSPFreshGatherTopKExactVsFlat`,
 `TestSPFreshAssignExactVsFlat`). No pure-Go path gives an order-of-magnitude here
 (the kernel is at the scalar floor, RFC-100); that needs SIMD/GPU.
+
+### SPFresh bulk-build: k-means convergence-fraction early-stop (RFC-102)
+
+The k-means Lloyd assignment step is the #1 distance sink (34.6 % of build CPU).
+At high k (k0=246 at 1M) Lloyd runs the full maxIters=25 without converging — a
+long micro-refinement tail. A recall-vs-iterations A/B shows that tail is wasted:
+
+| maxIters | 25 | 10 | 6 | 4 |
+|---|---|---|---|---|
+| recall@10 (SIFT-100k) | 0.9970 | 0.9950 | 0.9960 | 0.9950 |
+
+Recall is flat from 4→25 iters. RFC-102 stops the tail via a convergence-fraction
+early-stop (ε=1 %: stop when <1 % of points reassign), as a PARAMETER so the
+foreground split/csplit path (k=2) keeps exact convergence (bit-identical — no
+recall A/B there) and only the bulk build coarse+wave-A opt in.
+
+| N | build EXACT | build ε=1 % | speedup | recall EXACT → ε=1 % |
+|---|---|---|---|---|
+| 100k | 12,351 vec/s | 12,776 vec/s | 1.034× | 0.9970 → 0.9960 |
+| 500k | 10,198 vec/s | 10,352 vec/s | 1.015× | 0.9840 → 0.9830 |
+
+**Honest: the measured win is small (1.5–3.4 %, near noise)** because coarse k is
+small at these scales (k0=25/123, converges fast); the trimmable tail only
+appears at the 1M coarse pass (k0=246, 25 non-converging iters per the
+instrumented curve), where the win is larger but unmeasured (1M build exceeds the
+short-bench budget). Recall-neutral; split path bit-identical. The earlier design
+(Hamerly bound pruning) was rejected — its bit-identical form needs the RFC-101
+roundoff machinery + tie-break handling to *preserve* a tail the A/B proves is
+worthless; stopping the tail is simpler and strictly better.
