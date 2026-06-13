@@ -242,17 +242,59 @@ func FuzzSPFreshClosure(f *testing.F) {
 	})
 }
 
+// newTwoLevelTestRouter builds a two-level build router (RFC-099) from a flat
+// (ids, cells, vecs) list. Each cell's coarse centroid is the mean of its
+// fines, and w_b defaults to spfreshBuildAssignCells (48) — far more than the
+// handful of cells these closure tests use, so EVERY fine is gathered and the
+// closure sees the identical candidate set the old flat router gave it. These
+// tests exercise the closure/RNG/widening logic, not the routing.
+func newTwoLevelTestRouter(ids, cells []int64, vecs [][]float64) *spfreshBuildRouter {
+	cellFineIDs := map[int64][]int64{}
+	cellFineVecs := map[int64][][]float64{}
+	sum := map[int64][]float64{}
+	cnt := map[int64]int{}
+	for i := range ids {
+		c := cells[i]
+		cellFineIDs[c] = append(cellFineIDs[c], ids[i])
+		cellFineVecs[c] = append(cellFineVecs[c], vecs[i])
+		if sum[c] == nil {
+			sum[c] = make([]float64, len(vecs[i]))
+		}
+		for d, x := range vecs[i] {
+			sum[c][d] += x
+		}
+		cnt[c]++
+	}
+	var coarseIDs []int64
+	var coarseVecs [][]float64
+	for c, s := range sum {
+		mean := make([]float64, len(s))
+		for d := range s {
+			mean[d] = s[d] / float64(cnt[c])
+		}
+		coarseIDs = append(coarseIDs, c)
+		coarseVecs = append(coarseVecs, mean)
+	}
+	return &spfreshBuildRouter{
+		coarseIDs:    coarseIDs,
+		coarseVecs:   coarseVecs,
+		cellFineIDs:  cellFineIDs,
+		cellFineVecs: cellFineVecs,
+		w:            spfreshDefaultBuildAssignCells,
+	}
+}
+
 func TestSPFreshBuildRouterAssignRNGPool(t *testing.T) {
 	t.Parallel()
 	// Three same-direction fines stacked beyond the nearest plus one diverse
 	// fine. With rep=2 the copy-set must be {nearest, diverse}: a candidate
 	// pool of exactly rep would only ever see the same-direction duplicate
 	// and RNG-skip it, silently shrinking the copy-set to 1.
-	r := &spfreshBuildRouter{
-		ids:   []int64{1, 2, 3, 4},
-		cells: []int64{10, 10, 10, 20},
-		vecs:  [][]float64{{1, 0}, {1.2, 0}, {1.3, 0}, {-1.5, 0}},
-	}
+	r := newTwoLevelTestRouter(
+		[]int64{1, 2, 3, 4},
+		[]int64{10, 10, 10, 20},
+		[][]float64{{1, 0}, {1.2, 0}, {1.3, 0}, {-1.5, 0}},
+	)
 	ids, fvecs := r.assign([]float64{0, 0}, 2, 2.0)
 	if len(ids) != 2 || ids[0] != 1 || ids[1] != 4 {
 		t.Fatalf("assign copy-set: got %v, want [1 4]", ids)
@@ -269,16 +311,19 @@ func TestSPFreshBuildRouterAssignWidensPastFixedPool(t *testing.T) {
 	// still within the alpha ratio. A fixed pool truncates ahead of it and
 	// under-replicates to {nearest}; the widening loop must reach it
 	// (codex 094.4 r2).
-	r := &spfreshBuildRouter{}
+	var ids0 []int64
+	var cells0 []int64
+	var vecs0 [][]float64
 	for i := 0; i < 17; i++ {
-		r.ids = append(r.ids, int64(i+1))
-		r.cells = append(r.cells, 10)
-		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.001, 0})
+		ids0 = append(ids0, int64(i+1))
+		cells0 = append(cells0, 10)
+		vecs0 = append(vecs0, []float64{1 + float64(i)*0.001, 0})
 	}
 	const diverse = int64(99)
-	r.ids = append(r.ids, diverse)
-	r.cells = append(r.cells, 20)
-	r.vecs = append(r.vecs, []float64{-1.05, 0}) // d2 1.1025 <= 1.2²·1 = 1.44
+	ids0 = append(ids0, diverse)
+	cells0 = append(cells0, 20)
+	vecs0 = append(vecs0, []float64{-1.05, 0}) // d2 1.1025 <= 1.2²·1 = 1.44
+	r := newTwoLevelTestRouter(ids0, cells0, vecs0)
 
 	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
 	if len(ids) != 2 || ids[1] != diverse {
@@ -471,15 +516,18 @@ func TestSPFreshBuildRouterAssignWideningIsBounded(t *testing.T) {
 	// quadratic at 1M density (the RNG rejects whole neighborhoods and the
 	// pool doubled to the entire fine table per vector). The miss is NPA's
 	// to repair, not the build's to hunt.
-	r := &spfreshBuildRouter{}
+	var ids0 []int64
+	var cells0 []int64
+	var vecs0 [][]float64
 	for i := 0; i < 70; i++ {
-		r.ids = append(r.ids, int64(i+1))
-		r.cells = append(r.cells, 10)
-		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.0001, 0})
+		ids0 = append(ids0, int64(i+1))
+		cells0 = append(cells0, 10)
+		vecs0 = append(vecs0, []float64{1 + float64(i)*0.0001, 0})
 	}
-	r.ids = append(r.ids, 999)
-	r.cells = append(r.cells, 20)
-	r.vecs = append(r.vecs, []float64{-1.05, 0}) // diverse, in-ratio, but past the cap
+	ids0 = append(ids0, 999)
+	cells0 = append(cells0, 20)
+	vecs0 = append(vecs0, []float64{-1.05, 0}) // diverse, in-ratio, but past the cap
+	r := newTwoLevelTestRouter(ids0, cells0, vecs0)
 	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("bounded widening must stop at 4x base and accept under-replication: got %v", ids)
@@ -494,16 +542,19 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	// it. A silent regression of the cap to 2×base would miss it and this
 	// test, together with the >4×base negative, pins the boundary from both
 	// sides (Torvalds 094.4 r4).
-	r := &spfreshBuildRouter{}
+	var ids0 []int64
+	var cells0 []int64
+	var vecs0 [][]float64
 	for i := 0; i < 40; i++ {
-		r.ids = append(r.ids, int64(i+1))
-		r.cells = append(r.cells, 10)
-		r.vecs = append(r.vecs, []float64{1 + float64(i)*0.0001, 0})
+		ids0 = append(ids0, int64(i+1))
+		cells0 = append(cells0, 10)
+		vecs0 = append(vecs0, []float64{1 + float64(i)*0.0001, 0})
 	}
 	const diverse = int64(999)
-	r.ids = append(r.ids, diverse)
-	r.cells = append(r.cells, 20)
-	r.vecs = append(r.vecs, []float64{-1.05, 0}) // sorted index 40, in-ratio at α=1.2
+	ids0 = append(ids0, diverse)
+	cells0 = append(cells0, 20)
+	vecs0 = append(vecs0, []float64{-1.05, 0}) // sorted index 40, in-ratio at α=1.2
+	r := newTwoLevelTestRouter(ids0, cells0, vecs0)
 
 	ids, _ := r.assign([]float64{0, 0}, 2, 1.2)
 	if len(ids) != 2 || ids[1] != diverse {

@@ -35,6 +35,12 @@ const (
 	IndexOptionSPFreshAlpha = "spfreshAlpha"
 	// IndexOptionSPFreshKn is the NPA reassignment neighborhood (centroids).
 	IndexOptionSPFreshKn = "spfreshKn"
+	// IndexOptionSPFreshBuildAssignCells is the bulk-build wave-B assignment
+	// width w_b (RFC-099): how many nearest coarse cells supply candidate fine
+	// centroids when assigning an imported vector. Build-time only — it changes
+	// which fine a vector is assigned to, never the on-disk format. Must be ≥
+	// the query probe width so build assignments are query-reachable.
+	IndexOptionSPFreshBuildAssignCells = "spfreshBuildAssignCells"
 	// IndexOptionSPFreshCooldownSec is the post-split merge cooldown.
 	IndexOptionSPFreshCooldownSec = "spfreshCooldownSec"
 	// IndexOptionSPFreshRaBitQNumExBits is the RaBitQ extended-bits parameter
@@ -61,6 +67,10 @@ const (
 	spfreshDefaultKn          = 8
 	spfreshDefaultCooldown    = 600 // seconds
 	spfreshDefaultNumExBits   = 1
+	// spfreshDefaultBuildAssignCells: the bulk-build assignment width (RFC-099).
+	// 48 sits comfortably above the default query probe width (32) so every
+	// fine the build can assign lives in a cell a query will probe.
+	spfreshDefaultBuildAssignCells = 48
 	// spfreshCSplitDeferLimit: consecutive coarse-split deferrals before
 	// fine-split task issuance for the cell is paused (starvation guard, §6b).
 	spfreshCSplitDeferLimit = 8
@@ -89,6 +99,9 @@ type SPFreshConfig struct {
 	CooldownSec   int     // post-split merge cooldown
 	NumExBits     int     // RaBitQ extended bits for posting residual codes
 	Sidecar       bool    // fp16 sidecar for re-rank
+	// BuildAssignCells is the bulk-build wave-B assignment width w_b (RFC-099):
+	// nearest coarse cells whose fines are candidates per imported vector.
+	BuildAssignCells int
 }
 
 // Lmin returns the merge threshold in entries.
@@ -129,18 +142,19 @@ func (c SPFreshConfig) centroidRowBytes() int {
 // dimensionality.
 func DefaultSPFreshConfig(numDimensions int) SPFreshConfig {
 	return SPFreshConfig{
-		NumDimensions: numDimensions,
-		Metric:        VectorMetricEuclidean,
-		Lmax:          spfreshDefaultLmax,
-		LminRatio:     spfreshDefaultLminRatio,
-		CellTarget:    spfreshDefaultCellTarget,
-		CellMax:       spfreshDefaultCellMax,
-		Replication:   spfreshDefaultReplication,
-		Alpha:         spfreshDefaultAlpha,
-		Kn:            spfreshDefaultKn,
-		CooldownSec:   spfreshDefaultCooldown,
-		NumExBits:     spfreshDefaultNumExBits,
-		Sidecar:       true,
+		NumDimensions:    numDimensions,
+		Metric:           VectorMetricEuclidean,
+		Lmax:             spfreshDefaultLmax,
+		LminRatio:        spfreshDefaultLminRatio,
+		CellTarget:       spfreshDefaultCellTarget,
+		CellMax:          spfreshDefaultCellMax,
+		Replication:      spfreshDefaultReplication,
+		Alpha:            spfreshDefaultAlpha,
+		Kn:               spfreshDefaultKn,
+		CooldownSec:      spfreshDefaultCooldown,
+		NumExBits:        spfreshDefaultNumExBits,
+		Sidecar:          true,
+		BuildAssignCells: spfreshDefaultBuildAssignCells,
 	}
 }
 
@@ -174,6 +188,9 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	}
 	if c.Kn < 1 || c.Kn > 64 {
 		return fmt.Errorf("spfresh: kn must be in [1, 64], got %d", c.Kn)
+	}
+	if c.BuildAssignCells < 1 {
+		return fmt.Errorf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)
 	}
 	if c.CooldownSec < 0 {
 		return fmt.Errorf("spfresh: cooldownSec must be >= 0, got %d", c.CooldownSec)
@@ -255,6 +272,7 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	parseInt(IndexOptionSPFreshCellMax, &config.CellMax)
 	parseInt(IndexOptionSPFreshReplication, &config.Replication)
 	parseInt(IndexOptionSPFreshKn, &config.Kn)
+	parseInt(IndexOptionSPFreshBuildAssignCells, &config.BuildAssignCells)
 	parseInt(IndexOptionSPFreshCooldownSec, &config.CooldownSec)
 	parseInt(IndexOptionSPFreshRaBitQNumExBits, &config.NumExBits)
 	if v, ok := index.Options[IndexOptionSPFreshAlpha]; ok {

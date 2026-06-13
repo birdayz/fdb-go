@@ -516,46 +516,63 @@ func (b *spfreshBuilder) waveA(ctx context.Context, cellID int64, seed int64, ma
 	return nil
 }
 
-// spfreshBuildRouter routes a vector to fine centroids across ALL cells (the
-// wave-B closure table). Flat scan — build-time only.
+// spfreshBuildRouter routes a vector to fine centroids two-level (RFC-099):
+// the w_b nearest coarse cells, then the closure over their fines — the same
+// candidate set a query would probe, not a flat scan of the global fine table.
 type spfreshBuildRouter struct {
-	ids   []int64
-	cells []int64
-	vecs  [][]float64
+	coarseIDs    []int64
+	coarseVecs   [][]float64
+	cellFineIDs  map[int64][]int64
+	cellFineVecs map[int64][][]float64
+	w            int
 }
 
 func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int64][][]float64) *spfreshBuildRouter {
-	r := &spfreshBuildRouter{}
-	for _, cellID := range b.cellIDs {
-		for i, id := range fineIDs[cellID] {
-			r.ids = append(r.ids, id)
-			r.cells = append(r.cells, cellID)
-			r.vecs = append(r.vecs, fineVecs[cellID][i])
-		}
+	return &spfreshBuildRouter{
+		coarseIDs:    b.cellIDs,
+		coarseVecs:   b.coarseVec,
+		cellFineIDs:  fineIDs,
+		cellFineVecs: fineVecs,
+		w:            b.config.BuildAssignCells,
 	}
-	return r
 }
 
 // assign returns the closure copy-set (fineIDs) and the fine vectors for
-// residual encoding. The candidate pool is wider than the replica target so
-// the closure's RNG rule has same-direction candidates to skip, and it
-// widens past a fixed pool that would truncate just ahead of a diverse
-// in-ratio candidate (codex 094.4 r2) — but the widening is BOUNDED at two
-// doublings (4× the base pool). Unbounded "widen until the ratio break"
-// was quadratic at 1M density: hundreds of fines sit inside α²·d²(c1) and
-// the RNG rejects them all as same-direction, so the pool doubled to the
-// entire fine table PER VECTOR (measured: 14s builds at 100k became
-// CPU-hours at 1M). Past the cap the same argument as the insert path's
-// cap applies: the rare missed diverse replica is repaired by NPA's
-// full-neighborhood re-closure after splits, and under-replication only
-// costs recall, never records.
+// residual encoding. It routes to the w_b nearest cells (two-level) and runs
+// the SAME bounded-widening closure as before over their fines.
+//
+// The candidate pool is wider than the replica target so the closure's RNG
+// rule has same-direction candidates to skip, and it widens past a fixed pool
+// that would truncate just ahead of a diverse in-ratio candidate (codex
+// 094.4 r2) — but the widening is BOUNDED at two doublings (4× the base pool).
+// Unbounded "widen until the ratio break" was quadratic at 1M density: hundreds
+// of fines sit inside α²·d²(c1) and the RNG rejects them all as same-direction,
+// so the pool doubled to the entire fine table PER VECTOR. Past the cap the
+// same argument as the insert path's cap applies: the rare missed diverse
+// replica is repaired by NPA's full-neighborhood re-closure after splits, and
+// under-replication only costs recall, never records.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
+	// Two-level: gather the fines of the w_b nearest coarse cells. With fewer
+	// than w_b cells (small index) this is every fine — identical to a flat
+	// scan, so small indexes are unaffected.
+	cells := spfreshNearestK(vec, r.coarseIDs, r.coarseVecs, r.w)
+	n := 0
+	for _, c := range cells {
+		n += len(r.cellFineIDs[c.id])
+	}
+	gIDs := make([]int64, 0, n)
+	gVecs := make([][]float64, 0, n)
+	for _, c := range cells {
+		gIDs = append(gIDs, r.cellFineIDs[c.id]...)
+		gVecs = append(gVecs, r.cellFineVecs[c.id]...)
+	}
+
 	base := spfreshClosurePool(rep)
 	for pool := base; ; pool *= 2 {
-		cands := spfreshNearestK(vec, r.ids, r.vecs, pool)
+		cands := spfreshNearestK(vec, gIDs, gVecs, pool)
 		kept := spfreshClosure(cands, rep, alpha)
 		if len(kept) >= rep || len(cands) < pool || pool >= 4*base ||
-			cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2 {
+			(len(cands) > 0 && cands[len(cands)-1].d2 > alpha*alpha*cands[0].d2) {
 			for _, c := range kept {
 				ids = append(ids, c.id)
 				fvecs = append(fvecs, c.vec)

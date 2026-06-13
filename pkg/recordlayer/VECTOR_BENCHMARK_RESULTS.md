@@ -604,3 +604,20 @@ magnitude on bulk ingest. When the workload is a single process building a
 static index once, use an embedded library; when records mutate
 transactionally across many writers and tenants, the embedded library is
 not in the running.
+
+### SPFresh bulk-build: two-level wave-B assignment (RFC-099)
+
+The wave-B per-vector assignment scanned the global fine table (flat). RFC-099
+routes it two-level (w_b nearest coarse cells → their fines), matching the query
+path. Build-time only; no wire/format change.
+
+| metric | flat (w_b=100000) | two-level (w_b=48) |
+|---|---|---|
+| 500k build | 6,776 vec/s | **9,266 vec/s (1.37×)** |
+| 500k recall@10 | 0.9755 | **0.9755 (identical)** |
+| assign micro-bench (6,100 fines) | 501 µs/vec | **136 µs/vec (3.7×)** |
+
+At 500k only ~60 coarse cells form, so w_b=48 prunes modestly; the full-build
+win grows with scale (1M ≈ 245 cells ⇒ w_b=48 scans ≈ 20% of the fines ⇒ ~5×
+fewer assignment distances — the dominant 1M build cost). Recall is unchanged
+because two-level assignment uses the same candidate set a query probes.

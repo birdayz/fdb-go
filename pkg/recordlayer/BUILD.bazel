@@ -265,6 +265,7 @@ go_test(
         "scan_test.go",
         "schema_migration_test.go",
         "sparse_index_test.go",
+        "spfresh_build_bench_test.go",
         "spfresh_build_query_test.go",
         "spfresh_cache_evict_test.go",
         "spfresh_cache_test.go",

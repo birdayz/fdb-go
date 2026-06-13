@@ -75,6 +75,11 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	if alpha := os.Getenv("SIFT_ALPHA"); alpha != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshAlpha] = alpha
 	}
+	// SIFT_BUILD_W sweeps the wave-B assignment width w_b (RFC-099): a large
+	// value == the old flat scan (gathers all cells), the default 48 == two-level.
+	if bw := os.Getenv("SIFT_BUILD_W"); bw != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshBuildAssignCells] = bw
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
