@@ -47,7 +47,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 	}
 
 	const nRecords = 160
-	saveRecords := func(storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string) {
+	saveRecords := func(storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, n int) {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
 			if serr != nil {
@@ -62,7 +62,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 			if serr != nil {
 				return nil, serr
 			}
-			for i := 0; i < nRecords; i++ {
+			for i := 0; i < n; i++ {
 				if _, serr = store.SaveRecord(&gen.Order{
 					OrderId:  proto.Int64(int64(i)),
 					Price:    proto.Int32(int32((i * 13) % 50)),
@@ -81,13 +81,13 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 	// prefix, plus the shard count actually used. It deliberately stops BEFORE
 	// finalize (which clears staging) so the staged set itself can be compared —
 	// fine IDs are assigned later in wave A and are not shard-count-invariant.
-	stageAndDump := func(ks subspace.Subspace, shards int) (map[string][]byte, int) {
+	stageAndDump := func(ks subspace.Subspace, shards, n int) (map[string][]byte, int) {
 		idx := newVecIndex("spf_det")
 		md := buildMeta(idx)
 		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
 			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 		}
-		saveRecords(storeBuilder, "spf_det")
+		saveRecords(storeBuilder, "spf_det", n)
 
 		var index *Index
 		var config SPFreshConfig
@@ -168,8 +168,8 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		// (A shared subspace would let the second build inherit the first's
 		// allocator block and clear its generation.)
 		base := specSubspace()
-		d1, n1 := stageAndDump(base.Sub("s1"), 1)
-		d8, n8 := stageAndDump(base.Sub("s8"), 8)
+		d1, n1 := stageAndDump(base.Sub("s1"), 1, nRecords)
+		d8, n8 := stageAndDump(base.Sub("s8"), 8, nRecords)
 
 		// Prove the test exercised what it claims: S=1 ran one shard, S=8
 		// actually fanned out (else "byte-identical" would be trivially true).
@@ -183,6 +183,16 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		Expect(d8).To(Equal(d1), "S=8 staging+sidecar keyspace must be byte-identical to S=1")
 	})
 
+	It("a shard-safe store with fewer records than shards degrades to a single serial shard", func() {
+		// Boundaries need ≥ shards candidate PKs; with N < shards the sampler
+		// yields none ⇒ one full-range shard. Pinned end-to-end (not only the
+		// sampler unit) so the degrade path is visible at the integration level.
+		const few = 3
+		dump, nShards := stageAndDump(specSubspace().Sub("few"), spfreshBuildStagingShards, few)
+		Expect(nShards).To(Equal(1), "N<shards must degrade to a single shard")
+		Expect(dump).To(HaveLen(2*few), "every record staged once (staging + sidecar)")
+	})
+
 	It("a ranged shard scan reads exactly [low,high) across resumed batches (held high bound)", func() {
 		ks := specSubspace()
 		idx := newVecIndex("spf_cont")
@@ -190,7 +200,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
 			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 		}
-		saveRecords(storeBuilder, "spf_cont")
+		saveRecords(storeBuilder, "spf_cont", nRecords)
 
 		var index *Index
 		var indexSubspace subspace.Subspace
@@ -240,7 +250,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
 			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 		}
-		saveRecords(storeBuilder, "spf_recall")
+		saveRecords(storeBuilder, "spf_recall", nRecords)
 		Expect(buildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_recall", 42, shards)).To(Succeed())
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, serr := storeBuilder(rtx)
@@ -310,7 +320,7 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
 			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 		}
-		saveRecords(storeBuilder, "spf_unsafe")
+		saveRecords(storeBuilder, "spf_unsafe", nRecords)
 		// Default fan-out (S=8 requested) must silently degrade to S=1 and build.
 		Expect(buildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_unsafe", 42, 8)).To(Succeed())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
