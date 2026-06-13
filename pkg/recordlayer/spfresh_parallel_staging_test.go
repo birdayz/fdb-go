@@ -140,17 +140,21 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 
 		dump := map[string][]byte{}
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			pr, perr := fdb.PrefixRange(storage.staging.Bytes())
-			if perr != nil {
-				return nil, perr
-			}
-			kvs, kerr := rtx.Transaction().GetRange(pr, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
-			if kerr != nil {
-				return nil, kerr
-			}
-			prefix := storage.staging.Bytes()
-			for _, kv := range kvs {
-				dump[string([]byte(kv.Key)[len(prefix):])] = append([]byte(nil), kv.Value...)
+			// The staged set is STAGING + SIDECAR — both keyed by the record pk
+			// (sidecar defaults on); compare both keyspaces (codex impl review P3).
+			for tag, sub := range map[string]subspace.Subspace{"staging": storage.staging, "sidecar": storage.sidecar} {
+				pr, perr := fdb.PrefixRange(sub.Bytes())
+				if perr != nil {
+					return nil, perr
+				}
+				kvs, kerr := rtx.Transaction().GetRange(pr, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+				if kerr != nil {
+					return nil, kerr
+				}
+				prefix := sub.Bytes()
+				for _, kv := range kvs {
+					dump[tag+"|"+string([]byte(kv.Key)[len(prefix):])] = append([]byte(nil), kv.Value...)
+				}
 			}
 			return nil, nil
 		})
@@ -172,11 +176,59 @@ var _ = Describe("SPFresh parallel staging scan (RFC-103)", func() {
 		Expect(n1).To(Equal(1), "S=1 must be a single serial shard")
 		Expect(n8).To(Equal(8), "S=8 must fan out into 8 disjoint shards")
 
-		// Every record staged exactly once into its routed cell.
-		Expect(d1).To(HaveLen(nRecords))
-		Expect(d8).To(HaveLen(nRecords))
+		// Every record staged exactly once: one STAGING + one SIDECAR key each.
+		Expect(d1).To(HaveLen(2 * nRecords))
+		Expect(d8).To(HaveLen(2 * nRecords))
 		// The headline invariant: byte-identical staged set regardless of S.
-		Expect(d8).To(Equal(d1), "S=8 staging keyspace must be byte-identical to S=1")
+		Expect(d8).To(Equal(d1), "S=8 staging+sidecar keyspace must be byte-identical to S=1")
+	})
+
+	It("a ranged shard scan reads exactly [low,high) across resumed batches (held high bound)", func() {
+		ks := specSubspace()
+		idx := newVecIndex("spf_cont")
+		md := buildMeta(idx)
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		saveRecords(storeBuilder, "spf_cont")
+
+		var index *Index
+		var indexSubspace subspace.Subspace
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			index = store.GetMetaData().GetIndex("spf_cont")
+			indexSubspace = store.indexSubspace(index)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		collect := func(out *[]tuple.Tuple) func([]spfreshBuildInput) error {
+			return func(batch []spfreshBuildInput) error {
+				for _, in := range batch {
+					*out = append(*out, in.fullPK)
+				}
+				return nil
+			}
+		}
+		// Ground truth: every full record PK in key order. batchSize=2 forces the
+		// continuation/resume path (~80 batches), not a single read.
+		var all []tuple.Tuple
+		Expect(spfreshScanRecordRange(ctx, sharedDB, storeBuilder, index, indexSubspace,
+			nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, 2, nil, collect(&all))).To(Succeed())
+		Expect(all).To(HaveLen(nRecords))
+
+		// A bounded sub-range under the SAME small batch size must return EXACTLY
+		// all[k1:k2] — never a record past the held high bound. If a resumed batch
+		// reset highEP to TreeEnd (the ScanRecords default), it would over-read to
+		// the end and this would fail.
+		k1, k2 := 37, 121
+		var sub []tuple.Tuple
+		Expect(spfreshScanRecordRange(ctx, sharedDB, storeBuilder, index, indexSubspace,
+			all[k1], all[k2], EndpointTypeRangeInclusive, EndpointTypeRangeExclusive, 2, nil, collect(&sub))).To(Succeed())
+		Expect(sub).To(Equal(all[k1:k2]), "ranged scan must read exactly [low,high) across resumed batches, never past high")
 	})
 
 	// buildAndQuery runs the FULL parallel build (coarse + sharded staging +

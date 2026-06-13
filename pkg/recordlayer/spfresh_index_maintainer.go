@@ -871,17 +871,28 @@ func spfreshStageRecordsSharded(
 		r := ranges[0]
 		return spfreshScanRecordRange(ctx, db, storeBuilder, index, indexSubspace, r.low, r.high, r.lowEP, r.highEP, batchSize, inTx, nil)
 	}
+	// storeBuilder was only ever called serially before sharding; the fan-out
+	// now calls it from S goroutines. A caller that closes over a REUSABLE
+	// StoreBuilder (SetContext mutates it) would race, so serialize the cheap
+	// store construction behind a mutex — each call binds a fresh store to its
+	// own transaction. The scans themselves still run fully concurrently
+	// (codex impl review P2).
+	var sbMu sync.Mutex
+	safeStoreBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+		sbMu.Lock()
+		defer sbMu.Unlock()
+		return storeBuilder(rtx)
+	}
 	shardCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
 	var errOnce sync.Once
 	var firstErr error
 	for _, r := range ranges {
-		r := r
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := spfreshScanRecordRange(shardCtx, db, storeBuilder, index, indexSubspace, r.low, r.high, r.lowEP, r.highEP, batchSize, inTx, nil); err != nil {
+			if err := spfreshScanRecordRange(shardCtx, db, safeStoreBuilder, index, indexSubspace, r.low, r.high, r.lowEP, r.highEP, batchSize, inTx, nil); err != nil {
 				errOnce.Do(func() {
 					firstErr = err
 					cancel()
