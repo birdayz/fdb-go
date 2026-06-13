@@ -46,6 +46,14 @@ var (
 	CountSPFreshZombieCleans = Event{"spfresh_zombie_cleans", "SPFresh Zombie Cleanups"}
 	CountSPFreshCSplitDefers = Event{"spfresh_csplit_defers", "SPFresh Coarse Split Deferrals"}
 	CountSPFreshLeaseSkips   = Event{"spfresh_lease_skips", "SPFresh Lease Skips"}
+	// Assignment refinement (RFC-104) fleet pass: vectors re-routed against the
+	// converged topology, and tenants whose cursor wrapped a full cycle moving
+	// nothing. Moves trending to zero while Converged rises = the fleet has
+	// recovered ingest recall-drift and is quiescing; sustained nonzero Moves =
+	// ongoing drift (e.g. a steady fast-ingest tenant) the refinement loop is
+	// absorbing.
+	CountSPFreshRefineMoves     = Event{"spfresh_refine_moves", "SPFresh Refinement Moves"}
+	CountSPFreshRefineConverged = Event{"spfresh_refine_converged", "SPFresh Refinement Converged Tenants"}
 	// Task handler errors in a rebalance pass: the pass SKIPS the failed
 	// task and continues (a poisoned task at the deterministic queue head
 	// must not starve everything behind it), then surfaces the joined

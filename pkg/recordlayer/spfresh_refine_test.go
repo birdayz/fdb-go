@@ -323,11 +323,12 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		}
 		// budget ≥ n ⇒ each pass is one full cursor cycle per tenant, so
 		// convergence is per-pass clean (the small-budget cursor path is pinned
-		// by the budget spec above).
+		// by the budget spec above). A Timer meters moves + convergence.
+		timer := NewStoreTimer()
 		totalMoves := 0
 		var res SPFreshRefineResult
 		for i := 0; i < 5; i++ {
-			res, err = RefineSPFreshIndexes(ctx, sharedDB, tenants, SPFreshRefineOptions{BudgetPerTenant: 200})
+			res, err = RefineSPFreshIndexes(ctx, sharedDB, tenants, SPFreshRefineOptions{BudgetPerTenant: 200, Timer: timer})
 			Expect(err).NotTo(HaveOccurred())
 			totalMoves += res.Moves
 			if res.Converged == len(tenants) {
@@ -336,6 +337,8 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		}
 		Expect(res.Converged).To(Equal(len(tenants)), "both tenants converge (cursor wraps, zero moves)")
 		Expect(totalMoves).To(Equal(k), "the fleet re-adds exactly the K dropped copies (drifted tenant only)")
+		Expect(timer.GetCount(CountSPFreshRefineMoves)).To(Equal(int64(k)), "the timer meters every refinement move")
+		Expect(timer.GetCount(CountSPFreshRefineConverged)).To(BeNumerically(">=", int64(len(tenants))), "the timer meters each tenant's convergence")
 
 		// The drifted tenant's memberships are restored to their full closure.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

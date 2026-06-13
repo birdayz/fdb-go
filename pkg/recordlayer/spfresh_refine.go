@@ -447,6 +447,11 @@ type SPFreshRefineOptions struct {
 	// BudgetPerTenant bounds the vectors re-evaluated per tenant per pass.
 	// 0 means the default (spfreshRefineFleetBudget).
 	BudgetPerTenant int
+
+	// Timer, when non-nil, accumulates refinement instrumentation across the pass
+	// (CountSPFreshRefineMoves, CountSPFreshRefineConverged) — the observability
+	// the rebalance sweeper gets via its own Timer. Nil disables recording.
+	Timer *StoreTimer
 }
 
 // SPFreshRefineResult summarizes one fleet refinement pass.
@@ -484,6 +489,9 @@ func RefineSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFres
 		}
 		moved, cycleConverged, err := RefineSPFreshIndex(ctx, db, tenant.StoreBuilder, tenant.IndexName, budget)
 		result.Moves += moved
+		if opts.Timer != nil && moved > 0 {
+			opts.Timer.IncrementBy(CountSPFreshRefineMoves, int64(moved))
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("refine %q: %w", tenant.IndexName, err))
 			continue
@@ -491,6 +499,9 @@ func RefineSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFres
 		result.Refined++
 		if cycleConverged {
 			result.Converged++
+			if opts.Timer != nil {
+				opts.Timer.Increment(CountSPFreshRefineConverged)
+			}
 		}
 	}
 	return result, errors.Join(errs...)
