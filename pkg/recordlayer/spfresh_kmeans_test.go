@@ -564,26 +564,40 @@ func TestSPFreshBuildRouterAssignWideningBoundary(t *testing.T) {
 	}
 }
 
-// TestSPFreshPruneSlackCoversRoundoff is the regression for codex's P2: the
-// triangle bound is built from two SEPARATELY-rounded sqrts (d(v,c), d(c,f)), so
-// the squared bound (d(v,c)-d(c,f))² can land a few ulps ABOVE the true d(v,f)²
-// on large near-collinear coordinates. gatherTopK skips a fine only when
-// lb*lb > worst*(1+spfreshPruneSlack); for that skip to be EXACT (never drop a
-// fine whose true distance is <= worst) the slack must exceed the worst relative
-// overshoot of lb*lb over the true squared distance. This drives collinear
-// large-magnitude triples (where the triangle inequality is equality and the
-// bound is tightest, maximizing roundoff sensitivity), confirms the overshoot is
-// real (>0), and asserts spfreshPruneSlack comfortably covers the worst case.
-// Set spfreshPruneSlack to 0 (the pre-fix behavior) and this fails.
-func TestSPFreshPruneSlackCoversRoundoff(t *testing.T) {
+// TestSPFreshPruneLowerBoundIsConservative is the regression for codex's P2: the
+// prune bound is dvc-dcf where dvc=d(v,c), dcf=d(c,f) are SEPARATELY-rounded sqrts
+// of dims-term summed squared distances. When dvc≈dcf (a fine almost on the query
+// but far from its cell centroid) the subtraction CANCELS catastrophically and
+// the raw (dvc-dcf)² can exceed the true d(v,f)² by an amount no FIXED relative
+// slack can bound (the relative overshoot → ∞ as d(v,f) → 0). spfreshPruneLowerBound
+// subtracts a magnitude-scaled absolute error term, so for the prune to be EXACT
+// its result must NEVER exceed the actual computed d(v,f). This asserts
+// lb*lb <= d²(q,f) (whenever lb>0) across an adversarial sweep that DELIBERATELY
+// drives the near-cancellation regime (fines fractionally off the query, large
+// magnitude, up to 160-D), plus codex's exact reported triple. A naive bound
+// (dvc-dcf without the magnitude-scaled error term) fails this.
+func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(7777))
-	maxOver := 0.0
-	sawOvershoot := false
-	for trial := 0; trial < 500000; trial++ {
-		// Sweep dims up to >128 (SIFT is 128-D; more terms accumulate more
-		// squared-distance roundoff) and magnitude up to ~1e9 (arbitrary float64
-		// vectors the index accepts; real SIFT is uint8 0..255 and exact).
+
+	check := func(q, c, f []float64, label string) {
+		dims := len(q)
+		d2qc := spfreshSquaredDistance(q, c)
+		d2cf := spfreshSquaredDistance(c, f)
+		d2qf := spfreshSquaredDistance(q, f)
+		lb := spfreshPruneLowerBound(math.Sqrt(d2qc), math.Sqrt(d2cf), dims)
+		if lb > 0 && lb*lb > d2qf {
+			t.Fatalf("%s: prune lower bound NOT conservative: lb²=%.17g > d²(q,f)=%.17g (would wrong-skip)", label, lb*lb, d2qf)
+		}
+	}
+
+	// codex's exact reported case (1-D): q=3000, c=13000, f=3000.0001.
+	check([]float64{3000}, []float64{13000}, []float64{3000.0001}, "codex-1d")
+
+	naiveOvershoots := 0 // how often the NAIVE bound (no error term) would wrong-skip
+	for trial := 0; trial < 400000; trial++ {
+		// Sweep dims up to >128 (SIFT is 128-D) and magnitude up to ~1e9
+		// (arbitrary float64 the index accepts; real SIFT is uint8 0..255, exact).
 		dims := 1 + rng.Intn(160)
 		dir := make([]float64, dims)
 		var nn float64
@@ -595,13 +609,20 @@ func TestSPFreshPruneSlackCoversRoundoff(t *testing.T) {
 			continue
 		}
 		nn = math.Sqrt(nn)
+		mag := math.Pow(10, 3+rng.Float64()*6) // 1e3 .. 1e9
 		q := make([]float64, dims)
-		mag := math.Pow(10, 4+rng.Float64()*5) // 1e4 .. 1e9
 		for d := range q {
 			q[d] = rng.NormFloat64() * mag
 		}
 		scale := (rng.Float64()*99 + 1) * mag * 0.1
-		tf := rng.Float64() // fine at fraction tf along q->c, collinear (between)
+		// tf near 0 puts the fine fractionally off the query while the centroid
+		// stays ~scale away — the near-cancellation regime codex exploited.
+		var tf float64
+		if rng.Intn(2) == 0 {
+			tf = math.Pow(10, -(rng.Float64() * 12)) // 1e-12 .. 1, biased tiny
+		} else {
+			tf = rng.Float64()
+		}
 		c := make([]float64, dims)
 		f := make([]float64, dims)
 		for d := range dir {
@@ -609,27 +630,20 @@ func TestSPFreshPruneSlackCoversRoundoff(t *testing.T) {
 			c[d] = q[d] + u*scale
 			f[d] = q[d] + u*scale*tf
 		}
+		check(q, c, f, "sweep")
+
+		// Track how often the NAIVE bound would have wrong-skipped, to prove the
+		// adversarial sweep actually exercises the hazard (non-vacuous regression).
 		d2qc := spfreshSquaredDistance(q, c)
 		d2cf := spfreshSquaredDistance(c, f)
 		d2qf := spfreshSquaredDistance(q, f)
-		lb := math.Sqrt(d2qc) - math.Sqrt(d2cf)
-		if lb <= 0 || d2qf <= 0 {
-			continue
-		}
-		if boundSq := lb * lb; boundSq > d2qf {
-			sawOvershoot = true
-			if over := (boundSq - d2qf) / d2qf; over > maxOver {
-				maxOver = over
-			}
+		if naive := math.Sqrt(d2qc) - math.Sqrt(d2cf); naive > 0 && naive*naive > d2qf {
+			naiveOvershoots++
 		}
 	}
-	if !sawOvershoot {
-		t.Fatalf("search observed no roundoff overshoot — the regression is vacuous")
-	}
-	t.Logf("max relative bound overshoot over true d²: %.3e (spfreshPruneSlack=%.0e)", maxOver, spfreshPruneSlack)
-	if maxOver >= spfreshPruneSlack {
-		t.Fatalf("spfreshPruneSlack=%.0e too small: observed roundoff overshoot %.3e can cause a wrong skip in gatherTopK",
-			spfreshPruneSlack, maxOver)
+	t.Logf("naive (no error-term) bound would have overshot d²(q,f) in %d trials; spfreshPruneLowerBound never did", naiveOvershoots)
+	if naiveOvershoots == 0 {
+		t.Fatalf("sweep never drove the cancellation hazard — regression is vacuous; widen the search")
 	}
 }
 

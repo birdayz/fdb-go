@@ -617,32 +617,36 @@ func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids 
 	}
 }
 
-// spfreshPruneSlack guards the triangle-inequality skip against float64 roundoff.
-// The lower bound is built from d(v,c) and d(c,f) — two SEPARATELY-rounded sqrts
-// whose subtraction can cancel — so the squared bound (d(v,c)-d(c,f))² can land
-// ABOVE the true d(v,f)² on large, near-collinear coordinates (codex). A strict
-// `bound² > worst` skip could then drop a true top-pool fine whose actual
-// distance sits in that gap, breaking exactness. Skipping only when the bound
-// exceeds worst by this RELATIVE margin keeps the prune EXACT. The worst observed
-// overshoot across an adversarial collinear sweep (dims≤160, magnitude≤1e9) is
-// ~7e-11 relative (TestSPFreshPruneSlackCoversRoundoff); 1e-8 covers it with
-// ~150× headroom while remaining far below any real distance gap. The only cost
-// is the vanishingly thin shell of boundary fines that escape the skip and are
-// then scored exactly — so the result is unchanged either way (the byte-identical
-// fuzz still holds). Real SIFT data (uint8 0..255, d² ≤ ~8.3e6) is exact; this
-// only matters for arbitrary large-magnitude float64 vectors the index accepts.
-const spfreshPruneSlack = 1e-8
+// spfreshPruneLowerBound returns a GUARANTEED lower bound on the true distance
+// d(v,f), given d(v,c)=dvc and d(c,f)=dcf — both rounded sqrts of dims-term
+// summed squared distances. The triangle inequality gives d(v,f) >= dvc - dcf in
+// exact arithmetic, but a fixed slack cannot make that safe: when dvc ≈ dcf
+// (a fine almost on the query but far from its cell centroid) the subtraction
+// CANCELS catastrophically and the relative error of dvc-dcf is unbounded as
+// d(v,f) → 0 (codex). So we subtract an ABSOLUTE error term that scales with the
+// operand magnitude (dvc+dcf), not with the difference: it bounds the two sqrt
+// roundings, the dims-term squared-distance sum roundoff, and the subtraction.
+// (dims+2)*2^-51 is ~4–8× the leading (dims+2)·2^-53 term — generous cushion.
+// When cancellation dominates, the returned bound goes <= 0 and the caller must
+// not prune (it scores the fine exactly). This keeps gatherTopK EXACT for all
+// float64 inputs. Real SIFT data (uint8 0..255) never cancels; this guards the
+// arbitrary-magnitude float64 vectors the index accepts.
+func spfreshPruneLowerBound(dvc, dcf float64, dims int) float64 {
+	errAbs := (dvc + dcf) * float64(dims+2) * 0x1p-51
+	return dvc - dcf - errAbs
+}
 
 // gatherTopK returns the `pool` nearest fines across the given cells, pruned by
 // the L2 triangle inequality. EXACT: byte-identical to spfreshNearestK over a
 // flat gather of the same cells' fines — it offers candidates in the same order
-// (cell-ascending, then cellFineVecs order) and only skips fines whose lower
-// bound (with spfreshPruneSlack roundoff margin) already exceeds the pool-th best
-// actual distance, so they could not have been in the pool. The prune activates
-// only once the pool is full, so it never prevents the pool from filling when
-// enough fines exist (⇒ the `len < pool` widening termination in assign is
-// unchanged). cells must be ascending by d².
+// (cell-ascending, then cellFineVecs order) and only skips fines whose
+// roundoff-conservative lower bound (spfreshPruneLowerBound) already exceeds the
+// pool-th best actual distance, so they could not have been in the pool. The
+// prune activates only once the pool is full, so it never prevents the pool from
+// filling when enough fines exist (⇒ the `len < pool` widening termination in
+// assign is unchanged). cells must be ascending by d².
 func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate, pool int) []spfreshCandidate {
+	dims := len(vec)
 	top := newSpfreshBoundedTopK(pool)
 	for _, cell := range cells {
 		fvs := r.cellFineVecs[cell.id]
@@ -650,16 +654,15 @@ func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate,
 		fd := r.cellFineDist[cell.id]
 		dvc := math.Sqrt(cell.d2)
 		if top.full() {
-			// No fine in this cell can be closer than d(v,c) - radius(c). The
-			// lb<=0 case is intentionally not pruned (vacuous bound), and the
-			// skip carries spfreshPruneSlack to stay exact under sqrt roundoff.
-			if lb := dvc - r.cellRadius[cell.id]; lb > 0 && lb*lb > top.worst()*(1+spfreshPruneSlack) {
+			// No fine in this cell can be closer than d(v,c) - radius(c); a
+			// non-positive bound is vacuous (cancellation) and is not pruned.
+			if lb := spfreshPruneLowerBound(dvc, r.cellRadius[cell.id], dims); lb > 0 && lb*lb > top.worst() {
 				continue
 			}
 		}
 		for j, fv := range fvs {
 			if top.full() {
-				if lb := dvc - fd[j]; lb > 0 && lb*lb > top.worst()*(1+spfreshPruneSlack) {
+				if lb := spfreshPruneLowerBound(dvc, fd[j], dims); lb > 0 && lb*lb > top.worst() {
 					continue
 				}
 			}

@@ -114,6 +114,21 @@ behavior. (We are not asserting IP is a metric — we are asserting the prune is
 exact w.r.t. the squared-L2 scan the build already performs.) A unit test pins
 bit-identical output for Euclidean AND a normalized-cosine topology.
 
+Float64 roundoff (cancellation): `d(v,c)` and `d(c,f)` are SEPARATELY-rounded
+sqrts, so `d(v,c)-d(c,f)` cancels catastrophically when they are close (a fine
+almost on the query but far from its cell centroid) — the raw `(d(v,c)-d(c,f))²`
+can then exceed the true `d(v,f)²` by an amount no fixed slack can bound (the
+relative overshoot → ∞ as `d(v,f) → 0`, codex P2). `spfreshPruneLowerBound`
+subtracts a magnitude-scaled absolute error term `(d(v,c)+d(c,f))·(dims+2)·2⁻⁵¹`
+(bounds the two sqrt roundings + the dims-term sum roundoff + the subtraction),
+so the bound NEVER exceeds the actual computed distance; when cancellation
+dominates the bound goes ≤ 0 and the fine is scored exactly rather than skipped.
+`TestSPFreshPruneLowerBoundIsConservative` asserts `lb² ≤ d²(v,f)` over an
+adversarial sweep driving the cancellation regime (the naive bound overshoots in
+~180k/400k trials there; the guarded bound in zero) plus codex's exact triple.
+Real SIFT data (uint8 0..255) never cancels; this guards the arbitrary-magnitude
+float64 vectors the index accepts.
+
 ## Test plan
 
 - **Exactness (the load-bearing test):** for several random topologies + metrics,
