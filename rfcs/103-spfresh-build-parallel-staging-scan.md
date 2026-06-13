@@ -65,17 +65,36 @@ with `lowEP = RangeInclusive`, `highEP = RangeExclusive` on interior bounds and
 `TreeStart` / `TreeEnd` at the two ends. Three load-bearing invariants on the
 boundaries:
 
-1. **Boundaries are primary-key tuples, never raw bytes.** A cut at a PK `b`
-   puts record `b` and all its split chunks *wholly* in the upper shard:
-   `recordsSubspace.Pack(b)` is the common prefix of every key of record `b`, so
-   `[.., Pack(b))` excludes the whole record and `[Pack(b), ..)` includes all of
-   it. Feeding a raw FDB key — a `LocalityGetBoundaryKeys` result or an
-   interpolated byte string — straight into `ScanRecordsInRange` is **forbidden**:
-   a raw boundary can land *inside* a split record (`PK + suffix`), tearing one
-   record across two shards (codex r2 P1). The boundary source therefore yields
-   PKs; any candidate that does not cleanly unpack to a PK is **dropped** (a
-   dropped boundary only coarsens the split — fewer shards, still a correct
-   gapless tiling).
+1. **Boundaries are primary-key tuples, never raw bytes — and the indexed PK
+   keyspace must be prefix-safe.** A cut at a PK `b` puts record `b` and all its
+   split chunks *wholly* in the upper shard: `recordsSubspace.Pack(b)` is the
+   common prefix of every key of record `b`, so `[.., Pack(b))` excludes the
+   whole record and `[Pack(b), ..)` includes all of it. Feeding a raw FDB key — a
+   `LocalityGetBoundaryKeys` result or an interpolated byte string — straight
+   into `ScanRecordsInRange` is **forbidden**: a raw boundary can land *inside* a
+   split record (`PK + suffix`), tearing one record across two shards. Any
+   candidate that does not cleanly unpack to a PK is **dropped** (a dropped
+   boundary only coarsens the split — fewer shards, still a correct gapless
+   tiling).
+
+   The subtler hazard (codex r2 P1): a cut at `Pack(b)` lands *inside another
+   record* iff that record's PK is a **strict prefix** of `b` — then `Pack(b)`
+   coincides with one of its split-chunk keys `Pack(pk, suffix)` and the lower
+   shard stops mid-record. Two facts make this impossible for the boundaries we
+   use:
+   - Boundaries come only from **observed PKs of the indexed record type**, which
+     all share one **fixed arity**. Distinct equal-arity tuples are mutually
+     non-prefixing at the byte level (tuple element encodings are prefix-free),
+     so no indexed boundary can fall inside another indexed record.
+   - To extend the guarantee to *co-resident* record types, parallel staging
+     (S>1) is **gated** on the indexed keyspace being disjoint from other types':
+     the store has a single record type, or the primary key carries a
+     `RecordTypeKey` prefix (`primaryKeyHasRecordTypePrefix`, store.go) — the
+     Record Layer norm. The only configuration this excludes is the deliberate
+     prefix-overlap pathology (`collision_test.go`: distinct types sharing a
+     keyspace with no type prefix), where it falls back to **S=1** (today's
+     serial scan, always correct). A `Pack(b)` whose prefix is the indexed type
+     key can never fall inside a differently-type-keyed record.
 
 2. **The tiling is gapless with ±∞ ends.** Shard 0 starts at `TreeStart`, shard
    S-1 ends at `TreeEnd`, so the union of the disjoint sub-ranges is the *entire*
@@ -89,18 +108,23 @@ boundaries:
      over the record subspace (the `indexing_mutual.go:99` pattern), each
      unpacked to a PK; non-PK boundaries dropped per (1).
    - **Single-node (testcontainers — the path the tests exercise):**
-     `LocalityGetBoundaryKeys` returns empty, so derive the S-1 interior PK
+     `LocalityGetBoundaryKeys` returns empty, so derive the interior PK
      boundaries **by record count** by piggy-backing on the already-serial
      **sample scan** (§"sample scan stays serial"), which visits every record in
-     PK order *before* staging. Capturing S-1 count-quantile PKs there costs no
-     extra I/O and yields valid, record-aligned, balanced boundaries for *any*
-     PK type. This **supersedes** the original "byte interpolation" sketch,
-     which could land mid-record and skew badly on tuple-encoded sequential keys
-     (Graefe/codex). Imbalance is a perf footgun, never a correctness one
-     (determinism is split-quality-invariant), but count-quantiles make the
-     shards even by construction.
-   Worst case (no boundaries derived) ⇒ S=1 ⇒ today's serial scan (trivial
-   revert; the safe floor).
+     PK order *before* staging. The sample scan is one pass and learns `totalN`
+     only as it goes, so the boundaries are **approximate** quantiles from a
+     bounded-memory decimation: keep an evenly-spaced reservoir of ≤ M candidate
+     PKs (systematic decimation — when the buffer fills, drop every other entry
+     and double the stride; O(M) memory, no second pass), then pick the S-1
+     evenly-spaced candidates as boundaries. This costs no extra I/O and yields
+     valid, record-aligned boundaries for *any* PK type — **superseding** the
+     original "byte interpolation" sketch, which could land mid-record and skew
+     badly on tuple-encoded sequential keys (Graefe/codex). Approximate quantiles
+     (or fewer than S-1 distinct candidates ⇒ fewer shards) only affect balance,
+     never correctness — determinism and the staged set are split-quality- and
+     shard-count-invariant.
+   Worst case (no boundaries derived, or the prefix-safety gate fails) ⇒ S=1 ⇒
+   today's serial scan (trivial revert; the safe floor).
 
 ### Per-shard scan: ranged continuation
 
@@ -134,18 +158,29 @@ a clean run the maintainer's range-set + flip bookkeeping is unchanged.
 
 ## Determinism & recall
 
-- **Determinism.** The staged SET is shard-count-invariant (every record staged
-  exactly once into its routed cell, idempotently). coarsePass (the centroids
-  everything routes on) is unchanged and runs BEFORE staging. waveA loads each
-  cell's staging via a key-ordered range read (`spfreshLoadStagingCell`, sorted
-  by PK — not write order) and seeds k-means++ off `seed+cellID`; waveB reads the
-  full staged set deterministically. So for a **quiescent record set** (what the
-  bulk build targets and the determinism test exercises) the build output is
-  **byte-identical** regardless of S — including fine IDs, since fine-ID
-  allocation happens in wave A over the PK-sorted staged set, after staging.
-  (A test pins S=1 vs S=8 byte-identical topology.) Under concurrent foreground
-  writers the guarantee is the weaker but sufficient one the serial scan already
-  gives — same staged set ⇒ same recall; S does not weaken it (codex r2 P3).
+- **Determinism (what RFC-103 controls: the staged set).** The staged SET is
+  **shard-count-invariant** — every record staged exactly once into its routed
+  cell (`nearestCell` is a pure function of the frozen, pre-staging `coarseVec`),
+  idempotently, to a per-record key. So the STAGING keyspace
+  (`(cell, recordPK) → fp16` + sidecar) is **byte-identical for S=1 vs S=8**.
+  This is the precise invariant the parallelization must preserve, and the
+  **headline test pins it directly**: run coarsePass + the (parallel) staging
+  scan, dump the staging keyspace, assert byte-identical across S — plus an
+  end-to-end recall-equivalence check on the finished index.
+- **Fine IDs are NOT a determinism axis (pre-existing, independent of S).** Build
+  output past staging is *not* byte-reproducible even on master: fine-ID
+  allocation (`claimFineIDs`, `spfresh_build.go:501`) doles consecutive IDs from
+  a shared-mutex pool in wave-A **worker-completion order** (`forEachCellParallel`
+  dispatches via an atomic counter; retries re-claim fresh IDs), so which cell
+  gets which fine-ID block varies run-to-run regardless of shard count. RFC-103
+  neither improves nor worsens this. The determinism test therefore asserts the
+  **staged set** (above) and **recall**, NOT byte-identical fines/postings/counters
+  (codex r2 P2). Reproducible fine-ID numbering is a separate, out-of-scope
+  follow-up (deterministic allocation in cellID order).
+- The staged-set invariant holds for a **quiescent record set** (what the bulk
+  build targets and the test exercises). Under concurrent foreground writers the
+  guarantee is the same one the serial scan already gives — same staged set ⇒
+  same recall; S does not weaken it.
 - **Recall.** Unchanged — identical staged set ⇒ identical clustering.
 - **The sample scan stays SERIAL** (16 %, out of scope): reservoir sampling
   (Algorithm R) is inherently sequential (each swap depends on the running count)
@@ -159,7 +194,10 @@ a clean run the maintainer's range-set + flip bookkeeping is unchanged.
 
 The review must scrutinize: (1) the per-shard delete-fence still fences — the
 boundaries are PK-aligned, half-open, gapless, ±∞ at the ends, so the union of
-disjoint conflict ranges = the full record range; (2) staging-key disjointness
+disjoint conflict ranges = the full record range; (1b) no record is torn at a
+boundary — boundaries are fixed-arity indexed PKs (mutually non-prefixing) and
+S>1 is gated to single-type / record-type-prefixed stores (else S=1), so no
+`Pack(b)` lands inside another record's split chunks; (2) staging-key disjointness
 across shards into a shared cell — `stagingKey(cell, pk)` / `sidecarKey(pk)`
 include the (trimmed) record PK, so two shards into one cell write disjoint keys;
 (3) FDB 5 s / 10 MB tx limits per shard — unchanged (same per-shard byte bound);
@@ -171,8 +209,14 @@ retry over idempotent Sets. Pure build-path code; trivial revert. Worst case
 
 ## Test plan
 
-- **Determinism (headline):** S=1 vs S=8 staging → byte-identical topology
-  (cells, fines, postings, counters) and recall, on a quiescent record set.
+- **Determinism (headline):** S=1 vs S=8 → **byte-identical staging keyspace**
+  (`(cell, recordPK) → fp16` + sidecar, dumped after coarsePass + staging) on a
+  quiescent record set, plus **recall equivalence** on the finished index. NOT
+  fine IDs / postings (pre-existing wave-A allocation nondeterminism — see
+  Determinism).
+- **Prefix-safety gate:** a single-record-type / record-type-prefixed store
+  shards (S>1); a `collision_test.go`-style prefix-overlap store falls back to
+  S=1. Pin both.
 - **Tiling correctness:** assert the shard boundaries tile the record range
   gaplessly and disjointly (every record read by exactly one shard; union =
   whole range); a split-record dataset (vectors large enough to split) proves no
