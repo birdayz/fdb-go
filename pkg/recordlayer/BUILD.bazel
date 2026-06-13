@@ -271,6 +271,7 @@ go_test(
         "spfresh_cascade_test.go",
         "spfresh_churn_test.go",
         "spfresh_codec_test.go",
+        "spfresh_concurrency_test.go",
         "spfresh_gc_test.go",
         "spfresh_kmeans_test.go",
         "spfresh_layout_test.go",

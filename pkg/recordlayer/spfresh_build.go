@@ -693,4 +693,10 @@ func (s *spfreshQuantizer) Distance(residualQuery []float64, code []byte, dims i
 	return s.q.Distance(residualQuery, code, dims)
 }
 
-func spfreshLeaseDeadline() int64 { return spfreshNowMs() + 60_000 }
+// spfreshLeaseDurationMs is the task-lease length (RFC-094 §6 — long enough
+// to cover a multi-tx lifecycle; an executor that dies mid-lifecycle has its
+// lease reclaimed after it expires). Var, not const, so concurrency tests can
+// force mid-lifecycle takeover between two executors with a short lease.
+var spfreshLeaseDurationMs int64 = 60_000
+
+func spfreshLeaseDeadline() int64 { return spfreshNowMs() + spfreshLeaseDurationMs }
