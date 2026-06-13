@@ -412,6 +412,68 @@ func RefineSPFreshIndexAll(ctx context.Context, db *FDBDatabase, storeBuilder fu
 	return spfreshRefineAll(ctx, db, s, config)
 }
 
+// --- Fleet driver (the refinement loop beside the rebalancer loop) ----------
+
+// spfreshRefineFleetBudget is the default per-tenant per-pass vector budget for
+// RefineSPFreshIndexes: ten move batches. Small enough that one pass over a large
+// fleet stays bounded, large enough that a tenant's cursor makes real progress
+// each pass. Tune via SPFreshRefineOptions.BudgetPerTenant.
+const spfreshRefineFleetBudget = 1000
+
+// SPFreshRefineOptions tunes one fleet refinement pass.
+type SPFreshRefineOptions struct {
+	// BudgetPerTenant bounds the vectors re-evaluated per tenant per pass.
+	// 0 means the default (spfreshRefineFleetBudget).
+	BudgetPerTenant int
+}
+
+// SPFreshRefineResult summarizes one fleet refinement pass.
+type SPFreshRefineResult struct {
+	Moves     int // vectors moved (re-routed) across all tenants this pass
+	Refined   int // tenants that completed a refine pass without error
+	Converged int // tenants whose cursor wrapped a full cycle moving nothing
+}
+
+// RefineSPFreshIndexes runs ONE budgeted refinement pass over each tenant — the
+// "refinement loop beside the rebalancer loop" (RFC-104). Unlike
+// SweepSPFreshIndexes (task-driven: tenants with no pending lifecycle task rows
+// are skipped), refinement is CURSOR-driven and unconditional — every tenant's
+// persistent round-robin cursor advances by up to BudgetPerTenant vectors,
+// re-routing each against the current (converged) topology and moving the stale
+// ones, recovering the closure replication fast ingest never fired.
+//
+// Run it on a SLOWER cadence than the rebalance sweep: refinement is
+// recall-recovery, not correctness, and a fully converged tenant re-scans its
+// cursor for zero moves each pass. The result's Converged count (cursor wrapped
+// a full cycle with zero moves) lets a caller back off quiescent tenants. As in
+// SweepSPFreshIndexes, per-tenant failures are isolated (joined, not fatal — one
+// corrupt tenant must not halt fleet refinement) and ctx cancellation ends the
+// pass between tenants.
+func RefineSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFreshTenant, opts SPFreshRefineOptions) (SPFreshRefineResult, error) {
+	budget := opts.BudgetPerTenant
+	if budget <= 0 {
+		budget = spfreshRefineFleetBudget
+	}
+	var result SPFreshRefineResult
+	var errs []error
+	for _, tenant := range tenants {
+		if ctx.Err() != nil {
+			return result, errors.Join(append(errs, ctx.Err())...)
+		}
+		moved, wrapped, err := RefineSPFreshIndex(ctx, db, tenant.StoreBuilder, tenant.IndexName, budget)
+		result.Moves += moved
+		if err != nil {
+			errs = append(errs, fmt.Errorf("refine %q: %w", tenant.IndexName, err))
+			continue
+		}
+		result.Refined++
+		if wrapped && moved == 0 {
+			result.Converged++
+		}
+	}
+	return result, errors.Join(errs...)
+}
+
 // spfreshResolveRefineTarget resolves the index's storage (at the readable
 // generation) and config. Returns a nil storage when the index is not yet
 // bootstrapped (no generation) — nothing to refine.

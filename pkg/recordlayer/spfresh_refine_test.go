@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -251,6 +252,84 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("the fleet driver refines across tenants, recovers drift, and reports convergence", func() {
+		// RefineSPFreshIndexes is the production driver — the refinement loop
+		// beside the rebalancer loop. Two converged tenants; drift ONE (drop K
+		// closure copies); the fleet pass must re-add exactly K (the other tenant
+		// stays at zero) and, once recovered, report both tenants converged.
+		base := specSubspace()
+		md := buildMeta(newVecIndex("spf", 2))
+		sb1 := buildConverged(base.Sub("t1"), md, "spf", 120)
+		sb2 := buildConverged(base.Sub("t2"), md, "spf", 120)
+
+		s1, cfg1, err := spfreshResolveRefineTarget(ctx, sharedDB, sb1, "spf")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s1).NotTo(BeNil())
+		cache1, err := spfreshLoadRefineCache(ctx, sharedDB, s1)
+		Expect(err).NotTo(HaveOccurred())
+		plans := findCopyDrops(ctx, s1, cfg1, cache1, 3)
+		Expect(plans).To(HaveLen(3), "need three drifted pks with distinct dropped fines")
+		dropCopies(ctx, s1, plans, -1 /* seal none */)
+		k := len(plans)
+
+		tenants := []SPFreshTenant{
+			{StoreBuilder: sb1, IndexName: "spf"},
+			{StoreBuilder: sb2, IndexName: "spf"},
+		}
+		// budget ≥ n ⇒ each pass is one full cursor cycle per tenant, so
+		// convergence is per-pass clean (the small-budget cursor path is pinned
+		// by the budget spec above).
+		totalMoves := 0
+		var res SPFreshRefineResult
+		for i := 0; i < 5; i++ {
+			res, err = RefineSPFreshIndexes(ctx, sharedDB, tenants, SPFreshRefineOptions{BudgetPerTenant: 200})
+			Expect(err).NotTo(HaveOccurred())
+			totalMoves += res.Moves
+			if res.Converged == len(tenants) {
+				break
+			}
+		}
+		Expect(res.Converged).To(Equal(len(tenants)), "both tenants converge (cursor wraps, zero moves)")
+		Expect(totalMoves).To(Equal(k), "the fleet re-adds exactly the K dropped copies (drifted tenant only)")
+
+		// The drifted tenant's memberships are restored to their full closure.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for _, p := range plans {
+				m, merr := spfreshReadMembership(tx, s1, p.pk)
+				if merr != nil {
+					return nil, merr
+				}
+				Expect(idSetEqual(m, p.full)).To(BeTrue(), "drifted membership recovered by the fleet pass")
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("the fleet driver isolates per-tenant errors and honors ctx cancellation", func() {
+		base := specSubspace()
+		md := buildMeta(newVecIndex("spf", 2))
+		sb := buildConverged(base.Sub("good"), md, "spf", 120)
+		tenants := []SPFreshTenant{
+			{StoreBuilder: sb, IndexName: "spf"},
+			{StoreBuilder: sb, IndexName: "does_not_exist"}, // bad: not in metadata
+		}
+
+		res, err := RefineSPFreshIndexes(ctx, sharedDB, tenants, SPFreshRefineOptions{BudgetPerTenant: 200})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("does_not_exist"), "the failing tenant is reported")
+		Expect(res.Refined).To(Equal(1), "the good tenant refines despite the bad tenant's error")
+		Expect(res.Converged).To(Equal(1), "the good (converged) tenant wraps with zero moves")
+
+		// A cancelled context ends the pass before touching any tenant.
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		cres, cerr := RefineSPFreshIndexes(cctx, sharedDB, tenants, SPFreshRefineOptions{})
+		Expect(errors.Is(cerr, context.Canceled)).To(BeTrue())
+		Expect(cres.Refined).To(Equal(0))
 	})
 })
 
