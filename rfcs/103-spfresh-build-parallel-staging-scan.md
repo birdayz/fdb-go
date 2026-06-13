@@ -77,24 +77,32 @@ boundaries:
    boundary only coarsens the split — fewer shards, still a correct gapless
    tiling).
 
-   The subtler hazard (codex r2 P1): a cut at `Pack(b)` lands *inside another
-   record* iff that record's PK is a **strict prefix** of `b` — then `Pack(b)`
-   coincides with one of its split-chunk keys `Pack(pk, suffix)` and the lower
-   shard stops mid-record. Two facts make this impossible for the boundaries we
-   use:
-   - Boundaries come only from **observed PKs of the indexed record type**, which
-     all share one **fixed arity**. Distinct equal-arity tuples are mutually
-     non-prefixing at the byte level (tuple element encodings are prefix-free),
-     so no indexed boundary can fall inside another indexed record.
-   - To extend the guarantee to *co-resident* record types, parallel staging
-     (S>1) is **gated** on the indexed keyspace being disjoint from other types':
-     the store has a single record type, or the primary key carries a
-     `RecordTypeKey` prefix (`primaryKeyHasRecordTypePrefix`, store.go) — the
-     Record Layer norm. The only configuration this excludes is the deliberate
-     prefix-overlap pathology (`collision_test.go`: distinct types sharing a
-     keyspace with no type prefix), where it falls back to **S=1** (today's
-     serial scan, always correct). A `Pack(b)` whose prefix is the indexed type
-     key can never fall inside a differently-type-keyed record.
+   The subtler hazard (codex r2/r3 P1): a cut at `Pack(b)` tears a **split**
+   record R only if it falls strictly between two of R's chunk keys. R's keys are
+   `Pack(R.pk, s)` where the suffix `s` is an **integer** (`recordVersionSuffix=-1`,
+   `unsplitRecord=0`, `startSplitRecord=1,2,…`; constants.go). `Pack(b)` lands
+   between two of them iff `b = R.pk ++ [s]` for an integer `s` in that range —
+   i.e. **`R.pk` is `b` with its last element removed, and that last element is an
+   integer**. (This is deliberately *not* argued as "Pack(R.pk) is a byte-prefix
+   of Pack(b)": string/bytes element encodings are **not** byte-prefix-free —
+   `Pack(("a",))` is a byte-prefix of `Pack(("a\x00",))` — but such a false
+   prefix appends `0xff…`, never an integer-suffix encoding, so it sorts *past*
+   all of R's chunks and tears nothing. Only an integer-element extension can
+   land between chunks.) Two facts rule the tear out:
+   - Boundaries are full PKs of the **indexed record type**, all of one **fixed
+     arity** A. `b` with its last element removed has arity A−1, so it is never a
+     PK of the indexed type ⇒ no indexed boundary tears an indexed record.
+   - For *co-resident* types, parallel staging (S>1) is **gated** on
+     `RecordMetaData.PrimaryKeyHasRecordTypePrefix()` (metadata.go:1125 — the
+     **ALL-types** predicate; the per-expression `primaryKeyHasRecordTypePrefix`
+     is insufficient, since one indexed type could be type-key-prefixed while a
+     co-resident type has a bare PK) **or** a single record type. Then every
+     type's keyspace begins with its own distinct `RecordTypeKey`, so
+     `b`-minus-last-element (prefixed by the indexed type key, arity A−1) cannot
+     equal any other type's PK, and `Pack(b)` cannot fall inside a foreign
+     record's chunks. The excluded config — the `collision_test.go` prefix-overlap
+     pathology (mixed types, some without a type-key prefix) — falls back to
+     **S=1** (today's serial scan, always correct).
 
 2. **The tiling is gapless with ±∞ ends.** Shard 0 starts at `TreeStart`, shard
    S-1 ends at `TreeEnd`, so the union of the disjoint sub-ranges is the *entire*
@@ -195,8 +203,10 @@ a clean run the maintainer's range-set + flip bookkeeping is unchanged.
 The review must scrutinize: (1) the per-shard delete-fence still fences — the
 boundaries are PK-aligned, half-open, gapless, ±∞ at the ends, so the union of
 disjoint conflict ranges = the full record range; (1b) no record is torn at a
-boundary — boundaries are fixed-arity indexed PKs (mutually non-prefixing) and
-S>1 is gated to single-type / record-type-prefixed stores (else S=1), so no
+boundary — a tear needs `b`-minus-last-element to be another record's PK with an
+integer suffix; boundaries are fixed-arity indexed PKs (so `b`-minus-last is the
+wrong arity) and S>1 is gated to single-type or ALL-types-RecordTypeKey-prefixed
+stores via `RecordMetaData.PrimaryKeyHasRecordTypePrefix()` (else S=1), so no
 `Pack(b)` lands inside another record's split chunks; (2) staging-key disjointness
 across shards into a shared cell — `stagingKey(cell, pk)` / `sidecarKey(pk)`
 include the (trimmed) record PK, so two shards into one cell write disjoint keys;
@@ -214,9 +224,9 @@ retry over idempotent Sets. Pure build-path code; trivial revert. Worst case
   quiescent record set, plus **recall equivalence** on the finished index. NOT
   fine IDs / postings (pre-existing wave-A allocation nondeterminism — see
   Determinism).
-- **Prefix-safety gate:** a single-record-type / record-type-prefixed store
-  shards (S>1); a `collision_test.go`-style prefix-overlap store falls back to
-  S=1. Pin both.
+- **Prefix-safety gate:** a single-record-type / all-types-`RecordTypeKey`-prefixed
+  store shards (S>1); a `collision_test.go`-style prefix-overlap store (a bare-PK
+  type co-resident with a type-key-prefixed one) falls back to S=1. Pin both.
 - **Tiling correctness:** assert the shard boundaries tile the record range
   gaplessly and disjointly (every record read by exactly one shard; union =
   whole range); a split-record dataset (vectors large enough to split) proves no
