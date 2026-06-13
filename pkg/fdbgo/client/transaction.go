@@ -219,6 +219,13 @@ type Transaction struct {
 	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
 	maxRetryDelay time.Duration
 
+	// rpcTimeoutOverride: if > 0, the per-RPC reply timeout for this
+	// transaction's READS instead of DefaultRPCTimeout. Test-only knob to
+	// drive the read path's reply-timeout retry deterministically; production
+	// leaves it 0. (libfdb_c has no per-read client timeout at all; this knob
+	// shrinks ours, it never lengthens the observable contract.)
+	rpcTimeoutOverride time.Duration
+
 	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
 	// ranges. Used for insert-only batch writes where all keys are unique (no
 	// write-write conflicts possible) and all atomics commute. Reduces commit
