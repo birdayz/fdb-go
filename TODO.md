@@ -1057,3 +1057,19 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   bounded-pool build at 1M — far past the bandwidth model too. PROFILE FIRST
   (go test -cpuprofile on a 300k bulk reproduces in minutes) before optimizing;
   the two-level routing fix is the likely shape but the model has been wrong twice.
+
+- [x] **7. float32 distance kernel ("RFC-100") — SIZED, measured MARGINAL (not
+  pursued).** The build's residual CPU after RFC-099/101 is the distance kernel
+  `spfreshSquaredDistance` ([]float64): 66% flat of assign (BenchmarkSPFreshBuildAssign
+  87µs/vector ⇒ ~87s for the 1M assign phase) and dominant in k-means
+  (BenchmarkSPFreshKMeans 288ms / 8k×48×25). float32 would roughly halve the kernel's
+  bandwidth — BUT RFC-099+101 already cut the build from the old ~7 CPU-hours flat scan
+  to MINUTES, so the win is a fraction of a ONE-TIME bulk build. Against that: the kernel
+  has 20+ call sites including the query path (cache.route) and the EXACT re-rank (a
+  correctness property — float32 there would break "exact"), and float32 assignment can
+  shift near-tie centroid picks ⇒ a recall risk needing 1M revalidation. SPFresh is
+  Go-only (no Java SPFresh) so there's no wire-compat forcing function either. A large,
+  recall-critical change for a marginal one-time-build gain — spent lever, like the Lmax
+  (item 4) and α-replication (item 3) negatives. Revisit only if a demonstrated build- or
+  query-latency problem appears (it would need float32 for the approximate kernel only,
+  float64 preserved for re-rank).
