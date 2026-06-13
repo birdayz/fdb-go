@@ -308,20 +308,53 @@ func spfreshFindCentroidCell(tx fdb.Transaction, s *spfreshStorage, fineID int64
 // read-path split re-file uses it for the csplit-pause check (the routed
 // cellID can be stale after a completed coarse split; codex delta P2) while
 // keeping queries conflict-free except for the one Set-if-absent that
-// actually files.
-func spfreshFindCentroidCellSnapshot(tx fdb.Transaction, s *spfreshStorage, fineID int64) (int64, error) {
-	ids, _, err := spfreshLoadAllCoarse(tx, s)
-	if err != nil {
-		return 0, err
-	}
-	for _, cellID := range ids {
-		data, gerr := tx.Snapshot().Get(s.centroidKey(cellID, fineID)).Get()
+// actually files. hintCell (the routed cell) is probed FIRST — one point
+// read in the common still-current case; the moved-fine fallback issues the
+// whole coarse table as ONE parallel burst, never one blocking read per cell
+// (a serial scan added O(cells) round trips to the user query that hit the
+// cap — codex delta r3).
+func spfreshFindCentroidCellSnapshot(tx fdb.Transaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
+	if hintCell != 0 {
+		data, gerr := tx.Snapshot().Get(s.centroidKey(hintCell, fineID)).Get()
 		if gerr != nil {
 			return 0, gerr
 		}
 		if data != nil {
-			return cellID, nil
+			return hintCell, nil
 		}
+	}
+	ids, _, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	futs := make([]fdb.FutureByteSlice, len(ids))
+	for i, cellID := range ids {
+		if cellID == hintCell {
+			continue // already probed
+		}
+		futs[i] = tx.Snapshot().Get(s.centroidKey(cellID, fineID))
+	}
+	// Drain EVERY future even after a hit or an error (a pending read must
+	// not outlive this attempt — the cross-attempt contamination rule).
+	var found int64
+	var ferr error
+	for i, cellID := range ids {
+		if futs[i] == nil {
+			continue
+		}
+		data, gerr := futs[i].Get()
+		if gerr != nil && ferr == nil {
+			ferr = gerr
+		}
+		if data != nil && found == 0 {
+			found = cellID
+		}
+	}
+	if ferr != nil {
+		return 0, ferr
+	}
+	if found != 0 {
+		return found, nil
 	}
 	return 0, errSPFreshNotFound
 }

@@ -645,7 +645,7 @@ func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStor
 		// through the starvation guard (codex delta P2). Snapshot resolve —
 		// rare path (cap-hit only), and a fine that is gone entirely gets
 		// nothing filed (its lifecycle already retired it).
-		cellID, cerr := spfreshFindCentroidCellSnapshot(m.tx, storage, rt.fineID)
+		cellID, cerr := spfreshFindCentroidCellSnapshot(m.tx, storage, rt.fineID, rt.cellID)
 		if cerr != nil {
 			if errors.Is(cerr, errSPFreshNotFound) {
 				continue
