@@ -65,6 +65,37 @@ maps, recursive-CTE/DFS/union/DML slices — is RFC-106b.)
    errors (54F01) past the cap. Complements the row-count `MAX_ROWS`. The size estimate is the
    cheap encoded length, not exact heap (documented as a non-exact egress ceiling).
 
+## Completeness round (codex r2 — every leaf cursor + every buffered path)
+
+The first impl wired the limits at the common cursors (record/index/key-value) and
+the `fetchPage` chokepoint. codex's r2 review found the coverage was not yet "every
+leaf cursor / every buffered path" the RFC claims:
+
+1. **Every leaf cursor honors the statement deadline.** `indexCursor`, `countKVCursor`
+   (aggregate index), `textCursor`, `bitmapKVCursor`, and `vectorSearchCursor` ignored
+   the `ctx` arg, so a per-request timeout could not bound a secondary-index / aggregate
+   / text / bitmap / vector scan. Each now checks `ctx.Err()` at the top of `OnNext`.
+   `countKVCursor` and `bitmapKVCursor` also gained the missing `ScannedRecordsLimit`
+   branch (and `countKVCursor` full scanned-bytes/time accounting) so aggregate-index
+   scans can't read past the cap — mirrors the `index_scan` pattern, `noNextOrFail` →
+   54F01 in fail mode.
+2. **Buffered/eager operators error instead of truncating.** In paginate mode a leaf
+   cursor returns an OUT-OF-BAND no-next (scan/byte/time limit) + continuation; the
+   streaming operators (sort/group) capture partial state and paginate, but a one-shot
+   buffer (union/NLJ-inner/INSERT/recursive-CTE via `CollectAllBounded`, scalar subquery,
+   DELETE/UPDATE drains) cannot. `errIfBufferTruncated` (mirrors Java's
+   `RecordCursor.NoNextReason.isOutOfBand()`) turns that stop into 54F01 — silently
+   returning the partial buffer would be a silent truncation (CLAUDE.md). This also
+   closes the flip side of the original scalar-subquery fix (threading the limit in must
+   not then truncate the subquery in paginate mode).
+3. **MAX_ROWS / LIMIT bound the page buffer, not just egress.** `paginatingRows.fetchPage`
+   set the MAIN plan's `ReturnedRowLimit` to the EXACT remaining returned-row budget
+   (unconsumed OFFSET + remaining cap) so a `MAX_ROWS=10` statement without a scan limit
+   no longer materializes the whole underlying result into `r.buf`. Applied only to the
+   main plan (NOT the shared props the scalar subqueries use — a budget of 1 would cap a
+   subquery at one row and defeat its cardinality check) and never to DML (its scan must
+   not be bounded by a returned-row cap). The budget is exact, so it never under-produces.
+
 ## Test plan (yamsql + executor unit + FDB integration)
 
 - **Scan-limit wiring (parity):** a scenario sets `OptExecutionScannedRowsLimit` + `FailOnScanLimitReached`,

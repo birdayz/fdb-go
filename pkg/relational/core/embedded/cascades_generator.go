@@ -1172,6 +1172,44 @@ func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
 // sentinels that mean "no limit", so the produced ScannedRecordsLimit /
 // ScannedBytesLimit are left 0 (the recordlayer "unlimited" value). This
 // keeps the no-option path identical to the pre-RFC behavior.
+// pageRowBudget returns the maximum number of rows the MAIN plan's current page
+// must produce given the active returned-row caps (SQL LIMIT + JDBC MAX_ROWS)
+// and the unconsumed OFFSET, or 0 when no cap is active (unbounded page).
+// Bounding the page cursor's ReturnedRowLimit to this stops fetchPage from
+// materializing the entire underlying result into r.buf when a returned-row cap
+// is set without a per-page scan limit (codex RFC-106a §3). The budget is EXACT
+// — unconsumed offset + remaining emit is precisely the rows this statement can
+// still consume — so it never under-produces (no row loss). DML plans report an
+// affected-row count, not a result set, so the cap must NOT bound their scan.
+func (r *paginatingRows) pageRowBudget() int {
+	if r.respectActiveTx { // DML (INSERT/UPDATE/DELETE): never bound the scan
+		return 0
+	}
+	rowCap := int64(math.MaxInt64)
+	if r.sqlLimit >= 0 && r.sqlLimit < rowCap {
+		rowCap = r.sqlLimit
+	}
+	if r.maxRows > 0 && r.maxRows < math.MaxInt32 && r.maxRows < rowCap {
+		rowCap = r.maxRows
+	}
+	if rowCap == math.MaxInt64 {
+		return 0 // no active returned-row cap → leave the page unbounded
+	}
+	remainingEmit := rowCap - r.emitted
+	if remainingEmit <= 0 {
+		return 0 // cap already reached; Next() EOFs before this is used
+	}
+	remainingOffset := r.sqlOffset - r.skipped
+	if remainingOffset < 0 {
+		remainingOffset = 0
+	}
+	budget := remainingOffset + remainingEmit
+	if budget <= 0 || budget > math.MaxInt32 {
+		return 0
+	}
+	return int(budget)
+}
+
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	props := recordlayer.DefaultExecuteProperties()
 
@@ -1264,7 +1302,17 @@ func (r *paginatingRows) fetchPage() error {
 			}
 			evalCtx = evalCtx.WithScalarSubqueries(scalarResults)
 		}
-		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, props)
+		// Bound the MAIN plan's page to the remaining returned-row budget so a
+		// MAX_ROWS / SQL-LIMIT statement without a per-page scan limit does not
+		// materialize the entire underlying result into r.buf (codex RFC-106a).
+		// Applied ONLY here, not to the shared props the scalar subqueries use —
+		// a budget of 1 would otherwise cap a subquery at one row and defeat its
+		// >1-row cardinality check.
+		mainProps := props
+		if budget := r.pageRowBudget(); budget > 0 {
+			mainProps = props.WithReturnedRowLimit(budget)
+		}
+		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, mainProps)
 		if execErr != nil {
 			return nil, translateExecError(execErr)
 		}

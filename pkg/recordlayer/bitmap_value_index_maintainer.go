@@ -514,9 +514,14 @@ func (c *bitmapKVCursor) initIterator() error {
 	return nil
 }
 
-func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
+	}
+
+	// Honor a statement deadline / cancellation (RFC-106a).
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	if c.iterator == nil {
@@ -526,6 +531,12 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 	}
 
 	executeProps := c.scanProps.GetExecuteProperties()
+
+	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
+	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it).
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
+	}
 
 	// Check row limit.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {

@@ -23,6 +23,8 @@ func (e *ScanLimitReachedError) Error() string {
 	switch e.Reason {
 	case ByteLimitReached:
 		return "scan limit reached: scanned-bytes limit exceeded"
+	case TimeLimitReached:
+		return "scan limit reached: time limit exceeded"
 	default:
 		return "scan limit reached: scanned-records limit exceeded"
 	}

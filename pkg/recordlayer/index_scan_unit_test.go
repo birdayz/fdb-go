@@ -581,6 +581,43 @@ var _ = Describe("Index Scan Unit Tests", func() {
 		})
 	})
 
+	// The remaining specialized leaf cursors (count/aggregate, text, bitmap,
+	// vector) also ignored ctx before RFC-106a, so a statement deadline could not
+	// bound their scans. Each now checks ctx.Err() at the top of OnNext. A zero
+	// cursor + cancelled ctx exercises that check with no FDB; revert-proof: drop
+	// the check and OnNext either nil-derefs its (nil) iterator/tx or returns
+	// SourceExhausted instead of the ctx error.
+	Describe("specialized leaf cursors honor ctx cancellation (RFC-106a)", func() {
+		It("countKVCursor.OnNext returns the ctx error", func() {
+			c := &countKVCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("textCursor.OnNext returns the ctx error", func() {
+			c := &textCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("bitmapKVCursor.OnNext returns the ctx error", func() {
+			c := &bitmapKVCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("vectorSearchCursor.OnNext returns the ctx error", func() {
+			c := &vectorSearchCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+	})
+
 	Describe("newIndexCursor", func() {
 		It("initializes with correct defaults", func() {
 			ss := subspace.Sub("idx")

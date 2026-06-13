@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,4 +322,101 @@ func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 	_, err := drainIDs(ctx, conn,
 		"SELECT id FROM Small WHERE id < (SELECT COUNT(*) FROM Big)")
 	wantExecLimit(t, err)
+}
+
+// TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates pins the codex follow-up:
+// in PAGINATE mode (FailOnScanLimitReached=false) a leaf cursor that hits the
+// scan limit returns an out-of-band NoNext + continuation — but a BUFFERED
+// operator (here a scalar subquery) cannot paginate, so silently breaking on
+// !HasNext would truncate its input and fabricate a wrong scalar value. The
+// errIfBufferTruncated guard turns that out-of-band stop into 54F01 instead.
+//
+// Isolation: the subquery `SELECT id FROM Big WHERE val = 'target'` full-scans
+// Big (val is unindexed) and the single matching row (id=49) sits PAST the
+// scan limit, so the buffered scan is cut off before finding it. WITH the guard
+// → 54F01; without it → the subquery truncates to no row, the outer predicate
+// `id < NULL` yields zero rows, and the query wrongly succeeds (revert-proof:
+// drop errIfBufferTruncated in scalar_subquery.go → this returns 0 rows, no err).
+func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_buftrunc", "buftrunc",
+		"CREATE TABLE Big (id BIGINT, val STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const bigRows = 50
+	const scanLimit = 5 // the only matching Big row is id=49, well past 5
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+		// FailOnScanLimitReached deliberately LEFT FALSE → paginate mode. The
+		// buffered subquery must still error rather than truncate.
+	})
+	for i := 0; i < bigRows; i++ {
+		val := "x"
+		if i == bigRows-1 {
+			val = "target"
+		}
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO Big (id, val) VALUES (%d, '%s')", i, val)); err != nil {
+			t.Fatalf("INSERT Big row %d: %v", i, err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "INSERT INTO Small (id) VALUES (0)"); err != nil {
+		t.Fatalf("INSERT Small: %v", err)
+	}
+
+	_, err := drainIDs(ctx, conn,
+		"SELECT id FROM Small WHERE id < (SELECT id FROM Big WHERE val = 'target')")
+	wantExecLimit(t, err)
+}
+
+// TestFDB_RFC106a_AggregateIndexScanLimit pins the codex P2: a grouped
+// aggregate-index scan (countKVCursor) must honor the wired scan limits — before
+// the fix it checked only ReturnedRowLimit, so a high-cardinality GROUP BY could
+// read every group entry past the cap without 54F01. The COUNT(*) GROUP BY index
+// gives one entry per group; with 50 groups and ScannedRowsLimit=5 + fail mode,
+// countKVCursor stops at the 5th group entry and errors. Revert-proof: drop the
+// ScannedRecordsLimit branch from countKVCursor.OnNext → all 50 groups return.
+func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_aggscan", "aggscan",
+		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
+	ctx := context.Background()
+
+	const groups = 50
+	const scanLimit = 5
+
+	// Prove the grouped COUNT plans as an AggregateIndex scan (the countKVCursor
+	// leaf codex flagged), not a full-scan fallback that would hit a different
+	// cursor. EXPLAIN is static — no data needed.
+	const groupedCount = "SELECT g, COUNT(*) FROM ga GROUP BY g"
+	if plan := planExplainVia(t, ctx, db, groupedCount); !strings.Contains(plan, "AggregateIndex") {
+		t.Fatalf("grouped COUNT must plan as AggregateIndex (exercises countKVCursor), got: %s", plan)
+	}
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+		ec.SetFailOnScanLimitReached(true)
+	})
+	// Distinct g per row → `groups` aggregate-index entries. Atomic COUNT-index
+	// maintenance is an atomic ADD (no read), so the limit never bites the seed.
+	for i := 0; i < groups; i++ {
+		if _, err := conn.ExecContext(ctx,
+			fmt.Sprintf("INSERT INTO ga (id, g) VALUES (%d, %d)", i, i)); err != nil {
+			t.Fatalf("INSERT ga row %d: %v", i, err)
+		}
+	}
+
+	rows, qerr := conn.QueryContext(ctx, groupedCount)
+	if qerr == nil {
+		for rows.Next() { //nolint:revive // draining to reach the terminal error
+		}
+		qerr = rows.Err()
+		rows.Close()
+	}
+	wantExecLimit(t, qerr)
 }

@@ -57,9 +57,15 @@ func (c *textCursor) setUnderlying(it *BunchedMapMultiIterator) {
 // Matches Java's TextCursor.onNext() which checks limitManager.tryRecordScan()
 // before each entry. The "free initial pass" pattern allows at least one record
 // before enforcing scan/time limits (matching CursorLimitManager.usedInitialPass).
-func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.lastResult != nil && !c.lastResult.HasNext() {
 		return *c.lastResult, nil
+	}
+
+	// Honor a statement deadline / cancellation (RFC-106a) so a text scan is
+	// bounded by the per-request timeout, not only by the per-page scan limits.
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	executeProps := c.scanProps.GetExecuteProperties()

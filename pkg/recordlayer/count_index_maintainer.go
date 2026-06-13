@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -27,6 +28,12 @@ type countKVCursor struct {
 	prefixLength int
 	lastCont     []byte
 	tupleValues  bool // if true, decode values as tuple-packed bytes
+
+	// Scan accounting for RFC-106a resource limits. Each aggregate-index KV is a
+	// pre-aggregated group, so one KV read == one entry returned; `returned`
+	// doubles as the scanned-records count (like index_scan's recordsRead).
+	bytesScanned int64
+	startTime    time.Time
 }
 
 // newCountIndexCursor creates a cursor that scans a COUNT index.
@@ -63,6 +70,7 @@ func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx 
 }
 
 func (c *countKVCursor) initIterator() error {
+	c.startTime = time.Now() // per-page time-limit reference (RFC-106a)
 	// Compute begin from TupleRange low endpoint
 	var begin fdb.Key
 	switch c.tupleRange.LowEndpoint {
@@ -126,9 +134,14 @@ func (c *countKVCursor) initIterator() error {
 	return nil
 }
 
-func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
+	}
+
+	// Honor a statement deadline / cancellation (RFC-106a).
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	if c.iterator == nil {
@@ -138,6 +151,22 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 	}
 
 	executeProps := c.scanProps.GetExecuteProperties()
+
+	// Scanned-records limit (RFC-106a parity): one aggregate-index KV per entry,
+	// so `returned` is the scanned-records count. noNextOrFail → 54F01 in fail mode.
+	if executeProps.ScannedRecordsLimit > 0 && c.returned >= executeProps.ScannedRecordsLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, &BytesContinuation{bytes: c.lastCont})
+	}
+
+	// Time limit (free initial pass like the other leaf cursors).
+	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
+		return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.lastCont}), nil
+	}
+
+	// Scanned-bytes limit (free initial pass).
+	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, &BytesContinuation{bytes: c.lastCont})
+	}
 
 	// Check row limit
 	if executeProps.ReturnedRowLimit > 0 && c.returned >= executeProps.ReturnedRowLimit {
@@ -172,6 +201,7 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan: %w", err)
 	}
+	c.bytesScanned += int64(len(kv.Key) + len(kv.Value)) // RFC-106a byte accounting
 
 	// Unpack key using fastUnpack for zero-alloc integer decode.
 	prefixLen := len(c.indexSubspace.Bytes())

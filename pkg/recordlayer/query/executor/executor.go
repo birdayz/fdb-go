@@ -1863,6 +1863,11 @@ func executeDelete(
 			return nil, err
 		}
 		if !result.HasNext() {
+			// A resource-limit cut-off mid-DELETE would partially delete and lie
+			// about the affected set — error instead of truncating (RFC-106a).
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		qr := result.GetValue()
@@ -2034,6 +2039,11 @@ func executeUpdate(
 			return nil, err
 		}
 		if !result.HasNext() {
+			// A resource-limit cut-off mid-UPDATE would partially update and lie
+			// about the affected set — error instead of truncating (RFC-106a).
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		qr := result.GetValue()
@@ -2623,6 +2633,9 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 			return nil, err
 		}
 		if !result.HasNext() {
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		results = append(results, result.GetValue())
@@ -2643,6 +2656,9 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 			return nil, err
 		}
 		if !result.HasNext() {
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		results = append(results, result.GetValue())
@@ -2651,6 +2667,24 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 		}
 	}
 	return results, nil
+}
+
+// errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
+// collect's source cursor stopped OUT-OF-BAND — i.e. a scan/byte/time resource
+// limit (RFC-106a) cut it off, not true exhaustion or a legitimate
+// ReturnedRowLimit. A buffered operator (union/NLJ-inner/INSERT/recursive-CTE,
+// scalar subquery, DML drain) materializes its source in one shot and cannot
+// paginate a continuation, so an out-of-band stop means the buffer is INCOMPLETE.
+// Erroring (→ 54F01) is correct; silently returning the partial buffer would be a
+// silent truncation (CLAUDE.md: no silent caps). Mirrors Java's
+// RecordCursor.NoNextReason.isOutOfBand() — the streaming operators (sort/group)
+// instead capture the partial state in a continuation and paginate, which a
+// one-shot buffer cannot.
+func errIfBufferTruncated(result recordlayer.RecordCursorResult[QueryResult]) error {
+	if result.GetNoNextReason().IsOutOfBand() {
+		return &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
+	}
+	return nil
 }
 
 // sortByKeys sorts QueryResult slice by the given sort key names.

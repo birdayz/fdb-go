@@ -40,6 +40,12 @@ func EvaluateScalarSubquery(
 			return nil, nextErr
 		}
 		if !result.HasNext() {
+			// An out-of-band (resource-limit) stop means the subquery's input was
+			// truncated — error (→ 54F01) rather than fabricate a no-row / wrong
+			// scalar value from a partial scan (RFC-106a).
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		rows = append(rows, result.GetValue())
