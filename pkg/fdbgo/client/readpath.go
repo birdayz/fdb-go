@@ -346,10 +346,11 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		// Other FDB error → bubble up for Transact retry.
 		return nil, err
 	}
-	// Exhausted the wrong-shard retry budget on all_alternatives_failed:
-	// surface a RETRYABLE transaction_too_old (libfdb_c never propagates
-	// all_alternatives_failed to the application — it retries the read; a
-	// bounded client surfaces the transaction-level retry instead).
+	// Exhausted the wrong-shard retry budget (a wrong_shard_server storm or
+	// repeated all_alternatives_failed): surface a RETRYABLE transaction_too_old
+	// (libfdb_c never propagates all_alternatives_failed to the application — it
+	// retries the read; a bounded client surfaces the transaction-level retry
+	// instead).
 	return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 }
 
