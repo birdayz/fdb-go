@@ -45,11 +45,19 @@ type spfreshBuildRouter struct {
 3. `spfreshNearestK(vec, gathered, pool)` → `spfreshClosure(...)` — **identical**
    closure/RNG/bounded-widening logic as today, applied to the gathered subset.
 
-`w` is the build assignment width, a new config-derived knob
-`spfreshBuildAssignCells` (default chosen so the build covers at least the
-query's default probe width with margin — see Recall). The flat-scan path is
-removed; `buildRouter` populates the coarse + per-cell maps it already has
-(`waveA` produced per-cell fines; the coarse centroids come from `coarsePass`).
+`w` is the build assignment width `w_b`, a new per-index config option
+`BuildAssignCells` / `spfreshBuildAssignCells`, **derived as exactly the query
+probe width `w_q`** (`spfreshDefaultProbeW`, default 32) so the build assigns
+over the SAME nearest-cell neighborhood a query navigates, and so a query-width
+sweep moves `w_b` with it (no silent drift). The flat-scan path is removed;
+`buildRouter` populates the coarse + per-cell maps it already has (`waveA`
+produced per-cell fines; the coarse centroids come from `coarsePass`).
+
+`w_b = w_q` (not larger): a replica the build would place in v's cell ranked
+`w_q+1..w_b` is never reached by a query FOR v (which probes only `w_q` cells),
+so a larger `w_b` is wasted build work with no recall gain (codex). A smaller
+`w_b` is permitted (narrows candidate cells, never places an unreachable
+replica) but the default mirrors the query.
 
 ## Recall argument (the load-bearing part)
 
@@ -91,7 +99,16 @@ is a pure code rollback; existing indexes are unaffected (build-time only).
   full-build win grows with scale (at 1M ~245 cells ⇒ w_b=48 scans ≈ 20% of the
   fines ⇒ ~5× fewer assignment distances, the dominant build cost).
 
-The recall A/B is the load-bearing result: two-level routing matches the query
-path, so assignment quality is unchanged while the work per vector drops. The
-headline lever toward the 10× bulk-import goal; stacks with float32/code-domain
-distance (RFC-100), cheaper k-means (RFC-101), and pipeline/fan-out (RFC-102).
+- **Binding-regime A/B** (200k real-SIFT, CellTarget=4 ⇒ ~150 coarse cells so
+  w_b actually prunes hard, reproducing the 1M pruning ratio without a 1M
+  build): recall@10 **0.9835 identical** at w_b ∈ {flat=100000, 48, 32}, even
+  though w_b=32 gathers only **32/150 ≈ 21%** of cells. Build rate
+  4,255 → 5,104 vec/s flat→w_b=32. This is the load-bearing validation Graefe
+  and the paper review asked for: recall holds where w_b BINDS, confirming the
+  closure's α-bounded replicas span only a few cells, so recall is insensitive
+  to w_b above a small floor.
+
+Two-level routing matches the query path, so assignment quality is unchanged
+while the work per vector drops. The headline lever toward the 10× bulk-import
+goal; stacks with float32/code-domain distance (RFC-100), cheaper k-means
+(RFC-101), and pipeline/fan-out (RFC-102).

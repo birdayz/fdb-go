@@ -69,3 +69,26 @@ func BenchmarkSPFreshBuildAssign(b *testing.B) {
 		router.assign(queries[i%len(queries)], config.Replication, config.Alpha)
 	}
 }
+
+// BenchmarkSPFreshKMeans measures the clustering cost (wave-A per-cell + coarse
+// k-means) — the other half of the CPU-bound build after two-level assignment
+// (RFC-099) cut the flat scan. Clusters a cell's worth of vectors (~8k) into
+// CellTarget centroids over the default 25 Lloyd iterations. Informs RFC-101
+// (cheaper k-means) and RFC-100 (float32 distance — the shared kernel).
+func BenchmarkSPFreshKMeans(b *testing.B) {
+	rng := rand.New(rand.NewSource(7))
+	const dims, n, k = 128, 8000, 48
+	vecs := make([][]float64, n)
+	for i := range vecs {
+		v := make([]float64, dims)
+		for d := range v {
+			v[d] = rng.NormFloat64() * 10
+		}
+		vecs[i] = v
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spfreshKMeans(vecs, k, int64(i), 25)
+	}
+}

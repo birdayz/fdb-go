@@ -80,6 +80,15 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	if bw := os.Getenv("SIFT_BUILD_W"); bw != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshBuildAssignCells] = bw
 	}
+	// SIFT_CELL_TARGET / SIFT_CELL_MAX force a smaller cell size so MANY coarse
+	// cells form at a low N — used to validate the RFC-099 recall invariant in
+	// the regime where w_b actually BINDS (cells ≫ w_b) without a 1M build.
+	if ct := os.Getenv("SIFT_CELL_TARGET"); ct != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshCellTarget] = ct
+	}
+	if cm := os.Getenv("SIFT_CELL_MAX"); cm != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshCellMax] = cm
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))

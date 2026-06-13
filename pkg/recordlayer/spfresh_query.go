@@ -61,7 +61,7 @@ func newSPFreshSearcher(storage *spfreshStorage, config SPFreshConfig, cache *sp
 		// overrides ride the scan contract's High tuple (k, kc, w, c[, ε])
 		// — e.g. 16/24/64 gives 0.826 at ~11 ms p50 for latency-first
 		// callers (w=16, not 8, for the same reason).
-		w:  32,
+		w:  spfreshDefaultProbeW,
 		kc: 64,
 		c:  200,
 		// SPANN §4.2's published recall@10 setting: SPTAG applies

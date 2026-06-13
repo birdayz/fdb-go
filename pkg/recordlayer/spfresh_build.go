@@ -548,9 +548,19 @@ func (b *spfreshBuilder) buildRouter(fineIDs map[int64][]int64, fineVecs map[int
 // Unbounded "widen until the ratio break" was quadratic at 1M density: hundreds
 // of fines sit inside α²·d²(c1) and the RNG rejects them all as same-direction,
 // so the pool doubled to the entire fine table PER VECTOR. Past the cap the
-// same argument as the insert path's cap applies: the rare missed diverse
-// replica is repaired by NPA's full-neighborhood re-closure after splits, and
-// under-replication only costs recall, never records.
+// same argument as the insert path's cap applies: under-replication only costs
+// recall, never records.
+//
+// On the two-level restriction: the default w_b == w_q (the query probe width),
+// so the build considers exactly the cells a query for this vector probes. A
+// diverse replica that would land OUTSIDE those cells is not lost recall — a
+// query for this vector never probes there either (and a query for some OTHER
+// vector near that cell finds its own near replicas, not this one). The flat
+// scan's habit of placing such far replicas was wasted work, not recall.
+// Measured: recall is identical at w_b ∈ {w_q, larger, flat} even when w_b
+// gathers ~20% of cells (RFC-099). NPA is split-local (NPA-bounded, SPFresh
+// §3.3) and does NOT re-closure globally, so query-reachability — not NPA — is
+// the justification.
 func (r *spfreshBuildRouter) assign(vec []float64, rep int, alpha float64) (ids []int64, fvecs [][]float64) {
 	// Two-level: gather the fines of the w_b nearest coarse cells. With fewer
 	// than w_b cells (small index) this is every fine — identical to a flat

@@ -67,10 +67,24 @@ const (
 	spfreshDefaultKn          = 8
 	spfreshDefaultCooldown    = 600 // seconds
 	spfreshDefaultNumExBits   = 1
-	// spfreshDefaultBuildAssignCells: the bulk-build assignment width (RFC-099).
-	// 48 sits comfortably above the default query probe width (32) so every
-	// fine the build can assign lives in a cell a query will probe.
-	spfreshDefaultBuildAssignCells = 48
+	// spfreshDefaultProbeW is the default query probe width w_q (cells probed
+	// per kNN query; newSPFreshSearcher.w).
+	spfreshDefaultProbeW = 32
+	// spfreshDefaultBuildAssignCells: the bulk-build wave-B assignment width
+	// w_b (RFC-099). DERIVED as exactly w_q — the build assigns over the SAME
+	// nearest-cell neighborhood a query for that vector navigates (SPANN
+	// §3.2.1: query and build share the centroid-navigation structure). Two
+	// reasons it is w_q, not larger:
+	//   - codex: w_b > w_q would let the build place a replica in v's cell
+	//     ranked w_q+1..w_b, which a query FOR v (probing only w_q cells)
+	//     never reaches — wasted build work, no recall gain;
+	//   - measured (RFC-099 binding A/B, 200k, ~150 cells): recall@10 is
+	//     IDENTICAL (0.9835) at w_b ∈ {32, 48, flat} even when w_b=32 gathers
+	//     just 21% of cells — the closure's α-bounded replicas span only a few
+	//     cells, so recall is insensitive to w_b above a small floor.
+	// Tying it to spfreshDefaultProbeW (not a separate literal) means a future
+	// query-width sweep moves w_b with it — no silent drift (Graefe).
+	spfreshDefaultBuildAssignCells = spfreshDefaultProbeW
 	// spfreshCSplitDeferLimit: consecutive coarse-split deferrals before
 	// fine-split task issuance for the cell is paused (starvation guard, §6b).
 	spfreshCSplitDeferLimit = 8
@@ -189,6 +203,13 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	if c.Kn < 1 || c.Kn > 64 {
 		return fmt.Errorf("spfresh: kn must be in [1, 64], got %d", c.Kn)
 	}
+	// w_b (RFC-099 build assignment width) just needs to be positive: the
+	// default ties it to the query probe width (build mirrors query), and
+	// recall is empirically insensitive to its exact value above a small floor
+	// (the closure's α-bounded replicas span only a few cells — RFC-099 binding
+	// A/B). A smaller-than-query w_b is permitted (it only narrows the build's
+	// candidate cells, never places an unreachable replica); a larger one only
+	// wastes build work. So the bound is just ≥ 1.
 	if c.BuildAssignCells < 1 {
 		return fmt.Errorf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)
 	}
