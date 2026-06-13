@@ -338,15 +338,35 @@ func (d *wrongShardDialer) armAll() {
 // Cleanup is registered via t.Cleanup.
 func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongShardDialer) {
 	t.Helper()
+	connectCF := startProxyFDB(t, ctx)
+
+	const wrongShardServerCode = 1001 // canonical wrong_shard_server (see func doc)
+	errBody := buildFDBErrorResponse(wrongShardServerCode)
+	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
+		t.Fatal("buildFDBErrorResponse should produce an error response")
+	}
+
+	wd := &wrongShardDialer{errBody: errBody}
+	db := newTestDatabase(t, ctx, connectCF, wd.dial)
+	t.Cleanup(func() { db.Close() })
+	return db, wd
+}
+
+// startProxyFDB starts an FDB container and returns a ClusterFile whose
+// Coordinators are the external (dial-through) addresses while
+// InternalKey/Description/ID carry the container-internal cluster identity —
+// the shape a frame-proxying dialer (wrongShardDialer, dropReplyDialer) needs.
+// Container teardown is registered on t.Cleanup with a FRESH context: t.Cleanup
+// runs AFTER the caller's `defer cancel()`, so terminating on the (cancelled)
+// test ctx makes testcontainers bail with context.Canceled and leak the
+// container (RFC-010 codex finding).
+func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
+	t.Helper()
 
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	// Terminate on a FRESH context, not the test's ctx: t.Cleanup runs AFTER the
-	// caller's `defer cancel()`, so terminating on the (cancelled) test ctx makes
-	// testcontainers bail with context.Canceled and leak the container. RFC-010
-	// codex review finding. Matches the multishard env's cleanup convention.
 	t.Cleanup(func() {
 		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer termCancel()
@@ -382,17 +402,98 @@ func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongSh
 		}
 		connectCF.InternalKey += a
 	}
+	return connectCF
+}
 
-	const wrongShardServerCode = 1001 // canonical wrong_shard_server (see func doc)
-	errBody := buildFDBErrorResponse(wrongShardServerCode)
-	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
-		t.Fatal("buildFDBErrorResponse should produce an error response")
+// dropReplyConn proxies frames like wrongShardConn, but when armed it silently
+// DROPS every non-PING server reply instead of forwarding it. The client's RPC
+// reply then never arrives, so the per-read reply timer fires deterministically
+// — there is no timer-vs-real-reply race (the flaw of a tiny rpcTimeoutOverride
+// against a real connection: on a fast box the real reply can win every time,
+// as the getKey subtest did in CI). PINGs still pass through so the connection
+// is not torn down as dead. Used to drive the read path's errReplyTimeout retry
+// loop to its retryable transaction_too_old exhaustion.
+type dropReplyConn struct {
+	net.Conn
+	pr       *io.PipeReader
+	dropping atomic.Bool
+}
+
+func newDropReplyConn(c net.Conn) *dropReplyConn {
+	pr, pw := io.Pipe()
+	d := &dropReplyConn{Conn: c, pr: pr}
+	go d.proxyLoop(pw)
+	return d
+}
+
+func (d *dropReplyConn) Read(b []byte) (int, error) { return d.pr.Read(b) }
+
+func (d *dropReplyConn) proxyLoop(pw *io.PipeWriter) {
+	defer pw.Close()
+
+	var cpBuf [transport.ConnectPacketSize]byte
+	if _, err := io.ReadFull(d.Conn, cpBuf[:]); err != nil {
+		pw.CloseWithError(err)
+		return
+	}
+	if _, err := pw.Write(cpBuf[:]); err != nil {
+		return
 	}
 
-	wd := &wrongShardDialer{errBody: errBody}
-	db := newTestDatabase(t, ctx, connectCF, wd.dial)
+	pingToken := transport.WellKnownToken(transport.WLTokenPingPacket)
+	for {
+		token, body, err := transport.ReadFrame(d.Conn, false)
+		if err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		if d.dropping.Load() && token != pingToken {
+			continue // swallow the reply: the client's RPC reply timer fires
+		}
+		if err := transport.WriteFrame(pw, token, body, false); err != nil {
+			return
+		}
+	}
+}
+
+// dropReplyDialer creates dropReplyConns and can arm them to start dropping.
+type dropReplyDialer struct {
+	mu    sync.Mutex
+	conns []*dropReplyConn
+}
+
+func (d *dropReplyDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	c, err := net.DialTimeout(network, addr, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	dc := newDropReplyConn(c)
+	d.mu.Lock()
+	d.conns = append(d.conns, dc)
+	d.mu.Unlock()
+	return dc, nil
+}
+
+// armAll makes every existing connection drop all subsequent non-PING replies.
+func (d *dropReplyDialer) armAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, c := range d.conns {
+		c.dropping.Store(true)
+	}
+}
+
+// newDropReplyTestDB starts an FDB container and returns a Database that dials
+// through a dropReplyDialer. After warming the location cache + read version,
+// dd.armAll() makes subsequent read replies vanish, so the read path times out
+// deterministically (no race) and exercises its errReplyTimeout retry loop.
+func newDropReplyTestDB(t *testing.T, ctx context.Context) (*Database, *dropReplyDialer) {
+	t.Helper()
+	connectCF := startProxyFDB(t, ctx)
+	dd := &dropReplyDialer{}
+	db := newTestDatabase(t, ctx, connectCF, dd.dial)
 	t.Cleanup(func() { db.Close() })
-	return db, wd
+	return db, dd
 }
 
 // TestWrongShardServer_FaultInjection verifies that an injected wrong_shard_server

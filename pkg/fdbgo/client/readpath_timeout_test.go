@@ -21,22 +21,25 @@ import (
 // RETRYABLE transaction_too_old (1007) so the Transact loop retries with a
 // fresh read version — the observable libfdb_c contract.
 //
-// Driven by tx.rpcTimeoutOverride = 1ns: the reply cannot arrive that fast, so
-// reads time out and re-send (bounded) to 1007. The GRV uses DefaultRPCTimeout
-// (unchanged), so ensureReadVersion still succeeds — only the reads time out.
-// (At 1ns the select between "timer already expired" and "reply in flight" can,
-// under heavy parallel scheduling, occasionally observe the reply first and
-// succeed — so the load-bearing invariant asserted on every read is the
-// ABSENCE of a terminal leak; that 1007 is actually reached is pinned
-// separately by a short loop, where it dominates.)
+// Determinism: the timeout is driven by a dropReplyDialer (fault_test.go) that
+// SILENTLY DROPS every server reply once armed, combined with a small
+// rpcTimeoutOverride. The reply never arrives, so the per-read timer ALWAYS
+// fires — there is no timer-vs-real-reply race. (An earlier version set
+// rpcTimeoutOverride = 1ns over a real connection and hoped the timer beat the
+// reply; on a fast box the real getKey reply won every iteration and the
+// "1007 is reachable" assertion failed in CI. Dropping the reply removes the
+// race entirely.) The location cache + read version are warmed BEFORE arming,
+// so the only RPC in the fault window is the read-under-test's own — locate and
+// GRV (which use DefaultRPCTimeout) never run while replies are being dropped.
 
-// assertNoTerminalLeak is the precise fix guarantee: a read either succeeds
-// (nil) or fails with a RETRYABLE transaction_too_old — never a raw context
-// deadline, never the internal sentinel, never non-retryable 1006.
-func assertNoTerminalLeak(t *testing.T, err error, what string) {
+// assertRetryableTooOld is the precise fix guarantee under a dropped reply: the
+// read CANNOT succeed (the reply is gone), so it MUST fail with a RETRYABLE
+// transaction_too_old — never a raw context deadline, never the internal
+// sentinel, never non-retryable all_alternatives_failed (1006).
+func assertRetryableTooOld(t *testing.T, err error, what string) {
 	t.Helper()
 	if err == nil {
-		return // the reply won the 1ns race; still a valid (non-leaking) outcome
+		t.Fatalf("%s: unexpectedly succeeded though every server reply was dropped", what)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("%s: leaked raw context.DeadlineExceeded (terminal) — must be a retryable FDB error: %v", what, err)
@@ -52,7 +55,7 @@ func assertNoTerminalLeak(t *testing.T, err error, what string) {
 		t.Fatalf("%s: surfaced non-retryable all_alternatives_failed (1006); the read path must absorb it and surface a retryable error", what)
 	}
 	if fdbErr.Code != ErrTransactionTooOld {
-		t.Fatalf("%s: expected transaction_too_old (%d) or success, got %d", what, ErrTransactionTooOld, fdbErr.Code)
+		t.Fatalf("%s: expected retryable transaction_too_old (%d), got %d", what, ErrTransactionTooOld, fdbErr.Code)
 	}
 }
 
@@ -60,8 +63,7 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	db := openTestDB(t, ctx)
-	defer db.Close()
+	db, dd := newDropReplyTestDB(t, ctx)
 
 	// Seed keys committed by a prior transaction (so a fresh read txn reads
 	// them from the server, not from its own RYW write set).
@@ -76,40 +78,51 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	newTimedOutTx := func() *Transaction {
-		tx := db.CreateTransaction()
-		if err := tx.ensureReadVersion(ctx); err != nil { // GRV uses DefaultRPCTimeout, succeeds
-			t.Fatalf("ensureReadVersion: %v", err)
+	// Warm the location cache for every key/range the test reads, with
+	// successful reads, so once we arm the dropReplyDialer the ONLY RPCs are the
+	// read-under-test's storage reads — no GetKeyServerLocations during the
+	// fault window (which uses DefaultRPCTimeout and would hang on a dropped
+	// reply).
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		if _, e := tx.Get(ctx, k1); e != nil {
+			return nil, e
 		}
-		tx.rpcTimeoutOverride = time.Nanosecond // every read reply is "too late"
-		return tx
+		if _, _, e := tx.GetRange(ctx, k1, k3, 100); e != nil {
+			return nil, e
+		}
+		if _, e := tx.GetKey(ctx, k1, false, 1); e != nil {
+			return nil, e
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
 	}
 
-	// Each read path: never a terminal leak, AND across a short loop the
-	// retryable transaction_too_old is actually reached at least once (the
-	// timeout dominates the 1ns race).
+	// Pre-fetch a read version so no GRV runs during the fault window.
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	// Arm: every subsequent non-PING server reply is silently dropped.
+	dd.armAll()
+
 	cases := []struct {
 		name string
 		read func(*Transaction) error
 	}{
 		{"getValue", func(tx *Transaction) error { _, e := tx.Get(ctx, k1); return e }},
 		{"getRange", func(tx *Transaction) error { _, _, e := tx.GetRange(ctx, k1, k3, 100); return e }},
-		{"getKey", func(tx *Transaction) error { _, e := tx.getKey(ctx, k1, false, 1); return e }}, // firstGreaterOrEqual(k1)
+		{"getKey", func(tx *Transaction) error { _, e := tx.GetKey(ctx, k1, false, 1); return e }}, // firstGreaterOrEqual(k1)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sawTooOld := false
-			for i := 0; i < 8; i++ {
-				err := tc.read(newTimedOutTx())
-				assertNoTerminalLeak(t, err, tc.name)
-				var fdbErr *wire.FDBError
-				if errors.As(err, &fdbErr) && fdbErr.Code == ErrTransactionTooOld {
-					sawTooOld = true
-				}
-			}
-			if !sawTooOld {
-				t.Fatalf("%s: never surfaced transaction_too_old across 8 timed-out reads — the retryable timeout path is unreachable", tc.name)
-			}
+			tx := db.CreateTransaction()
+			tx.SetReadVersion(rv)
+			// Small but irrelevant to the race — the reply never comes, so the
+			// timer always wins; this just keeps the bounded re-send fast.
+			tx.rpcTimeoutOverride = 20 * time.Millisecond
+			assertRetryableTooOld(t, tc.read(tx), tc.name)
 		})
 	}
 }
