@@ -2,9 +2,14 @@ package recordlayer
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"sync/atomic"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -25,6 +30,36 @@ import (
 // save commits (the record context has no after-commit hook infrastructure
 // yet; when it grows one, wiring it is a one-liner around this entry point).
 
+// spfreshOwnerSeq disambiguates rebalancer invocations within a process.
+var spfreshOwnerSeq atomic.Int64
+
+// spfreshProcessNonce makes lease owners unique ACROSS processes. Every
+// process counts spfreshOwnerSeq from zero, so without a process-unique
+// component two live workers on different machines both mint
+// "rebalance-<index>-1" and the same-owner reclaim in spfreshTaskClaim
+// voids mutual exclusion. Lease expiry does NOT cover this: it protects
+// against DEAD owners, not live name collisions (codex P1).
+var spfreshProcessNonce = newSPFreshProcessNonce()
+
+func newSPFreshProcessNonce() string {
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		// crypto/rand read cannot fail on supported platforms; if it ever
+		// does, pid+walltime still beats a constant.
+		return fmt.Sprintf("%d.%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// spfreshRebalanceOwner mints a lease owner UNIQUE to one rebalancer
+// invocation, within and across processes. Never share an owner string
+// across invocations: the claim keeps same-owner reclaim (in-executor
+// retries), so shared names give zero mutual exclusion between concurrent
+// executors.
+func spfreshRebalanceOwner(indexName string) string {
+	return fmt.Sprintf("rebalance-%s-%s-%d", indexName, spfreshProcessNonce, spfreshOwnerSeq.Add(1))
+}
+
 // spfreshTaskRef is one scanned task: kind, id, and (for fine lifecycles)
 // the cell resolved at scan time — staleness is fine, every lifecycle
 // re-verifies authoritatively and treats absent-at-cell as a zombie.
@@ -34,15 +69,39 @@ type spfreshTaskRef struct {
 	cellID int64
 }
 
-// spfreshRebalanceOnce scans the task queue once and runs every actionable
-// task, in lifecycle order (splits before NPA before merges — splits enqueue
-// NPAs; merges of split children respect the cooldown anyway). Returns the
-// number of tasks acted on; tasks under live foreign leases are skipped.
-func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64) (int, error) {
+// spfreshTaskOutcome classifies one lifecycle-handler invocation for budget
+// and metrics attribution (Torvalds 094.4 r4: lumping cleanup writes into
+// the per-kind action counters made the operator metrics lie):
+//
+//	Skipped  — wrote nothing: task gone or foreign live lease. Budget-free.
+//	Cleaned  — committed a cleanup write (zombie/cooldown/no-target clear).
+//	Deferred — csplit's pause-window defer-count bump (a write, not a split).
+//	Acted    — the lifecycle action itself.
+//
+// Cleaned/Deferred/Acted all consume action budget: they are committed
+// writes that make progress.
+type spfreshTaskOutcome uint8
+
+const (
+	spfreshOutcomeSkipped spfreshTaskOutcome = iota
+	spfreshOutcomeCleaned
+	spfreshOutcomeDeferred
+	spfreshOutcomeActed
+)
+
+// spfreshRebalanceOnce scans the task queue once and runs actionable tasks,
+// in lifecycle order (splits before NPA before merges — splits enqueue NPAs;
+// merges of split children respect the cooldown anyway), up to `limit` tasks
+// (≤ 0 = unlimited; the sweeper bounds it so a whale tenant's queue cannot
+// monopolize a fleet pass — codex MT P2). Returns the number of tasks acted
+// on; tasks under live foreign leases are skipped.
+func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, seed int64, limit int, timer *StoreTimer) (int, error) {
 	// Scan (snapshot — the queue is advisory; claims are the authority).
 	var refs []spfreshTaskRef
+	var legacyCellfin []int64
 	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		refs = refs[:0]
+		legacyCellfin = legacyCellfin[:0]
 		tx := rtx.Transaction()
 		r, rerr := fdb.PrefixRange(s.tasks.Bytes())
 		if rerr != nil {
@@ -63,7 +122,15 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				return fmt.Errorf("spfresh rebalance: malformed task key elements")
 			}
 			if kind == spfreshTaskCellfin {
-				continue // build machinery, not a rebalancer concern
+				// Build machinery, not a rebalancer concern. Rows in the
+				// READABLE generation are LEAKED bookkeeping from builds
+				// that flipped before the flip learned to clear them — an
+				// in-flight build's rows live under its own unpublished
+				// generation, never here. Self-heal: clear on sight, or the
+				// pending-work probe reports this tenant busy forever
+				// (codex MT P2).
+				legacyCellfin = append(legacyCellfin, id)
+				continue
 			}
 			ref := spfreshTaskRef{kind: kind, id: id}
 			if kind == spfreshTaskSplit || kind == spfreshTaskMerge {
@@ -87,6 +154,16 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 	if err != nil {
 		return 0, err
 	}
+	if len(legacyCellfin) > 0 {
+		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			for _, id := range legacyCellfin {
+				rtx.Transaction().Clear(s.taskKey(spfreshTaskCellfin, id))
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+	}
 
 	// Lifecycle execution order (NOT the kind constants): splits first, then
 	// the NPAs they enqueue, then merges, then coarse splits. Within a kind,
@@ -99,39 +176,112 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 		return refs[i].id < refs[j].id
 	})
 
+	// One routing cache per round for the NPA arm (lazily loaded): the
+	// per-task full reload was O(fines) × one NPA per split — the dominant
+	// maintenance CPU at fine granularity. Round staleness is the same
+	// tolerated staleness as the plan phase's snapshot reads.
+	var npaRouting *spfreshRoutingCache
+	// worked counts COMMITTED WRITES — lifecycle actions and zombie-cleanup
+	// clears (both make progress and cost real transactions). Foreign-lease
+	// and task-gone skips write nothing and consume no budget: a tenant whose
+	// queue head is live-leased by another executor must not have its whole
+	// action budget burned on skips while actionable tasks behind it starve
+	// (codex 094.4).
 	worked := 0
+	// A failed task is SKIPPED, counted, and surfaced at the end — never
+	// allowed to halt the pass: the scan order is deterministic (kind+id),
+	// so returning on the first handler error would park a poisoned task at
+	// the queue head and silently starve everything behind it on every pass,
+	// with an operator signal identical to "sweeper down" (Torvalds
+	// final-gauntlet S5). The errors still fail the pass loudly; the work
+	// behind the poison still happens.
+	var taskErrs []error
+	fail := func(err error) {
+		timer.Increment(CountSPFreshTaskErrors)
+		taskErrs = append(taskErrs, err)
+	}
 	for _, ref := range refs {
+		if limit > 0 && worked >= limit {
+			break // per-pass budget spent: the caller schedules the rest
+		}
 		switch ref.kind {
 		case spfreshTaskSplit:
 			out, serr := spfreshSealFine(ctx, db, s, owner, ref.cellID, ref.id)
 			if serr != nil {
-				return worked, serr
+				fail(fmt.Errorf("seal fine %d (cell %d): %w", ref.id, ref.cellID, serr))
+				continue
 			}
 			if !out.proceed {
+				if out.cleaned {
+					timer.Increment(CountSPFreshZombieCleans)
+					worked++
+				} else {
+					timer.Increment(CountSPFreshLeaseSkips)
+				}
 				continue // zombie cleaned or foreign lease
 			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
-				return worked, serr
+				fail(fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr))
+				continue
 			}
+			timer.Increment(CountSPFreshSplits)
 			worked++
 		case spfreshTaskNPA:
-			if nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id); nerr != nil {
-				return worked, nerr
+			if npaRouting == nil {
+				npaRouting = newSPFreshRoutingCache(0)
+				if lerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+					return npaRouting.fullReload(rtx.Transaction(), s, s.generation)
+				}); lerr != nil {
+					// Not a task failure: the shared cache is broken — every
+					// NPA would fail identically. Abort the pass.
+					return worked, errors.Join(append(taskErrs, fmt.Errorf("NPA routing load: %w", lerr))...)
+				}
 			}
-			worked++
+			out, nerr := spfreshNPARun(ctx, db, s, config, owner, ref.id, npaRouting)
+			if nerr != nil {
+				fail(fmt.Errorf("NPA %d: %w", ref.id, nerr))
+				continue
+			}
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshNPAs)
 		case spfreshTaskMerge:
-			if merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id); merr != nil {
-				return worked, merr
+			out, merr := spfreshMergeFine(ctx, db, s, config, owner, ref.cellID, ref.id)
+			if merr != nil {
+				fail(fmt.Errorf("merge fine %d (cell %d): %w", ref.id, ref.cellID, merr))
+				continue
 			}
-			worked++
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshMerges)
 		case spfreshTaskCSplit:
-			if cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id); cerr != nil {
-				return worked, cerr
+			out, cerr := spfreshCoarseSplit(ctx, db, s, config, owner, ref.id, seed+ref.id)
+			if cerr != nil {
+				fail(fmt.Errorf("coarse split cell %d: %w", ref.id, cerr))
+				continue
 			}
-			worked++
+			worked += spfreshMeterOutcome(timer, out, CountSPFreshCSplits)
 		}
 	}
-	return worked, nil
+	return worked, errors.Join(taskErrs...)
+}
+
+// spfreshMeterOutcome attributes one handler outcome to the right counter
+// (Torvalds 094.4 r4: per-kind action counters must count ACTIONS — cleanup
+// clears go to ZombieCleans, csplit defer-bumps to CSplitDefers, skips to
+// LeaseSkips) and returns the budget charge: every committed write consumes
+// budget, skips are free.
+func spfreshMeterOutcome(timer *StoreTimer, out spfreshTaskOutcome, acted Event) int {
+	switch out {
+	case spfreshOutcomeActed:
+		timer.Increment(acted)
+		return 1
+	case spfreshOutcomeCleaned:
+		timer.Increment(CountSPFreshZombieCleans)
+		return 1
+	case spfreshOutcomeDeferred:
+		timer.Increment(CountSPFreshCSplitDefers)
+		return 1
+	default:
+		timer.Increment(CountSPFreshLeaseSkips)
+		return 0
+	}
 }
 
 // RebalanceSPFreshIndex drains the index's task queue to quiescence: scan,
@@ -139,6 +289,25 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 // so multiple rounds are normal). Bounded against pathological re-triggering.
 // Returns the total number of lifecycle actions taken.
 func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string) (int, error) {
+	const maxRounds = 32
+	total, drained, err := rebalanceSPFreshIndexRounds(ctx, db, storeBuilder, indexName, maxRounds, 0, nil)
+	if err != nil {
+		return total, err
+	}
+	if !drained {
+		return total, fmt.Errorf("spfresh rebalance: task queue did not quiesce in %d rounds (%d actions) — re-trigger loop?", maxRounds, total)
+	}
+	return total, nil
+}
+
+// rebalanceSPFreshIndexRounds is the budgeted core: up to maxRounds
+// scan-and-act passes and (when maxActions > 0) at most maxActions lifecycle
+// actions TOTAL, reporting whether the queue drained. The multi-tenant
+// sweeper uses small budgets for fairness — the action budget caps work even
+// when a single scan finds a wide queue (a whale tenant with thousands of
+// independent task rows must not monopolize a fleet pass through one round).
+// An undrained queue is NOT an error there — the next sweep pass continues.
+func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, maxRounds, maxActions int, timer *StoreTimer) (int, bool, error) {
 	var indexSubspace subspace.Subspace
 	var config SPFreshConfig
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
@@ -157,53 +326,88 @@ func RebalanceSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder fu
 		indexSubspace = store.indexSubspace(index)
 		return nil
 	}); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
-	// The readable generation is the one being maintained.
+	// The readable generation is the one being maintained. No generation =
+	// the index was never bootstrapped or built (§6b insert-first): nothing
+	// to rebalance — idle, don't error (a production rebalancer loop starts
+	// alongside the writers, often before the first insert).
 	var gen int64
+	bootstrapped := true
 	if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		g, gerr := spfreshReadGenerationSnapshot(rtx.Transaction(), newSPFreshStorage(indexSubspace, 0))
 		if gerr != nil {
-			return fmt.Errorf("spfresh rebalance: no readable generation: %w", gerr)
+			if errors.Is(gerr, errSPFreshNotFound) {
+				bootstrapped = false
+				return nil
+			}
+			return fmt.Errorf("spfresh rebalance: read generation: %w", gerr)
 		}
 		gen = g
 		return nil
 	}); err != nil {
-		return 0, err
+		return 0, false, err
+	}
+	if !bootstrapped {
+		return 0, true, nil // nothing to drain
 	}
 	s := newSPFreshStorage(indexSubspace, gen)
 
-	owner := fmt.Sprintf("rebalance-%s", indexName)
+	// UNIQUE owner per invocation: the lease check is `row.owner != owner`,
+	// so two executors sharing an owner string reclaim each other's live
+	// leases freely — zero mutual exclusion. Two concurrent
+	// RebalanceSPFreshIndex calls for the same index (e.g. a rebalancer loop
+	// overlapping a final drain) then interleave MULTI-TRANSACTION lifecycles
+	// on the same tasks: one executor's coarse split races another's chunked
+	// split mid-drain, writing children into a cell the first just cleared —
+	// the 300k fill orphaned ~3/4 of its entries exactly this way.
+	owner := spfreshRebalanceOwner(indexName)
 	total := 0
-	const maxRounds = 32
-	var loopErr error
+	drained := false
 	for round := 0; round < maxRounds; round++ {
-		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919)
-		if err != nil {
-			return total, err
+		limit := 0
+		if maxActions > 0 {
+			limit = maxActions - total
+			if limit <= 0 {
+				break // action budget spent: not drained
+			}
 		}
+		worked, err := spfreshRebalanceOnce(ctx, db, s, config, owner, int64(round)*7919, limit, timer)
+		// A pass can return COMMITTED WORK alongside a joined task error
+		// (poisoned tasks are skipped, the rest of the queue still drains —
+		// codex delta P2): account the work and run the eager cache refresh
+		// below before surfacing the error, or splits committed behind the
+		// poison are reported as zero and the process-local cache routes on
+		// the pre-pass topology until an amortized refresh.
 		total += worked
+		if err != nil {
+			refreshErr := spfreshRefreshAfterRebalance(ctx, db, s, total)
+			return total, false, errors.Join(err, refreshErr)
+		}
 		if worked == 0 {
-			loopErr = nil
+			drained = true
 			break
 		}
-		loopErr = fmt.Errorf("spfresh rebalance: task queue did not quiesce in %d rounds (%d actions) — re-trigger loop?", maxRounds, total)
 	}
 	// GC: retired topology past the cooldown horizon (the same window that
 	// guards split↔merge oscillation guards stale readers' grace period).
 	if _, err := spfreshGCSweep(ctx, db, s, config, int64(config.CooldownSec)*1000); err != nil {
-		return total, err
+		return total, drained, errors.Join(err, spfreshRefreshAfterRebalance(ctx, db, s, total))
 	}
-	if total > 0 {
-		// The rebalancer just changed the topology it routes on: refresh the
-		// process-local cache eagerly (the §4 "maintainer timer" action —
-		// other processes converge via the amortized query-path refresh).
-		if err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
-			return spfreshCacheFor(indexSubspace, gen).fullReload(rtx.Transaction(), s, gen)
-		}); err != nil {
-			return total, err
-		}
+	return total, drained, spfreshRefreshAfterRebalance(ctx, db, s, total)
+}
+
+// spfreshRefreshAfterRebalance eagerly reloads the process-local routing
+// cache after a rebalance that committed work — the §4 "maintainer timer"
+// action; other processes converge via the amortized query-path refresh. It
+// runs on the error exits too: committed lifecycle work changed the topology
+// regardless of how the pass ended.
+func spfreshRefreshAfterRebalance(ctx context.Context, db *FDBDatabase, s *spfreshStorage, total int) error {
+	if total == 0 {
+		return nil
 	}
-	return total, loopErr
+	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		return spfreshCacheFor(s.index, s.generation).fullReload(rtx.Transaction(), s, s.generation)
+	})
 }

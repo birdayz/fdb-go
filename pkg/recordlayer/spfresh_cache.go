@@ -1,10 +1,11 @@
 package recordlayer
 
 import (
+	"cmp"
 	"container/list"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -31,6 +32,12 @@ type spfreshRoutingCache struct {
 	// rev-2 hot-key anti-pattern).
 	lastRefreshMs atomic.Int64
 
+	// lastUseMs drives idle-tenant eviction from the process-global cache
+	// map (multi-tenant fleets touch many indexes; an untouched tenant's
+	// cache must not live for the process lifetime). Stamped on every
+	// spfreshCacheFor hit.
+	lastUseMs atomic.Int64
+
 	generation int64
 	cursor     fdb.Key // changelog position (nil = never refreshed)
 
@@ -53,6 +60,10 @@ type spfreshCachedCell struct {
 	lruElem *list.Element
 }
 
+// errSPFreshEmptyRouting: the cache holds no coarse cells — never loaded, or
+// the index is freshly bootstrapped and empty.
+var errSPFreshEmptyRouting = errors.New("spfresh: routing cache has no coarse cells (reload required)")
+
 // spfreshDefaultMaxCells bounds L2 residency per cache. At cellTarget=48 and
 // 768D fp64-decoded vectors a cell is ~300 KB; 1024 cells ≈ 300 MB worst case
 // — within the RFC's per-tenant budget; the multi-tenant global budget is the
@@ -69,6 +80,26 @@ func newSPFreshRoutingCache(maxCells int) *spfreshRoutingCache {
 		lru:       list.New(),
 		maxCells:  maxCells,
 	}
+}
+
+// cloneForWrite returns a TX-LOCAL cache seeded with this cache's L1 (slice
+// copies; the vectors themselves are shared read-only) and an EMPTY L2. The
+// write path must never load state into the process-global cache through its
+// own transaction: RYW makes it publish UNCOMMITTED writes (minted centroids,
+// bootstrap cells), and an abort leaves every other writer routing on
+// phantoms (caught by the concurrent foreground-fill benchmark).
+func (c *spfreshRoutingCache) cloneForWrite() *spfreshRoutingCache {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	clone := newSPFreshRoutingCache(c.maxCells)
+	clone.generation = c.generation
+	clone.cursor = append(fdb.Key(nil), c.cursor...)
+	clone.coarseIDs = append([]int64(nil), c.coarseIDs...)
+	clone.coarseVecs = append([][]float64(nil), c.coarseVecs...)
+	for k, v := range c.coarseFwd {
+		clone.coarseFwd[k] = v
+	}
+	return clone
 }
 
 // fullReload rebuilds L1 from FDB and drops L2 (generation flip, horizon
@@ -125,6 +156,50 @@ func (c *spfreshRoutingCache) fullReload(tx fdb.ReadTransaction, s *spfreshStora
 	defer c.mu.Unlock()
 	c.generation = generation
 	c.cursor = last
+	c.coarseIDs = coarseIDs
+	c.coarseVecs = coarseVecs
+	c.coarseFwd = coarseFwd
+	c.cells = make(map[int64]*spfreshCachedCell)
+	c.lru.Init()
+	return nil
+}
+
+// fullReloadTxLocal is the TX-LOCAL variant: it loads L1 from the coarse
+// rows (RYW: a bootstrap or mint committed earlier in THIS transaction is
+// visible — exactly what a same-transaction route needs) and SKIPS the
+// changelog entirely. A tx-local cache dies with its transaction and is
+// never incrementally refreshed, so the delta scan that anchors the cursor
+// is not just useless here — it is FORBIDDEN: the same transaction may have
+// appended versionstamped changelog deltas (the §6b bootstrap, the
+// first-centroid mint), and a range read over a pending versionstamped key
+// is accessed_unreadable (1036) per the C++ client semantics the fdbgo
+// client enforces (RFC-098). The cursor anchors at the bare changelog
+// prefix purely to satisfy ready()'s loaded check.
+func (c *spfreshRoutingCache) fullReloadTxLocal(tx fdb.ReadTransaction, s *spfreshStorage, generation int64) error {
+	ids, rows, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return err
+	}
+	coarseIDs := make([]int64, 0, len(ids))
+	coarseVecs := make([][]float64, 0, len(ids))
+	coarseFwd := make(map[int64][2]int64)
+	for i, id := range ids {
+		switch rows[i].state {
+		case spfreshStateActive:
+			vec, verr := rows[i].vector()
+			if verr != nil {
+				return verr
+			}
+			coarseIDs = append(coarseIDs, id)
+			coarseVecs = append(coarseVecs, vec)
+		case spfreshStateForward:
+			coarseFwd[id] = [2]int64{rows[i].childA, rows[i].childB}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation = generation
+	c.cursor = fdb.Key(s.changelog.Bytes())
 	c.coarseIDs = coarseIDs
 	c.coarseVecs = coarseVecs
 	c.coarseFwd = coarseFwd
@@ -239,6 +314,14 @@ func (c *spfreshRoutingCache) refresh(tx fdb.ReadTransaction, s *spfreshStorage,
 	return nil
 }
 
+// evictCell drops one L2 cell (lock-taking variant — lifecycle code that
+// changed a cell's contents in its own transaction calls this post-write).
+func (c *spfreshRoutingCache) evictCell(cellID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictCellLocked(cellID)
+}
+
 func (c *spfreshRoutingCache) evictCellLocked(cellID int64) {
 	if cell, ok := c.cells[cellID]; ok {
 		c.lru.Remove(cell.lruElem)
@@ -275,9 +358,10 @@ func (c *spfreshRoutingCache) ensureCell(tx fdb.ReadTransaction, s *spfreshStora
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 && fwdA == 0 && fwdB == 0 {
-		return nil, fmt.Errorf("spfresh: cell %d empty and not forwarded: %w", cellID, errSPFreshNotFound)
-	}
+	// An empty, unforwarded cell is a VALID state: the §6b cold-start
+	// bootstrap creates exactly one until the first insert mints a centroid.
+	// It caches as an empty cell (zero candidates) rather than erroring —
+	// queries against an empty index return zero rows.
 	cell = &spfreshCachedCell{fwd: [2]int64{fwdA, fwdB}}
 	for _, r := range rows {
 		vec, verr := r.row.vector()
@@ -342,9 +426,16 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 	vecs := c.coarseVecs
 	c.mu.RUnlock()
 	if len(ids) == 0 {
-		return nil, errors.New("spfresh: routing cache has no coarse cells (reload required)")
+		return nil, errSPFreshEmptyRouting
 	}
 
+	// w is the cell-reachability bound: a query reaches only the entries in its
+	// w nearest cells. The bulk build's w_b (SPFreshConfig.BuildAssignCells,
+	// RFC-099) defaults to this same width so the build places replicas only in
+	// cells a query will probe. ε-pruning and starvation-widening narrow/un-narrow
+	// WITHIN this w-cell set; they never probe beyond it. INVARIANT: if a future
+	// change makes routing escalate w past its nearest-w set (adaptive widening),
+	// w_b must mirror that escalation or the build will place unreachable replicas.
 	cells := spfreshNearestK(query, ids, vecs, w)
 
 	var routed []spfreshRouted
@@ -394,11 +485,11 @@ func (c *spfreshRoutingCache) routeStates(tx fdb.ReadTransaction, s *spfreshStor
 		}
 	}
 
-	sort.Slice(routed, func(i, j int) bool {
-		if routed[i].d2 != routed[j].d2 {
-			return routed[i].d2 < routed[j].d2
+	slices.SortFunc(routed, func(a, b spfreshRouted) int {
+		if c := cmp.Compare(a.d2, b.d2); c != 0 {
+			return c
 		}
-		return routed[i].fineID < routed[j].fineID
+		return cmp.Compare(a.fineID, b.fineID)
 	})
 	if writeBudget {
 		// Separate budgets per state, one sorted pass: up to kc ACTIVE and

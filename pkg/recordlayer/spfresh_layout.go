@@ -88,6 +88,12 @@ const (
 	spfreshTaskNPA int64 = 4
 )
 
+// spfreshLiveTaskKinds is every kind the rebalancer executes — the sweeper's
+// pending probe scans EXACTLY these. A new task kind MUST be added here, or
+// tenants whose only pending work is the new kind are silently never swept.
+// Cellfin is deliberately absent: build bookkeeping, not live maintenance.
+var spfreshLiveTaskKinds = []int64{spfreshTaskSplit, spfreshTaskMerge, spfreshTaskCSplit, spfreshTaskNPA}
+
 // spfreshHDR is the reserved posting/centroid header key element: tuple nil
 // (encodes as 0x00), which sorts strictly before every legal pk encoding —
 // sound because the record layer rejects null primary-key components, so no pk
@@ -206,6 +212,25 @@ func (s *spfreshStorage) postingPK(key fdb.Key) (tuple.Tuple, bool, error) {
 	return tuple.Tuple(t[1:]), true, nil
 }
 
+// postingPKSpan is the boxing-free postingPK for the query hot loop: the pk's
+// elements are packed FLAT after the (fineID) prefix (see postingKey), so the
+// raw key suffix is byte-identical to what sidecarKey/membershipKey append
+// after their own prefixes — a stable dedup key, a direct sidecar-key suffix,
+// and decodable with tuple.Unpack only for the final winners. prefixLen is
+// len(postings.Pack({fineID})), computed once per posting fetch. ok=false for
+// the HDR row (the nil element encodes as 0x00; entry pks never contain nil,
+// so no entry suffix starts with 0x00). The returned span aliases key.
+func (s *spfreshStorage) postingPKSpan(key fdb.Key, prefixLen int) ([]byte, bool, error) {
+	if len(key) <= prefixLen {
+		return nil, false, fmt.Errorf("spfresh: posting key too short: %d bytes under a %d-byte prefix", len(key), prefixLen)
+	}
+	span := key[prefixLen:]
+	if span[0] == 0x00 {
+		return nil, false, nil // HDR
+	}
+	return span, true, nil
+}
+
 func (s *spfreshStorage) membershipKey(pk tuple.Tuple) fdb.Key {
 	return fdb.Key(s.membership.Pack(pk))
 }
@@ -220,6 +245,16 @@ func (s *spfreshStorage) taskKey(kind, id int64) fdb.Key {
 
 func (s *spfreshStorage) sidecarKey(pk tuple.Tuple) fdb.Key {
 	return fdb.Key(s.sidecar.Pack(pk))
+}
+
+// sidecarKeyFromSpan builds the sidecar key from a posting-key pk span
+// without decoding it: both keys append the same flat-packed pk elements to
+// their prefixes.
+func (s *spfreshStorage) sidecarKeyFromSpan(span string) fdb.Key {
+	prefix := s.sidecar.Bytes()
+	k := make([]byte, 0, len(prefix)+len(span))
+	k = append(k, prefix...)
+	return fdb.Key(append(k, span...))
 }
 
 func (s *spfreshStorage) stagingKey(cellID int64, pk tuple.Tuple) fdb.Key {

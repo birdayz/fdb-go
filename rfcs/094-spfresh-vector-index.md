@@ -182,7 +182,7 @@ would silently eat the one-reply byte budgets (FDB-author r4 #5).
 | | `(cellID, HDR)` | `FORWARD{cellIDs}` | coarse-split marker for stale L2 fetchers |
 | `S/0'` COARSE | `(cellID)` | `Tuple{fp16 vector, state}` | state: ACTIVE / FORWARD(cells) |
 | `S/1` POSTINGS | `(fineID, pk)` | `Tuple{rabitqResidualCode}` | the range is the posting; **independent of cellID** — coarse restructure moves no data |
-| | `(fineID, HDR)` | `FORWARD{cellID, childIDs}` | fine-split marker. **HDR = tuple null (0x00)**: sorts before every legal pk because nulls are rejected in primary-key components — the spec leans on that invariant explicitly (FDB-author r3 #1). HDR occupies one row of the fetch cap: `Limit = 2×Lmax + 1`. The payload carries the children's **cellID** — a stale client may have cached this fine centroid under a cell it has since left via a coarse split, so child keys must never be derived from the routed cell (codex r4 #3); if the cell-qualified point reads still return absent (deeper staleness), force a synchronous cache refresh and re-route |
+| | `(fineID, HDR)` | `FORWARD{cellID, childIDs}` | fine-split marker. **HDR = tuple null (0x00)**: sorts before every legal pk because nulls are rejected in primary-key components — the spec leans on that invariant explicitly (FDB-author r3 #1). HDR occupies one row of the fetch cap: `Limit = 4×Lmax + 1` (the cap matches the split-dispatch envelope below — a posting the lifecycle considers in-envelope is always fully visible to a capped read; a cap-hit read therefore signals a damaged envelope and re-files the split task from the read path). The payload carries the children's **cellID** — a stale client may have cached this fine centroid under a cell it has since left via a coarse split, so child keys must never be derived from the routed cell (codex r4 #3); if the cell-qualified point reads still return absent (deeper staleness), force a synchronous cache refresh and re-route |
 | `S/2` MEMBERSHIP | `(pk)` | `Tuple{fineID...}` | authoritative copy-set |
 | `S/3` COUNTERS | `(FINE, fineID)` / `(CELL, cellID)` | int64 LE | **kind-tagged** — fineIDs and cellIDs come from the same block allocator but the two counter families must never alias (codex r4 #6). Atomic ADD; **advisory** — reconciled exactly at split/merge; build writes via ADD (commutes across cross-cell writers; commit_unknown drift self-corrects at first reconciliation) |
 | `S/4` CHANGELOG | `(versionstamp+uv)` | `Tuple{op, ids…}` | distinct 2-byte user-versions per tx. **Horizon advancement:** the rebalancer periodically sets META horizon = now − maxStaleness (default 10 min) and prunes older entries; GC of FORWARD markers keys off it |
@@ -214,10 +214,17 @@ CPU  L1 scan (2.5k × fp16) → w = 32 cells (rev 3's w=16 probed 0.78% of cells
      with no coarse-boundary mitigation; w=32 doubles L2 work to ~1.5k distances,
      still < 0.5 ms total, and halves coarse-boundary loss — LanceDB r3; sweep
      w ∈ {16,32,64} in 094.1, coarse-level closure only if 64 still leaks).
-     L2 scan → k_c = 96 nearest ACTIVE fine centroids (adaptive → 192 under
-     ε-pruning starvation). L2 cell miss: one range read, one reply (≤ 77 KB).
-RT1  k_c parallel GetRange(POSTINGS/(fineID,*)), snapshot, Limit = 2×Lmax+1
-     (fetch cap: an oversized posting degrades THIS query boundedly + metric).
+     L2 scan → the k_c CAP of nearest ACTIVE fine centroids; Eq. (3) ε-pruning
+     selects the probe set within the cap (ratio 1+ε applied directly to d² —
+     SPTAG's MaxDistRatio semantics), and starvation widening refetches the
+     pruned tail WITHIN the cap when the probed set can't fill the re-rank
+     budget (it never exceeds k_c). L2 cell miss: one range read, one reply
+     (≤ 77 KB).
+RT1  k_c parallel GetRange(POSTINGS/(fineID,*)), snapshot, Limit = 4×Lmax+1
+     (fetch cap = the split-dispatch envelope: an oversized posting degrades
+     THIS query boundedly + metric; a cap-hit read means the envelope is
+     damaged — the searcher counts it and the maintainer re-files the split
+     task, insert-path guards included, so the envelope self-heals from reads).
      HDR FORWARD row (stale cache; split landed inside our refresh window):
      point-read the children's CENTROIDS rows **using the cellID carried in the
      HDR payload — never the cell the client routed through** (the parent may
@@ -249,11 +256,16 @@ as the HNSW scan).
 ## 5. Write path
 
 **Insert(pk, v):**
-1. Route on cache. Closure (SPANN): keep fine centroid c_i of the r nearest iff
-   `dist(v, c_i) ≤ α · dist(v, c_1)`, **α = 1.2 default** — rev 3's α = 1.0
-   admitted only c_1, silently making r = 1 and invalidating the sizing and
-   recall math built on r ≈ 2 (LanceDB r3 #5 + codex r3 #1, found independently).
-   r = 2 cap, config-immutable.
+1. Route on cache. Closure (SPANN): scanning candidates ascending by distance,
+   keep fine centroid c iff `dist(v, c) ≤ α · dist(v, c_1)` (boundary ratio,
+   **α = 1.2 default** — rev 3's α = 1.0 admitted only c_1, silently making
+   r = 1 and invalidating the sizing and recall math built on r ≈ 2; LanceDB
+   r3 #5 + codex r3 #1, found independently) AND `dist(v, c) < dist(s, c)` for
+   every already-kept s (the §3.2.2 RNG representative-replication rule,
+   Figure 5 — a replica closer to a kept centroid than to v duplicates that
+   centroid's posting list; spend the copy on a different direction instead).
+   RNG skips scan past index r until r diverse replicas are kept or the ratio
+   bound breaks. r = 2 cap, config-immutable.
 2. One transaction:
    - **real reads** of `CENTROIDS/(cell, c_i)` — ACTIVE required; SEALED/FORWARD
      **or absent** (the row moved in a coarse split — fineID still valid but we
@@ -282,9 +294,17 @@ membership; counter −1s; sampled merge probe (Set-if-absent). No tombstones.
 Rebalancer: in-process on writers by default, optional dedicated runner; claims
 serialize transactionally; leases expire and are reclaimable.
 
-**Split(c)** — two single-tx steps (chunking is forbidden; `Lmax × maxEntryBytes`
-is validated against tx limits; the 4×Lmax ceiling worst case is ~225 KB read /
-~450 KB written):
+**Split(c)** — two single-tx steps for postings within the 4×Lmax envelope
+(`Lmax × maxEntryBytes` is validated against tx limits; the 4×Lmax ceiling
+worst case is ~225 KB read / ~450 KB written). A posting found PAST the
+envelope at step 2 — possible only when maintenance lagged the writers (the
+1M foreground fill hit `transaction_too_large` exactly here) — takes the
+**chunked multi-tx drain** instead (`spfreshSplitFineChunked`): the children
+are created ACTIVE up front (queries and inserts route to them mid-drain, and
+a pk lives in exactly one of parent/child at any commit point), entries move
+in 4×Lmax-sized chunks, each chunk one lease-fenced transaction with the same
+membership-rewrite rules as the single-tx step, and the FORWARD flip lands
+only after a REAL read proves the parent empty:
 
 1. **SEAL** (tiny): read claim; read `CENTROIDS/(cell, c)` = ACTIVE (FORWARD /
    DEAD ⇒ zombie rule: delete task, no-op; SEALED with own childIDs ⇒ resume at

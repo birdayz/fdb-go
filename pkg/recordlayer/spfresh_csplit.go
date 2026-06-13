@@ -42,8 +42,14 @@ const (
 	spfreshCSplitPausing byte = 1 // defer limit hit: fine-split issuance paused
 )
 
-func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID int64, seed int64) error {
-	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+// The returned outcome attributes the invocation: Acted for the split,
+// Deferred for the pause-window defer-count bump, Cleaned for zombie/
+// degenerate task clears, Skipped (no write) when the task is gone or
+// another executor holds the lease.
+func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID int64, seed int64) (spfreshTaskOutcome, error) {
+	outcome := spfreshOutcomeSkipped
+	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		outcome = spfreshOutcomeCleaned
 		tx := rtx.Transaction()
 		coarse, err := spfreshReadCoarseForWrite(tx, s, cellID)
 		if err != nil {
@@ -59,8 +65,9 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		row, cerr := spfreshTaskClaim(tx, s, spfreshTaskCSplit, cellID, owner, spfreshLeaseDeadline(), spfreshNowMs())
 		if cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				return nil // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				outcome = spfreshOutcomeSkipped
+				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
 		}
@@ -92,6 +99,7 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 					row.state = spfreshCSplitPausing
 				}
 				tx.Set(s.taskKey(spfreshTaskCSplit, cellID), encodeTaskRow(row))
+				outcome = spfreshOutcomeDeferred
 				return nil
 			case spfreshStateActive:
 				rows = append(rows, r)
@@ -99,7 +107,37 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 				tombstones = append(tombstones, r)
 			}
 		}
+		// Repair the PAUSING window on EVERY task-clearing exit, not just the
+		// acting split: while this csplit deferred, the starvation guard
+		// suppressed every fine-split PROBE for the cell — postings that
+		// crossed Lmax in that window have NO task, and post-quiescence
+		// nothing re-probes them (the 300k/1M fills ended with an empty queue
+		// and 4k-entry postings; recall collapsed). Clearing the csplit task
+		// lifts the pause, so the re-file must land in the SAME transaction —
+		// including the degenerate exits (cell drained below 2 by merges,
+		// identical-vector 2-means, one-sided partition), which un-pause
+		// without splitting anything (Torvalds final-gauntlet B2). `rows`
+		// holds ACTIVE rows ONLY (the state switch above defers on SEALED and
+		// diverts FORWARD/DEAD to tombstones), so this can never file a
+		// childless task beside an in-flight split's SEALED row.
+		refileOversized := func() error {
+			for _, r := range rows {
+				cnt, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, r.fineID)
+				if cerr != nil {
+					return cerr
+				}
+				if cnt > int64(config.Lmax) {
+					if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, r.fineID); terr != nil {
+						return terr
+					}
+				}
+			}
+			return nil
+		}
 		if len(rows) < 2 {
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil // nothing to split (merges drained it since the trigger)
 		}
@@ -115,7 +153,11 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		}
 		cents, assign := spfreshKMeans(vecs, 2, seed, 25)
 		if len(cents) < 2 {
-			// Degenerate (identical vectors): nothing meaningful to split.
+			// Degenerate (identical vectors): nothing meaningful to split —
+			// but clearing un-pauses the cell, so repair first.
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil
 		}
@@ -128,6 +170,9 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			partition[c]++
 		}
 		if partition[0] == 0 || partition[1] == 0 {
+			if rerr := refileOversized(); rerr != nil {
+				return rerr
+			}
 			tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 			return nil
 		}
@@ -136,6 +181,10 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		if aerr != nil {
 			return aerr
 		}
+		// The acting split clears the task below too: same repair, same tx.
+		if rerr := refileOversized(); rerr != nil {
+			return rerr
+		}
 		cellA, cellB := start, start+1
 		cells := []int64{cellA, cellB}
 		counts := []int64{0, 0}
@@ -143,11 +192,13 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			c := assign[i]
 			// Rewrite under the new cell: fineID, state, epoch, children and
 			// the raw vector bytes preserved verbatim.
+			spfreshAudit("cmove", cellID, r.fineID, r.row.state)
 			spfreshSaveCentroid(tx, s, cells[c], r.fineID, encodeCentroidRowRaw(r.row.state, r.row.epoch, r.row.childA, r.row.childB, r.row.vecBytes))
 			counts[c]++
 		}
 		// Tombstones ride to their nearest new cell (GC discovery), without
 		// counting toward the ACTIVE-centroid cell counters.
+		spfreshAudit("csplit-counts", cellID, int64(len(rows)), byte(len(tombstones)))
 		for _, r := range tombstones {
 			v, verr := r.row.vector()
 			c := 0
@@ -163,6 +214,18 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			spfreshSaveCoarse(tx, s, id, encodeCentroidRow(spfreshStateActive, 0, 0, 0, cents[i]))
 			spfreshCounterSet(tx, s, spfreshCounterCell, id, counts[i])
 			deltas = append(deltas, spfreshDelta{op: spfreshOpAddCell, ids: []int64{id}})
+			// Re-trigger: a child born already over cellMax must split again.
+			// The only OTHER csplit trigger site is the fine-split commit, so
+			// without this the topology stops converging the moment writes
+			// stop — a cell that grew far past cellMax under sustained load
+			// stays a routing hotspot forever (caught by the 100k foreground
+			// fill: one cell held 270+ fine centroids and reads degraded to
+			// ~107 ms / 0.90 recall).
+			if counts[i] > int64(config.CellMax) {
+				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskCSplit, id); terr != nil {
+					return terr
+				}
+			}
 		}
 
 		// Retire the old cell: centroid range cleared behind the HDR forward
@@ -171,14 +234,20 @@ func spfreshCoarseSplit(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 		if rerr != nil {
 			return rerr
 		}
+		spfreshAudit("csplit-rangeclear", cellID, -1, 0)
 		tx.ClearRange(cr)
 		tx.Set(s.centroidHDRKey(cellID), encodeCellHDR(cellA, cellB))
 		spfreshSaveCoarse(tx, s, cellID, encodeCentroidRowRaw(spfreshStateForward, spfreshNowMs(), cellA, cellB, coarse.vecBytes))
 		tx.Clear(s.counterKey(spfreshCounterCell, cellID))
 		tx.Clear(s.taskKey(spfreshTaskCSplit, cellID))
 		deltas = append(deltas, spfreshDelta{op: spfreshOpForwardCell, ids: []int64{cellID, cellA, cellB}})
+		outcome = spfreshOutcomeActed
 		return spfreshAppendDeltas(tx, s, deltas)
 	})
+	if err != nil {
+		return spfreshOutcomeSkipped, err
+	}
+	return outcome, nil
 }
 
 // spfreshCSplitPaused reports whether fine-split issuance for the cell is

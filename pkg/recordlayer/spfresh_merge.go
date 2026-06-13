@@ -33,9 +33,14 @@ import (
 //
 // commit_unknown retry: FORWARD centroid ⇒ no-op (the committed tx cleared
 // the task too).
-func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID, fineID int64) error {
+// The returned outcome attributes the invocation: Acted for the merge
+// itself, Cleaned for zombie/cooldown/no-target task clears, Skipped (no
+// write) when the task is gone or another executor holds the lease.
+func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, cellID, fineID int64) (spfreshTaskOutcome, error) {
 	quantizer := newSPFreshQuantizer(config)
-	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+	outcome := spfreshOutcomeSkipped
+	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+		outcome = spfreshOutcomeCleaned
 		tx := rtx.Transaction()
 		cent, err := spfreshReadCentroidForWrite(tx, s, cellID, fineID)
 		if err != nil {
@@ -55,8 +60,9 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			return nil
 		}
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskMerge, fineID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				return nil // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				outcome = spfreshOutcomeSkipped
+				return nil // task gone, or another executor is mid-lifecycle
 			}
 			return cerr
 		}
@@ -96,9 +102,16 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			targets = append(targets, spfreshMergeTarget{fineID: r.fineID, vec: tvec})
 		}
 		// Nearest-first by distance to the merged centroid, capped at Kn.
+		// Distances precomputed once — the comparator recomputing them made
+		// the insertion sort O(n²·D) per merge for nothing.
+		d2s := make([]float64, len(targets))
+		for i := range targets {
+			d2s[i] = spfreshSquaredDistance(vec, targets[i].vec)
+		}
 		for i := 1; i < len(targets); i++ {
-			for j := i; j > 0 && spfreshSquaredDistance(vec, targets[j].vec) < spfreshSquaredDistance(vec, targets[j-1].vec); j-- {
+			for j := i; j > 0 && d2s[j] < d2s[j-1]; j-- {
 				targets[j], targets[j-1] = targets[j-1], targets[j]
+				d2s[j], d2s[j-1] = d2s[j-1], d2s[j]
 			}
 		}
 		if len(targets) > config.Kn {
@@ -169,8 +182,30 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 			}
 			tx.Set(s.membershipKey(e.pk), encodeMembership(newSet))
 		}
+		// A drain target can cross Lmax right here, and post-quiescence
+		// nothing re-probes it (insert probes are the only other trigger site
+		// once writes stop) — file the split with the drain, honoring the
+		// same csplit-pause guard as every other issuance site (the targets
+		// live in this cell; a pausing coarse split re-files for oversized
+		// rows it moves).
+		paused, perr := spfreshCSplitPaused(tx, s, cellID)
+		if perr != nil {
+			return perr
+		}
 		for id, delta := range counterDeltas {
 			spfreshCounterAdd(tx, s, spfreshCounterFine, id, delta)
+			if paused {
+				continue
+			}
+			count, cerr := spfreshCounterReadSnapshot(tx, s, spfreshCounterFine, id)
+			if cerr != nil {
+				return cerr
+			}
+			if count > int64(config.Lmax) {
+				if _, terr := spfreshTaskSetIfAbsent(tx, s, spfreshTaskSplit, id); terr != nil {
+					return terr
+				}
+			}
 		}
 
 		// Retire the posting behind a FORWARD to the two nearest targets.
@@ -190,10 +225,15 @@ func spfreshMergeFine(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 		// The cell lost a fine centroid.
 		spfreshCounterAdd(tx, s, spfreshCounterCell, cellID, -1)
 		tx.Clear(s.taskKey(spfreshTaskMerge, fineID))
+		outcome = spfreshOutcomeActed
 		return spfreshAppendDeltas(tx, s, []spfreshDelta{
 			{op: spfreshOpForwardFine, ids: []int64{fineID, tgtA, tgtB}},
 		})
 	})
+	if err != nil {
+		return spfreshOutcomeSkipped, err
+	}
+	return outcome, nil
 }
 
 // spfreshMergeTarget is one drain destination: an ACTIVE sibling centroid.

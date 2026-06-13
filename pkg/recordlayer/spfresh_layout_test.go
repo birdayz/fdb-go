@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
@@ -168,6 +169,10 @@ func TestValidateSPFreshConfig(t *testing.T) {
 	bad(func(c *SPFreshConfig) { c.Alpha = 1.0 }, "alpha")
 	bad(func(c *SPFreshConfig) { c.Kn = 0 }, "kn")
 	bad(func(c *SPFreshConfig) { c.NumExBits = 9 }, "exBits")
+	// Sidecar=false bricks maintenance (split/merge/GC hard-require the fp16
+	// sidecar; no source-record fallback exists) — must be a config error,
+	// never a silently degraded index.
+	bad(func(c *SPFreshConfig) { c.Sidecar = false }, "sidecar")
 	// Reply-budget rule: huge Lmax must be rejected even when individually legal.
 	bad(func(c *SPFreshConfig) { c.Lmax = 4096; c.NumDimensions = 768 }, "reply")
 
@@ -199,9 +204,60 @@ func TestParseSPFreshConfig(t *testing.T) {
 		c.Alpha != 1.5 || c.Sidecar {
 		t.Fatalf("parse mismatch: %+v", c)
 	}
+	// EUCLIDEAN_SQUARE_METRIC must map (the DDL accepts it for USING
+	// SPFRESH; a silent Euclidean fallback made the planner candidate
+	// advertise squared distances while re-rank returned true L2 — Graefe
+	// merge-HEAD F1).
+	idx.Options[IndexOptionSPFreshMetric] = "EUCLIDEAN_SQUARE_METRIC"
+	if c := parseSPFreshConfig(idx); c.Metric != VectorMetricEuclideanSquare {
+		t.Fatalf("EUCLIDEAN_SQUARE_METRIC parsed to %v, want VectorMetricEuclideanSquare", c.Metric)
+	}
 	// Absent options take RFC defaults.
 	if c.CellTarget != spfreshDefaultCellTarget || c.Replication != spfreshDefaultReplication ||
 		c.Kn != spfreshDefaultKn || c.LminRatio != spfreshDefaultLminRatio {
 		t.Fatalf("defaults not applied: %+v", c)
 	}
+}
+
+// FuzzSPFreshPostingPKSpan pins span-extraction equivalence with the decoding
+// postingPK: same entry/HDR classification, and the span IS the packed pk
+// (so sidecarKeyFromSpan(span) == sidecarKey(pk) byte-for-byte).
+func FuzzSPFreshPostingPKSpan(f *testing.F) {
+	f.Add(int64(7), int64(42), "user", false)
+	f.Add(int64(1), int64(-9), "", true)
+	f.Fuzz(func(t *testing.T, fineID, pkInt int64, pkStr string, hdr bool) {
+		s := newSPFreshStorage(subspace.Sub("fuzz-span"), 1)
+		var key fdb.Key
+		if hdr {
+			key = s.postingHDRKey(fineID)
+		} else {
+			key = s.postingKey(fineID, tuple.Tuple{pkInt, pkStr})
+		}
+		prefixLen := len(s.postings.Pack(tuple.Tuple{fineID}))
+
+		pk, okPK, errPK := s.postingPK(key)
+		span, okSpan, errSpan := s.postingPKSpan(key, prefixLen)
+		if (errPK == nil) != (errSpan == nil) {
+			t.Fatalf("error divergence: postingPK=%v postingPKSpan=%v", errPK, errSpan)
+		}
+		if errPK != nil {
+			return
+		}
+		if okPK != okSpan {
+			t.Fatalf("entry/HDR divergence: postingPK=%v postingPKSpan=%v", okPK, okSpan)
+		}
+		if !okPK {
+			return
+		}
+		if string(s.sidecarKey(pk)) != string(s.sidecarKeyFromSpan(string(span))) {
+			t.Fatalf("sidecar key divergence for pk %v", pk)
+		}
+		got, derr := tuple.Unpack(span)
+		if derr != nil {
+			t.Fatalf("span must decode: %v", derr)
+		}
+		if len(got) != len(pk) {
+			t.Fatalf("span decodes to %d elements, postingPK gave %d", len(got), len(pk))
+		}
+	})
 }

@@ -29,7 +29,19 @@ const spfreshNPABatch = 64
 
 // spfreshNPARun claims and executes one NPA task. Returns
 // errSPFreshNotFound-free semantics: a missing/zombie task is a clean no-op.
-func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64) error {
+// The returned outcome attributes the invocation: Acted for the
+// reassignment, Cleaned for the stale-task clear, Skipped (no write) when
+// the task is gone or another executor holds the lease.
+//
+// routing is an optional pre-loaded cache shared across a rebalance round:
+// loading the full routing table PER TASK was the maintenance-CPU bomb at
+// fine granularity (one O(fines) reload × one NPA per split — the Lmax=128
+// probe burned 9+ CPU-hours at 1M before this). Round-level staleness is
+// tolerated by the same argument as the per-task snapshot staleness below:
+// the plan only chooses CANDIDATES; the move transaction re-verifies every
+// pk against authoritative state. nil loads a fresh cache (direct callers,
+// tests).
+func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64, routing *spfreshRoutingCache) (spfreshTaskOutcome, error) {
 	// Claim + plan: resolve the children and the neighborhood, and collect
 	// move CANDIDATES (snapshot reads — staleness here only affects which pks
 	// get considered; the move tx re-verifies everything per pk).
@@ -39,14 +51,15 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 	}
 	var cands []candidate
 	var childA, childB int64
-	zombie := false
+	skipped := false // no write at all: task gone or foreign live lease
+	stale := false   // stale task cleared: a write, but no move pass to run
 	err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		cands = cands[:0]
-		zombie = false
+		skipped, stale = false, false
 		tx := rtx.Transaction()
 		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskNPA, parentID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
-			if errors.Is(cerr, errSPFreshNotFound) {
-				zombie = true // task gone or foreign live lease
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				skipped = true // task gone, or another executor is mid-lifecycle
 				return nil
 			}
 			return cerr
@@ -59,7 +72,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		}
 		if hdr == nil {
 			tx.Clear(s.taskKey(spfreshTaskNPA, parentID))
-			zombie = true
+			stale = true
 			return nil
 		}
 		cellID, a, b, derr := decodePostingHDR(hdr)
@@ -69,9 +82,12 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		childA, childB = a, b
 
 		// Neighborhood: the K_n nearest fine centroids around each child.
-		cache := newSPFreshRoutingCache(0)
-		if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
-			return rerr
+		cache := routing
+		if cache == nil || !cache.ready(s.generation) {
+			cache = newSPFreshRoutingCache(0)
+			if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
+				return rerr
+			}
 		}
 		neighbors := map[int64]bool{}
 		for _, childID := range []int64{childA, childB} {
@@ -131,8 +147,11 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 		}
 		return nil
 	})
-	if err != nil || zombie {
-		return err
+	if err != nil || skipped {
+		return spfreshOutcomeSkipped, err
+	}
+	if stale {
+		return spfreshOutcomeCleaned, nil
 	}
 
 	// Move pass: per-pk atomic closure re-evaluation, batched.
@@ -210,7 +229,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 					if !ci.ok {
 						continue
 					}
-					pool = append(pool, spfreshCandidate{id: id, d2: spfreshSquaredDistance(cand.vec, ci.vec)})
+					pool = append(pool, spfreshCandidate{id: id, d2: spfreshSquaredDistance(cand.vec, ci.vec), vec: ci.vec})
 					vecsByID[id] = ci.vec
 				}
 				if len(pool) == 0 {
@@ -254,12 +273,12 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("spfresh NPA: move batch at %d: %w", lo, err)
+			return spfreshOutcomeSkipped, fmt.Errorf("spfresh NPA: move batch at %d: %w", lo, err)
 		}
 	}
 
 	// Done: clear the task.
-	return spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+	return spfreshOutcomeActed, spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 		rtx.Transaction().Clear(s.taskKey(spfreshTaskNPA, parentID))
 		return nil
 	})
@@ -280,6 +299,62 @@ func spfreshFindCentroidCell(tx fdb.Transaction, s *spfreshStorage, fineID int64
 		} else if !errors.Is(rerr, errSPFreshNotFound) {
 			return 0, rerr
 		}
+	}
+	return 0, errSPFreshNotFound
+}
+
+// spfreshFindCentroidCellSnapshot is the QUERY-PATH variant: it resolves the
+// fine's CURRENT cell with snapshot reads only — no conflict ranges. The
+// read-path split re-file uses it for the csplit-pause check (the routed
+// cellID can be stale after a completed coarse split; codex delta P2) while
+// keeping queries conflict-free except for the one Set-if-absent that
+// actually files. hintCell (the routed cell) is probed FIRST — one point
+// read in the common still-current case; the moved-fine fallback issues the
+// whole coarse table as ONE parallel burst, never one blocking read per cell
+// (a serial scan added O(cells) round trips to the user query that hit the
+// cap — codex delta r3).
+func spfreshFindCentroidCellSnapshot(tx fdb.Transaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
+	if hintCell != 0 {
+		data, gerr := tx.Snapshot().Get(s.centroidKey(hintCell, fineID)).Get()
+		if gerr != nil {
+			return 0, gerr
+		}
+		if data != nil {
+			return hintCell, nil
+		}
+	}
+	ids, _, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	futs := make([]fdb.FutureByteSlice, len(ids))
+	for i, cellID := range ids {
+		if cellID == hintCell {
+			continue // already probed
+		}
+		futs[i] = tx.Snapshot().Get(s.centroidKey(cellID, fineID))
+	}
+	// Drain EVERY future even after a hit or an error (a pending read must
+	// not outlive this attempt — the cross-attempt contamination rule).
+	var found int64
+	var ferr error
+	for i, cellID := range ids {
+		if futs[i] == nil {
+			continue
+		}
+		data, gerr := futs[i].Get()
+		if gerr != nil && ferr == nil {
+			ferr = gerr
+		}
+		if data != nil && found == 0 {
+			found = cellID
+		}
+	}
+	if ferr != nil {
+		return 0, ferr
+	}
+	if found != 0 {
+		return found, nil
 	}
 	return 0, errSPFreshNotFound
 }

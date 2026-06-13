@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -148,7 +150,54 @@ func spfreshVerifyBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []by
 // --- CENTROIDS / COARSE ---
 
 func spfreshSaveCentroid(tx fdb.Transaction, s *spfreshStorage, cellID, fineID int64, row []byte) {
+	spfreshAudit("save", cellID, fineID, row[0])
 	tx.Set(s.centroidKey(cellID, fineID), row)
+}
+
+// spfreshAuditLog, when enabled, records centroid-row mutations (bisection
+// diagnostics only; in-memory, process-local — records ATTEMPTS, including
+// transactions that later abort). spfreshAuditOn keeps the disabled-path
+// check off the mutex AND race-free: Enable publishes the map under the
+// mutex BEFORE flipping the flag, so a writer that observes the flag always
+// sees the map.
+var (
+	spfreshAuditOn  atomic.Bool
+	spfreshAuditMu  sync.Mutex
+	spfreshAuditLog map[int64][]string
+)
+
+func spfreshAudit(op string, cellID, fineID int64, state byte) {
+	if !spfreshAuditOn.Load() {
+		return
+	}
+	spfreshAuditMu.Lock()
+	spfreshAuditLog[fineID] = append(spfreshAuditLog[fineID], fmt.Sprintf("%s(cell=%d,st=%d)", op, cellID, state))
+	spfreshAuditMu.Unlock()
+}
+
+// SPFreshEnableAudit turns on the centroid audit log (diagnostics).
+func SPFreshEnableAudit() {
+	spfreshAuditMu.Lock()
+	spfreshAuditLog = map[int64][]string{}
+	spfreshAuditMu.Unlock()
+	spfreshAuditOn.Store(true)
+}
+
+// SPFreshDisableAudit turns the audit log off and releases its memory.
+// Flag first, then the map: a concurrent spfreshAudit that already passed
+// the flag check still finds a (stale, discarded) map under the mutex.
+func SPFreshDisableAudit() {
+	spfreshAuditOn.Store(false)
+	spfreshAuditMu.Lock()
+	spfreshAuditLog = map[int64][]string{}
+	spfreshAuditMu.Unlock()
+}
+
+// SPFreshAuditTrail returns the recorded trail for a fineID.
+func SPFreshAuditTrail(fineID int64) []string {
+	spfreshAuditMu.Lock()
+	defer spfreshAuditMu.Unlock()
+	return spfreshAuditLog[fineID]
 }
 
 // spfreshReadCentroidForWrite REAL-reads a fine centroid's state row — the
@@ -416,10 +465,16 @@ func spfreshTaskSetIfAbsent(tx fdb.Transaction, s *spfreshStorage, kind, id int6
 	return true, nil
 }
 
+// errSPFreshLeaseHeld marks a claim refused because a LIVE foreign lease owns
+// the task. Distinct from errSPFreshNotFound (row absent): callers that skip
+// both still can, but code reasoning about "the task is gone" must not
+// conflate it with "another executor is mid-lifecycle" (Torvalds MT review).
+var errSPFreshLeaseHeld = errors.New("spfresh: task lease held by another owner")
+
 // spfreshTaskClaim REAL-reads and claims a task row: unclaimed, lease-expired,
 // or already-ours rows are (re)claimed with the new lease; a live foreign
-// lease returns errSPFreshNotFound (nothing to do here). Absent rows error
-// with errSPFreshNotFound too — enqueue first.
+// lease returns errSPFreshLeaseHeld (someone else is mid-lifecycle). Absent
+// rows return errSPFreshNotFound — enqueue first.
 func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, owner string, leaseDeadlineMs, nowMs int64) (spfreshTaskRow, error) {
 	key := s.taskKey(kind, id)
 	data, err := tx.Get(key).Get()
@@ -434,7 +489,7 @@ func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, own
 		return spfreshTaskRow{}, err
 	}
 	if row.owner != "" && row.owner != owner && row.leaseDeadlineMs > nowMs {
-		return spfreshTaskRow{}, errSPFreshNotFound // live foreign lease
+		return spfreshTaskRow{}, errSPFreshLeaseHeld
 	}
 	row.owner = owner
 	row.leaseDeadlineMs = leaseDeadlineMs
@@ -447,9 +502,16 @@ func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, own
 // spfreshAppendDeltas writes the deltas with versionstamped keys; the 2-byte
 // user-version disambiguates multiple entries in one transaction (RFC-094 §3;
 // FDB-author r3 #6).
+// spfreshMaxDeltasPerTx is the changelog's single-transaction delta cap: the
+// versionstamp user-version that disambiguates entries in one tx is 2 bytes, so
+// at most 65536 deltas (indices 0..0xffff) fit one transaction. Callers that
+// could exceed it (e.g. coarsePass at ~267M records) must guard up-front with a
+// clear message rather than fall into the generic error here.
+const spfreshMaxDeltasPerTx = 0x10000 // 65536
+
 func spfreshAppendDeltas(tx fdb.Transaction, s *spfreshStorage, deltas []spfreshDelta) error {
 	for i, d := range deltas {
-		if i > 0xffff {
+		if i >= spfreshMaxDeltasPerTx {
 			return fmt.Errorf("spfresh: too many deltas in one tx: %d", len(deltas))
 		}
 		key, err := s.changelog.PackWithVersionstamp(tuple.Tuple{tuple.IncompleteVersionstamp(uint16(i))})

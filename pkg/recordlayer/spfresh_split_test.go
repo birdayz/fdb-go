@@ -10,6 +10,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
 )
 
 // §6 SEAL→SPLIT→FORWARD primitives and the foreground-vs-split interleavings
@@ -689,5 +690,158 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 
 		childPKs := append(postingPKs(storage, out.childA), postingPKs(storage, out.childB)...)
 		Expect(childPKs).To(ContainElement(string(tuple.Tuple{int64(500)}.Pack())), "pre-seal insert lost by the split")
+	})
+})
+
+// Oversized postings (ballooned past the single-tx write budget under
+// sustained load) drain CHUNKED: §6's no-chunking rule assumed the 4×Lmax
+// inline-split ceiling, which needs after-commit hooks the record context
+// doesn't have — without this path the 1M foreground fill died with
+// transaction_too_large (2101).
+var _ = Describe("SPFresh chunked oversized split", func() {
+	ctx := context.Background()
+
+	It("drains an over-envelope posting across bounded transactions with full integrity", func() {
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 16 // 4×Lmax = 64: postings past that drain chunked
+		config.CellTarget = 4
+		config.CellMax = 8
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-chunked").Sub("drain"), 1)
+
+		// Build a SMALL two-cluster index, then balloon cluster A's posting
+		// far past the 4×Lmax envelope by direct posting writes (the exact
+		// state sustained write load leaves when the rebalancer lags).
+		var inputs []spfreshBuildInput
+		id := int64(1)
+		for i := 0; i < 8; i++ {
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i%5) * 0.2, float64(i%7) * 0.2}})
+			id++
+		}
+		for i := 0; i < 8; i++ {
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{50 + float64(i%2)*0.1, float64(i%3) * 0.1}})
+			id++
+		}
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")
+		Expect(builder.build(ctx, inputs, 42)).To(Succeed())
+		// Balloon: 90 more members written the way the foreground insert
+		// writes them (posting + membership + sidecar + counter).
+		quantizerB := newSPFreshQuantizer(config)
+		var firstFine int64
+		_, err0 := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			mem, merr := spfreshReadMembership(tx, storage, tuple.Tuple{int64(1)})
+			Expect(merr).NotTo(HaveOccurred())
+			firstFine = mem[0]
+			cellOf, ferr := spfreshFindCentroidCell(tx, storage, firstFine)
+			Expect(ferr).NotTo(HaveOccurred())
+			row, rerr := spfreshReadCentroidForWrite(tx, storage, cellOf, firstFine)
+			Expect(rerr).NotTo(HaveOccurred())
+			cvec, verr := row.vector()
+			Expect(verr).NotTo(HaveOccurred())
+			for i := 0; i < 90; i++ {
+				pk := tuple.Tuple{int64(1000 + i)}
+				v := []float64{float64(i%5) * 0.21, float64(i%7) * 0.19}
+				residual := []float64{v[0] - cvec[0], v[1] - cvec[1]}
+				tx.Set(storage.postingKey(firstFine, pk), quantizerB.Encode(residual))
+				tx.Set(storage.membershipKey(pk), encodeMembership([]int64{firstFine}))
+				tx.Set(storage.sidecarKey(pk), vectorcodec.SerializeHalf(v))
+				spfreshCounterAdd(tx, storage, spfreshCounterFine, firstFine, 1)
+			}
+			return nil, nil
+		})
+		Expect(err0).NotTo(HaveOccurred())
+
+		// The fullest posting is cluster A's (or one of its build-time splits).
+		var cellID, fineID int64
+		var members []tuple.Tuple
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cellID, fineID, members = 0, 0, nil
+			cells, _, lerr := spfreshLoadAllCoarse(tx, storage)
+			Expect(lerr).NotTo(HaveOccurred())
+			for _, cid := range cells {
+				rows, _, _, cerr := spfreshLoadCell(tx, storage, cid)
+				Expect(cerr).NotTo(HaveOccurred())
+				for _, r := range rows {
+					if r.row.state != spfreshStateActive {
+						continue
+					}
+					entries, perr := spfreshLoadPostingForSplit(tx, storage, r.fineID)
+					Expect(perr).NotTo(HaveOccurred())
+					if len(entries) > len(members) {
+						cellID, fineID = cid, r.fineID
+						members = nil
+						for _, e := range entries {
+							members = append(members, e.pk)
+						}
+					}
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(members)).To(BeNumerically(">", 4*config.Lmax),
+			"test premise: the posting must exceed the 4×Lmax single-tx envelope")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, terr := spfreshTaskSetIfAbsent(rtx.Transaction(), storage, spfreshTaskSplit, fineID)
+			return nil, terr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "chunk-test", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "chunk-test", cellID, fineID, 7)).To(Succeed())
+		// Idempotent re-run on the FORWARD parent.
+		Expect(spfreshSplitFine(ctx, sharedDB, storage, config, "chunk-test", cellID, fineID, 7)).To(Succeed())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cent, cerr := spfreshReadCentroidForWrite(tx, storage, cellID, fineID)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(cent.state).To(Equal(spfreshStateForward), "chunked drain must finish FORWARD")
+			parentEntries, perr := spfreshLoadPostingForSplit(tx, storage, fineID)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(parentEntries).To(BeEmpty())
+			// Every member in exactly one child, membership/posting agree,
+			// counters exact.
+			childPKs := map[string]int64{}
+			for _, child := range []int64{out.childA, out.childB} {
+				es, eerr := spfreshLoadPostingForSplit(tx, storage, child)
+				Expect(eerr).NotTo(HaveOccurred())
+				for _, e := range es {
+					k := string(e.pk.Pack())
+					Expect(childPKs).NotTo(HaveKey(k), "member duplicated across children")
+					childPKs[k] = child
+				}
+				count, cterr := spfreshCounterReadSnapshot(tx, storage, spfreshCounterFine, child)
+				Expect(cterr).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(len(es))), "exact child counters")
+			}
+			Expect(childPKs).To(HaveLen(len(members)), "no member lost in the chunked drain")
+			for _, pk := range members {
+				child, ok := childPKs[string(pk.Pack())]
+				Expect(ok).To(BeTrue())
+				mem, merr := spfreshReadMembership(tx, storage, pk)
+				Expect(merr).NotTo(HaveOccurred())
+				Expect(mem).To(ContainElement(child))
+				Expect(mem).NotTo(ContainElement(fineID))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Queries see everything through the new topology.
+		cache := newSPFreshRoutingCache(0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
+			searcher := newSPFreshSearcher(storage, config, cache)
+			got, serr := searcher.search(tx, []float64{0.4, 0.6}, len(inputs))
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(len(got)).To(BeNumerically(">=", len(inputs)-2), "records lost across the chunked split")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

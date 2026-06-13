@@ -336,7 +336,9 @@ func (store *FDBRecordStore) ScanIndexByType(
 			}
 		}
 	case IndexScanByDistance:
-		vm, ok := maintainer.(*vectorIndexMaintainer)
+		// HNSW and SPFresh share the BY_DISTANCE TupleRange/IndexEntry
+		// contract (RFC-094 §10) — dispatch by interface, not concrete type.
+		vm, ok := maintainer.(byDistanceScanner)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
@@ -752,3 +754,16 @@ func (c *indexRecordCursor) Close() error {
 }
 
 func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }
+
+// byDistanceScanner is the BY_DISTANCE access-method contract every vector
+// index maintainer implements (RFC-094 §10): Low = (serialized query vector
+// [, prefix...]), High = (k [, tuning...]); entries ascend by distance.
+// Compile-time assertions catch signature drift at build time (Graefe 094.6).
+type byDistanceScanner interface {
+	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+}
+
+var (
+	_ byDistanceScanner = (*vectorIndexMaintainer)(nil)
+	_ byDistanceScanner = (*spfreshIndexMaintainer)(nil)
+)

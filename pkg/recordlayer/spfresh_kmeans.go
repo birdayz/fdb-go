@@ -2,13 +2,71 @@ package recordlayer
 
 import (
 	"math"
+	"runtime"
 	"sort"
+	"sync"
+	"sync/atomic"
 )
 
 // SPFresh clustering and closure assignment (RFC-094 §5, §6, §8). Pure CPU,
 // deterministic given the seed — splits and builds must be reproducible for
 // the pinned lifecycle tests, so all randomness flows through the same
 // splittableRandom the rest of the index uses.
+
+// spfreshKMeansChunk is the fixed work-unit size for the parallel loops.
+// FIXED (not derived from worker count) so chunk boundaries — and therefore
+// the float accumulation order in the chunk-merged reductions — are identical
+// on every machine: determinism holds per (vectors, k, seed) regardless of
+// GOMAXPROCS.
+const spfreshKMeansChunk = 4096
+
+// spfreshParallelChunks runs fn over [0,n) in fixed-size chunks across
+// NumCPU workers. fn must only write chunk-local or index-disjoint state.
+func spfreshParallelChunks(n int, fn func(chunk, lo, hi int)) {
+	spfreshParallelChunksSized(n, spfreshKMeansChunk, 0, fn)
+}
+
+// spfreshParallelChunksSized is the parameterized core. workers == 0 means
+// NumCPU; tests pin worker-count invariance — the actual cross-machine
+// determinism guarantee — by comparing workers=1 against the parallel run at
+// the SAME chunk size (chunk boundaries fix the float-reduction order, so
+// chunk size itself is NOT invariant and must match).
+func spfreshParallelChunksSized(n, chunkSize, workers int, fn func(chunk, lo, hi int)) {
+	chunks := (n + chunkSize - 1) / chunkSize
+	if chunks <= 1 {
+		if n > 0 {
+			fn(0, 0, n)
+		}
+		return
+	}
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+	if workers > chunks {
+		workers = chunks
+	}
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				c := int(next.Add(1) - 1)
+				if c >= chunks {
+					return
+				}
+				lo := c * chunkSize
+				hi := lo + chunkSize
+				if hi > n {
+					hi = n
+				}
+				fn(c, lo, hi)
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 // spfreshKMeans runs Lloyd's algorithm with k-means++ seeding on the given
 // vectors, returning k centroids and each vector's assignment. Deterministic
@@ -19,10 +77,53 @@ import (
 // vectors must be non-empty and share one dimensionality. k is clamped to
 // [1, len(vectors)].
 func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansWorkers(vectors, k, seed, maxIters, 0)
+}
+
+// spfreshKMeansWorkers is the worker-count-parameterized core (0 = NumCPU) with
+// EXACT convergence (stop only when no point changes cluster) — the behavior
+// splits/csplit and the determinism tests rely on. The FIXED chunk size pins the
+// float-accumulation order of the parallel reductions, so any two runs with the
+// same (vectors, k, seed) are bit-identical regardless of worker count.
+func spfreshKMeansWorkers(vectors [][]float64, k int, seed int64, maxIters, workers int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansCore(vectors, k, seed, maxIters, workers, 0)
+}
+
+// spfreshKMeansBuildConvergeFraction is the bulk-build coarse/wave-A k-means
+// early-stop threshold: stop once fewer than this fraction of points are
+// reassigned in an iteration. At high k (e.g. 246 coarse cells at 1M) Lloyd
+// never reaches exact zero within maxIters — it micro-refines a long tail of
+// <1% reassignments that does NOT move recall (RFC-102 A/B: recall@10 flat at
+// 0.995–0.997 from 4 to 25 iterations on SIFT-100k). Stopping that tail is a
+// build speedup at zero recall cost. Build-path only: splits/csplit (k=2,
+// foreground/rebalance) keep EXACT convergence (fraction 0) so their clustering
+// stays bit-identical — the foreground update path has no recall A/B harness.
+const spfreshKMeansBuildConvergeFraction = 0.01
+
+// spfreshKMeansBuild is the bulk-build variant: exact-EXCEPT it early-stops the
+// long micro-refinement tail via spfreshKMeansBuildConvergeFraction. Used only by
+// coarsePass and waveA — the recall-A/B-validated build path.
+func spfreshKMeansBuild(vectors [][]float64, k int, seed int64, maxIters int) (centroids [][]float64, assign []int) {
+	return spfreshKMeansCore(vectors, k, seed, maxIters, 0, spfreshKMeansBuildConvergeFraction)
+}
+
+// spfreshKMeansCore runs Lloyd with k-means++ seeding. convergeFraction is the
+// early-stop threshold: stop when the number of reassigned points in an
+// iteration is <= floor(convergeFraction·n). 0 ⇒ exact convergence (stop only on
+// zero change). The reassignment COUNT is an order-independent sum, so the stop
+// decision is deterministic and GOMAXPROCS-invariant (same fixed-chunk reduction
+// order as before).
+func spfreshKMeansCore(vectors [][]float64, k int, seed int64, maxIters, workers int, convergeFraction float64) (centroids [][]float64, assign []int) {
 	n := len(vectors)
 	if n == 0 {
 		return nil, nil
 	}
+	convergeThresh := int64(0)
+	if convergeFraction > 0 {
+		convergeThresh = int64(convergeFraction * float64(n))
+	}
+	const chunkSize = spfreshKMeansChunk
+	chunked := func(fn func(chunk, lo, hi int)) { spfreshParallelChunksSized(n, chunkSize, workers, fn) }
 	if k < 1 {
 		k = 1
 	}
@@ -39,9 +140,11 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	centroids = append(centroids, append([]float64(nil), vectors[first]...))
 
 	d2 := make([]float64, n) // squared distance to nearest chosen centroid
-	for i := range d2 {
-		d2[i] = spfreshSquaredDistance(vectors[i], centroids[0])
-	}
+	chunked(func(_, lo, hi int) {
+		for i := lo; i < hi; i++ {
+			d2[i] = spfreshSquaredDistance(vectors[i], centroids[0])
+		}
+	})
 	for len(centroids) < k {
 		var sum float64
 		for _, d := range d2 {
@@ -65,11 +168,13 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 		}
 		c := append([]float64(nil), vectors[idx]...)
 		centroids = append(centroids, c)
-		for i := range d2 {
-			if d := spfreshSquaredDistance(vectors[i], c); d < d2[i] {
-				d2[i] = d
+		chunked(func(_, lo, hi int) {
+			for i := lo; i < hi; i++ {
+				if d := spfreshSquaredDistance(vectors[i], c); d < d2[i] {
+					d2[i] = d
+				}
 			}
-		}
+		})
 	}
 
 	// Lloyd iterations.
@@ -79,34 +184,94 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 	for i := range sums {
 		sums[i] = make([]float64, dims)
 	}
+	numChunks := (n + chunkSize - 1) / chunkSize
+	// Partial-reduction buffers live OUTSIDE the iteration loop: at the
+	// coarse-1M shape (62 chunks × k≈3k × 128 dims) reallocating them every
+	// Lloyd iteration churned ~190MB per iteration through the allocator.
+	// Zeroed at chunk start each iteration instead; per-cluster rows are
+	// still allocated lazily (most chunks see a small subset of clusters)
+	// and zeroing is unconditional once allocated — a row whose cluster
+	// skips an iteration must not leak stale sums into a later one.
+	partialCounts := make([][]int, numChunks)
+	partialSums := make([][][]float64, numChunks)
+	for chunk := range partialCounts {
+		partialCounts[chunk] = make([]int, k)
+		partialSums[chunk] = make([][]float64, k)
+	}
+	converged := false
 	for iter := 0; iter < maxIters; iter++ {
-		changed := false
-		for i, v := range vectors {
-			best, bestD := 0, math.Inf(1)
-			for c := range centroids {
-				if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-					best, bestD = c, d
+		// Assignment: index-disjoint writes, order-independent — parallel.
+		// changed is the per-iteration reassignment count (an order-independent
+		// sum), used for the convergence test below.
+		var changed atomic.Int64
+		chunked(func(_, lo, hi int) {
+			chunkChanged := int64(0)
+			for i := lo; i < hi; i++ {
+				v := vectors[i]
+				best, bestD := 0, math.Inf(1)
+				for c := range centroids {
+					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+						best, bestD = c, d
+					}
+				}
+				if assign[i] != best {
+					chunkChanged++
+					assign[i] = best
 				}
 			}
-			if assign[i] != best || iter == 0 {
-				changed = changed || assign[i] != best
-				assign[i] = best
-			}
-		}
-		if iter > 0 && !changed {
+			changed.Add(chunkChanged)
+		})
+		// Converged: stop when <= convergeThresh points were reassigned. With
+		// convergeThresh==0 this is the exact "no change" stop (splits, tests).
+		// With the build fraction it also trims the long micro-refinement tail
+		// at high k that doesn't move recall (RFC-102). On this break `assign` is
+		// already current for `centroids` (the assignment phase above ran against
+		// them and no centroid update follows), so the final pass below is
+		// skipped — re-running it would give back one full O(n·k) Lloyd
+		// assignment, the exact work this early-stop exists to save (codex).
+		if iter > 0 && changed.Load() <= convergeThresh {
+			converged = true
 			break
 		}
+		// Accumulation: per-chunk partials merged in CHUNK ORDER, so the
+		// float addition order is fixed by the constant chunk size —
+		// deterministic on any machine, any worker count.
+		chunked(func(chunk, lo, hi int) {
+			pc := partialCounts[chunk]
+			ps := partialSums[chunk]
+			for c := range pc {
+				pc[c] = 0
+				if ps[c] != nil {
+					for d := range ps[c] {
+						ps[c][d] = 0
+					}
+				}
+			}
+			for i := lo; i < hi; i++ {
+				c := assign[i]
+				pc[c]++
+				if ps[c] == nil {
+					ps[c] = make([]float64, dims)
+				}
+				for d, x := range vectors[i] {
+					ps[c][d] += x
+				}
+			}
+		})
 		for c := range sums {
 			counts[c] = 0
 			for d := range sums[c] {
 				sums[c][d] = 0
 			}
 		}
-		for i, v := range vectors {
-			c := assign[i]
-			counts[c]++
-			for d, x := range v {
-				sums[c][d] += x
+		for chunk := 0; chunk < numChunks; chunk++ {
+			for c := 0; c < k; c++ {
+				counts[c] += partialCounts[chunk][c]
+				if partialSums[chunk][c] != nil {
+					for d, x := range partialSums[chunk][c] {
+						sums[c][d] += x
+					}
+				}
 			}
 		}
 		for c := range centroids {
@@ -129,79 +294,213 @@ func spfreshKMeans(vectors [][]float64, k int, seed int64, maxIters int) (centro
 			}
 		}
 	}
-	// Final assignment against the converged centroids.
-	for i, v := range vectors {
-		best, bestD := 0, math.Inf(1)
-		for c := range centroids {
-			if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
-				best, bestD = c, d
+	// Final assignment against the final centroids — needed only when the loop
+	// exhausted maxIters without converging (the last iteration updated centroids
+	// after assigning, so `assign` is stale for them). On an early-stop break
+	// `assign` is already current for `centroids`, so this is skipped.
+	if !converged {
+		chunked(func(_, lo, hi int) {
+			for i := lo; i < hi; i++ {
+				v := vectors[i]
+				best, bestD := 0, math.Inf(1)
+				for c := range centroids {
+					if d := spfreshSquaredDistance(v, centroids[c]); d < bestD {
+						best, bestD = c, d
+					}
+				}
+				assign[i] = best
 			}
-		}
-		assign[i] = best
+		})
 	}
 	return centroids, assign
 }
 
 // spfreshSquaredDistance is squared L2 — the k-means objective and the routing
 // comparator (monotone in true L2, so nearest-centroid selection never needs
-// the sqrt).
+// the sqrt). Four independent accumulator lanes break the loop-carried
+// dependency the scalar form serializes on (Go does not auto-vectorize; this
+// kernel is the single largest flat CPU cost in build and routing profiles).
+// The lane-summed float order differs from the scalar form only in last-ulp
+// rounding, and is itself fixed per length — determinism per (vectors, k,
+// seed) is unchanged.
 func spfreshSquaredDistance(a, b []float64) float64 {
-	var sum float64
-	for i := range a {
-		d := a[i] - b[i]
-		sum += d * d
+	b = b[:len(a)] // one bounds check; lets the compiler drop the per-lane ones
+	var s0, s1, s2, s3 float64
+	i := 0
+	for ; i+4 <= len(a); i += 4 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		s0 += d0 * d0
+		s1 += d1 * d1
+		s2 += d2 * d2
+		s3 += d3 * d3
 	}
-	return sum
+	for ; i < len(a); i++ {
+		d := a[i] - b[i]
+		s0 += d * d
+	}
+	return (s0 + s1) + (s2 + s3)
 }
 
 // spfreshCandidate is a (id, squared-distance) pair used by routing and
-// closure assignment.
+// closure assignment. vec is the candidate's centroid vector when the caller
+// has it — required for the closure's RNG diversity test, which compares
+// centroid-to-centroid distances (nil degrades the closure to the pure ratio
+// rule; see spfreshRNGAccept).
 type spfreshCandidate struct {
-	id int64
-	d2 float64
+	id  int64
+	d2  float64
+	vec []float64
 }
 
 // spfreshNearestK returns the k nearest candidates by squared distance,
 // ascending, deterministic tie-break by id. ids[i] corresponds to vecs[i].
+//
+// TOP-K SELECTION, not a full sort: k is tiny (replication r≈2 on the build
+// closure path, w/kc ≤ ~200 on the routing path) while len(ids) reaches tens
+// of thousands of fine centroids at 1M+ scale. The full sort.Slice here made
+// the bulk build effectively unbounded — wave B sorted all ~11k fines per
+// staged vector to take the top 2; ~2 billion comparator calls at SIFT-1M
+// (caught by a SIGQUIT stack dump of a build that outlived 2 hours).
 func spfreshNearestK(query []float64, ids []int64, vecs [][]float64, k int) []spfreshCandidate {
-	cands := make([]spfreshCandidate, len(ids))
+	if k <= 0 || len(ids) == 0 {
+		return nil
+	}
+	out := make([]spfreshCandidate, 0, min(k, len(ids))+1)
 	for i := range ids {
-		cands[i] = spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i])}
-	}
-	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].d2 != cands[j].d2 {
-			return cands[i].d2 < cands[j].d2
+		c := spfreshCandidate{id: ids[i], d2: spfreshSquaredDistance(query, vecs[i]), vec: vecs[i]}
+		if len(out) == k && !spfreshCandLess(c, out[k-1]) {
+			continue // common case after warmup: not in the top k
 		}
-		return cands[i].id < cands[j].id
-	})
-	if k < len(cands) {
-		cands = cands[:k]
+		spfreshInsertCandidate(&out, c, k)
 	}
-	return cands
+	return out
 }
 
-// spfreshClosure applies SPANN's RNG closure rule (RFC-094 §5): from the
-// r-nearest candidates (ascending), keep candidate c_i iff
+// spfreshCandLess is the canonical candidate order — ascending squared distance,
+// ties broken by ascending id. Shared by spfreshNearestK and the bound-pruned
+// two-level top-k (RFC-101) so both produce byte-identical result slices for the
+// same set of offered candidates.
+func spfreshCandLess(a, b spfreshCandidate) bool {
+	if a.d2 != b.d2 {
+		return a.d2 < b.d2
+	}
+	return a.id < b.id
+}
+
+// spfreshInsertCandidate inserts c into the ascending top-k slice *out (cap k),
+// the exact insertion spfreshNearestK uses. Caller has already rejected c when
+// the slice is full and c is not better than the current worst.
+func spfreshInsertCandidate(out *[]spfreshCandidate, c spfreshCandidate, k int) {
+	s := *out
+	pos := sort.Search(len(s), func(j int) bool { return spfreshCandLess(c, s[j]) })
+	s = append(s, spfreshCandidate{})
+	copy(s[pos+1:], s[pos:])
+	s[pos] = c
+	if len(s) > k {
+		s = s[:k]
+	}
+	*out = s
+}
+
+// spfreshBoundedTopK keeps the k smallest candidates in spfreshCandLess order.
+// Insertion semantics are identical to spfreshNearestK, so a bound-pruned scan
+// that offers the same NON-pruned candidates yields the same result slice
+// (RFC-101 exactness). worst() is the current prune threshold (k-th best d2).
+type spfreshBoundedTopK struct {
+	k   int
+	out []spfreshCandidate
+}
+
+func newSpfreshBoundedTopK(k int) spfreshBoundedTopK {
+	return spfreshBoundedTopK{k: k, out: make([]spfreshCandidate, 0, k+1)}
+}
+
+func (t *spfreshBoundedTopK) full() bool { return len(t.out) == t.k }
+
+// worst returns the current k-th best squared distance. Valid only when full().
+func (t *spfreshBoundedTopK) worst() float64 { return t.out[len(t.out)-1].d2 }
+
+func (t *spfreshBoundedTopK) offer(id int64, d2 float64, vec []float64) {
+	c := spfreshCandidate{id: id, d2: d2, vec: vec}
+	if len(t.out) == t.k && !spfreshCandLess(c, t.out[t.k-1]) {
+		return
+	}
+	spfreshInsertCandidate(&t.out, c, t.k)
+}
+
+// spfreshClosure applies SPANN's closure assignment (RFC-094 §5) with the
+// §3.2.2 RNG representative-replication rule (Figure 5). Scanning candidates
+// ascending by distance, keep candidate c iff
 //
-//	dist(v, c_i) <= alpha * dist(v, c_1)
+//  1. ratio:	dist(v, c) <= alpha * dist(v, c_1)	(boundary test, Eq. 2)
+//  2. RNG:	dist(v, c)  < dist(s, c) for every already-kept s	(diversity)
 //
-// — in squared-distance space the threshold is alpha² · d2(c_1). alpha > 1
-// admits boundary replicas; alpha == 1 degenerates to r == 1 (the rev-3 RFC
-// bug, rejected at config validation when r > 1). Always returns at least the
-// nearest candidate.
+// — in squared-distance space the ratio threshold is alpha² · d2(c_1).
+// The RNG rule skips a replica that sits closer to an already-kept centroid
+// than to the vector itself: such posting lists are near-duplicates in the
+// same direction and both get recalled by the router anyway (SPANN Fig. 5 —
+// better to spend the copy on a list in a different direction). Because RNG
+// can skip, the scan runs past index r until r diverse replicas are kept or
+// the ratio bound breaks (candidates are ascending, so the first ratio
+// failure ends the scan). alpha > 1 admits boundary replicas; alpha == 1
+// degenerates to r == 1 (the rev-3 RFC bug, rejected at config validation
+// when r > 1). Always returns at least the nearest candidate.
 func spfreshClosure(cands []spfreshCandidate, r int, alpha float64) []spfreshCandidate {
 	if len(cands) == 0 {
 		return nil
 	}
-	if r > len(cands) {
-		r = len(cands)
-	}
 	threshold := alpha * alpha * cands[0].d2
 	out := cands[:1:1]
-	for _, c := range cands[1:r] {
-		if c.d2 <= threshold {
-			out = append(out, c)
+	for _, c := range cands[1:] {
+		if len(out) >= r {
+			break
 		}
+		if c.d2 > threshold {
+			break // ascending order: every later candidate fails the ratio test too
+		}
+		if !spfreshRNGAccept(c, out) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// spfreshClosurePool is the candidate-pool width that gives the closure's
+// RNG rule room to skip same-direction replicas: a pool of exactly r would
+// turn every RNG rejection into a silently smaller copy-set (under-
+// replication instead of diversity). 8× the replica target is SPTAG's
+// headroom (replicaCount 8, candidate set 64). A fixed pool can still
+// truncate ahead of a diverse in-ratio candidate (codex 094.4 r2) — the
+// build path widens iteratively until the RATIO bound terminates the scan;
+// the insert path deliberately caps here (each verified candidate is a
+// sequential REAL read inside the user's save transaction) and leaves the
+// rare beyond-cap miss to NPA, which re-runs the closure over the full
+// neighborhood pool after every split.
+func spfreshClosurePool(r int) int {
+	return max(8*r, 16)
+}
+
+// spfreshRNGAccept is SPANN §3.2.2's RNG test: candidate c is a useful
+// replica only if the vector is strictly closer to c than every already-kept
+// centroid is (SPTAG rejects on equality; squared distances preserve the
+// comparison). A candidate without a centroid vector falls open to accepted —
+// the closure then degrades to the pure ratio rule rather than failing, since
+// replica diversity is a recall optimization, not a correctness requirement.
+func spfreshRNGAccept(c spfreshCandidate, kept []spfreshCandidate) bool {
+	if c.vec == nil {
+		return true
+	}
+	for _, s := range kept {
+		if s.vec == nil {
+			continue
+		}
+		if spfreshSquaredDistance(s.vec, c.vec) <= c.d2 {
+			return false
+		}
+	}
+	return true
 }

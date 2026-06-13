@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 
@@ -29,6 +30,19 @@ import (
 type spfreshIndexMaintainer struct {
 	standardIndexMaintainer
 	config SPFreshConfig
+
+	// rctx is the record context this maintainer lives in. The TX-LOCAL
+	// routing cache (write path AND same-tx reads) lives in its session,
+	// keyed by index subspace, so a write through one store instance and a
+	// search through another in the same transaction share it — and the
+	// process-global cache is never touched through a transaction carrying
+	// uncommitted SPFresh topology (see txWriteCache).
+	rctx *FDBRecordContext
+
+	// timer is the context's StoreTimer (nil when uninstrumented — every
+	// recording method is nil-receiver-safe). The TEXT index's
+	// context.getTimer() idiom.
+	timer *StoreTimer
 }
 
 func newSPFreshIndexMaintainer(
@@ -36,6 +50,8 @@ func newSPFreshIndexMaintainer(
 	indexSubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
+	rctx *FDBRecordContext,
+	timer *StoreTimer,
 ) (*spfreshIndexMaintainer, error) {
 	config := parseSPFreshConfig(index)
 	if err := ValidateSPFreshConfig(config); err != nil {
@@ -52,22 +68,140 @@ func newSPFreshIndexMaintainer(
 	return &spfreshIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		config:                  config,
+		rctx:                    rctx,
+		timer:                   timer,
 	}, nil
+}
+
+// txWriteCache returns the transaction-local SPFresh routing cache for this
+// index, or nil if this transaction has not written to it. Lives in the
+// record context's session (keyed by index subspace) so a SaveRecord through
+// one store instance and a ScanByDistance through another in the SAME
+// transaction find the same cache — the maintainer instance is not the unit
+// of transaction state, the context is.
+func (m *spfreshIndexMaintainer) txWriteCache() *spfreshRoutingCache {
+	if m.rctx == nil {
+		return nil
+	}
+	if v := m.rctx.Session(m.writeCacheSessionKey()); v != nil {
+		return v.(*spfreshRoutingCache)
+	}
+	return nil
+}
+
+func (m *spfreshIndexMaintainer) setTxWriteCache(c *spfreshRoutingCache) {
+	if m.rctx != nil {
+		m.rctx.PutSession(m.writeCacheSessionKey(), c)
+	}
+}
+
+func (m *spfreshIndexMaintainer) writeCacheSessionKey() string {
+	return "spfresh-writecache/" + string(m.indexSubspace.Bytes())
 }
 
 // spfreshCaches holds the per-process routing caches, one per (index
 // subspace, generation) — the client-side state of RFC-094 §2. Browsing a
-// retrained generation gets a fresh cache; superseded entries age out with
-// the process (bounded: generations are rare).
-var spfreshCaches sync.Map // string(subspace bytes)+gen -> *spfreshRoutingCache
+// retrained generation gets a fresh cache. Bounded ACROSS tenants: each
+// cache is individually bounded (L2 LRU), but a multi-tenant serving fleet
+// touches arbitrarily many indexes, so idle caches are evicted by TTL and
+// the map is capped with oldest-first eviction (amortized inline — no
+// background goroutine). Evicting a live pointer is safe: holders keep
+// their snapshot; the next spfreshCacheFor reloads from FDB.
+var (
+	spfreshCaches        sync.Map     // string(subspace bytes)+gen -> *spfreshRoutingCache
+	spfreshCacheCount    atomic.Int64 // approximate map size (eviction trigger)
+	spfreshCacheForCalls atomic.Int64 // spfreshCacheFor call counter (sweep stride)
+	spfreshCacheSweepMu  sync.Mutex   // single sweeper at a time (TryLock gate)
+
+	// Eviction policy. Vars, not consts: the many-tenant soak tightens them.
+	spfreshCacheIdleTTLMs   int64 = 15 * 60 * 1000 // idle eviction horizon
+	spfreshCacheMaxEntries  int64 = 4096           // hard cap across tenants
+	spfreshCacheSweepEveryN int64 = 256            // amortization stride
+)
 
 func spfreshCacheFor(indexSubspace subspace.Subspace, generation int64) *spfreshRoutingCache {
 	key := fmt.Sprintf("%x/%d", indexSubspace.Bytes(), generation)
+	now := spfreshNowMs()
 	if c, ok := spfreshCaches.Load(key); ok {
-		return c.(*spfreshRoutingCache)
+		cache := c.(*spfreshRoutingCache)
+		cache.lastUseMs.Store(now)
+		spfreshMaybeEvictCaches(now)
+		return cache
 	}
-	c, _ := spfreshCaches.LoadOrStore(key, newSPFreshRoutingCache(0))
-	return c.(*spfreshRoutingCache)
+	fresh := newSPFreshRoutingCache(0)
+	fresh.lastUseMs.Store(now)
+	c, loaded := spfreshCaches.LoadOrStore(key, fresh)
+	if !loaded {
+		spfreshCacheCount.Add(1)
+	}
+	cache := c.(*spfreshRoutingCache)
+	cache.lastUseMs.Store(now)
+	spfreshMaybeEvictCaches(now)
+	return cache
+}
+
+// spfreshMaybeEvictCaches amortizes idle/over-cap eviction over cache hits:
+// a full map sweep every spfreshCacheSweepEveryN calls, or immediately while
+// the map is over its cap. At most ONE goroutine sweeps at a time — while
+// over cap, every cache hit qualifies, and without the gate they would all
+// run the full Range+sort concurrently until the first sweep lands.
+func spfreshMaybeEvictCaches(nowMs int64) {
+	if spfreshCacheForCalls.Add(1)%spfreshCacheSweepEveryN != 0 &&
+		spfreshCacheCount.Load() <= spfreshCacheMaxEntries {
+		return
+	}
+	if !spfreshCacheSweepMu.TryLock() {
+		return // a concurrent sweep is already running
+	}
+	defer spfreshCacheSweepMu.Unlock()
+	spfreshSweepCaches(nowMs)
+}
+
+// spfreshSweepCaches is the unamortized sweep body: TTL-evict idle caches,
+// then enforce the cross-tenant cap oldest-first (with hysteresis).
+func spfreshSweepCaches(nowMs int64) {
+	type entry struct {
+		key     string
+		lastUse int64
+	}
+	var entries []entry
+	spfreshCaches.Range(func(k, v any) bool {
+		entries = append(entries, entry{key: k.(string), lastUse: v.(*spfreshRoutingCache).lastUseMs.Load()})
+		return true
+	})
+	spfreshCacheCount.Store(int64(len(entries))) // re-sync the approximation
+	evict := func(key string) {
+		if _, loaded := spfreshCaches.LoadAndDelete(key); loaded {
+			spfreshCacheCount.Add(-1)
+		}
+	}
+	live := 0
+	for _, e := range entries {
+		if nowMs-e.lastUse > spfreshCacheIdleTTLMs {
+			evict(e.key)
+		} else {
+			live++
+		}
+	}
+	if int64(live) <= spfreshCacheMaxEntries {
+		return
+	}
+	// Over cap even after TTL: drop oldest-first down to 90% of the cap
+	// (hysteresis — evicting to the cap exactly would re-trigger a full
+	// sweep on every subsequent miss while the fleet hovers at the cap).
+	target := spfreshCacheMaxEntries - spfreshCacheMaxEntries/10
+	sort.Slice(entries, func(i, j int) bool { return entries[i].lastUse < entries[j].lastUse })
+	excess := int64(live) - target
+	for _, e := range entries {
+		if excess <= 0 {
+			break
+		}
+		if nowMs-e.lastUse > spfreshCacheIdleTTLMs {
+			continue // already evicted above
+		}
+		evict(e.key)
+		excess--
+	}
 }
 
 // Update is the foreground write path (RFC-094 §5, phase 094.2): delete-old
@@ -343,22 +477,33 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	if len(scanRange.Low) > 1 {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: prefixed (grouped) scans not supported in 094.1", m.index.Name)}
 	}
+	// High = (k [, kc [, w [, c [, ε]]]]): per-query tuning knobs (RFC-094 §4
+	// / 094.4). kc keeps the HNSW efSearch slot; w and c extend it; ε is the
+	// SPANN Eq. (3) pruning ratio (float or int; ≤ 0 disables pruning, absent
+	// keeps the searcher default).
 	k := 10
-	efSearch := 0
+	efSearch, wProbe, cRerank := 0, 0, 0
 	if scanRange.High != nil {
-		if len(scanRange.High) >= 1 {
-			if kVal, ok := asInt64(scanRange.High[0]); ok && kVal > 0 {
-				k = int(kVal)
-			}
-		}
-		if len(scanRange.High) >= 2 {
-			if efVal, ok := asInt64(scanRange.High[1]); ok && efVal > 0 {
-				efSearch = int(efVal)
+		ints := []*int{&k, &efSearch, &wProbe, &cRerank}
+		for i := 0; i < len(scanRange.High) && i < len(ints); i++ {
+			if v, ok := asInt64(scanRange.High[i]); ok && (v > 0 || (i == 3 && v == -1)) {
+				// c = -1: estimates-only ranking, no sidecar re-rank wave
+				// (the 094.4 sidecar A/B; distances are then approximate).
+				*ints[i] = int(v)
 			}
 		}
 	}
+	epsilon, epsilonSet := 0.0, false
+	if len(scanRange.High) > 4 {
+		switch v := scanRange.High[4].(type) {
+		case float64:
+			epsilon, epsilonSet = v, true
+		case int64:
+			epsilon, epsilonSet = float64(v), true
+		}
+	}
 
-	results, err := m.searchCurrentGeneration(queryVector, k, efSearch)
+	results, err := m.searchCurrentGeneration(queryVector, k, efSearch, wProbe, cRerank, epsilon, epsilonSet)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -373,38 +518,156 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 
 // searchCurrentGeneration resolves the readable generation, refreshes/loads
 // the per-process cache, and runs the search in the maintainer's transaction.
-func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch int) ([]spfreshSearchResult, error) {
+func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
 	// Resolve the generation (snapshot — queries never conflict).
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0) // gen 0: META access only
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
 	if err != nil {
-		return nil, fmt.Errorf("spfresh index %q: no readable generation (build the index first): %w", m.index.Name, err)
+		if errors.Is(err, errSPFreshNotFound) {
+			// No generation: either nothing was ever inserted or built (§6b
+			// insert-first — zero rows), or a bulk build holds the token and
+			// has not flipped yet — that index is BUILDING, and silently
+			// reporting it empty would be a lie (codex 094.4 r2; same
+			// distinction the insert path draws). Snapshot read: queries
+			// take no conflict ranges.
+			tok, terr := m.tx.Snapshot().Get(metaStorage.metaKey(spfreshMetaBuild)).Get()
+			if terr != nil {
+				return nil, terr
+			}
+			if tok != nil {
+				return nil, fmt.Errorf("spfresh index %q: a bulk build is in flight (or died before flipping) — retry after it completes, or rerun BuildSPFreshIndex", m.index.Name)
+			}
+			return nil, nil
+		}
+		return nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
-	cache := spfreshCacheFor(m.indexSubspace, gen)
-
-	// Queries pay ZERO cache-maintenance I/O on the common path (RFC-094 §4 —
-	// the per-query changelog read was the rev-2-NAK'd hot-key anti-pattern,
-	// and it cost ~half the measured p50 at SIFT-100k). With the 094.3
-	// rebalancer the topology changes WITHIN a generation, so the cache
-	// additionally refreshes on an amortized timer: one changelog read per
-	// interval per process, not per query; between refreshes queries ride the
-	// searcher's posting-HDR forward tolerance.
-	if !cache.ready(gen) {
-		if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
-			return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
+	var cache *spfreshRoutingCache
+	if wc := m.txWriteCache(); wc != nil && wc.ready(gen) {
+		// This transaction already wrote to this index: route on the
+		// TX-LOCAL cache. Two reasons, both load-bearing: (a) RYW gives a
+		// same-transaction INSERT→SELECT the inserted record; (b) the
+		// process-global cache must NEVER be loaded or refreshed through a
+		// transaction carrying uncommitted SPFresh topology — RYW would
+		// publish phantom bootstrap cells / minted centroids globally, and
+		// an abort leaves every later query routing on a topology that does
+		// not exist (for a §6b cold-start index there is no generation flip
+		// to ever flush it). The write path has guarded against this since
+		// cloneForWrite; this is the read-side half (Torvalds final-gauntlet
+		// S1). No refresh either: the changelog range may contain this tx's
+		// own unresolved versionstamped deltas.
+		cache = wc
+	} else {
+		cache = spfreshCacheFor(m.indexSubspace, gen)
+		// Queries pay ZERO cache-maintenance I/O on the common path (RFC-094
+		// §4 — the per-query changelog read was the rev-2-NAK'd hot-key
+		// anti-pattern, and it cost ~half the measured p50 at SIFT-100k).
+		// With the 094.3 rebalancer the topology changes WITHIN a
+		// generation, so the cache additionally refreshes on an amortized
+		// timer: one changelog read per interval per process, not per query;
+		// between refreshes queries ride the searcher's posting-HDR forward
+		// tolerance.
+		if !cache.ready(gen) {
+			if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
+				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
+			}
+		} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
+			return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 		}
-	} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
-		return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 	}
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)
+	searcher.timer = m.timer
 	if efSearch > 0 {
-		// Map the HNSW-style efSearch knob onto the fine-probe width.
-		searcher.kc = max(searcher.kc, efSearch)
+		// The HNSW-style efSearch slot sets the fine-probe width DIRECTLY
+		// (094.4: sweeps need to tune DOWN as well as up).
+		searcher.kc = efSearch
 		searcher.c = max(searcher.c, 4*k)
 	}
-	return searcher.search(m.tx, query, k)
+	if wProbe > 0 {
+		searcher.w = wProbe
+	}
+	if cRerank > 0 {
+		searcher.c = max(cRerank, k)
+	} else if cRerank == -1 {
+		searcher.noRerank = true
+	}
+	if epsilonSet {
+		searcher.epsilon = epsilon // ≤ 0 disables pruning
+	}
+	results, serr := searcher.search(m.tx, query, k)
+	if serr != nil {
+		return nil, serr
+	}
+	// Read-path envelope repair: a capped posting read is proof the posting is
+	// past the split-dispatch envelope with its tail invisible to queries —
+	// the split trigger was lost (every lifecycle that can balloon a posting
+	// re-files on its own, but the cap-hit signal is the regression net for
+	// the whole class). Re-file from here so the envelope heals from reads
+	// instead of trusting every lifecycle forever.
+	if ferr := m.spfreshFileSplitsForCapped(storage, searcher.capped); ferr != nil {
+		return nil, fmt.Errorf("spfresh index %q: read-path split re-file: %w", m.index.Name, ferr)
+	}
+	return results, nil
+}
+
+// spfreshFileSplitsForCapped re-files split tasks for postings whose search
+// fetch hit the 4×Lmax+1 cap. Conflict discipline: queries stay conflict-free
+// in every steady state — the task-row gate is a SNAPSHOT read, so once a
+// split is pending (the whole heal window) queries take no conflict ranges
+// here; only the one query that actually files pays spfreshTaskSetIfAbsent's
+// REAL read + write (the same Set-if-absent the insert-path probe uses — a
+// live claim must not be clobbered). The insert path's csplit starvation
+// guard applies unchanged: issuance stays paused for cells with a pausing
+// coarse split (the csplit move re-files for oversized rows it relocates —
+// the pause-window repair), so the read path cannot re-introduce the
+// fine-split/csplit starvation the pause exists to prevent. A cap-hit on a
+// FORWARD parent files a task the seal step's zombie rule deletes — no
+// special case needed.
+func (m *spfreshIndexMaintainer) spfreshFileSplitsForCapped(storage *spfreshStorage, capped []spfreshRouted) error {
+	seen := make(map[int64]bool, len(capped))
+	for _, rt := range capped {
+		if seen[rt.fineID] {
+			continue
+		}
+		seen[rt.fineID] = true
+		data, gerr := m.tx.Snapshot().Get(storage.taskKey(spfreshTaskSplit, rt.fineID)).Get()
+		if gerr != nil {
+			return gerr
+		}
+		if data != nil {
+			continue // already pending: zero conflict surface taken
+		}
+		// The pause check must run against the fine's CURRENT cell, not the
+		// cell the (possibly stale) cache routed through: a completed coarse
+		// split may have moved the fine into a cell whose own csplit is now
+		// PAUSING, and checking the old cell would file a split straight
+		// through the starvation guard (codex delta P2). Snapshot resolve —
+		// rare path (cap-hit only), and a fine that is gone entirely gets
+		// nothing filed (its lifecycle already retired it).
+		cellID, cerr := spfreshFindCentroidCellSnapshot(m.tx, storage, rt.fineID, rt.cellID)
+		if cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) {
+				continue
+			}
+			return cerr
+		}
+		paused, perr := spfreshCSplitPaused(m.tx.Snapshot(), storage, cellID)
+		if perr != nil {
+			return perr
+		}
+		if paused {
+			continue
+		}
+		filed, terr := spfreshTaskSetIfAbsent(m.tx, storage, spfreshTaskSplit, rt.fineID)
+		if terr != nil {
+			return terr
+		}
+		if filed {
+			m.timer.Increment(CountSPFreshReadPathSplitFiles)
+		}
+	}
+	return nil
 }
 
 // spfreshScanBatchSize is the records-per-transaction limit of the build's
@@ -560,12 +823,24 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		return err
 	}
 
-	// Sample scan (§8 step 1): all records at current scale; reservoir
-	// sampling caps this at production scale.
+	// Sample scan (§8 step 1) with RESERVOIR SAMPLING (algorithm R,
+	// deterministic via the build seed): the coarse k-means only needs a
+	// representative sample — training it on every record made the build's
+	// clustering cost O(N²·r/(avgFill·cellTarget)·d), unbounded in practice
+	// at SIFT-1M. K₀ still derives from the FULL count (totalN below). The
+	// cap keeps ≥ ~30 sample points per coarse centroid up to ~2.5M records;
+	// beyond that, raise the cap or move to hierarchical sampling (§8).
 	var sample [][]float64
+	totalN := 0
+	rng := &splittableRandom{seed: splitMixLong(seed), gamma: goldenGamma}
 	if err := spfreshScanRecordBatches(ctx, db, storeBuilder, index, indexSubspace, spfreshScanBatchSize, nil, func(batch []spfreshBuildInput) error {
 		for _, in := range batch {
-			sample = append(sample, in.vec)
+			if totalN < spfreshCoarseSampleCap {
+				sample = append(sample, in.vec)
+			} else if j := int(uint64(rng.nextLong()) % uint64(totalN+1)); j < spfreshCoarseSampleCap {
+				sample[j] = in.vec
+			}
+			totalN++
 		}
 		return nil
 	}); err != nil {
@@ -630,7 +905,7 @@ func BuildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 	// the coarse table commits (the interleaving contract — see the function
 	// comment). Records saved post-coarse may be staged twice (by themselves
 	// and by this scan); the Sets are idempotent.
-	if berr := builder.coarsePass(ctx, sample, seed); berr != nil {
+	if berr := builder.coarsePass(ctx, sample, totalN, seed); berr != nil {
 		return berr
 	}
 	// The staging writes ride INSIDE each scan transaction: the scan's REAL

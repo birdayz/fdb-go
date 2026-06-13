@@ -35,13 +35,24 @@ const (
 	IndexOptionSPFreshAlpha = "spfreshAlpha"
 	// IndexOptionSPFreshKn is the NPA reassignment neighborhood (centroids).
 	IndexOptionSPFreshKn = "spfreshKn"
+	// IndexOptionSPFreshBuildAssignCells is the bulk-build wave-B assignment
+	// width w_b (RFC-099): how many nearest coarse cells supply candidate fine
+	// centroids when assigning an imported vector. Build-time only — it changes
+	// which fine a vector is assigned to, never the on-disk format. Must be ≥
+	// the query probe width so build assignments are query-reachable.
+	IndexOptionSPFreshBuildAssignCells = "spfreshBuildAssignCells"
 	// IndexOptionSPFreshCooldownSec is the post-split merge cooldown.
 	IndexOptionSPFreshCooldownSec = "spfreshCooldownSec"
 	// IndexOptionSPFreshRaBitQNumExBits is the RaBitQ extended-bits parameter
 	// for posting residual codes.
 	IndexOptionSPFreshRaBitQNumExBits = "spfreshRaBitQNumExBits"
-	// IndexOptionSPFreshSidecar enables the fp16 SIDECAR subspace (re-rank
-	// source). Default true; disabling falls back to source-record reads.
+	// IndexOptionSPFreshSidecar enables the fp16 SIDECAR subspace. Default
+	// true — and currently REQUIRED: the sidecar is not just the query
+	// re-rank source, every rebalancer lifecycle reads it (split 2-means,
+	// chunked drain, merge drain, GC re-home), so disabling it would brick
+	// maintenance permanently. ValidateSPFreshConfig rejects false until a
+	// source-record fallback exists for all of those paths. The option stays
+	// (the wire layout reserves the choice); only the value is constrained.
 	IndexOptionSPFreshSidecar = "spfreshSidecar"
 )
 
@@ -56,16 +67,36 @@ const (
 	spfreshDefaultKn          = 8
 	spfreshDefaultCooldown    = 600 // seconds
 	spfreshDefaultNumExBits   = 1
+	// spfreshDefaultProbeW is the default query probe width w_q (cells probed
+	// per kNN query; newSPFreshSearcher.w).
+	spfreshDefaultProbeW = 32
+	// spfreshDefaultBuildAssignCells: the bulk-build wave-B assignment width
+	// w_b (RFC-099). DERIVED as exactly w_q — the build assigns over the SAME
+	// nearest-cell neighborhood a query for that vector navigates (SPANN
+	// §3.2.1: query and build share the centroid-navigation structure). Two
+	// reasons it is w_q, not larger:
+	//   - codex: w_b > w_q would let the build place a replica in v's cell
+	//     ranked w_q+1..w_b, which a query FOR v (probing only w_q cells)
+	//     never reaches — wasted build work, no recall gain;
+	//   - measured (RFC-099 binding A/B, 200k, ~150 cells): recall@10 is
+	//     IDENTICAL (0.9835) at w_b ∈ {32, 48, flat} even when w_b=32 gathers
+	//     just 21% of cells — the closure's α-bounded replicas span only a few
+	//     cells, so recall is insensitive to w_b above a small floor.
+	// Tying it to spfreshDefaultProbeW (not a separate literal) means a future
+	// query-width sweep moves w_b with it — no silent drift (Graefe).
+	spfreshDefaultBuildAssignCells = spfreshDefaultProbeW
 	// spfreshCSplitDeferLimit: consecutive coarse-split deferrals before
 	// fine-split task issuance for the cell is paused (starvation guard, §6b).
 	spfreshCSplitDeferLimit = 8
 	// spfreshReplyByteBudget is the per-range-reply byte budget the layout is
 	// sized against (FDB REPLY_BYTE_LIMIT, ClientKnobs.cpp:66).
 	spfreshReplyByteBudget = 80000
-	// spfreshTxByteBudget bounds the single-tx split worst case (4×Lmax entries
-	// read + ~2× written) far below FDB's 10 MB transaction limit.
-	spfreshTxByteBudget = 4 << 20
 )
+
+// spfreshTxByteBudget bounds the single-tx split worst case (4×Lmax entries
+// read + ~2× written) far below FDB's 10 MB transaction limit. Variable so
+// the chunked-drain dispatch is testable at small scale.
+var spfreshTxByteBudget = 4 << 20
 
 // SPFreshConfig is the structural configuration of an SPFresh index. Every
 // field here is immutable for an existing index (RFC-094 §10).
@@ -82,6 +113,9 @@ type SPFreshConfig struct {
 	CooldownSec   int     // post-split merge cooldown
 	NumExBits     int     // RaBitQ extended bits for posting residual codes
 	Sidecar       bool    // fp16 sidecar for re-rank
+	// BuildAssignCells is the bulk-build wave-B assignment width w_b (RFC-099):
+	// nearest coarse cells whose fines are candidates per imported vector.
+	BuildAssignCells int
 }
 
 // Lmin returns the merge threshold in entries.
@@ -122,18 +156,19 @@ func (c SPFreshConfig) centroidRowBytes() int {
 // dimensionality.
 func DefaultSPFreshConfig(numDimensions int) SPFreshConfig {
 	return SPFreshConfig{
-		NumDimensions: numDimensions,
-		Metric:        VectorMetricEuclidean,
-		Lmax:          spfreshDefaultLmax,
-		LminRatio:     spfreshDefaultLminRatio,
-		CellTarget:    spfreshDefaultCellTarget,
-		CellMax:       spfreshDefaultCellMax,
-		Replication:   spfreshDefaultReplication,
-		Alpha:         spfreshDefaultAlpha,
-		Kn:            spfreshDefaultKn,
-		CooldownSec:   spfreshDefaultCooldown,
-		NumExBits:     spfreshDefaultNumExBits,
-		Sidecar:       true,
+		NumDimensions:    numDimensions,
+		Metric:           VectorMetricEuclidean,
+		Lmax:             spfreshDefaultLmax,
+		LminRatio:        spfreshDefaultLminRatio,
+		CellTarget:       spfreshDefaultCellTarget,
+		CellMax:          spfreshDefaultCellMax,
+		Replication:      spfreshDefaultReplication,
+		Alpha:            spfreshDefaultAlpha,
+		Kn:               spfreshDefaultKn,
+		CooldownSec:      spfreshDefaultCooldown,
+		NumExBits:        spfreshDefaultNumExBits,
+		Sidecar:          true,
+		BuildAssignCells: spfreshDefaultBuildAssignCells,
 	}
 }
 
@@ -168,11 +203,37 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	if c.Kn < 1 || c.Kn > 64 {
 		return fmt.Errorf("spfresh: kn must be in [1, 64], got %d", c.Kn)
 	}
+	// w_b (RFC-099 build assignment width) just needs to be positive: the
+	// default ties it to the query probe width (build mirrors query), and
+	// recall is empirically insensitive to its exact value above a small floor
+	// (the closure's α-bounded replicas span only a few cells — RFC-099 binding
+	// A/B: recall@10 identical at w_b ∈ {flat, 48, 32} where 32 gathers 5.4% of
+	// cells). A smaller-than-query w_b is permitted (it only narrows the build's
+	// candidate cells, never places an unreachable replica); a larger one only
+	// wastes build work. So the bound is just ≥ 1. CAVEAT (the one regime that
+	// can bite): w_b < Replication gathers fewer cells than the closure wants
+	// diverse replicas, so it can under-replicate — a recall cost, never lost
+	// records, exactly like the insert-path widening cap. Operators forcing
+	// w_b below Replication should expect reduced recall; the default (= w_q ≫
+	// Replication) is the safe value.
+	if c.BuildAssignCells < 1 {
+		return fmt.Errorf("spfresh: buildAssignCells must be >= 1, got %d", c.BuildAssignCells)
+	}
 	if c.CooldownSec < 0 {
 		return fmt.Errorf("spfresh: cooldownSec must be >= 0, got %d", c.CooldownSec)
 	}
 	if c.NumExBits < 0 || c.NumExBits > 8 {
 		return fmt.Errorf("spfresh: raBitQNumExBits must be in [0, 8], got %d", c.NumExBits)
+	}
+	// The sidecar is load-bearing for MAINTENANCE, not just re-rank: split
+	// 2-means, the chunked drain, merge drains, and GC re-homes all read the
+	// fp16 vectors from it and hard-error when a vector is missing. With the
+	// sidecar disabled, the first posting to cross Lmax files a split task
+	// that fails forever and the tenant's whole maintenance pass halts — a
+	// bricked index, not a degraded one. Reject until a source-record
+	// fallback exists for every lifecycle reader.
+	if !c.Sidecar {
+		return fmt.Errorf("spfresh: sidecar=false is not supported — split/merge/GC lifecycles require the fp16 sidecar (no source-record fallback is implemented)")
 	}
 	// One posting = one range reply (RFC-094 §3): Lmax entries must fit the
 	// reply byte budget, or the constant-round-trip query claim is false.
@@ -185,8 +246,10 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 		return fmt.Errorf("spfresh: cellTarget (%d) * centroid row bytes (%d) = %d exceeds the %d-byte range-reply budget — one L2 cell must fit one reply",
 			c.CellTarget, c.centroidRowBytes(), got, spfreshReplyByteBudget)
 	}
-	// Splits are single-transaction by spec — chunking is forbidden (RFC-094
-	// §6): the 4×Lmax inline-split worst case must fit the tx byte budget.
+	// The in-envelope split is single-transaction (RFC-094 §6): the 4×Lmax
+	// worst case must fit the tx byte budget. Postings found PAST the
+	// envelope take the chunked multi-tx drain — this bound is what makes
+	// the single-tx path safe, not a ban on chunking.
 	if got := 4 * c.Lmax * c.postingEntryBytes() * 3; got > spfreshTxByteBudget {
 		return fmt.Errorf("spfresh: worst-case split (4*lmax entries, read+rewrite) = %d bytes exceeds the %d-byte single-transaction budget",
 			got, spfreshTxByteBudget)
@@ -214,6 +277,13 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 			config.Metric = VectorMetricCosine
 		case "DOT_PRODUCT_METRIC":
 			config.Metric = VectorMetricInnerProduct
+		case "EUCLIDEAN_SQUARE_METRIC":
+			// The DDL accepts it for USING SPFRESH (same metric grammar as
+			// HNSW), so the maintainer must honor it — a silent fall-through
+			// to Euclidean made the candidate advertise squared distances
+			// while re-rank returned true L2 (Graefe merge-HEAD F1). Same
+			// kNN ordering; only the reported distance differs.
+			config.Metric = VectorMetricEuclideanSquare
 		}
 	}
 	parseInt := func(key string, dst *int) {
@@ -229,6 +299,7 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	parseInt(IndexOptionSPFreshCellMax, &config.CellMax)
 	parseInt(IndexOptionSPFreshReplication, &config.Replication)
 	parseInt(IndexOptionSPFreshKn, &config.Kn)
+	parseInt(IndexOptionSPFreshBuildAssignCells, &config.BuildAssignCells)
 	parseInt(IndexOptionSPFreshCooldownSec, &config.CooldownSec)
 	parseInt(IndexOptionSPFreshRaBitQNumExBits, &config.NumExBits)
 	if v, ok := index.Options[IndexOptionSPFreshAlpha]; ok {
@@ -243,3 +314,10 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	}
 	return config
 }
+
+// spfreshCoarseSampleCap bounds the coarse-k-means training sample in
+// BuildSPFreshIndex (reservoir sampling past the cap; K₀ still derives from
+// the full record count). 250k keeps ≥ ~30 sample points per coarse centroid
+// up to ~2.5M records — raise it (or add hierarchical sampling, §8) beyond
+// that. Var, not const: scale tests tighten it.
+var spfreshCoarseSampleCap = 250_000

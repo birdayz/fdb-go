@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"sort"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -217,7 +218,7 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 		Expect(err.Error()).To(ContainSubstring("alpha"))
 	})
 
-	It("ScanByDistance before any build reports a clear error", func() {
+	It("ScanByDistance before any build or insert returns zero rows (§6b insert-first)", func() {
 		ks := specSubspace()
 		idx := newIndex("spf_unbuilt")
 		builder := baseMetaData()
@@ -237,9 +238,12 @@ var _ = Describe("SPFresh index maintainer e2e", func() {
 				Low:  tuple.Tuple{SerializeVector([]float64{1, 1})},
 				High: tuple.Tuple{int64(1)},
 			}, nil, ScanProperties{})
-			_, cerr := cursor.OnNext(ctx)
-			Expect(cerr).To(HaveOccurred())
-			Expect(cerr.Error()).To(ContainSubstring("no readable generation"))
+			// 094.1 errored here ('build the index first'); since the §6b
+			// insert-first flow an untouched index is simply EMPTY
+			// (Torvalds 094.4 #2).
+			res, cerr := cursor.OnNext(ctx)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(res.HasNext()).To(BeFalse())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -465,7 +469,7 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 		for i := range inputs {
 			sample[i] = inputs[i].vec
 		}
-		Expect(bld.coarsePass(ctx, sample, 42)).To(Succeed())
+		Expect(bld.coarsePass(ctx, sample, len(sample), 42)).To(Succeed())
 
 		// WINDOW 2 — post-coarse, pre-finalize: the save STAGES itself.
 		save(100, 11, 12)
@@ -503,8 +507,9 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 		Expect(bld.stageBatch(ctx, inputs)).To(Succeed())
 		fineIDs := make(map[int64][]int64)
 		fineVecs := make(map[int64][][]float64)
+		var waveAMu sync.Mutex
 		for _, cellID := range bld.cellIDs {
-			Expect(bld.waveA(ctx, cellID, 42, fineIDs, fineVecs)).To(Succeed())
+			Expect(bld.waveA(ctx, cellID, 42, &waveAMu, fineIDs, fineVecs)).To(Succeed())
 		}
 		router := bld.buildRouter(fineIDs, fineVecs)
 		for _, cellID := range bld.cellIDs {
@@ -598,7 +603,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 				// The coarse pass commits AFTER our read version, BEFORE our
 				// commit (a separate transaction).
 				bld := newSPFreshBuilder(sharedDB, storage, config, "racer")
-				Expect(bld.coarsePass(ctx, [][]float64{{1, 1}, {2, 2}, {100, 100}}, 7)).To(Succeed())
+				Expect(bld.coarsePass(ctx, [][]float64{{1, 1}, {2, 2}, {100, 100}}, 3, 7)).To(Succeed())
 			}
 			sawCoarse = len(ids) > 0
 			// Any write makes this a committing transaction.
@@ -654,7 +659,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		storage := newSPFreshStorage(indexSubspace, 1)
 		config := parseSPFreshConfig(idx)
 		bld := newSPFreshBuilder(sharedDB, storage, config, "ghost-build")
-		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 7)).To(Succeed())
+		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 3, 7)).To(Succeed())
 
 		// Assignment scan in batches of 3; mid-FIRST-batch a delete of record
 		// 2 commits. The staging writes ride INSIDE the scan tx, whose REAL
@@ -714,7 +719,7 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		// routes on must equal the stored row's decode, or a boundary vector
 		// double-stages into different cells on the two paths.
 		sample := [][]float64{{1.0005, 0}, {1.0005, 0}, {500, 500}, {500, 500}}
-		Expect(bld.coarsePass(ctx, sample, 7)).To(Succeed())
+		Expect(bld.coarsePass(ctx, sample, len(sample), 7)).To(Succeed())
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			ids, rows, lerr := spfreshLoadAllCoarse(rtx.Transaction(), storage)

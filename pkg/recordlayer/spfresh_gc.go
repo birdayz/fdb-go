@@ -67,8 +67,18 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 
 	purged := 0
 	quantizer := newSPFreshQuantizer(config)
+	// One routing cache for the whole sweep's re-homes (lazily loaded): a
+	// fullReload per residual entry inside the purge transaction was the
+	// same O(fines)-per-item shape as the NPA reload bomb — and the purge
+	// tx also REAL-reads the posting, so the reloads flirted with the 5s
+	// limit for nothing. Sweep staleness is the same tolerated staleness as
+	// the NPA round cache: spfreshRehome re-verifies every target with a
+	// REAL centroid read before writing.
+	var rehomeRouting *spfreshRoutingCache
 	for _, ref := range fines {
+		didPurge := false
 		err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			didPurge = false
 			tx := rtx.Transaction()
 			cent, cerr := spfreshReadCentroidForWrite(tx, s, ref.cellID, ref.fineID)
 			if cerr != nil {
@@ -107,9 +117,16 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 				if !claims {
 					continue // orphan: cleared with the posting range below
 				}
+				if rehomeRouting == nil {
+					rehomeRouting = newSPFreshRoutingCache(0)
+					if lerr := rehomeRouting.fullReload(tx, s, s.generation); lerr != nil {
+						rehomeRouting = nil
+						return lerr
+					}
+				}
 				// Live residual: re-home to the nearest ACTIVE sibling not
 				// already in the copy-set (the merge-drain rule).
-				if rerr := spfreshRehome(tx, s, config, quantizer, e.pk, ref.fineID, mem); rerr != nil {
+				if rerr := spfreshRehome(tx, s, config, quantizer, rehomeRouting, e.pk, ref.fineID, mem); rerr != nil {
 					return rerr
 				}
 			}
@@ -119,8 +136,10 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 				return rerr
 			}
 			tx.ClearRange(pr)
+			spfreshAudit("gc-clear", ref.cellID, ref.fineID, cent.state)
 			tx.Clear(s.centroidKey(ref.cellID, ref.fineID))
 			tx.Clear(s.counterKey(spfreshCounterFine, ref.fineID))
+			didPurge = true
 			return spfreshAppendDeltas(tx, s, []spfreshDelta{
 				{op: spfreshOpDeadFine, ids: []int64{ref.fineID}},
 			})
@@ -128,11 +147,15 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 		if err != nil {
 			return purged, err
 		}
-		purged++
+		if didPurge {
+			purged++
+		}
 	}
 
 	for _, cellID := range cells {
+		didPurge := false
 		err := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
+			didPurge = false
 			tx := rtx.Transaction()
 			coarse, cerr := spfreshReadCoarseForWrite(tx, s, cellID)
 			if cerr != nil {
@@ -156,6 +179,7 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 			}
 			tx.Clear(s.centroidHDRKey(cellID))
 			tx.Clear(s.coarseKey(cellID))
+			didPurge = true
 			return spfreshAppendDeltas(tx, s, []spfreshDelta{
 				{op: spfreshOpDeadCell, ids: []int64{cellID}},
 			})
@@ -163,7 +187,9 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 		if err != nil {
 			return purged, err
 		}
-		purged++
+		if didPurge {
+			purged++
+		}
 	}
 
 	// Changelog trim: clear entries older than (read version − horizon) and
@@ -209,8 +235,10 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 
 // spfreshRehome moves a live residual copy from a retired posting to the
 // nearest ACTIVE sibling not already in the pk's copy-set (the merge-drain
-// rule, applied at GC time).
-func spfreshRehome(tx fdb.Transaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, pk tuple.Tuple, deadID int64, mem []int64) error {
+// rule, applied at GC time). The routing cache is the sweep-scoped one the
+// caller loaded once (sweep staleness tolerated: every target is REAL-read
+// verified ACTIVE below before anything is written).
+func spfreshRehome(tx fdb.Transaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cache *spfreshRoutingCache, pk tuple.Tuple, deadID int64, mem []int64) error {
 	data, gerr := tx.Get(s.sidecarKey(pk)).Get()
 	if gerr != nil {
 		return gerr
@@ -221,10 +249,6 @@ func spfreshRehome(tx fdb.Transaction, s *spfreshStorage, config SPFreshConfig, 
 	v, derr := vectorcodec.Deserialize(data)
 	if derr != nil {
 		return derr
-	}
-	cache := newSPFreshRoutingCache(0)
-	if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
-		return rerr
 	}
 	routed, rerr := cache.route(tx, s, v, 4, config.Kn)
 	if rerr != nil {

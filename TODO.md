@@ -8,24 +8,41 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ## Known gaps
 
-### [ ] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
+### [ ] fdbgo/client: read-path RPC reply timeout leaks a non-retryable `context.DeadlineExceeded` to applications (C++ divergence)
 
-**A red flake reproduced on UNMODIFIED master — real concurrency bug in the 094.3
-writer-vs-rebalancer stack (PR #282), NOT noise.** Spec: `SPFresh churn: writers vs
-rebalancer — invariants and recall hold after concurrent churn across every lifecycle`
-(`spfresh_churn_test.go:309`). Fingerprint: `live record NNNNN not findable at its own
-vector after churn: got [...six other ids...]; membership=[393217] fine 393217@cell 2
-state=0` — a live record's posting ends up in a fine cell with `state=0` and the
-post-churn search misses it. Repro: `bazelisk test //pkg/recordlayer:recordlayer_test
---test_arg="--ginkgo.focus=SPFresh churn" --runs_per_test=10 --nocache_test_results`
-→ failed run 8/10 on master `60d69bc3` (2026-06-11); also seen once under a full
-`just test` (4-container load). Independent of the RFC-095 wire branch (zero
-recordlayer files in that diff; 18/18 green focused+full runs there — the flake is
-load/seed-dependent both sides). Root-cause in the rebalancer lifecycle (split/merge
-visibility vs concurrent insert — likely the record lands in a cell that is
-concurrently demoted/trimmed without membership re-check), fix, and pin with a
-deterministic interleaving regression. Until fixed this randomly reddens ANY
-pre-commit `just test`.
+`waitReply` (pkg/fdbgo/client/rpc.go:32) returns raw `context.DeadlineExceeded`
+after `DefaultRPCTimeout` (5s, transaction.go:53) when a storage server is slow
+to reply. That Go error is not an `fdb.Error`, so `OnError`/`db.Run` treats it
+as terminal and surfaces it to the APPLICATION — the 10M SPFresh soak died at
+4.9M records on exactly this (`route insert: load cell N: context deadline
+exceeded`) when the single-container storage server stalled ~5s under
+sustained 740 vec/s × 4-writer load. libfdb_c has NO per-request read timeout:
+`getValue`/`getKeyValues` retry transparently against alternatives (with
+backoff) until the read version expires → `transaction_too_old` (1007), which
+IS retryable — a slow-but-alive storage server never produces a terminal
+application error in the C client. Fix in the client read path (retry the
+request on reply timeout instead of returning; the commit path differs —
+`commit_unknown_result` rules apply there), through the fdb-client-review
+gate (C++ is the spec: NativeAPI.actor.cpp getValue/getKeyValues retry
+loops). Found by the 10M SPFresh soak, 2026-06-13.
+
+### [x] TOP — SPFresh churn flake on MASTER: live record not findable after concurrent churn (094.3 race)
+
+**ROOT-CAUSED + FIXED on the 094.4 branch (PR #283): the csplit pause-window orphan.**
+The fingerprint (`membership=[393217] fine 393217@cell 2 state=0` — membership and
+posting entry both present, centroid ACTIVE, search still misses) is the capped-read
+truncation shape: the query path fetches postings with a 4×Lmax+1 cap
+(`spfresh_query.go`), while the invariant checks read uncapped. On master, a posting
+that ballooned past the cap while a pending coarse split PAUSED fine-split issuance
+(`spfreshCSplitPaused` skip in the insert probe) never got its split task re-filed —
+it survived quiescence oversized, and any record whose entry sorted past the cap was
+live-but-unfindable. Fixed by the pause-window repair (csplit move re-files split
+tasks for moved oversized ACTIVE rows, commit a55fec70), pinned deterministically in
+`spfresh_cascade_test.go` ("csplit move re-files split tasks…"). Verified: 45/45
+focused runs green on the branch vs ~1-in-8 red on master. The churn test now also
+asserts post-quiescence that every ACTIVE posting is within the 4×Lmax envelope (the
+search-visibility bound) and its failure diag includes posting size vs cap + sidecar
+presence, so either silent-miss shape self-diagnoses on any recurrence.
 
 ### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 
@@ -913,3 +930,90 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   `client/reply_ground_truth_test.go`), generator now reproduces the hand-fixes that lived in
   DO-NOT-EDIT files (KeyRangeRef swap-inversion, OOM cap), bazel data deps added + every skip in
   the net is now a Fatalf, orphan `wire/conformance_test.go` + dead justfile recipes deleted.
+
+## SPFresh multi-tenant scale-out (RFC-094 follow-up; post-094.5)
+
+The index is tenant-local by construction (per-store subspaces — the CloudKit pattern), so
+100k-tenant fleets are structurally supported: each user is an independent SPFresh index with its
+own topology, counters, changelog, and task queue; per-tenant changelogs also dissolve the
+versionstamped hot-shard concern. The on-disk format and lifecycle algorithms need no changes —
+everything below is infrastructure *around* the index. Items 1–2 are required before pointing a
+real fleet at it; 3–4 harden it.
+
+- [x] **1. Tenant maintenance sweeper.** DONE (SweepSPFreshIndexes + SPFreshHasPendingMaintenance probe + round-budgeted rebalance core; found+fixed the builder Cellfin task-row leak that made every bulk-built index probe permanently busy). Splits/merges/reassignments are caller-driven today
+  (something must call `RebalanceSPFreshIndex` per index — the benchmark runs its own goroutine).
+  Build the background worker fleet that discovers indexes with pending task rows and drives their
+  rebalancing ("find tenants with work, do the work, move on"). Safe concurrent executors are
+  already solved (unique lease owners, task-level exclusion); what's missing is purely the
+  discovery/scheduling layer — which tenants, what order, how often.
+- [x] **2. Routing-cache eviction across tenants.** DONE (idle-TTL 15min + 4096-entry cap with oldest-first eviction and hysteresis, amortized inline in spfreshCacheFor). `spfreshCaches` (process-global, keyed by
+  index subspace + generation) never evicts: touch a tenant once and its cache lives until the
+  process dies. Bounded per tenant (L2 LRU), unbounded across tenants — a serving process handling
+  thousands of users leaks cache memory for its lifetime. Add idle-TTL or a global LRU over the
+  cache map; cold tenants rebuild on next touch.
+- [x] **3. Per-tenant maintenance budgets.** DONE (MaxRoundsPerTenant fairness budget in the sweeper; undrained tenants reported and continued next pass; per-tenant errors isolated via errors.Join). Leases prevent corruption but not starvation: a whale
+  tenant's split storm must not starve 99,999 small tenants' maintenance. The sweeper needs
+  per-tenant work budgets / fair scheduling.
+- [x] **4. Many-tenant aggregate soak.** DONE (TestSPFreshMultiTenantSoak: 20 tenants × 2k vectors, 4 interleaved writers + 2 concurrent sweepers → 1,093 vec/s AGGREGATE — multi-tenancy spreads the conflict surface, beating single-tenant fill 2–5×; worst tenant recall@10 = 1.0000; fleet drained, every probe quiet). Every number so far is single-tenant. Pin the new
+  dimension: N small indexes churning concurrently on one cluster (fill + churn + recall sampling
+  per tenant), watching aggregate conflict rate and sweeper lag.
+- [x] **5. Concurrent-reader QPS measurement.** DONE (SIFT_QPS=G hammer phase in the sweep harness, commit b0432b61; measured at 1M for all 16 sweep configs — frozen defaults 134 QPS@16, fast 374 QPS; post-RNG topology 148/421). All read benchmarks to date were single-threaded
+  latency (25.5ms p50 ⇒ ~39 QPS/thread default, ~106 QPS/thread fast). Queries are stateless
+  snapshot reads off the in-process routing cache and should scale near-linearly with client
+  cores/processes until storage-server read bandwidth (~100–300KB/query). Add a G-goroutine
+  hammer phase to the fill benchmark reporting aggregate QPS per config; also the basis for the
+  10-client scale-out estimate (whitepaper claim: needs measurement, not argument).
+
+## SPFresh recall at scale (spfresh-reviewer findings, 2026-06-10 — pre-094.5-freeze)
+
+Paper-review verdict on the SIFT-1M fixed-probe recall decay (fast budget 0.947@100k →
+0.816@1M; default holds 0.950): three causes, ranked by recall-per-ms. Full review in the
+PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
+
+- [x] **1. Implement ε-pruning (SPANN §3.3; RFC-094 §217/§468).** Landed (SPANN Eq.3
+  query-aware ε-pruning, default-ON ε₂=7.0, kc as cap, starvation widening, per-query
+  override). The 1M ε A/B that pins the recall/latency claim on realistic data is the
+  in-flight sweep (item 2's run carries both).
+- [x] **2. 1M w-sweep + ε A/B + QPS — DONE, defaults frozen (094.5).** Full table in
+  VECTOR_BENCHMARK_RESULTS.md. ε=7.0 measured INERT on SIFT-1M (identical recall/latency
+  on/off — Eq.(3)-faithful, distance concentration; stays default-ON as it's free). F2 is
+  small (+0.7pp from w 8→16 at kc=24, w>16 nil); the decay is F1 kc-tail (0.973 @ kc=128,
+  0.987 @ kc=192, at 2-3× latency). Frozen: default 32/64/200/ε7 (0.952 @ 27.9ms, 134 QPS),
+  fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
+- [x] **3. α-led replication sweep — DONE, measured NEGATIVE (r stays 2).** Four 1M
+  foreground fills: ρ ≈ 1.01/1.01/1.03/1.02 across α² ∈ {1.44, 1.44, 4, 11} (r 2/4/4/4);
+  recall moves ±1pp (variance), r=4 costs ~20% fill throughput for nothing. Closure
+  replication is structurally unavailable at Lmax=256 granularity (cells hold ~170
+  vectors vs the paper's ~6 — a vector sits deep inside one cell and the RNG rule
+  rejects every other centroid as same-direction). Full table + geometry in
+  VECTOR_BENCHMARK_RESULTS.md. The recall ladder beyond ~0.94 at 1M is granularity
+  (item 4), the refinement sweep (item 5), and kc.
+- [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 0.6% centroid ratio
+  (post-RNG: 6,228 lists at 1M) vs paper's 16%: coarser lists make each kc step blunter;
+  Lmax=256 is FDB-reply-budget justified (RFC) so only move it with measurements. Paper
+  ACK rider: ε-inertness on SIFT-1M is a GRANULARITY property, not an Eq.(3) property —
+  Fig. 12's pruning win was measured at 16% centroid ratio, and at 100k granularity our
+  corrected ε already binds (0.990 at −15% latency). If this item moves Lmax/granularity
+  toward Fig. 9's regime, re-measure ε there.
+- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery).** Measured at 1M:
+  a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
+  same code, similar action counts. Writers outrunning the rebalancer assign vectors
+  against a lagging topology; NPA repairs split neighborhoods only, not global drift.
+  A maintenance op that re-runs the closure for sampled/flagged vectors against the
+  CONVERGED topology (an online analog of the bulk build's wave B; SPFresh §3.3's
+  reassignment generalized beyond splits) would recover the gap after bulk-ingest
+  phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
+  the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
+  the fast-filled topology). The α-sweep (item 3) also lifts this floor.
+- [ ] **6. Wave B should route two-level, not flat-scan the fine table.** (Original staging
+  theory was WRONG — 5,000 staging txs fit in ~80s; measured.) The real 1M bulk cost:
+  waveB assign() runs nearestK over ALL ~11.7k fines (12MB, cache-resident it is not)
+  up to 3 bounded pool passes per staged vector — memory-bandwidth-bound, ~15-20 min
+  of the 1M build. Queries route coarse→cell (two-level) for exactly this reason;
+  the build router should do the same: nearest w cells via L1 (245 × 128d), then fines
+  within those cells (~48×w) — ~30× less bandwidth. Bounded-widening semantics carry
+  over unchanged. ALSO still worth checking: staging parallelism (minor, ~80s at 1M).
+  MEASURED before killing: 759% CPU sustained for 54+ min (~7 CPU-hours) on the
+  bounded-pool build at 1M — far past the bandwidth model too. PROFILE FIRST
+  (go test -cpuprofile on a 300k bulk reproduces in minutes) before optimizing;
+  the two-level routing fix is the likely shape but the model has been wrong twice.

@@ -174,7 +174,7 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 
 		// A different owner's rebalancer reclaims the expired lease and
 		// completes the lifecycle (SEAL resumes with the SAME children).
-		worked, err := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "recovery-owner", 7)
+		worked, err := spfreshRebalanceOnce(ctx, sharedDB, storage, config, "recovery-owner", 7, 0, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(worked).To(BeNumerically(">", 0))
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -282,7 +282,7 @@ var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", fu
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-cell", 1, 10)).To(Succeed())
+		Expect(errOnly(spfreshMergeFine(ctx, sharedDB, storage, config, "merge-cell", 1, 10))).To(Succeed())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			cent, cerr := spfreshReadCentroidForWrite(tx, storage, 1, 10)
@@ -338,7 +338,7 @@ var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", fu
 			return nil, terr
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(spfreshCoarseSplit(ctx, sharedDB, storage, config, "gc-test", cellID, 7)).To(Succeed())
+		Expect(errOnly(spfreshCoarseSplit(ctx, sharedDB, storage, config, "gc-test", cellID, 7))).To(Succeed())
 
 		// The tombstone moved with the partition (pre-fix it was dropped:
 		// GC's scan could never find it; its posting HDR leaked forever).

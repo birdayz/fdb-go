@@ -362,11 +362,18 @@ func executeVectorIndexScan(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	efSearch := defaultVectorEfSearch
+	// The default is the INDEX METHOD's own (HNSW efSearch=200; SPFresh's
+	// tuned kc=64 — passing 200 here silently overrode it for every SQL
+	// query, Torvalds 094.4 nit). 0 = "use the maintainer's default"; only
+	// an explicit per-query efSearch overrides it.
+	efSearch := 0
+	if idx.Type == recordlayer.IndexTypeVector {
+		efSearch = defaultVectorEfSearch
+	}
 	if p.GetEfSearch() != nil {
 		efSearch = *p.GetEfSearch()
 	}
-	if efSearch < limit {
+	if efSearch != 0 && efSearch < limit {
 		efSearch = limit
 	}
 

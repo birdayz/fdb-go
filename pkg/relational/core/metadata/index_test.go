@@ -5,6 +5,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
 // Compile-time check that RecordLayerIndex satisfies cascades.IndexDef.
@@ -31,5 +32,34 @@ func TestRecordLayerIndex_IndexDef(t *testing.T) {
 	}
 	if rli.IndexIsUnique() {
 		t.Fatal("should not be unique")
+	}
+}
+
+// TestAddVectorIndexUsingMethodValidation: the method string is case-
+// sensitive everywhere downstream (buildVectorIndex treats anything that is
+// not "SPFRESH" as HNSW), so unknown or mis-cased methods must fail loudly —
+// AddVectorIndexUsing("SPFresh", …) silently building an HNSW index is a
+// quiet misroute a schema author cannot debug (Graefe merge-HEAD F2).
+func TestAddVectorIndexUsingMethodValidation(t *testing.T) {
+	t.Parallel()
+	mk := func(method string) error {
+		b := NewSchemaTemplateBuilder().SetName("vt")
+		b.AddTable("DOCS", []ColumnSpec{
+			NewColumnSpec("ID", api.NewLongType(false), 1),
+			NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 2),
+		}, []string{"ID"})
+		b.AddVectorIndexUsing(method, "DOCS", "V", "EMBEDDING", nil, nil)
+		_, err := b.Build()
+		return err
+	}
+	for _, bad := range []string{"SPFresh", "hnsw", "IVFPQ", ""} {
+		if err := mk(bad); err == nil {
+			t.Errorf("method %q: want a loud rejection, got nil", bad)
+		}
+	}
+	for _, good := range []string{"HNSW", "SPFRESH"} {
+		if err := mk(good); err != nil {
+			t.Errorf("method %q must build: %v", good, err)
+		}
 	}
 }

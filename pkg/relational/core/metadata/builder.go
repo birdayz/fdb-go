@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -47,6 +48,7 @@ type indexSpec struct {
 
 	// VECTOR (HNSW) index fields — set only when vector is true.
 	vector           bool
+	vectorMethod     string
 	vectorColumn     string            // the indexed vector field
 	partitionColumns []string          // HNSW partition prefix (independent graph per partition)
 	numDimensions    int               // derived from the column's VECTOR type
@@ -192,7 +194,30 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 // Mirrors Java's DdlVisitor.visitVectorIndexDefinition, which requires
 // exactly one indexed column of VECTOR type and derives
 // HNSW_NUM_DIMENSIONS from the column's VectorType.
+// AddVectorIndex registers an HNSW vector index (the default method).
 func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	return b.AddVectorIndexUsing("HNSW", tableName, indexName, vectorColumn, partitionColumns, options)
+}
+
+// AddVectorIndexUsing registers a vector index with an explicit method:
+// "HNSW" (graph, Java-compatible wire format) or "SPFRESH" (RFC-094
+// centroid+posting-list, Go-native). SPFresh does not support PARTITION BY.
+func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn string, partitionColumns []string, options map[string]string) *Builder {
+	// The method is case-sensitive everywhere downstream (buildVectorIndex
+	// treats anything that is not "SPFRESH" as HNSW), so an unknown or
+	// mis-cased method must fail loudly here — AddVectorIndexUsing("SPFresh",
+	// …) silently building an HNSW index is exactly the kind of quiet
+	// misroute a schema author cannot debug (Graefe merge-HEAD F2).
+	if method != "HNSW" && method != "SPFRESH" {
+		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"vector index %q: unknown method %q (want HNSW or SPFRESH)", indexName, method))
+		return b
+	}
+	if method == "SPFRESH" && len(partitionColumns) > 0 {
+		b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"vector index %q: PARTITION BY is not supported with USING SPFRESH", indexName))
+		return b
+	}
 	for i := range b.tables {
 		if b.tables[i].name != tableName {
 			continue
@@ -226,6 +251,7 @@ func (b *Builder) AddVectorIndex(tableName, indexName, vectorColumn string, part
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:             indexName,
 			vector:           true,
+			vectorMethod:     method,
 			vectorColumn:     vectorColumn,
 			partitionColumns: partitionColumns,
 			numDimensions:    vt.Dimensions(),
@@ -500,6 +526,17 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 	}
 	root := recordlayer.KeyWithValue(inner, len(idx.partitionColumns))
 
+	if idx.vectorMethod == "SPFRESH" {
+		rl := recordlayer.NewIndex(idx.name, root)
+		rl.Type = recordlayer.IndexTypeVectorSPFresh
+		rl.Options = map[string]string{
+			recordlayer.IndexOptionSPFreshNumDimensions: fmt.Sprintf("%d", idx.numDimensions),
+		}
+		for k, v := range idx.options {
+			rl.Options[k] = v
+		}
+		return rl, nil
+	}
 	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
 	for k, v := range idx.options {
 		rl.Options[k] = v
