@@ -40,13 +40,20 @@ scalar ops where the 4-lane f64 does 4, but over half as many loop iterations:
 **memory bandwidth**, and only when the working set exceeds L3 (the 1.26× row).
 
 The build's dominant cost — the two-level wave-B **assign** path (RFC-099) —
-gathers `w_b` cells' fines (~`w_b × cellTarget` ≈ 32×25–200 centroids,
-≤ ~6.5 MB), which is **L3-resident ⇒ compute-bound ⇒ float32 buys nothing
-(1.00×)**. Only the coarse-k-means pass over all 1M points (≈1 GB, streamed)
-is bandwidth-bound, where f32 would give ~1.25× on a ~20–30 s slice of a ~190 s
-build ⇒ **~3 % whole-build**, in exchange for migrating the entire build path
-from `[][]float64` to `[][]float32` and re-pinning every determinism test
-(the float-reduction order changes). Poor ROI; rejected.
+gathers `w_b` cells' fines (~`w_b × cellTarget` ≈ 32×48 ≈ 1.5 MB at 1M
+defaults), which is **L3-resident ⇒ compute-bound ⇒ float32 buys nothing
+(1.00×)**. The coarse-k-means pass streams all 1M points (≈1 GB) but is ALSO
+compute-bound at production defaults, not bandwidth-bound: the reused centroid
+set is only k₀≈246 vectors ≈ 0.2 MB (fits L1/L2), and each point is read once
+and reused across all 246 centroid comparisons (246×128 flops/point), so the
+point-stream bandwidth is amortized away. So float32's only measured win (1.13–
+1.26× in a synthetic >L3 all-distinct micro-bench) does **not** apply to the real
+coarse pass either — the true whole-build f32 win is **≤3 %, leaning lower**, in
+exchange for migrating the entire build path from `[][]float64` to `[][]float32`
+and re-pinning every determinism test (the float-reduction order changes). Poor
+ROI; rejected. (The k-means *compute* cost is real and dominant — 34.6 % of build
+CPU in profile — but the lever there is fewer distances via Hamerly bound pruning
+in pure deterministic Go, RFC-102, not a float32 constant factor.)
 
 ## Why SIMD is deferred (not "never")
 
