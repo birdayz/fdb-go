@@ -1009,7 +1009,11 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   (no-regress). Codex's r1 NAK (budget bounded moves not pks; retry double-count)
   fixed in 1c1af82d, each bug pinned by an FDB regression proven to fail on the
   pre-fix code (budget-bounds, retryOnceTransactor double-count, lifecycle-fence
-  A/B). Original investigation/measurements below. SIFT-300k A/B (full table
+  A/B). Wired into the fleet: `RefineSPFreshIndexes` (spfresh_refine.go) is the
+  refinement loop beside the rebalancer loop — one budgeted pass per tenant,
+  per-tenant error isolation + ctx cancel + Converged reporting, mirroring
+  SweepSPFreshIndexes (FDB specs: drift recovery across tenants, error isolation,
+  cancellation). Original investigation/measurements below. SIFT-300k A/B (full table
   in VECTOR_BENCHMARK_RESULTS.md): fast fill (8 writers, 533 vec/s) vs bulk build of the
   SAME data — recall fast 0.8720 vs 0.9205 (−4.9pp), default 0.9685 vs 0.9880 (−1.9pp);
   the fill topology is under-developed (55 cells/1755 fines/**1.00× replication** vs

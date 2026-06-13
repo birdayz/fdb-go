@@ -97,7 +97,8 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		return storeBuilder
 	}
 
-	DescribeTable("a converged bulk index refines to ZERO moves",
+	DescribeTable(
+		"a converged bulk index refines to ZERO moves",
 		func(replication int) {
 			ks := specSubspace()
 			name := "spf_refine_r" + strconv.Itoa(replication)
@@ -113,10 +114,10 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 			// has more replicas to lose, so it gates kc harder.
 			total := 0
 			for {
-				m, wrapped, rerr := RefineSPFreshIndex(ctx, sharedDB, storeBuilder, name, 1000)
+				m, converged, rerr := RefineSPFreshIndex(ctx, sharedDB, storeBuilder, name, 1000)
 				Expect(rerr).NotTo(HaveOccurred())
 				total += m
-				if wrapped {
+				if converged {
 					break
 				}
 			}
@@ -139,18 +140,60 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		md := buildMeta(idx)
 		storeBuilder := buildConverged(ks, md, "spf_refine_budget", 120)
 
-		m1, w1, err := RefineSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_refine_budget", 50)
+		m1, conv1, err := RefineSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_refine_budget", 50)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(m1).To(Equal(0))
-		Expect(w1).To(BeFalse(), "budget<n must not cover the whole keyspace in one call (budget bounds pks, not moves)")
+		Expect(conv1).To(BeFalse(), "budget<n must not complete a cycle in one call (budget bounds pks, not moves)")
 
 		calls := 1
-		for !w1 {
-			_, w1, err = RefineSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_refine_budget", 50)
+		conv := conv1
+		for !conv {
+			_, conv, err = RefineSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_refine_budget", 50)
 			Expect(err).NotTo(HaveOccurred())
 			calls++
 		}
-		Expect(calls).To(Equal(3), "ceil(120/50) calls of budget 50 to cover the keyspace")
+		Expect(calls).To(Equal(3), "ceil(120/50) calls of budget 50 to cover the keyspace (converged index ⇒ wrap = converge)")
+	})
+
+	It("does not report convergence until a FULL cycle is quiet (budget < n)", func() {
+		// Convergence is a CYCLE property, not a pass property. With budget < n a
+		// cursor cycle spans several passes; if an early pass moves rows and the
+		// wrapping tail pass moves none, the tenant is NOT converged — a per-pass
+		// "wrapped && moved==0" signal would falsely say so and make a fleet caller
+		// back off a still-drifting tenant (codex fleet P2).
+		ks := specSubspace()
+		idx := newVecIndex("spf_refine_cycle", 2)
+		md := buildMeta(idx)
+		storeBuilder := buildConverged(ks, md, "spf_refine_cycle", 120)
+
+		s, cfg, err := spfreshResolveRefineTarget(ctx, sharedDB, storeBuilder, "spf_refine_cycle")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s).NotTo(BeNil())
+		cache, err := spfreshLoadRefineCache(ctx, sharedDB, s)
+		Expect(err).NotTo(HaveOccurred())
+		plans := findCopyDrops(ctx, s, cfg, cache, 1)
+		Expect(plans).To(HaveLen(1))
+		// The dropped pk must fall in the FIRST budgeted pass so the wrapping tail
+		// pass itself moves nothing — that is the exact case the per-pass signal got
+		// wrong. (findCopyDrops returns the lowest-key qualifying pk; assert it.)
+		Expect(plans[0].pk[0].(int64)).To(BeNumerically("<", 80))
+		dropCopies(ctx, s, plans, -1 /* seal none */)
+
+		type passResult struct {
+			moved int
+			conv  bool
+		}
+		var passes []passResult
+		for i := 0; i < 4; i++ { // budget=80 over n=120 ⇒ two passes per cycle, two cycles
+			m, conv, perr := RefineSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_refine_cycle", 80)
+			Expect(perr).NotTo(HaveOccurred())
+			passes = append(passes, passResult{m, conv})
+		}
+		Expect(passes[0].moved+passes[1].moved).To(Equal(1), "cycle 1 re-adds the one dropped copy")
+		Expect(passes[2].moved+passes[3].moved).To(Equal(0), "cycle 2 is quiescent")
+		Expect(passes[0].conv).To(BeFalse(), "a mid-cycle pass never reports converged")
+		Expect(passes[1].conv).To(BeFalse(), "cycle 1's tail pass moved zero but the CYCLE moved a row — NOT converged (codex fleet P2)")
+		Expect(passes[3].conv).To(BeTrue(), "cycle 2 wraps with the whole cycle quiet ⇒ converged")
 	})
 
 	It("never double-counts a move when the batch tx conflict-retries", func() {

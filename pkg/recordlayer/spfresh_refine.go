@@ -231,49 +231,59 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 // --- Budgeted online op (RFC-104 production) -------------------------------
 
 // spfreshRefineCursor is the persisted round-robin position: the generation it
-// belongs to (a rebuild/retrain flips it → the cursor resets) and the raw
-// membership-relative key bytes to resume after (nil = start of the keyspace).
+// belongs to (a rebuild/retrain flips it → the cursor resets), the moves
+// accumulated SINCE the last wrap (so convergence is judged over a full cursor
+// CYCLE, not one budgeted pass — a tenant with n > budget completes a cycle over
+// several passes; an early pass can move rows while the wrapping tail pass moves
+// none, codex), and the raw membership-relative key bytes to resume after (nil =
+// start of the keyspace). Format: [generation:8 LE][movedSinceWrap:8 LE][after...].
 type spfreshRefineCursor struct {
-	generation int64
-	after      []byte // relative membership key of the last refined pk, or nil
+	generation     int64
+	movedSinceWrap int64
+	after          []byte // relative membership key of the last refined pk, or nil
 }
 
 func (s *spfreshStorage) refineCursorKey() fdb.Key { return s.metaKey(spfreshMetaRefineCursor) }
 
 // spfreshReadRefineCursor reads the persisted cursor, resetting to the start of
-// the current generation if absent or stamped with a stale generation.
+// the current generation (movedSinceWrap=0) if absent, too short, or stamped with
+// a stale generation.
 func spfreshReadRefineCursor(tx fdb.ReadTransaction, s *spfreshStorage) (spfreshRefineCursor, error) {
 	data, err := tx.Get(s.refineCursorKey()).Get()
 	if err != nil {
 		return spfreshRefineCursor{}, err
 	}
 	cur := spfreshRefineCursor{generation: s.generation}
-	if data == nil || len(data) < 8 {
+	if data == nil || len(data) < 16 {
 		return cur, nil
 	}
 	if int64(binary.LittleEndian.Uint64(data[:8])) != s.generation {
 		return cur, nil // stale generation → restart this generation
 	}
-	if len(data) > 8 {
-		cur.after = append([]byte(nil), data[8:]...)
+	cur.movedSinceWrap = int64(binary.LittleEndian.Uint64(data[8:16]))
+	if len(data) > 16 {
+		cur.after = append([]byte(nil), data[16:]...)
 	}
 	return cur, nil
 }
 
 func spfreshWriteRefineCursor(tx fdb.Transaction, s *spfreshStorage, cur spfreshRefineCursor) {
-	buf := make([]byte, 8+len(cur.after))
+	buf := make([]byte, 16+len(cur.after))
 	binary.LittleEndian.PutUint64(buf[:8], uint64(cur.generation))
-	copy(buf[8:], cur.after)
+	binary.LittleEndian.PutUint64(buf[8:16], uint64(cur.movedSinceWrap))
+	copy(buf[16:], cur.after)
 	tx.Set(s.refineCursorKey(), buf)
 }
 
 // spfreshRefineRound runs ONE budgeted refinement pass: it resumes the persisted
 // cursor, re-evaluates up to `budget` pks against the current topology, moves the
 // changed ones, and advances+persists the cursor (wrapping to the start when it
-// reaches the end). Returns (moves, wrapped). It does NOT drain to quiescence —
-// the caller loops on its own cadence (one full cursor cycle with zero moves =
-// converged). Cursor advance is idempotent under commit_unknown and tolerates
-// benign double-coverage across executors (every move is idempotent).
+// reaches the end). Returns (moves, cycleConverged): cycleConverged is true only
+// when this pass WRAPS and the whole cursor cycle since the last wrap moved
+// nothing — the honest convergence signal even when n > budget spreads a cycle
+// across several passes (codex). It does NOT drain to quiescence — the caller
+// loops on its own cadence. Cursor advance is idempotent under commit_unknown and
+// tolerates benign double-coverage across executors (every move is idempotent).
 func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage, config SPFreshConfig, budget int) (int, bool, error) {
 	cache, err := spfreshLoadRefineCache(ctx, db, s)
 	if err != nil {
@@ -307,9 +317,14 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 	// low-move index does few moves but must still return promptly and advance
 	// the cursor incrementally — otherwise the first call on a large quiescent
 	// index would walk the entire membership keyspace before returning (codex
-	// rfc104-impl P1). `moved` is only the reported move count.
+	// rfc104-impl P1). `moved` is only the reported per-pass move count.
 	processed := 0
-	wrapped := false
+	// sinceWrap accumulates moves over the WHOLE cursor cycle (across earlier
+	// passes since the last wrap, carried in the cursor): convergence is judged on
+	// it, not the per-pass `moved`, so a budgeted tenant whose tail pass happens to
+	// move nothing isn't falsely declared converged (codex fleet P2).
+	sinceWrap := cur.movedSinceWrap
+	cycleConverged := false
 	for processed < budget {
 		want := min(spfreshRefineMoveBatch, budget-processed)
 		var pks []tuple.Tuple
@@ -356,25 +371,30 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 			}
 			next := spfreshRefineCursor{generation: s.generation}
 			if short {
-				next.after = nil // reached the end: wrap to start
+				next.after = nil        // reached the end: wrap to start
+				next.movedSinceWrap = 0 // new cycle begins: reset the accumulator
 			} else {
 				next.after = lastRel
+				next.movedSinceWrap = sinceWrap + int64(batchMoved) // carry the cycle total
 			}
 			spfreshWriteRefineCursor(tx, s, next)
 			return nil
 		}); rerr != nil {
-			return moved, wrapped, fmt.Errorf("spfresh refine round: %w", rerr)
+			return moved, cycleConverged, fmt.Errorf("spfresh refine round: %w", rerr)
 		}
 		// Commit succeeded: fold in the committed attempt's moves and pks once.
 		moved += batchMoved
 		processed += len(pks)
+		sinceWrap += int64(batchMoved)
 		if short {
-			wrapped = true
-			break // wrapped to start; stop this round here (next round resumes at the head)
+			// Cycle complete: it moved `sinceWrap` rows in total (this pass plus the
+			// earlier passes since the last wrap). Converged iff that total is zero.
+			cycleConverged = sinceWrap == 0
+			break // wrapped to start; the next round resumes at the head of a fresh cycle
 		}
 		begin = append(append(append(fdb.Key{}, prefix...), lastRel...), 0x00)
 	}
-	return moved, wrapped, nil
+	return moved, cycleConverged, nil
 }
 
 // RefineSPFreshIndex runs ONE budgeted refinement pass over the index (RFC-104):
@@ -382,16 +402,18 @@ func spfreshRefineRound(ctx context.Context, db *FDBDatabase, s *spfreshStorage,
 // re-routing each against the current topology and moving the stale ones to
 // recover the closure replication fast ingest never fired. It does NOT drain to
 // quiescence — the deployment runs it on its own cadence (a refinement loop
-// beside the rebalancer loop); one full cursor cycle with zero moves = converged.
-// Returns (moves, wrapped) where wrapped is true when this call reached the end
-// of the membership keyspace and reset the cursor.
+// beside the rebalancer loop). Returns (moves, cycleConverged): cycleConverged is
+// true when this call wrapped the cursor AND the whole cycle since the last wrap
+// moved nothing — the signal a caller uses to back off a converged tenant. It is
+// NOT merely "this pass reached the end": a budgeted pass whose tail moves zero
+// does not imply the cycle's earlier passes did (codex).
 func RefineSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), indexName string, budget int) (int, bool, error) {
 	s, config, err := spfreshResolveRefineTarget(ctx, db, storeBuilder, indexName)
 	if err != nil {
 		return 0, false, err
 	}
 	if s == nil {
-		return 0, true, nil // not bootstrapped: nothing to refine
+		return 0, true, nil // not bootstrapped: nothing to refine (vacuously converged)
 	}
 	if budget <= 0 {
 		budget = spfreshRefineMoveBatch
@@ -460,14 +482,14 @@ func RefineSPFreshIndexes(ctx context.Context, db *FDBDatabase, tenants []SPFres
 		if ctx.Err() != nil {
 			return result, errors.Join(append(errs, ctx.Err())...)
 		}
-		moved, wrapped, err := RefineSPFreshIndex(ctx, db, tenant.StoreBuilder, tenant.IndexName, budget)
+		moved, cycleConverged, err := RefineSPFreshIndex(ctx, db, tenant.StoreBuilder, tenant.IndexName, budget)
 		result.Moves += moved
 		if err != nil {
 			errs = append(errs, fmt.Errorf("refine %q: %w", tenant.IndexName, err))
 			continue
 		}
 		result.Refined++
-		if wrapped && moved == 0 {
+		if cycleConverged {
 			result.Converged++
 		}
 	}
