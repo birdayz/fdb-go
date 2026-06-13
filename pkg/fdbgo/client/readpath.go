@@ -127,12 +127,16 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 		orEqual = replyOrEqual
 		offset = replyOffset
 	}
-	// Wrong-shard retry budget exhausted: surface a RETRYABLE
-	// transaction_too_old rather than terminal all_alternatives_failed — the
-	// read path must never propagate all_alternatives_failed to the
-	// application (it retries reads; client_test pins 1006 as non-retryable
-	// at OnError precisely because the read path absorbs it).
-	return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+	// Loop exhausted. Unlike getValue/getRange, this loop is also consumed by
+	// SUCCESSFUL partial selector resolutions (a selector whose offset crosses
+	// many shard boundaries advances here without any error), so this exit is
+	// NOT necessarily a retry-worthy failure — making it retryable would let
+	// Transact re-run a deep selector and hit the same client-side cap until
+	// the caller's context expires (codex). Keep the pre-existing
+	// non-retryable terminal error; the timeout path already returns a
+	// retryable transaction_too_old from inside the loop, so no timeout leaks
+	// through here.
+	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // sendGetKey sends a GetKeyRequest and returns the full KeySelector from the reply.
@@ -408,6 +412,14 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			val, err := tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
 			if err == nil {
 				return val, nil
+			}
+			// A fallback server that is slow-but-alive must surface the
+			// timeout, not be flattened to 1006: result.err below holds only
+			// the ORIGINAL hedge error, so a fallback reply timeout would
+			// otherwise be lost and the slow server re-tried on the
+			// wrong-shard budget with a pointless cache invalidation (codex).
+			if isReplyTimeout(err) {
+				return nil, err
 			}
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				return nil, err
