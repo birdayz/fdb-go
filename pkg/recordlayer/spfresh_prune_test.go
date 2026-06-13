@@ -128,4 +128,80 @@ var _ = Describe("SPFresh ε-pruning", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("widens past the rerank budget when k > c (large-k under pruning)", func() {
+		// codex full-PR P2: the starvation widening gated on s.c (the rerank
+		// budget), but the re-rank keeps cTop = max(s.c, k). With k > s.c a
+		// pruned query stopped widening once the probe set filled s.c and
+		// returned FEWER than k rows despite enough indexed records. Here the
+		// probe set (3-vector origin cluster) exceeds a small c but is < k, and
+		// the answer lives in the pruned far cluster — without the fix the query
+		// returns 3, not k.
+		config := DefaultSPFreshConfig(2)
+		config.Lmax = 4
+		storage := newSPFreshStorage(specSubspace().Sub("spfresh-prune").Sub("largek"), 1)
+
+		var inputs []spfreshBuildInput
+		var all [][]float64
+		id := int64(1)
+		for i := 0; i < 3; i++ {
+			v := []float64{float64(i) * 0.1, float64(i) * 0.1}
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: v})
+			all = append(all, v)
+			id++
+		}
+		for i := 0; i < 10; i++ {
+			v := []float64{50 + float64(i%4)*0.1, 50 + float64(i/4)*0.1}
+			inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: v})
+			all = append(all, v)
+			id++
+		}
+		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-largek")
+		Expect(builder.build(ctx, inputs, 7)).To(Succeed())
+
+		query := []float64{0, 0}
+		k := 8
+		type cand struct {
+			id int64
+			d2 float64
+		}
+		var truth []cand
+		for i, v := range all {
+			rtv, rerr := vectorcodecRoundtrip(v)
+			Expect(rerr).NotTo(HaveOccurred())
+			truth = append(truth, cand{id: int64(i + 1), d2: spfreshSquaredDistance(query, rtv)})
+		}
+		sort.Slice(truth, func(i, j int) bool {
+			if truth[i].d2 != truth[j].d2 {
+				return truth[i].d2 < truth[j].d2
+			}
+			return truth[i].id < truth[j].id
+		})
+		want := map[int64]bool{}
+		for _, c := range truth[:k] {
+			want[c.id] = true
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			cache := newSPFreshRoutingCache(0)
+			Expect(cache.fullReload(tx, storage, 1)).To(Succeed())
+			searcher := newSPFreshSearcher(storage, config, cache)
+			searcher.kc = 32
+			searcher.epsilon = 0.0001 // prune the far cluster's lists
+			searcher.c = 1            // rerank budget BELOW k — the codex k>c case
+			results, serr := searcher.search(tx, query, k)
+			if serr != nil {
+				return nil, serr
+			}
+			Expect(results).To(HaveLen(k),
+				"k > c must still widen into the pruned tail and return k rows")
+			for _, r := range results {
+				Expect(want[r.PrimaryKey[0].(int64)]).To(BeTrue(),
+					"large-k widened search must return the true nearest neighbors")
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

@@ -502,9 +502,16 @@ func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, own
 // spfreshAppendDeltas writes the deltas with versionstamped keys; the 2-byte
 // user-version disambiguates multiple entries in one transaction (RFC-094 §3;
 // FDB-author r3 #6).
+// spfreshMaxDeltasPerTx is the changelog's single-transaction delta cap: the
+// versionstamp user-version that disambiguates entries in one tx is 2 bytes, so
+// at most 65536 deltas (indices 0..0xffff) fit one transaction. Callers that
+// could exceed it (e.g. coarsePass at ~267M records) must guard up-front with a
+// clear message rather than fall into the generic error here.
+const spfreshMaxDeltasPerTx = 0x10000 // 65536
+
 func spfreshAppendDeltas(tx fdb.Transaction, s *spfreshStorage, deltas []spfreshDelta) error {
 	for i, d := range deltas {
-		if i > 0xffff {
+		if i >= spfreshMaxDeltasPerTx {
 			return fmt.Errorf("spfresh: too many deltas in one tx: %d", len(deltas))
 		}
 		key, err := s.changelog.PackWithVersionstamp(tuple.Tuple{tuple.IncompleteVersionstamp(uint16(i))})

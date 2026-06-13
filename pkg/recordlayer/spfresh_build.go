@@ -112,6 +112,17 @@ func (b *spfreshBuilder) coarsePass(ctx context.Context, sample [][]float64, tot
 	if k0 < 1 {
 		k0 = 1
 	}
+	if k0 > spfreshMaxDeltasPerTx {
+		// coarsePass writes one changelog delta per cell in ONE transaction
+		// (idempotent under retry); the changelog's 2-byte user-version caps a
+		// tx at spfreshMaxDeltasPerTx deltas. At defaults that is ~267M records
+		// — BELOW the K0>sample cliff (~1.0B) — so guard it here with a clear
+		// message instead of failing deep in spfreshAppendDeltas with a generic
+		// "too many deltas". Lifting it needs the coarse-table commit to chunk
+		// the changelog across transactions (not yet implemented) (codex).
+		return fmt.Errorf("spfresh build: K0 %d exceeds the single-tx changelog limit (%d cells); the coarse-table build does not yet chunk the changelog across transactions",
+			k0, spfreshMaxDeltasPerTx)
+	}
 	if k0 > len(sample) {
 		// The k > n clamp in spfreshKMeans would silently shrink the very
 		// topology K₀-from-totalN exists to protect. This is the hard cliff

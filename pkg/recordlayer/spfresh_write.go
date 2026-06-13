@@ -669,6 +669,9 @@ func SPFreshDebugIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 			pks = append(pks, pk)
 		}
 	}
+	if sample <= 0 {
+		sample = 1 // a non-positive sample would divide-by-zero the stride (codex)
+	}
 	step := len(pks) / sample
 	if step < 1 {
 		step = 1

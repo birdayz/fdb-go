@@ -224,8 +224,16 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 	}
 	// ε-pruning starvation widening (RFC-094 §4): if the pruned probe set
 	// can't fill the re-rank budget, fetch the pruned tail too — one extra
-	// burst, only on starved queries, never beyond the kc cap.
-	if len(pruned) > 0 && len(best) < s.c {
+	// burst, only on starved queries, never beyond the kc cap. The budget is
+	// the SAME cTop the re-rank keeps below (max(s.c, k)): gating on s.c alone
+	// skipped the pruned tail once the probe set hit the rerank budget, so a
+	// k > s.c scan could return fewer than k rows even with enough records in
+	// the pruned postings (codex). cTop is reused at the top-C cut below.
+	cTop := s.c
+	if cTop < k {
+		cTop = k
+	}
+	if len(pruned) > 0 && len(best) < cTop {
 		s.timer.Increment(CountSPFreshStarvationWiden)
 		if err := fetchAndScore(pruned); err != nil {
 			return nil, err
@@ -294,10 +302,7 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		}
 		return strings.Compare(a.span, b.span)
 	})
-	cTop := s.c
-	if cTop < k {
-		cTop = k
-	}
+	// cTop = max(s.c, k), computed above for the starvation budget.
 	if cTop < len(hits) {
 		hits = hits[:cTop]
 	}
