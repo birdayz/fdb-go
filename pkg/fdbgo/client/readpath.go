@@ -32,6 +32,15 @@ const (
 	// backstop against a wedged connection, not the primary bound. On
 	// exhaustion the read path surfaces a RETRYABLE transaction_too_old.
 	maxReadTimeoutRetries = 10
+	// maxSelectorResolutionSteps bounds the number of SUCCESSFUL partial
+	// selector resolutions in getKey (each crosses one shard boundary). A
+	// legitimate deep selector crosses at most one shard per resolution and
+	// converges; this generous cap (far above any realistic cluster shard
+	// count touched by one selector) only trips on a non-converging selector
+	// or a misbehaving server — a non-retryable terminal condition, not a
+	// transient one. C++ has no such cap (it relies on the transaction
+	// timeout); this is the bounded-client analog.
+	maxSelectorResolutionSteps = 1000
 )
 
 // readRPCTimeout is the per-RPC reply timeout for this transaction's reads:
@@ -67,8 +76,20 @@ var allKeysEnd = []byte{0xFF, 0xFF}
 // re-issue the request with the updated selector.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
-	timeoutRetries := 0
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+	// Three independent budgets, because getKey's loop iterates for two
+	// unrelated reasons (codex): successful partial selector resolutions
+	// (PROGRESS — a deep selector legitimately crosses many shards) and error
+	// retries. Conflating them in one counter forced an impossible choice —
+	// retryable exhaustion infinite-loops a deep selector, non-retryable
+	// exhaustion aborts a transient wrong-shard storm. Separate them:
+	//   - shardRetries (wrong_shard/all_alternatives) and timeoutRetries are
+	//     transient error retries → exhaustion is RETRYABLE transaction_too_old
+	//     (consistent with getValue/getRange);
+	//   - progressSteps bounds total successful resolutions → exhaustion is a
+	//     genuinely stuck/pathological selector (or a misbehaving server), a
+	//     NON-retryable terminal error (retrying re-hits the same cap).
+	timeoutRetries, shardRetries, progressSteps := 0, 0, 0
+	for {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
 		// These checks are INSIDE the loop (matching C++) because the selector
@@ -100,13 +121,19 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 				if timeoutRetries > maxReadTimeoutRetries {
 					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 				}
-				attempts--
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 					return nil, err
 				}
 				continue
 			}
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				shardRetries++
+				if shardRetries > MaxWrongShardRetries {
+					// Transient routing error exhausted: retry the whole txn
+					// with a fresh read version (consistent with getValue/
+					// getRange; the read path never surfaces 1006 to the app).
+					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
+				}
 				tx.db.locCache.invalidate(selectorKey, tx.tenantId)
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 					return nil, err
@@ -126,17 +153,14 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 		selectorKey = replyKey
 		orEqual = replyOrEqual
 		offset = replyOffset
+		progressSteps++
+		if progressSteps > maxSelectorResolutionSteps {
+			// The selector keeps resolving without converging — a pathological
+			// selector or a misbehaving server, NOT a transient condition.
+			// Non-retryable: a fresh read version would re-hit the same cap.
+			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		}
 	}
-	// Loop exhausted. Unlike getValue/getRange, this loop is also consumed by
-	// SUCCESSFUL partial selector resolutions (a selector whose offset crosses
-	// many shard boundaries advances here without any error), so this exit is
-	// NOT necessarily a retry-worthy failure — making it retryable would let
-	// Transact re-run a deep selector and hit the same client-side cap until
-	// the caller's context expires (codex). Keep the pre-existing
-	// non-retryable terminal error; the timeout path already returns a
-	// retryable transaction_too_old from inside the loop, so no timeout leaks
-	// through here.
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // sendGetKey sends a GetKeyRequest and returns the full KeySelector from the reply.
@@ -405,6 +429,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	}
 	if result.err != nil {
 		// Hedge failed — fall back to remaining servers sequentially.
+		// A reply timeout from any arm (hedge or a fallback) is REMEMBERED but
+		// does NOT stop the scan: a later replica may be healthy, and one slow
+		// server must not pre-empt an available one (codex). Only a definitive
+		// wrong_shard/all_alternatives reply ends the scan (all alternatives
+		// share the shard assignment, so re-locating is the right response).
+		sawTimeout := isReplyTimeout(result.err)
 		for i, server := range servers {
 			if i == bestIdx || i == secondIdx {
 				continue // already tried
@@ -413,23 +443,20 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			if err == nil {
 				return val, nil
 			}
-			// A fallback server that is slow-but-alive must surface the
-			// timeout, not be flattened to 1006: result.err below holds only
-			// the ORIGINAL hedge error, so a fallback reply timeout would
-			// otherwise be lost and the slow server re-tried on the
-			// wrong-shard budget with a pointless cache invalidation (codex).
 			if isReplyTimeout(err) {
-				return nil, err
+				sawTimeout = true
+				continue // remember it, keep trying healthy replicas
 			}
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				return nil, err
 			}
 		}
-		// Preserve a reply timeout so getValue re-sends without a pointless
-		// cache invalidation (the location is fine, the server was slow);
-		// only a genuine no-reachable-server outcome flattens to 1006.
-		if isReplyTimeout(result.err) {
-			return nil, result.err
+		// No replica succeeded. Prefer surfacing the timeout (so getValue
+		// re-sends without a pointless cache invalidation — the location is
+		// fine, the servers were slow) over flattening to 1006; only a genuine
+		// no-reachable-server outcome flattens.
+		if sawTimeout {
+			return nil, errReplyTimeout
 		}
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
