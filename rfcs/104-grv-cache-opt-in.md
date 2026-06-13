@@ -76,39 +76,53 @@ The Go knobs already match (`grv.go:16-21`): `MAX_VERSION_CACHE_LAG=0.1s`,
    `Transaction` (`transaction.go:153`), default false. Wire the existing stub
    `TransactionOptions.SetUseGrvCache()` to set `useGrvCache=true` on the inner client tx; add
    `SetSkipGrvCache()` (option 1102) setting `skipGrvCache=true` (used by the refresher).
+   `SetUseGrvCache()` must **ACCEPT** the option (set the flag, return nil) — never silently no-op
+   again, and never error. (C++ throws `invalid_option` only because it requires api≥720 +
+   multi-version shared state, `:7147-7149`; Go has no shared-state precondition, so it accepts
+   unconditionally while matching the *semantic* — option-gated, default off.) The
+   `disable_client_bypass` co-requirement named in the 1101 option doc (`fdb.options:344`) is a
+   RYW-layer concern, NOT enforced in the native GRV gate; it is **intentionally not ported** here.
 2. **Gate the cache read.** The fast path in `grvBatcher.getReadVersion` (`grv.go:242-251`) must
    consult `tryCache` **only when the calling transaction opted in**:
    `useGrvCache && !skipGrvCache` (in addition to the existing `!isImmediate`, freshness, and
-   rk-cooldown checks). Thread the two per-tx bools into `getReadVersion` (currently it takes only
-   `flags uint32`; either add params or carry them as flag bits, matching how `causalReadRisky`/
-   priority already ride `flags`). When the gate is false → fall through to the proxy GRV batch
-   (the current "slow path"). **Default transactions now always issue a fresh GRV**, matching
-   libfdb_c — which fixes the demonstrated wrong answer.
+   rk-cooldown checks). Thread the two per-tx bools into `getReadVersion` as **SEPARATE
+   parameters, NOT as bits in `flags`** (codex P2): `flags` is serialized onto the wire — `flush`
+   ORs `r.flags &^ grvPriorityMask` and `buildGetReadVersionRequest` writes it into
+   `GetReadVersionRequest.Flags`. `useGrvCache`/`skipGrvCache` are LOCAL client options, not GRV
+   wire flags (unlike `causalReadRisky`/priority, which ARE wire flags); riding them on `flags`
+   would put undefined bytes on the wire and break the "wire-compat: none" guarantee below. Pass
+   them as their own arguments. When the gate is false → fall through to the proxy GRV batch (the
+   current "slow path"). **Default transactions now always issue a fresh GRV**, matching libfdb_c —
+   which fixes the demonstrated wrong answer.
 3. **Refresher stays lazy** (already `refreshOnce` on first cache hit, `grv.go:245-248`). With the
    gate added, a cache hit only happens for an opted-in transaction, so the refresher naturally
    never starts unless an app opts in — matching C++ `:1283`. Confirm it is joined on
    `db.Close()` via `db.wg` (already `db.wg.Add(1)`); add a stop signal if missing.
-4. **Revisit RFC-096 (the subtle part — flagged for FDB C++ dev).** RFC-096 added `lastLocked`
-   ride-along + a lock-check on the cached path, and deliberately did NOT advance `lastTime` on
-   commit, **specifically because the cache was always-on and enforcement-carrying** (`grv.go:36-45,
-   85-96`). With the cache opt-in/default-off, that hazard disappears: every default transaction
-   takes the fresh-GRV path and hits the normal `locked` check at the consumption site
-   (`transaction.go:561`). To match libfdb_c exactly we should:
-   - **Remove the lock-check on the cached path** (C++ fail-opens there, `:7504-7518` has no
-     `lockAware` branch). An opted-in transaction accepts the documented staleness, locked flag
-     included — exactly as a libfdb_c `USE_GRV_CACHE` app does.
-   - **Restore C++'s commit-advances-`lastTime`** (`:6657`) — the divergence note at `grv.go:85-96`
-     was motivated only by the always-on enforcement hazard.
-   This is a behavior change to RFC-096; **the FDB C++ dev decides** whether to (a) match C++ exactly
-   (fail-open cached path, as proposed) or (b) keep the Go-only `lastLocked` enforcement as a
-   strictly-safer extension on the opt-in path. Either is defensible; I propose (a) for exact parity
-   and will implement whichever the reviewer ACKs. The `lastLocked`/commit-`lastTime` code only runs
-   for opted-in transactions after this change, so the blast radius is small.
+4. **Revisit RFC-096 — RESOLVED to option (a), match C++ exactly (FDB C++ dev ruling).** RFC-096
+   added `lastLocked` ride-along + a lock-check on the cached path, and deliberately did NOT advance
+   `lastTime` on commit, **specifically because the cache was always-on and enforcement-carrying**
+   (`grv.go:36-45, 85-96`). With the cache opt-in/default-off, that hazard disappears: every default
+   transaction takes the fresh-GRV path and hits the normal `locked` check at the consumption site
+   (`transaction.go:561`). The FDB C++ dev ruled to match libfdb_c exactly:
+   - **Remove the `lastLocked` lock-check from the cached path** — C++ fail-opens there by contract
+     (`:7514-7516` returns `rv` with zero lock inspection; `lockAware` appears only on the fresh
+     fall-through at `:7425`). An opted-in transaction accepts the documented staleness, locked flag
+     included — exactly as a libfdb_c `USE_GRV_CACHE` app does. Keeping the Go-only enforcement (b)
+     would be a behavioral divergence on the opt-in path with no wire benefit.
+   - **Restore C++'s commit-advances-`lastTime`** (`:6657`). **Cache POPULATION stays UNCONDITIONAL
+     for ALL transactions** (codex P3) — both the GRV-reply update (`:7409`) and the commit update
+     (`:6657`) run regardless of the option; only cache *READS* are gated on the opt-in. So a default
+     transaction's commit still warms the cache (which a later opted-in transaction may consume).
+     Do NOT gate the update path on `useGrvCache`.
+   The `lastLocked` field is removed entirely (no consumer after the cached-path check goes away).
 
 ## Wire-compat impact
 
 **None.** No bytes change on the wire — keys, records, GRV request/reply frames, conflict ranges,
-continuations are all untouched. Option codes 1101/1102 match libfdb_c exactly. This is purely a
+continuations are all untouched. Option codes 1101/1102 match libfdb_c exactly. The
+`useGrvCache`/`skipGrvCache` flags are **local client state, passed as their own parameters and
+NEVER serialized into `GetReadVersionRequest.Flags`** (codex P2) — a GRV request frame from an
+opted-in Go transaction is byte-identical to one from a default transaction. This is purely a
 client read-version-freshness *behavior* + option *semantic* change. The observable effect is that
 a default Go transaction now reads a version at least as fresh as libfdb_c's default — strictly
 *toward* parity, never away from it.
@@ -120,13 +134,22 @@ a default Go transaction now reads a version at least as fresh as libfdb_c's def
    (always-on cache) this can miss the seed; post-fix it cannot. Remove the "seed through the Go
    client" workaround in `differential_unreadable_test.go` and assert cross-client visibility
    directly. Revert-prove (re-enable always-on → differential red).
-2. **Opt-in serves cache (FDB integration):** a transaction with `SetUseGrvCache()` may serve a
-   read version within `MAX_VERSION_CACHE_LAG` of a prior GRV (assert two back-to-back opted-in
-   reads can share a version); a **default** transaction gets a fresh version each time (assert the
-   version advances / the cache fast-path is not taken — e.g. via a metrics counter or a seam).
-3. **Refresher is opt-in:** assert no background GRV-refresher goroutine starts for a process that
-   only runs default transactions (goroutine-count / seam check); it starts after the first opted-in
-   cached hit.
+   **The deterministic seam (Torvalds):** add a `grvCacheHits atomic.Int64` counter, incremented
+   exactly once each time `tryCache` returns a hit (the cached path is taken), exposed on the
+   `Metrics()` snapshot beside the existing `transactionReadVersionsCompleted` (which already counts
+   *real* GRV replies, cache hits excluded — `clientmetrics.go:20,76`). This pair distinguishes the
+   three states unambiguously, with NO goroutine-count flakiness: cache gated OFF →
+   `grvCacheHits == 0` and `transactionReadVersionsCompleted` advances every txn; cache hit →
+   `grvCacheHits` increments; cache stale-but-on → `grvCacheHits == 0` **but** the refresher started
+   (distinguishable from gated-off, which never starts it).
+2. **Opt-in serves cache vs default does not (FDB integration), via the seam:** two back-to-back
+   `SetUseGrvCache()` reads within `MAX_VERSION_CACHE_LAG` → `grvCacheHits >= 1` (the second is a
+   hit); N **default** transactions → `grvCacheHits == 0` AND `transactionReadVersionsCompleted`
+   advanced by ~N (each took a real GRV) — proving the gate is OFF, not merely that the cache was
+   stale.
+3. **Refresher is opt-in:** assert the refresher's `refreshOnce` has NOT fired (a `started
+   atomic.Bool` seam on the batcher, not a goroutine count) for a process that only ran default
+   transactions; it flips after the first opted-in cached hit.
 4. **rk-cooldown + IMMEDIATE bypass** preserved (port the existing `tryCache` throttle tests under
    the new gate).
 5. **Locked path:** a default transaction against a locked DB still gets `database_locked` (1038)
