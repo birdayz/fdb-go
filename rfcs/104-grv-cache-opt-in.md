@@ -1,6 +1,7 @@
 # RFC-104: GRV cache is opt-in (`USE_GRV_CACHE`, default off) — match libfdb_c
 
-**Status:** Draft
+**Status:** Accepted — FDB C++ dev + Torvalds + codex ACK on r2 (2026-06-13). §4 resolved to
+option (a) (match C++: cached path fail-opens, commit advances `lastTime`, `lastLocked` removed).
 **Item:** Client launch-readiness #1 (TODO.md). Closes the "GRV cache is ALWAYS-ON in Go;
 opt-in in C++" divergence filed by RFC-096. Gate: `fdb-client-engineer` (FDB C++ dev + Torvalds
 + codex), C++ (libfdb_c 7.3.75) is the spec.
@@ -144,9 +145,10 @@ a default Go transaction now reads a version at least as fresh as libfdb_c's def
    (distinguishable from gated-off, which never starts it).
 2. **Opt-in serves cache vs default does not (FDB integration), via the seam:** two back-to-back
    `SetUseGrvCache()` reads within `MAX_VERSION_CACHE_LAG` → `grvCacheHits >= 1` (the second is a
-   hit); N **default** transactions → `grvCacheHits == 0` AND `transactionReadVersionsCompleted`
-   advanced by ~N (each took a real GRV) — proving the gate is OFF, not merely that the cache was
-   stale.
+   hit); N **default** transactions issued **strictly serially** (each committed/closed before the
+   next starts, so the batcher cannot coalesce them into one GRV reply — Torvalds) →
+   `grvCacheHits == 0` AND `transactionReadVersionsCompleted` advanced by **exactly N** (each took
+   its own real GRV) — proving the gate is OFF, not merely that the cache was stale.
 3. **Refresher is opt-in:** assert the refresher's `refreshOnce` has NOT fired (a `started
    atomic.Bool` seam on the batcher, not a goroutine count) for a process that only ran default
    transactions; it flips after the first opted-in cached hit.
