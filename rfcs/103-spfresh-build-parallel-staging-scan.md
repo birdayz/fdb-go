@@ -111,15 +111,19 @@ boundaries:
    highest boundary during the build still falls inside shard S-1's
    `[.., TreeEnd)` fence — the full-scan fence is not shrunk (Torvalds r1 #2).
 
-3. **Boundaries are record-aligned and roughly count-balanced.** Source:
-   - **Multi-shard cluster:** FDB shard splits via `LocalityGetBoundaryKeys`
-     over the record subspace (the `indexing_mutual.go:99` pattern), each
-     unpacked to a PK; non-PK boundaries dropped per (1).
-   - **Single-node (testcontainers — the path the tests exercise):**
-     `LocalityGetBoundaryKeys` returns empty, so derive the interior PK
-     boundaries **by record count** by piggy-backing on the already-serial
-     **sample scan** (§"sample scan stays serial"), which visits every record in
-     PK order *before* staging. The sample scan is one pass and learns `totalN`
+3. **Boundaries are record-aligned and roughly count-balanced.** Source — the
+   implementation uses **one universal path: count-quantile PKs captured on the
+   serial sample scan**, on every cluster. (FDB shard splits via
+   `LocalityGetBoundaryKeys` — the `indexing_mutual.go:99` pattern — are *not*
+   used: they return raw keys needing per-(1) normalization, and the synchronous
+   pure-Go client is latency-bound, not locality-bound, so aligning shards to
+   data placement buys nothing over count-balanced quantiles. Locality alignment
+   is a possible future optimization, not needed here.)
+   - Derive the interior PK boundaries **by record count** by piggy-backing on
+     the already-serial **sample scan** (§"sample scan stays serial"), which
+     visits every record in PK order *before* staging. On a single-node cluster
+     (testcontainers — the path the tests exercise) this is the only source
+     anyway. The sample scan is one pass and learns `totalN`
      only as it goes, so the boundaries are **approximate** quantiles from a
      bounded-memory decimation: keep an evenly-spaced reservoir of ≤ M candidate
      PKs (systematic decimation — when the buffer fills, drop every other entry

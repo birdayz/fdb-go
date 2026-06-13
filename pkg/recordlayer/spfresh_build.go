@@ -31,8 +31,13 @@ import (
 
 // spfreshBuildInput is one vector to index.
 type spfreshBuildInput struct {
-	pk  tuple.Tuple
+	pk  tuple.Tuple // index-trimmed primary key — the staging-row key component
 	vec []float64
+	// fullPK is the UN-trimmed record primary key. Staging keys use the trimmed
+	// pk (above), but parallel-staging shard boundaries (RFC-103) must bound the
+	// records subspace, which is keyed by the full record PK — the two differ
+	// whenever the index key overlaps PK components (TrimPrimaryKey drops them).
+	fullPK tuple.Tuple
 }
 
 // spfreshBuilder drives a bulk build of one generation.
