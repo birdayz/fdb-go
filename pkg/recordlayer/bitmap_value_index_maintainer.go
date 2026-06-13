@@ -532,13 +532,9 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
-	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it).
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
-	}
-
-	// Check row limit.
+	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
+	// ReturnLimitReached before the scan-record backstop can fire (codex RFC-106a:
+	// match index_scan ordering).
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
@@ -556,6 +552,12 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 			SourceExhausted,
 			&EndContinuation{},
 		), nil
+	}
+
+	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
+	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it).
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
 	// Check time limit.

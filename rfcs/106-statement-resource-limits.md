@@ -96,6 +96,32 @@ leaf cursor / every buffered path" the RFC claims:
    subquery at one row and defeat its cardinality check) and never to DML (its scan must
    not be bounded by a returned-row cap). The budget is exact, so it never under-produces.
 
+### Completeness round 2 (codex r3 — ordering, DML atomicity, multidim)
+
+codex's r3 review (after the leaf-cursor/buffered-path round above) found three deeper gaps:
+
+4. **DML aborts atomically on a resource limit (no partial mutation).** `executeDelete`/
+   `executeUpdate` mutated as they streamed, so `errIfBufferTruncated` fired only AFTER earlier
+   rows were already deleted/saved — in an explicit transaction those partial writes stage and
+   commit if the caller commits after the 54F01. Both now **pre-materialize** the target set via
+   `CollectAllBounded` (which errors on an out-of-band truncation) BEFORE any mutation, so the
+   statement aborts with ZERO records changed. DML runs in one transaction, so the target set is
+   tx-bounded; the materialization cap is the memory backstop. Pinned by an explicit-tx FDB test
+   (revert-proof: stream the DELETE → 5 rows commit, 45 remain).
+5. **Returned-row limit checked before the scan backstop.** `countKVCursor`/`bitmapKVCursor`/
+   `textCursor` checked `ScannedRecordsLimit` before `ReturnedRowLimit`, so `MAX_ROWS=N`
+   (injected as the page `ReturnedRowLimit` by `pageRowBudget`) plus an equal scan limit could
+   54F01 *after* producing exactly the N rows asked for. Reordered to match `index_scan`: a
+   satisfied row cap stops cleanly (`ReturnLimitReached`) and is never turned into an error.
+6. **MULTIDIMENSIONAL (R-tree) leaf cursors.** `rtreeScanCursor` and `prefixSkipScanCursor` are
+   record-layer-internal (RFC-046; not SQL-reachable). Both now check `ctx.Err()`;
+   `rtreeScanCursor` honors `ScannedRecordsLimit`/`ScannedBytesLimit`/`TimeLimit`/
+   `FailOnScanLimitReached` (counting every item read incl. point-filtered), and
+   `prefixSkipScanCursor` threads a SHARED scan budget across prefixes (decrementing the per-prefix
+   `ScannedRecordsLimit`, counting `findNextPrefix` reads, and propagating an out-of-band stop)
+   so a many-small-prefix skip-scan can't bypass the cap. ctx is unit-tested; the scan-limit logic
+   mirrors the FDB-tested index/aggregate pattern.
+
 ## Test plan (yamsql + executor unit + FDB integration)
 
 - **Scan-limit wiring (parity):** a scenario sets `OptExecutionScannedRowsLimit` + `FailOnScanLimitReached`,

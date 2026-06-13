@@ -420,3 +420,102 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	}
 	wantExecLimit(t, qerr)
 }
+
+// TestFDB_RFC106a_RowLimitBeatsScanLimit pins the codex r3 ordering fix: when
+// pageRowBudget injects MAX_ROWS as the page's ReturnedRowLimit AND a scan limit
+// is set to the SAME value, a leaf cursor must check the returned-row limit FIRST
+// (clean ReturnLimitReached) — the caller asked for and received exactly N rows;
+// the scan backstop was not exceeded, so turning it into a 54F01 is wrong. Uses
+// the aggregate-index (countKVCursor) path. Revert-proof: check ScannedRecordsLimit
+// before ReturnedRowLimit in countKVCursor → MAX_ROWS=5 errors 54F01.
+func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_rowbeats", "rowbeats",
+		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
+	ctx := context.Background()
+	const groups = 50
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptMaxRows, 5).
+			Set(api.OptExecutionScannedRowsLimit, 5).Build())
+		ec.SetFailOnScanLimitReached(true)
+	})
+	for i := 0; i < groups; i++ {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("INSERT INTO ga (id, g) VALUES (%d, %d)", i, i)); err != nil {
+			t.Fatalf("INSERT ga row %d: %v", i, err)
+		}
+	}
+	n, err := drainPairs(ctx, conn, "SELECT g, COUNT(*) FROM ga GROUP BY g")
+	if err != nil {
+		t.Fatalf("MAX_ROWS=5 with an equal scan limit must return cleanly, got: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("want exactly 5 rows (MAX_ROWS satisfied), got %d", n)
+	}
+}
+
+// TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx pins the codex r3 P1: a DML
+// statement cut off by a resource limit must abort with ZERO mutations, never
+// leave a partially-applied DELETE staged in an explicit transaction that a later
+// commit would persist. Pre-materializing the target set means the 54F01 fires
+// before any record is deleted. (Auto-commit can't distinguish this — the error
+// rolls back either way — so the test drives an EXPLICIT tx and commits after the
+// error.) Revert-proof: stream the DELETE (delete-as-you-go) → 5 rows commit, 45 remain.
+func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc106a_dmltx", "dmltx",
+		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	ctx := context.Background()
+	const rows = 50
+
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().
+			Set(api.OptExecutionScannedRowsLimit, 5).Build())
+		// non-fail (paginate): the DELETE's inner scan stops OUT-OF-BAND at 5 →
+		// pre-materialize errors before any delete.
+	})
+	for i := 0; i < rows; i++ {
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
+			t.Fatalf("INSERT %d: %v", i, err)
+		}
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	_, derr := tx.ExecContext(ctx, "DELETE FROM t")
+	wantExecLimit(t, derr)
+	// Commit after the error: the staged writes (if any) become durable. With
+	// pre-materialize there are none, so all rows survive.
+	_ = tx.Commit()
+
+	plain := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	n, cerr := drainIDs(ctx, plain, "SELECT id FROM t")
+	if cerr != nil {
+		t.Fatalf("count after failed DELETE: %v", cerr)
+	}
+	if n != rows {
+		t.Fatalf("a resource-limit-aborted DELETE must leave all %d rows intact (no partial commit), got %d", rows, n)
+	}
+}
+
+// drainPairs runs sql scanning two columns (int, int), returning the row count.
+func drainPairs(ctx context.Context, conn *sql.Conn, sqlText string) (int, error) {
+	r, err := conn.QueryContext(ctx, sqlText)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+	n := 0
+	for r.Next() {
+		var a, b int64
+		if serr := r.Scan(&a, &b); serr != nil {
+			return n, serr
+		}
+		n++
+	}
+	return n, r.Err()
+}

@@ -1853,24 +1853,19 @@ func executeDelete(
 		return nil, err
 	}
 
+	// Pre-materialize the full target set BEFORE deleting anything. A resource-limit
+	// cut-off (CollectAllBounded → errIfBufferTruncated → 54F01) must abort the DELETE
+	// with ZERO records removed — never leave a partially-applied DELETE staged in an
+	// explicit transaction that a later commit would persist (codex RFC-106a). DML runs
+	// in one transaction, so the target set is bounded by the tx; the materialization
+	// cap is the memory backstop.
+	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "DELETE target set")
+	if err != nil {
+		return nil, err
+	}
+
 	var results []QueryResult
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		result, err := innerCursor.OnNext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !result.HasNext() {
-			// A resource-limit cut-off mid-DELETE would partially delete and lie
-			// about the affected set — error instead of truncating (RFC-106a).
-			if lerr := errIfBufferTruncated(result); lerr != nil {
-				return nil, lerr
-			}
-			break
-		}
-		qr := result.GetValue()
+	for _, qr := range targets {
 		if qr.PrimaryKey == nil {
 			continue
 		}
@@ -2029,24 +2024,16 @@ func executeUpdate(
 
 	transforms := p.GetTransforms()
 
+	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
+	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
+	// staged in an explicit transaction (codex RFC-106a; see executeDelete).
+	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "UPDATE target set")
+	if err != nil {
+		return nil, err
+	}
+
 	var results []QueryResult
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		result, err := innerCursor.OnNext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !result.HasNext() {
-			// A resource-limit cut-off mid-UPDATE would partially update and lie
-			// about the affected set — error instead of truncating (RFC-106a).
-			if lerr := errIfBufferTruncated(result); lerr != nil {
-				return nil, lerr
-			}
-			break
-		}
-		qr := result.GetValue()
+	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
 		}

@@ -152,23 +152,10 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Scanned-records limit (RFC-106a parity): one aggregate-index KV per entry,
-	// so `returned` is the scanned-records count. noNextOrFail → 54F01 in fail mode.
-	if executeProps.ScannedRecordsLimit > 0 && c.returned >= executeProps.ScannedRecordsLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, &BytesContinuation{bytes: c.lastCont})
-	}
-
-	// Time limit (free initial pass like the other leaf cursors).
-	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.lastCont}), nil
-	}
-
-	// Scanned-bytes limit (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, &BytesContinuation{bytes: c.lastCont})
-	}
-
-	// Check row limit
+	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
+	// ReturnLimitReached before the scan-limit backstops can fire (codex RFC-106a:
+	// match index_scan ordering — a returned-row cap that is satisfied must not be
+	// turned into a 54F01 by an equal scan-record cap).
 	if executeProps.ReturnedRowLimit > 0 && c.returned >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
@@ -186,6 +173,22 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 			SourceExhausted,
 			&EndContinuation{},
 		), nil
+	}
+
+	// Scanned-records limit (RFC-106a parity): one aggregate-index KV per entry,
+	// so `returned` is the scanned-records count. noNextOrFail → 54F01 in fail mode.
+	if executeProps.ScannedRecordsLimit > 0 && c.returned >= executeProps.ScannedRecordsLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, &BytesContinuation{bytes: c.lastCont})
+	}
+
+	// Time limit (free initial pass like the other leaf cursors).
+	if executeProps.TimeLimit > 0 && c.returned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
+		return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.lastCont}), nil
+	}
+
+	// Scanned-bytes limit (free initial pass).
+	if executeProps.ScannedBytesLimit > 0 && c.returned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, &BytesContinuation{bytes: c.lastCont})
 	}
 
 	if !c.iterator.Advance() {
