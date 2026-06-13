@@ -61,6 +61,7 @@ go_test(
         "failure_monitor_test.go",
         "fault_test.go",
         "getkey_conflict_unit_test.go",
+        "grv_cache_optin_test.go",
         "grv_test.go",
         "grv_unit_test.go",
         "hedge_test.go",

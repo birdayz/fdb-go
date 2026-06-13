@@ -117,6 +117,31 @@ The Go knobs already match (`grv.go:16-21`): `MAX_VERSION_CACHE_LAG=0.1s`,
      Do NOT gate the update path on `useGrvCache`.
    The `lastLocked` field is removed entirely (no consumer after the cached-path check goes away).
 
+## Surfaced divergence — `minAcceptableReadVersion` must track the MINIMUM, not the max (fixed here)
+
+Making the default GRV fresh surfaced a pre-existing divergence the always-on cache had masked.
+C++ tracks `minAcceptableReadVersion` as the **`std::min`** over GRV reply versions (the SMALLEST
+version the client has seen — `NativeAPI.actor.cpp:3871`/`:7287`, inited to `max()`), and
+`validateVersion` rejects `version < min` as a floor check. Go's `database.go` comment said the
+same ("tracks the minimum version this client has seen"), but `updateMinAcceptable` **ratcheted
+UPWARD** — it tracked the **maximum**. With the always-on cache this was hidden (Go's GRVs were
+cache hits, so the max-min crept up slowly); fresh GRVs advance it on every call, so it raced past
+recent pinned versions and Go's `validateVersion` spuriously rejected reads with
+`transaction_too_old` (1007) that libfdb_c accepts — `TestSnapshot_GetDoesNotConflict`,
+`TestAddConflictRange_CPort`, and the `TestDifferential_GetKeyRYW` cross-client harness (which pins
+one version across both clients) all flipped to 1007 under load.
+
+Fix: `updateMinAcceptable` now tracks the SMALLEST seen version (`std::min`, 0 = unset), matching
+C++ and the existing Go comment. The floor stays low (the first version seen), so `validateVersion`
+rejects only a genuinely-ancient pinned version (below anything the client has observed) — never a
+recent pin that merely predates a later GRV. This keeps the ancient-version fail-fast
+(`TestDifferential_PinnedRangeRetriesStaleVersion` pins version 1, which both clients still surface
+as a retryable 1007 — Go client-side, cgo server-side, same outcome) while removing the spurious
+rejections. No new wire bytes. (C++ additionally gates the throw on `switchable`; the Go client is
+non-switchable and keeps the check as an outcome-equivalent client-side fail-fast for ancient
+versions — the storage server rejects exactly those. Two narrower attempts — removing the check, and
+skipping it at commit — were reverted once the max-vs-min root cause was found.)
+
 ## Wire-compat impact
 
 **None.** No bytes change on the wire — keys, records, GRV request/reply frames, conflict ranges,

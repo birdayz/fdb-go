@@ -47,6 +47,13 @@ type ClientMetrics struct {
 	transactionDefaultReadVersionsCompleted   atomic.Int64
 	transactionImmediateReadVersionsCompleted atomic.Int64
 
+	// grvCacheHits counts transactions served a read version from the GRV cache
+	// (the USE_GRV_CACHE opt-in fast path, RFC-104) — the complement of
+	// transactionReadVersionsCompleted (real GRV replies, cache hits excluded).
+	// Go-only observability + the deterministic test seam that distinguishes a
+	// cache-off transaction (grvCacheHits stays 0) from a stale/served one.
+	grvCacheHits atomic.Int64
+
 	transactionRetries atomic.Int64 // Go-only aggregate, see doc comment
 }
 
@@ -93,6 +100,13 @@ func (m *ClientMetrics) countGRVBatchCompleted(priority uint32, n int) {
 	}
 }
 
+// countGRVCacheHit records one transaction served a read version from the GRV
+// cache (USE_GRV_CACHE opt-in fast path, RFC-104). The complement of
+// countGRVBatchCompleted, which counts only real GRV replies.
+func (m *ClientMetrics) countGRVCacheHit() {
+	m.grvCacheHits.Add(1)
+}
+
 // ClientMetricsSnapshot is a point-in-time copy of the counters. Fields are
 // monotonic; diff two snapshots for rates.
 type ClientMetricsSnapshot struct {
@@ -111,6 +125,7 @@ type ClientMetricsSnapshot struct {
 	TransactionBatchReadVersionsCompleted     int64
 	TransactionDefaultReadVersionsCompleted   int64
 	TransactionImmediateReadVersionsCompleted int64
+	GRVCacheHits                              int64 // RFC-104: served from the GRV cache (opt-in)
 
 	TransactionRetries int64
 }
@@ -133,6 +148,7 @@ func (m *ClientMetrics) Snapshot() ClientMetricsSnapshot {
 		TransactionBatchReadVersionsCompleted:     m.transactionBatchReadVersionsCompleted.Load(),
 		TransactionDefaultReadVersionsCompleted:   m.transactionDefaultReadVersionsCompleted.Load(),
 		TransactionImmediateReadVersionsCompleted: m.transactionImmediateReadVersionsCompleted.Load(),
+		GRVCacheHits: m.grvCacheHits.Load(),
 
 		TransactionRetries: m.transactionRetries.Load(),
 	}

@@ -204,6 +204,15 @@ type Transaction struct {
 	// causalReadRisky: if true, FLAG_CAUSAL_READ_RISKY is set in GRV Flags.
 	causalReadRisky bool
 
+	// useGrvCache: USE_GRV_CACHE (1101) — opt in to serving this transaction's
+	// read version from the database's GRV cache. Default false, matching
+	// libfdb_c (NativeAPI.actor.cpp:6148): a default transaction always issues a
+	// fresh proxy GRV. skipGrvCache: SKIP_GRV_CACHE (1102) — force a fresh GRV
+	// even if useGrvCache is set (skip wins). LOCAL options, never serialized
+	// onto the wire. RFC-104.
+	useGrvCache  bool
+	skipGrvCache bool
+
 	// lockAware: if true, lock_aware is set on both reads and commits.
 	// readLockAware: if true, lock_aware is set on reads only (not commits).
 	// C++: req.options.lockAware = tr->options.lockAware || tr->options.readLockAware
@@ -546,7 +555,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	tx.readVersionMu.Lock()
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return err
@@ -565,18 +574,20 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	// C++ DatabaseContext::validateVersion() on a user-set read version: reject a
+	// version below the smallest-seen floor (genuinely ancient) or an absurd
+	// future. Post-RFC-104 the floor is the SMALLEST version seen (see
+	// updateMinAcceptable), so a recent pinned version is never spuriously
+	// rejected. If the client hasn't seen any version yet, a GRV establishes the
+	// floor first.
 	userSet := tx.userSetReadVersion
 	rv := tx.readVersion
 	tx.readVersionMu.Unlock()
-	// C++ DatabaseContext::validateVersion(): reject user-set read versions
-	// outside the acceptable range. If the client hasn't seen a version yet
-	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
-	// baseline. C++ does this in startTransaction() before validateVersion().
 	if tx.db != nil && userSet {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
-			// Bootstrap: fetch a version to establish the minimum.
+			// Bootstrap: fetch a version to establish the baseline.
 			flags := tx.grvFlags()
-			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err
@@ -1432,10 +1443,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
 	}
 
-	// Feed committed version to GRV cache so subsequent reads see this write.
-	// Advances the VERSION only — not freshness, not lock state (see
-	// grvCache.update; a commit must not extend how long stale lock
-	// metadata can be served).
+	// Feed committed version to GRV cache so a later opted-in read sees this
+	// write. Advances version + freshness, matching C++ updateCachedReadVersion
+	// at the commit site (NativeAPI.actor.cpp:6657, t=now()). Unconditional —
+	// population runs for every transaction regardless of USE_GRV_CACHE; only
+	// cache READS are opt-in (RFC-104).
 	if tx.committedVersion > 0 {
 		tx.db.grvCache.update(tx.committedVersion)
 	}
@@ -1971,6 +1983,19 @@ func (tx *Transaction) SetPriority(p TransactionPriority) {
 // When set, the read version may not reflect the latest committed writes.
 func (tx *Transaction) SetCausalReadRisky(v bool) {
 	tx.causalReadRisky = v
+}
+
+// SetUseGrvCache opts this transaction in to serving its read version from the
+// database's GRV cache (USE_GRV_CACHE, 1101). Off by default — a default
+// transaction issues a fresh proxy GRV, matching libfdb_c. RFC-104.
+func (tx *Transaction) SetUseGrvCache() {
+	tx.useGrvCache = true
+}
+
+// SetSkipGrvCache forces this transaction to bypass the GRV cache even if
+// SetUseGrvCache was also set (SKIP_GRV_CACHE, 1102 — skip wins). RFC-104.
+func (tx *Transaction) SetSkipGrvCache() {
+	tx.skipGrvCache = true
 }
 
 // SetLockAware sets the lock-aware flag on the commit request.

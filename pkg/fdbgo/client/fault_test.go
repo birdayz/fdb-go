@@ -162,7 +162,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// Manual commit with fault: ADD 5, then kill connection.
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -577,7 +577,7 @@ func TestWrongShardServer_GetKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestWrongShardServer_GetRange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm: %v", err)
 	}
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

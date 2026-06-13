@@ -1,0 +1,117 @@
+package client
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// TestFDB_GRVCache_OptInOnly pins RFC-104: the GRV cache is opt-in
+// (USE_GRV_CACHE, default off). A DEFAULT transaction never serves a cached read
+// version — each issues its own real proxy GRV — and the background refresher
+// never starts. A SetUseGrvCache() transaction reading a warm cache serves the
+// cached version (a cache HIT) and starts the refresher.
+//
+// Deterministic via the grvCacheHits + transactionReadVersionsCompleted counters
+// and the refresherStarted seam — no goroutine-count or timer-vs-reply flakiness
+// (RFC-104 test plan, Torvalds). The grvCacheHits==0 + exactly-N-real-GRVs pair
+// proves the cache is GATED OFF, not merely that it happened to be stale.
+//
+// openTestDB returns a FRESH database handle (its own grvCache, metrics, and
+// refresher), so these per-handle counters are isolated from other parallel
+// tests sharing the container.
+func TestFDB_GRVCache_OptInOnly(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	batcher := db.db.grvBatchers[grvBatcherDefault]
+
+	// --- DEFAULT transactions: zero cache hits, exactly-N real GRVs ---
+	// Issued strictly serially (each read version fetched before the next
+	// starts) so the batcher cannot coalesce them into one GRV reply, making the
+	// real-GRV count exactly N (Torvalds: no "~N" tolerance).
+	before := db.db.metrics.Snapshot()
+	const n = 5
+	for i := 0; i < n; i++ {
+		tx := db.CreateTransaction()
+		if err := tx.ensureReadVersion(ctx); err != nil {
+			t.Fatalf("default read %d: ensureReadVersion: %v", i, err)
+		}
+	}
+	after := db.db.metrics.Snapshot()
+	if got := after.GRVCacheHits - before.GRVCacheHits; got != 0 {
+		t.Fatalf("default transactions: GRVCacheHits advanced by %d, want 0 — the cache must be OFF by default", got)
+	}
+	if got := after.TransactionReadVersionsCompleted - before.TransactionReadVersionsCompleted; got != n {
+		t.Fatalf("default transactions: real GRVs = %d, want exactly %d — each default tx must fresh-fetch", got, n)
+	}
+	if batcher.refresherStarted.Load() {
+		t.Fatal("background GRV refresher started for default-only transactions — it must be opt-in")
+	}
+
+	// --- OPT-IN transaction: serves a cached version (fail-open on the cached path) ---
+	// Warm the cache deterministically: a real GRV populates it (population is
+	// unconditional, RFC-104), then refresh its freshness clock to now() so the
+	// opt-in read is guaranteed inside maxVersionCacheLag — no timing race.
+	warm := db.CreateTransaction()
+	if err := warm.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("warm GRV: %v", err)
+	}
+	v := db.db.grvCache.version.Load()
+	if v == 0 {
+		t.Fatal("GRV cache not populated by a real reply")
+	}
+	db.db.grvCache.updateFromGRV(time.Now(), v) // refresh freshness → deterministic hit window
+
+	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
+	optIn := db.CreateTransaction()
+	optIn.SetUseGrvCache()
+	if err := optIn.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("opt-in read: ensureReadVersion: %v", err)
+	}
+	if got := db.db.metrics.Snapshot().GRVCacheHits - hitsBefore; got != 1 {
+		t.Fatalf("opt-in transaction: GRVCacheHits advanced by %d, want 1 — it must serve from the warm cache", got)
+	}
+	if !batcher.refresherStarted.Load() {
+		t.Fatal("background refresher did not start after an opt-in cache hit")
+	}
+	// The opt-in read adopted the cached version with no real GRV.
+	if rv := optIn.readVersion; rv != v {
+		t.Fatalf("opt-in read version = %d, want the cached %d", rv, v)
+	}
+}
+
+// TestFDB_GRVCache_SkipOverridesUse pins that SKIP_GRV_CACHE (1102) wins over
+// USE_GRV_CACHE (1101): a transaction that sets both must NOT consult the cache,
+// matching the C++ gate `useGrvCache && !skipGrvCache` (NativeAPI.actor.cpp:7505).
+func TestFDB_GRVCache_SkipOverridesUse(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Warm the cache deterministically (as above).
+	warm := db.CreateTransaction()
+	if err := warm.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("warm GRV: %v", err)
+	}
+	v := db.db.grvCache.version.Load()
+	if v == 0 {
+		t.Fatal("GRV cache not populated")
+	}
+	db.db.grvCache.updateFromGRV(time.Now(), v)
+
+	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
+	tx := db.CreateTransaction()
+	tx.SetUseGrvCache()
+	tx.SetSkipGrvCache() // skip wins
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("ensureReadVersion: %v", err)
+	}
+	if got := db.db.metrics.Snapshot().GRVCacheHits - hitsBefore; got != 0 {
+		t.Fatalf("SKIP_GRV_CACHE did not override USE_GRV_CACHE: GRVCacheHits advanced by %d, want 0", got)
+	}
+}

@@ -142,8 +142,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		// shared key would be stamped by whichever client runs first.
 		t.Parallel()
 		kGo, kC := pfx+"svv_rywoff_go", pfx+"svv_rywoff_c"
-		// kGo seeded through the GO client for GRV-cache causality — see the
-		// getkey subtest comment.
+		// kGo seeded through the GO client (key ownership; the pre-RFC-104
+		// GRV-cache causality requirement is gone) — see the getkey subtest comment.
 		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
 			tx.Set(gofdb.Key(kGo), []byte("storage-v"))
 			return nil, nil
@@ -186,11 +186,12 @@ func TestDifferential_Unreadable(t *testing.T) {
 		t.Parallel()
 		k := pfx + "getkey"
 		fence := k + "\x01fence"
-		// Seed through the GO client: its always-on GRV cache (filed divergence,
-		// TODO.md) does not guarantee causality with cgo-committed data — a
-		// cached version older than a cgo seed commit makes the seed invisible
-		// (this test caught exactly that in the full suite). The go client's own
-		// commit advances its cache past the seed; cgo always fetches a real GRV.
+		// Seed through the GO client (per-client key isolation). NOTE: pre-RFC-104
+		// this was REQUIRED for causality — the Go client's then-always-on GRV
+		// cache could serve a version older than a cgo seed commit, hiding it.
+		// RFC-104 made the cache opt-in/default-off, so a default Go read now sees
+		// cgo-committed data directly (pinned by TestDifferential_GRVCacheDefaultSeesCgoSeed);
+		// seeding through go here is now just key-ownership hygiene, not a workaround.
 		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
 			tx.Set(gofdb.Key(fence), []byte("f"))
 			return nil, nil
@@ -267,9 +268,10 @@ func TestDifferential_Unreadable(t *testing.T) {
 		t.Parallel()
 		rPfx := pfx + "reach/"
 		a, b, z := rPfx+"a", rPfx+"b", rPfx+"z"
-		// Seeded through the GO client for GRV-cache causality — see the getkey
-		// subtest comment. (A stale go read version hid a/b here: the limited
-		// scan saw 0 rows, "reached" the pending stamp, and threw a spurious 1036.)
+		// Seeded through the GO client (key ownership) — see the getkey subtest
+		// comment. (Pre-RFC-104 a stale go read version could hide a/b here: a
+		// limited scan saw 0 rows, "reached" the pending stamp, and threw a
+		// spurious 1036. RFC-104's fresh-GRV default removed that hazard.)
 		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
 			tx.Set(gofdb.Key(a), []byte("va"))
 			tx.Set(gofdb.Key(b), []byte("vb"))

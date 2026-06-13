@@ -118,6 +118,12 @@ func (o TransactionOptions) SetSnapshotRywDisable() error {
 }
 
 func (o TransactionOptions) SetUseGrvCache() error {
+	o.tx.inner.SetUseGrvCache()
+	return nil
+}
+
+func (o TransactionOptions) SetSkipGrvCache() error {
+	o.tx.inner.SetSkipGrvCache()
 	return nil
 }
 
