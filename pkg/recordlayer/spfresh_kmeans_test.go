@@ -647,11 +647,90 @@ func TestSPFreshPruneLowerBoundIsConservative(t *testing.T) {
 	}
 }
 
+// TestSPFreshGatherTopKExactSubnormal is the behavioral regression for codex's
+// subnormal P3: when squared distances are subnormal (coords ~1e-160), the
+// relative error term in spfreshPruneLowerBound underflows and the squaring
+// lb*lb can round up by a subnormal ulp at an exact tie. gatherTopK gates the
+// prune to the normal range (spfreshMinPrunableWorst), so subnormal inputs are
+// scored exactly and stay byte-identical to the flat scan. Includes codex's
+// exact reported 1-D triple (which wrong-skips id 1 WITHOUT the gate) plus a
+// subnormal-scale sweep.
+func TestSPFreshGatherTopKExactSubnormal(t *testing.T) {
+	t.Parallel()
+	assertExact := func(t *testing.T, r *spfreshBuildRouter, q []float64, pool int, label string) {
+		t.Helper()
+		cellsK := spfreshNearestK(q, r.coarseIDs, r.coarseVecs, len(r.coarseIDs))
+		got := r.gatherTopK(q, cellsK, pool)
+		var fIDs []int64
+		var fVecs [][]float64
+		for _, c := range cellsK {
+			fIDs = append(fIDs, r.cellFineIDs[c.id]...)
+			fVecs = append(fVecs, r.cellFineVecs[c.id]...)
+		}
+		want := spfreshNearestK(q, fIDs, fVecs, pool)
+		if len(got) != len(want) {
+			t.Fatalf("%s: len got=%d want=%d", label, len(got), len(want))
+		}
+		for i := range got {
+			if got[i].id != want[i].id || got[i].d2 != want[i].d2 {
+				t.Fatalf("%s pos %d: got (id=%d d2=%g) want (id=%d d2=%g)", label, i, got[i].id, got[i].d2, want[i].id, want[i].d2)
+			}
+		}
+	}
+
+	// codex's exact 1-D triple: centroid c far, query q, two fines that tie in
+	// distance. id 2 is offered FIRST (becomes the pool worst), then id 1 — whose
+	// ungated bound rounds up by a subnormal ulp past worst and is wrong-skipped,
+	// even though id 1 should win the tie-break. The gate scores it exactly.
+	cdx := &spfreshBuildRouter{
+		coarseIDs:    []int64{1},
+		coarseVecs:   [][]float64{{0x1.97f6271e113d5p-487}},
+		cellFineIDs:  map[int64][]int64{1: {2, 1}},
+		cellFineVecs: map[int64][][]float64{1: {{0x1.97f6270ddaa0dp-487}, {0x1.97f6271c84e43p-487}}},
+		w:            1,
+	}
+	cdx.precomputePrune()
+	for pool := 1; pool <= 2; pool++ {
+		assertExact(t, cdx, []float64{0x1.97f627152fc28p-487}, pool, "codex-subnormal-1d")
+	}
+
+	// Subnormal-scale sweep: coords ~1e-160 so squared distances are subnormal.
+	rng := rand.New(rand.NewSource(0x5AB))
+	for trial := 0; trial < 4000; trial++ {
+		dims := 1 + rng.Intn(6)
+		nFines := 2 + rng.Intn(10)
+		ids := make([]int64, nFines)
+		cells := make([]int64, nFines)
+		vecs := make([][]float64, nFines)
+		base := make([]float64, dims)
+		for d := range base {
+			base[d] = rng.NormFloat64() * 0x1p-540 // sqrt → subnormal d²
+		}
+		for i := 0; i < nFines; i++ {
+			ids[i] = int64(i + 1)
+			cells[i] = 1
+			v := make([]float64, dims)
+			for d := range v {
+				v[d] = base[d] + rng.NormFloat64()*0x1p-548
+			}
+			vecs[i] = v
+		}
+		r := newTwoLevelTestRouter(ids, cells, vecs)
+		for sub := 0; sub < 3; sub++ {
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64() * 0x1p-540
+			}
+			assertExact(t, r, q, 1+rng.Intn(nFines), "subnormal-sweep")
+		}
+	}
+}
+
 // TestSPFreshGatherTopKExactLargeCoords is the behavioral large-magnitude guard:
 // gatherTopK must stay byte-identical to the flat scan even when coordinates are
 // large (~1e6) and fines cluster tightly near the pool boundary — the regime
 // where the sqrt-rounded bound binds at the ulp scale (see codex's P2 and
-// TestSPFreshPruneSlackCoversRoundoff). Exercises gatherTopK end-to-end.
+// TestSPFreshPruneLowerBoundIsConservative). Exercises gatherTopK end-to-end.
 func TestSPFreshGatherTopKExactLargeCoords(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(909))

@@ -636,15 +636,27 @@ func spfreshPruneLowerBound(dvc, dcf float64, dims int) float64 {
 	return dvc - dcf - errAbs
 }
 
+// spfreshMinPrunableWorst gates the prune to the NORMAL float64 range. The
+// magnitude-scaled error term in spfreshPruneLowerBound is relative, so it
+// underflows in the subnormal regime (squared distances < 0x1p-1022, i.e.
+// coordinates ~1e-160) and the squaring lb*lb can round up by a subnormal ulp at
+// an exact tie — a wrong skip (codex P3). When the pool-th best is subnormal we
+// simply don't prune; the fine is scored exactly, so gatherTopK stays
+// byte-identical. If worst is normal, any lb*lb that could exceed it is itself
+// normal, so the proven normal-range analysis holds. No real vector data is
+// subnormal (SIFT is uint8; embeddings are O(1)); this is pure exactness rigor.
+const spfreshMinPrunableWorst = 0x1p-1022
+
 // gatherTopK returns the `pool` nearest fines across the given cells, pruned by
 // the L2 triangle inequality. EXACT: byte-identical to spfreshNearestK over a
 // flat gather of the same cells' fines — it offers candidates in the same order
 // (cell-ascending, then cellFineVecs order) and only skips fines whose
 // roundoff-conservative lower bound (spfreshPruneLowerBound) already exceeds the
 // pool-th best actual distance, so they could not have been in the pool. The
-// prune activates only once the pool is full, so it never prevents the pool from
-// filling when enough fines exist (⇒ the `len < pool` widening termination in
-// assign is unchanged). cells must be ascending by d².
+// prune activates only once the pool is full (and the boundary is a normal
+// float, spfreshMinPrunableWorst), so it never prevents the pool from filling
+// when enough fines exist (⇒ the `len < pool` widening termination in assign is
+// unchanged). cells must be ascending by d².
 func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate, pool int) []spfreshCandidate {
 	dims := len(vec)
 	top := newSpfreshBoundedTopK(pool)
@@ -653,7 +665,7 @@ func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate,
 		fids := r.cellFineIDs[cell.id]
 		fd := r.cellFineDist[cell.id]
 		dvc := math.Sqrt(cell.d2)
-		if top.full() {
+		if top.full() && top.worst() >= spfreshMinPrunableWorst {
 			// No fine in this cell can be closer than d(v,c) - radius(c); a
 			// non-positive bound is vacuous (cancellation) and is not pruned.
 			if lb := spfreshPruneLowerBound(dvc, r.cellRadius[cell.id], dims); lb > 0 && lb*lb > top.worst() {
@@ -661,7 +673,7 @@ func (r *spfreshBuildRouter) gatherTopK(vec []float64, cells []spfreshCandidate,
 			}
 		}
 		for j, fv := range fvs {
-			if top.full() {
+			if top.full() && top.worst() >= spfreshMinPrunableWorst {
 				if lb := spfreshPruneLowerBound(dvc, fd[j], dims); lb > 0 && lb*lb > top.worst() {
 					continue
 				}

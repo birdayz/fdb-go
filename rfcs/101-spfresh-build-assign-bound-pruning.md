@@ -129,6 +129,14 @@ adversarial sweep driving the cancellation regime (the naive bound overshoots in
 Real SIFT data (uint8 0..255) never cancels; this guards the arbitrary-magnitude
 float64 vectors the index accepts.
 
+Subnormal regime: the magnitude-scaled error term is relative and underflows when
+squared distances are subnormal (`< 0x1p-1022`, coordinates ~1e-160), where the
+squaring `lb*lb` can round up by a subnormal ulp at an exact tie (codex P3). The
+prune is therefore GATED to a normal-float pool boundary (`spfreshMinPrunableWorst
+= 0x1p-1022`): a subnormal `worst` skips the prune and the fine is scored exactly,
+so gatherTopK stays byte-identical. `TestSPFreshGatherTopKExactSubnormal` pins it
+(codex's exact triple wrong-skips id 1 without the gate; passes with).
+
 ## Test plan
 
 - **Exactness (the load-bearing test):** for several random topologies + metrics,
