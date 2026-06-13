@@ -996,7 +996,20 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   FDB-reply-budget floor — granularity is structurally bounded, recall is **probe-bound
   not granularity-bound** (like item 3's α-sweep, this lever is spent). The remaining
   recall headroom is assignment-quality (item 5), not cell size.
-- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery).** Measured at 1M:
+- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery). RFC-104 written;
+  drift re-confirmed + root-caused, prototype-validation next.** SIFT-300k A/B (full table
+  in VECTOR_BENCHMARK_RESULTS.md): fast fill (8 writers, 533 vec/s) vs bulk build of the
+  SAME data — recall fast 0.8720 vs 0.9205 (−4.9pp), default 0.9685 vs 0.9880 (−1.9pp);
+  the fill topology is under-developed (55 cells/1755 fines/**1.00× replication** vs
+  74/3418/**1.20×**). Root cause: closure replication never fires during fast fill (the
+  SPANN RNG rule rejects every non-home centroid against the coarse insertion-time
+  topology — the item-3 geometry), and those vectors are never re-evaluated as the
+  topology refines; the existing rebalancer (drained to quiescence) does NOT recover it.
+  RFC-104 (rfcs/104-spfresh-assignment-refinement.md): an online wave-B-analog refinement
+  op reusing the NPA per-pk closure-move primitive, candidate = round-robin membership
+  cursor. VALIDATE-FIRST: prototype "refine-all" → measure recall recovery before building
+  the budgeted op (if it doesn't recover, the drift is partly structural and needs
+  re-splitting). Originally measured at 1M:
   a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
   same code, similar action counts. Writers outrunning the rebalancer assign vectors
   against a lagging topology; NPA repairs split neighborhoods only, not global drift.

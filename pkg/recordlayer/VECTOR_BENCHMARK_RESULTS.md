@@ -253,6 +253,25 @@ Run: add `SIFT_LMAX=128` to the build-bench env. The recall headroom that remain
 is the assignment-quality axis (item 5: drift recovery under ingest), not coarser
 or finer cells.
 
+### SPFresh ingest recall-drift (SIFT-300k, fast fill vs bulk) — RFC-104 motivation
+
+Fast foreground ingest costs recall versus a bulk build of the SAME data, and the
+rebalancer (drained to quiescence) does NOT recover it. Same query sweep:
+
+| 300k | bulk build (ideal) | fast fill (8 writers, 533 vec/s) | gap |
+|---|---|---|---|
+| cells / active fines | 74 / 3,418 | 55 / 1,755 | ~½ the fines |
+| replication (entries/N) | 1.20× | **1.00×** | closure never fired |
+| recall fast (16/24/64) | 0.9205 | **0.8720** | **−4.9 pp** |
+| recall default (32/64/200) | 0.9880 | **0.9685** | **−1.9 pp** |
+
+Root cause: a vector is closure-replicated once, at insert, against the coarse
+insertion-time topology, where the SPANN RNG rule rejects every non-home centroid
+(the item-3 geometry) → it lands at 1.0× replication and is never re-evaluated as
+the topology refines. RFC-104 designs an online refinement op to recover it
+(validate-first: prototype "refine-all" → measure recovery before building the
+budgeted op).
+
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 
 Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):
