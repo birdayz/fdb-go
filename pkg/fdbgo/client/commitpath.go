@@ -33,7 +33,7 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
 
 	conn, err := tx.db.getOrDial(ctx, proxy.Address)
 	if err != nil {
-		tx.db.handleConnError(proxy.Address)
+		tx.db.handleDialError(ctx, proxy.Address)
 		tx.db.kickTopology()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
 		if !tx.isDummy {

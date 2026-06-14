@@ -700,7 +700,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	for _, server := range loc.Servers {
 		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
 		if dialErr != nil {
-			tx.db.handleConnError(server.Address)
+			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()

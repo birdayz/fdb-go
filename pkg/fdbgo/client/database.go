@@ -167,6 +167,12 @@ type database struct {
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
 	connMu   sync.RWMutex
 	connPool map[string]*transport.Conn
+	// dialing coalesces concurrent dials to the same address (singleflight): the
+	// first miss dials, later misses to the same address wait on its result rather
+	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
+	// connMu. Mirrors C++ FlowTransport, where one Peer (one connectionKeeper) owns
+	// the single dial per NetworkAddress.
+	dialing map[string]*dialCall
 
 	// Location cache. C++: CoalescedKeyRangeMap<Reference<LocationInfo>>.
 	locCache locationCache
@@ -257,48 +263,129 @@ func (db *database) getCommitProxies() []ProxyInfo {
 }
 
 func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
-	conn, dialed, err := db.getOrDialConn(ctx, addr)
+	conn, _, err := db.getOrDialConn(ctx, addr)
 	if err != nil {
 		return nil, err
-	}
-	if dialed {
-		db.failMon.markAlive(addr)
 	}
 	return conn, nil
 }
 
-// getOrDialConn returns a pooled or freshly-dialed connection.
-// dialed is true when a new TCP connection was established (cache miss).
-func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
-	db.connMu.Lock()
-	defer db.connMu.Unlock()
+// handleDialError reacts to a getOrDial error. A context cancellation is the
+// CALLER giving up, not the endpoint failing — evicting the pooled connection and
+// marking the endpoint failed there would punish a healthy peer (and, in a
+// concurrent cold dial, could drop the very connection a sibling caller just
+// pooled). So only a genuine transport failure (ctx still live) feeds
+// handleConnError.
+func (db *database) handleDialError(ctx context.Context, addr string) {
+	if ctx.Err() == nil {
+		db.handleConnError(addr)
+	}
+}
 
+// dialCall is one in-flight singleflight dial. Waiters block on done, then read
+// conn/err — written by the dialer before close(done), so the channel close
+// establishes the happens-before.
+type dialCall struct {
+	done chan struct{}
+	conn *transport.Conn
+	err  error
+}
+
+// getOrDialConn returns a pooled or freshly-dialed connection.
+// dialed is true when THIS call is the cache miss that started the dial (the
+// "owner"); callers that coalesced onto an in-flight dial get dialed=false.
+//
+// The dial runs WITHOUT holding connMu — holding the pool lock across the dial
+// (TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock amplifier:
+// one stalled dial would block every goroutine acquiring ANY connection and wedge
+// the whole client. And concurrent misses to the SAME address are coalesced
+// (singleflight), so a burst to one cold proxy opens ONE socket, not O(requests).
+// Both mirror C++ FlowTransport: one Peer per NetworkAddress, its single
+// connectionKeeper owning the dial, no global dial lock.
+//
+// The dial itself runs on a goroutine bound to db.ctx (+ RPC timeout), NOT to any
+// one caller's context, so a caller whose ctx cancels merely abandons its own wait
+// — it never aborts the dial that the other waiters share (matching C++, where the
+// connectionKeeper's dial outlives any single request).
+func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
+	// An already-canceled caller must not start (or coalesce onto) a dial.
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	db.connMu.Lock()
+	// Fast path: a live pooled connection.
 	if c, ok := db.connPool[addr]; ok {
 		if !c.IsClosed() {
+			db.connMu.Unlock()
 			return c, false, nil
 		}
 		delete(db.connPool, addr)
 	}
+	// Join the in-flight dial for addr, or start one (becoming its owner).
+	call, owner := db.dialing[addr], false
+	if call == nil {
+		call = &dialCall{done: make(chan struct{})}
+		db.dialing[addr] = call
+		owner = true
+	}
+	db.connMu.Unlock()
 
-	// Dial a new connection. C++ FlowTransport creates one Peer (TCP connection)
-	// per unique NetworkAddress. No address aliasing or port-matching — each
-	// ip:port gets its own connection.
-	//
-	// TODO: C++ FlowTransport deduplicates bidirectional connections via
-	// ConnectionID exchange in ConnectPacket. When two processes connect to
-	// each other simultaneously, the lower-priority connection is dropped.
-	// We don't need this as a pure client (we never accept incoming connections),
-	// but should implement it if we ever add server-side functionality.
-	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-	defer cancel()
-
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
-	if dialErr != nil {
-		return nil, false, dialErr
+	if owner {
+		go db.dialAndPool(addr, call)
 	}
 
-	db.connPool[addr] = c
-	return c, true, nil
+	// Every caller — owner included — waits the same way: a caller's ctx cancels
+	// only its own wait, never the shared dial.
+	select {
+	case <-call.done:
+		if call.err != nil {
+			return nil, false, call.err
+		}
+		return call.conn, owner, nil
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
+	}
+}
+
+// dialAndPool runs the single shared dial for addr and publishes the result to all
+// waiters via call. It is bound to db.ctx (not a caller ctx); on database close
+// (db.ctx canceled) the dial aborts and any connection that nonetheless completed
+// is discarded rather than pooled past Close()'s pool drain.
+//
+// TODO: C++ FlowTransport deduplicates bidirectional connections via ConnectionID
+// exchange in ConnectPacket. We don't need this as a pure client (we never accept
+// incoming connections), but should implement it if we ever add server-side
+// functionality.
+func (db *database) dialAndPool(addr string, call *dialCall) {
+	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
+	cancel()
+
+	db.connMu.Lock()
+	delete(db.dialing, addr)
+	switch {
+	case dialErr != nil:
+		call.err = dialErr
+	case db.ctx.Err() != nil:
+		// The database closed while we dialed: Close() drains the pool under connMu,
+		// so a conn pooled now would never be reaped (leaking its read/write/monitor
+		// goroutines). Discard it and fail the call.
+		call.err = db.ctx.Err()
+		_ = c.Close()
+	default:
+		db.connPool[addr] = c
+		call.conn = c
+		// Clear the failed state on a successful dial HERE — not in a caller (so a
+		// reconnect wakes failure-monitor recovery even if every caller abandoned
+		// its wait), and BEFORE the connection becomes visible (connMu unlock +
+		// close(call.done)). Marking after exposure would race: a waiter could grab
+		// the conn, fail its first RPC and markFailed, and this stale markAlive would
+		// then overwrite that real failure. failureMonitor uses only its own lock
+		// (it never reaches connMu/db), so nesting it here is lock-order-safe.
+		db.failMon.markAlive(addr)
+	}
+	db.connMu.Unlock()
+	close(call.done) // wake all waiters (conn/err already set under the lock)
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
@@ -487,6 +574,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		tlsConfig:      tlsConfig,
 		logger:         logger,
 		connPool:       make(map[string]*transport.Conn),
+		dialing:        make(map[string]*dialCall),
 		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),
 		connected:      make(chan struct{}),

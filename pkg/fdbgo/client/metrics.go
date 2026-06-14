@@ -96,7 +96,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
-			tx.db.handleConnError(server.Address)
+			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -182,7 +182,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
-			tx.db.handleConnError(server.Address)
+			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()

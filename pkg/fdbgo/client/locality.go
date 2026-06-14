@@ -480,7 +480,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 		for _, proxy := range proxies {
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
-				db.handleConnError(proxy.Address)
+				db.handleDialError(ctx, proxy.Address)
 				continue
 			}
 

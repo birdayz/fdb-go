@@ -184,7 +184,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		return func() inFlightRPC {
 			conn, err := tx.db.getOrDial(ctx, server.Address)
 			if err != nil {
-				tx.db.handleConnError(server.Address)
+				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -375,7 +375,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		return func() inFlightRPC {
 			conn, err := tx.db.getOrDial(ctx, server.Address)
 			if err != nil {
-				tx.db.handleConnError(server.Address)
+				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -472,7 +472,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64) ([]byte, error) {
 	conn, err := tx.db.getOrDial(ctx, server.Address)
 	if err != nil {
-		tx.db.handleConnError(server.Address)
+		tx.db.handleDialError(ctx, server.Address)
 		return nil, err
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -701,7 +701,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		return func() inFlightRPC {
 			conn, err := tx.db.getOrDial(ctx, server.Address)
 			if err != nil {
-				tx.db.handleConnError(server.Address)
+				tx.db.handleDialError(ctx, server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -1001,7 +1001,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
-			tx.db.handleConnError(server.Address)
+			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
