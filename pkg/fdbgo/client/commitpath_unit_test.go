@@ -389,10 +389,10 @@ func TestJitterBackoff_ZeroAndNegative(t *testing.T) {
 }
 
 // ============================================================================
-// isRetryable — error-code → retry decision (mirrors fdb_error_predicate).
+// onErrorRetryable — error-code → onError retry decision (RFC-105 single source).
 // ============================================================================
 
-func TestIsRetryable_RetryableSet(t *testing.T) {
+func TestOnErrorRetryable_RetryableSet(t *testing.T) {
 	t.Parallel()
 	// Every code in this list MUST return true. If a future commit
 	// silently drops one (typo in the switch case label), this test
@@ -406,13 +406,13 @@ func TestIsRetryable_RetryableSet(t *testing.T) {
 		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
 	}
 	for _, code := range retryable {
-		if !isRetryable(code) {
-			t.Errorf("isRetryable(%d) = false, want true", code)
+		if !onErrorRetryable(code) {
+			t.Errorf("onErrorRetryable(%d) = false, want true", code)
 		}
 	}
 }
 
-func TestIsRetryable_NotRetryableSet(t *testing.T) {
+func TestOnErrorRetryable_NotRetryableSet(t *testing.T) {
 	t.Parallel()
 	// A representative set of non-retryable codes. The function's
 	// default case returns false, so we sanity-check that codes NOT
@@ -427,8 +427,8 @@ func TestIsRetryable_NotRetryableSet(t *testing.T) {
 		-1,                     // negative
 	}
 	for _, code := range notRetryable {
-		if isRetryable(code) {
-			t.Errorf("isRetryable(%d) = true, want false", code)
+		if onErrorRetryable(code) {
+			t.Errorf("onErrorRetryable(%d) = true, want false", code)
 		}
 	}
 }

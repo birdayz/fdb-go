@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -552,6 +553,82 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			err := c.Close()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(c.closed).To(BeTrue())
+		})
+	})
+
+	Describe("indexCursor.OnNext context cancellation (RFC-106a)", func() {
+		// The statement deadline (a Go-only read-path extension) reaches the
+		// secondary-index scan via the ctx passed to OnNext. Before the fix the
+		// index cursor ignored ctx (signature was OnNext(_ context.Context)), so
+		// a cancelled/expired statement kept draining to the per-page time limit.
+		// The check sits before initIterator, so a zero cursor with a cancelled
+		// ctx returns the ctx error without touching FDB. Revert-proof: drop the
+		// check and OnNext falls through to initIterator, nil-derefing c.store.
+		It("returns the ctx error before touching the iterator", func() {
+			c := &indexCursor{} // not closed; iterator nil
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+
+		It("propagates a deadline-exceeded ctx (→ 54F01 statement timeout)", func() {
+			c := &indexCursor{}
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+			defer cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.DeadlineExceeded))
+		})
+	})
+
+	// The remaining specialized leaf cursors (count/aggregate, text, bitmap,
+	// vector) also ignored ctx before RFC-106a, so a statement deadline could not
+	// bound their scans. Each now checks ctx.Err() at the top of OnNext. A zero
+	// cursor + cancelled ctx exercises that check with no FDB; revert-proof: drop
+	// the check and OnNext either nil-derefs its (nil) iterator/tx or returns
+	// SourceExhausted instead of the ctx error.
+	Describe("specialized leaf cursors honor ctx cancellation (RFC-106a)", func() {
+		It("countKVCursor.OnNext returns the ctx error", func() {
+			c := &countKVCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("textCursor.OnNext returns the ctx error", func() {
+			c := &textCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("bitmapKVCursor.OnNext returns the ctx error", func() {
+			c := &bitmapKVCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("vectorSearchCursor.OnNext returns the ctx error", func() {
+			c := &vectorSearchCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("rtreeScanCursor.OnNext returns the ctx error", func() {
+			c := &rtreeScanCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
+		})
+		It("prefixSkipScanCursor.OnNext returns the ctx error", func() {
+			c := &prefixSkipScanCursor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := c.OnNext(ctx)
+			Expect(err).To(Equal(context.Canceled))
 		})
 	})
 

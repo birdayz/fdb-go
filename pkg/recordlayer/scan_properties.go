@@ -6,6 +6,47 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
+// ScanLimitReachedError is returned by a leaf cursor when it hits a
+// scanned-records or scanned-bytes limit AND ExecuteProperties.
+// FailOnScanLimitReached is set. Mirrors Java's ScanLimitReachedException
+// (RecordCoreException, SQLSTATE 54F01): with setFailOnScanLimitReached(true)
+// the scan errors instead of paginating. Default (false) is unchanged —
+// the cursor returns a ScanLimitReached/ByteLimitReached NoNextReason and
+// the caller paginates via the continuation.
+type ScanLimitReachedError struct {
+	// Reason is the out-of-band stop reason that triggered the failure
+	// (ScanLimitReached or ByteLimitReached).
+	Reason NoNextReason
+}
+
+func (e *ScanLimitReachedError) Error() string {
+	switch e.Reason {
+	case ByteLimitReached:
+		return "scan limit reached: scanned-bytes limit exceeded"
+	case TimeLimitReached:
+		return "scan limit reached: time limit exceeded"
+	default:
+		return "scan limit reached: scanned-records limit exceeded"
+	}
+}
+
+// noNextOrFail returns a ScanLimitReachedError when FailOnScanLimitReached
+// is set on the execute properties, otherwise it returns the out-of-band
+// no-next result (paginate). Reason must be ScanLimitReached or
+// ByteLimitReached; the continuation is the resume point for the
+// paginating case. Centralizes the fail-vs-paginate decision so every
+// leaf cursor's scan/byte-limit return site behaves identically.
+func noNextOrFail[T any](
+	props ExecuteProperties,
+	reason NoNextReason,
+	continuation RecordCursorContinuation,
+) (RecordCursorResult[T], error) {
+	if props.FailOnScanLimitReached {
+		return RecordCursorResult[T]{}, &ScanLimitReachedError{Reason: reason}
+	}
+	return NewResultNoNext[T](reason, continuation), nil
+}
+
 // IsolationLevel represents the transaction isolation level.
 // Matches Java's IsolationLevel enum.
 //

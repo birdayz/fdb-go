@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -575,6 +576,41 @@ var _ = Describe("RecordCounting", func() {
 			}
 			Expect(count).To(Equal(5))
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("CountRecords errors on a scan-limit truncation, not a partial count (RFC-106a)", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 10; i++ {
+				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
+					return nil, err
+				}
+			}
+
+			// A ScannedRecordsLimit below the row count (paginate mode) stops the
+			// leaf scan OUT-OF-BAND. GetCount can't paginate, so CountRecords must
+			// error rather than return a silently-truncated partial count (codex).
+			scan := ForwardScan()
+			scan.ExecuteProperties = scan.ExecuteProperties.WithScannedRecordsLimit(5)
+			_, cErr := store.CountRecords(ctx, nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, nil, scan)
+			var sle *ScanLimitReachedError
+			Expect(errors.As(cErr, &sle)).To(BeTrue(),
+				"CountRecords past the scan limit must error, not return a partial count; got: %v", cErr)
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

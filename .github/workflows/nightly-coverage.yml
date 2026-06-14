@@ -27,7 +27,16 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Check Docker (else coverage + race silently no-op)
+        # The coverage run and the race step below drive real FDB testcontainers;
+        # without Docker every FDB test hits the allowed `FDB not available (no Docker)`
+        # skip and the job reports SUCCESS with no coverage/race data (RFC-107). Fail
+        # loudly so a green nightly coverage run always reflects real execution.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — coverage/race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
+
       - name: Run tests with coverage
+        id: coverage
         run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
@@ -48,7 +57,7 @@ jobs:
             --test_summary=detailed
 
       - name: Generate coverage report
-        if: always()
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
@@ -63,7 +72,7 @@ jobs:
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload coverage report to Hetzner Object Storage
-        if: always()
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         continue-on-error: true
         env:
           S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
@@ -86,7 +95,7 @@ jobs:
           echo "Coverage report: https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/coverage/latest.html"
 
       - name: Upload coverage report as artifact
-        if: always()
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
@@ -97,7 +106,7 @@ jobs:
         run: just bench-ci
 
       - name: Upload benchmark results as artifact
-        if: always()
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: bench-results

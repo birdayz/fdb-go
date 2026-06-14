@@ -180,7 +180,7 @@ var _ = Describe("cursor_util", func() {
 
 	Describe("Filter (iter.Seq)", func() {
 		It("filters elements matching predicate", func() {
-			seq := Seq(FromList([]int{1, 2, 3, 4, 5, 6}), ctx)
+			seq := mustSeq(FromList([]int{1, 2, 3, 4, 5, 6}), ctx)
 			evens := Filter(seq, func(v int) bool { return v%2 == 0 })
 			var collected []int
 			for v := range evens {
@@ -190,7 +190,7 @@ var _ = Describe("cursor_util", func() {
 		})
 
 		It("returns empty for no matches", func() {
-			seq := Seq(FromList([]int{1, 3, 5}), ctx)
+			seq := mustSeq(FromList([]int{1, 3, 5}), ctx)
 			evens := Filter(seq, func(v int) bool { return v%2 == 0 })
 			var collected []int
 			for v := range evens {
@@ -202,7 +202,7 @@ var _ = Describe("cursor_util", func() {
 
 	Describe("Map (iter.Seq)", func() {
 		It("transforms elements", func() {
-			seq := Seq(FromList([]int{1, 2, 3}), ctx)
+			seq := mustSeq(FromList([]int{1, 2, 3}), ctx)
 			doubled := Map(seq, func(v int) int { return v * 2 })
 			var collected []int
 			for v := range doubled {
@@ -212,7 +212,7 @@ var _ = Describe("cursor_util", func() {
 		})
 
 		It("handles type conversion", func() {
-			seq := Seq(FromList([]int{1, 2, 3}), ctx)
+			seq := mustSeq(FromList([]int{1, 2, 3}), ctx)
 			strs := Map(seq, func(v int) string { return fmt.Sprintf("%d", v) })
 			var collected []string
 			for v := range strs {
@@ -251,7 +251,7 @@ var _ = Describe("cursor_util", func() {
 
 	Describe("Limit (iter.Seq)", func() {
 		It("limits to n elements", func() {
-			seq := Seq(FromList([]int{1, 2, 3, 4, 5}), ctx)
+			seq := mustSeq(FromList([]int{1, 2, 3, 4, 5}), ctx)
 			limited := Limit(seq, 3)
 			var collected []int
 			for v := range limited {
@@ -261,7 +261,7 @@ var _ = Describe("cursor_util", func() {
 		})
 
 		It("returns all if n >= length", func() {
-			seq := Seq(FromList([]int{1, 2}), ctx)
+			seq := mustSeq(FromList([]int{1, 2}), ctx)
 			limited := Limit(seq, 10)
 			var collected []int
 			for v := range limited {
@@ -271,7 +271,7 @@ var _ = Describe("cursor_util", func() {
 		})
 
 		It("returns empty for n=0", func() {
-			seq := Seq(FromList([]int{1, 2, 3}), ctx)
+			seq := mustSeq(FromList([]int{1, 2, 3}), ctx)
 			limited := Limit(seq, 0)
 			var collected []int
 			for v := range limited {

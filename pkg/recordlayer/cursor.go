@@ -215,26 +215,6 @@ type RecordCursor[T any] interface {
 // nil continuation means start from the beginning.
 type CursorFactory[T any] func(continuation []byte) RecordCursor[T]
 
-// Seq returns an iterator sequence over values only.
-// Errors are silently dropped; use Seq2 if you need error handling.
-func Seq[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = cursor.Close() }()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			result, err := cursor.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
 // Seq2 returns an iterator sequence over (value, error) pairs.
 func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
@@ -250,28 +230,15 @@ func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error
 				return
 			}
 			if !result.HasNext() {
+				// Surface an out-of-band (resource-limit) stop on the error channel
+				// so a Seq2 consumer doesn't read a truncated scan as clean end-of-data
+				// (codex RFC-106a). SourceExhausted/ReturnLimitReached → clean end.
+				if e := errIfDrainTruncated(result); e != nil {
+					yield(*new(T), e)
+				}
 				return
 			}
 			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs.
-func SeqWithContinuation[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = cursor.Close() }()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			result, err := cursor.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
 				return
 			}
 		}

@@ -99,7 +99,7 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 	}
 
 	// Pre-fetch a read version so no GRV runs during the fault window.
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

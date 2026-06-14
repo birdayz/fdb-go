@@ -434,9 +434,16 @@ func newIndexCursor(
 }
 
 // OnNext returns the next IndexEntry or indicates why iteration stopped.
-func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *indexCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
+	}
+
+	// Honor a statement deadline (RFC-106a): draining an already-fetched range
+	// batch must still return on ctx cancellation/timeout (codex), not run to the
+	// per-page time limit. context.DeadlineExceeded → 54F01 "statement timeout".
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	if c.iterator == nil {
@@ -469,10 +476,7 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 
 	// Check scanned records limit (free initial pass for first record).
 	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
-		return NewResultNoNext[*IndexEntry](
-			ScanLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
 	}
 
 	// Check time limit before reading next entry (free initial pass for first record).
@@ -486,10 +490,7 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one entry (free initial pass).
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		return NewResultNoNext[*IndexEntry](
-			ByteLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
 	if !c.iterator.Advance() {

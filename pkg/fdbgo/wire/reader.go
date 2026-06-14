@@ -587,56 +587,10 @@ var fdbErrorDescriptions = map[int]string{
 	2101: "transaction_too_large",
 }
 
-// Retryable returns true if this wire-level error should trigger the
-// client's retry loop.
-//
-// SUPERSET of fdb.IsRetryable (in pkg/fdbgo/fdb/error.go). The fdb
-// package mirrors C++'s `fdb_error_predicate(RETRYABLE, code)` exactly
-// — 12 canonical codes. This wire-level predicate adds four more:
-//
-//   - 1006 all_alternatives_failed (Layer 2 retry — covers locality
-//     selection failures the Go client retries above the wire layer)
-//   - 1200 all_proxies_unreachable (Go-internal — synthesised when the
-//     client's proxy pool is exhausted; never appears in real FDB
-//     responses)
-//   - 1235 transaction_throttled_hot_shard (FDB 7.4+; not in our
-//     pinned error_definitions.h but the C++ fdb_c.cpp adds it)
-//   - 1242 transaction_rejected_range_locked (same)
-//
-// Why the wire-side superset: the wire Reader sees codes the FDB
-// public API never surfaces (Go-internal 1200), and the client's
-// retry loop is the right place to be lenient. If a non-retryable
-// error gets retried it eventually surfaces to the caller anyway.
-//
-// Source: flow/error_definitions.h + fdb_c.cpp fdb_error_predicate().
-// Cross-reference: pkg/fdbgo/fdb/error.go::IsRetryable for the strict
-// FDB-public-contract version.
-func (e *FDBError) Retryable() bool {
-	switch e.Code {
-	// MAYBE_COMMITTED (canonical)
-	case 1021, // commit_unknown_result
-		1039: // cluster_version_changed
-		return true
-	// RETRYABLE_NOT_COMMITTED (canonical)
-	case 1007, // transaction_too_old
-		1009, // future_version
-		1020, // not_committed (conflict)
-		1037, // process_behind
-		1038, // database_locked
-		1042, // commit_proxy_memory_limit_exceeded
-		1051, // batch_transaction_throttled
-		1078, // grv_proxy_memory_limit_exceeded
-		1213, // tag_throttled
-		1223, // proxy_tag_throttled
-		// Wire-side additions (see method doc comment for rationale):
-		1006, // all_alternatives_failed (Layer 2 retry)
-		1200, // all_proxies_unreachable (Go-internal)
-		1235, // transaction_throttled_hot_shard (FDB 7.4+)
-		1242: // transaction_rejected_range_locked (FDB 7.4+)
-		return true
-	}
-	return false
-}
+// (wire.FDBError.Retryable() was removed in RFC-105: dead code — zero callers —
+// that carried a fourth, divergent retry-code list. The retry predicates live in
+// the client/fdb layers: fdb.IsRetryable (fdb_error_predicate) and
+// client.onErrorRetryable (Transaction.onError), each C++-pinned by tests.)
 
 // ErrorOr<T> is serialized as a flow union_like: a root object carrying a uint8
 // type tag at vtable slot 0 and a RelativeOffset to the chosen alternative at

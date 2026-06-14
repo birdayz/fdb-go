@@ -177,7 +177,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		// is sent to FDB which crashes the server.
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
-			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
+			if errors.As(err, &fdbErr) && onErrorRetryable(fdbErr.Code) {
 				// Count the dummy's retries like C++: its errors route
 				// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
 				// the same per-code counters as any transaction. RFC-097.
@@ -212,8 +212,23 @@ func jitterBackoff(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * factor)
 }
 
-// isRetryable returns true if the FDB error code is retryable.
-func isRetryable(code int) bool {
+// onErrorRetryable reports whether OnError retries `code`. It is the SINGLE
+// source of the Go client's onError-retryable set — called by both
+// Transaction.OnError (as its retryability guard) and commitDummyTransaction's
+// retry — so the two can never drift (RFC-105). It equals C++ Transaction::onError's
+// retry set (NativeAPI.actor.cpp:7743-7768) PLUS documented Go extensions:
+//   - cluster_version_changed (1039): C++ retries it in the MULTI-VERSION layer
+//     (MultiVersionTransaction.actor.cpp:1740, updateTransaction+retry), NOT
+//     NativeAPI::onError; Go has no MVC layer so OnError owns it — MAYBE_COMMITTED,
+//     made idempotency-safe by the self-conflicting deep-copy. Do NOT "fix" this
+//     to the literal NativeAPI behavior; it would break cluster-version-change retry.
+//   - all_proxies_unreachable (1200): Go-internal Layer-2 error (NOT C++ 1200).
+//   - throttled_hot_shard (1235), range_locked (1242): FDB 7.4+, forward-compat.
+//
+// fdb.IsRetryable is a DIFFERENT predicate (fdb_error_predicate, 12 codes — it
+// EXCLUDES 1079/1200/1235/1242 and includes only the C-API contract set); do not
+// conflate the two.
+func onErrorRetryable(code int) bool {
 	switch code {
 	case ErrTransactionTooOld, ErrFutureVersion,
 		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,

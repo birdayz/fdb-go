@@ -9,11 +9,14 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-// TestFDB_DatabaseLocked_ReadPathEnforcement pins RFC-096: a locked database
-// refuses reads from transactions that are not lock-aware, exactly as C++
-// does client-side (NativeAPI.actor.cpp:7425-7426). Uses a DEDICATED
-// container — a database lock is global, not key-prefix-scoped, and would
-// break every parallel test on the shared TestMain container.
+// TestFDB_DatabaseLocked_ReadPathEnforcement pins the locked-database read
+// check: a locked database refuses reads from non-lock-aware transactions,
+// exactly as C++ does client-side (NativeAPI.actor.cpp:7425-7426). Post-RFC-104
+// the GRV cache is opt-in (default off), so every DEFAULT transaction here
+// fresh-fetches its read version and reaches the locked check — the enforcement
+// no longer rides the cache (the RFC-096 lastLocked mechanism is removed). Uses
+// a DEDICATED container — a database lock is global, not key-prefix-scoped, and
+// would break every parallel test on the shared TestMain container.
 func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	t.Parallel()
 
@@ -89,23 +92,24 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 		assertFDBErrorCode(t, err, ErrDatabaseLocked)
 	}
 
-	// Arm 2: a second raw transaction immediately after — the GRV cache is
-	// now warm WITH the locked flag, so this pins the CACHED-path check
-	// (the arm that silently passes if `locked` doesn't ride the cache).
+	// Arm 2: a second raw (default) transaction immediately after. Default
+	// transactions do NOT consult the GRV cache (USE_GRV_CACHE is off by
+	// default — RFC-104), so this fresh-fetches its own GRV and gets the locked
+	// flag → 1038. A warm cache cannot let a default transaction fail-open; only
+	// an opt-in (SetUseGrvCache) transaction reads the cache, and that path
+	// fail-opens by C++ contract (not exercised here).
 	plain2 := db2.CreateTransaction()
 	if _, err := plain2.Get(ctx, key); err == nil {
-		t.Fatal("plain read via warm cache on a LOCKED database succeeded, want database_locked (1038)")
+		t.Fatal("second plain read on a LOCKED database succeeded, want database_locked (1038)")
 	} else {
 		assertFDBErrorCode(t, err, ErrDatabaseLocked)
 	}
 
 	// Arm 2b: the SAME handle that committed the lock transaction must also
-	// converge to 1038 for plain reads (codex P1: the lock commit advances
-	// the cached version but must not RENEW freshness with stale
-	// locked=false metadata — TestGRVCache_CommitUpdateDoesNotExtendFreshness
-	// pins that channel deterministically; this arm pins the end-to-end
-	// property). Bounded poll: within maxVersionCacheLag of the handle's
-	// last real GRV the pre-lock cache entry may legitimately serve.
+	// surface 1038 for plain reads. Its commit warmed the shared cache (version
+	// + freshness, RFC-104), but a default read never consults the cache, so it
+	// fresh-fetches and hits the locked flag. (Bounded poll kept for robustness;
+	// convergence is immediate now that default reads always fresh-fetch.)
 	armDeadline := time.Now().Add(10 * time.Second)
 	for {
 		sameHandle := db.CreateTransaction()
@@ -147,10 +151,10 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 		t.Fatalf("unlock database: %v", err)
 	}
 
-	// Arm 5: plain reads succeed again. POLL: the warm cache legitimately
-	// carries locked=true until the background refresher's next real fetch
-	// stores the unlocked reply — the same eventual consistency C++ accepts
-	// for its (opt-in) cache, bounded by the refresh cadence.
+	// Arm 5: plain reads succeed again. POLL: the unlock commit must become
+	// visible to a fresh GRV before reads stop seeing the locked flag. Default
+	// reads fresh-fetch (no cache — RFC-104), so this converges as soon as the
+	// unlock is visible, not on any cache-refresh cadence.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		postUnlock := db2.CreateTransaction()

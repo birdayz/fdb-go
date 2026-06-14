@@ -37,11 +37,24 @@ jobs:
             exit 1
           fi
 
+      - name: Check Docker (else the PRIMARY merge gate silently no-ops)
+        # The whole test suite drives real FDB testcontainers; without Docker every
+        # FDB test hits the allowed `FDB not available (no Docker)` skip and this job
+        # — the gate that BLOCKS MERGES — reports SUCCESS with no coverage (codex,
+        # RFC-107). This matters more than the nightly/race jobs: fail loudly.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
+
       - name: Build, lint & test
+        id: test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
+      # Report/upload run on test success OR failure (always() lost the report on a
+      # red suite) — but NOT when the test step was SKIPPED (e.g. the Docker preflight
+      # aborted first): there's no BEP then, and `> test-report.html` would otherwise
+      # truncate an EMPTY report and publish it, masking the real failure (codex).
       - name: Generate test report
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
@@ -49,7 +62,7 @@ jobs:
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         continue-on-error: true
         env:
           S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
@@ -78,7 +91,7 @@ jobs:
           echo "Archive: https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/${REF}/${SHA}/report.html"
 
       - name: Upload test report as artifact
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-report
@@ -108,11 +121,18 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@latest $PKGS
 
   race:
-    name: Race detector (SQL layer)
+    name: Race detector (SQL layer + client)
     runs-on: [self-hosted, linux, x64, hetzner]
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      - name: Check Docker (else the race gates silently no-op)
+        # Both race steps below drive real FDB testcontainers; without Docker the
+        # tests skip (exit 0) and the gate passes with no race coverage (codex,
+        # RFC-107). Fail loudly so a green race job always means -race actually ran.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
       - name: -race tests for //pkg/relational/...
         # The relational/SQL layer is driven concurrently via database/sql and was
@@ -122,3 +142,22 @@ jobs:
         # race in the plan cache / driver / planner is silent corruption, worse
         # than a loud panic. (stress-tagged targets excluded — heavy/manual.)
         run: bazelisk test //pkg/relational/... --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors
+
+      - name: -race tests for the pure-Go client (RFC-107)
+        # The from-scratch Go client's highest-concurrency code — pipelined reads,
+        # commit path, transport read/write loops — was previously race-gated ONLY
+        # by the nightly job on 5 hand-named targets (the hadRead data race shipped
+        # exactly here). Make it a PR gate like the SQL layer. Scoped to the
+        # concurrency-bearing packages (client/transport/fdb); bench (cgo libfdb_c)
+        # and conformance (Docker) are excluded from the PR default — race-instrumented
+        # they'd dominate PR latency on the single runner. Expand only with measured
+        # numbers (RFC-107 §3). A data race here corrupts a SHARED FDB cluster.
+        run: |
+          SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
+          N=$(bazelisk query "tests($(echo $SCOPE | sed 's/ / + /g'))" 2>/dev/null | wc -l)
+          if [ "$N" -eq 0 ]; then
+            echo "::error::client race scope resolved 0 test targets — gate would be a no-op"
+            exit 1
+          fi
+          echo "client race scope: $N test targets"
+          bazelisk test $SCOPE --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors

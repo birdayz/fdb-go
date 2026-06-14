@@ -57,18 +57,36 @@ func (c *textCursor) setUnderlying(it *BunchedMapMultiIterator) {
 // Matches Java's TextCursor.onNext() which checks limitManager.tryRecordScan()
 // before each entry. The "free initial pass" pattern allows at least one record
 // before enforcing scan/time limits (matching CursorLimitManager.usedInitialPass).
-func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.lastResult != nil && !c.lastResult.HasNext() {
 		return *c.lastResult, nil
 	}
 
+	// Honor a statement deadline / cancellation (RFC-106a) so a text scan is
+	// bounded by the per-request timeout, not only by the per-page scan limits.
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
+	}
+
 	executeProps := c.scanProps.GetExecuteProperties()
+
+	// Check the returned-row limit FIRST (codex RFC-106a): a MAX_ROWS/LIMIT-bounded
+	// text scan must stop cleanly with ReturnLimitReached before the scan-record
+	// backstop below can turn a satisfied row cap into a 54F01 (match index_scan).
+	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
+		result := NewResultNoNext[*IndexEntry](ReturnLimitReached, c.limitContinuation())
+		c.lastResult = &result
+		return result, nil
+	}
 
 	// Check byte scan limit BEFORE reading next entry (free initial pass for first record).
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks
 	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && atomic.LoadInt64(&c.bytesScanned) >= executeProps.ScannedBytesLimit {
-		result := NewResultNoNext[*IndexEntry](ByteLimitReached, c.limitContinuation())
+		result, err := noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		c.lastResult = &result
 		return result, nil
 	}
@@ -86,7 +104,10 @@ func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry],
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks
 	// recordScanLimiter with usedInitialPass guard.
 	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
-		result := NewResultNoNext[*IndexEntry](ScanLimitReached, c.limitContinuation())
+		result, err := noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		c.lastResult = &result
 		return result, nil
 	}

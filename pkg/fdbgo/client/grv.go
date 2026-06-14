@@ -33,33 +33,32 @@ type grvCache struct {
 	lastProxyContact atomic.Int64 // UnixNano
 	lastRkDefault    atomic.Int64 // ratekeeper throttle
 	lastRkBatch      atomic.Int64
-	// lastLocked is the database-locked flag from the most recent GRV reply
-	// accepted by the version CAS. C++ never lock-checks ITS cached path —
-	// but C++'s cache is opt-in (USE_GRV_CACHE, default off,
-	// NativeAPI.actor.cpp:7505/:6148), so every default C++ transaction
-	// reaches extractReadVersion's locked check (:7425). This cache is
-	// ALWAYS-ON (a filed divergence; see TODO.md), so `locked` must ride it
-	// or enforcement would fire roughly once per warm handle, ever. Stored
-	// only on version-CAS acceptance (updateFromGRV) so a late stale reply
-	// cannot overwrite fresher lock state. RFC-096.
-	lastLocked atomic.Bool
+	// No `locked` rides the cache: the cache is now opt-in (USE_GRV_CACHE,
+	// default off, RFC-104), so every DEFAULT transaction takes the fresh-GRV
+	// path and hits the real locked check at the consumption site
+	// (transaction.go ensureReadVersion). C++ fail-opens its cached path by
+	// contract (NativeAPI.actor.cpp:7514-7516 returns the version with zero
+	// lock inspection; lockAware appears only on the fresh fall-through, :7425),
+	// so an opted-in Go transaction does too. The RFC-096 lastLocked ride-along
+	// existed ONLY to compensate for the previous always-on cache and is gone.
 }
 
-// tryCache returns the cached version (and the database-locked flag stored
-// with it) if it's fresh enough.
+// tryCache returns the cached version if it's fresh enough and not throttled.
 // priority determines which ratekeeper throttle to check:
 // BATCH checks lastRkBatch, DEFAULT checks lastRkDefault.
-// Matches C++ DatabaseContext::getConsistentReadVersion throttle checks.
-func (c *grvCache) tryCache(priority uint32) (int64, bool, bool) {
+// Matches C++ DatabaseContext::getConsistentReadVersion throttle checks. The
+// opt-in gate (USE_GRV_CACHE) is enforced by the CALLER (getReadVersion);
+// reaching here already implies the transaction opted in (RFC-104).
+func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 	v := c.version.Load()
 	if v == 0 {
-		return 0, false, false
+		return 0, false
 	}
 
 	now := time.Now().UnixNano()
 	lastTime := c.lastTime.Load()
 	if time.Duration(now-lastTime) > maxVersionCacheLag {
-		return 0, false, false // stale
+		return 0, false // stale
 	}
 
 	// Check ratekeeper throttle cooldown for the requesting priority.
@@ -71,29 +70,27 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool, bool) {
 	case grvPriorityBatch:
 		lastThrottle = c.lastRkBatch.Load()
 	case grvPrioritySystemImmediate:
-		return 0, false, false // SYSTEM_IMMEDIATE must always contact proxy
+		return 0, false // SYSTEM_IMMEDIATE must always contact proxy
 	default:
 		lastThrottle = c.lastRkDefault.Load()
 	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
-		return 0, false, false // throttled — must contact proxy
+		return 0, false // throttled — must contact proxy
 	}
 
-	return v, c.lastLocked.Load(), true
+	return v, true
 }
 
-// update advances the cached version from a successful commit.
-// Monotonic: only accepts versions >= current cached version.
-//
-// It deliberately does NOT advance the freshness clock (lastTime) and does
-// NOT touch lock state: a commit proves nothing about either. C++ DOES
-// extend lastGrvTime here (NativeAPI.actor.cpp:6657 → :357-359), but its
-// cache is opt-in and entirely fail-open by contract (no lock check on
-// hits); with Go's ALWAYS-ON, enforcement-carrying cache, commit-extended
-// freshness would let a handle that locks the database and keeps committing
-// serve post-lock versions with stale locked=false metadata indefinitely
-// (codex P1, RFC-096). Invariant: cache freshness == recency of the last
-// ACCEPTED real GRV reply (updateFromGRV is the only lastTime writer).
+// update advances the cached version + freshness clock from a successful
+// commit, matching C++ updateCachedReadVersion at the commit site
+// (NativeAPI.actor.cpp:6657, t=now()). Monotonic on both: version only accepts
+// >= current (the CAS loop), lastTime only advances (updateTime's guard).
+// Population is UNCONDITIONAL — it runs for every committing transaction
+// regardless of USE_GRV_CACHE (RFC-104, codex P3); only cache READS are opt-in,
+// so a default transaction's commit can warm the cache for a later opted-in
+// reader. No lock state: the cached path fail-opens (RFC-104; the RFC-096
+// commit-must-not-extend-freshness divergence is reverted now that the cache is
+// no longer always-on + enforcement-carrying).
 func (c *grvCache) update(v int64) {
 	for {
 		cur := c.version.Load()
@@ -101,30 +98,28 @@ func (c *grvCache) update(v int64) {
 			return
 		}
 		if c.version.CompareAndSwap(cur, v) {
-			return
+			break
 		}
 	}
+	c.updateTime(time.Now())
 }
 
-// updateFromGRV updates the cache from a real GRV reply: version plus the
-// database-locked flag. lastLocked is stored ONLY when the version CAS
-// accepts the reply — a late, stale reply (older version, locked=false) must
-// not overwrite fresher locked=true state (a fail-open hazard). The residual
-// CAS→Store interleaving window between two concurrently-accepted replies:
-// a spurious locked=true is genuinely benign (a retryable 1038 until the
-// next refresh); a missed locked=true is bounded by maxVersionCacheLag and
-// then corrected by the background refresher's next real fetch. RFC-096.
-func (c *grvCache) updateFromGRV(t time.Time, v int64, locked bool) {
+// updateFromGRV updates the cache from a real GRV reply: version + freshness,
+// monotonic on both (CAS for version, updateTime for lastTime). Unconditional —
+// runs for every GRV reply regardless of USE_GRV_CACHE (C++ extractReadVersion,
+// :7409, is not gated on the option). No lock state: the cached path fail-opens
+// (RFC-104; the RFC-096 lastLocked ride-along is removed — the per-transaction
+// locked check now lives only on the fresh-GRV consumption path).
+func (c *grvCache) updateFromGRV(t time.Time, v int64) {
 	for {
 		cur := c.version.Load()
 		if v < cur {
-			return // stale reply — don't go backwards, don't touch lock state
+			return // stale reply — don't go backwards
 		}
 		if c.version.CompareAndSwap(cur, v) {
 			break
 		}
 	}
-	c.lastLocked.Store(locked)
 	c.updateTime(t)
 }
 
@@ -148,13 +143,24 @@ func (c *grvCache) invalidate() {
 	c.lastTime.Store(0)
 }
 
-// updateMinAcceptable atomically ratchets minAcceptableReadVersion upward.
-// Matches C++ DatabaseContext::minAcceptableReadVersion.
+// updateMinAcceptable lowers minAcceptableReadVersion toward the SMALLEST read
+// version this client has seen. C++ DatabaseContext::minAcceptableReadVersion is
+// a std::min over GRV reply versions (NativeAPI.actor.cpp:3871,:7287), inited to
+// max(). Go inits the atomic to 0, so 0 means "unset": the first version sets it
+// and later (necessarily ≥) versions leave it at the smallest. This is the floor
+// validateVersion compares against — keeping it the smallest-seen (NOT a rising
+// max) means only a genuinely-ancient pinned version is rejected, never a recent
+// one that merely predates a later GRV. (Previously this ratcheted UPWARD, so
+// RFC-104's fresh-GRV default raced it past pinned versions libfdb_c accepted —
+// the root of the spurious 1007s in the snapshot/conflict/getKey differentials.)
 func updateMinAcceptable(min *atomic.Int64, v int64) {
+	if v <= 0 {
+		return
+	}
 	for {
 		cur := min.Load()
-		if v <= cur {
-			return
+		if cur != 0 && v >= cur {
+			return // already hold a smaller-or-equal floor
 		}
 		if min.CompareAndSwap(cur, v) {
 			return
@@ -162,20 +168,27 @@ func updateMinAcceptable(min *atomic.Int64, v int64) {
 	}
 }
 
-// validateVersion checks that a user-set read version is within the
-// acceptable range. Matches C++ DatabaseContext::validateVersion().
-// Returns transaction_too_old (1007) if version < minAcceptableReadVersion.
-// Returns future_version (1009) for obviously absurd versions (>10^15) that
-// the storage server would block on indefinitely. The server normally returns
-// future_version after MAX_READ_TRANSACTION_LIFE_VERSIONS (5s), but our RPC
-// timeout races with it — client-side detection is more reliable for extreme values.
+// validateVersion checks a user-set read version against the client's
+// seen-version floor. A version below minAcceptableReadVersion — the SMALLEST
+// read version this client has seen (std::min; see updateMinAcceptable) — is
+// transaction_too_old. Because the floor is the smallest-seen and NOT a rising
+// max (the RFC-104 fix), this rejects only a genuinely-ancient pinned version
+// (below anything the client has observed), never a recent one that merely
+// predates a later GRV — so a libfdb_c-current version pinned across both
+// clients is honored, and the storage server remains the authority on the 5s
+// MVCC window. (C++ gates the same throw on `switchable` at NativeAPI.actor.cpp:518;
+// the Go client is non-switchable and keeps it as a client-side fail-fast for
+// ancient versions — outcome-equivalent, since the server rejects exactly those.)
+//
+// The absurd-future check is a Go-only client-side guard (real FDB versions are
+// ~10^7/s; even 100 years is ~3×10^16): a wildly-out-of-range version would
+// block the storage server indefinitely, and our RPC timeout races the server's
+// own future_version, so detecting it client-side is more reliable.
 func (db *database) validateVersion(version int64) error {
 	min := db.minAcceptableReadVersion.Load()
 	if min > 0 && version < min {
 		return &wire.FDBError{Code: ErrTransactionTooOld}
 	}
-	// Reject absurd future versions client-side. Real FDB versions are ~10^7
-	// per second; even at 100 years that's ~3×10^16. 10^15 is a safe threshold.
 	if version > 1_000_000_000_000_000 {
 		return &wire.FDBError{Code: ErrFutureVersion}
 	}
@@ -217,6 +230,12 @@ type grvBatcher struct {
 	priority  uint32 // fixed priority bits for this batcher
 
 	refreshOnce sync.Once
+	// refresherStarted is a deterministic test seam (RFC-104): true once the
+	// background refresher has been launched (on the first opted-in request —
+	// hit OR miss, matching C++ which starts the updater inside the opt-in gate
+	// before the freshness check). Lets a test assert "the refresher never
+	// started for a cache-off process" without a flaky goroutine count.
+	refresherStarted atomic.Bool
 }
 
 type grvRequest struct {
@@ -235,18 +254,39 @@ type grvResult struct {
 // cache entry) — the per-transaction lock check happens at the consumption
 // site (the C++ extractReadVersion analog), NOT here: one batched reply
 // fans out to transactions with different lock-awareness.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, bool, error) {
-	// Fast path: serve from cache if fresh and not throttled.
-	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32, useGrvCache, skipGrvCache bool) (int64, bool, error) {
+	// Fast path: serve from cache ONLY when the transaction opted in
+	// (USE_GRV_CACHE, default off — RFC-104). C++ gate NativeAPI.actor.cpp:7504-7517.
+	// SYSTEM_IMMEDIATE never caches (needs a guaranteed-fresh version).
+	// The cached path FAIL-OPENS on locked (returns locked=false): C++ does not
+	// lock-check the cached path (:7514-7516 returns the version with zero lock
+	// inspection; lockAware appears only on the fresh fall-through, :7425). The
+	// real locked check is at the consumption site (ensureReadVersion), which
+	// every DEFAULT (cache-off) transaction reaches.
 	isImmediate := b.priority == grvPrioritySystemImmediate
-	if !isImmediate {
-		if v, locked, ok := db.grvCache.tryCache(b.priority); ok {
-			// Start background refresher on first cache hit.
-			b.refreshOnce.Do(func() {
-				db.wg.Add(1)
-				go b.backgroundRefresher(db)
-			})
-			return v, locked, nil
+	// NOTE (divergence, TODO_client.md #16): the C++ gate also requires
+	// rkThrottlingCooledDown(cx, priority) (NativeAPI.actor.cpp:7506); under active
+	// ratekeeper throttling C++ skips the whole cache block (no updater start, no cached
+	// serve). Go's gate omits that one condition, so under throttle Go starts the
+	// refresher where C++ would not. tryCache still rechecks throttle on the serve path,
+	// so this only affects WHEN the background updater launches, never correctness.
+	if !isImmediate && useGrvCache && !skipGrvCache {
+		// Start the background refresher on the FIRST opted-in request, BEFORE the
+		// freshness check — matching C++ getReadVersion (NativeAPI.actor.cpp:7507-7509),
+		// which launches backgroundGrvUpdater inside the opt-in gate regardless of
+		// whether the cached version is usable ("Upon our first request to use cached
+		// RVs, start the background updater"). Starting it only on a cache HIT (the
+		// prior Go behavior) left a cold/stale cache un-warmed: every opted-in read with
+		// lag > MAX_VERSION_CACHE_LAG fell through to a real GRV and the cache never
+		// caught up, defeating the opt-in entirely for sparse workloads.
+		b.refreshOnce.Do(func() {
+			b.refresherStarted.Store(true)
+			db.wg.Add(1)
+			go b.backgroundRefresher(db)
+		})
+		if v, ok := db.grvCache.tryCache(b.priority); ok {
+			db.metrics.countGRVCacheHit()
+			return v, false, nil
 		}
 	}
 
@@ -305,8 +345,9 @@ func (b *grvBatcher) flush(db *database) {
 	if err == nil {
 		// Unconditional, even when locked: C++ updates the shared cache
 		// BEFORE the per-transaction locked throw (NativeAPI.actor.cpp:7409
-		// precedes :7425).
-		b.applyGRVReply(db, requestTime, version, locked, rkDefault, rkBatch, tagThrottleInfoBytes)
+		// precedes :7425). `locked` is returned to waiters below but no longer
+		// rides the cache (RFC-104).
+		b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 		// C++ counts per-transaction in extractReadVersion (:7428-7440) — one
 		// batched reply serves len(batch) transactions. Cache hits never reach
 		// here (C++ parity: its cached path returns before the counters); the
@@ -416,16 +457,16 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
 			// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
 			// its tryCache always returns false (refreshOnce never fires).
-			version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
+			version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
 			refreshCancel()
 			if err == nil {
-				// The refresher stores `locked` into the cache and otherwise
-				// ignores it — functionally equivalent to C++'s background
-				// updater, whose non-lock-aware txn THROWS 1038 on a locked
-				// DB after the cache update (:7409 precedes :7425) and is
-				// caught by its own onError loop. Nothing surfaces to users
-				// from a background refresh either way. RFC-096.
-				b.applyGRVReply(db, requestTime, version, locked, rkDefault, rkBatch, tagThrottleInfoBytes)
+				// The refresher ignores the reply's `locked` flag — equivalent
+				// to C++'s background updater, whose non-lock-aware txn THROWS
+				// 1038 on a locked DB after the cache update (:7409 precedes
+				// :7425) and is caught by its own onError loop. Nothing surfaces
+				// to users from a background refresh, and the cached path
+				// fail-opens anyway (RFC-104).
+				b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 				// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
 				grvDelay = (grvDelay + time.Since(requestTime)) / 2
 			}
@@ -439,8 +480,8 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 // version cache, proxy contact time, minAcceptableReadVersion, ratekeeper
 // throttle state, and tag throttle info.
 // Called from both flush() (batched request) and backgroundRefresher().
-func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, locked bool, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
-	db.grvCache.updateFromGRV(requestTime, version, locked)
+func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
+	db.grvCache.updateFromGRV(requestTime, version)
 	db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
 	updateMinAcceptable(&db.minAcceptableReadVersion, version)
 

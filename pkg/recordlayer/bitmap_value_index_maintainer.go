@@ -514,9 +514,14 @@ func (c *bitmapKVCursor) initIterator() error {
 	return nil
 }
 
-func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if c.closed {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("cursor is closed")
+	}
+
+	// Honor a statement deadline / cancellation (RFC-106a).
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
 	if c.iterator == nil {
@@ -527,7 +532,9 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 
 	executeProps := c.scanProps.GetExecuteProperties()
 
-	// Check row limit.
+	// Check row limit FIRST so a MAX_ROWS/LIMIT-bounded scan stops cleanly with
+	// ReturnLimitReached before the scan-record backstop can fire (codex RFC-106a:
+	// match index_scan ordering).
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
 		if c.iterator.Advance() {
 			return NewResultNoNext[*IndexEntry](
@@ -547,6 +554,12 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 		), nil
 	}
 
+	// Check scanned-records limit (RFC-106a parity with the other leaf cursors —
+	// index_scan/record_key honor ScannedRecordsLimit; bitmap omitted it).
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+		return noNextOrFail[*IndexEntry](executeProps, ScanLimitReached, c.limitContinuation())
+	}
+
 	// Check time limit.
 	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
 		return NewResultNoNext[*IndexEntry](
@@ -557,10 +570,7 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 
 	// Check byte limit.
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		return NewResultNoNext[*IndexEntry](
-			ByteLimitReached,
-			c.limitContinuation(),
-		), nil
+		return noNextOrFail[*IndexEntry](executeProps, ByteLimitReached, c.limitContinuation())
 	}
 
 	if !c.iterator.Advance() {

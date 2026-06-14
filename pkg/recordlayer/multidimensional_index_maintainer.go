@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -355,6 +356,8 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		limit:             limit,
 		pointFilter:       pointFilter,
 		outerContinuation: outerContinuation,
+		props:             scanProperties.ExecuteProperties,
+		startTime:         time.Now(),
 	}
 }
 
@@ -491,6 +494,14 @@ type rtreeScanCursor struct {
 	// nil for single-prefix (non-skip-scan) scans.
 	outerContinuation []byte
 	closed            bool
+
+	// RFC-106a scan governance. props carries the scan/byte/time limits +
+	// FailOnScanLimitReached; scanned/bytesScanned count EVERY item read from the
+	// R-tree (including point-filtered ones — reading them is the scan cost).
+	props        ExecuteProperties
+	scanned      int
+	bytesScanned int64
+	startTime    time.Time
 }
 
 func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -498,11 +509,26 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err
 		}
-		// Row limit check BEFORE fetching — avoids wasting an FDB read when
-		// the limit is already reached.
+		// Row limit check FIRST — clean ReturnLimitReached stop, and avoids
+		// wasting an FDB read when the limit is already reached (ordering matches
+		// index_scan so a satisfied row cap isn't turned into 54F01 by an equal
+		// scan-record cap — codex RFC-106a).
 		if c.limit > 0 && c.delivered >= c.limit {
 			cont := c.buildContinuation()
 			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+		}
+
+		// Scan governance (RFC-106a): bound the spatial scan by scanned records /
+		// time / bytes, counting EVERY item read below (incl. point-filtered ones —
+		// reading them is the scan cost). noNextOrFail → 54F01 in fail mode.
+		if c.props.ScannedRecordsLimit > 0 && c.scanned >= c.props.ScannedRecordsLimit {
+			return noNextOrFail[*IndexEntry](c.props, ScanLimitReached, &BytesContinuation{bytes: c.buildContinuation()})
+		}
+		if c.props.TimeLimit > 0 && c.scanned > 0 && time.Since(c.startTime) >= c.props.TimeLimit {
+			return NewResultNoNext[*IndexEntry](TimeLimitReached, &BytesContinuation{bytes: c.buildContinuation()}), nil
+		}
+		if c.props.ScannedBytesLimit > 0 && c.scanned > 0 && c.bytesScanned >= c.props.ScannedBytesLimit {
+			return noNextOrFail[*IndexEntry](c.props, ByteLimitReached, &BytesContinuation{bytes: c.buildContinuation()})
 		}
 
 		// Get next item from iterator.
@@ -518,6 +544,8 @@ func (c *rtreeScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*Index
 		// skips past this item).
 		c.lastHV = item.HilbertValue
 		c.lastKey = item.ItemKey()
+		c.scanned++
+		c.bytesScanned += int64(len(c.lastKey.Pack())) // approx scanned bytes (RFC-106a)
 
 		// Exact point filter: skip items whose coordinates don't match the
 		// scan range. This matches Java's containsPosition() post-filter.
@@ -611,6 +639,12 @@ type prefixSkipScanCursor struct {
 	nextPrefixStart fdb.Key
 	// Total entries delivered across all prefixes.
 	totalDelivered int
+	// Shared RFC-106a scan budget across all prefixes (per-prefix cursor scans +
+	// findNextPrefix enumeration reads) so a many-small-prefix skip-scan can't
+	// bypass the cap by resetting a fresh per-prefix counter each prefix.
+	totalScanned      int       // records: ScannedRecordsLimit
+	totalBytesScanned int64     // bytes:   ScannedBytesLimit
+	startTime         time.Time // wall-clock origin for TimeLimit (set on first OnNext)
 	// Row limit (0 = unlimited).
 	limit int
 	// Whether we've computed the limit yet.
@@ -622,6 +656,7 @@ type prefixSkipScanCursor struct {
 func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
 	if !c.limitComputed {
 		c.limitComputed = true
+		c.startTime = time.Now() // shared time-budget origin (RFC-106a)
 		if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
 			c.limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit
 		}
@@ -640,6 +675,31 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: []byte{}}), nil
 		}
 
+		// Aggregate scan budgets across all prefixes (RFC-106a). Without these a
+		// skip-scan over many small prefixes — each under the per-prefix limit —
+		// would never trip the cap because each per-prefix cursor resets its own
+		// counter.
+		//
+		// These stops are ALWAYS a terminal error, even when FailOnScanLimitReached
+		// is off (codex): cross-prefix resume is unsupported (see the type comment),
+		// so the skip-scan cannot hand back a valid continuation — a paginating
+		// no-next here carries empty bytes, which a resuming caller reads as "no
+		// continuation" and restarts from the first prefix (an infinite re-scan).
+		// Erroring is the only honest option; a bound-prefix scan (single
+		// rtreeScanCursor) still paginates these limits normally.
+		scanLimit := c.scanProperties.ExecuteProperties.ScannedRecordsLimit
+		if scanLimit > 0 && c.totalScanned >= scanLimit {
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: ScanLimitReached}
+		}
+		bytesLimit := c.scanProperties.ExecuteProperties.ScannedBytesLimit
+		if bytesLimit > 0 && c.totalScanned > 0 && c.totalBytesScanned >= bytesLimit {
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: ByteLimitReached}
+		}
+		timeLimit := c.scanProperties.ExecuteProperties.TimeLimit
+		if timeLimit > 0 && c.totalScanned > 0 && time.Since(c.startTime) >= timeLimit {
+			return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: TimeLimitReached}
+		}
+
 		// If we have an active per-prefix cursor, delegate to it.
 		if c.currentCursor != nil {
 			result, err := c.currentCursor.OnNext(ctx)
@@ -650,16 +710,31 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 				c.totalDelivered++
 				return result, nil
 			}
-			// Per-prefix cursor exhausted — close it and move to next prefix.
+			// Per-prefix cursor done — fold its scan counts into the shared budget
+			// before closing, then close. (A non-rtree cursor — only *errorCursor,
+			// whose OnNext already returned an error above — never reaches here, so
+			// the count is never silently dropped.)
+			if rc, ok := c.currentCursor.(*rtreeScanCursor); ok {
+				c.totalScanned += rc.scanned
+				c.totalBytesScanned += rc.bytesScanned
+			}
 			_ = c.currentCursor.Close()
 			c.currentCursor = nil
-			// Only advance if the per-prefix source was truly exhausted.
-			if result.GetNoNextReason() == ReturnLimitReached {
-				// The per-prefix cursor hit its limit. Since the limit is
-				// shared, this means our global limit was hit inside the
-				// rtreeScanCursor. Propagate.
+			reason := result.GetNoNextReason()
+			if reason == ReturnLimitReached {
+				// The per-prefix cursor hit the (shared) row limit. Propagate.
 				return result, nil
 			}
+			if reason.IsOutOfBand() {
+				// The per-prefix cursor consumed the (remaining) shared scan/byte/time
+				// budget mid-prefix. Like the aggregate checks above, this is a TERMINAL
+				// error even in non-fail mode (codex): the per-prefix continuation has no
+				// cross-prefix state, so propagating it as a paginating no-next would
+				// resume from the first prefix (infinite re-scan). FailOnScanLimitReached
+				// is moot here — the per-prefix cursor would have errored upstream if set.
+				return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: reason}
+			}
+			// SourceExhausted → genuinely move to the next prefix.
 		}
 
 		if c.exhausted {
@@ -675,6 +750,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 			c.exhausted = true
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 		}
+		c.totalScanned++ // the prefix-enumeration read counts against the scan budget
 
 		// Build a per-prefix scanRange with this prefix in the Low/High bounds.
 		prefixScanRange := c.scanRange
@@ -695,6 +771,29 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 				continue // will be caught by limit check at top
 			}
 			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithReturnedRowLimit(remaining)
+		}
+		// Decrement the shared scan budgets so this prefix's cursor can only consume
+		// what's left of each aggregate cap (RFC-106a) — records, bytes, and time.
+		if scanLimit > 0 {
+			remainingScan := scanLimit - c.totalScanned
+			if remainingScan <= 0 {
+				continue // caught by the aggregate scan-budget check at the top
+			}
+			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithScannedRecordsLimit(remainingScan)
+		}
+		if bytesLimit > 0 {
+			remainingBytes := bytesLimit - c.totalBytesScanned
+			if remainingBytes <= 0 {
+				continue
+			}
+			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithScannedBytesLimit(remainingBytes)
+		}
+		if timeLimit > 0 {
+			remainingTime := timeLimit - time.Since(c.startTime)
+			if remainingTime <= 0 {
+				continue
+			}
+			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithTimeLimit(remainingTime)
 		}
 
 		// Use the continuation only for the first prefix (subsequent prefixes
@@ -730,6 +829,10 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	if len(kvs) == 0 {
 		return nil, false, nil
 	}
+	// The enumeration read counts against the shared byte budget too, not just
+	// the record budget (codex RFC-106a) — otherwise many-prefix overhead bypasses
+	// ScannedBytesLimit. (The caller adds 1 to totalScanned for the record count.)
+	c.totalBytesScanned += int64(len(kvs[0].Key) + len(kvs[0].Value))
 
 	// Unpack the key relative to the index subspace.
 	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))

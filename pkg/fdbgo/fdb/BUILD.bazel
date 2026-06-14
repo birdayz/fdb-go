@@ -40,6 +40,7 @@ go_test(
         "range_iterator_test.go",
         "range_result_internal_test.go",
         "range_test.go",
+        "retry_predicate_pin_test.go",
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",

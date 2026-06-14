@@ -680,7 +680,13 @@ func (m *vectorIndexMaintainer) newVectorSearchCursor(entries []*IndexEntry, con
 	}
 }
 
-func (c *vectorSearchCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *vectorSearchCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	// Honor a statement deadline / cancellation while emitting (RFC-106a). The
+	// kNN search itself is bounded by k/efSearch, so this only guards the emit
+	// loop; per-search cost is bounded by construction, not by a scan limit.
+	if err := ctx.Err(); err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
+	}
 	if c.closed || c.pos >= len(c.entries) {
 		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 	}

@@ -105,6 +105,10 @@ var counters = []counterDef{
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionImmediateReadVersionsCompleted },
 	},
 	{
+		"fdb_client_grv_cache_hits_total", "Read versions served from the GRV cache (USE_GRV_CACHE opt-in; complement of read_versions_completed).",
+		func(s client.ClientMetricsSnapshot) int64 { return s.GRVCacheHits },
+	},
+	{
 		"fdb_client_transaction_retries_total", "All OnError-sanctioned retries (Go aggregate; includes codes C++ retries without a counter).",
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionRetries },
 	},

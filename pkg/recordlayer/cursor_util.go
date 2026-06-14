@@ -5,6 +5,22 @@ import (
 	"iter"
 )
 
+// errIfDrainTruncated returns a *ScanLimitReachedError when a non-paginating drain's
+// cursor stopped OUT-OF-BAND — i.e. a scan/byte/time resource limit cut it off, not
+// true exhaustion or a clean ReturnLimitReached. A value-only drain (ForEach / First /
+// GetCount / Reduce) discards the continuation and cannot paginate, so an out-of-band
+// stop means the materialized/aggregated result is INCOMPLETE; surfacing it prevents a
+// silently-truncated value (e.g. a partial CountRecords) (codex RFC-106a; mirrors Java's
+// RecordCursor.NoNextReason.isOutOfBand()). Inert when no scan limit is set — leaf
+// cursors then only emit SourceExhausted/ReturnLimitReached. AsListWithContinuation, the
+// paginating variant, instead returns the continuation and must NOT use this.
+func errIfDrainTruncated[T any](result RecordCursorResult[T]) error {
+	if result.GetNoNextReason().IsOutOfBand() {
+		return &ScanLimitReachedError{Reason: result.GetNoNextReason()}
+	}
+	return nil
+}
+
 // ForEach applies a function to each record in the cursor
 func ForEach[T any](ctx context.Context, cursor RecordCursor[T], fn func(T) error) error {
 	defer func() { _ = cursor.Close() }()
@@ -19,7 +35,7 @@ func ForEach[T any](ctx context.Context, cursor RecordCursor[T], fn func(T) erro
 		}
 
 		if !result.HasNext() {
-			return nil
+			return errIfDrainTruncated(result)
 		}
 
 		if err := fn(result.GetValue()); err != nil {
@@ -78,7 +94,8 @@ func First[T any](ctx context.Context, cursor RecordCursor[T]) (*T, error) {
 		return nil, err
 	}
 	if !result.HasNext() {
-		return nil, nil
+		// Out-of-band before the first row → truncated; can't report "empty".
+		return nil, errIfDrainTruncated(result)
 	}
 	v := result.GetValue()
 	return &v, nil
@@ -98,7 +115,7 @@ func GetCount[T any](ctx context.Context, cursor RecordCursor[T]) (int, error) {
 			return count, err
 		}
 		if !result.HasNext() {
-			return count, nil
+			return count, errIfDrainTruncated(result)
 		}
 		count++
 	}
@@ -118,7 +135,7 @@ func Reduce[T any, R any](ctx context.Context, cursor RecordCursor[T], initial R
 			return acc, err
 		}
 		if !result.HasNext() {
-			return acc, nil
+			return acc, errIfDrainTruncated(result)
 		}
 		acc = fn(acc, result.GetValue())
 	}

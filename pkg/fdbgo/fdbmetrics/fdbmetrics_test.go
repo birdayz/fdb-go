@@ -20,6 +20,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionsNotCommitted:         3,
 		TransactionsMaybeCommitted:       1,
 		TransactionReadVersionsCompleted: 42,
+		GRVCacheHits:                     9,
 		TransactionRetries:               4,
 	}}
 
@@ -37,6 +38,8 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_transactions_not_committed_total 3",
 		"fdb_client_transactions_maybe_committed_total 1",
 		"fdb_client_transaction_read_versions_completed_total 42",
+		"# TYPE fdb_client_grv_cache_hits_total counter",
+		"fdb_client_grv_cache_hits_total 9",
 		"fdb_client_transaction_retries_total 4",
 		"fdb_client_transactions_throttled_total 0",
 	} {

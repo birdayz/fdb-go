@@ -247,30 +247,6 @@ var _ = Describe("Cursor context cancellation", func() {
 	})
 
 	// ---------------------------------------------------------------
-	// Seq iterator
-	// ---------------------------------------------------------------
-	Describe("Seq", func() {
-		It("yields nothing on pre-cancelled context", func() {
-			inner := &infiniteCursor{}
-			var count int
-			for range Seq[int](inner, cancelledCtx()) {
-				count++
-			}
-			Expect(count).To(Equal(0))
-			Expect(inner.calls.Load()).To(BeNumerically("<=", 1))
-		})
-
-		It("works normally with non-cancelled context", func() {
-			inner := FromList([]int{10, 20, 30})
-			var results []int
-			for v := range Seq[int](inner, context.Background()) {
-				results = append(results, v)
-			}
-			Expect(results).To(Equal([]int{10, 20, 30}))
-		})
-	})
-
-	// ---------------------------------------------------------------
 	// Seq2 iterator
 	// ---------------------------------------------------------------
 	Describe("Seq2", func() {
@@ -292,20 +268,6 @@ var _ = Describe("Cursor context cancellation", func() {
 				results = append(results, v)
 			}
 			Expect(results).To(Equal([]int{10, 20}))
-		})
-	})
-
-	// ---------------------------------------------------------------
-	// SeqWithContinuation iterator
-	// ---------------------------------------------------------------
-	Describe("SeqWithContinuation", func() {
-		It("yields nothing on pre-cancelled context", func() {
-			inner := &infiniteCursor{}
-			var count int
-			for range SeqWithContinuation[int](inner, cancelledCtx()) {
-				count++
-			}
-			Expect(count).To(Equal(0))
 		})
 	})
 

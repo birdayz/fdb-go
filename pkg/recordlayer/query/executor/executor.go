@@ -1852,20 +1852,31 @@ func executeDelete(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
+
+	// Pre-materialize the full target set BEFORE deleting anything. A resource-limit
+	// cut-off (CollectAllBounded → errIfBufferTruncated → 54F01) must abort the DELETE
+	// with ZERO records removed — never leave a partially-applied DELETE staged in an
+	// explicit transaction that a later commit would persist (codex RFC-106a). DML runs
+	// in one transaction, so the target set is bounded by the tx; the materialization
+	// cap is the memory backstop.
+	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "DELETE target set")
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline AFTER collection and BEFORE any mutation: if the
+	// deadline already passed (collection itself is ctx-gated, but the window after it
+	// is not), abort with ZERO records changed (codex RFC-106a). The mutation loop then
+	// runs to completion uninterrupted — checking ctx mid-loop would reintroduce the
+	// partial-mutation hazard pre-materialization exists to prevent; the loop only
+	// stages local writes over a tx-bounded target set.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	var results []QueryResult
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		result, err := innerCursor.OnNext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !result.HasNext() {
-			break
-		}
-		qr := result.GetValue()
+	for _, qr := range targets {
 		if qr.PrimaryKey == nil {
 			continue
 		}
@@ -1892,6 +1903,7 @@ func executeInsert(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
 
 	// Materialize the inner rows BEFORE writing any record so that
 	// INSERT … SELECT reading the target table doesn't re-scan its own
@@ -1901,8 +1913,13 @@ func executeInsert(
 	// still re-read across page boundaries — that extreme case is a known
 	// limitation, RFC-035.)
 	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "INSERT source")
-	innerCursor.Close()
 	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline after collection, before any write — abort
+	// with ZERO records inserted if already expired (codex RFC-106a; see executeDelete).
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
@@ -2021,22 +2038,26 @@ func executeUpdate(
 	if err != nil {
 		return nil, err
 	}
+	defer innerCursor.Close()
 
 	transforms := p.GetTransforms()
 
+	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
+	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
+	// staged in an explicit transaction (codex RFC-106a; see executeDelete).
+	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "UPDATE target set")
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-check the statement deadline after collection, before any mutation — abort
+	// with ZERO records changed if already expired (codex RFC-106a; see executeDelete).
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	var results []QueryResult
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		result, err := innerCursor.OnNext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !result.HasNext() {
-			break
-		}
-		qr := result.GetValue()
+	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
 		}
@@ -2623,6 +2644,9 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 			return nil, err
 		}
 		if !result.HasNext() {
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		results = append(results, result.GetValue())
@@ -2643,6 +2667,9 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 			return nil, err
 		}
 		if !result.HasNext() {
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		results = append(results, result.GetValue())
@@ -2651,6 +2678,24 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 		}
 	}
 	return results, nil
+}
+
+// errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
+// collect's source cursor stopped OUT-OF-BAND — i.e. a scan/byte/time resource
+// limit (RFC-106a) cut it off, not true exhaustion or a legitimate
+// ReturnedRowLimit. A buffered operator (union/NLJ-inner/INSERT/recursive-CTE,
+// scalar subquery, DML drain) materializes its source in one shot and cannot
+// paginate a continuation, so an out-of-band stop means the buffer is INCOMPLETE.
+// Erroring (→ 54F01) is correct; silently returning the partial buffer would be a
+// silent truncation (CLAUDE.md: no silent caps). Mirrors Java's
+// RecordCursor.NoNextReason.isOutOfBand() — the streaming operators (sort/group)
+// instead capture the partial state in a continuation and paginate, which a
+// one-shot buffer cannot.
+func errIfBufferTruncated(result recordlayer.RecordCursorResult[QueryResult]) error {
+	if result.GetNoNextReason().IsOutOfBand() {
+		return &recordlayer.ScanLimitReachedError{Reason: result.GetNoNextReason()}
+	}
+	return nil
 }
 
 // sortByKeys sorts QueryResult slice by the given sort key names.

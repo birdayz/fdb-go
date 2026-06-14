@@ -85,7 +85,8 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 			expectedID := int64(0)
 			recordCount := 0
-			for record := range Seq(cursor, ctx) {
+			for record, iterErr := range Seq2(cursor, ctx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				order, ok := record.Record.(*gen.Order)
 				if !ok {
 					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
@@ -190,10 +191,14 @@ var _ = Describe("BasicContinuation", func() {
 				defer func() { _ = cursor.Close() }()
 
 				batchRecordCount := 0
-				var lastContinuation RecordCursorContinuation
 
-				// Read this batch using SeqWithContinuation to get proper continuation
-				for record, cont := range SeqWithContinuation(cursor, ctx) {
+				// Read this batch via AsListWithContinuation to get the final
+				// (resumable) continuation bytes — nil when the source is exhausted.
+				batch, contBytes, lErr := AsListWithContinuation(ctx, cursor)
+				if lErr != nil {
+					return nil, lErr
+				}
+				for _, record := range batch {
 					order, ok := record.Record.(*gen.Order)
 					if !ok {
 						return nil, fmt.Errorf("unexpected record type: %T", record.Record)
@@ -220,18 +225,12 @@ var _ = Describe("BasicContinuation", func() {
 					}
 
 					batchRecordCount++
-					lastContinuation = cont
 				}
 
 				// Return batch results as a map for easier type assertion
 				result := map[string]any{
 					"count":        batchRecordCount,
-					"continuation": []byte(nil),
-				}
-				if lastContinuation != nil && !lastContinuation.IsEnd() {
-					contBytes, contErr := lastContinuation.ToBytes()
-					Expect(contErr).NotTo(HaveOccurred())
-					result["continuation"] = contBytes
+					"continuation": contBytes,
 				}
 
 				return result, nil

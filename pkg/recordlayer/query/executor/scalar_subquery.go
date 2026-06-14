@@ -21,9 +21,12 @@ func EvaluateScalarSubquery(
 	plan plans.RecordQueryPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
+	props recordlayer.ExecuteProperties,
 ) (any, error) {
-	cursor, err := ExecutePlan(ctx, plan, store, evalCtx, nil,
-		recordlayer.DefaultExecuteProperties())
+	// props carries the statement's scan limits (RFC-106a) so an uncorrelated
+	// subquery respects the same cap as the outer plan (codex). ctx carries the
+	// statement timeout.
+	cursor, err := ExecutePlan(ctx, plan, store, evalCtx, nil, props)
 	if err != nil {
 		return nil, err
 	}
@@ -37,6 +40,12 @@ func EvaluateScalarSubquery(
 			return nil, nextErr
 		}
 		if !result.HasNext() {
+			// An out-of-band (resource-limit) stop means the subquery's input was
+			// truncated — error (→ 54F01) rather than fabricate a no-row / wrong
+			// scalar value from a partial scan (RFC-106a).
+			if lerr := errIfBufferTruncated(result); lerr != nil {
+				return nil, lerr
+			}
 			break
 		}
 		rows = append(rows, result.GetValue())
