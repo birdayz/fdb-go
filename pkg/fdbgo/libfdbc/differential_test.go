@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -321,6 +322,73 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 		if got := readKeyVia(t, goRaw, key); string(got) != "committed" {
 			t.Fatalf("write must have committed despite the late cancel, got %q", got)
+		}
+	})
+
+	t.Run("range_iterator_contract", func(t *testing.T) {
+		// Drive the cgo backend's GetRange iterator the way the record-layer cursors
+		// do: an Advance/Get loop, an idempotent Get(), and a post-loop Get() to tell
+		// clean exhaustion from a stored FDB error. cgofdb's native iterator violates
+		// that contract — its Get() advances (not idempotent) and panics when called
+		// after exhaustion — so the adapter must buffer/translate. The record-store
+		// subtests above never exercised this (they use GetSliceWithError / point
+		// reads), which is exactly how the bug shipped past them.
+		pfx := "libfdbc_diff/iter/"
+		want := map[string]string{}
+		if _, err := cgoBackend.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			for i := 0; i < 12; i++ {
+				k := fmt.Sprintf("%s%02d", pfx, i)
+				v := fmt.Sprintf("v%02d", i)
+				tr.Set(fdb.Key(k), []byte(v))
+				want[k] = v
+			}
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		iterate := func(rng fdb.Range) map[string]string {
+			out := map[string]string{}
+			_, err := cgoBackend.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+				it := rtx.GetRange(rng, fdb.RangeOptions{}).Iterator()
+				for it.Advance() {
+					kv, err := it.Get()
+					if err != nil {
+						return nil, err
+					}
+					// Get() must be idempotent — a second call yields the same element.
+					if kv2, err2 := it.Get(); err2 != nil || string(kv2.Key) != string(kv.Key) {
+						t.Fatalf("Get() not idempotent: %x vs %x (err %v)", kv.Key, kv2.Key, err2)
+					}
+					out[string(kv.Key)] = string(kv.Value)
+				}
+				// The record-layer error-check pattern: Get() after Advance()==false
+				// must be SAFE (no panic) and report (zero, nil) on clean exhaustion.
+				if _, err := it.Get(); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("iterate: %v", err)
+			}
+			return out
+		}
+
+		got := iterate(subspace.FromBytes([]byte(pfx)))
+		if len(got) != len(want) {
+			t.Fatalf("iterator returned %d keys, want %d (skipped or duplicated?)", len(got), len(want))
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("iterator key %s = %q, want %q", k, got[k], v)
+			}
+		}
+
+		// Empty range: Advance() is immediately false; the post-loop Get() must still
+		// be safe (the panic case for the old adapter).
+		if g := iterate(subspace.FromBytes([]byte("libfdbc_diff/iter_empty/"))); len(g) != 0 {
+			t.Fatalf("empty range must iterate to 0 keys, got %d", len(g))
 		}
 	})
 }

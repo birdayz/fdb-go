@@ -320,18 +320,69 @@ func (r rangeResult) Iterator() fdb.RangeIterator {
 	return &rangeIterator{it: r.rr.Iterator()}
 }
 
+// rangeIterator translates cgofdb's iterator model to the fdb.RangeIterator
+// contract, which the record-layer cursors rely on and which differs from
+// cgofdb's:
+//
+//   - fdb model: Advance() moves to the next element and returns whether one
+//     exists; Get() returns the CURRENT element idempotently and is SAFE after
+//     Advance()==false, returning (zero, nil) on clean exhaustion or (zero, err)
+//     on a stored error (the cursors call Get() post-loop to tell exhaustion from a
+//     transient FDB error).
+//   - cgofdb model: Get() returns the current element AND advances (not
+//     idempotent), and Advance() returns *true* on a stored error (so Get() is
+//     never called after Advance()==false; doing so panics with index-out-of-range
+//     on clean exhaustion).
+//
+// So we drive cgofdb's Advance()+Get() pair once per fdb Advance(), buffering the
+// one current element; fdb Get() just returns that buffer. The stored error is
+// sticky and surfaced by Get(), never by indexing a spent batch.
 type rangeIterator struct {
-	it *cgofdb.RangeIterator
+	it    *cgofdb.RangeIterator
+	cur   fdb.KeyValue
+	valid bool  // cur holds a live current element (set by Advance, cleared on exhaustion)
+	err   error // sticky error, surfaced by Get() after Advance()==false
 }
 
-func (i *rangeIterator) Advance() bool { return i.it.Advance() }
+func (i *rangeIterator) Advance() bool {
+	i.valid = false
+	if i.err != nil {
+		return false
+	}
+	if !i.it.Advance() {
+		// cgofdb returns false ONLY on clean exhaustion (it returns true on a stored
+		// error). Leave i.err nil so Get() reports (zero, nil).
+		return false
+	}
+	// cgofdb Advance()==true ⟹ a current element OR a stored error; Get() yields it
+	// (and advances cgofdb's index — which is why we call it exactly once here).
+	kv, err := i.it.Get()
+	if err != nil {
+		i.err = convErr(err)
+		return false
+	}
+	i.cur = fromCgoKeyValue(kv)
+	i.valid = true
+	return true
+}
 
 func (i *rangeIterator) Get() (fdb.KeyValue, error) {
-	kv, err := i.it.Get()
-	return fromCgoKeyValue(kv), convErr(err)
+	if i.err != nil {
+		return fdb.KeyValue{}, i.err
+	}
+	if !i.valid {
+		return fdb.KeyValue{}, nil // before first Advance, or after exhaustion
+	}
+	return i.cur, nil
 }
 
-func (i *rangeIterator) MustGet() fdb.KeyValue { return fromCgoKeyValue(i.it.MustGet()) }
+func (i *rangeIterator) MustGet() fdb.KeyValue {
+	kv, err := i.Get()
+	if err != nil {
+		panic(err)
+	}
+	return kv
+}
 
 // SetTraceLog is a no-op: cgofdb's iterator exposes no per-batch trace hook (that
 // is a pure-Go-client debugging aid). The data is identical with or without it.

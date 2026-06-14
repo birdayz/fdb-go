@@ -138,6 +138,11 @@ func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
 	// Without this, opening with OpenDatabaseWithBackend(BackendGo, …) would needlessly
 	// cripple those paths.
 	if goDB, ok := backend.(fdb.Database); ok {
+		// Match NewFDBDatabase: the record layer reads \xff/metadataVersion, so make
+		// ReadSystemKeys the default on every transaction (including the direct
+		// CreateTransaction path) — otherwise BackendGo via this constructor would
+		// behave differently from NewFDBDatabase and fail those reads.
+		goDB.Options().SetReadSystemKeys()
 		d.db = goDB
 	}
 	return d
