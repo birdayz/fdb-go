@@ -77,18 +77,22 @@ by embedded/unit tests, noted per item):
 | Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
 | Recall at scale: ε-pruning (SPANN §3.3), 1M w/ε/QPS sweeps, frozen defaults | 094.5 | Shipped | `VECTOR_BENCHMARK_RESULTS.md` |
 
-### Current performance (SIFT-1M) — two ingest paths
+### Current performance (SIFT) — two ingest paths
 
 SPFresh has **two ingest paths** with very different throughput *and* recall — the
-doc must not be read as "SPFresh ingests at 530 vec/s":
+doc must not be read as "SPFresh ingests at 530 vec/s". (Numbers are tagged with the
+scale they were measured at; the bulk-build path has not been separately re-pinned at
+1M.)
 
 **1. Bulk build (`BuildSPFreshIndex`, build-then-read) — the fast, high-recall path.**
 Mark the index disabled, write the records, build the whole topology in one shot,
 mark readable. No concurrent-maintenance lag, so it lands the **converged-topology
-ideal: ~0.988 recall default** (1.0000 @ 100k) — and ingest is an **order of
-magnitude above foreground fill**: ≈1,524 vec/s single-thread k-means baseline,
-**7× with the perf stack** (~minutes for 1M). Use this whenever you can ingest
-offline / batch.
+ideal** — recall **1.0000 @ 100k**, **~0.988 default @ 300k** (the "bulk ideal" the
+refinement table below targets). Build throughput **measured at 100k**: ≈1,524 vec/s
+single-thread k-means baseline → **7.0× with the perf stack ≈ 10.7k vec/s** — i.e.
+**≈20× the 530 vec/s online fill**. At 1M the build is **~minutes** (extrapolated from
+the 100k harness + the 88 µs/vector assign microbench), not separately re-pinned. Use
+this whenever you can ingest offline / in batch.
 
 **2. Foreground / online fill — live `SaveRecord` with the rebalancer looping beside
 the writers.** Throughput **205–530 vec/s** at 1M (the perf stack lifted it 205→530),
