@@ -89,9 +89,8 @@ func TestRFC106a_ExecutePropsWiring(t *testing.T) {
 }
 
 // TestRFC106a_SQLSTATEMap proves the translateExecError arms added for the
-// eager-buffer caps + the scan-limit fail + the statement-timeout deadline
-// surface 54F01 — and revert-proves the arms are load-bearing (an unmapped
-// error passes through untranslated).
+// eager-buffer caps + the scan-limit fail surface 54F01 — and revert-proves the
+// arms are load-bearing (an unmapped error passes through untranslated).
 func TestRFC106a_SQLSTATEMap(t *testing.T) {
 	t.Parallel()
 
@@ -102,7 +101,6 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 		{"materialization", &executor.MaterializationLimitExceededError{Limit: 100_000, Context: "buffered union"}},
 		{"sortBuffer", &executor.SortBufferExceededError{Rows: 6_000_000, Limit: 5_000_000}},
 		{"scanLimitFail", &recordlayer.ScanLimitReachedError{Reason: recordlayer.ScanLimitReached}},
-		{"deadline", fmt.Errorf("wrapped: %w", context.DeadlineExceeded)},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -119,9 +117,11 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 		})
 	}
 
-	// The deadline arm must carry the specific "statement timeout" message.
-	if msg := asAPIMsg(translateExecError(context.DeadlineExceeded)); msg != "statement timeout" {
-		t.Fatalf("deadline message = %q, want 'statement timeout'", msg)
+	// A bare deadline is NO LONGER mapped by translateExecError on its own — the
+	// statement-timeout→54F01 mapping is gated on the internal-timeout context cause
+	// (translateExecErrorCtx) so a caller deadline can survive (see below).
+	if out := translateExecError(context.DeadlineExceeded); !errors.Is(out, context.DeadlineExceeded) {
+		t.Fatalf("translateExecError(deadline) = %v, want the bare deadline to pass through", out)
 	}
 
 	// Revert-prove: an UNMAPPED error passes through untranslated, proving
@@ -132,11 +132,43 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 	}
 }
 
-// asAPIMsg extracts an *api.Error message, or "" if the error is not one.
-func asAPIMsg(err error) string {
-	var e *api.Error
-	if errors.As(err, &e) {
-		return e.Message
+// TestRFC106a_StatementTimeoutVsCallerDeadline pins the codex PR #291 fix: the
+// INTERNAL RFC-106a statement-timeout deadline maps to 54F01 "statement timeout", while
+// a CALLER's own QueryContext/ExecContext deadline propagates as context.DeadlineExceeded
+// (never rewritten to 54F01) so errors.Is(err, context.DeadlineExceeded) keeps working
+// and a client cancellation isn't misreported as a Go-local statement timeout.
+func TestRFC106a_StatementTimeoutVsCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	// Internal statement timeout: cause == errStatementTimeout → 54F01.
+	stmtCtx, stmtCancel := context.WithDeadlineCause(context.Background(), time.Now().Add(-time.Second), errStatementTimeout)
+	defer stmtCancel()
+	for _, in := range []error{context.DeadlineExceeded, fmt.Errorf("cursor gave up: %w", context.DeadlineExceeded)} {
+		got := translateExecErrorCtx(stmtCtx, in)
+		var apiErr *api.Error
+		if !errors.As(got, &apiErr) || apiErr.Code != api.ErrCodeExecutionLimitReached {
+			t.Fatalf("statement-timeout deadline %v → %v, want 54F01 ExecutionLimitReached", in, got)
+		}
+		if apiErr.Message != "statement timeout" {
+			t.Fatalf("statement-timeout message = %q, want 'statement timeout'", apiErr.Message)
+		}
 	}
-	return ""
+
+	// Caller's own deadline (no statement-timeout cause) must PROPAGATE unchanged.
+	callerCtx, callerCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer callerCancel()
+	out := translateExecErrorCtx(callerCtx, context.DeadlineExceeded)
+	if !errors.Is(out, context.DeadlineExceeded) {
+		t.Fatalf("caller deadline = %v, want propagated context.DeadlineExceeded (errors.Is must hold)", out)
+	}
+	var apiErr *api.Error
+	if errors.As(out, &apiErr) {
+		t.Fatalf("caller deadline mapped to api.Error %q, want the raw context.DeadlineExceeded", apiErr.Code)
+	}
+
+	// No statement timeout set at all (Execute didn't wrap ctx): a deadline is the
+	// caller's by construction → propagate.
+	if out := translateExecErrorCtx(context.Background(), context.DeadlineExceeded); !errors.Is(out, context.DeadlineExceeded) {
+		t.Fatalf("unwrapped ctx deadline = %v, want propagated context.DeadlineExceeded", out)
+	}
 }

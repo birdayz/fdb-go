@@ -826,7 +826,11 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// lifetime), not when Execute returns.
 	var cancel context.CancelFunc
 	if c.statementTimeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, c.statementTimeout)
+		// Tag the internal deadline with errStatementTimeout as its cause so the error
+		// translator can tell THIS timeout (→ 54F01) apart from a caller-supplied
+		// QueryContext/ExecContext deadline (which must keep propagating as
+		// context.DeadlineExceeded so errors.Is(err, context.DeadlineExceeded) holds).
+		ctx, cancel = context.WithTimeoutCause(ctx, c.statementTimeout, errStatementTimeout)
 	}
 
 	// Each fetchPage creates a fresh cursor hierarchy from the plan +
@@ -1296,7 +1300,7 @@ func (r *paginatingRows) fetchPage() error {
 					// Route the subquery error through the same translation as the
 					// outer plan so a subquery scan-limit/deadline hit surfaces as
 					// 54F01, not a raw *ScanLimitReachedError (codex RFC-106a).
-					return nil, translateExecError(ssqErr)
+					return nil, translateExecErrorCtx(r.ctx, ssqErr)
 				}
 				scalarResults[ssq.alias] = result
 			}
@@ -1314,7 +1318,7 @@ func (r *paginatingRows) fetchPage() error {
 		}
 		cursor, execErr := executor.ExecutePlan(r.ctx, r.plan, store, evalCtx, r.continuation, mainProps)
 		if execErr != nil {
-			return nil, translateExecError(execErr)
+			return nil, translateExecErrorCtx(r.ctx, execErr)
 		}
 
 		rs := executor.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
@@ -1332,7 +1336,7 @@ func (r *paginatingRows) fetchPage() error {
 			r.buf = append(r.buf, row)
 		}
 		if err := rs.Err(); err != nil {
-			return nil, translateExecError(err)
+			return nil, translateExecErrorCtx(r.ctx, err)
 		}
 
 		cont := rs.GetContinuation()
@@ -1354,22 +1358,36 @@ func (r *paginatingRows) fetchPage() error {
 	})
 
 	if txErr != nil {
-		return translateExecError(txErr)
+		return translateExecErrorCtx(r.ctx, txErr)
 	}
 	return nil
+}
+
+// errStatementTimeout is the cause stamped on the internal RFC-106a §4 statement-timeout
+// context (Execute's context.WithTimeoutCause). It lets translateExecErrorCtx map ONLY
+// that timeout to 54F01, leaving a caller's own context deadline to propagate.
+var errStatementTimeout = errors.New("statement timeout")
+
+// translateExecErrorCtx is translateExecError plus statement-timeout awareness. ctx is
+// the statement-scoped context (Execute's, possibly WithTimeoutCause-wrapped). A deadline
+// error is mapped to 54F01 ONLY when it came from the INTERNAL statement timeout
+// (context.Cause(ctx) == errStatementTimeout); a caller-supplied QueryContext/ExecContext
+// deadline falls through to translateExecError, which returns it unchanged so that
+// errors.Is(err, context.DeadlineExceeded) keeps working and a client cancellation is not
+// misreported as a Go-local statement timeout (codex RFC-106a, PR #291).
+func translateExecErrorCtx(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) && errors.Is(context.Cause(ctx), errStatementTimeout) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, "statement timeout")
+	}
+	return translateExecError(err)
 }
 
 func translateExecError(err error) error {
 	if err == nil {
 		return nil
-	}
-	// Statement timeout (RFC-106a §4): the per-Execute context deadline
-	// fired. Cursors gate on ctx.Err() and surface context.DeadlineExceeded;
-	// map it to 54F01. Checked first so it wins over any FDB-error string
-	// matching further down. Note: this is the STATEMENT deadline, distinct
-	// from the per-transaction FDB 1031 timeout (translateFDBError).
-	if errors.Is(err, context.DeadlineExceeded) {
-		return api.NewError(api.ErrCodeExecutionLimitReached, "statement timeout")
 	}
 	var typeMismatch *predicates.TypeMismatchError
 	if errors.As(err, &typeMismatch) {
