@@ -51,12 +51,6 @@ variable "location" {
   default     = "fsn1"
 }
 
-variable "fdb_version" {
-  description = "FoundationDB client version — MUST match MODULE.bazel + the testcontainers default so the host libfdb_c the differential harness links is the same FDB the tests run against (RFC-108 §2)."
-  type        = string
-  default     = "7.3.75"
-}
-
 variable "runner_ephemeral" {
   description = "Run the GitHub Actions runner in --ephemeral mode (one job per runner process, fresh state each time — removes the orphaned-bazel/wedged-listener failure mode at the cost of a cold cache per job). Default false keeps the persistent + watchdog model (RFC-108 §4)."
   type        = bool
@@ -82,7 +76,12 @@ locals {
     # MinIO client (was the rolling :latest object — now a dated, verified release).
     mc_release = "mc.RELEASE.2025-05-21T01-59-54Z"
     mc_sha256  = "fb11c542a9d781fb228de1126c267a7933e98bee831654462fb352d5c9e94d24"
-    # FoundationDB clients .deb (host libfdb_c for the cgo differential harness).
+    # FoundationDB clients .deb — host libfdb_c for the cgo differential harness. The
+    # version lives HERE (not a tofu variable) so it is LOCKED to its checksum: overriding
+    # the version without updating the SHA would make fetch-verified.sh abort (codex). MUST
+    # match MODULE.bazel + the testcontainers default (RFC-108 §2) — a bump is one reviewed
+    # edit of both fields.
+    fdb_version        = "7.3.75"
     fdb_clients_sha256 = "642841a90acd7f2cc0ae08297245f4f9df76fe250b7b1331f2f99702fec3bee8"
   }
 }
@@ -125,7 +124,7 @@ resource "hcloud_server" "runner" {
   ssh_keys = [hcloud_ssh_key.runner.id]
 
   user_data = templatefile("${path.module}/cloud-init.yaml", {
-    fdb_version         = var.fdb_version
+    fdb_version         = local.versions.fdb_version
     github_repo         = var.github_repo
     github_runner_token = var.github_runner_token
     runner_labels       = var.runner_labels
