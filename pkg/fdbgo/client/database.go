@@ -263,14 +263,23 @@ func (db *database) getCommitProxies() []ProxyInfo {
 }
 
 func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
-	conn, dialed, err := db.getOrDialConn(ctx, addr)
+	conn, _, err := db.getOrDialConn(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	if dialed {
-		db.failMon.markAlive(addr)
-	}
 	return conn, nil
+}
+
+// handleDialError reacts to a getOrDial error. A context cancellation is the
+// CALLER giving up, not the endpoint failing — evicting the pooled connection and
+// marking the endpoint failed there would punish a healthy peer (and, in a
+// concurrent cold dial, could drop the very connection a sibling caller just
+// pooled). So only a genuine transport failure (ctx still live) feeds
+// handleConnError.
+func (db *database) handleDialError(ctx context.Context, addr string) {
+	if ctx.Err() == nil {
+		db.handleConnError(addr)
+	}
 }
 
 // dialCall is one in-flight singleflight dial. Waiters block on done, then read
@@ -299,6 +308,10 @@ type dialCall struct {
 // — it never aborts the dial that the other waiters share (matching C++, where the
 // connectionKeeper's dial outlives any single request).
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
+	// An already-canceled caller must not start (or coalesce onto) a dial.
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	db.connMu.Lock()
 	// Fast path: a live pooled connection.
 	if c, ok := db.connPool[addr]; ok {
@@ -350,6 +363,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 
 	db.connMu.Lock()
 	delete(db.dialing, addr)
+	pooled := false
 	switch {
 	case dialErr != nil:
 		call.err = dialErr
@@ -362,9 +376,18 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	default:
 		db.connPool[addr] = c
 		call.conn = c
+		pooled = true
 	}
 	db.connMu.Unlock()
 	close(call.done) // wake all waiters (conn/err already set under the lock)
+
+	// Mark the endpoint alive on a successful dial here — not in a caller — so a
+	// reconnect wakes failure-monitor recovery even if every caller abandoned its
+	// wait (the owner's ctx canceled), which would otherwise leave a healthy
+	// endpoint marked failed until a later RPC happens to succeed.
+	if pooled {
+		db.failMon.markAlive(addr)
+	}
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.

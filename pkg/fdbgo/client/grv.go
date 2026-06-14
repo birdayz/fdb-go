@@ -549,7 +549,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			proxy := proxies[(startIdx+i)%len(proxies)]
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
-				db.handleConnError(proxy.Address)
+				db.handleDialError(ctx, proxy.Address)
 				continue
 			}
 

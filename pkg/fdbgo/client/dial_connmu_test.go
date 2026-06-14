@@ -175,3 +175,31 @@ func TestGetOrDialConn_OwnerCancelDoesNotFailWaiters(t *testing.T) {
 		t.Fatalf("a live waiter must get the shared dial result, not the owner's cancellation: got %v", e)
 	}
 }
+
+// TestHandleDialError_CtxCancelDoesNotEvict pins that a caller's context
+// cancellation is NOT treated as an endpoint failure: handleDialError must skip
+// handleConnError (which closes the pooled conn + marks the endpoint failed) when
+// the ctx is canceled, so a coalesced waiter that gives up cannot evict a healthy
+// connection a sibling just pooled. A genuine dial failure (live ctx) still marks
+// the endpoint failed.
+func TestHandleDialError_CtxCancelDoesNotEvict(t *testing.T) {
+	t.Parallel()
+
+	db := &database{
+		connPool: make(map[string]*transport.Conn),
+		failMon:  newFailureMonitor(),
+	}
+	const addr = "p:1"
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	db.handleDialError(canceled, addr)
+	if db.failMon.isFailed(addr) {
+		t.Fatal("a ctx-canceled dial (caller gave up) must NOT mark the endpoint failed")
+	}
+
+	db.handleDialError(context.Background(), addr)
+	if !db.failMon.isFailed(addr) {
+		t.Fatal("a real dial failure (live ctx) must mark the endpoint failed")
+	}
+}
