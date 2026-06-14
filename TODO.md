@@ -867,8 +867,12 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 
 ## Exploration: a second, FDB-native vector index (Go-only — NOT Java parity)
 
-- [ ] **Explore an FDB-native ANN index designed for a high-latency networked KV store.**
-  *Status: research / RFC needed. This is a deliberate Go-only extension, NOT a Java-parity item* —
+- [x] **Explore an FDB-native ANN index for a high-latency networked KV store — REALIZED by SPFresh (RFC-094).**
+  *Status: the headline question ("build an FDB-native ANN index for this substrate, and which?") is
+  answered — **SPFresh**, the top candidate below, is built, shipped, and SQL-exposed; the authoritative
+  tracker is `rfcs/094-spfresh-status.md`. The OTHER candidates below (DiskANN/Vamana, batched beam
+  search, atomic-append build) remain **parked alternatives/additions**, NOT blocked-on or
+  needed-by SPFresh — future ideas on file, not open SPFresh work.* This is a deliberate Go-only extension, NOT a Java-parity item —
   Java has no such index, so it is allowed under "query reach may exceed Java" **only if** it ships as
   a separate index type with deep test coverage. **Wire-format tradeoff (must be stated up front):** a
   new on-disk graph/posting-list layout is *wire format*; Java's `VectorIndexMaintainer` cannot

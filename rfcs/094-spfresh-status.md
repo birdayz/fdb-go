@@ -271,5 +271,6 @@ needs a *new* measurement that contradicts the recorded result.
 Genesis / alternatives: `005-vector-index.md`, `006-ivf-vector-index.md`. SPFresh
 *is* the realization of the "second, FDB-native vector index" exploration (the
 Go-only, distinct-on-disk-layout ANN index that escapes HNSW's sequential-RTT
-latency profile); that `TODO.md` exploration item is effectively closed by RFC-094
-and is stale.
+latency profile) — that `TODO.md` exploration item is now marked **done (realized by
+RFC-094)**. Its other listed candidates (DiskANN/Vamana, batched beam search,
+atomic-append build) remain *parked alternatives*, not open SPFresh work.
