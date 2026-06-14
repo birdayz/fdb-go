@@ -4,9 +4,14 @@ BUF_VERSION := "1.67.0"
 # DIFFERENT build config than a normal `bazelisk test`; on a SHARED output_base, toggling
 # the config makes Bazel DISCARD the analysis cache and re-execute every action — so
 # `just test` followed by `just race`/`just coverage` cold-recompiles both ways every
-# time. Dedicated bases keep each config's cache warm and isolated (local + CI both use
-# these exact paths, so they share the same warm caches). The default base stays
+# time. Dedicated bases keep each config's cache warm and isolated; the default base stays
 # pure-normal-config and never thrashes.
+#   race_base — SHARED with CI: ci.yml's race job + nightly-coverage's race step use this
+#     exact path, so local `just race` and CI warm the same race cache.
+#   cov_base  — LOCAL ONLY: nightly-coverage still runs `bazelisk coverage` on the default
+#     base (its report step + memory-shutdown are coupled to it), so this only isolates
+#     local `just coverage` from the local `just test` cache. Sharing it with nightly is a
+#     follow-up (needs --output_base threaded through the coverage report step).
 race_base := env_var('HOME') / ".cache/bazel/_race_output_base"
 cov_base := env_var('HOME') / ".cache/bazel/_coverage_output_base"
 

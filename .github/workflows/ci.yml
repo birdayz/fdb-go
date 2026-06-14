@@ -158,13 +158,17 @@ jobs:
         run: |
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          SCOPE="//pkg/relational/... //pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
-          N=$(bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(echo $SCOPE | sed 's/ / + /g'))" 2>/dev/null | wc -l)
-          if [ "$N" -eq 0 ]; then
-            echo "::error::race scope resolved 0 test targets — gate would be a no-op"
-            exit 1
-          fi
-          echo "race scope: $N test targets"
-          bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g test $SCOPE \
+          REL_SCOPE="//pkg/relational/..."
+          CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
+          # No-op guard PER SCOPE (codex): count each gate independently. Counting the
+          # UNION would let one side silently drop to zero (e.g. the client packages stop
+          # exposing test targets) while the other keeps the union > 0 — `bazel test`
+          # would still exit 0 and quietly lose that race coverage. Both must be non-empty.
+          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(echo "$1" | sed 's/ / + /g'))" 2>/dev/null | wc -l; }
+          NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE")
+          if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
+          if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
+          echo "race scope: relational=$NR client=$NC test targets"
+          bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g test $REL_SCOPE $CLIENT_SCOPE \
             --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors \
             --local_resources=memory=HOST_RAM*0.6
