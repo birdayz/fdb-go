@@ -269,20 +269,29 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 
 // getOrDialConn returns a pooled or freshly-dialed connection.
 // dialed is true when a new TCP connection was established (cache miss).
+//
+// The dial runs WITHOUT holding connMu. Holding the pool lock across the dial
+// (the TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock
+// amplifier: if a single dial stalls — e.g. a proxy is unreachable and, under
+// heavy load, the dial's deadline timer is slow to fire — every other goroutine
+// acquiring ANY connection (even a pooled one, or a dial to a healthy proxy)
+// blocks on connMu and the whole client wedges. C++ FlowTransport likewise dials
+// each Peer independently, with no global dial lock.
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
+	// Fast path: return a live pooled connection. Lock held only to read/evict.
 	db.connMu.Lock()
-	defer db.connMu.Unlock()
-
 	if c, ok := db.connPool[addr]; ok {
 		if !c.IsClosed() {
+			db.connMu.Unlock()
 			return c, false, nil
 		}
 		delete(db.connPool, addr)
 	}
+	db.connMu.Unlock()
 
-	// Dial a new connection. C++ FlowTransport creates one Peer (TCP connection)
-	// per unique NetworkAddress. No address aliasing or port-matching — each
-	// ip:port gets its own connection.
+	// Dial a new connection OUTSIDE the lock. C++ FlowTransport creates one Peer
+	// (TCP connection) per unique NetworkAddress. No address aliasing or
+	// port-matching — each ip:port gets its own connection.
 	//
 	// TODO: C++ FlowTransport deduplicates bidirectional connections via
 	// ConnectionID exchange in ConnectPacket. When two processes connect to
@@ -297,7 +306,18 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		return nil, false, dialErr
 	}
 
+	// Insert under the lock, conceding to a concurrent dial of the same addr:
+	// the first writer wins the pool slot, later dials discard their redundant
+	// connection and return the pooled one (a rare, bounded waste — two
+	// goroutines racing the very first dial to one proxy).
+	db.connMu.Lock()
+	if existing, ok := db.connPool[addr]; ok && !existing.IsClosed() {
+		db.connMu.Unlock()
+		_ = c.Close()
+		return existing, false, nil
+	}
 	db.connPool[addr] = c
+	db.connMu.Unlock()
 	return c, true, nil
 }
 

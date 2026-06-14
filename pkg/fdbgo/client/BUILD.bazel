@@ -57,6 +57,7 @@ go_test(
         "coordinator_test.go",
         "correctness_test.go",
         "database_test.go",
+        "dial_connmu_test.go",
         "endpoint_test.go",
         "failure_monitor_test.go",
         "fault_test.go",
