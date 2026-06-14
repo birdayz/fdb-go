@@ -169,6 +169,13 @@ jobs:
           if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           echo "race scope: relational=$NR client=$NC test targets"
-          bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g test $REL_SCOPE $CLIENT_SCOPE \
-            --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors \
-            --local_resources=memory=HOST_RAM*0.6
+          # Run the two heavy suites as SEPARATE, serial invocations (codex) — NOT one
+          # combined `bazel test`. A combined invocation lets Bazel interleave relational
+          # and client targets under --local_test_jobs=4, so the heavy client_test could
+          # overlap the heavy relational FDB-testcontainer tests and reintroduce Docker/
+          # container contention on the single runner. Serial keeps the heavy suites from
+          # overlapping; the SHARED RACE_BASE keeps both warm + isolated from the normal
+          # build. (set -e stops on the first scope that races — same as the old two steps.)
+          RACE="bazelisk --output_base=$RACE_BASE --host_jvm_args=-Xmx3g test --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors --local_resources=memory=HOST_RAM*0.6"
+          $RACE $REL_SCOPE
+          $RACE $CLIENT_SCOPE
