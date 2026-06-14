@@ -245,25 +245,6 @@ func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error
 	}
 }
 
-// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs.
-func SeqWithContinuation[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = cursor.Close() }()
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			result, err := cursor.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // emptyCursor is a cursor that immediately returns no results.
 // Matches Java's RecordCursor.empty().
 type emptyCursor[T any] struct{}

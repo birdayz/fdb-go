@@ -453,7 +453,7 @@ var _ = Describe("listCursor / FromList / FromListWithContinuation", func() {
 	})
 })
 
-var _ = Describe("Seq2 / SeqWithContinuation", func() {
+var _ = Describe("Seq2 / AsListWithContinuation", func() {
 	ctx := context.Background()
 
 	Describe("Seq2", func() {
@@ -484,35 +484,22 @@ var _ = Describe("Seq2 / SeqWithContinuation", func() {
 		})
 	})
 
-	Describe("SeqWithContinuation", func() {
-		It("yields (value, continuation) pairs from FromList", func() {
+	Describe("AsListWithContinuation", func() {
+		It("returns all values and a nil continuation when exhausted", func() {
 			c := FromList([]int{10, 20})
-			type pair struct {
-				v    int
-				cont RecordCursorContinuation
-			}
-			var got []pair
-			for v, cont := range SeqWithContinuation(c, ctx) {
-				got = append(got, pair{v, cont})
-			}
-			Expect(got).To(HaveLen(2))
-			Expect(got[0].v).To(Equal(10))
-			Expect(got[0].cont.IsEnd()).To(BeFalse())
-			Expect(got[1].v).To(Equal(20))
-			// After last item position=2, list exhausted on next call, but continuation
-			// returned with the item itself encodes the position after reading it.
-			b, err := got[1].cont.ToBytes()
-			Expect(err).To(BeNil())
-			Expect(b).To(Equal([]byte{0, 0, 0, 2}))
+			vals, contBytes, err := AsListWithContinuation(ctx, c)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(Equal([]int{10, 20}))
+			// listCursor exhausts after the last item, so there is no resume token.
+			Expect(contBytes).To(BeNil())
 		})
 
-		It("yields nothing from an error cursor", func() {
+		It("returns no values and the error from an error cursor", func() {
 			c := &errorCursor[string]{err: errors.New("x")}
-			var got []string
-			for v := range SeqWithContinuation(c, ctx) {
-				got = append(got, v)
-			}
-			Expect(got).To(BeEmpty())
+			vals, contBytes, err := AsListWithContinuation(ctx, c)
+			Expect(err).To(MatchError("x"))
+			Expect(vals).To(BeEmpty())
+			Expect(contBytes).To(BeNil())
 		})
 	})
 })

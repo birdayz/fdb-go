@@ -272,20 +272,6 @@ var _ = Describe("Cursor context cancellation", func() {
 	})
 
 	// ---------------------------------------------------------------
-	// SeqWithContinuation iterator
-	// ---------------------------------------------------------------
-	Describe("SeqWithContinuation", func() {
-		It("yields nothing on pre-cancelled context", func() {
-			inner := &infiniteCursor{}
-			var count int
-			for range SeqWithContinuation[int](inner, cancelledCtx()) {
-				count++
-			}
-			Expect(count).To(Equal(0))
-		})
-	})
-
-	// ---------------------------------------------------------------
 	// intersectionCursor (via NewIntersection)
 	// ---------------------------------------------------------------
 	Describe("intersectionCursor", func() {

@@ -477,24 +477,7 @@ var _ = Describe("Coverage Unit Tests", func() {
 		})
 	})
 
-	// cursor.go: SeqWithContinuation early break and saturatingAdd overflow.
-	Describe("SeqWithContinuation", func() {
-		It("stops when yield returns false", func() {
-			cursor := FromList([]int{10, 20, 30})
-			ctx := context.Background()
-			seq := SeqWithContinuation(cursor, ctx)
-			var values []int
-			for v, cont := range seq {
-				_ = cont
-				values = append(values, v)
-				if len(values) == 1 {
-					break
-				}
-			}
-			Expect(values).To(Equal([]int{10}))
-		})
-	})
-
+	// cursor.go: saturatingAdd overflow.
 	Describe("saturatingAdd", func() {
 		It("returns MaxInt on overflow", func() {
 			result := saturatingAdd(math.MaxInt, 1)
