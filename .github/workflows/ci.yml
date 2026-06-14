@@ -114,6 +114,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Check Docker (else the race gates silently no-op)
+        # Both race steps below drive real FDB testcontainers; without Docker the
+        # tests skip (exit 0) and the gate passes with no race coverage (codex,
+        # RFC-107). Fail loudly so a green race job always means -race actually ran.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
+
       - name: -race tests for //pkg/relational/...
         # The relational/SQL layer is driven concurrently via database/sql and was
         # previously NOT covered by the race detector (nightly only ran -race on 5
