@@ -16,45 +16,48 @@ flagged inline.
 
 ## TL;DR
 
-SPFresh is a **production-ready, FDB-native vector index** — SPANN + LIRE: coarse
+SPFresh is a **feature-complete, FDB-native vector index** — SPANN + LIRE: coarse
 cells → fine centroids → posting lists, RaBitQ-quantized residuals, an fp16
 sidecar for exact re-rank. It is **Go-built / Go-read only** (Java has no SPFresh
 index type; it forfeits cross-engine record sharing for *this index*, the stated
-cost of an FDB-native layout). It is **usable from SQL today**. Recall and latency
-are frozen at measured defaults; the recall ceiling at 1M is a probe-budget
-tradeoff, not a defect.
+cost of an FDB-native layout). It is **usable from SQL today** (single-partition).
+Recall and latency are measured and stable; the recall ceiling at 1M is a
+probe-budget tradeoff, not a defect.
 
-The recall + multi-tenant + build-perf backlogs are **closed**. The open work is
-**hardening and operability** (chaos/soak coverage, ops docs, a reference worker)
-plus two scaling/ergonomics items — none block production use at the multi-tenant
-scale SPFresh is designed for.
+It has deep **functional + FDB-integration + multi-tenant-soak** coverage, but the
+**one hardening gap before unqualified production sign-off is model-based
+fault-injection (chaos), which the lifecycle currently lacks entirely** (Tier-1
+below). The recall + multi-tenant + build-perf backlogs are closed; the open work
+is that chaos gap plus operability (ops-doc refresh, a reference worker) and two
+scaling/ergonomics items. None are functional defects, but "production-ready"
+should wait on the chaos coverage.
 
 ---
 
 ## Usable from SQL (verified — 7 FDB e2e tests pass)
 
 ```sql
-CREATE VECTOR INDEX docs_emb USING SPFRESH ON docs(embedding)
-  [PARTITION BY (tenant, zone)] OPTIONS(...);
+CREATE VECTOR INDEX docs_emb USING SPFRESH ON docs(embedding) OPTIONS(...);
 
 SELECT id FROM docs
 QUALIFY ROW_NUMBER() OVER (
-  [PARTITION BY tenant]
   ORDER BY euclidean_distance(embedding, [0.9, 0.1, 0.0])
 ) <= 10;
 ```
 
 Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e2e_fdb_test.go`):
-- `CREATE VECTOR INDEX … USING HNSW` **or** `USING SPFRESH`, with `PARTITION BY (…)` (`ddl.go:189`).
-- The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`).
-- `euclidean_distance`, `euclidean_square`, `cosine_distance`, `dot_product` (`walk.go:706`).
+- `CREATE VECTOR INDEX … USING HNSW` **or** `USING SPFRESH` (`ddl.go:189`). **SPFresh does
+  NOT support `PARTITION BY`** — it errors at DDL time (`metadata/builder.go:204`,
+  `TestVectorDDL_SPFreshErrors`); partitioned vector indexes are HNSW-only.
+- The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`). The SPFresh e2e (`vector_spfresh_e2e_fdb_test.go`) runs it un-partitioned.
+- Distance functions `EUCLIDEAN_DISTANCE`, `EUCLIDEAN_SQUARE_DISTANCE`, `COSINE_DISTANCE`, `DOT_PRODUCT_DISTANCE` (`walk.go:706`).
 - Plans to a physical **BY_DISTANCE vector index scan** (EXPLAIN-pinned), never a full scan; the index-only `DistanceRank` predicate is never lowered to a residual filter (`predicate_multi_map.go`, `plan_executability.go`).
-- Multi-partition fan-out over a partial partition prefix (RFC-046).
 - A metric mismatch (e.g. `cosine_distance` against a EUCLIDEAN index) errors cleanly with `UnplannableIndexOnlyResidualError` rather than panicking.
+- **Multi-partition fan-out over a partial partition prefix (RFC-046) is HNSW-only** (SPFresh has no partitioning). Listed here only to draw the SPFresh/HNSW line.
 
 > **Accuracy note:** earlier tracking implied SQL vector search was unfinished
 > "Phase 9 / window-function parity" work. That was stale — Phase 9 (9.1–9.5) is
-> complete and tested. SQL K-NN over SPFresh works.
+> complete and tested. SQL K-NN over SPFresh works (single-partition).
 
 ---
 
@@ -67,29 +70,48 @@ Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e
 | Exact triangle-inequality assign prune | **101** | Shipped | `spfreshPruneLowerBound` `spfresh_build.go:654`, used `:691/:697` |
 | Parallel sharded staging scan | **103** | Merged (PR #289) | `spfreshStageRecordsSharded` `spfresh_index_maintainer.go:860` |
 | Online assignment refinement (ingest recall-drift recovery) + fleet driver + metrics | **104** | Merged (PR #290) | `spfresh_refine.go`; 9 `-race` specs |
-| SQL surface: `CREATE VECTOR INDEX USING HNSW\|SPFRESH`, QUALIFY K-NN, multi-partition | **045 / 046** (Phase 9.1–9.5) | Shipped | 7 `TestFDB_VectorSearch*` e2e |
+| SQL surface: `CREATE VECTOR INDEX USING SPFRESH`, QUALIFY K-NN (un-partitioned) | **045** (Phase 9.1–9.4) | Shipped | `vector_spfresh_e2e_fdb_test.go` |
+| SQL multi-partition fan-out — **HNSW-only** (SPFresh rejects `PARTITION BY`) | **046** (Phase 9.5) | Shipped (HNSW) | `vector_multipartition_e2e_fdb_test.go` |
 | Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
 | Recall at scale: ε-pruning (SPANN §3.3), 1M w/ε/QPS sweeps, frozen defaults | 094.5 | Shipped | `VECTOR_BENCHMARK_RESULTS.md` |
 
-### Current performance (SIFT-1M, frozen defaults)
+### Current performance (SIFT-1M, shipped write-path re-pin)
 
-| Config (w_q / kc / Lmax / ε) | recall@10 | p50 | QPS@16 |
+Numbers from the **RNG-closure shipped-write-path 1M re-pin** (165 cells / 6,228
+fines / ρ≈1.04). These **supersede** the earlier 094.5 freeze (0.952/0.826) — that
+topology is no longer produced by the shipped write path (`VECTOR_BENCHMARK_RESULTS.md`,
+"SPFresh 1M re-pin"). `c` below is *re-rank candidates* (a per-query knob), **not**
+Lmax (the build-time posting-split threshold, default 256).
+
+| Config (w_q / kc / c / ε) | recall@10 | p50 | QPS@16 |
 |---|---|---|---|
-| **default** 32 / 64 / 200 / 7 | 0.952 | 27.9 ms | 134 |
-| **fast** 16 / 24 / 64 / 7 | 0.826 | 10.7 ms | 374 |
+| **default** 32 / 64 / 200 / 7 | 0.961 | 23.9 ms | 148 |
+| **fast** 16 / 24 / 64 / 7 | 0.830 | 9.3 ms | 421 |
+| kc=128 cap / 7 | 0.993 | 45.4 ms | 91 |
+| kc=192 cap / 7 | 0.998 | 69.2 ms | 64 |
 
-The recall ladder beyond ~0.95@1M is **kc-tail** (0.987 @ kc=192) at 2–3× latency
-— a probe-budget tradeoff, structurally capped by the FDB range-reply budget.
-RFC-104 refinement recovers fast-ingest recall *drift* back to these baselines;
-it does not lift the ceiling.
+The recall ladder beyond ~0.96@1M is **kc-tail** (0.993 @ kc=128, 0.998 @ kc=192) at
+2–3× latency — a probe-budget tradeoff, structurally capped by the FDB range-reply
+budget. RFC-104 refinement recovers ingest recall *drift*, not this ceiling — and
+its recovery is measured at **300k**, not re-pinned at 1M:
+
+| 300k fast fill | pre-refine | one-shot refine | bulk (ideal) |
+|---|---|---|---|
+| default (32/64/200) | 0.9735 | **0.9885** | 0.9880 |
+| fast (16/24/64) | 0.8675 | **0.9225** | 0.9205 |
+
+The one-shot `refine-all` fully recovers both budgets; the **budgeted production op**
+fully recovers the *default* budget but lands the *fast* budget ~1.75pp short of
+bulk-fast (incremental cursor co-evolving with concurrent splits — RFC-104).
 
 ---
 
 ## Proposed but NOT implemented
 
 - **RFC-102 (k-means / Hamerly).** Status "proposed (pivoted from Hamerly)". **Not
-  in code** — the build uses plain Lloyd k-means (`spfreshKMeansCore`) with only a
-  `convergeFraction` early-stop (`spfresh_kmeans.go:103`). k-means is the other CPU
+  in code** — the build uses plain Lloyd k-means (`spfreshKMeansBuild`→`spfreshKMeansCore`,
+  `spfresh_kmeans.go:106/116`) with only a `convergeFraction` early-stop
+  (`spfreshKMeansBuildConvergeFraction = 0.01`, `:101`). k-means is the other CPU
   half of the build after two-level routing cut the flat scan; like RFC-100 below,
   the speedup is marginal now that the 1M build is minutes, not hours. Revisit only
   if build time becomes a demonstrated problem.
