@@ -41,10 +41,15 @@ each on its own stacked branch.
    value drain helper, and cursor iterator — none silently truncates. The per-query MEMORY byte budget
    is split to **RFC-106b** (deferred: needs every cardinality-growing buffer charged + a CI lint that
    also covers the out-of-band handling for new leaf cursors / drains). (TODO-production P1.9.)
-4. **[ ] Make CI gates real.** `M` · Torvalds + codex. The 1M stress test runs in NO workflow; the
-   23 `pkg/fdbgo` fuzz targets (incl. `FuzzDifferential*`) are never given fuzz time; `-race` is not
-   a PR gate for the client itself (only `//pkg/relational/...`). Add a scheduled stress job, extend
-   the nightly fuzz loop to `//pkg/fdbgo/...`, add `//pkg/fdbgo/...` to the PR race job. (TODO-prod P1.6.)
+4. **[x] Make CI gates real.** DONE (RFC-107) — Torvalds ACK + codex clean, HEAD `b1779f49`. `M`.
+   New `nightly-stress.yml` (query-generated stress labels + no-op guard, latency reported not gated);
+   `client-fuzz` job fuzzing all 23 `//pkg/fdbgo` Fuzz targets Bazel-natively (faithful to the cgo/
+   MODULE.bazel patch) + the 8 unfuzzed diff-oracle reply types; `//pkg/fdbgo/client+transport+fdb`
+   added to the PR `-race` gate. The review caught + fixed two silent-pass footguns: a `docker info`
+   preflight on EVERY FDB-driving gate (else `FDB not available` skips → exit 0 → green with no
+   coverage), and `steps.<id>.outcome != 'skipped'` guards so a skipped preflight can't publish an
+   empty report. (Also fixed the `codex` CLI hang via a new `codexreview` tool in the codex-review
+   skill — root cause: `codex exec` blocks on open stdin.) (TODO-production P1.6.)
 5. **[ ] CI reproducibility — off the single Hetzner box.** `M/L` · Torvalds + codex. All jobs run on
    one self-hosted Hetzner runner → unreproducible green + bus-factor. Provide a containerized/
    ephemeral runner OR document the requirement and pin tool/image versions with checksums. (TODO-prod P1.8.)

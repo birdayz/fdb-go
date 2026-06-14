@@ -1,12 +1,16 @@
 # RFC-107: Make the CI gates real — stress in a workflow, fuzz the client, race-gate the client
 
-**Status:** Draft r2 — addressed Torvalds + codex NAKs (scoped PR race to client/transport/fdb;
-dropped the latency-failure gate → report-as-trend; query-generated stress labels for the
-`stress`+`manual` tag; Bazel-native fuzzing for faithfulness over the cgo/module-patch; Docker/cgo
-gating; no-op guards; +8 unfuzzed diff-oracle reply types). For review by **Torvalds + codex**
-(CI/infra item; no query-engine or client/wire *behavior* change, so no Graefe / FDB-C++ gate — but
-the underlying bazel commands must be the same ones a developer runs locally — Bazel-native fuzz
-invocation validated locally: 17.7M execs/15s on a pure target, no crash).
+**Status:** IMPLEMENTED — Torvalds ACK + codex clean on HEAD `b1779f49`. RFC accepted r2
+(scoped PR race; latency-as-trend not a gate; query-generated stress labels; Bazel-native fuzzing;
+Docker/cgo gating; no-op guards; +8 diff-oracle reply types). Implementation review (driven by the
+new `codexreview` tool — codex no longer hangs) caught and fixed two real silent-pass footguns:
+(1) every FDB-driving gate now runs a `docker info` preflight — the stress/race/coverage tests
+otherwise `t.Skip` with `FDB not available (no Docker)` and exit 0, silently passing with ZERO
+coverage; (2) report/upload steps are gated on `steps.<id>.outcome != 'skipped'` so a preflight
+abort can't truncate + publish an empty report that masks the failure. CI/infra item — no
+query-engine or client/wire behaviour change (no Graefe / FDB-C++ gate); every bazel command
+validated locally (scoped client `-race` passes; Bazel-native fuzz runs on pure + container targets;
+the stress query resolves). diff-fuzz needs no preflight (serialization-only vs the oracle binary).
 **Item:** Client launch-readiness #4 (TODO.md) — TODO-production P1.6.
 
 ## Problem — three load-bearing test suites exist but never gate anything
