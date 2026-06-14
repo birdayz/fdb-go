@@ -41,7 +41,7 @@ type ReadTransaction interface {
 	GetRange(r Range, options RangeOptions) RangeResult
 	GetReadVersion() FutureInt64
 	GetDatabase() Database
-	Snapshot() Snapshot
+	Snapshot() ReadTransaction
 	GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64
 	GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray
 	Options() TransactionOptions

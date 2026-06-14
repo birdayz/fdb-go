@@ -2167,7 +2167,7 @@ func TestSnapshotCancel(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	sn := tr.Snapshot()
-	g.Expect(func() { sn.Cancel() }).NotTo(Panic())
+	g.Expect(func() { sn.(fdb.Snapshot).Cancel() }).NotTo(Panic())
 }
 
 // TestSnapshotSnapshot verifies that Snapshot.Snapshot is idempotent.

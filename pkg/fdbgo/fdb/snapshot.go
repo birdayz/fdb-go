@@ -44,7 +44,7 @@ func (sn Snapshot) GetDatabase() Database {
 	return sn.s.tx.db
 }
 
-func (sn Snapshot) Snapshot() Snapshot {
+func (sn Snapshot) Snapshot() ReadTransaction {
 	return sn
 }
 

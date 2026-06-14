@@ -188,7 +188,7 @@ func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureK
 }
 
 // Snapshot returns a Snapshot view of this transaction.
-func (tr Transaction) Snapshot() Snapshot {
+func (tr Transaction) Snapshot() ReadTransaction {
 	return Snapshot{s: &snapshot{tx: tr.t}}
 }
 

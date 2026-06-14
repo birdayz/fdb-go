@@ -179,6 +179,17 @@ transaction-internal or per-transaction:
   (widened) interface (`check.go:12` `_ WritableTransaction = Transaction{}` stays green) and the
   pipelined `Get` (`transaction.go:50-83`) is byte-for-byte untouched, so there is no perf slice to
   benchmark (unlike Plan B). The whole existing suite is the regression.
+- **Phase A.2 — interface-ize the concrete return types the cgo backend can't construct
+  (DISCOVERED DURING IMPLEMENTATION).** Widening the `Transactor` callback (A.1) is necessary but
+  NOT sufficient: `ReadTransaction.GetRange(...)` returns the concrete `fdb.RangeResult` struct and
+  `ReadTransaction.Snapshot()` returns the concrete `fdb.Snapshot`, both of which wrap the pure-Go
+  `*transaction` internal (`range_result.go:11`) — a cgo backend physically cannot build them. So
+  `RangeResult` (10 non-test usages, all `var x fdb.RangeResult`), its `Iterator()`'s
+  `*RangeIterator` (3 usages), and `Snapshot` (0 type-usages in the layer) must become INTERFACES,
+  with the pure-Go structs as one impl and the cgo backend as the other. Tractable (the futures —
+  `FutureByteSlice` etc. — are already interfaces, so they need no change), but it is real scope the
+  v2 RFC under-counted; folded back here for the reviewers. Still a behavior-preserving refactor
+  (suite is the regression), still no perf slice (pure-Go impls unchanged).
 - **Phase B — the libfdb_c backend** (`backend_libfdb_c.go`, `//go:build cgo`): `libfdbcDatabase`/
   `libfdbcTxn` over `cgofdb`, with callback-based future resolution, `OnError` delegation, raw-int
   options, and 1:1 error mapping. A `//go:build !cgo` stub makes `OpenDatabaseWithBackend(
