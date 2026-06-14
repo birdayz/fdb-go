@@ -88,6 +88,17 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 			return nil, err
 		}
 		rr, ee := f(&txn{reader: reader{rt: ctr}, tr: ctr})
+		if ee == nil {
+			// Match the pure-Go Transact (client/database.go:645): a cancellation or
+			// deadline that arrived DURING the callback aborts BEFORE cgofdb's
+			// auto-commit. Without this the same Run(ctx,…) would commit on the cgo
+			// backend where the pure-Go backend aborts. (ctx.Err() is not an
+			// fdb.Error, so cgofdb's retryable() returns it terminal — no commit, no
+			// retry.) A non-nil callback error takes precedence and is handled below.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+		}
 		// Re-wrap fdb.Error back to cgofdb.Error so cgofdb's retryable() loop
 		// (errors.As(&cgofdb.Error)) still recognizes a retryable code the record
 		// layer propagated up — preserving libfdb_c's OnError retry delegation.

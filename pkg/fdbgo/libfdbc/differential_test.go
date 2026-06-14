@@ -298,30 +298,28 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
-	t.Run("cgo_backend_keeps_committed_result_on_late_cancel", func(t *testing.T) {
-		// A ctx canceled AFTER the write is queued (so the commit still proceeds and
-		// succeeds) must NOT be reported as a failure — reporting a ctx error for a
-		// committed transaction would be a lie that invites a double-write retry. The
-		// ctx cause is surfaced only when the transaction actually failed.
+	t.Run("cgo_backend_aborts_commit_on_cancel_during_callback", func(t *testing.T) {
+		// A ctx canceled DURING the callback (before the auto-commit) must ABORT the
+		// transaction — NOT commit — exactly as the pure-Go Transact does (it checks
+		// ctx.Err() after the callback and before commit, client/database.go:645).
+		// The same Run(ctx,…) must not commit on the cgo backend where it aborts on
+		// the pure-Go one.
 		ct, ok := cgoBackend.(fdb.CtxTransactor)
 		if !ok {
 			t.Fatal("cgo backend must implement fdb.CtxTransactor")
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		key := fdb.Key("libfdbc_diff/late_cancel")
-		res, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
-			tr.Set(key, []byte("committed"))
-			cancel() // cancel after the write is queued; the commit still goes through
+		key := fdb.Key("libfdbc_diff/abort_during_cb")
+		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
+			tr.Set(key, []byte("must-not-commit"))
+			cancel() // ctx canceled mid-callback, before the commit
 			return "ok", nil
 		})
-		if err != nil {
-			t.Fatalf("a committed tx must not be reported failed on a late cancel, got %v", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a ctx canceled during the callback must abort with context.Canceled, got %v", err)
 		}
-		if res != "ok" {
-			t.Fatalf("lost the committed result: %v", res)
-		}
-		if got := readKeyVia(t, goRaw, key); string(got) != "committed" {
-			t.Fatalf("write must have committed despite the late cancel, got %q", got)
+		if got := readKeyVia(t, goRaw, key); got != nil {
+			t.Fatalf("the write must NOT have committed after a mid-callback cancel, got %q", got)
 		}
 	})
 
