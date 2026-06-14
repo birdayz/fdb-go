@@ -91,8 +91,8 @@ ideal** — recall **1.0000 @ 100k**, **~0.988 default @ 300k** (the "bulk ideal
 refinement table below targets). Build throughput **measured at 100k**: ≈1,524 vec/s
 single-thread k-means baseline → **7.0× with the perf stack ≈ 10.7k vec/s** — i.e.
 **≈20× the 530 vec/s online fill**. At 1M the build is **~minutes** (extrapolated from
-the 100k harness + the 88 µs/vector assign microbench), not separately re-pinned. Use
-this whenever you can ingest offline / in batch.
+the 100k harness + the 84 µs/vector assign microbench, `VECTOR_BENCHMARK_RESULTS.md:751`),
+not separately re-pinned. Use this whenever you can ingest offline / in batch.
 
 **2. Foreground / online fill — live `SaveRecord` with the rebalancer looping beside
 the writers.** Throughput **205–530 vec/s** at 1M (the perf stack lifted it 205→530),
