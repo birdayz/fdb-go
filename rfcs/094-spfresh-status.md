@@ -34,7 +34,7 @@ should wait on the chaos coverage.
 
 ---
 
-## Usable from SQL (verified — 7 FDB e2e tests pass)
+## Usable from SQL (verified — 1 SPFresh e2e + 6 vector-SQL surface tests pass)
 
 ```sql
 CREATE VECTOR INDEX docs_emb USING SPFRESH ON docs(embedding) OPTIONS(...);
@@ -66,10 +66,10 @@ Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e
 | Area | RFC | State | Proof |
 |---|---|---|---|
 | Core index (cells/fines/postings, LIRE, RaBitQ, fp16 sidecar, split/merge/coarse-split/NPA/GC lifecycle, generation-prefixed layout) | **094** (rev 5) | Shipped | `spfresh_*.go`; full Ginkgo suite |
-| Two-level build assignment (route to w_b nearest cells, not a flat fine scan) | **099** | Shipped | `spfresh_build.go:619` `assign`→`gatherTopK` |
+| Two-level build assignment (route to w_b nearest cells, not a flat fine scan) | **099** | Shipped | `spfresh_build.go:615` `assign` (route `spfreshNearestK:619` → `gatherTopK:623`) |
 | Exact triangle-inequality assign prune | **101** | Shipped | `spfreshPruneLowerBound` `spfresh_build.go:654`, used `:691/:697` |
 | Parallel sharded staging scan | **103** | Merged (PR #289) | `spfreshStageRecordsSharded` `spfresh_index_maintainer.go:860` |
-| Online assignment refinement (ingest recall-drift recovery) + fleet driver + metrics | **104** | Merged (PR #290) | `spfresh_refine.go`; 9 `-race` specs |
+| Online assignment refinement (ingest recall-drift recovery) + fleet driver + metrics | **104** | Merged (PR #290) | `spfresh_refine.go`; 9 `-race` Ginkgo specs (7 `It` + a 2-entry `DescribeTable`) |
 | SQL surface: `CREATE VECTOR INDEX USING SPFRESH`, QUALIFY K-NN (un-partitioned) | **045** (Phase 9.1–9.4) | Shipped | `vector_spfresh_e2e_fdb_test.go` |
 | SQL multi-partition fan-out — **HNSW-only** (SPFresh rejects `PARTITION BY`) | **046** (Phase 9.5) | Shipped (HNSW) | `vector_multipartition_e2e_fdb_test.go` |
 | Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
@@ -166,7 +166,7 @@ concurrent writers + sweepers without corruption (no faults injected).
    `IndexTypeVectorSPFresh`. So the whole lifecycle — splits, merges, coarse
    splits, NPA, GC, **and refinement** — is unverified under injected faults
    (commit_unknown, conflicts) and under concurrency. In particular RFC-104
-   refinement is exercised *only in isolation* (9 unit specs, no goroutines, no
+   refinement is exercised *only in isolation* (9 Ginkgo specs, no goroutines, no
    concurrent rebalancer); the **refiner-vs-rebalancer race** and a
    **fault-injected refine pass** are untested. The per-pk conflict-retry and
    sealing-fence paths *are* unit-pinned, but a model-based run is the gold
