@@ -297,6 +297,98 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("never unindexes a vector when the fence rejects every candidate (empty newSet guard)", func() {
+		// Refinement routes SEALED fines into the pool (to preserve existing copies)
+		// and fences only NEW copies after the closure. So if a pk's whole closure is
+		// concurrently sealing AND no current copy is in it, every candidate is
+		// dropped ⇒ newSet empty. The move must NOT then clear `current` and orphan
+		// the vector (@claude review). Construct it: seal the pk's entire closure and
+		// point its membership at a fine the router never returns.
+		ks := specSubspace()
+		idx := newVecIndex("spf_refine_orphan", 2)
+		md := buildMeta(idx)
+		storeBuilder := buildConverged(ks, md, "spf_refine_orphan", 120)
+
+		s, cfg, err := spfreshResolveRefineTarget(ctx, sharedDB, storeBuilder, "spf_refine_orphan")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s).NotTo(BeNil())
+		cache, err := spfreshLoadRefineCache(ctx, sharedDB, s)
+		Expect(err).NotTo(HaveOccurred())
+		quantizer := newSPFreshQuantizer(cfg)
+		kc := spfreshRefineKc(cfg)
+
+		const bogusFine = int64(1) << 40
+		var pk tuple.Tuple
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			mr, rerr := fdb.PrefixRange(s.membership.Bytes())
+			if rerr != nil {
+				return nil, rerr
+			}
+			kvs, gerr := tx.Snapshot().GetRange(mr, fdb.RangeOptions{Limit: 1, Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			if gerr != nil {
+				return nil, gerr
+			}
+			Expect(kvs).NotTo(BeEmpty())
+			p, uerr := s.membership.Unpack(kvs[0].Key)
+			if uerr != nil {
+				return nil, uerr
+			}
+			pk = p
+			sc, scerr := tx.Snapshot().Get(s.sidecarKey(pk)).Get()
+			if scerr != nil {
+				return nil, scerr
+			}
+			vec, verr := vectorcodec.Deserialize(sc)
+			if verr != nil {
+				return nil, verr
+			}
+			routed, rrerr := cache.route(tx, s, vec, cfg.BuildAssignCells, kc)
+			if rrerr != nil {
+				return nil, rrerr
+			}
+			pool := make([]spfreshCandidate, 0, len(routed))
+			cellByID := map[int64]int64{}
+			for _, r := range routed {
+				pool = append(pool, spfreshCandidate{id: r.fineID, d2: r.d2, vec: r.vec})
+				cellByID[r.fineID] = r.cellID
+			}
+			spfreshSortCandidates(pool)
+			kept := spfreshClosure(pool, cfg.Replication, cfg.Alpha)
+			Expect(kept).NotTo(BeEmpty())
+			for _, k := range kept {
+				row, crerr := spfreshReadCentroidForWrite(tx, s, cellByID[k.id], k.id)
+				if crerr != nil {
+					return nil, crerr
+				}
+				spfreshSaveCentroid(tx, s, cellByID[k.id], k.id,
+					encodeCentroidRowRaw(spfreshStateSealed, row.epoch, row.childA, row.childB, row.vecBytes))
+			}
+			tx.Set(s.membershipKey(pk), encodeMembership([]int64{bogusFine}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var moved bool
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			var perr error
+			moved, perr = spfreshRefinePKInTx(rtx.Transaction(), s, cfg, quantizer, cache, kc, pk)
+			return nil, perr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(moved).To(BeFalse(), "fence rejected every candidate ⇒ no move")
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			m, merr := spfreshReadMembership(rtx.Transaction(), s, pk)
+			if merr != nil {
+				return nil, merr
+			}
+			Expect(m).To(Equal([]int64{bogusFine}), "membership preserved — the vector is NOT unindexed")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("the fleet driver refines across tenants, recovers drift, and reports convergence", func() {
 		// RefineSPFreshIndexes is the production driver — the refinement loop
 		// beside the rebalancer loop. Two converged tenants; drift ONE (drop K

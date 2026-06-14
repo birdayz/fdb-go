@@ -114,6 +114,16 @@ func spfreshRefinePKInTx(tx fdb.Transaction, s *spfreshStorage, config SPFreshCo
 		}
 		newSet = append(newSet, id)
 	}
+	// Never unindex on refinement: if the fence rejected EVERY new candidate (the
+	// pk's whole closure is concurrently sealing) and no existing copy survived,
+	// leave the current copies in place — they keep the vector findable, and the
+	// rebalancer + a later refine pass recover it once the fines settle. Without
+	// this, the clear loop below would wipe `current` and orphan the vector
+	// (@claude review; NPA can't hit this — it filters non-ACTIVE out of the pool
+	// pre-closure, so an all-sealed neighborhood short-circuits on len(pool)==0).
+	if len(newSet) == 0 {
+		return false, nil
+	}
 	if spfreshSameIDSet(current, newSet) {
 		return false, nil // already optimal: idempotent no-op
 	}
@@ -166,8 +176,13 @@ func spfreshRefineAll(ctx context.Context, db *FDBDatabase, s *spfreshStorage, c
 	begin := mr.Begin
 	for {
 		var nextBegin fdb.Key
+		// Truncate back to the pre-batch length at the top of the closure: a
+		// snapshot-scan retry (e.g. past_version) must not append this batch's pks
+		// twice (the spfreshRefineRound pattern — @claude review).
+		baseLen := len(pks)
 		if rerr := spfreshRun(ctx, db, func(rtx *FDBRecordContext) error {
 			nextBegin = nil
+			pks = pks[:baseLen]
 			kvs, kerr := rtx.Transaction().Snapshot().GetRange(
 				fdb.KeyRange{Begin: begin, End: mr.End},
 				fdb.RangeOptions{Limit: spfreshRefineScanBatch, Mode: fdb.StreamingModeWantAll},
