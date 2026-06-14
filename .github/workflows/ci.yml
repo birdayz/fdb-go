@@ -134,30 +134,37 @@ jobs:
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
-      - name: -race tests for //pkg/relational/...
-        # The relational/SQL layer is driven concurrently via database/sql and was
-        # previously NOT covered by the race detector (nightly only ran -race on 5
-        # fdbgo/recordlayer targets). The first run here caught a real pre-existing
-        # client race (tx.hadRead, fixed -> atomic.Bool). Keep it gating: a data
-        # race in the plan cache / driver / planner is silent corruption, worse
-        # than a loud panic. (stress-tagged targets excluded — heavy/manual.)
-        run: bazelisk test //pkg/relational/... --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors
-
-      - name: -race tests for the pure-Go client (RFC-107)
-        # The from-scratch Go client's highest-concurrency code — pipelined reads,
-        # commit path, transport read/write loops — was previously race-gated ONLY
-        # by the nightly job on 5 hand-named targets (the hadRead data race shipped
-        # exactly here). Make it a PR gate like the SQL layer. Scoped to the
-        # concurrency-bearing packages (client/transport/fdb); bench (cgo libfdb_c)
-        # and conformance (Docker) are excluded from the PR default — race-instrumented
-        # they'd dominate PR latency on the single runner. Expand only with measured
-        # numbers (RFC-107 §3). A data race here corrupts a SHARED FDB cluster.
+      - name: -race tests (SQL layer + client) — isolated output_base
+        # CACHE ISOLATION (the perf fix). -race builds with --@rules_go//go/config:race,
+        # a DIFFERENT build config than the normal "Build, Lint & Test" job. On a SHARED
+        # output_base (the default), alternating that flag makes Bazel DISCARD the
+        # analysis cache AND re-execute every action each run — so on the single
+        # self-hosted runner the normal build and the race build cold-recompile on EVERY
+        # PR (the CI slowness). A DEDICATED --output_base gives the race config its own
+        # warm analysis + action cache that never thrashes — and is never thrashed by —
+        # the normal build. Same base path as nightly-coverage's race step, so they share
+        # one warm race cache. Mirrors nightly-coverage's memory discipline:
+        #   - `bazelisk shutdown` frees the normal-base server's heap before the race
+        #     server starts (7.6 GB box; FDB testcontainers also run here);
+        #   - --host_jvm_args=-Xmx3g caps the race server; --local_resources bounds
+        #     test concurrency by RAM.
+        # relational + client run as ONE invocation (one analysis pass, one server).
+        # WHY these scopes: the relational/SQL layer is driven concurrently via
+        # database/sql and once caught a real client race (tx.hadRead → atomic.Bool);
+        # the client packages (pipelined reads / commit / transport) are that same
+        # hadRead class. bench (cgo libfdb_c) + conformance (Docker) stay excluded —
+        # race-instrumented they'd dominate PR latency (RFC-107 §3). A data race in
+        # either corrupts a SHARED FDB cluster, so keep it gating.
         run: |
-          SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
-          N=$(bazelisk query "tests($(echo $SCOPE | sed 's/ / + /g'))" 2>/dev/null | wc -l)
+          bazelisk shutdown
+          RACE_BASE="$HOME/.cache/bazel/_race_output_base"
+          SCOPE="//pkg/relational/... //pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
+          N=$(bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(echo $SCOPE | sed 's/ / + /g'))" 2>/dev/null | wc -l)
           if [ "$N" -eq 0 ]; then
-            echo "::error::client race scope resolved 0 test targets — gate would be a no-op"
+            echo "::error::race scope resolved 0 test targets — gate would be a no-op"
             exit 1
           fi
-          echo "client race scope: $N test targets"
-          bazelisk test $SCOPE --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors
+          echo "race scope: $N test targets"
+          bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g test $SCOPE \
+            --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors \
+            --local_resources=memory=HOST_RAM*0.6

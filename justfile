@@ -1,5 +1,15 @@
 BUF_VERSION := "1.67.0"
 
+# Per-config Bazel output bases (cache isolation). -race and coverage build with a
+# DIFFERENT build config than a normal `bazelisk test`; on a SHARED output_base, toggling
+# the config makes Bazel DISCARD the analysis cache and re-execute every action — so
+# `just test` followed by `just race`/`just coverage` cold-recompiles both ways every
+# time. Dedicated bases keep each config's cache warm and isolated (local + CI both use
+# these exact paths, so they share the same warm caches). The default base stays
+# pure-normal-config and never thrashes.
+race_base := env_var('HOME') / ".cache/bazel/_race_output_base"
+cov_base := env_var('HOME') / ".cache/bazel/_coverage_output_base"
+
 default:
     @just --list
 
@@ -333,8 +343,11 @@ report:
 coverage:
     #!/usr/bin/env bash
     set -euo pipefail
-    bazelisk coverage //... --combined_report=lcov
-    LCOV=$(bazelisk info output_path)/_coverage/_coverage_report.dat
+    # Coverage instruments a DIFFERENT build config; run it on a dedicated output_base so
+    # it doesn't thrash the normal `just test` cache (and stays warm itself). The lcov is
+    # read from that same base; the report TOOL builds normal-config on the default base.
+    bazelisk --output_base={{cov_base}} coverage //... --combined_report=lcov
+    LCOV=$(bazelisk --output_base={{cov_base}} info output_path)/_coverage/_coverage_report.dat
     bazelisk build //cmd/test-report
     BAZEL_BIN=$(bazelisk info bazel-bin)
     "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
@@ -343,13 +356,16 @@ coverage:
     COV_PCT=$(grep -oP 'style="color: #[0-9a-f]+">\K[0-9.]+%' test-report.html | head -1 || echo '?')
     echo "Report: test-report.html ($TOTAL tests, $COV_PCT coverage)"
 
-# Run client tests with race detector (slower — recompiles with instrumentation)
+# Run client tests with race detector. Uses a dedicated output_base ({{race_base}}) so it
+# never thrashes (and is never thrashed by) the normal `just test` cache — the race cache
+# stays warm, so re-runs are fast instead of a full instrumented recompile each time.
 race:
-    bazelisk test //pkg/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
 
-# Run all tests with race detector (~3 min, full recompile + instrumentation)
+# Run all tests with race detector. Dedicated output_base (see `race`). First run on a
+# cold race cache recompiles instrumented (~3 min); subsequent runs are warm.
 race-all:
-    bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
 
 # Full pre-merge verification: build + test + race detector + fuzz smoke test.
 # Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
