@@ -45,14 +45,16 @@ QUALIFY ROW_NUMBER() OVER (
 ) <= 10;
 ```
 
-Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e2e_fdb_test.go`):
+Supported (the query/plan/execute path is pinned by real-FDB e2e tests in
+`pkg/relational/sqldriver/vector_*_e2e_fdb_test.go`; DDL rejections + metric mismatch
+by embedded/unit tests, noted per item):
 - `CREATE VECTOR INDEX … USING HNSW` **or** `USING SPFRESH` (`ddl.go:189`). **SPFresh does
-  NOT support `PARTITION BY`** — it errors at DDL time (`metadata/builder.go:216`,
-  `TestVectorDDL_SPFreshErrors`); partitioned vector indexes are HNSW-only.
-- The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`). The SPFresh e2e (`vector_spfresh_e2e_fdb_test.go`) runs it un-partitioned.
+  NOT support `PARTITION BY`** — it errors at DDL time (`metadata/builder.go:216`, pinned by
+  the embedded `TestVectorDDL_SPFreshErrors`); partitioned vector indexes are HNSW-only.
+- The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`). The SPFresh **FDB e2e** (`vector_spfresh_e2e_fdb_test.go`) runs it un-partitioned.
 - Distance functions `EUCLIDEAN_DISTANCE`, `EUCLIDEAN_SQUARE_DISTANCE`, `COSINE_DISTANCE`, `DOT_PRODUCT_DISTANCE` (`walk.go:706`).
 - Plans to a physical **BY_DISTANCE vector index scan** (EXPLAIN-pinned), never a full scan; the index-only `DistanceRank` predicate is never lowered to a residual filter (`predicate_multi_map.go`, `plan_executability.go`).
-- A metric mismatch (e.g. `cosine_distance` against a EUCLIDEAN index) errors cleanly with `UnplannableIndexOnlyResidualError` rather than panicking.
+- A metric mismatch (e.g. `cosine_distance` against a EUCLIDEAN index) errors cleanly with `UnplannableIndexOnlyResidualError` rather than panicking (pinned by the plan-level `TestVectorPlan_MetricMismatchDoesNotMatchVector`, not an FDB e2e).
 - **Multi-partition fan-out over a partial partition prefix (RFC-046) is HNSW-only** (SPFresh has no partitioning). Listed here only to draw the SPFresh/HNSW line.
 
 > **Accuracy note:** earlier tracking implied SQL vector search was unfinished
@@ -120,7 +122,9 @@ it *works*; we have not tested that it *survives faults*. A vector index corrupt
 this gap is the gate between conditional and unqualified production use.
 
 What *is* hardened: the design is fence-heavy (REAL-read serialization points +
-conflict ranges), tombstone-free / idempotent-under-retry, the FDB-client and
+conflict ranges), deletes are membership-driven (no delete tombstones — though the
+split/coarse lifecycle does use transient FORWARD/DEAD rows, GC-reaped), operations
+are idempotent-under-retry, the FDB-client and
 record-layer primitives underneath *are* chaos-tested, and a 20-tenant soak ran
 concurrent writers + sweepers without corruption (no faults injected).
 
