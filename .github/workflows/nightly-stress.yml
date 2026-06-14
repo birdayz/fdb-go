@@ -1,0 +1,73 @@
+name: Nightly Stress
+
+# RFC-107: the 1M-row stress test (//pkg/relational/sqldriver/stress, tag `stress`+`manual`)
+# was excluded from every workflow (--test_tag_filters=-stress), so the planner/cost-model/
+# executor regression net ran in NO CI. This scheduled job runs it. It does NOT gate PRs
+# (too heavy); a red run here is a release blocker, surfaced like the nightly-fuzz failures.
+on:
+  schedule:
+    # 4:23 AM UTC daily (off-minute, after the 3:17 fuzz job, to avoid fleet congestion)
+    - cron: '23 4 * * *'
+  workflow_dispatch: # manual trigger
+
+jobs:
+  stress:
+    name: 1M Stress (planner / cost-model / executor)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve stress targets (no-op guard)
+        id: targets
+        # The stress target carries BOTH `stress` and `manual` tags, so a wildcard
+        # `//pkg/... --test_tag_filters=stress` drops it (manual targets are excluded
+        # from wildcard expansion BEFORE the tag filter). Resolve explicit labels via
+        # query and FAIL on an empty set — the no-fake-checkbox rule applied to CI:
+        # a gate that silently runs nothing is worse than no gate.
+        run: |
+          STRESS=$(bazelisk query 'attr(tags, stress, tests(//pkg/...))' 2>/dev/null)
+          if [ -z "$STRESS" ]; then
+            echo "::error::no stress targets resolved — the stress gate would be a no-op"
+            exit 1
+          fi
+          echo "Resolved stress targets:"
+          echo "$STRESS"
+          # space-join for the bazel test invocation
+          echo "labels=$(echo $STRESS | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Run stress tests
+        # Gate ONLY on correctness: the stress test asserts row counts / results, so a
+        # cost-model or executor regression that returns wrong rows fails here (bazel
+        # non-zero exit). Wall-clock latency is NOT a gate (noisy on a shared self-hosted
+        # runner → false reds); it is reported below as a trend instead (RFC-107 §1).
+        run: |
+          bazelisk test ${{ steps.targets.outputs.labels }} \
+            --test_timeout=3600 --test_output=streamed --test_arg=--test.v \
+            --nocache_test_results 2>&1 | tee stress-output.txt
+
+      - name: Report latency trend (non-gating)
+        if: always()
+        # Parse the per-op latency lines the stress test prints and emit them to the job
+        # summary as a REPORTED trend. A real regression is visible without flaking the
+        # build; an out-of-band alarm on the trend is future work (RFC-107 §1). The
+        # CLAUDE.md reference thresholds: point lookups <5ms, full scans ~3s/1M, index
+        # equality <10ms.
+        run: |
+          {
+            echo "## 1M stress — latency trend ($(date -u +%FT%TZ))"
+            echo '```'
+            grep -iE 'point lookup|full scan|index (equality|scan)|p50|p99|latency|ms/op|rows|elapsed' \
+              stress-output.txt | head -40 || echo "(no latency lines matched — check the stress test output format)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload stress output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stress-output
+          path: stress-output.txt
+          retention-days: 30

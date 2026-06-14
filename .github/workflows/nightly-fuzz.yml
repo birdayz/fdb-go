@@ -10,7 +10,7 @@ jobs:
   diff-fuzz:
     name: Differential Serialization Fuzzer
     runs-on: [self-hosted, linux, x64, hetzner]
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -39,17 +39,26 @@ jobs:
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
 
-      - name: Fuzz oracle-compared types (10min each)
+      - name: Fuzz ALL oracle-compared types (6min each)
+        # RFC-107: discover EVERY Fuzz* in cmd/fdb-diff-oracle rather than a hard-coded
+        # list — the old loop named only 9 of 17, leaving the 8 reply-parse types
+        # (GetValueReply / GetKeyReply / GetKeyValuesReply / GetReadVersionReply / Error /
+        # Endpoint / ClientDBInfo / OpenDatabaseCoordRequest) un-fuzzed. Fail on an empty
+        # discovery (no-op guard). 17 × 6m ≈ 1h45m, within the 180m timeout.
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
+          if [ -z "$TARGETS" ]; then
+            echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
+            exit 1
+          fi
+          echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets"
           FAILED=0
-          for target in FuzzGetReadVersionRequest FuzzGetValueRequest FuzzGetKeyRequest \
-                        FuzzGetKeyValuesRequest FuzzGetKeyServerLocationsRequest \
-                        FuzzCommitTransactionRequest FuzzCommitID FuzzNetworkAddress FuzzReplyPromise; do
-            echo "=== $target (10m) ==="
-            OUTPUT=$(timeout 610 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
-                -fuzz="$target" -fuzztime=10m ./cmd/fdb-diff-oracle/ 2>&1) || {
+          for target in $TARGETS; do
+            echo "=== $target (6m) ==="
+            OUTPUT=$(timeout 370 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
+                -run='^$' -fuzz="^${target}\$" -fuzztime=6m ./cmd/fdb-diff-oracle/ 2>&1) || {
               echo "FAIL: $target (exit code $?)"
               echo "$OUTPUT"
               FAILED=1
@@ -58,6 +67,15 @@ jobs:
             echo ""
           done
           exit $FAILED
+
+      - name: Upload failing fuzz seeds
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diff-oracle-fuzz-seeds
+          path: cmd/fdb-diff-oracle/testdata/fuzz/**
+          retention-days: 30
+          if-no-files-found: ignore
 
   race-detector:
     name: Race Detector
@@ -97,3 +115,83 @@ jobs:
 
       - name: Run directory binding stress (30 seeds × 500 ops)
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
+
+  client-fuzz:
+    name: Pure-Go Client Fuzz (//pkg/fdbgo)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check Docker + libfdb_c (mandatory for client/bench fuzz)
+        # RFC-107: pkg/fdbgo/client TestMain and pkg/fdbgo/bench always start an FDB
+        # testcontainer (bench also exercises the cgo libfdb_c binding), so Docker is a
+        # hard prerequisite — fail loudly rather than skip silently. The pure
+        # wire/types/tuple targets don't need it but share the job.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker not available — client/bench fuzz cannot run"; exit 1; }
+
+      - name: Fuzz every //pkg/fdbgo Fuzz target (Bazel-native, 4min each)
+        # Bazel-native (NOT plain `go test -fuzz`) so the run is faithful to the
+        # MODULE.bazel go_deps.module_override that patches the Apple FDB Go binding —
+        # the pkg/fdbgo/bench FuzzDifferential* targets compare the pure-Go client against
+        # the cgo libfdb_c, which is only correct against the Bazel-built binding.
+        # -test.run='^$' fuzzes only (no unit tests first). Targets are DISCOVERED, not
+        # hard-listed; an empty discovery fails the job (no-op guard, RFC-107).
+        run: |
+          mkdir -p /tmp/fuzz-cache
+          # The valid go_test labels under pkg/fdbgo, fetched ONCE (per-dir queries in a
+          # loop contend on the bazel server and flake to empty). Targets follow gazelle's
+          # convention //<dir>:<basename>_test; validate each derived label against this set
+          # so a future gazelle rename fails loudly instead of silently fuzzing nothing.
+          VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
+          # Build (target, FuzzFunc) pairs: each *_test.go under pkg/fdbgo with a Fuzz
+          # func -> its package's go_test label.
+          PAIRS=""
+          for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
+            dir=$(dirname "$f")
+            target="//$dir:$(basename "$dir")_test"
+            echo "$VALID" | grep -qxF "$target" || {
+              echo "::error::derived target $target (from $f) is not a real go_test — gazelle naming changed"
+              exit 1
+            }
+            for fn in $(grep -oP '^func \KFuzz\w+' "$f"); do
+              PAIRS="$PAIRS ${target}|${fn}"
+            done
+          done
+          if [ -z "$PAIRS" ]; then
+            echo "::error::no //pkg/fdbgo Fuzz targets discovered — client fuzz gate is a no-op"
+            exit 1
+          fi
+          echo "Discovered $(echo $PAIRS | wc -w) (target,func) fuzz pairs"
+          FAILED=0
+          for pair in $PAIRS; do
+            target="${pair%|*}"; fn="${pair#*|}"
+            echo "=== $target $fn (4m) ==="
+            bazelisk test "$target" \
+              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+              --test_arg=-test.fuzztime=4m --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+              --sandbox_writable_path=/tmp/fuzz-cache \
+              --test_timeout=600 --nocache_test_results --test_output=errors || {
+                echo "::error::fuzz FAIL: $target $fn"
+                FAILED=1
+              }
+          done
+          exit $FAILED
+
+      - name: Upload failing fuzz logs + cache
+        if: failure()
+        # A Bazel-native fuzz crash is printed to the test log (the sandbox source tree is
+        # read-only, so the minimized crasher can't be persisted to testdata/fuzz/ — it is
+        # recoverable from the log + the new-corpus cache, then added as a regression seed
+        # by hand).
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-fuzz-failure
+          path: |
+            bazel-testlogs/pkg/fdbgo/**/test.log
+            /tmp/fuzz-cache/**
+          retention-days: 30
+          if-no-files-found: ignore
