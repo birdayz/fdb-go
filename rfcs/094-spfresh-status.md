@@ -21,8 +21,8 @@ cells → fine centroids → posting lists, RaBitQ-quantized residuals, an fp16
 sidecar for exact re-rank. It is **Go-built / Go-read only** (Java has no SPFresh
 index type; it forfeits cross-engine record sharing for *this index*, the stated
 cost of an FDB-native layout). It is **usable from SQL today** (single-partition).
-Recall and latency are measured and stable; the recall ceiling at 1M is a
-probe-budget tradeoff, not a defect.
+Recall is measured and **ingest-rate-dependent** (faster fills drift; refinement
+and higher kc recover it); the per-fill probe ceiling is a budget tradeoff, not a defect.
 
 It has deep **functional + FDB-integration + multi-tenant-soak** coverage, but the
 **one hardening gap before unqualified production sign-off is model-based
@@ -77,25 +77,34 @@ by embedded/unit tests, noted per item):
 | Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
 | Recall at scale: ε-pruning (SPANN §3.3), 1M w/ε/QPS sweeps, frozen defaults | 094.5 | Shipped | `VECTOR_BENCHMARK_RESULTS.md` |
 
-### Current performance (SIFT-1M, shipped write-path re-pin)
+### Current performance (SIFT-1M) — recall is INGEST-RATE-dependent
 
-Numbers from the **RNG-closure shipped-write-path 1M re-pin** (165 cells / 6,228
-fines / ρ≈1.04). These **supersede** the earlier 094.5 freeze (0.952/0.826) — that
-topology is no longer produced by the shipped write path (`VECTOR_BENCHMARK_RESULTS.md`,
-"SPFresh 1M re-pin"). `c` below is *re-rank candidates* (a per-query knob), **not**
-Lmax (the build-time posting-split threshold, default 256).
+There is no single "the recall": **recall at fixed probes depends on the ingest rate
+the topology was built under** — a faster fill lets the rebalancer lag the writers,
+so vectors get closure-assigned against a staler topology. This is the central
+SPFresh trade and the reason RFC-104 refinement exists. The table below is the
+**full-perf-stack 530 vec/s fill** — the realistic high-throughput point (186 cells /
+5,835 fines / ρ≈1.01, `VECTOR_BENCHMARK_RESULTS.md` "1M clean fill A/B"). `c` is
+*re-rank candidates* (per-query), **not** Lmax (the build-time posting-split
+threshold, 256).
 
 | Config (w_q / kc / c / ε) | recall@10 | p50 | QPS@16 |
 |---|---|---|---|
-| **default** 32 / 64 / 200 / 7 | 0.961 | 23.9 ms | 148 |
-| **fast** 16 / 24 / 64 / 7 | 0.830 | 9.3 ms | 421 |
-| kc=128 cap / 7 | 0.993 | 45.4 ms | 91 |
-| kc=192 cap / 7 | 0.998 | 69.2 ms | 64 |
+| **default** 32 / 64 / 200 / 7 | 0.925 | 17.9 ms | 141 |
+| **fast** 16 / 24 / 64 / 7 | 0.791 | 6.8 ms | 392 |
+| kc=128 cap / 7 | 0.973 | 32.5 ms | 90 |
+| kc=192 cap / 7 | 0.987 | 47.2 ms | 64 |
 
-The recall ladder beyond ~0.96@1M is **kc-tail** (0.993 @ kc=128, 0.998 @ kc=192) at
-2–3× latency — a probe-budget tradeoff, structurally capped by the FDB range-reply
-budget. RFC-104 refinement recovers ingest recall *drift*, not this ceiling — and
-its recovery is measured at **300k**, not re-pinned at 1M:
+A **slower 110 vec/s** fill of the same data reads ~3.5pp higher at default probes
+(0.961 / 0.993 / 0.998 at default/kc128/kc192) — max-rate ingest is the cost. Three
+mitigations: ingest at the rate your recall target tolerates; raise kc post-fill
+(0.987 @ 47ms holds even on the fast-filled topology); or run RFC-104 refinement. The
+kc-tail (0.973 → 0.987) is a probe-budget tradeoff, capped by the FDB range-reply
+budget. (The earlier 094.5 freeze 0.952/0.826 is superseded — no longer produced by
+the shipped write path.)
+
+RFC-104 refinement recovers fast-ingest *drift*; measured at **300k**, not re-pinned
+at 1M:
 
 | 300k fast fill | pre-refine | one-shot refine | bulk (ideal) |
 |---|---|---|---|
@@ -148,15 +157,17 @@ concurrent writers + sweepers without corruption (no faults injected).
 
 ---
 
-## Proposed but NOT implemented
+## k-means build early-stop (RFC-102) — shipped; the Hamerly pivot-from was rejected
 
-- **RFC-102 (k-means / Hamerly).** Status "proposed (pivoted from Hamerly)". **Not
-  in code** — the build uses plain Lloyd k-means (`spfreshKMeansBuild`→`spfreshKMeansCore`,
-  `spfresh_kmeans.go:106/116`) with only a `convergeFraction` early-stop
-  (`spfreshKMeansBuildConvergeFraction = 0.01`, `:101`). k-means is the other CPU
-  half of the build after two-level routing cut the flat scan; like RFC-100 below,
-  the speedup is marginal now that the 1M build is minutes, not hours. Revisit only
-  if build time becomes a demonstrated problem.
+- **RFC-102's actual design — a convergence-fraction early-stop — IS implemented.** The
+  RFC is titled "bulk-build k-means: convergence-fraction early-stop" and *pivoted from
+  Hamerly* after measurement. The shipped build k-means (`spfreshKMeansBuild`→`spfreshKMeansCore`,
+  `spfresh_kmeans.go:106/116`) early-stops when an iteration moves ≤
+  `spfreshKMeansBuildConvergeFraction`·n points (= 0.01, `:101`) — that *is* RFC-102.
+  Only the **original Hamerly bounds approach was rejected / not implemented** (the RFC is
+  still stamped "proposed" but its pivoted design shipped). k-means is the other CPU half of
+  the build after two-level routing cut the flat scan; a faster variant is marginal now that
+  the 1M build is minutes, not hours.
 
 ---
 
@@ -238,12 +249,14 @@ needs a *new* measurement that contradicts the recorded result.
 | **099** | Two-level build assignment | Shipped |
 | **100** | Build distance-domain (float32/SIMD) | **REJECTED (measured)** |
 | **101** | Assign-bound (triangle-inequality) pruning | Shipped |
-| **102** | k-means / Hamerly | **Proposed, not implemented** |
+| **102** | k-means convergence-fraction early-stop | Shipped (Hamerly pivot-from rejected) |
 | **103** | Parallel staging scan | Merged (#289) |
 | **104** | Online assignment refinement | Merged (#290) |
 | **045** | Vector relational (SQL) parity | Shipped |
 | **046** | Multi-partition vector scan | Shipped |
 
-Genesis / alternatives: `005-vector-index.md`, `006-ivf-vector-index.md`. A
-separate FDB-native ANN index (Go-only, distinct on-disk layout) remains an open
-*exploration* item — see `TODO.md` "Exploration: a second, FDB-native vector index".
+Genesis / alternatives: `005-vector-index.md`, `006-ivf-vector-index.md`. SPFresh
+*is* the realization of the "second, FDB-native vector index" exploration (the
+Go-only, distinct-on-disk-layout ANN index that escapes HNSW's sequential-RTT
+latency profile); that `TODO.md` exploration item is effectively closed by RFC-094
+and is stale.
