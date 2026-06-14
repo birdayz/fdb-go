@@ -64,8 +64,13 @@ jobs:
           {
             echo "## 1M stress — latency trend ($(date -u +%FT%TZ))"
             echo '```'
-            grep -iE 'point lookup|full scan|index (equality|scan)|p50|p99|latency|ms/op|rows|elapsed' \
-              stress-output.txt | head -40 || echo "(no latency lines matched — check the stress test output format)"
+            # grep -m 40 (NOT `grep | head -40`): head closes the pipe early on >40
+            # matches → grep SIGPIPEs → under GHA's default `bash -eo pipefail` the
+            # `|| echo` fallback would ALSO fire, printing a spurious "no matches" line
+            # next to real matches (codex). `grep -m 40` caps inside grep, so its exit is
+            # clean: 0 with matches (no fallback), 1 with none (fallback prints).
+            grep -m 40 -iE 'point lookup|full scan|index (equality|scan)|p50|p99|latency|ms/op|rows|elapsed' \
+              stress-output.txt || echo "(no latency lines matched — check the stress test output format)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
