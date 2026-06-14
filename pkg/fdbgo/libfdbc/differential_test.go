@@ -323,6 +323,23 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_backend_preserves_callback_error_over_ctx", func(t *testing.T) {
+		// A callback that returns its OWN application error must surface that error,
+		// not context.Canceled — even when the ctx was also canceled. The pure-Go
+		// loop gives the callback error precedence (client/database.go:631-637); only
+		// a ctx-CAUSED failure maps to ctx.Err().
+		ct := cgoBackend.(fdb.CtxTransactor)
+		ctx, cancel := context.WithCancel(context.Background())
+		appErr := errors.New("libfdbc_diff: callback validation error")
+		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
+			cancel()           // ctx canceled...
+			return nil, appErr // ...but the callback returns its own error
+		})
+		if !errors.Is(err, appErr) {
+			t.Fatalf("a callback application error must win over ctx.Err(), got %v", err)
+		}
+	})
+
 	t.Run("range_iterator_contract", func(t *testing.T) {
 		// Drive the cgo backend's GetRange iterator the way the record-layer cursors
 		// do: an Advance/Get loop, an idempotent Get(), and a post-loop Get() to tell
