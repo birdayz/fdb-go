@@ -931,145 +931,21 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   DO-NOT-EDIT files (KeyRangeRef swap-inversion, OOM cap), bazel data deps added + every skip in
   the net is now a Fatalf, orphan `wire/conformance_test.go` + dead justfile recipes deleted.
 
-## SPFresh multi-tenant scale-out (RFC-094 follow-up; post-094.5)
+## SPFresh — tracked in RFC-094 (status)
 
-The index is tenant-local by construction (per-store subspaces — the CloudKit pattern), so
-100k-tenant fleets are structurally supported: each user is an independent SPFresh index with its
-own topology, counters, changelog, and task queue; per-tenant changelogs also dissolve the
-versionstamped hot-shard concern. The on-disk format and lifecycle algorithms need no changes —
-everything below is infrastructure *around* the index. Items 1–2 are required before pointing a
-real fleet at it; 3–4 harden it.
+All SPFresh tracking — current state, shipped work, open items, frozen
+performance, and measured-negative levers — is consolidated in the authoritative
+tracker **`rfcs/094-spfresh-status.md`**. The former "multi-tenant scale-out" and
+"recall at scale" sections (every item closed) moved there; the SQL surface is
+Phase 9 above (shipped).
 
-- [x] **1. Tenant maintenance sweeper.** DONE (SweepSPFreshIndexes + SPFreshHasPendingMaintenance probe + round-budgeted rebalance core; found+fixed the builder Cellfin task-row leak that made every bulk-built index probe permanently busy). Splits/merges/reassignments are caller-driven today
-  (something must call `RebalanceSPFreshIndex` per index — the benchmark runs its own goroutine).
-  Build the background worker fleet that discovers indexes with pending task rows and drives their
-  rebalancing ("find tenants with work, do the work, move on"). Safe concurrent executors are
-  already solved (unique lease owners, task-level exclusion); what's missing is purely the
-  discovery/scheduling layer — which tenants, what order, how often.
-- [x] **2. Routing-cache eviction across tenants.** DONE (idle-TTL 15min + 4096-entry cap with oldest-first eviction and hysteresis, amortized inline in spfreshCacheFor). `spfreshCaches` (process-global, keyed by
-  index subspace + generation) never evicts: touch a tenant once and its cache lives until the
-  process dies. Bounded per tenant (L2 LRU), unbounded across tenants — a serving process handling
-  thousands of users leaks cache memory for its lifetime. Add idle-TTL or a global LRU over the
-  cache map; cold tenants rebuild on next touch.
-- [x] **3. Per-tenant maintenance budgets.** DONE (MaxRoundsPerTenant fairness budget in the sweeper; undrained tenants reported and continued next pass; per-tenant errors isolated via errors.Join). Leases prevent corruption but not starvation: a whale
-  tenant's split storm must not starve 99,999 small tenants' maintenance. The sweeper needs
-  per-tenant work budgets / fair scheduling.
-- [x] **4. Many-tenant aggregate soak.** DONE (TestSPFreshMultiTenantSoak: 20 tenants × 2k vectors, 4 interleaved writers + 2 concurrent sweepers → 1,093 vec/s AGGREGATE — multi-tenancy spreads the conflict surface, beating single-tenant fill 2–5×; worst tenant recall@10 = 1.0000; fleet drained, every probe quiet). Every number so far is single-tenant. Pin the new
-  dimension: N small indexes churning concurrently on one cluster (fill + churn + recall sampling
-  per tenant), watching aggregate conflict rate and sweeper lag.
-- [x] **5. Concurrent-reader QPS measurement.** DONE (SIFT_QPS=G hammer phase in the sweep harness, commit b0432b61; measured at 1M for all 16 sweep configs — frozen defaults 134 QPS@16, fast 374 QPS; post-RNG topology 148/421). All read benchmarks to date were single-threaded
-  latency (25.5ms p50 ⇒ ~39 QPS/thread default, ~106 QPS/thread fast). Queries are stateless
-  snapshot reads off the in-process routing cache and should scale near-linearly with client
-  cores/processes until storage-server read bandwidth (~100–300KB/query). Add a G-goroutine
-  hammer phase to the fill benchmark reporting aggregate QPS per config; also the basis for the
-  10-client scale-out estimate (whitepaper claim: needs measurement, not argument).
-
-## SPFresh recall at scale (spfresh-reviewer findings, 2026-06-10 — pre-094.5-freeze)
-
-Paper-review verdict on the SIFT-1M fixed-probe recall decay (fast budget 0.947@100k →
-0.816@1M; default holds 0.950): three causes, ranked by recall-per-ms. Full review in the
-PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
-
-- [x] **1. Implement ε-pruning (SPANN §3.3; RFC-094 §217/§468).** Landed (SPANN Eq.3
-  query-aware ε-pruning, default-ON ε₂=7.0, kc as cap, starvation widening, per-query
-  override). The 1M ε A/B that pins the recall/latency claim on realistic data is the
-  in-flight sweep (item 2's run carries both).
-- [x] **2. 1M w-sweep + ε A/B + QPS — DONE, defaults frozen (094.5).** Full table in
-  VECTOR_BENCHMARK_RESULTS.md. ε=7.0 measured INERT on SIFT-1M (identical recall/latency
-  on/off — Eq.(3)-faithful, distance concentration; stays default-ON as it's free). F2 is
-  small (+0.7pp from w 8→16 at kc=24, w>16 nil); the decay is F1 kc-tail (0.973 @ kc=128,
-  0.987 @ kc=192, at 2-3× latency). Frozen: default 32/64/200/ε7 (0.952 @ 27.9ms, 134 QPS),
-  fast 16/24/64/ε7 (0.826 @ 10.7ms, 374 QPS) — both strictly better than old at equal cost.
-- [x] **3. α-led replication sweep — DONE, measured NEGATIVE (r stays 2).** Four 1M
-  foreground fills: ρ ≈ 1.01/1.01/1.03/1.02 across α² ∈ {1.44, 1.44, 4, 11} (r 2/4/4/4);
-  recall moves ±1pp (variance), r=4 costs ~20% fill throughput for nothing. Closure
-  replication is structurally unavailable at Lmax=256 granularity (cells hold ~170
-  vectors vs the paper's ~6 — a vector sits deep inside one cell and the RNG rule
-  rejects every other centroid as same-direction). Full table + geometry in
-  VECTOR_BENCHMARK_RESULTS.md. The recall ladder beyond ~0.94 at 1M is granularity
-  (item 4), the refinement sweep (item 5), and kc.
-- [x] **4. Revisit Lmax=128 — DONE, measured NEGATIVE (Lmax=256 stays).** SIFT-500k A/B
-  (full table in VECTOR_BENCHMARK_RESULTS.md): Lmax=128 (2× cells/fines) LOWERS recall at
-  every fixed probe budget (fast 0.8985→0.8690, default 0.9745→0.9630) — just faster
-  queries + a slower build. At a fixed w/kc/c probe, smaller lists cover fewer total
-  candidates ⇒ recall drops. Reaching the paper's 16% ratio needs Lmax≈16, far under the
-  FDB-reply-budget floor — granularity is structurally bounded, recall is **probe-bound
-  not granularity-bound** (like item 3's α-sweep, this lever is spent). The remaining
-  recall headroom is assignment-quality (item 5), not cell size.
-- [x] **5. Assignment-refinement (RFC-104) — DONE: drift root-caused, refinement
-  VALIDATED, budgeted production op shipped & impl-reviewed CLEAN (codex/Torvalds/
-  Graefe/Paper ACK).** `RefineSPFreshIndex` (pkg/recordlayer/spfresh_refine.go): an
-  online closure re-evaluation against the converged topology — generation-scoped
-  round-robin membership cursor, budget bounds pks re-evaluated (not moves),
-  per-pk REAL-membership + ACTIVE-state move fences (NPA's), kc=4·spfreshClosurePool
-  (matches the bulk router's max pool, gated by the converged→zero-moves spec for
-  r∈{2,4}). Measured: one-shot recovers fast-fill recall to the bulk baseline
-  (default 0.9680→0.9875 ≈ bulk 0.9880; fast 0.8570→0.9030); the budgeted op
-  converges (14 calls) + recovers; a converged bulk index refines to ZERO moves
-  (no-regress). Codex's r1 NAK (budget bounded moves not pks; retry double-count)
-  fixed in 1c1af82d, each bug pinned by an FDB regression proven to fail on the
-  pre-fix code (budget-bounds, retryOnceTransactor double-count, lifecycle-fence
-  A/B). Wired into the fleet: `RefineSPFreshIndexes` (spfresh_refine.go) is the
-  refinement loop beside the rebalancer loop — one budgeted pass per tenant,
-  per-tenant error isolation + ctx cancel + Converged reporting, mirroring
-  SweepSPFreshIndexes (FDB specs: drift recovery across tenants, error isolation,
-  cancellation). Original investigation/measurements below. SIFT-300k A/B (full table
-  in VECTOR_BENCHMARK_RESULTS.md): fast fill (8 writers, 533 vec/s) vs bulk build of the
-  SAME data — recall fast 0.8720 vs 0.9205 (−4.9pp), default 0.9685 vs 0.9880 (−1.9pp);
-  the fill topology is under-developed (55 cells/1755 fines/**1.00× replication** vs
-  74/3418/**1.20×**). Root cause: closure replication never fires during fast fill (the
-  SPANN RNG rule rejects every non-home centroid against the coarse insertion-time
-  topology — the item-3 geometry), and those vectors are never re-evaluated as the
-  topology refines; the existing rebalancer (drained to quiescence) does NOT recover it.
-  RFC-104 (rfcs/104-spfresh-assignment-refinement.md): an online wave-B-analog refinement
-  op reusing the NPA per-pk closure-move primitive, candidate = round-robin membership
-  cursor. VALIDATE-FIRST: prototype "refine-all" → measure recall recovery before building
-  the budgeted op (if it doesn't recover, the drift is partly structural and needs
-  re-splitting). Originally measured at 1M:
-  a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
-  same code, similar action counts. Writers outrunning the rebalancer assign vectors
-  against a lagging topology; NPA repairs split neighborhoods only, not global drift.
-  A maintenance op that re-runs the closure for sampled/flagged vectors against the
-  CONVERGED topology (an online analog of the bulk build's wave B; SPFresh §3.3's
-  reassignment generalized beyond splits) would recover the gap after bulk-ingest
-  phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
-  the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
-  the fast-filled topology). The α-sweep (item 3) also lifts this floor.
-- [x] **6. Wave B should route two-level, not flat-scan the fine table — DONE (RFC-099
-  + RFC-101 prune).** `spfreshBuildRouter.assign` (spfresh_build.go:615) routes to the
-  w_b nearest coarse cells via `spfreshNearestK` then `gatherTopK` over only those
-  cells' fines, with an EXACT RFC-101 triangle-inequality prune (`spfreshPruneLowerBound`)
-  — no global fine scan. waveB (build.go:748) calls it. PROFILED (BenchmarkSPFreshBuildAssign,
-  1M-scale topology 245×25≈6,100 fines, /tmp/assign.prof): 88µs/vector ⇒ ~88s
-  single-threaded for the whole 1M assign phase vs the item's ~15–20 min flat scan;
-  hot path is gatherTopK(73%)/nearestK(23%) two-level routing, NOT a flat fine scan.
-  The residual cost is the distance kernel itself (spfreshSquaredDistance 66% flat) —
-  a different lever (RFC-100 float32 distance / k-means, per the BenchmarkSPFreshKMeans
-  note), not this item. Original (now-superseded) investigation below. (Original staging
-  theory was WRONG — 5,000 staging txs fit in ~80s; measured.) The real 1M bulk cost:
-  waveB assign() runs nearestK over ALL ~11.7k fines (12MB, cache-resident it is not)
-  up to 3 bounded pool passes per staged vector — memory-bandwidth-bound, ~15-20 min
-  of the 1M build. Queries route coarse→cell (two-level) for exactly this reason;
-  the build router should do the same: nearest w cells via L1 (245 × 128d), then fines
-  within those cells (~48×w) — ~30× less bandwidth. Bounded-widening semantics carry
-  over unchanged. ALSO still worth checking: staging parallelism (minor, ~80s at 1M).
-  MEASURED before killing: 759% CPU sustained for 54+ min (~7 CPU-hours) on the
-  bounded-pool build at 1M — far past the bandwidth model too. PROFILE FIRST
-  (go test -cpuprofile on a 300k bulk reproduces in minutes) before optimizing;
-  the two-level routing fix is the likely shape but the model has been wrong twice.
-
-- [x] **7. float32 distance kernel ("RFC-100") — SIZED, measured MARGINAL (not
-  pursued).** The build's residual CPU after RFC-099/101 is the distance kernel
-  `spfreshSquaredDistance` ([]float64): 66% flat of assign (BenchmarkSPFreshBuildAssign
-  87µs/vector ⇒ ~87s for the 1M assign phase) and dominant in k-means
-  (BenchmarkSPFreshKMeans 288ms / 8k×48×25). float32 would roughly halve the kernel's
-  bandwidth — BUT RFC-099+101 already cut the build from the old ~7 CPU-hours flat scan
-  to MINUTES, so the win is a fraction of a ONE-TIME bulk build. Against that: the kernel
-  has 20+ call sites including the query path (cache.route) and the EXACT re-rank (a
-  correctness property — float32 there would break "exact"), and float32 assignment can
-  shift near-tie centroid picks ⇒ a recall risk needing 1M revalidation. SPFresh is
-  Go-only (no Java SPFresh) so there's no wire-compat forcing function either. A large,
-  recall-critical change for a marginal one-time-build gain — spent lever, like the Lmax
-  (item 4) and α-replication (item 3) negatives. Revisit only if a demonstrated build- or
-  query-latency problem appears (it would need float32 for the approximate kernel only,
-  float64 preserved for re-rank).
+Open work (detail + file:line in the RFC):
+- **Tier 1:** SPFresh has no chaos/model-based fault coverage — the whole
+  lifecycle incl. RFC-104 refinement is untested under injected faults and
+  refiner-vs-rebalancer concurrency (highest-value gap); refresh
+  `SPFRESH_OPERATIONS.md` for the refinement loop (stale wrt RFC-104).
+- **Tier 2:** changelog chunking for >~267M-vector single-store builds
+  (`spfresh_build.go:120`); a reference maintenance worker looping sweep+refine on
+  a cadence (today they're library entry points a deployment must wire).
+- **SQL nice-to-haves:** yamsql vector port, `ef_search` FDB behavioral test,
+  OR-of-two-KNN execution test, window-in-`WHERE` `42F21` rejection.

@@ -1,0 +1,185 @@
+# RFC-094 (status): SPFresh — current state & open work
+
+**Status:** Living tracker (authoritative). This is the single index of what's
+**shipped**, what's **open**, and what's been **measured and rejected** for the
+SPFresh FDB-native vector index. Per-feature *design* detail lives in the numbered
+RFCs linked at the bottom; *benchmark numbers* in
+`pkg/recordlayer/VECTOR_BENCHMARK_RESULTS.md`. This file supersedes the scattered
+SPFresh sections that used to live in `TODO.md`.
+
+**Last code-verified: 2026-06-14.** Every "shipped"/"open" line below was
+cross-checked against the code (file:line) and, where relevant, a passing test —
+not carried forward from prior notes. Items proven stale during that pass are
+flagged inline.
+
+---
+
+## TL;DR
+
+SPFresh is a **production-ready, FDB-native vector index** — SPANN + LIRE: coarse
+cells → fine centroids → posting lists, RaBitQ-quantized residuals, an fp16
+sidecar for exact re-rank. It is **Go-built / Go-read only** (Java has no SPFresh
+index type; it forfeits cross-engine record sharing for *this index*, the stated
+cost of an FDB-native layout). It is **usable from SQL today**. Recall and latency
+are frozen at measured defaults; the recall ceiling at 1M is a probe-budget
+tradeoff, not a defect.
+
+The recall + multi-tenant + build-perf backlogs are **closed**. The open work is
+**hardening and operability** (chaos/soak coverage, ops docs, a reference worker)
+plus two scaling/ergonomics items — none block production use at the multi-tenant
+scale SPFresh is designed for.
+
+---
+
+## Usable from SQL (verified — 7 FDB e2e tests pass)
+
+```sql
+CREATE VECTOR INDEX docs_emb USING SPFRESH ON docs(embedding)
+  [PARTITION BY (tenant, zone)] OPTIONS(...);
+
+SELECT id FROM docs
+QUALIFY ROW_NUMBER() OVER (
+  [PARTITION BY tenant]
+  ORDER BY euclidean_distance(embedding, [0.9, 0.1, 0.0])
+) <= 10;
+```
+
+Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e2e_fdb_test.go`):
+- `CREATE VECTOR INDEX … USING HNSW` **or** `USING SPFRESH`, with `PARTITION BY (…)` (`ddl.go:189`).
+- The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`).
+- `euclidean_distance`, `euclidean_square`, `cosine_distance`, `dot_product` (`walk.go:706`).
+- Plans to a physical **BY_DISTANCE vector index scan** (EXPLAIN-pinned), never a full scan; the index-only `DistanceRank` predicate is never lowered to a residual filter (`predicate_multi_map.go`, `plan_executability.go`).
+- Multi-partition fan-out over a partial partition prefix (RFC-046).
+- A metric mismatch (e.g. `cosine_distance` against a EUCLIDEAN index) errors cleanly with `UnplannableIndexOnlyResidualError` rather than panicking.
+
+> **Accuracy note:** earlier tracking implied SQL vector search was unfinished
+> "Phase 9 / window-function parity" work. That was stale — Phase 9 (9.1–9.5) is
+> complete and tested. SQL K-NN over SPFresh works.
+
+---
+
+## Shipped (closed work) — all VERIFIED
+
+| Area | RFC | State | Proof |
+|---|---|---|---|
+| Core index (cells/fines/postings, LIRE, RaBitQ, fp16 sidecar, split/merge/coarse-split/NPA/GC lifecycle, generation-prefixed layout) | **094** (rev 5) | Shipped | `spfresh_*.go`; full Ginkgo suite |
+| Two-level build assignment (route to w_b nearest cells, not a flat fine scan) | **099** | Shipped | `spfresh_build.go:619` `assign`→`gatherTopK` |
+| Exact triangle-inequality assign prune | **101** | Shipped | `spfreshPruneLowerBound` `spfresh_build.go:654`, used `:691/:697` |
+| Parallel sharded staging scan | **103** | Merged (PR #289) | `spfreshStageRecordsSharded` `spfresh_index_maintainer.go:860` |
+| Online assignment refinement (ingest recall-drift recovery) + fleet driver + metrics | **104** | Merged (PR #290) | `spfresh_refine.go`; 9 `-race` specs |
+| SQL surface: `CREATE VECTOR INDEX USING HNSW\|SPFRESH`, QUALIFY K-NN, multi-partition | **045 / 046** (Phase 9.1–9.5) | Shipped | 7 `TestFDB_VectorSearch*` e2e |
+| Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
+| Recall at scale: ε-pruning (SPANN §3.3), 1M w/ε/QPS sweeps, frozen defaults | 094.5 | Shipped | `VECTOR_BENCHMARK_RESULTS.md` |
+
+### Current performance (SIFT-1M, frozen defaults)
+
+| Config (w_q / kc / Lmax / ε) | recall@10 | p50 | QPS@16 |
+|---|---|---|---|
+| **default** 32 / 64 / 200 / 7 | 0.952 | 27.9 ms | 134 |
+| **fast** 16 / 24 / 64 / 7 | 0.826 | 10.7 ms | 374 |
+
+The recall ladder beyond ~0.95@1M is **kc-tail** (0.987 @ kc=192) at 2–3× latency
+— a probe-budget tradeoff, structurally capped by the FDB range-reply budget.
+RFC-104 refinement recovers fast-ingest recall *drift* back to these baselines;
+it does not lift the ceiling.
+
+---
+
+## Proposed but NOT implemented
+
+- **RFC-102 (k-means / Hamerly).** Status "proposed (pivoted from Hamerly)". **Not
+  in code** — the build uses plain Lloyd k-means (`spfreshKMeansCore`) with only a
+  `convergeFraction` early-stop (`spfresh_kmeans.go:103`). k-means is the other CPU
+  half of the build after two-level routing cut the flat scan; like RFC-100 below,
+  the speedup is marginal now that the 1M build is minutes, not hours. Revisit only
+  if build time becomes a demonstrated problem.
+
+---
+
+## Open work
+
+### Tier 1 — harden & document what shipped
+
+1. **SPFresh has NO chaos / model-based fault coverage** (broader than refinement
+   alone). The chaos harness (`pkg/recordlayer/chaos/`) has **zero** SPFresh files;
+   `verify_vector.go:26` models only HNSW (`IndexTypeVector`), never
+   `IndexTypeVectorSPFresh`. So the whole lifecycle — splits, merges, coarse
+   splits, NPA, GC, **and refinement** — is unverified under injected faults
+   (commit_unknown, conflicts) and under concurrency. In particular RFC-104
+   refinement is exercised *only in isolation* (9 unit specs, no goroutines, no
+   concurrent rebalancer); the **refiner-vs-rebalancer race** and a
+   **fault-injected refine pass** are untested. The per-pk conflict-retry and
+   sealing-fence paths *are* unit-pinned, but a model-based run is the gold
+   standard this subsystem is missing. **Highest-value open item.**
+
+2. **`SPFRESH_OPERATIONS.md` is stale wrt RFC-104.** It documents the
+   rebalancer/sweeper runbook (topologies, budgets, metrics, troubleshooting) but
+   has **zero** mention of the refinement loop. Add a refinement section: cadence
+   (slower than the rebalance sweep), the two new metrics
+   (`CountSPFreshRefineMoves` / `CountSPFreshRefineConverged`), how `Converged`
+   lets a caller back off quiescent tenants, and the refiner/rebalancer interaction
+   (the lifecycle fence makes them safe to run concurrently).
+
+### Tier 2 — scaling & ergonomics
+
+3. **Changelog chunking for huge single-store builds.** `coarsePass` writes one
+   changelog delta per coarse cell in ONE transaction; the 2-byte versionstamp
+   user-version caps it at `spfreshMaxDeltasPerTx = 65536` cells (`spfresh_storage.go:510`),
+   so a bulk build hard-errors above ~267M vectors **in a single store**
+   (`spfresh_build.go:120-130`). Real ceiling, but it only bites one giant tenant —
+   multi-tenant fleets (the deployment model) sit far under it. Lifting it needs the
+   coarse-table commit to chunk the changelog across transactions (not implemented).
+
+4. **No reference maintenance worker.** `SweepSPFreshIndexes`, `RefineSPFreshIndexes`,
+   and `RebalanceSPFreshIndex` are library entry points only — no `cmd/` binary or
+   ticker loop drives them on a cadence; a deployment must wire that itself. A
+   reference worker (discover tenants → sweep + refine on independent cadences,
+   with the metrics wired) would close the "how do I actually run this" gap.
+
+### Nice-to-have — SQL surface follow-ups (none block "done")
+
+- **yamsql vector port** — *real open*: no `.yamsql` scenario covers vector/QUALIFY; Java's `window-function-documentation-queries.yamsql` is unported.
+- **`ef_search` FDB behavioral test** — *partial*: the knob is parsed + threaded + unit-tested, but no FDB test proves a non-default `ef_search` changes search behavior.
+- **OR-of-two-KNN** — *partial*: `applyDistanceRankTransform` recurses into `OrPredicate`, but no test plans/executes an OR of two K-NN searches.
+- **Window-in-`WHERE` rejection** — *real open*: a bare `ROW_NUMBER() … <= K` in `WHERE` (outside `QUALIFY`) isn't pinned to error the Java way (`42F21`).
+
+> **Accuracy note:** "cosine-on-euclidean clean error" was listed as an open
+> follow-up but is already DONE (`TestVectorPlan_MetricMismatchDoesNotMatchVector`).
+
+---
+
+## Measured-negative — do NOT re-chase
+
+These levers were investigated with real measurements and rejected. Re-opening one
+needs a *new* measurement that contradicts the recorded result.
+
+- **float32 / code-domain distance kernel (RFC-100)** — REJECTED (measured):
+  float32-scalar is a no-op in pure Go and SIMD isn't available; the kernel stays
+  `spfreshSquaredDistance(a, b []float64)`. After RFC-099/101 the 1M build is
+  minutes, so the bandwidth win is a fraction of a one-time build, against a recall
+  risk across 20+ call sites incl. the exact re-rank.
+- **Lmax granularity (smaller lists)** — NEGATIVE: recall is **probe-bound, not
+  granularity-bound**; Lmax=128 lowers recall at every fixed probe budget. Lmax=256 stays.
+- **α-led closure replication (r > 2)** — NEGATIVE: at Lmax=256 density the SPANN
+  RNG rule rejects every non-home centroid as same-direction; r=4 costs ~20% fill
+  throughput for ±1pp recall. r=2 stays.
+
+---
+
+## Reference RFCs
+
+| RFC | Subject | Status |
+|---|---|---|
+| **094** | SPFresh core (FDB-native vector index) | Rev 5, shipped |
+| **099** | Two-level build assignment | Shipped |
+| **100** | Build distance-domain (float32/SIMD) | **REJECTED (measured)** |
+| **101** | Assign-bound (triangle-inequality) pruning | Shipped |
+| **102** | k-means / Hamerly | **Proposed, not implemented** |
+| **103** | Parallel staging scan | Merged (#289) |
+| **104** | Online assignment refinement | Merged (#290) |
+| **045** | Vector relational (SQL) parity | Shipped |
+| **046** | Multi-partition vector scan | Shipped |
+
+Genesis / alternatives: `005-vector-index.md`, `006-ivf-vector-index.md`. A
+separate FDB-native ANN index (Go-only, distinct on-disk layout) remains an open
+*exploration* item — see `TODO.md` "Exploration: a second, FDB-native vector index".
