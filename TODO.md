@@ -32,10 +32,15 @@ each on its own stacked branch.
    in C++ `fdb_error_predicate(RETRYABLE)` ≠ `Transaction::onError`'s set (1039 predicate-retryable
    but not onError-retried; 1006 the reverse). Make each match its OWN C++ predicate, share the
    per-code facts, pin both against the C++ source.
-3. **[ ] Resource limits / backpressure (multi-tenant launch safety).** `M` · query-engine-gated
-   (Graefe + Torvalds + codex). Only `MaterializationLimitExceededError` exists. Add a statement
-   timeout, a max-rows / result-size cap, and a per-query memory budget for streaming intermediates.
-   Surface as errors, not crashes. (TODO-production P1.9.)
+3. **[x] Resource limits / backpressure (multi-tenant launch safety).** DONE (RFC-106a) — clean
+   tri-ACK (Graefe + Torvalds + codex), HEAD `a396227e`. `M` · query-engine-gated. Statement timeout
+   (per-request ctx deadline → 54F01), scan-limit options wired to `ExecuteProperties` with Java
+   semantics + `FailOnScanLimitReached`, `MAX_ROWS`/result-byte caps, SQLSTATE 54F01 mapping. The
+   completeness work (9 codex rounds) swept the out-of-band/scan-limit dimension across every leaf
+   cursor, buffered operator, DML path (atomic abort, no partial mutation), executor stream wrapper,
+   value drain helper, and cursor iterator — none silently truncates. The per-query MEMORY byte budget
+   is split to **RFC-106b** (deferred: needs every cardinality-growing buffer charged + a CI lint that
+   also covers the out-of-band handling for new leaf cursors / drains). (TODO-production P1.9.)
 4. **[ ] Make CI gates real.** `M` · Torvalds + codex. The 1M stress test runs in NO workflow; the
    23 `pkg/fdbgo` fuzz targets (incl. `FuzzDifferential*`) are never given fuzz time; `-race` is not
    a PR gate for the client itself (only `//pkg/relational/...`). Add a scheduled stress job, extend

@@ -1,9 +1,15 @@
 # RFC-106a: Per-statement resource governance — timeout, scan-limit wiring, SQLSTATE, result-size
 
-**Status:** Accepted — Graefe (ACK, Q1 per-request ruling), Torvalds (NAK→split: this is the
-106a half), codex (P2s: Java-option semantics) — addressed on r2 (2026-06-13). The memory byte
-budget is split out to **RFC-106b** (Torvalds: it needs *completeness* — every cardinality-growing
-buffer charged + a CI lint — not a plausible-looking 4-site list).
+**Status:** IMPLEMENTED — clean tri-ACK (Graefe + Torvalds + codex) on HEAD `a396227e`
+(2026-06-14). RFC accepted r2; implementation reviewed across 9 codex rounds that swept the
+out-of-band/scan-limit dimension end to end (leaf cursors → buffered operators → DML atomicity
+→ executor stream wrappers → recordlayer combinators [verified already-correct] → value drain
+helpers → the `Seq`/`SeqWithContinuation` footgun iterators [deleted]). Every fix revert-proven.
+The memory byte budget is split out to **RFC-106b** (Torvalds: it needs *completeness* — every
+cardinality-growing buffer charged + a CI lint — not a plausible-looking 4-site list); a CI lint
+that any new leaf cursor / buffered drain handles out-of-band stops is also tracked there. Known
+structurally-inert internal exceptions (no scan limiter reaches them): the aggregate-function
+direct-record-store drains and `permuted_min_max` — flagged for the 106b lint.
 **Item:** Client launch-readiness #3 (TODO.md) — TODO-production P1.9. Gate: **query-engine
 (Graefe)** + Torvalds + codex. Java (4.11.1.0) is the spec for the parity parts (scan-limit wiring);
 the statement timeout + result-size cap are Go-only read-path extensions (Java lacks both) that
