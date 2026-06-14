@@ -40,11 +40,12 @@ const (
 const spfreshMetaPrefix = "m"
 
 const (
-	spfreshMetaGeneration int64 = 0 // current readable generation (int64)
-	spfreshMetaIDBlock    int64 = 1 // centroid/cell ID block allocator (int64)
-	spfreshMetaHorizon    int64 = 2 // changelog GC horizon (version)
-	spfreshMetaTransform  int64 = 3 // RaBitQ transform (rotator seed + centroid)
-	spfreshMetaBuild      int64 = 4 // build ownership token (opaque 16 bytes; see spfreshVerifyBuilderToken)
+	spfreshMetaGeneration   int64 = 0 // current readable generation (int64)
+	spfreshMetaIDBlock      int64 = 1 // centroid/cell ID block allocator (int64)
+	spfreshMetaHorizon      int64 = 2 // changelog GC horizon (version)
+	spfreshMetaTransform    int64 = 3 // RaBitQ transform (rotator seed + centroid)
+	spfreshMetaBuild        int64 = 4 // build ownership token (opaque 16 bytes; see spfreshVerifyBuilderToken)
+	spfreshMetaRefineCursor int64 = 5 // RFC-104 refinement round-robin cursor (generation int64 + relative membership key)
 )
 
 // Centroid / coarse-cell lifecycle states (RFC-094 §6, §6b).

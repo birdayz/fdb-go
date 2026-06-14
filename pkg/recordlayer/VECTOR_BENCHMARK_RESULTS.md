@@ -230,6 +230,72 @@ S=1): `SPFRESH_BENCH=1 SIFT_N=100000 SIFT_SHARD_SAFE=1 bazelisk test
 //pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshSIFTBenchmark"
 --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SIFT_SHARD_SAFE`
 
+### SPFresh Lmax granularity A/B (SIFT-500k) — NEGATIVE (recall-at-scale item 4)
+
+Tested the spfresh-reviewer's "biggest recall lever": finer cells (smaller Lmax →
+more, smaller posting lists) for a better recall ladder. Falsified — finer
+granularity LOWERS recall at every fixed probe budget:
+
+| SIFT-500k | Lmax=256 (default) | Lmax=128 (finer) |
+|---|---|---|
+| cells / active fines | 123 / 5,736 | 246 / 10,266 |
+| build | 50.0 s | 57.9 s (slower) |
+| recall fast (16/24/64) | **0.8985** @ 6.9 ms | 0.8690 @ 4.3 ms |
+| recall default (32/64/200) | **0.9745** @ 13.7 ms | 0.9630 @ 10.9 ms |
+
+At a FIXED w/kc/c probe, smaller lists ⇒ the probe covers fewer total candidates
+⇒ recall drops (just faster, and a slower build). Exploiting finer granularity
+needs MORE probes (latency cost); reaching the paper's 16% centroid ratio would
+need Lmax ≈ 16, far under the FDB-reply-budget floor. So granularity is
+structurally bounded and recall is **probe-bound, not granularity-bound** — like
+the α-replication sweep (item 3), this lever is spent; default Lmax=256 dominates.
+Run: add `SIFT_LMAX=128` to the build-bench env. The recall headroom that remains
+is the assignment-quality axis (item 5: drift recovery under ingest), not coarser
+or finer cells.
+
+### SPFresh ingest recall-drift (SIFT-300k, fast fill vs bulk) — RFC-104 motivation
+
+Fast foreground ingest costs recall versus a bulk build of the SAME data, and the
+rebalancer (drained to quiescence) does NOT recover it. Same query sweep:
+
+| 300k | bulk build (ideal) | fast fill (8 writers, 533 vec/s) | gap |
+|---|---|---|---|
+| cells / active fines | 74 / 3,418 | 55 / 1,755 | ~½ the fines |
+| replication (entries/N) | 1.20× | **1.00×** | closure never fired |
+| recall fast (16/24/64) | 0.9205 | **0.8720** | **−4.9 pp** |
+| recall default (32/64/200) | 0.9880 | **0.9685** | **−1.9 pp** |
+
+Root cause: a vector is closure-replicated once, at insert, against the coarse
+insertion-time topology, where the SPANN RNG rule rejects every non-home centroid
+(the item-3 geometry) → it lands at 1.0× replication and is never re-evaluated as
+the topology refines. RFC-104 designs an online refinement op to recover it
+(validate-first: prototype "refine-all" → measure recovery before building the
+budgeted op).
+
+**Recovery CONFIRMED (RFC-104 `refine-all` prototype).** One full refinement pass
+over the drifted fast-fill index recovers recall to the bulk baseline:
+
+| 300k fast fill (8 writers) | PRE-refine | POST-refine | bulk (ideal) |
+|---|---|---|---|
+| recall default (32/64/200) | 0.9735 | **0.9885** | 0.9880 |
+| recall fast (16/24/64) | 0.8675 | **0.9225** | 0.9205 |
+
+122k/300k pks moved (3m24s). Recall recovered **even though the topology stayed
+coarse** (57 vs 74 cells; replication 1.0→1.09×, not 1.20×) — the drift is
+**assignment quality, recoverable by re-routing**, not granularity.
+
+**Budgeted production op (`RefineSPFreshIndex`, `SIFT_REFINE=2`) — also recovers
++ CONVERGES.** Looping the budgeted op (budget 10k/call) until one full cursor
+cycle moves nothing: **14 calls, converged**, recall default 0.9680→0.9875
+(≈bulk 0.9880), fast 0.8570→0.9030. The default budget recovers to within 0.05pp
+of bulk; the fast budget recovers most of the drift but sits ~1.75pp under
+bulk-fast (the incremental cursor co-evolves with the rebalancer's splits, so it
+converges slightly less optimally than the one-shot at the tightest probe — in
+production both loops run continuously). A converged BULK index refines to ZERO
+moves (pinned by `TestRecordLayer` "SPFresh refinement", gating
+`kc=4·spfreshClosurePool`). Run: `...TestSPFreshForegroundFillBenchmark ...
+--test_env=SIFT_REFINE` with `SIFT_REFINE=1` (one-shot) or `=2` (budgeted).
+
 ### SPFresh 094.4 tuning sweep (SIFT-100k, recall@10 vs p50/p99)
 
 Same built index, per-query knobs via the scan contract (`High = [k, kc, w, c]`):

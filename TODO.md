@@ -988,14 +988,44 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   rejects every other centroid as same-direction). Full table + geometry in
   VECTOR_BENCHMARK_RESULTS.md. The recall ladder beyond ~0.94 at 1M is granularity
   (item 4), the refinement sweep (item 5), and kc.
-- [ ] **4. Revisit Lmax=128 after 1–3 (SPANN Fig 9 granularity).** Our 0.6% centroid ratio
-  (post-RNG: 6,228 lists at 1M) vs paper's 16%: coarser lists make each kc step blunter;
-  Lmax=256 is FDB-reply-budget justified (RFC) so only move it with measurements. Paper
-  ACK rider: ε-inertness on SIFT-1M is a GRANULARITY property, not an Eq.(3) property —
-  Fig. 12's pruning win was measured at 16% centroid ratio, and at 100k granularity our
-  corrected ε already binds (0.990 at −15% latency). If this item moves Lmax/granularity
-  toward Fig. 9's regime, re-measure ε there.
-- [ ] **5. Assignment-refinement sweep (ingest-rate recall recovery).** Measured at 1M:
+- [x] **4. Revisit Lmax=128 — DONE, measured NEGATIVE (Lmax=256 stays).** SIFT-500k A/B
+  (full table in VECTOR_BENCHMARK_RESULTS.md): Lmax=128 (2× cells/fines) LOWERS recall at
+  every fixed probe budget (fast 0.8985→0.8690, default 0.9745→0.9630) — just faster
+  queries + a slower build. At a fixed w/kc/c probe, smaller lists cover fewer total
+  candidates ⇒ recall drops. Reaching the paper's 16% ratio needs Lmax≈16, far under the
+  FDB-reply-budget floor — granularity is structurally bounded, recall is **probe-bound
+  not granularity-bound** (like item 3's α-sweep, this lever is spent). The remaining
+  recall headroom is assignment-quality (item 5), not cell size.
+- [x] **5. Assignment-refinement (RFC-104) — DONE: drift root-caused, refinement
+  VALIDATED, budgeted production op shipped & impl-reviewed CLEAN (codex/Torvalds/
+  Graefe/Paper ACK).** `RefineSPFreshIndex` (pkg/recordlayer/spfresh_refine.go): an
+  online closure re-evaluation against the converged topology — generation-scoped
+  round-robin membership cursor, budget bounds pks re-evaluated (not moves),
+  per-pk REAL-membership + ACTIVE-state move fences (NPA's), kc=4·spfreshClosurePool
+  (matches the bulk router's max pool, gated by the converged→zero-moves spec for
+  r∈{2,4}). Measured: one-shot recovers fast-fill recall to the bulk baseline
+  (default 0.9680→0.9875 ≈ bulk 0.9880; fast 0.8570→0.9030); the budgeted op
+  converges (14 calls) + recovers; a converged bulk index refines to ZERO moves
+  (no-regress). Codex's r1 NAK (budget bounded moves not pks; retry double-count)
+  fixed in 1c1af82d, each bug pinned by an FDB regression proven to fail on the
+  pre-fix code (budget-bounds, retryOnceTransactor double-count, lifecycle-fence
+  A/B). Wired into the fleet: `RefineSPFreshIndexes` (spfresh_refine.go) is the
+  refinement loop beside the rebalancer loop — one budgeted pass per tenant,
+  per-tenant error isolation + ctx cancel + Converged reporting, mirroring
+  SweepSPFreshIndexes (FDB specs: drift recovery across tenants, error isolation,
+  cancellation). Original investigation/measurements below. SIFT-300k A/B (full table
+  in VECTOR_BENCHMARK_RESULTS.md): fast fill (8 writers, 533 vec/s) vs bulk build of the
+  SAME data — recall fast 0.8720 vs 0.9205 (−4.9pp), default 0.9685 vs 0.9880 (−1.9pp);
+  the fill topology is under-developed (55 cells/1755 fines/**1.00× replication** vs
+  74/3418/**1.20×**). Root cause: closure replication never fires during fast fill (the
+  SPANN RNG rule rejects every non-home centroid against the coarse insertion-time
+  topology — the item-3 geometry), and those vectors are never re-evaluated as the
+  topology refines; the existing rebalancer (drained to quiescence) does NOT recover it.
+  RFC-104 (rfcs/104-spfresh-assignment-refinement.md): an online wave-B-analog refinement
+  op reusing the NPA per-pk closure-move primitive, candidate = round-robin membership
+  cursor. VALIDATE-FIRST: prototype "refine-all" → measure recall recovery before building
+  the budgeted op (if it doesn't recover, the drift is partly structural and needs
+  re-splitting). Originally measured at 1M:
   a 530 vec/s fill reads 0.925 at default probes where a 110 vec/s fill reads 0.961 —
   same code, similar action counts. Writers outrunning the rebalancer assign vectors
   against a lagging topology; NPA repairs split neighborhoods only, not global drift.
@@ -1005,7 +1035,17 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   phases. Interim operational guidance is in VECTOR_BENCHMARK_RESULTS.md: ingest at
   the rate the recall target tolerates, or raise kc post-fill (0.987 @ 47ms holds on
   the fast-filled topology). The α-sweep (item 3) also lifts this floor.
-- [ ] **6. Wave B should route two-level, not flat-scan the fine table.** (Original staging
+- [x] **6. Wave B should route two-level, not flat-scan the fine table — DONE (RFC-099
+  + RFC-101 prune).** `spfreshBuildRouter.assign` (spfresh_build.go:615) routes to the
+  w_b nearest coarse cells via `spfreshNearestK` then `gatherTopK` over only those
+  cells' fines, with an EXACT RFC-101 triangle-inequality prune (`spfreshPruneLowerBound`)
+  — no global fine scan. waveB (build.go:748) calls it. PROFILED (BenchmarkSPFreshBuildAssign,
+  1M-scale topology 245×25≈6,100 fines, /tmp/assign.prof): 88µs/vector ⇒ ~88s
+  single-threaded for the whole 1M assign phase vs the item's ~15–20 min flat scan;
+  hot path is gatherTopK(73%)/nearestK(23%) two-level routing, NOT a flat fine scan.
+  The residual cost is the distance kernel itself (spfreshSquaredDistance 66% flat) —
+  a different lever (RFC-100 float32 distance / k-means, per the BenchmarkSPFreshKMeans
+  note), not this item. Original (now-superseded) investigation below. (Original staging
   theory was WRONG — 5,000 staging txs fit in ~80s; measured.) The real 1M bulk cost:
   waveB assign() runs nearestK over ALL ~11.7k fines (12MB, cache-resident it is not)
   up to 3 bounded pool passes per staged vector — memory-bandwidth-bound, ~15-20 min
@@ -1017,3 +1057,19 @@ PR #283 thread; papers in `.claude/skills/spfresh-reviewer/`.
   bounded-pool build at 1M — far past the bandwidth model too. PROFILE FIRST
   (go test -cpuprofile on a 300k bulk reproduces in minutes) before optimizing;
   the two-level routing fix is the likely shape but the model has been wrong twice.
+
+- [x] **7. float32 distance kernel ("RFC-100") — SIZED, measured MARGINAL (not
+  pursued).** The build's residual CPU after RFC-099/101 is the distance kernel
+  `spfreshSquaredDistance` ([]float64): 66% flat of assign (BenchmarkSPFreshBuildAssign
+  87µs/vector ⇒ ~87s for the 1M assign phase) and dominant in k-means
+  (BenchmarkSPFreshKMeans 288ms / 8k×48×25). float32 would roughly halve the kernel's
+  bandwidth — BUT RFC-099+101 already cut the build from the old ~7 CPU-hours flat scan
+  to MINUTES, so the win is a fraction of a ONE-TIME bulk build. Against that: the kernel
+  has 20+ call sites including the query path (cache.route) and the EXACT re-rank (a
+  correctness property — float32 there would break "exact"), and float32 assignment can
+  shift near-tie centroid picks ⇒ a recall risk needing 1M revalidation. SPFresh is
+  Go-only (no Java SPFresh) so there's no wire-compat forcing function either. A large,
+  recall-critical change for a marginal one-time-build gain — spent lever, like the Lmax
+  (item 4) and α-replication (item 3) negatives. Revisit only if a demonstrated build- or
+  query-latency problem appears (it would need float32 for the approximate kernel only,
+  float64 preserved for re-rank).

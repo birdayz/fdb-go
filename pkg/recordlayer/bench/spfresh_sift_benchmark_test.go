@@ -89,6 +89,12 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 	if cm := os.Getenv("SIFT_CELL_MAX"); cm != "" {
 		spfIdx.Options[recordlayer.IndexOptionSPFreshCellMax] = cm
 	}
+	// SIFT_LMAX sweeps the posting-list cap (granularity): a smaller Lmax forms
+	// MORE, finer cells — the spfresh-reviewer's biggest recall lever at scale —
+	// traded against the FDB reply budget (a query reads more, smaller lists).
+	if lmax := os.Getenv("SIFT_LMAX"); lmax != "" {
+		spfIdx.Options[recordlayer.IndexOptionSPFreshLmax] = lmax
+	}
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	// SIFT_SHARD_SAFE=1 gives all record types a RecordTypeKey prefix, which
 	// satisfies RFC-103's parallel-staging gate (PrimaryKeyHasRecordTypePrefix)
@@ -632,68 +638,118 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	type sbd interface {
 		ScanByDistance(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	}
-	for _, cfg := range []struct {
-		name     string
-		kc, w, c int
-	}{
-		{"default(32/64/200)", 0, 0, 0},
-		{"fast(16/24/64)", 24, 16, 64},
-	} {
-		latencies := make([]time.Duration, 0, len(queryVecs))
-		hits, total := 0, 0
-		for qi, qv := range queryVecs {
-			query := float32sToFloat64s(qv)
-			want := wants[qi]
-			qStart := time.Now()
-			var got []int64
-			_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				store, serr := storeBuilder(rtx)
-				if serr != nil {
-					return nil, serr
-				}
-				maintainer, merr := store.GetIndexMaintainer(spfIdx)
-				if merr != nil {
-					return nil, merr
-				}
-				high := tuple.Tuple{int64(k)}
-				if cfg.kc > 0 {
-					high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
-				}
-				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
-					High: high,
-				}, nil, recordlayer.ScanProperties{})
-				got = got[:0]
-				for {
-					res, cerr := cursor.OnNext(ctx)
-					if cerr != nil {
-						return nil, cerr
+	readRecall := func(phase string) {
+		for _, cfg := range []struct {
+			name     string
+			kc, w, c int
+		}{
+			{"default(32/64/200)", 0, 0, 0},
+			{"fast(16/24/64)", 24, 16, 64},
+		} {
+			latencies := make([]time.Duration, 0, len(queryVecs))
+			hits, total := 0, 0
+			for qi, qv := range queryVecs {
+				query := float32sToFloat64s(qv)
+				want := wants[qi]
+				qStart := time.Now()
+				var got []int64
+				_, qerr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, serr := storeBuilder(rtx)
+					if serr != nil {
+						return nil, serr
 					}
-					if !res.HasNext() {
-						break
+					maintainer, merr := store.GetIndexMaintainer(spfIdx)
+					if merr != nil {
+						return nil, merr
 					}
-					got = append(got, res.GetValue().Key[0].(int64))
+					high := tuple.Tuple{int64(k)}
+					if cfg.kc > 0 {
+						high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
+					}
+					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
+						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+						High: high,
+					}, nil, recordlayer.ScanProperties{})
+					got = got[:0]
+					for {
+						res, cerr := cursor.OnNext(ctx)
+						if cerr != nil {
+							return nil, cerr
+						}
+						if !res.HasNext() {
+							break
+						}
+						got = append(got, res.GetValue().Key[0].(int64))
+					}
+					return nil, nil
+				})
+				if qerr != nil {
+					t.Fatalf("query: %v", qerr)
 				}
-				return nil, nil
-			})
-			if qerr != nil {
-				t.Fatalf("query: %v", qerr)
-			}
-			latencies = append(latencies, time.Since(qStart))
-			wantSet := make(map[int64]bool, k)
-			for _, id := range want {
-				wantSet[id] = true
-			}
-			for _, id := range got {
-				if wantSet[id] {
-					hits++
+				latencies = append(latencies, time.Since(qStart))
+				wantSet := make(map[int64]bool, k)
+				for _, id := range want {
+					wantSet[id] = true
 				}
-				total++
+				for _, id := range got {
+					if wantSet[id] {
+						hits++
+					}
+					total++
+				}
 			}
+			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+			t.Logf("READ %s %s: recall@%d=%.4f p50=%v p99=%v", phase, cfg.name, k,
+				float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
 		}
-		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-		t.Logf("READ %s: recall@%d=%.4f p50=%v p99=%v", cfg.name, k,
-			float64(hits)/float64(total), latencies[len(latencies)/2], latencies[len(latencies)*99/100])
+	}
+	readRecall("PRE-refine")
+
+	// RFC-104 validation: refine vectors against the converged topology and
+	// re-measure — does re-assignment recover the ingest recall-drift?
+	// SIFT_REFINE=1 = one-shot prototype (refine-all); =2 = the budgeted production
+	// op (loop RefineSPFreshIndex until one full cursor cycle moves nothing).
+	if rv := os.Getenv("SIFT_REFINE"); rv == "1" || rv == "2" {
+		rstart := time.Now()
+		var moved int
+		if rv == "1" {
+			m, rerr := recordlayer.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+			if rerr != nil {
+				t.Fatalf("refine: %v", rerr)
+			}
+			moved = m
+		} else {
+			budget := siftEnvInt("SIFT_REFINE_BUDGET", 10000)
+			cycleMoves, calls := 0, 0
+			for {
+				m, wrapped, rerr := recordlayer.RefineSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill", budget)
+				if rerr != nil {
+					t.Fatalf("refine round: %v", rerr)
+				}
+				moved += m
+				cycleMoves += m
+				calls++
+				if wrapped {
+					if cycleMoves == 0 {
+						break // one full cursor cycle with zero moves = converged
+					}
+					cycleMoves = 0
+				}
+			}
+			t.Logf("REFINE budgeted: %d calls (budget %d)", calls, budget)
+		}
+		t.Logf("REFINE(mode=%s): moved %d pks in %v", rv, moved, time.Since(rstart))
+		if _, terr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			t.Logf("TOPOLOGY post-refine: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
+			return nil, nil
+		}); terr != nil {
+			t.Fatalf("post-refine topology: %v", terr)
+		}
+		readRecall("POST-refine")
 	}
 
 	// SIFT_SWEEP=w:kc:c[:eps],... sweeps searcher knobs against the
