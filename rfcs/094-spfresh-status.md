@@ -77,16 +77,26 @@ by embedded/unit tests, noted per item):
 | Multi-tenant scale-out: sweeper, cross-tenant routing-cache eviction (15min TTL + 4096 cap), per-tenant fairness budgets, many-tenant soak | 094 follow-up | Shipped | `spfresh_sweeper.go`, `spfresh_index_maintainer.go:117`, `bench/spfresh_multitenant_test.go` |
 | Recall at scale: ε-pruning (SPANN §3.3), 1M w/ε/QPS sweeps, frozen defaults | 094.5 | Shipped | `VECTOR_BENCHMARK_RESULTS.md` |
 
-### Current performance (SIFT-1M) — recall is INGEST-RATE-dependent
+### Current performance (SIFT-1M) — two ingest paths
 
-There is no single "the recall": **recall at fixed probes depends on the ingest rate
-the topology was built under** — a faster fill lets the rebalancer lag the writers,
-so vectors get closure-assigned against a staler topology. This is the central
-SPFresh trade and the reason RFC-104 refinement exists. The table below is the
-**full-perf-stack 530 vec/s fill** — the realistic high-throughput point (186 cells /
-5,835 fines / ρ≈1.01, `VECTOR_BENCHMARK_RESULTS.md` "1M clean fill A/B"). `c` is
-*re-rank candidates* (per-query), **not** Lmax (the build-time posting-split
-threshold, 256).
+SPFresh has **two ingest paths** with very different throughput *and* recall — the
+doc must not be read as "SPFresh ingests at 530 vec/s":
+
+**1. Bulk build (`BuildSPFreshIndex`, build-then-read) — the fast, high-recall path.**
+Mark the index disabled, write the records, build the whole topology in one shot,
+mark readable. No concurrent-maintenance lag, so it lands the **converged-topology
+ideal: ~0.988 recall default** (1.0000 @ 100k) — and ingest is an **order of
+magnitude above foreground fill**: ≈1,524 vec/s single-thread k-means baseline,
+**7× with the perf stack** (~minutes for 1M). Use this whenever you can ingest
+offline / batch.
+
+**2. Foreground / online fill — live `SaveRecord` with the rebalancer looping beside
+the writers.** Throughput **205–530 vec/s** at 1M (the perf stack lifted it 205→530),
+and **recall is ingest-rate-dependent**: the faster you write, the more the
+rebalancer lags and vectors get closure-assigned against a staler topology. This is
+the SPFresh online trade and the reason RFC-104 refinement exists. Query side at the
+full-perf-stack **530 vec/s** fill (186 cells / 5,835 fines / ρ≈1.01; `c` is *re-rank
+candidates* per-query, **not** Lmax):
 
 | Config (w_q / kc / c / ε) | recall@10 | p50 | QPS@16 |
 |---|---|---|---|
@@ -95,16 +105,15 @@ threshold, 256).
 | kc=128 cap / 7 | 0.973 | 32.5 ms | 90 |
 | kc=192 cap / 7 | 0.987 | 47.2 ms | 64 |
 
-A **slower 110 vec/s** fill of the same data reads ~3.5pp higher at default probes
-(0.961 / 0.993 / 0.998 at default/kc128/kc192) — max-rate ingest is the cost. Three
-mitigations: ingest at the rate your recall target tolerates; raise kc post-fill
-(0.987 @ 47ms holds even on the fast-filled topology); or run RFC-104 refinement. The
-kc-tail (0.973 → 0.987) is a probe-budget tradeoff, capped by the FDB range-reply
-budget. (The earlier 094.5 freeze 0.952/0.826 is superseded — no longer produced by
-the shipped write path.)
+A **slower 110 vec/s** online fill reads ~3.5pp higher at default probes (0.961 /
+0.993 / 0.998). Three ways to close the online-fill gap toward the bulk ideal: ingest
+at the rate your recall target tolerates; raise kc post-fill (0.987 @ 47ms holds even
+on the fast-filled topology); or run RFC-104 refinement. The kc-tail (0.973 → 0.987)
+is a probe-budget tradeoff, capped by the FDB range-reply budget. (The earlier 094.5
+freeze 0.952/0.826 is superseded — no longer produced by the shipped write path.)
 
-RFC-104 refinement recovers fast-ingest *drift*; measured at **300k**, not re-pinned
-at 1M:
+RFC-104 refinement recovers online-fill *drift* back toward the bulk ideal; measured
+at **300k**, not re-pinned at 1M:
 
 | 300k fast fill | pre-refine | one-shot refine | bulk (ideal) |
 |---|---|---|---|
