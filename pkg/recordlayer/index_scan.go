@@ -399,7 +399,7 @@ func (store *FDBRecordStore) ScanTimeWindowLeaderboard(
 type indexCursor struct {
 	index         *Index
 	indexSubspace subspace.Subspace
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	tupleRange    TupleRange
 	continuation  []byte
 	scanProps     ScanProperties
@@ -416,7 +416,7 @@ type indexCursor struct {
 func newIndexCursor(
 	index *Index,
 	indexSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	tupleRange TupleRange,
 	continuation []byte,
 	scanProps ScanProperties,

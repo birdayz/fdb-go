@@ -249,7 +249,8 @@ func runDifferentialSequence(t *testing.T, label string, txns [][]fuzzOp) {
 	clearPrefix(t, cPfx)
 
 	for _, ops := range txns {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			applyGo(tx, ops, goPfx)
 			return nil, nil
 		}); err != nil {

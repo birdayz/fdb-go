@@ -3161,13 +3161,13 @@ var _ = Describe("OnlineIndexer", func() {
 				hb := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
 
 				// Write heartbeat in a transaction.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, hb.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Read it back.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					heartbeats, indexerIDs, err := ReadHeartbeats(tx, ks, priceIndex)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(heartbeats).To(HaveLen(1))
@@ -3198,13 +3198,13 @@ var _ = Describe("OnlineIndexer", func() {
 				hb2 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false) // exclusive
 
 				// First heartbeat writes successfully.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, hb1.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Second exclusive heartbeat should fail with SynchronizedSessionLockedError.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, hb2.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).To(HaveOccurred())
@@ -3230,19 +3230,19 @@ var _ = Describe("OnlineIndexer", func() {
 				hb2 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
 
 				// First heartbeat writes.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, hb1.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Second mutual heartbeat should also succeed (no lock check).
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, hb2.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).NotTo(HaveOccurred())
 
 				// Verify both heartbeats are present.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					heartbeats, indexerIDs, err := ReadHeartbeats(tx, ks, priceIndex)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(heartbeats).To(HaveLen(2))
@@ -3267,7 +3267,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// Write a heartbeat with an old timestamp (beyond the 10s lease).
 				staleHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					// Manually write a heartbeat proto with an old timestamp.
 					hbProto := &gen.IndexBuildHeartbeat{
 						Info:                      proto.String("BY_RECORDS"),
@@ -3283,7 +3283,7 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// A new exclusive heartbeat should succeed because the existing one is stale.
 				freshHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					return nil, freshHB.CheckAndUpdate(tx, ks, priceIndex)
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -3849,7 +3849,7 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Verify no heartbeats remain after build completes.
-				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 					heartbeats, _, err := ReadHeartbeats(tx, ks, priceIndex)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(heartbeats).To(BeEmpty())

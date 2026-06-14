@@ -545,7 +545,7 @@ type spyTransactor struct {
 	onCalled func()
 }
 
-func (s *spyTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, error) {
+func (s *spyTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	s.onCalled()
 	return s.inner.Transact(fn)
 }

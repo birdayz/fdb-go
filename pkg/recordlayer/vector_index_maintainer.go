@@ -115,7 +115,7 @@ type vectorIndexMaintainer struct {
 func newVectorIndexMaintainer(
 	index *Index,
 	indexSubspace, hnswSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) (*vectorIndexMaintainer, error) {
 	config := parseHNSWConfig(index)

@@ -34,7 +34,7 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	defer db.Close()
 
 	// Verify we can execute a transaction.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(gofdb.Key("test_key"), []byte("test_value"))
 		return nil, nil
 	})
@@ -43,7 +43,7 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	}
 
 	// Read it back.
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(gofdb.Key("test_key")).MustGet(), nil
 	})
 	if err != nil {

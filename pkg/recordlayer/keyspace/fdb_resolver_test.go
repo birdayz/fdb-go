@@ -66,7 +66,7 @@ func TestFDBResolver_ResolveAllocatesNew(t *testing.T) {
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
 	// Clean up any prior test data
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -95,7 +95,7 @@ func TestFDBResolver_Persistence(t *testing.T) {
 	ctx := context.Background()
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -123,7 +123,7 @@ func TestFDBResolver_EmptyStringName(t *testing.T) {
 	ctx := context.Background()
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -153,7 +153,7 @@ func TestFDBResolver_CacheManagement(t *testing.T) {
 	ctx := context.Background()
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -189,7 +189,7 @@ func TestFDBResolver_ResolverDirectory_EndToEnd(t *testing.T) {
 	g := NewWithT(t)
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -241,7 +241,7 @@ func TestFDBResolver_ConcurrentCrossInstance(t *testing.T) {
 	ctx := context.Background()
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil
@@ -289,7 +289,7 @@ func TestFDBResolver_ReverseLookup(t *testing.T) {
 	ctx := context.Background()
 
 	ss := subspace.Sub(tuple.Tuple{t.Name()})
-	_, err := sharedDB.Transact(func(tx fdb.Transaction) (any, error) {
+	_, err := sharedDB.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		begin, end := ss.FDBRangeKeys()
 		tx.ClearRange(fdb.KeyRange{Begin: begin.FDBKey(), End: end.FDBKey()})
 		return nil, nil

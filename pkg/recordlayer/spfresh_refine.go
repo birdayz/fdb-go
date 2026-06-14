@@ -45,7 +45,7 @@ func spfreshRefineKc(config SPFreshConfig) int { return 4 * spfreshClosurePool(c
 // returns ACTIVE+SEALED, and the move must not deposit a posting into a fine that
 // seals/splits concurrently (the NPA fence). Idempotent: an already-optimal pk
 // re-evaluates to the same set → spfreshSameIDSet no-op.
-func spfreshRefinePKInTx(tx fdb.Transaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cache *spfreshRoutingCache, kc int, pk tuple.Tuple) (bool, error) {
+func spfreshRefinePKInTx(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cache *spfreshRoutingCache, kc int, pk tuple.Tuple) (bool, error) {
 	current, merr := spfreshReadMembership(tx, s, pk)
 	if merr != nil {
 		if errors.Is(merr, errSPFreshNotFound) {
@@ -282,7 +282,7 @@ func spfreshReadRefineCursor(tx fdb.ReadTransaction, s *spfreshStorage) (spfresh
 	return cur, nil
 }
 
-func spfreshWriteRefineCursor(tx fdb.Transaction, s *spfreshStorage, cur spfreshRefineCursor) {
+func spfreshWriteRefineCursor(tx fdb.WritableTransaction, s *spfreshStorage, cur spfreshRefineCursor) {
 	buf := make([]byte, 16+len(cur.after))
 	binary.LittleEndian.PutUint64(buf[:8], uint64(cur.generation))
 	binary.LittleEndian.PutUint64(buf[8:16], uint64(cur.movedSinceWrap))

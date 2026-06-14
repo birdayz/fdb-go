@@ -68,7 +68,7 @@ var _ = Describe("SplitHelper", func() {
 	Describe("saveWithSplit", func() {
 		It("returns error for empty primary key", func() {
 			rs := recordSub()
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, tuple.Tuple{}, []byte("data"), true, nil, si)
 				Expect(err).To(HaveOccurred())
@@ -83,7 +83,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(1)}
 			data := makeTestBytes(500)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -108,7 +108,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(2)}
 			data := makeTestBytes(splitRecordSize) // exactly 100_000 bytes
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -138,7 +138,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(3)}
 			data := makeTestBytes(splitRecordSize + 1) // 100_001 bytes
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -172,7 +172,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(4)}
 			data := makeTestBytes(2 * splitRecordSize) // 200_000 bytes
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -204,7 +204,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(5)}
 			data := makeTestBytes(3*splitRecordSize + 1)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -234,7 +234,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(6)}
 			data := makeTestBytes(splitRecordSize + 1)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, false, nil, si)
 				Expect(err).To(HaveOccurred())
@@ -250,7 +250,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(7)}
 			data := makeTestBytes(42)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, false, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -271,7 +271,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(8)}
 			data := makeTestBytes(splitRecordSize + 50)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, data, true, nil, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -299,7 +299,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(100)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				data, err := loadWithSplit(tx, rs, pk, true, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -313,7 +313,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(101)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				si := &sizeInfo{}
 				data, err := loadWithSplit(tx, rs, pk, false, si)
 				Expect(err).NotTo(HaveOccurred())
@@ -328,7 +328,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(102)}
 			original := makeTestBytes(500)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write raw unsplit data
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), original)
@@ -353,7 +353,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(103)}
 			original := makeTestBytes(splitRecordSize*2 + 77)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write chunks manually
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))),
 					original[0:splitRecordSize])
@@ -380,7 +380,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(104)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write only at split suffix (no unsplit key)
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))),
 					makeTestBytes(splitRecordSize))
@@ -400,7 +400,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(105)}
 			original := makeTestBytes(splitRecordSize*3 + 42)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				saveSI := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, original, true, nil, saveSI)
 				Expect(err).NotTo(HaveOccurred())
@@ -426,7 +426,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(106)}
 			original := makeTestBytes(splitRecordSize + 10)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write split chunks
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))),
 					original[0:splitRecordSize])
@@ -456,7 +456,7 @@ var _ = Describe("SplitHelper", func() {
 	Describe("deleteSplit", func() {
 		It("returns false for empty primary key", func() {
 			rs := recordSub()
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				result := deleteSplit(tx, rs, tuple.Tuple{}, true, &sizeInfo{})
 				Expect(result).To(BeFalse())
 				return nil, nil
@@ -467,7 +467,7 @@ var _ = Describe("SplitHelper", func() {
 		It("returns false for nil oldsizeInfo", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(200)}
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				result := deleteSplit(tx, rs, pk, true, nil)
 				Expect(result).To(BeFalse())
 				return nil, nil
@@ -480,7 +480,7 @@ var _ = Describe("SplitHelper", func() {
 			pk := tuple.Tuple{int64(201)}
 			data := makeTestBytes(500)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write unsplit
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), data)
@@ -504,7 +504,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(202)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write 3 split chunks
 				for i := int64(0); i < 3; i++ {
 					tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+i))),
@@ -531,7 +531,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(203)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write unsplit record + version key
 				unsplitKey := rs.Pack(appendToTuple(pk, unsplitRecord))
 				versionKey := rs.Pack(appendToTuple(pk, recordVersionSuffix))
@@ -565,7 +565,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(204)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				unsplitKey := rs.Pack(appendToTuple(pk, unsplitRecord))
 				versionKey := rs.Pack(appendToTuple(pk, recordVersionSuffix))
 				tx.Set(fdb.Key(unsplitKey), []byte("record"))
@@ -604,7 +604,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(300)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("data"))
 
 				exists, err := recordExistsWithSplit(tx, rs, pk, true)
@@ -620,7 +620,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(301)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Only split chunks, no unsplit key
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))), []byte("chunk1"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord+1))), []byte("chunk2"))
@@ -638,7 +638,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(302)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				exists, err := recordExistsWithSplit(tx, rs, pk, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(exists).To(BeFalse())
@@ -652,7 +652,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(303)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write only at split suffix — unsplit check won't find it
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))), []byte("chunk"))
 
@@ -669,7 +669,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(304)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("data"))
 
 				exists, err := recordExistsWithSplit(tx, rs, pk, false)
@@ -691,7 +691,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(400)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write some data that should NOT be cleared
 				key := rs.Pack(appendToTuple(pk, unsplitRecord))
 				tx.Set(fdb.Key(key), []byte("keep-me"))
@@ -711,7 +711,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(401)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write split chunks + version key
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("ver"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, startSplitRecord))), []byte("c1"))
@@ -737,7 +737,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(402)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("data"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("ver"))
 
@@ -762,7 +762,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(403)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				unsplitKey := rs.Pack(appendToTuple(pk, unsplitRecord))
 				versionKey := rs.Pack(appendToTuple(pk, recordVersionSuffix))
 				tx.Set(fdb.Key(unsplitKey), []byte("record"))
@@ -791,7 +791,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(404)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				unsplitKey := rs.Pack(appendToTuple(pk, unsplitRecord))
 				versionKey := rs.Pack(appendToTuple(pk, recordVersionSuffix))
 				tx.Set(fdb.Key(unsplitKey), []byte("record"))
@@ -823,7 +823,7 @@ var _ = Describe("SplitHelper", func() {
 		It("is a no-op for empty primary key (safety guard)", func() {
 			rs := recordSub()
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write something at a known PK
 				pk := tuple.Tuple{int64(500)}
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("safe"))
@@ -844,7 +844,7 @@ var _ = Describe("SplitHelper", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(501)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// Write at multiple suffixes
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, recordVersionSuffix))), []byte("ver"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord))), []byte("unsplit"))
@@ -869,7 +869,7 @@ var _ = Describe("SplitHelper", func() {
 			pk1 := tuple.Tuple{int64(502)}
 			pk2 := tuple.Tuple{int64(503)}
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk1, unsplitRecord))), []byte("pk1"))
 				tx.Set(fdb.Key(rs.Pack(appendToTuple(pk2, unsplitRecord))), []byte("pk2"))
 
@@ -902,7 +902,7 @@ var _ = Describe("SplitHelper", func() {
 			bigData := makeTestBytes(3 * splitRecordSize) // 3 chunks
 			smallData := makeTestBytes(500)               // unsplit
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// First save: 3 chunks
 				saveSI := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, bigData, true, nil, saveSI)
@@ -940,7 +940,7 @@ var _ = Describe("SplitHelper", func() {
 			smallData := makeTestBytes(500)
 			bigData := makeTestBytes(splitRecordSize + 50)
 
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				// First save: unsplit
 				saveSI := &sizeInfo{}
 				err := saveWithSplit(tx, rs, pk, smallData, true, nil, saveSI)

@@ -19,14 +19,14 @@ func (t Tenant) ID() int64 { return t.tenantId }
 // Transact runs a transactional function with automatic retry, scoped to
 // this tenant's key space. Matches Database.Transact but sets the tenant ID
 // on the underlying transaction.
-func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
+func (t Tenant) Transact(f func(WritableTransaction) (any, error)) (any, error) {
 	return t.TransactCtx(t.db.d.ctx, f)
 }
 
 // TransactCtx is Transact bounded by ctx (RFC-090 / fdb.CtxTransactor). The dispatched
 // commit + commit_unknown barrier run detached (in client.Database.Transact); ctx never
 // cancels an in-flight commit.
-func (t Tenant) TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error) {
+func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var lastTx *transaction
 	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer func() { e = unconvertError(e) }()

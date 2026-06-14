@@ -39,7 +39,7 @@ const (
 func newRankIndexMaintainer(
 	index *Index,
 	indexSubspace, secondarySubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) *rankIndexMaintainer {
 	return &rankIndexMaintainer{

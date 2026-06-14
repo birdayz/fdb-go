@@ -78,7 +78,7 @@ func TestTenantCRUD(t *testing.T) {
 	}
 
 	// Write+read through tenant
-	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("tenant-key"), []byte("tenant-value"))
 		return nil, nil
 	})
@@ -86,7 +86,7 @@ func TestTenantCRUD(t *testing.T) {
 		t.Fatalf("tenant Set: %v", err)
 	}
 
-	result, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(fdb.Key("tenant-key")).MustGet(), nil
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestTenantCRUD(t *testing.T) {
 	}
 
 	// GetRange through tenant
-	rangeResult, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	rangeResult, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{Limit: 10})
 		return rr.GetSliceWithError()
 	})
@@ -122,7 +122,7 @@ func TestTenantCRUD(t *testing.T) {
 	}
 
 	// Clear tenant data first
-	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 		return nil, nil
 	})
@@ -157,7 +157,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		tA, _ := db.OpenTenant(tenantA)
-		tA.Transact(func(tr fdb.Transaction) (any, error) {
+		tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -169,7 +169,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		tB, _ := db.OpenTenant(tenantB)
-		tB.Transact(func(tr fdb.Transaction) (any, error) {
+		tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -186,7 +186,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Write to tenant A.
-	_, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("shared-key"), []byte("from-A"))
 		tr.Set(fdb.Key("only-in-A"), []byte("secret"))
 		return nil, nil
@@ -196,7 +196,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Write to tenant B — same key name, different value.
-	_, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("shared-key"), []byte("from-B"))
 		return nil, nil
 	})
@@ -205,7 +205,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Read from tenant A — should see A's value.
-	result, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(fdb.Key("shared-key")).MustGet(), nil
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Read from tenant B — should see B's value, not A's.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(fdb.Key("shared-key")).MustGet(), nil
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// Tenant B should NOT see "only-in-A".
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(fdb.Key("only-in-A")).MustGet(), nil
 	})
 	if err != nil {
@@ -238,7 +238,7 @@ func TestTenantIsolation(t *testing.T) {
 	}
 
 	// GetRange in tenant B — should only see B's key.
-	rangeResult, err := tB.Transact(func(tr fdb.Transaction) (any, error) {
+	rangeResult, err := tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -259,7 +259,7 @@ func twoTenants(t *testing.T, db fdb.Database, nameA, nameB string) (fdb.Tenant,
 	g.Expect(db.CreateTenant(fdb.Key(nameA))).To(Succeed())
 	t.Cleanup(func() {
 		tA, _ := db.OpenTenant(fdb.Key(nameA))
-		tA.Transact(func(tr fdb.Transaction) (any, error) {
+		tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -269,7 +269,7 @@ func twoTenants(t *testing.T, db fdb.Database, nameA, nameB string) (fdb.Tenant,
 	g.Expect(db.CreateTenant(fdb.Key(nameB))).To(Succeed())
 	t.Cleanup(func() {
 		tB, _ := db.OpenTenant(fdb.Key(nameB))
-		tB.Transact(func(tr fdb.Transaction) (any, error) {
+		tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -294,7 +294,7 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 
 	// Populate both tenants with keys in the same range.
 	for _, tenant := range []fdb.Tenant{tA, tB} {
-		_, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			for i := range 10 {
 				tr.Set(fdb.Key(fmt.Sprintf("key-%03d", i)), []byte(fmt.Sprintf("val-%d", i)))
 			}
@@ -304,14 +304,14 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 	}
 
 	// ClearRange ALL keys in tenant A.
-	_, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 		return nil, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Tenant A should be empty.
-	result, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -319,7 +319,7 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 	g.Expect(result.([]fdb.KeyValue)).To(BeEmpty(), "tenant A should be empty after ClearRange")
 
 	// Tenant B MUST still have all 10 keys.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -334,7 +334,7 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 	}
 
 	// Partial ClearRange: add keys back to A, then clear a sub-range.
-	_, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 10 {
 			tr.Set(fdb.Key(fmt.Sprintf("key-%03d", i)), []byte("new-a"))
 		}
@@ -343,14 +343,14 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Clear only key-003 through key-006 in tenant A.
-	_, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key("key-003"), End: fdb.Key("key-007")})
 		return nil, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Tenant A should have 6 keys remaining (0-2, 7-9).
-	result, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -358,7 +358,7 @@ func TestTenantClearRangeIsolation(t *testing.T) {
 	g.Expect(result.([]fdb.KeyValue)).To(HaveLen(6))
 
 	// Tenant B MUST still have exactly 10 keys, unmodified.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -391,13 +391,13 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 	}
 
 	// Initialize counters to different values.
-	_, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(counterKey, encodeInt64(100))
 		return nil, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 
-	_, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(counterKey, encodeInt64(200))
 		return nil, nil
 	})
@@ -405,7 +405,7 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 
 	// Perform 50 atomic ADDs in tenant A.
 	for i := range 50 {
-		_, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Add(counterKey, encodeInt64(1))
 			return nil, nil
 		})
@@ -414,7 +414,7 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 
 	// Perform 10 atomic ADDs in tenant B.
 	for i := range 10 {
-		_, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Add(counterKey, encodeInt64(1))
 			return nil, nil
 		})
@@ -422,7 +422,7 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 	}
 
 	// Read counter from tenant A — should be 100 + 50 = 150.
-	result, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(counterKey).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
@@ -430,7 +430,7 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 		"tenant A counter should be 100+50=150, not contaminated by B's adds")
 
 	// Read counter from tenant B — should be 200 + 10 = 210.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(counterKey).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
@@ -438,21 +438,21 @@ func TestTenantAtomicMutationIsolation(t *testing.T) {
 		"tenant B counter should be 200+10=210, not contaminated by A's adds")
 
 	// Also test other atomic mutations: Max in A should not affect B.
-	_, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Max(counterKey, encodeInt64(9999))
 		return nil, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// A should now be 9999.
-	result, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(counterKey).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(decodeInt64(result.([]byte))).To(Equal(int64(9999)))
 
 	// B must still be 210.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(counterKey).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
@@ -471,7 +471,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	tA, tB := twoTenants(t, db, "getrange-a", "getrange-b")
 
 	// Write 100 keys to tenant A with prefix "data-".
-	_, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 100 {
 			tr.Set(fdb.Key(fmt.Sprintf("data-%04d", i)), []byte(fmt.Sprintf("A-%d", i)))
 		}
@@ -480,7 +480,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Write 50 keys to tenant B with the SAME prefix "data-".
-	_, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 50 {
 			tr.Set(fdb.Key(fmt.Sprintf("data-%04d", i)), []byte(fmt.Sprintf("B-%d", i)))
 		}
@@ -489,7 +489,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Full range scan in tenant A — must return exactly 100 keys.
-	result, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -504,7 +504,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	}
 
 	// Full range scan in tenant B — must return exactly 50 keys.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
@@ -519,7 +519,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	}
 
 	// Prefix range scan: only "data-005*" keys in A (should be 10: data-0050..data-0059).
-	result, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{
 			Begin: fdb.Key("data-005"),
 			End:   fdb.Key("data-006"),
@@ -532,7 +532,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 
 	// Same sub-range in B — B has keys 0000-0049, so use [data-002, data-003)
 	// which captures data-0020 through data-0029 (10 keys).
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{
 			Begin: fdb.Key("data-002"),
 			End:   fdb.Key("data-003"),
@@ -547,7 +547,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 	}
 
 	// Verify that a range existing only in A returns 0 in B.
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{
 			Begin: fdb.Key("data-005"),
 			End:   fdb.Key("data-006"),
@@ -559,7 +559,7 @@ func TestTenantGetRangeIsolation(t *testing.T) {
 		"B must see 0 keys in range that only exists in A")
 
 	// Reverse scan in A — still 100 keys, last key first.
-	result, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")},
 			fdb.RangeOptions{Reverse: true})
 		return rr.GetSliceWithError()
@@ -584,7 +584,7 @@ func TestTenantConflictIsolation(t *testing.T) {
 
 	// Initialize both tenants with the same key.
 	for _, tenant := range []fdb.Tenant{tA, tB} {
-		_, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(sharedKeyName, []byte("initial"))
 			return nil, nil
 		})
@@ -602,7 +602,7 @@ func TestTenantConflictIsolation(t *testing.T) {
 		wg.Add(2)
 		go func(idx int) {
 			defer wg.Done()
-			_, errorsA[idx] = tA.Transact(func(tr fdb.Transaction) (any, error) {
+			_, errorsA[idx] = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 				// Read-then-write creates a conflict window within the tenant.
 				val := tr.Get(sharedKeyName).MustGet()
 				tr.Set(sharedKeyName, []byte(fmt.Sprintf("A-%d-%s", idx, val)))
@@ -611,7 +611,7 @@ func TestTenantConflictIsolation(t *testing.T) {
 		}(i)
 		go func(idx int) {
 			defer wg.Done()
-			_, errorsB[idx] = tB.Transact(func(tr fdb.Transaction) (any, error) {
+			_, errorsB[idx] = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 				val := tr.Get(sharedKeyName).MustGet()
 				tr.Set(sharedKeyName, []byte(fmt.Sprintf("B-%d-%s", idx, val)))
 				return nil, nil
@@ -629,14 +629,14 @@ func TestTenantConflictIsolation(t *testing.T) {
 	}
 
 	// Final values should differ — tenant A's value must not contain "B-" and vice versa.
-	result, err := tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(sharedKeyName).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	valA := string(result.([]byte))
 	g.Expect(valA).To(HavePrefix("A-"), "tenant A final value should start with A-, got %q", valA)
 
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(sharedKeyName).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
@@ -661,13 +661,13 @@ func TestTenantConflictIsolation(t *testing.T) {
 	g.Expect(txB.Commit().Get()).To(Succeed())
 
 	// Verify final values.
-	result, err = tA.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tA.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(sharedKeyName).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(result.([]byte))).To(Equal("manual-A"))
 
-	result, err = tB.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = tB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(sharedKeyName).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())

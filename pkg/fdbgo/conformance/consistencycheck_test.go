@@ -105,7 +105,7 @@ func TestConsistencyCheck_AfterGoClientWrites(t *testing.T) {
 	const batches, perBatch = 10, 100
 	for b := 0; b < batches; b++ {
 		bb := b
-		if _, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		if _, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			for i := 0; i < perBatch; i++ {
 				k := gofdb.Key(tuple.Tuple{"c1", bb, i}.Pack())
 				tr.Set(k, []byte(fmt.Sprintf("v-%d-%d-%s", bb, i, strings.Repeat("x", 256))))

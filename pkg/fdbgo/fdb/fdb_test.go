@@ -27,7 +27,7 @@ func TestMustGetPanic_RetryInTransact(t *testing.T) {
 	key := fdb.Key("mustget_panic_test")
 
 	// Set up the key.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("value"))
 		return nil, nil
 	})
@@ -36,7 +36,7 @@ func TestMustGetPanic_RetryInTransact(t *testing.T) {
 	}
 
 	// Use Transact with MustGet — should work normally (no panic).
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		val := tr.Get(key).MustGet()
 		return val, nil
 	})
@@ -48,7 +48,7 @@ func TestMustGetPanic_RetryInTransact(t *testing.T) {
 	}
 
 	// MustGet on non-existent key should return nil (not panic).
-	result, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		val := tr.Get(fdb.Key("definitely_nonexistent_key_xyz")).MustGet()
 		return val, nil
 	})
@@ -60,7 +60,7 @@ func TestMustGetPanic_RetryInTransact(t *testing.T) {
 	}
 
 	// Clean up.
-	db.Transact(func(tr fdb.Transaction) (any, error) {
+	db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Clear(key)
 		return nil, nil
 	})
@@ -82,7 +82,7 @@ func TestPanicToError_NonFDBPanic(t *testing.T) {
 		}
 	}()
 
-	db.Transact(func(tr fdb.Transaction) (any, error) {
+	db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		panic("non-error panic")
 	})
 }
@@ -129,7 +129,7 @@ func TestSetGetBasic(t *testing.T) {
 	key := fdb.Key(t.Name() + "_key")
 
 	// Write
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("hello-facade"))
 		return nil, nil
 	})
@@ -138,7 +138,7 @@ func TestSetGetBasic(t *testing.T) {
 	}
 
 	// Read
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(key).MustGet(), nil
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestGetRange(t *testing.T) {
 	pfx := t.Name() + "_"
 
 	// Seed data
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(pfx+"a"), []byte("1"))
 		tr.Set(fdb.Key(pfx+"b"), []byte("2"))
 		tr.Set(fdb.Key(pfx+"c"), []byte("3"))
@@ -218,7 +218,7 @@ func TestIterator(t *testing.T) {
 	db := openTestDB(t)
 
 	prefix := t.Name() + "/data/"
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := 0; i < 20; i++ {
 			tr.Set(fdb.Key(fmt.Sprintf("%skey-%02d", prefix, i)), []byte(fmt.Sprintf("val-%02d", i)))
 		}
@@ -338,7 +338,7 @@ func TestAtomicOps(t *testing.T) {
 	key := fdb.Key(t.Name() + "_counter")
 
 	// Atomic ADD
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		// Initialize to 0 (little-endian int64)
 		tr.Set(key, []byte{0, 0, 0, 0, 0, 0, 0, 0})
 		return nil, nil
@@ -348,7 +348,7 @@ func TestAtomicOps(t *testing.T) {
 	}
 
 	// Add 5
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Add(key, []byte{5, 0, 0, 0, 0, 0, 0, 0})
 		return nil, nil
 	})
@@ -357,7 +357,7 @@ func TestAtomicOps(t *testing.T) {
 	}
 
 	// Read back
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(key).MustGet(), nil
 	})
 	if err != nil {
@@ -376,7 +376,7 @@ func TestClearRange(t *testing.T) {
 	pfx := t.Name() + "_"
 
 	// Seed
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(pfx+"a"), []byte("1"))
 		tr.Set(fdb.Key(pfx+"b"), []byte("2"))
 		tr.Set(fdb.Key(pfx+"c"), []byte("3"))
@@ -387,7 +387,7 @@ func TestClearRange(t *testing.T) {
 	}
 
 	// Clear range [pfx+"a", pfx+"c")
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "c")})
 		return nil, nil
 	})
@@ -415,7 +415,7 @@ func TestSnapshot(t *testing.T) {
 
 	key := fdb.Key(t.Name() + "_key")
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("snap-val"))
 		return nil, nil
 	})
@@ -443,7 +443,7 @@ func TestSnapshotMethods(t *testing.T) {
 	key := fdb.Key(pfx + "key")
 
 	// Seed data
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("val"))
 		return nil, nil
 	})
@@ -519,7 +519,7 @@ func TestGetCommittedVersion(t *testing.T) {
 
 	pfx := t.Name() + "_"
 
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(pfx+"key"), []byte("val"))
 		return nil, nil
 	})
@@ -554,7 +554,7 @@ func TestTransactorInterface(t *testing.T) {
 
 	// Verify Database satisfies Transactor
 	var transactor fdb.Transactor = db
-	_, err := transactor.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := transactor.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("iface-val"))
 		return nil, nil
 	})
@@ -699,7 +699,7 @@ func TestFutureParallelism(t *testing.T) {
 	pfx := t.Name() + "_"
 
 	// Seed two keys
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(pfx+"a"), []byte("val-a"))
 		tr.Set(fdb.Key(pfx+"b"), []byte("val-b"))
 		return nil, nil
@@ -709,7 +709,7 @@ func TestFutureParallelism(t *testing.T) {
 	}
 
 	// Read both in parallel using futures
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		fa := tr.Get(fdb.Key(pfx + "a"))
 		fb := tr.Get(fdb.Key(pfx + "b"))
 		// Both reads should be in-flight now
@@ -732,7 +732,7 @@ func TestSetVersionstampedKey(t *testing.T) {
 
 	// SetVersionstampedKey: key contains incomplete versionstamp placeholder
 	// The last 4 bytes of param specify the offset where the versionstamp goes.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		pfx := []byte(t.Name() + "_")
 		// Key: pfx + 10 zero bytes (placeholder) + offset (little-endian uint32)
 		key := make([]byte, len(pfx)+10+4)
@@ -762,7 +762,7 @@ func TestRetryLoopErrorConversion(t *testing.T) {
 	// Simulate: user closure returns fdb.Error{Code: 1020} (not_committed).
 	// This is retryable. Transact MUST retry, not propagate.
 	attempt := 0
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		attempt++
 		if attempt == 1 {
 			// Return a retryable fdb.Error — the type the user sees from Get().Get().
@@ -788,7 +788,7 @@ func TestMustGetPanicRecovery(t *testing.T) {
 	db := openTestDB(t)
 
 	attempt := 0
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		attempt++
 		if attempt == 1 {
 			// Simulate MustGet() panic with a retryable error.
@@ -832,7 +832,7 @@ func TestTransactionOptions(t *testing.T) {
 		t.Fatalf("Commit with batch priority: %v", err)
 	}
 	// Verify the write landed
-	result, err := db.Transact(func(tr2 fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr2 fdb.WritableTransaction) (any, error) {
 		return tr2.Get(fdb.Key(t.Name() + "/opt-key")).MustGet(), nil
 	})
 	if err != nil {
@@ -882,7 +882,7 @@ func TestTransactionOptions(t *testing.T) {
 	if err := tr4.Commit().Get(); err != nil {
 		t.Fatalf("Commit with lock-aware: %v", err)
 	}
-	result2, err := db.Transact(func(rtx fdb.Transaction) (any, error) {
+	result2, err := db.Transact(func(rtx fdb.WritableTransaction) (any, error) {
 		return rtx.Get(fdb.Key(t.Name() + "/lock-aware-key")).MustGet(), nil
 	})
 	if err != nil {
@@ -936,7 +936,7 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 	// happen almost immediately (the GRV round-trip alone takes >1ms).
 	var timedOut bool
 	for i := 0; i < 100; i++ {
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			return tr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
 		})
 		if err != nil {
@@ -967,7 +967,7 @@ func TestDatabaseTransactionSizeLimit(t *testing.T) {
 	}
 
 	// Transaction with mutations exceeding the limit should fail.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(t.Name()+"_key"), []byte("foundation database is amazing"))
 		return nil, nil
 	})
@@ -993,7 +993,7 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	pfx := t.Name() + "_"
 
 	// Write some data.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := 0; i < 10; i++ {
 			tr.Set(fdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte("v"))
 		}
@@ -1059,7 +1059,7 @@ func TestReset(t *testing.T) {
 	}
 
 	// Verify both keys.
-	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		a := tr.Get(fdb.Key(pfx + "a")).MustGet()
 		b := tr.Get(fdb.Key(pfx + "b")).MustGet()
 		return [2][]byte{a, b}, nil
@@ -1157,7 +1157,7 @@ func TestGetRangeWithSelectorRange(t *testing.T) {
 	prefix := t.Name() + "/"
 
 	// Seed 5 keys.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := 0; i < 5; i++ {
 			tr.Set(fdb.Key(fmt.Sprintf("%skey%d", prefix, i)), []byte(fmt.Sprintf("val%d", i)))
 		}
@@ -1199,7 +1199,7 @@ func TestPrefixRangeIntegration(t *testing.T) {
 	prefix := t.Name() + "/alphabet"
 
 	// Seed keys with shared prefix.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(prefix+"A"), []byte("1"))
 		tr.Set(fdb.Key(prefix+"B"), []byte("2"))
 		tr.Set(fdb.Key(prefix+"ize"), []byte("3"))
@@ -1329,7 +1329,7 @@ func TestAtomicAllTypes(t *testing.T) {
 		key := fdb.Key(t.Name() + "_" + tc.name)
 
 		// Seed.
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(key, tc.seed)
 			return nil, nil
 		})
@@ -1338,8 +1338,8 @@ func TestAtomicAllTypes(t *testing.T) {
 		}
 
 		// Apply atomic.
-		_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-			tc.apply(tr, key, tc.param)
+		_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			tc.apply(tr.(fdb.Transaction), key, tc.param)
 			return nil, nil
 		})
 		if err != nil {
@@ -1347,7 +1347,7 @@ func TestAtomicAllTypes(t *testing.T) {
 		}
 
 		// Verify.
-		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			return tr.Get(key).MustGet(), nil
 		})
 		if err != nil {
@@ -1372,14 +1372,14 @@ func TestKeyValueSizeLimits(t *testing.T) {
 		for i := range val {
 			val[i] = byte(i % 256)
 		}
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(key, val)
 			return nil, nil
 		})
 		if err != nil {
 			t.Fatalf("Set 100KB: %v", err)
 		}
-		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			return tr.Get(key).MustGet(), nil
 		})
 		if err != nil {
@@ -1396,14 +1396,14 @@ func TestKeyValueSizeLimits(t *testing.T) {
 
 	t.Run("empty_value", func(t *testing.T) {
 		key := fdb.Key(t.Name() + "_key")
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(key, []byte{})
 			return nil, nil
 		})
 		if err != nil {
 			t.Fatalf("Set empty: %v", err)
 		}
-		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			return tr.Get(key).MustGet(), nil
 		})
 		if err != nil {
@@ -1421,14 +1421,14 @@ func TestKeyValueSizeLimits(t *testing.T) {
 		for i := range key {
 			key[i] = byte('A' + i%26)
 		}
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(fdb.Key(key), []byte("long_key_value"))
 			return nil, nil
 		})
 		if err != nil {
 			t.Fatalf("Set long key: %v", err)
 		}
-		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		result, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			return tr.Get(fdb.Key(key)).MustGet(), nil
 		})
 		if err != nil {
@@ -1448,7 +1448,7 @@ func TestGetRangeWithSelectorRangeReverse(t *testing.T) {
 
 	prefix := t.Name() + "_"
 	// Seed 10 keys.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := 0; i < 10; i++ {
 			tr.Set(fdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
 		}
@@ -1491,7 +1491,7 @@ func TestTransactionRetryLimit(t *testing.T) {
 	db := openTestDB(t)
 
 	var callCount int32
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		atomic.AddInt32(&callCount, 1)
 		tr.Options().SetRetryLimit(2)
 		// Force a retryable error (not_committed) by writing a conflict.
@@ -1517,7 +1517,7 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 	key := fdb.Key(t.Name() + "_key")
 
 	// Seed.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("initial"))
 		return nil, nil
 	})
@@ -1527,16 +1527,16 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 
 	// Start two watches from separate transactions.
 	var w1, w2 fdb.FutureNil
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-		w1 = tr.Watch(key)
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		w1 = tr.(fdb.Transaction).Watch(key)
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("watch1: %v", err)
 	}
 
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-		w2 = tr.Watch(key)
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		w2 = tr.(fdb.Transaction).Watch(key)
 		return nil, nil
 	})
 	if err != nil {
@@ -1544,7 +1544,7 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 	}
 
 	// Modify the key.
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("changed"))
 		return nil, nil
 	})
@@ -1593,7 +1593,7 @@ func TestManyWatchesSameKey_AllFire(t *testing.T) {
 	key := fdb.Key(t.Name() + "_key")
 
 	// Seed.
-	if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("initial"))
 		return nil, nil
 	}); err != nil {
@@ -1605,8 +1605,8 @@ func TestManyWatchesSameKey_AllFire(t *testing.T) {
 	watches := make([]fdb.FutureNil, n)
 	for i := 0; i < n; i++ {
 		i := i
-		if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-			watches[i] = tr.Watch(key)
+		if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			watches[i] = tr.(fdb.Transaction).Watch(key)
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("watch %d: %v", i, err)
@@ -1614,7 +1614,7 @@ func TestManyWatchesSameKey_AllFire(t *testing.T) {
 	}
 
 	// Single modify strictly after all watches are established.
-	if _, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("changed"))
 		return nil, nil
 	}); err != nil {
@@ -1679,7 +1679,7 @@ func TestGetRangeEdgeCases(t *testing.T) {
 
 	t.Run("single_key_range", func(t *testing.T) {
 		key := fdb.Key(t.Name() + "_key")
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.Set(key, []byte("v"))
 			return nil, nil
 		})
@@ -1702,7 +1702,7 @@ func TestGetRangeEdgeCases(t *testing.T) {
 
 	t.Run("limit_zero_means_unlimited", func(t *testing.T) {
 		prefix := t.Name() + "_"
-		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			for i := 0; i < 5; i++ {
 				tr.Set(fdb.Key(fmt.Sprintf("%s%d", prefix, i)), []byte("v"))
 			}
@@ -1739,7 +1739,7 @@ func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 	key := fdb.Key(t.Name() + "_key")
 
 	// Seed.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("v0"))
 		return nil, nil
 	})
@@ -1754,7 +1754,7 @@ func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 	// a conflict causes OnError to reject retry, so the callback runs once
 	// and Transact returns the error.
 	var calls atomic.Int32
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		n := calls.Add(1)
 
 		// First call: read key, then return a retryable error to simulate
@@ -1887,7 +1887,7 @@ func TestOpenTenantById(t *testing.T) {
 	g.Expect(db.CreateTenant(tenantName)).To(Succeed())
 	t.Cleanup(func() {
 		tn, _ := db.OpenTenant(tenantName)
-		tn.Transact(func(tr fdb.Transaction) (any, error) {
+		tn.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -1899,7 +1899,7 @@ func TestOpenTenantById(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	key := fdb.Key("byid-key")
-	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("byid-value"))
 		return nil, nil
 	})
@@ -1910,7 +1910,7 @@ func TestOpenTenantById(t *testing.T) {
 
 	// Open by ID and verify we can read the key.
 	tenantById := db.OpenTenantById(tenantId)
-	result, err := tenantById.Transact(func(tr fdb.Transaction) (any, error) {
+	result, err := tenantById.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		return tr.Get(key).MustGet(), nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1955,7 +1955,7 @@ func TestDatabaseMaxRetryDelay(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify the option doesn't break normal transactions.
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(t.Name()+"_key"), []byte("val"))
 		return nil, nil
 	})
@@ -2067,7 +2067,7 @@ func TestSnapshotGetKey(t *testing.T) {
 
 	// Write test data.
 	prefix := t.Name() + "/"
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 5 {
 			tr.Set(fdb.Key(fmt.Sprintf("%skey-%d", prefix, i)), []byte(fmt.Sprintf("val-%d", i)))
 		}
@@ -2194,7 +2194,7 @@ func TestFutureIsReady(t *testing.T) {
 
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key(t.Name()+"/ready"), []byte("yes"))
 		return nil, nil
 	})
@@ -2236,7 +2236,7 @@ func TestTenantReadTransact(t *testing.T) {
 	g.Expect(db.CreateTenant(name)).To(Succeed())
 	t.Cleanup(func() {
 		tn, _ := db.OpenTenant(name)
-		tn.Transact(func(tr fdb.Transaction) (any, error) {
+		tn.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 			return nil, nil
 		})
@@ -2247,7 +2247,7 @@ func TestTenantReadTransact(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Write data.
-	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("rt-key"), []byte("rt-val"))
 		return nil, nil
 	})
@@ -2270,7 +2270,7 @@ func TestSnapshotGetEstimatedRangeSizeBytes(t *testing.T) {
 
 	// Write some data.
 	prefix := t.Name() + "/"
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 10 {
 			tr.Set(fdb.Key(fmt.Sprintf("%sdata-%04d", prefix, i)), make([]byte, 100))
 		}
@@ -2354,7 +2354,7 @@ func TestGetRangeSplitPoints(t *testing.T) {
 
 	// Write some data to create a non-empty range.
 	prefix := t.Name() + "/"
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		for i := range 20 {
 			tr.Set(fdb.Key(fmt.Sprintf("%sdata-%04d", prefix, i)), make([]byte, 500))
 		}

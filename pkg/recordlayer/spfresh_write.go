@@ -539,7 +539,7 @@ func spfreshSampledProbe(pk tuple.Tuple) bool {
 // spfreshDebugTopology summarizes the coarse table + fine states
 // (diagnostics). lmax buckets the posting-size histogram against the index's
 // REAL configured envelope.
-func spfreshDebugTopology(tx fdb.Transaction, s *spfreshStorage, lmax int) string {
+func spfreshDebugTopology(tx fdb.WritableTransaction, s *spfreshStorage, lmax int) string {
 	ids, rows, err := spfreshLoadAllCoarse(tx, s)
 	if err != nil {
 		return fmt.Sprintf("coarse err=%v", err)

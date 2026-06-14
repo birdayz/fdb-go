@@ -154,7 +154,8 @@ func TestDifferential_GetRangeSelectorRYW(t *testing.T) {
 	clearPrefix(t, cPfx)
 
 	const n = 20
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < n; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%sk%02d", goPfx, i)), []byte{byte(i)})
 		}

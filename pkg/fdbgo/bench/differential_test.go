@@ -95,7 +95,8 @@ func TestDifferential_WriteBattery(t *testing.T) {
 				tx.Clear(cgofdb.Key(cKey))
 			})
 
-			if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+				tx := txw.(gofdb.Transaction)
 				op.goW(tx, goKey)
 				return nil, nil
 			}); err != nil {
@@ -141,7 +142,8 @@ func TestDifferential_VersionstampedValue(t *testing.T) {
 		tx.Clear(cgofdb.Key(goKey))
 		tx.Clear(cgofdb.Key(cKey))
 	})
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.SetVersionstampedValue(gofdb.Key(goKey), mkVal())
 		return nil, nil
 	}); err != nil {
@@ -185,7 +187,8 @@ func TestDifferential_KeySizeBoundary(t *testing.T) {
 	cKey := mkKey("diff_ksz_c_")
 	val := []byte("boundary-value")
 
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Set(gofdb.Key(goKey), val)
 		return nil, nil
 	}); err != nil {
@@ -220,7 +223,8 @@ func cgoGet(t *testing.T, key []byte) []byte {
 
 func goGet(t *testing.T, key []byte) []byte {
 	t.Helper()
-	v, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	v, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.Get(gofdb.Key(key)).MustGet(), nil
 	})
 	if err != nil {

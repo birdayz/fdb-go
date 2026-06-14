@@ -19,7 +19,7 @@ func TestReadYourOwnWrite_Get(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		key := fdb.Key("ryw-test-get")
 		tr.Set(key, []byte("written-in-same-tx"))
 
@@ -44,7 +44,7 @@ func TestReadYourOwnWrite_GetRange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-range-a"), []byte("1"))
 		tr.Set(fdb.Key("ryw-range-b"), []byte("2"))
 		tr.Set(fdb.Key("ryw-range-c"), []byte("3"))
@@ -78,7 +78,7 @@ func TestReadYourOwnWrite_Clear(t *testing.T) {
 	db := openTestDB(t)
 
 	// First: write and commit a key.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-clear-key"), []byte("exists"))
 		return nil, nil
 	})
@@ -87,7 +87,7 @@ func TestReadYourOwnWrite_Clear(t *testing.T) {
 	}
 
 	// Second: clear the key and read it in the same tx.
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Clear(fdb.Key("ryw-clear-key"))
 
 		val := tr.Get(fdb.Key("ryw-clear-key")).MustGet()
@@ -110,7 +110,7 @@ func TestReadYourOwnWrite_AtomicAdd(t *testing.T) {
 	db := openTestDB(t)
 
 	// Seed: set counter to 10 (little-endian int64).
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-counter"), []byte{10, 0, 0, 0, 0, 0, 0, 0})
 		return nil, nil
 	})
@@ -119,7 +119,7 @@ func TestReadYourOwnWrite_AtomicAdd(t *testing.T) {
 	}
 
 	// Add 5 and read in same tx.
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Add(fdb.Key("ryw-counter"), []byte{5, 0, 0, 0, 0, 0, 0, 0})
 
 		val := tr.Get(fdb.Key("ryw-counter")).MustGet()
@@ -148,7 +148,7 @@ func TestReadYourOwnWrite_SetClearGetRange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-scgr-a"), []byte("1"))
 		tr.Set(fdb.Key("ryw-scgr-b"), []byte("2"))
 		tr.Set(fdb.Key("ryw-scgr-c"), []byte("3"))
@@ -186,7 +186,7 @@ func TestReadYourOwnWrite_SetClearIterator(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-iter-a"), []byte("1"))
 		tr.Set(fdb.Key("ryw-iter-b"), []byte("2"))
 		tr.Set(fdb.Key("ryw-iter-c"), []byte("3"))
@@ -221,7 +221,7 @@ func TestReadYourOwnWrite_PermutedMinMaxPattern(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		prefix := fdb.Key("ryw-pmm-")
 
 		// Simulate 3 VALUE index entries: [group=100, value=1], [group=100, value=5], [group=100, value=10]
@@ -286,7 +286,7 @@ func TestReadYourOwnWrite_SetClearGetRangeReverse(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-rev-a"), []byte("1"))
 		tr.Set(fdb.Key("ryw-rev-b"), []byte("2"))
 		tr.Set(fdb.Key("ryw-rev-c"), []byte("3"))
@@ -322,7 +322,7 @@ func TestReadYourOwnWrite_AtomicAddThenGet(t *testing.T) {
 	db := openTestDB(t)
 
 	// Seed counter = 100.
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		buf := make([]byte, 8)
 		buf[0] = 100
 		tr.Set(fdb.Key("ryw-atomic-add"), buf)
@@ -333,7 +333,7 @@ func TestReadYourOwnWrite_AtomicAddThenGet(t *testing.T) {
 	}
 
 	// Add 7, then read in same tx.
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		param := make([]byte, 8)
 		param[0] = 7
 		tr.Add(fdb.Key("ryw-atomic-add"), param)
@@ -359,7 +359,7 @@ func TestReadYourOwnWrite_SetThenAtomicAddThenGet(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		buf := make([]byte, 8)
 		buf[0] = 50
 		tr.Set(fdb.Key("ryw-set-add"), buf)
@@ -388,7 +388,7 @@ func TestReadYourOwnWrite_MultipleAtomicsThenGet(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		buf := make([]byte, 8)
 		buf[0] = 10
 		tr.Set(fdb.Key("ryw-multi-atomic"), buf)
@@ -398,7 +398,7 @@ func TestReadYourOwnWrite_MultipleAtomicsThenGet(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		one := make([]byte, 8)
 		one[0] = 1
 		tr.Add(fdb.Key("ryw-multi-atomic"), one)
@@ -425,7 +425,7 @@ func TestReadYourOwnWrite_CompareAndClearThenGet(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.Set(fdb.Key("ryw-cac"), []byte("match"))
 		return nil, nil
 	})
@@ -433,7 +433,7 @@ func TestReadYourOwnWrite_CompareAndClearThenGet(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		tr.CompareAndClear(fdb.Key("ryw-cac"), []byte("match"))
 
 		val := tr.Get(fdb.Key("ryw-cac")).MustGet()

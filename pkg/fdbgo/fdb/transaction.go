@@ -478,7 +478,7 @@ func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
 // Transact implements Transactor for composability.
 // Catches Error panics from MustGet() and returns them as errors,
 // matching the Apple binding's panicToError recovery.
-func (tr Transaction) Transact(f func(Transaction) (any, error)) (r any, e error) {
+func (tr Transaction) Transact(f func(WritableTransaction) (any, error)) (r any, e error) {
 	defer panicToError(&e)
 	return f(tr)
 }

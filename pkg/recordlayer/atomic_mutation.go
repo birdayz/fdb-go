@@ -22,7 +22,7 @@ type atomicMutation interface {
 
 	// applyMutation applies the FDB mutation for a single entry.
 	// remove=true for removal (old entries), false for insert (new entries).
-	applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error
+	applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error
 
 	// isIdempotent returns whether this index type is idempotent under retry.
 	isIdempotent() bool
@@ -84,7 +84,7 @@ func (m *countMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMu
 	return removeCommonAtomicByKey(old, new)
 }
 
-func (m *countMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
+func (m *countMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
@@ -126,7 +126,7 @@ func (m *countNotNullMutation) removeCommon(old, new []atomicMutationEntry) ([]a
 	return removeCommonAtomicByKey(old, new)
 }
 
-func (m *countNotNullMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
+func (m *countNotNullMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
@@ -169,7 +169,7 @@ func (m *countUpdatesMutation) removeCommon(old, new []atomicMutationEntry) ([]a
 	return old, new
 }
 
-func (m *countUpdatesMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, _ atomicMutationEntry, remove bool) error {
+func (m *countUpdatesMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, _ atomicMutationEntry, remove bool) error {
 	if remove {
 		// COUNT_UPDATES: getMutationParam returns null for remove — no-op.
 		return nil
@@ -263,7 +263,7 @@ func (m *sumMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMuta
 	return removeCommonAtomicByKeyAndValue(old, new)
 }
 
-func (m *sumMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
+func (m *sumMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		val := int64(binary.LittleEndian.Uint64(entry.param))
 		if val == math.MinInt64 {
@@ -341,7 +341,7 @@ func (m *minMaxEverLongMutation) removeCommon(old, new []atomicMutationEntry) ([
 	return old, new // Idempotent — no need to skip common entries.
 }
 
-func (m *minMaxEverLongMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
+func (m *minMaxEverLongMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		return nil // _EVER: deletes are no-ops.
 	}
@@ -418,7 +418,7 @@ func (m *minMaxEverTupleMutation) removeCommon(old, new []atomicMutationEntry) (
 	return old, new // Idempotent — no need to skip common entries.
 }
 
-func (m *minMaxEverTupleMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
+func (m *minMaxEverTupleMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
 		return nil // _EVER: deletes are no-ops.
 	}

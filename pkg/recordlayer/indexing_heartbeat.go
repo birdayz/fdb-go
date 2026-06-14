@@ -67,7 +67,7 @@ func (h *IndexingHeartbeat) heartbeatKey(storeSubspace subspace.Subspace, index 
 //
 // Called once per buildRange transaction to maintain liveness.
 // Matches Java's IndexingHeartbeat.checkAndUpdateHeartbeat().
-func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.Transaction, storeSubspace subspace.Subspace, index *Index) error {
+func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) error {
 	if h.allowMutual {
 		h.update(tx, storeSubspace, index)
 		return nil
@@ -128,7 +128,7 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.Transaction, storeSubspace sub
 
 // update writes this indexer's heartbeat with the current timestamp.
 // Matches Java's IndexingHeartbeat.updateHeartbeat().
-func (h *IndexingHeartbeat) update(tx fdb.Transaction, storeSubspace subspace.Subspace, index *Index) {
+func (h *IndexingHeartbeat) update(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) {
 	hb := &gen.IndexBuildHeartbeat{
 		Info:                      proto.String(h.info),
 		CreateTimeMilliseconds:    proto.Int64(h.createTimeMs),
@@ -144,13 +144,13 @@ func (h *IndexingHeartbeat) update(tx fdb.Transaction, storeSubspace subspace.Su
 // Cleanup removes this indexer's heartbeat. Called when the build completes or
 // is explicitly cancelled.
 // Matches Java's IndexingHeartbeat.removeHeartbeat().
-func (h *IndexingHeartbeat) Cleanup(tx fdb.Transaction, storeSubspace subspace.Subspace, index *Index) {
+func (h *IndexingHeartbeat) Cleanup(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) {
 	tx.Clear(h.heartbeatKey(storeSubspace, index))
 }
 
 // CleanupAll removes ALL heartbeats for an index. Used during index rebuild or
 // full clear operations.
-func CleanupAllHeartbeats(tx fdb.Transaction, storeSubspace subspace.Subspace, index *Index) {
+func CleanupAllHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) {
 	hbSub := heartbeatSubspace(storeSubspace, index)
 	begin, end := hbSub.FDBRangeKeys()
 	tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})

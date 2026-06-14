@@ -298,7 +298,7 @@ func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
 // Only non-READABLE states are stored; absent entries default to READABLE.
 // This is a standalone function that does not mutate any store fields.
 // Matches Java's FDBRecordStore.loadIndexStatesAsync().
-func readIndexStates(tx fdb.Transaction, ss subspace.Subspace) (map[string]IndexState, error) {
+func readIndexStates(tx fdb.WritableTransaction, ss subspace.Subspace) (map[string]IndexState, error) {
 	isSubspace := ss.Sub(IndexStateSpaceKey)
 	begin, end := isSubspace.FDBRangeKeys()
 

@@ -288,7 +288,7 @@ func spfreshNPARun(ctx context.Context, db *FDBDatabase, s *spfreshStorage, conf
 // coarse table and probing each cell's row (centroids are keyed (cell, fine);
 // the fineID alone does not name the cell). Bounded by the coarse count; only
 // lifecycle follow-ups need it — the hot paths always know the cell.
-func spfreshFindCentroidCell(tx fdb.Transaction, s *spfreshStorage, fineID int64) (int64, error) {
+func spfreshFindCentroidCell(tx fdb.WritableTransaction, s *spfreshStorage, fineID int64) (int64, error) {
 	ids, _, err := spfreshLoadAllCoarse(tx, s)
 	if err != nil {
 		return 0, err
@@ -313,7 +313,7 @@ func spfreshFindCentroidCell(tx fdb.Transaction, s *spfreshStorage, fineID int64
 // whole coarse table as ONE parallel burst, never one blocking read per cell
 // (a serial scan added O(cells) round trips to the user query that hit the
 // cap — codex delta r3).
-func spfreshFindCentroidCellSnapshot(tx fdb.Transaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
+func spfreshFindCentroidCellSnapshot(tx fdb.WritableTransaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
 	if hintCell != 0 {
 		data, gerr := tx.Snapshot().Get(s.centroidKey(hintCell, fineID)).Get()
 		if gerr != nil {

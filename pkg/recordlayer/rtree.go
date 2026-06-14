@@ -27,7 +27,7 @@ func NewRTree(storage *rtreeStorage, config RTreeConfig) (*RTree, error) {
 
 // InsertOrUpdate inserts a new item or updates an existing one.
 // Matches Java's RTree.insertOrUpdate().
-func (rt *RTree) InsertOrUpdate(tx fdb.Transaction, point Point, keySuffix tuple.Tuple, value tuple.Tuple) error {
+func (rt *RTree) InsertOrUpdate(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple, value tuple.Tuple) error {
 	coords := make([]int64, point.NumDimensions())
 	for d := 0; d < len(coords); d++ {
 		coords[d] = point.Coordinate(d)
@@ -82,7 +82,7 @@ func (rt *RTree) InsertOrUpdate(tx fdb.Transaction, point Point, keySuffix tuple
 
 // Delete removes an item from the R-tree.
 // Matches Java's RTree.delete().
-func (rt *RTree) Delete(tx fdb.Transaction, point Point, keySuffix tuple.Tuple) error {
+func (rt *RTree) Delete(tx fdb.WritableTransaction, point Point, keySuffix tuple.Tuple) error {
 	coords := make([]int64, point.NumDimensions())
 	for d := 0; d < len(coords); d++ {
 		coords[d] = point.Coordinate(d)
@@ -299,7 +299,7 @@ type updatePath struct {
 // For inserts (isInsert=true), defaults to the last child when no range covers the
 // target. For deletes (isInsert=false), returns a nil-leaf path if no child's range
 // can contain the target item.
-func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.Transaction, hv *big.Int, itemKey tuple.Tuple, isInsert bool) (*updatePath, error) {
+func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.WritableTransaction, hv *big.Int, itemKey tuple.Tuple, isInsert bool) (*updatePath, error) {
 	path := &updatePath{}
 
 	leaf, inter, err := rt.storage.fetchNode(tx, rootNodeID)
@@ -356,7 +356,7 @@ func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.Transaction, hv *big.Int, itemKey 
 }
 
 // handleLeafOverflow handles a leaf that may have exceeded maxM.
-func (rt *RTree) handleLeafOverflow(tx fdb.Transaction, path *updatePath) error {
+func (rt *RTree) handleLeafOverflow(tx fdb.WritableTransaction, path *updatePath) error {
 	leaf := path.leaf
 	if len(leaf.slots) <= rt.config.MaxM {
 		// No overflow — just write and propagate.
@@ -375,7 +375,7 @@ func (rt *RTree) handleLeafOverflow(tx fdb.Transaction, path *updatePath) error 
 }
 
 // splitRootLeaf splits a root leaf into two leaves + new intermediate root.
-func (rt *RTree) splitRootLeaf(tx fdb.Transaction, root *leafNode) error {
+func (rt *RTree) splitRootLeaf(tx fdb.WritableTransaction, root *leafNode) error {
 	mid := len(root.slots) / 2
 
 	leftID, err := newRandomNodeID()
@@ -408,7 +408,7 @@ func (rt *RTree) splitRootLeaf(tx fdb.Transaction, root *leafNode) error {
 }
 
 // overflowLeaf redistributes leaf items among siblings when overflow occurs.
-func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
+func (rt *RTree) overflowLeaf(tx fdb.WritableTransaction, path *updatePath) error {
 	parentIdx := len(path.parents) - 1
 	parent := path.parents[parentIdx]
 	childIdx := path.indices[parentIdx]
@@ -485,7 +485,7 @@ func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
 }
 
 // handleLeafUnderflow handles a leaf that may be below minM.
-func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error {
+func (rt *RTree) handleLeafUnderflow(tx fdb.WritableTransaction, path *updatePath) error {
 	leaf := path.leaf
 
 	// Root leaf can have any number of items (even 0).
@@ -574,7 +574,7 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error
 }
 
 // gatherLeafSiblings returns S siblings centered on childIdx, loaded from FDB.
-func (rt *RTree) gatherLeafSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*leafNode, int, error) {
+func (rt *RTree) gatherLeafSiblings(tx fdb.WritableTransaction, parent *intermediateNode, childIdx int) ([]*leafNode, int, error) {
 	s := rt.config.SplitS
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
@@ -657,7 +657,7 @@ func (rt *RTree) childSlotForLeaf(leaf *leafNode) ChildSlot {
 // propagateMBRUp updates parent ChildSlots with new MBR/HV info after a leaf change.
 // Walks from the leaf parent up to the root, updating each level's ChildSlot.
 // Matches Java's adjustSlotInParent: only writes the parent if the ChildSlot changed.
-func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
+func (rt *RTree) propagateMBRUp(tx fdb.WritableTransaction, path *updatePath) {
 	if len(path.parents) == 0 {
 		return
 	}
@@ -686,7 +686,7 @@ func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
 
 // propagateParentMBRUp updates intermediate nodes above a given parent level.
 // Recomputes the ChildSlot at each level from the child intermediate node below.
-func (rt *RTree) propagateParentMBRUp(tx fdb.Transaction, path *updatePath, startIdx int) {
+func (rt *RTree) propagateParentMBRUp(tx fdb.WritableTransaction, path *updatePath, startIdx int) {
 	for i := startIdx - 1; i >= 0; i-- {
 		parent := path.parents[i]
 		childIdx := path.indices[i]
@@ -701,7 +701,7 @@ func (rt *RTree) propagateParentMBRUp(tx fdb.Transaction, path *updatePath, star
 // handleIntermediateOverflow handles an intermediate node that may have exceeded maxM.
 // Called after modifying an intermediate node's child slots (e.g., after leaf overflow
 // added a new child slot). Cascades upward if needed.
-func (rt *RTree) handleIntermediateOverflow(tx fdb.Transaction, path *updatePath, level int) error {
+func (rt *RTree) handleIntermediateOverflow(tx fdb.WritableTransaction, path *updatePath, level int) error {
 	node := path.parents[level]
 	if len(node.slots) <= rt.config.MaxM {
 		// No overflow — just write and propagate.
@@ -721,7 +721,7 @@ func (rt *RTree) handleIntermediateOverflow(tx fdb.Transaction, path *updatePath
 
 // splitRootIntermediate splits an overflowing root intermediate node into two
 // intermediate children under a new root.
-func (rt *RTree) splitRootIntermediate(tx fdb.Transaction, root *intermediateNode) error {
+func (rt *RTree) splitRootIntermediate(tx fdb.WritableTransaction, root *intermediateNode) error {
 	mid := len(root.slots) / 2
 
 	leftID, err := newRandomNodeID()
@@ -756,7 +756,7 @@ func (rt *RTree) splitRootIntermediate(tx fdb.Transaction, root *intermediateNod
 
 // overflowIntermediate redistributes child slots among sibling intermediate nodes
 // when a non-root intermediate node overflows. Mirrors overflowLeaf logic.
-func (rt *RTree) overflowIntermediate(tx fdb.Transaction, path *updatePath, level int) error {
+func (rt *RTree) overflowIntermediate(tx fdb.WritableTransaction, path *updatePath, level int) error {
 	grandparentIdx := level - 1
 	grandparent := path.parents[grandparentIdx]
 	childIdx := path.indices[grandparentIdx]
@@ -833,7 +833,7 @@ func (rt *RTree) overflowIntermediate(tx fdb.Transaction, path *updatePath, leve
 
 // handleIntermediateUnderflow handles an intermediate node that may have dropped
 // below minM after a child was removed. Cascades upward if needed.
-func (rt *RTree) handleIntermediateUnderflow(tx fdb.Transaction, path *updatePath, level int) error {
+func (rt *RTree) handleIntermediateUnderflow(tx fdb.WritableTransaction, path *updatePath, level int) error {
 	node := path.parents[level]
 
 	if level == 0 {
@@ -865,7 +865,7 @@ func (rt *RTree) handleIntermediateUnderflow(tx fdb.Transaction, path *updatePat
 
 // promoteOnlyChild promotes the single child of a root intermediate node to become
 // the new root. The old child node is deleted and its contents written at the root ID.
-func (rt *RTree) promoteOnlyChild(tx fdb.Transaction, root *intermediateNode) error {
+func (rt *RTree) promoteOnlyChild(tx fdb.WritableTransaction, root *intermediateNode) error {
 	childID := root.slots[0].ChildID
 	leaf, inter, err := rt.storage.fetchNode(tx, childID)
 	if err != nil {
@@ -890,7 +890,7 @@ func (rt *RTree) promoteOnlyChild(tx fdb.Transaction, root *intermediateNode) er
 
 // fuseIntermediate redistributes child slots among sibling intermediate nodes
 // when a non-root intermediate node underflows. Mirrors handleLeafUnderflow logic.
-func (rt *RTree) fuseIntermediate(tx fdb.Transaction, path *updatePath, level int) error {
+func (rt *RTree) fuseIntermediate(tx fdb.WritableTransaction, path *updatePath, level int) error {
 	grandparentIdx := level - 1
 	grandparent := path.parents[grandparentIdx]
 	childIdx := path.indices[grandparentIdx]
@@ -961,7 +961,7 @@ func (rt *RTree) fuseIntermediate(tx fdb.Transaction, path *updatePath, level in
 
 // gatherIntermediateSiblings returns S intermediate siblings centered on childIdx,
 // loaded from FDB. Mirrors gatherLeafSiblings but for intermediate nodes.
-func (rt *RTree) gatherIntermediateSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int, error) {
+func (rt *RTree) gatherIntermediateSiblings(tx fdb.WritableTransaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int, error) {
 	s := rt.config.SplitS
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
@@ -1043,7 +1043,7 @@ func (rt *RTree) childSlotForIntermediate(node *intermediateNode) ChildSlot {
 }
 
 // Clear removes all data from the R-tree.
-func (rt *RTree) Clear(tx fdb.Transaction) error {
+func (rt *RTree) Clear(tx fdb.WritableTransaction) error {
 	return rt.storage.clearAll(tx)
 }
 

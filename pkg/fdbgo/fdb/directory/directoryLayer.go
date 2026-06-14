@@ -177,7 +177,8 @@ func (dl directoryLayer) createOrOpen(rtr fdb.ReadTransaction, tr *fdb.Transacti
 }
 
 func (dl directoryLayer) CreateOrOpen(t fdb.Transactor, path []string, layer []byte) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr := trw.(fdb.Transaction) // directory layer is pure-Go only (out of RFC-109 escape-hatch scope)
 		return dl.createOrOpen(tr, &tr, path, layer, nil, true, true)
 	})
 	if e != nil {
@@ -187,7 +188,8 @@ func (dl directoryLayer) CreateOrOpen(t fdb.Transactor, path []string, layer []b
 }
 
 func (dl directoryLayer) Create(t fdb.Transactor, path []string, layer []byte) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr := trw.(fdb.Transaction) // directory layer is pure-Go only (out of RFC-109 escape-hatch scope)
 		return dl.createOrOpen(tr, &tr, path, layer, nil, true, false)
 	})
 	if e != nil {
@@ -200,7 +202,8 @@ func (dl directoryLayer) CreatePrefix(t fdb.Transactor, path []string, layer []b
 	if prefix == nil {
 		prefix = []byte{}
 	}
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr := trw.(fdb.Transaction) // directory layer is pure-Go only (out of RFC-109 escape-hatch scope)
 		return dl.createOrOpen(tr, &tr, path, layer, prefix, true, false)
 	})
 	if e != nil {
@@ -278,7 +281,8 @@ func (dl directoryLayer) MoveTo(t fdb.Transactor, newAbsolutePath []string) (Dir
 }
 
 func (dl directoryLayer) Move(t fdb.Transactor, oldPath []string, newPath []string) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr := trw.(fdb.Transaction) // directory layer is pure-Go only (out of RFC-109 escape-hatch scope)
 		if e := dl.checkVersion(tr, &tr); e != nil {
 			return nil, e
 		}
@@ -340,7 +344,8 @@ func (dl directoryLayer) Move(t fdb.Transactor, oldPath []string, newPath []stri
 }
 
 func (dl directoryLayer) Remove(t fdb.Transactor, path []string) (bool, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr := trw.(fdb.Transaction) // directory layer is pure-Go only (out of RFC-109 escape-hatch scope)
 		if e := dl.checkVersion(tr, &tr); e != nil {
 			return false, e
 		}

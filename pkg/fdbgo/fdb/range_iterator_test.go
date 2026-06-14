@@ -22,7 +22,7 @@ func TestRangeIterator_ReversePaging(t *testing.T) {
 	pfx := "iter_rev_page_"
 
 	// Write 20 keys.
-	_, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		for i := 0; i < 20; i++ {
 			tr.Set(gofdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte(fmt.Sprintf("val%02d", i)))
 		}
@@ -67,7 +67,7 @@ func TestRangeIterator_ReversePaging(t *testing.T) {
 	}
 
 	// Clean up.
-	db.Transact(func(tr gofdb.Transaction) (any, error) {
+	db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(pfx + "00"), End: gofdb.Key(pfx + "99")})
 		return nil, nil
 	})
@@ -80,7 +80,7 @@ func TestRangeIterator_ForwardPaging(t *testing.T) {
 
 	pfx := "iter_fwd_page_"
 
-	_, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		for i := 0; i < 50; i++ {
 			tr.Set(gofdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte("v"))
 		}
@@ -113,7 +113,7 @@ func TestRangeIterator_ForwardPaging(t *testing.T) {
 		t.Fatalf("expected 50, got %d", result)
 	}
 
-	db.Transact(func(tr gofdb.Transaction) (any, error) {
+	db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(pfx + "00"), End: gofdb.Key(pfx + "99")})
 		return nil, nil
 	})
@@ -126,7 +126,7 @@ func TestRangeIterator_WithLimit(t *testing.T) {
 
 	pfx := "iter_limit_"
 
-	_, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		for i := 0; i < 30; i++ {
 			tr.Set(gofdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte("v"))
 		}
@@ -157,7 +157,7 @@ func TestRangeIterator_WithLimit(t *testing.T) {
 		t.Fatalf("expected 7, got %d", result)
 	}
 
-	db.Transact(func(tr gofdb.Transaction) (any, error) {
+	db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(pfx + "00"), End: gofdb.Key(pfx + "99")})
 		return nil, nil
 	})
@@ -171,7 +171,7 @@ func TestRangeIterator_SnapshotRead(t *testing.T) {
 
 	pfx := "iter_snap_"
 
-	_, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		for i := 0; i < 5; i++ {
 			tr.Set(gofdb.Key(fmt.Sprintf("%s%d", pfx, i)), []byte("v"))
 		}
@@ -198,7 +198,7 @@ func TestRangeIterator_SnapshotRead(t *testing.T) {
 		t.Fatalf("expected 5 keys, got %d", len(kvs))
 	}
 
-	db.Transact(func(tr gofdb.Transaction) (any, error) {
+	db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(pfx + "0"), End: gofdb.Key(pfx + "9")})
 		return nil, nil
 	})
@@ -211,7 +211,7 @@ func TestRangeIterator_TupleRange(t *testing.T) {
 
 	pfx := "iter_tuple_"
 
-	_, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		for i := int64(0); i < 10; i++ {
 			key := gofdb.Key(tuple.Tuple{pfx, i}.Pack())
 			tr.Set(key, []byte(fmt.Sprintf("val%d", i)))
@@ -240,7 +240,7 @@ func TestRangeIterator_TupleRange(t *testing.T) {
 		t.Fatalf("expected 3 keys (5,6,7), got %d", len(kvs))
 	}
 
-	db.Transact(func(tr gofdb.Transaction) (any, error) {
+	db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		begin := tuple.Tuple{pfx}.Pack()
 		end := append(begin, 0xFF)
 		tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)})

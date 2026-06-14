@@ -305,7 +305,7 @@ func (m *mutualIndexBuilder) buildMutual(ctx context.Context) (int64, bool, erro
 // findRangeInFragment finds a missing range within the fragment boundaries.
 // In FULL phase, only returns fully unbuilt fragments.
 // In ANY phase, returns any fragment with missing ranges.
-func (m *mutualIndexBuilder) findRangeInFragment(tx fdb.Transaction, rangeSet *IndexingRangeSet, fragBegin, fragEnd []byte) (*RangeSetRange, error) {
+func (m *mutualIndexBuilder) findRangeInFragment(tx fdb.WritableTransaction, rangeSet *IndexingRangeSet, fragBegin, fragEnd []byte) (*RangeSetRange, error) {
 	missing, err := rangeSet.ListMissingRangesInBytes(tx, fragBegin, fragEnd)
 	if err != nil {
 		return nil, err

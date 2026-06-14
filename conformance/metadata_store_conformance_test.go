@@ -48,7 +48,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 
 	AfterEach(func() {
 		// Clean up subspace
-		_, _ = sharedDB.Transact(func(tr gofdb.Transaction) (any, error) {
+		_, _ = sharedDB.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			begin, end := ss.FDBRangeKeys()
 			tr.ClearRange(gofdb.KeyRange{Begin: begin, End: end})
 			begin2, end2 := storeSS.FDBRangeKeys()

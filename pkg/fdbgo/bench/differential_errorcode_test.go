@@ -26,7 +26,8 @@ import (
 // C++-spec code so a single-client divergence is obvious.
 
 func goErrCode(setup func(tx gofdb.Transaction) error) int {
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return nil, setup(tx)
 	})
 	return fdbErrorCode(err)

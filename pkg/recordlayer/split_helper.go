@@ -24,7 +24,7 @@ type sizeInfo struct {
 // because Go FDB bindings need context-level AddVersionMutation for versionstamps.
 // Matches Java's SplitHelper.saveWithSplit() (data portion only).
 func saveWithSplit(
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	serialized []byte,
@@ -87,7 +87,7 @@ func saveWithSplit(
 // Otherwise, clears just the unsplit key.
 // Matches Java's SplitHelper behavior with clearBasedOnPrevioussizeInfo.
 func clearPreviousRecord(
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
@@ -241,7 +241,7 @@ func loadWithSplit(
 // Returns true if a record was deleted.
 // Matches Java's SplitHelper.deleteSplit().
 func deleteSplit(
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
@@ -309,7 +309,7 @@ func recordExistsWithSplit(
 
 // clearRecordKeyRange clears all keys for a primary key (version, unsplit, and all split chunks).
 // Empty primaryKey is a no-op to prevent catastrophic data loss (would clear entire records subspace).
-func clearRecordKeyRange(tx fdb.Transaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple) {
+func clearRecordKeyRange(tx fdb.WritableTransaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple) {
 	if len(primaryKey) == 0 {
 		return
 	}

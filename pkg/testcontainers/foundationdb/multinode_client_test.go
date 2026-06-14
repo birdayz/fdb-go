@@ -70,14 +70,14 @@ func TestMultiNodeCluster_GoClientCRUD(t *testing.T) {
 		value := []byte(fmt.Sprintf("value_%03d", i))
 
 		// Write.
-		_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			tr.Set(key, value)
 			return nil, nil
 		})
 		g.Expect(err).NotTo(HaveOccurred(), "write tx %d", i)
 
 		// Read back.
-		result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			return tr.Get(key).MustGet(), nil
 		})
 		g.Expect(err).NotTo(HaveOccurred(), "read tx %d", i)
@@ -85,7 +85,7 @@ func TestMultiNodeCluster_GoClientCRUD(t *testing.T) {
 	}
 
 	// Range scan to verify all 20 keys exist.
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		prefix := tuple.Tuple{"multinode_test"}.Pack()
 		rng, err := gofdb.PrefixRange(prefix)
 		if err != nil {

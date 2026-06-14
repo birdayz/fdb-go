@@ -138,7 +138,7 @@ func (env *TenantEnvironment) Cleanup(_ context.Context) error {
 		// Open tenant and clear all data first (tenant_not_empty check on delete).
 		tenant, err := env.DB.OpenTenant(gofdb.Key(env.TenantName))
 		if err == nil {
-			_, _ = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+			_, _ = tenant.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 				tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(""), End: gofdb.Key("\xff")})
 				return nil, nil
 			})
@@ -173,7 +173,7 @@ func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db
 
 	// Smoke test: write + read through the tenant. Use Set+Get (point ops)
 	// to verify tenant mapping works. GetRange hangs — known issue under investigation.
-	_, err = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = tenant.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(gofdb.Key("_init"), []byte("1"))
 		v := tr.Get(gofdb.Key("_init")).MustGet()
 		if string(v) != "1" {

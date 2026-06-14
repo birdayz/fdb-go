@@ -144,7 +144,7 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			transactionID: nextTransactionID.Add(1),
@@ -183,7 +183,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 // the transactor supports it (Database/Tenant via fdb.CtxTransactor), else falls back
 // to the ctx-less Transact (RFC-090). The dispatched commit + commit_unknown barrier
 // run detached regardless, so ctx never cancels an in-flight commit.
-func runTransactCtx(t fdb.Transactor, ctx context.Context, fn func(fdb.Transaction) (any, error)) (any, error) {
+func runTransactCtx(t fdb.Transactor, ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	if ct, ok := t.(fdb.CtxTransactor); ok {
 		return ct.TransactCtx(ctx, fn)
 	}
@@ -220,7 +220,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		if weak.IsCausalReadRisky {
 			tx.Options().SetCausalReadRisky()
@@ -260,7 +260,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	var hasVersionMutations bool
 	var lastCtx *FDBRecordContext
 
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		// Reset on retry — previous attempt's future is stale
 		vsFuture = nil
 		hasVersionMutations = false
@@ -373,7 +373,7 @@ type versionMutation struct {
 var nextTransactionID atomic.Int64
 
 type FDBRecordContext struct {
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
 
@@ -446,7 +446,7 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
 // This is primarily used for testing scenarios where direct transaction control is needed.
-func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
+func NewFDBRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
 	return &FDBRecordContext{
 		tx:  tx,
 		ctx: context.Background(),
@@ -454,7 +454,7 @@ func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
 }
 
 // Transaction returns the underlying FDB transaction
-func (rc *FDBRecordContext) Transaction() fdb.Transaction {
+func (rc *FDBRecordContext) Transaction() fdb.WritableTransaction {
 	return rc.tx
 }
 

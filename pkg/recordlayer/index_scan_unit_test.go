@@ -640,7 +640,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			props := ForwardScan()
 			cont := []byte{0x01}
 
-			var tx fdb.Transaction
+			var tx fdb.WritableTransaction
 			c := newIndexCursor(idx, ss, tx, r, cont, props)
 			Expect(c.index).To(Equal(idx))
 			Expect(c.indexSubspace).To(Equal(ss))

@@ -90,7 +90,8 @@ func runGetKeyRYWDifferential(t *testing.T, label string, seed, pending []fuzzOp
 	// offset like OE_BACK2(d) escapes the prefix and the result-in-prefix clamp is not
 	// enough to keep the comparison sound.
 	sentinels := []string{"\x00", "\x01", "\xee", "\xef"}
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for _, s := range sentinels {
 			tx.Set(gofdb.Key(goPfx+s), []byte("s"))
 		}
@@ -278,7 +279,8 @@ func runGetKeyColdSelector(t *testing.T, label string, seed, pending []fuzzOp, s
 		clearPrefix(t, goPfx)
 		clearPrefix(t, cPfx)
 		sentinels := []string{"\x00", "\x01", "\xee", "\xef"}
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			for _, s := range sentinels {
 				tx.Set(gofdb.Key(goPfx+s), []byte("s"))
 			}

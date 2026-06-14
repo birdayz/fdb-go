@@ -59,7 +59,7 @@ func (r *FDBResolver) Resolve(ctx context.Context, name string) (int64, error) {
 	r.mu.RUnlock()
 
 	// Slow path: transactional read + allocate if absent.
-	result, err := r.db.Transact(func(tx fdb.Transaction) (any, error) {
+	result, err := r.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		nameKey := r.subspace.Pack(tuple.Tuple{"n", name})
 		// Check if name is already mapped. Use .Get() (explicit error) rather than
 		// .MustGet() (panic→panicToError): a routine transaction conflict (1020) on

@@ -34,7 +34,7 @@ const (
 type bitmapValueIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	store         indexStoreContext
 	entrySize     int64
 	unique        bool
@@ -43,7 +43,7 @@ type bitmapValueIndexMaintainer struct {
 func newBitmapValueIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) *bitmapValueIndexMaintainer {
 	entrySize := int64(bitmapValueDefaultEntrySize)
@@ -438,7 +438,7 @@ func (m *bitmapValueIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 type bitmapKVCursor struct {
 	index         *Index
 	indexSubspace subspace.Subspace
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	tupleRange    TupleRange
 	continuation  []byte
 	scanProps     ScanProperties
@@ -456,7 +456,7 @@ type bitmapKVCursor struct {
 func newBitmapKVCursor(
 	index *Index,
 	indexSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	tupleRange TupleRange,
 	continuation []byte,
 	scanProperties ScanProperties,

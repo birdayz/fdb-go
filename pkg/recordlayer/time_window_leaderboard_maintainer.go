@@ -28,7 +28,7 @@ type timeWindowLeaderboardIndexMaintainer struct {
 func newTimeWindowLeaderboardIndexMaintainer(
 	index *Index,
 	indexSubspace, secondarySubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) *timeWindowLeaderboardIndexMaintainer {
 	return &timeWindowLeaderboardIndexMaintainer{

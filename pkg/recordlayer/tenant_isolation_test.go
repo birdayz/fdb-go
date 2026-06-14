@@ -40,7 +40,7 @@ var _ = Describe("Tenant isolation for record stores", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(func() {
-			_, _ = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+			_, _ = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
 				tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
 				return nil, nil
 			})

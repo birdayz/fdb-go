@@ -18,11 +18,11 @@ type ctxSpyTransactor struct {
 	gotReadCtx  context.Context
 }
 
-func (s *ctxSpyTransactor) Transact(func(fdb.Transaction) (any, error)) (any, error) {
+func (s *ctxSpyTransactor) Transact(func(fdb.WritableTransaction) (any, error)) (any, error) {
 	return nil, errors.New("ctxSpyTransactor.Transact called — Run must use TransactCtx")
 }
 
-func (s *ctxSpyTransactor) TransactCtx(ctx context.Context, _ func(fdb.Transaction) (any, error)) (any, error) {
+func (s *ctxSpyTransactor) TransactCtx(ctx context.Context, _ func(fdb.WritableTransaction) (any, error)) (any, error) {
 	s.gotWriteCtx = ctx
 	return nil, ctx.Err()
 }
