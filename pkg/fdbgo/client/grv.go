@@ -231,9 +231,10 @@ type grvBatcher struct {
 
 	refreshOnce sync.Once
 	// refresherStarted is a deterministic test seam (RFC-104): true once the
-	// background refresher has been launched (first opted-in cached hit). Lets
-	// a test assert "the refresher never started for a cache-off process"
-	// without a flaky goroutine count.
+	// background refresher has been launched (on the first opted-in request —
+	// hit OR miss, matching C++ which starts the updater inside the opt-in gate
+	// before the freshness check). Lets a test assert "the refresher never
+	// started for a cache-off process" without a flaky goroutine count.
 	refresherStarted atomic.Bool
 }
 
