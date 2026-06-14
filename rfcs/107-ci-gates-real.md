@@ -1,8 +1,12 @@
 # RFC-107: Make the CI gates real — stress in a workflow, fuzz the client, race-gate the client
 
-**Status:** Draft — for review by **Torvalds + codex** (CI/infra item; no query-engine or
-client/wire *behavior* change, so no Graefe / FDB-C++ gate — but the underlying bazel commands
-must be the same ones a developer runs locally).
+**Status:** Draft r2 — addressed Torvalds + codex NAKs (scoped PR race to client/transport/fdb;
+dropped the latency-failure gate → report-as-trend; query-generated stress labels for the
+`stress`+`manual` tag; Bazel-native fuzzing for faithfulness over the cgo/module-patch; Docker/cgo
+gating; no-op guards; +8 unfuzzed diff-oracle reply types). For review by **Torvalds + codex**
+(CI/infra item; no query-engine or client/wire *behavior* change, so no Graefe / FDB-C++ gate — but
+the underlying bazel commands must be the same ones a developer runs locally — Bazel-native fuzz
+invocation validated locally: 17.7M execs/15s on a pure target, no crash).
 **Item:** Client launch-readiness #4 (TODO.md) — TODO-production P1.6.
 
 ## Problem — three load-bearing test suites exist but never gate anything
@@ -35,54 +39,89 @@ CLAUDE.md is explicit: "A flaky or intermittently-failing test is a REAL BUG"; "
 integration tests are the gold standard"; "Fuzz is non-negotiable … 200k+ execs should produce 0
 panics." The tests embody that. CI doesn't enforce it.
 
-## Proposed change (CI wiring only — no product code change)
+## Proposed change (CI wiring only — no product code change) — r2, addressing Torvalds + codex
 
 1. **Scheduled stress workflow (`nightly-stress.yml`).** A new scheduled workflow (off-peak cron,
-   `workflow_dispatch` for manual) that runs the stress-tagged target(s) WITH the tag included.
-   `attr(tags, stress, //pkg/...)` resolves exactly one today —
-   `//pkg/relational/sqldriver/stress:stress_test` — so the job runs
-   `bazelisk test //pkg/... --test_tag_filters=stress --test_timeout=3600 --test_output=errors
-   --test_arg=--test.v` (tag-filter form, so any future stress-tagged target is picked up
-   automatically rather than a hard-coded label rotting).
-   Generous `timeout-minutes` (the 1M build + run). It does NOT gate PRs (too heavy / too slow for
-   every push) but a red scheduled stress run is a release blocker, surfaced like the nightly-fuzz
-   failures. Frequency: nightly to start (cheap on the idle Hetzner box overnight); can drop to
-   weekly if it crowds the fuzz/coverage jobs. The job greps the stress output for the per-op
-   latency lines and fails if a threshold regresses (the CLAUDE.md thresholds), not just on a hard
-   error — a 2× latency regression is a real cost-model bug even when rows are correct.
+   `workflow_dispatch` for manual). The stress target is tagged BOTH `stress` AND `manual`
+   (`stress/BUILD.bazel:11`), so a wildcard `//pkg/... --test_tag_filters=stress` can drop it (manual
+   targets are excluded from wildcard expansion before the tag filter runs — codex). Resolve the
+   targets explicitly via query and FAIL on an empty set (no-op guard):
+   ```sh
+   STRESS=$(bazelisk query 'attr(tags, stress, tests(//pkg/...))')
+   [ -n "$STRESS" ] || { echo "no stress targets resolved — CI gate is a no-op"; exit 1; }
+   bazelisk test $STRESS --test_output=streamed --test_arg=--test.v --test_timeout=3600
+   ```
+   This auto-picks up any future stress target (no rotting label) while still being explicit. It does
+   NOT gate PRs (too heavy) but a red scheduled run is a release blocker, surfaced like nightly-fuzz.
+   Nightly to start; drop to weekly if it crowds the box. **Gate only on row-count/correctness + hard
+   error/crash — NOT on wall-clock latency** (Torvalds: latency on a shared self-hosted runner is
+   noisy; a latency-failure gate manufactures false reds, and CLAUDE.md treats every red as a
+   must-investigate bug). The per-op latencies ARE parsed and emitted to the GitHub step summary as a
+   reported trend (and archived to the Hetzner bucket like the test report) so a real regression is
+   visible without flaking the build; an out-of-band alarm on the trend is future work.
 
 2. **Fuzz the 23 client targets nightly (extend `nightly-fuzz.yml`).** Add a `client-fuzz` job that
-   loops every `Fuzz*` under `//pkg/fdbgo/...`, each `-fuzztime=Nm` (start at 5m each; 23 × 5m ≈ 2h,
-   within a generous timeout — or shard across two jobs if it overruns). Use the SAME mechanism the
-   diff-oracle job uses: resolve the bazel Go SDK, `go test -fuzz=FuzzXxx -fuzztime=… ./pkg/fdbgo/…`.
-   The `FuzzDifferential*` targets need the running differential harness (real FDB via
-   testcontainers + the cgo binding) — gate those on Docker being present, exactly like the
-   existing differential job. A crash/new-corpus-entry fails the job and uploads the failing input
-   as an artifact (so the seed is reproducible: `go test -run=FuzzXxx/<hash>`).
+   fuzzes each `Fuzz*` under `//pkg/fdbgo/...` via the repo's **Bazel-native** invocation (CLAUDE.md),
+   NOT plain `go test -fuzz`:
+   ```sh
+   bazelisk test <owning_target> --test_arg=-test.fuzz='^FuzzXxx$' --test_arg=-test.run='^$' \
+     --test_arg=-test.fuzztime=Nm --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+     --sandbox_writable_path=/tmp/fuzz-cache --test_timeout=… --nocache_test_results
+   ```
+   Bazel-native is REQUIRED for faithfulness (codex): plain `go test` ignores Bazel `data`/`env` and
+   the `go_deps.module_override` that patches the Apple FDB Go binding (`MODULE.bazel:15`) — the
+   `pkg/fdbgo/bench` `FuzzDifferential*` targets compare Go vs the cgo `libfdb_c`, so they MUST run
+   against the Bazel-built binding, not `go.mod`'s raw module. `-test.run='^$'` runs the fuzz target
+   only, not the package's unit tests first (codex). Per-target owning package (Bazel test targets
+   are per-package, so this is natural). The targets are DISCOVERED, not hard-listed, and the job
+   fails if discovery yields zero (no-op guard): `grep -rl '^func Fuzz' pkg/fdbgo/ | …` → bazel labels.
+   **Docker/cgo gating is mandatory, not optional** (codex): `pkg/fdbgo/client` `TestMain`
+   (`testmain_test.go:94`) and `pkg/fdbgo/bench` (`bench_test.go:29,96`) always start
+   FDB-testcontainers (+ cgo for bench), so the job documents and checks the Docker + `libfdb_c`
+   requirement up front. Budget: start 5m each; the pure wire/type/tuple targets (10) are fast, the
+   container-backed client/bench (13) dominate — shard across jobs if the total overruns the timeout.
+   On a crash / new corpus entry: fail and upload `pkg/fdbgo/**/testdata/fuzz/**` (the minimized seed)
+   as an artifact so it reproduces (`-test.run=FuzzXxx/<hash>`).
+   **Also close the diff-oracle gap (Torvalds):** the existing differential job loops only 9 of the
+   17 `cmd/fdb-diff-oracle` `Fuzz*` funcs — extend it to the 8 unfuzzed REPLY-parse types.
 
-3. **Add `//pkg/fdbgo/...` to the PR `-race` job (`ci.yml`).** Extend the existing `race` job (or add
-   a sibling) to run `bazelisk test //pkg/fdbgo/... --@rules_go//go/config:race
-   --test_tag_filters=-stress --test_output=errors` on every PR, alongside the existing
-   `//pkg/relational/...`. This makes the client's concurrency the SAME gate the SQL layer already
-   is. `--local_test_jobs=4` (`.bazelrc:45`) already caps concurrent FDB containers so the race
-   build doesn't thrash. If the full `//pkg/fdbgo/...` race run is too slow for a PR, scope it to the
-   concurrency-bearing packages (`//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/...`)
-   and document what's excluded — but DEFAULT to the full set and only trim with measured numbers.
+3. **Add the CLIENT to the PR `-race` job (`ci.yml`), scoped (Torvalds + codex).** Extend the `race`
+   job to also run the **concurrency-bearing, non-Docker-cgo** client packages on every PR:
+   ```sh
+   bazelisk test //pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/... \
+     --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors
+   ```
+   This is the pipelined-read / commit-path / transport goroutine code (the `hadRead` race class) —
+   the SAME gate the SQL layer already is. The FULL `//pkg/fdbgo/...` is deliberately NOT the default:
+   it pulls in `bench` (cgo/`libfdb_c`) and `conformance` (Docker) tests that, race-instrumented
+   (2-10×) under `--local_test_jobs=4` on the single Hetzner runner, would dominate PR latency and
+   serialize behind the existing relational race job (codex/Torvalds). Expand the scope only with
+   measured numbers. A nonzero-target guard (`bazelisk query 'tests(...)'` non-empty) prevents a typo
+   silently shrinking the gate to nothing.
 
 ## Test plan (CI can't be unit-tested — validate the underlying commands + YAML)
 
-- **The bazel commands are load-bearing, the YAML is glue.** Each command in the workflows is run
-  LOCALLY and shown green before committing: the stress tag-filter actually selects the stress
-  target; `//pkg/fdbgo/... --@rules_go//go/config:race --test_tag_filters=-stress` builds + passes
-  under the race detector; a representative `go test -fuzz=FuzzXxx -fuzztime=30s ./pkg/fdbgo/wire/types/`
-  runs. The local green is the proof the CI step will do real work, not no-op.
-- **YAML validity + no-op guard.** Lint the workflow YAML (actionlint or a schema check). Assert the
-  tag filter is `stress` (include), not `-stress` (exclude) — an inverted filter is the classic
-  "green because it ran nothing" failure; a guard step greps the bazel output for "Executed N tests"
-  with N>0 and fails on N==0 (the no-fake-checkbox rule applied to CI itself).
-- **Race job actually exercises the client.** Confirm `bazelisk test //pkg/fdbgo/... --@rules_go//go/config:race`
-  resolves >1 test target (not zero) and that backing out a known-safe `atomic` to a plain field
-  reproduces a race locally (revert-proof that the gate has teeth), then restore.
+- **The bazel commands are load-bearing, the YAML is glue.** Each command is run LOCALLY and shown
+  green before committing: the `attr(tags, stress, …)` query resolves the stress target and the
+  explicit-label `bazelisk test` runs it; the scoped race set
+  `//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/... --@rules_go//go/config:race`
+  builds + passes under the race detector; a representative **Bazel-native** fuzz run
+  (`bazelisk test //pkg/fdbgo/wire/types:types_test --test_arg=-test.fuzz='^FuzzXxx$'
+  --test_arg=-test.fuzztime=30s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache
+  --sandbox_writable_path=/tmp/fuzz-cache`) executes real iterations on a pure target; and a
+  container-backed one (e.g. a `pkg/fdbgo/client` fuzz target) runs given Docker. Local green proves
+  the CI step does real work.
+- **No-op guards (the no-fake-checkbox rule applied to CI itself).** Each job FAILS if its target
+  discovery resolves zero: stress (`[ -n "$STRESS" ]`), fuzz (`grep -rl '^func Fuzz' pkg/fdbgo/`
+  non-empty → labels), race (`bazelisk query 'tests(<scope>)'` non-empty). Lint the YAML
+  (actionlint). The classic "green because it ran nothing" failure (an inverted tag filter, a
+  manual-tag drop, a typo in a label) is caught by the guard, not by a passing-but-empty run.
+- **Race job actually exercises the client + has teeth.** Confirm the scoped race set resolves >1
+  test target (not zero), and revert-prove the gate: back out a known-safe `atomic` in the client to
+  a plain field, confirm `--@rules_go//go/config:race` reports a data race locally, then restore.
+- **Fuzz faithfulness.** Confirm a `pkg/fdbgo/bench` differential fuzz target run via the Bazel-native
+  invocation actually exercises the cgo `libfdb_c` path (the Bazel-patched binding), since plain
+  `go test` would not — a short `-test.fuzztime` smoke run that loads the oracle proves it.
 
 ## What this does NOT do
 
