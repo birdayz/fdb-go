@@ -726,10 +726,13 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 				return result, nil
 			}
 			if reason.IsOutOfBand() {
-				// The per-prefix cursor hit the (remaining) shared scan/byte/time
-				// budget — propagate the limit rather than scanning the next prefix,
-				// which would exceed the aggregate cap (RFC-106a).
-				return result, nil
+				// The per-prefix cursor consumed the (remaining) shared scan/byte/time
+				// budget mid-prefix. Like the aggregate checks above, this is a TERMINAL
+				// error even in non-fail mode (codex): the per-prefix continuation has no
+				// cross-prefix state, so propagating it as a paginating no-next would
+				// resume from the first prefix (infinite re-scan). FailOnScanLimitReached
+				// is moot here — the per-prefix cursor would have errored upstream if set.
+				return RecordCursorResult[*IndexEntry]{}, &ScanLimitReachedError{Reason: reason}
 			}
 			// SourceExhausted → genuinely move to the next prefix.
 		}
