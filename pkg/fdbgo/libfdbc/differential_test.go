@@ -5,6 +5,7 @@ package libfdbc_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc"
@@ -233,6 +235,92 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 		if v, _ := got.([]byte); string(v) != "snapval" {
 			t.Fatalf("snapshot read = %q, want %q", v, "snapval")
+		}
+	})
+
+	// The following pin the three codex-review P2 findings — capability detection in
+	// the backend constructor, ctx honoring on the cgo backend, and the directory
+	// layer not panicking on a non-pure-Go transactor.
+
+	t.Run("pure_go_backend_keeps_direct_paths", func(t *testing.T) {
+		// NewFDBDatabaseWithBackend on the pure-Go backend (what OpenDatabaseWithBackend
+		// (BackendGo, …) returns) must KEEP CreateTransaction — the constructor detects
+		// the concrete fdb.Database and populates its db slot. (codex P2 #1)
+		rlGo := recordlayer.NewFDBDatabaseWithBackend(goRaw)
+		tx, err := rlGo.CreateTransaction()
+		if err != nil {
+			t.Fatalf("pure-Go backend must support CreateTransaction, got %v", err)
+		}
+		tx.Cancel()
+
+		// The cgo backend genuinely lacks it → fail-fast BackendCapabilityError, not nil-panic.
+		if _, err := cgoDB.CreateTransaction(); err == nil {
+			t.Fatal("cgo backend CreateTransaction must fail, got nil")
+		} else {
+			var be *recordlayer.BackendCapabilityError
+			if !errors.As(err, &be) {
+				t.Fatalf("cgo backend CreateTransaction must return *BackendCapabilityError, got %v", err)
+			}
+		}
+	})
+
+	t.Run("cgo_backend_honors_canceled_ctx", func(t *testing.T) {
+		// A canceled ctx must abort BEFORE the callback runs/commits on the cgo backend
+		// (it implements CtxTransactor now), matching the pure-Go backend. (codex P2 #2)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		called := false
+		_, err := cgoDB.Run(ctx, func(*recordlayer.FDBRecordContext) (any, error) {
+			called = true
+			return nil, nil
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cgo Run with a canceled ctx must return context.Canceled, got %v", err)
+		}
+		if called {
+			t.Fatal("cgo Run must NOT execute the callback when ctx is already canceled")
+		}
+	})
+
+	t.Run("directory_layer_rejects_cgo_backend", func(t *testing.T) {
+		// Directory writes need concrete pure-Go transaction features (out of escape-hatch
+		// scope); with the cgo backend they must return UnsupportedBackendError, NOT panic
+		// on the concrete-type assertion. (codex P2 #3)
+		_, err := directory.CreateOrOpen(cgoBackend, []string{"libfdbc_diff_dir_cgo"}, nil)
+		var ue *directory.UnsupportedBackendError
+		if !errors.As(err, &ue) {
+			t.Fatalf("directory.CreateOrOpen on cgo backend must return *UnsupportedBackendError, got %v", err)
+		}
+		// Still works on the pure-Go backend.
+		if _, err := directory.CreateOrOpen(goRaw, []string{"libfdbc_diff_dir_go"}, nil); err != nil {
+			t.Fatalf("directory.CreateOrOpen on pure-Go backend must succeed, got %v", err)
+		}
+	})
+
+	t.Run("cgo_backend_keeps_committed_result_on_late_cancel", func(t *testing.T) {
+		// A ctx canceled AFTER the write is queued (so the commit still proceeds and
+		// succeeds) must NOT be reported as a failure — reporting a ctx error for a
+		// committed transaction would be a lie that invites a double-write retry. The
+		// ctx cause is surfaced only when the transaction actually failed.
+		ct, ok := cgoBackend.(fdb.CtxTransactor)
+		if !ok {
+			t.Fatal("cgo backend must implement fdb.CtxTransactor")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		key := fdb.Key("libfdbc_diff/late_cancel")
+		res, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
+			tr.Set(key, []byte("committed"))
+			cancel() // cancel after the write is queued; the commit still goes through
+			return "ok", nil
+		})
+		if err != nil {
+			t.Fatalf("a committed tx must not be reported failed on a late cancel, got %v", err)
+		}
+		if res != "ok" {
+			t.Fatalf("lost the committed result: %v", res)
+		}
+		if got := readKeyVia(t, goRaw, key); string(got) != "committed" {
+			t.Fatalf("write must have committed despite the late cancel, got %q", got)
 		}
 	})
 }

@@ -27,6 +27,7 @@ go_test(
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/directory",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",

@@ -128,10 +128,19 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 // pure-Go-only in v1 and return errBackendNoDirectTx here (fail-fast, not a nil
 // panic) — the same scope boundary the RFC draws around tenants.
 func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
-	return &FDBDatabase{
+	d := &FDBDatabase{
 		transactor:      backend,
 		storeStateCache: PassThroughStoreStateCache(),
 	}
+	// If the selected backend is actually the pure-Go client (BackendGo), keep its
+	// concrete handle so the direct CreateTransaction / FDBDatabaseRunner / locality
+	// paths still work — only a non-pure-Go backend (libfdb_c) genuinely lacks them.
+	// Without this, opening with OpenDatabaseWithBackend(BackendGo, …) would needlessly
+	// cripple those paths.
+	if goDB, ok := backend.(fdb.Database); ok {
+		d.db = goDB
+	}
+	return d
 }
 
 // NewFDBDatabaseFromTenant creates a new FDBDatabase wrapping an FDB tenant

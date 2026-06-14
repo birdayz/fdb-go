@@ -33,7 +33,9 @@
 package libfdbc
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -62,35 +64,110 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	return &database{db: cdb}, nil
 }
 
-// database adapts cgofdb.Database to fdb.BackendDatabase (Transactor + Close).
-// It deliberately does not implement fdb.CtxTransactor: the record layer's
-// runTransactCtx then falls back to the ctx-less Transact, and libfdb_c's own
-// transaction timeout / retry-limit bound the retry loop (a caller ctx does not).
-// Time-bound a cgo-backed transaction via Options().SetTimeout, not a Go ctx.
+// database adapts cgofdb.Database to fdb.BackendDatabase. It also implements
+// fdb.CtxTransactor / fdb.CtxReadTransactor so the record layer's runTransactCtx
+// honors a caller context on this backend (not just the pure-Go one): cgofdb owns
+// the retry loop, but we (a) bail before each attempt if the ctx is done and
+// (b) bound each attempt's reads+commit by the ctx deadline via SetTimeout — so a
+// canceled/expired context cannot keep executing or commit, matching the pure-Go
+// backend's ctx semantics.
 type database struct {
 	db cgofdb.Database
 }
 
 func (d *database) Transact(f func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.TransactCtx(context.Background(), f)
+}
+
+func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransaction) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r, e := d.db.Transact(func(ctr cgofdb.Transaction) (any, error) {
+		if err := applyCtxBound(ctx, ctr); err != nil {
+			return nil, err
+		}
 		rr, ee := f(&txn{reader: reader{rt: ctr}, tr: ctr})
 		// Re-wrap fdb.Error back to cgofdb.Error so cgofdb's retryable() loop
 		// (errors.As(&cgofdb.Error)) still recognizes a retryable code the record
 		// layer propagated up — preserving libfdb_c's OnError retry delegation.
 		return rr, toCgoErr(ee)
 	})
-	return r, convErr(e)
+	if e != nil {
+		// Only on FAILURE prefer the ctx cause (so a deadline-induced timeout
+		// surfaces as context.DeadlineExceeded, like the pure-Go backend). A
+		// SUCCESSFUL commit is NEVER overridden by a ctx that expired right after —
+		// the transaction did commit, so reporting a ctx error would be a lie that
+		// invites a double-write retry.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, convErr(e)
+	}
+	return r, nil
 }
 
 func (d *database) ReadTransact(f func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return d.ReadTransactCtx(context.Background(), f)
+}
+
+func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransaction) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r, e := d.db.ReadTransact(func(crt cgofdb.ReadTransaction) (any, error) {
+		if err := applyCtxBoundRead(ctx, crt); err != nil {
+			return nil, err
+		}
 		rr, ee := f(reader{rt: crt})
 		return rr, toCgoErr(ee)
 	})
-	return r, convErr(e)
+	if e != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, convErr(e)
+	}
+	return r, nil
 }
 
 func (d *database) Close() { d.db.Close() }
+
+// applyCtxBound is invoked at the start of every cgofdb retry attempt: it bails if
+// the context is already done (so a canceled ctx cannot keep retrying or commit),
+// and bounds this attempt's reads + commit by the remaining ctx deadline via the
+// transaction timeout option (so an expiry mid-attempt aborts it). A deadline-less
+// context (e.g. context.Background()) sets no timeout — behavior is then exactly
+// cgofdb's own (libfdb_c's retry/timeout knobs).
+func applyCtxBound(ctx context.Context, tr cgofdb.Transaction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		ms := time.Until(dl).Milliseconds()
+		if ms <= 0 {
+			return context.DeadlineExceeded
+		}
+		_ = tr.Options().SetTimeout(ms)
+	}
+	return nil
+}
+
+// applyCtxBoundRead is applyCtxBound for a read transaction (no commit to bound,
+// but the same cancel-before-attempt + deadline-as-timeout semantics).
+func applyCtxBoundRead(ctx context.Context, rt cgofdb.ReadTransaction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		ms := time.Until(dl).Milliseconds()
+		if ms <= 0 {
+			return context.DeadlineExceeded
+		}
+		_ = rt.Options().SetTimeout(ms)
+	}
+	return nil
+}
 
 // reader adapts a cgofdb.ReadTransaction (a Transaction or Snapshot) to
 // fdb.ReadTransaction. txn embeds it for the read half of WritableTransaction.
@@ -431,6 +508,8 @@ func toCgoErr(err error) error {
 // Compile-time interface conformance.
 var (
 	_ fdb.BackendDatabase     = (*database)(nil)
+	_ fdb.CtxTransactor       = (*database)(nil)
+	_ fdb.CtxReadTransactor   = (*database)(nil)
 	_ fdb.ReadTransaction     = reader{}
 	_ fdb.WritableTransaction = (*txn)(nil)
 	_ fdb.RangeResult         = rangeResult{}
