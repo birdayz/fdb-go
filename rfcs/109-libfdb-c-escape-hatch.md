@@ -137,7 +137,10 @@ transaction-internal or per-transaction:
 - **Versionstamps** — the 10-byte stamp is assigned by the cluster at commit and differs per txn, so
   a raw byte-compare is wrong. Compare **structure**: the offset placement, the 2-byte LE position
   suffix the client appends, and `SetVersionstampedKey` vs `…Value` opcode; and assert the committed
-  stamp read back via `GetVersionstamp()` matches what landed. (Most likely adapter-bug site.)
+  stamp read back via `GetVersionstamp()` matches what landed. (Most likely adapter-bug site.) Also
+  pin the *resolve-after-commit* semantics: the pure-Go `GetVersionstamp()` blocks on the commit
+  (`transaction.go:129`); cgofdb's future also resolves post-commit, but the differential asserts
+  both surface the stamp only after `Commit` (FDB C++ dev).
 - **Conflict ranges / RYW** — persisted bytes can't observe them. Add a **concurrent-conflict
   differential** (two txns; exactly one must get `not_committed` 1020 under each backend) and an
   **RYW-ordering differential** (set-then-get, clear-then-range, atomic-then-get — the exact
@@ -157,11 +160,25 @@ transaction-internal or per-transaction:
 ## Phasing (`· L` — reviewable slices, each its own stacked PR)
 
 - **Phase A — widen the seam to the interface.** Change `Transactor.Transact` / `CtxTransactor.
-  TransactCtx` callbacks from `Transaction` → `WritableTransaction`; propagate the type through the
-  ~86 record-layer callbacks (mechanical, compiler-enforced). **No new backend, pure-Go path
-  runtime-unchanged** (the concrete `fdb.Transaction` still satisfies the interface; the pipelined
-  `Get` is untouched). The whole existing suite is the regression — and because the hot path is
-  byte-for-byte the same code, there is no perf slice to benchmark (unlike Plan B).
+  TransactCtx` callbacks from `Transaction` → `WritableTransaction`. **The real surface is bigger
+  than the callback (Torvalds — don't undercount it):**
+  - **Widen `WritableTransaction` itself** to add the six `[]byte` overloads
+    `SetBytes`/`ClearBytes`/`AddBytes`/`MaxBytes`/`MinBytes`/`CompareAndClearBytes`
+    (`transaction.go:202-308`). They are NOT in the interface today, but **34** hot-path
+    index-maintenance call sites invoke them through the bound `tx` (`atomic_mutation.go`, the
+    version/rank index maintainers, …). Widening the interface (vs. rewriting those call sites to
+    the `KeyConvertible` form) is preferred — the overloads exist to avoid boxing on that path. Both
+    backends implement them.
+  - **Cascade the type through the ~129 record-layer/relational helper functions** that take a
+    plain `fdb.Transaction` parameter (`ranked_set.go`, `range_set.go`, `rtree.go`, the maintainers,
+    …) → `WritableTransaction`, since under the escape hatch the `tx` handed in may be cgo-backed.
+    Compiler-enforced, but a genuine ~129-signature sweep, not a one-line callback swap.
+  - `Watch`/`Locality`/tenant concrete-only methods are NOT called through `tx` in the layer
+    (verified), so they stay OFF the interface.
+  **No new backend; pure-Go path runtime-unchanged** — `fdb.Transaction` still satisfies the
+  (widened) interface (`check.go:12` `_ WritableTransaction = Transaction{}` stays green) and the
+  pipelined `Get` (`transaction.go:50-83`) is byte-for-byte untouched, so there is no perf slice to
+  benchmark (unlike Plan B). The whole existing suite is the regression.
 - **Phase B — the libfdb_c backend** (`backend_libfdb_c.go`, `//go:build cgo`): `libfdbcDatabase`/
   `libfdbcTxn` over `cgofdb`, with callback-based future resolution, `OnError` delegation, raw-int
   options, and 1:1 error mapping. A `//go:build !cgo` stub makes `OpenDatabaseWithBackend(
