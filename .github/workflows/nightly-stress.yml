@@ -20,6 +20,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Check Docker (mandatory — else the stress gate silently no-ops)
+        # The stress test's TestMain catches a missing FDB container and exits 0 with
+        # the allowed `FDB not available (no Docker)` skip — so without Docker the
+        # `bazelisk test` below reports SUCCESS while running ZERO stress coverage
+        # (codex). Fail loudly here instead, so a green stress run always means the
+        # 1M scenario actually executed.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the stress test would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+
       - name: Resolve stress targets (no-op guard)
         id: targets
         # The stress target carries BOTH `stress` and `manual` tags, so a wildcard
