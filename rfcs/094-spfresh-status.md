@@ -106,6 +106,44 @@ bulk-fast (incremental cursor co-evolving with concurrent splits — RFC-104).
 
 ---
 
+## Production readiness (assessment — engineering judgment, not a verified claim)
+
+> The facts below (the chaos gap, the build cap, the missing runner) are
+> code-verified; the *recommendation* built on them is judgment. Calibrate to your
+> own blast radius and risk tolerance.
+
+**One-line verdict:** feature-complete and correct in isolation, but the
+maintenance lifecycle has **never been run under model-based fault injection**
+(commit_unknown / conflict retries, refiner-vs-rebalancer races). We've tested that
+it *works*; we have not tested that it *survives faults*. A vector index corrupts
+*quietly* (wrong results, not a crash) — the failure mode hardest to notice — so
+this gap is the gate between conditional and unqualified production use.
+
+What *is* hardened: the design is fence-heavy (REAL-read serialization points +
+conflict ranges), tombstone-free / idempotent-under-retry, the FDB-client and
+record-layer primitives underneath *are* chaos-tested, and a 20-tenant soak ran
+concurrent writers + sweepers without corruption (no faults injected).
+
+**Green-light now** — risk bounded/recoverable:
+- Per-tenant indexes (blast radius = one tenant; rebuildable in isolation).
+- Re-rankable / advisory results (recs, candidate generation) where you re-rank top-K exactly anyway.
+- Bulk-build-then-serve, read-mostly (low lifecycle churn ⇒ minimal exposure to the untested concurrent-fault surface).
+- …provided you have **ground-truth recall monitoring** (to detect drift/corruption) and a **rebuild path**.
+
+**Hold** until the chaos arm lands (Tier-1 #1):
+- High-churn, write-heavy workloads (lifecycle running constantly = maximum exposure).
+- SPFresh as the sole source of truth where silent wrong answers are unacceptable (compliance, dedup).
+
+**Before turning it on (deployment work, not index blockers):**
+1. **Wire a maintenance runner** — call `SweepSPFreshIndexes` + `RefineSPFreshIndexes` per tenant on cadences yourself; no reference worker ships (~50 LOC; metrics already exist). *(Tier-2 below.)*
+2. **Recall + lag monitoring** — the `CountSPFreshRefine*` and maintenance metrics are emitted; wire them.
+3. **Rebuild / recovery runbook** — `SPFRESH_OPERATIONS.md` is stale on refinement *(Tier-1 #2)*.
+4. Mind the **~267M-vector single-store build cap** *(Tier-2 below)* — fine for multi-tenant fleets.
+
+**The single lever to unconditional "yes": the SPFresh chaos arm (Tier-1 #1).**
+
+---
+
 ## Proposed but NOT implemented
 
 - **RFC-102 (k-means / Hamerly).** Status "proposed (pivoted from Hamerly)". **Not
