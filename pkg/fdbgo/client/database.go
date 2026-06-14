@@ -167,6 +167,12 @@ type database struct {
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
 	connMu   sync.RWMutex
 	connPool map[string]*transport.Conn
+	// dialing coalesces concurrent dials to the same address (singleflight): the
+	// first miss dials, later misses to the same address wait on its result rather
+	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
+	// connMu. Mirrors C++ FlowTransport, where one Peer (one connectionKeeper) owns
+	// the single dial per NetworkAddress.
+	dialing map[string]*dialCall
 
 	// Location cache. C++: CoalescedKeyRangeMap<Reference<LocationInfo>>.
 	locCache locationCache
@@ -267,19 +273,29 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 	return conn, nil
 }
 
+// dialCall is one in-flight singleflight dial. Waiters block on done, then read
+// conn/err — written by the dialer before close(done), so the channel close
+// establishes the happens-before.
+type dialCall struct {
+	done chan struct{}
+	conn *transport.Conn
+	err  error
+}
+
 // getOrDialConn returns a pooled or freshly-dialed connection.
-// dialed is true when a new TCP connection was established (cache miss).
+// dialed is true when THIS call established the new TCP connection (the cache
+// miss that won the dial); coalesced waiters get dialed=false.
 //
-// The dial runs WITHOUT holding connMu. Holding the pool lock across the dial
-// (the TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock
-// amplifier: if a single dial stalls — e.g. a proxy is unreachable and, under
-// heavy load, the dial's deadline timer is slow to fire — every other goroutine
-// acquiring ANY connection (even a pooled one, or a dial to a healthy proxy)
-// blocks on connMu and the whole client wedges. C++ FlowTransport likewise dials
-// each Peer independently, with no global dial lock.
+// The dial runs WITHOUT holding connMu — holding the pool lock across the dial
+// (TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock amplifier:
+// one stalled dial would block every goroutine acquiring ANY connection and wedge
+// the whole client. And concurrent misses to the SAME address are coalesced
+// (singleflight), so a burst to one cold proxy opens ONE socket, not O(requests).
+// Both mirror C++ FlowTransport: one Peer per NetworkAddress, its single
+// connectionKeeper owning the dial, no global dial lock.
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
-	// Fast path: return a live pooled connection. Lock held only to read/evict.
 	db.connMu.Lock()
+	// Fast path: a live pooled connection.
 	if c, ok := db.connPool[addr]; ok {
 		if !c.IsClosed() {
 			db.connMu.Unlock()
@@ -287,37 +303,56 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		}
 		delete(db.connPool, addr)
 	}
+	// Coalesce: a dial to addr is already in flight — wait for its result rather
+	// than running a redundant handshake.
+	if call, ok := db.dialing[addr]; ok {
+		db.connMu.Unlock()
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+		if call.err != nil {
+			return nil, false, call.err
+		}
+		return call.conn, false, nil
+	}
+	// We own the dial for addr.
+	call := &dialCall{done: make(chan struct{})}
+	db.dialing[addr] = call
 	db.connMu.Unlock()
 
-	// Dial a new connection OUTSIDE the lock. C++ FlowTransport creates one Peer
-	// (TCP connection) per unique NetworkAddress. No address aliasing or
-	// port-matching — each ip:port gets its own connection.
+	// Dial OUTSIDE the lock.
 	//
 	// TODO: C++ FlowTransport deduplicates bidirectional connections via
-	// ConnectionID exchange in ConnectPacket. When two processes connect to
-	// each other simultaneously, the lower-priority connection is dropped.
-	// We don't need this as a pure client (we never accept incoming connections),
-	// but should implement it if we ever add server-side functionality.
+	// ConnectionID exchange in ConnectPacket. We don't need this as a pure client
+	// (we never accept incoming connections), but should implement it if we ever
+	// add server-side functionality.
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-	defer cancel()
-
 	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
-	if dialErr != nil {
-		return nil, false, dialErr
-	}
+	cancel()
 
-	// Insert under the lock, conceding to a concurrent dial of the same addr:
-	// the first writer wins the pool slot, later dials discard their redundant
-	// connection and return the pooled one (a rare, bounded waste — two
-	// goroutines racing the very first dial to one proxy).
 	db.connMu.Lock()
-	if existing, ok := db.connPool[addr]; ok && !existing.IsClosed() {
-		db.connMu.Unlock()
+	delete(db.dialing, addr)
+	switch {
+	case dialErr != nil:
+		call.err = dialErr
+	case db.ctx.Err() != nil:
+		// The database closed while we dialed: Close() drains the pool under connMu,
+		// so a conn pooled now would never be reaped (leaking its read/write/monitor
+		// goroutines). Discard it and fail the call.
+		call.err = db.ctx.Err()
 		_ = c.Close()
-		return existing, false, nil
+	default:
+		db.connPool[addr] = c
+		call.conn = c
 	}
-	db.connPool[addr] = c
 	db.connMu.Unlock()
+	close(call.done) // wake coalesced waiters (conn/err already set)
+
+	if call.err != nil {
+		return nil, false, call.err
+	}
 	return c, true, nil
 }
 
@@ -507,6 +542,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		tlsConfig:      tlsConfig,
 		logger:         logger,
 		connPool:       make(map[string]*transport.Conn),
+		dialing:        make(map[string]*dialCall),
 		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),
 		connected:      make(chan struct{}),
