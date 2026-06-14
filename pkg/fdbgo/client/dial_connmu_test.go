@@ -29,6 +29,7 @@ func TestGetOrDialConn_DialOutsideConnMu(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	db := &database{
+		ctx:      context.Background(),
 		connPool: make(map[string]*transport.Conn),
 		dialing:  make(map[string]*dialCall),
 		dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -72,6 +73,7 @@ func TestGetOrDialConn_CoalescesConcurrentDials(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	db := &database{
+		ctx:      context.Background(),
 		connPool: make(map[string]*transport.Conn),
 		dialing:  make(map[string]*dialCall),
 		dialFn: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -114,5 +116,62 @@ func TestGetOrDialConn_CoalescesConcurrentDials(t *testing.T) {
 		if e == nil {
 			t.Fatalf("caller %d got nil error from a failed dial (should have seen the shared dial error)", i)
 		}
+	}
+}
+
+// TestGetOrDialConn_OwnerCancelDoesNotFailWaiters pins that the shared dial is NOT
+// bound to the first caller's context: if the owner's ctx cancels while a live
+// waiter is coalesced onto the dial, the owner abandons its own wait but the dial
+// continues and the live waiter still gets the dial's real result — not the owner's
+// cancellation. (Binding the dial to the owner's ctx would spuriously fail every
+// coalesced caller during a cold/reconnect burst.) The fake dialFn respects its ctx
+// so this is revert-proof: with an owner-owned dial, canceling the owner aborts the
+// dial and the waiter sees context.Canceled instead of the dial result.
+func TestGetOrDialConn_OwnerCancelDoesNotFailWaiters(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	sharedDialErr := errors.New("test: shared dial result")
+	db := &database{
+		ctx:      context.Background(),
+		connPool: make(map[string]*transport.Conn),
+		dialing:  make(map[string]*dialCall),
+		dialFn: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-release:
+				return nil, sharedDialErr
+			case <-ctx.Done(): // a real dialer honors its ctx
+				return nil, ctx.Err()
+			}
+		},
+	}
+
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	ownerErr := make(chan error, 1)
+	go func() { _, _, e := db.getOrDialConn(ownerCtx, "cold:1"); ownerErr <- e }()
+	<-entered // the owner started the shared dial; it is in flight
+
+	waiterErr := make(chan error, 1)
+	go func() { _, _, e := db.getOrDialConn(context.Background(), "cold:1"); waiterErr <- e }()
+	time.Sleep(100 * time.Millisecond) // let the waiter reach the coalesce wait
+
+	// Cancel the OWNER. It must abandon only its own wait; the shared dial keeps
+	// running (db.ctx, not ownerCtx, drives it).
+	cancelOwner()
+	if e := <-ownerErr; !errors.Is(e, context.Canceled) {
+		close(release)
+		t.Fatalf("owner whose ctx canceled should return context.Canceled, got %v", e)
+	}
+
+	// The shared dial is still alive — complete it and confirm the live waiter sees
+	// the dial's actual result, NOT the owner's cancellation.
+	close(release)
+	if e := <-waiterErr; !errors.Is(e, sharedDialErr) {
+		t.Fatalf("a live waiter must get the shared dial result, not the owner's cancellation: got %v", e)
 	}
 }

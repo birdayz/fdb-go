@@ -283,8 +283,8 @@ type dialCall struct {
 }
 
 // getOrDialConn returns a pooled or freshly-dialed connection.
-// dialed is true when THIS call established the new TCP connection (the cache
-// miss that won the dial); coalesced waiters get dialed=false.
+// dialed is true when THIS call is the cache miss that started the dial (the
+// "owner"); callers that coalesced onto an in-flight dial get dialed=false.
 //
 // The dial runs WITHOUT holding connMu — holding the pool lock across the dial
 // (TCP connect + TLS upgrade + ConnectPacket handshake) is a deadlock amplifier:
@@ -293,6 +293,11 @@ type dialCall struct {
 // (singleflight), so a burst to one cold proxy opens ONE socket, not O(requests).
 // Both mirror C++ FlowTransport: one Peer per NetworkAddress, its single
 // connectionKeeper owning the dial, no global dial lock.
+//
+// The dial itself runs on a goroutine bound to db.ctx (+ RPC timeout), NOT to any
+// one caller's context, so a caller whose ctx cancels merely abandons its own wait
+// — it never aborts the dial that the other waiters share (matching C++, where the
+// connectionKeeper's dial outlives any single request).
 func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
 	db.connMu.Lock()
 	// Fast path: a live pooled connection.
@@ -303,32 +308,43 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		}
 		delete(db.connPool, addr)
 	}
-	// Coalesce: a dial to addr is already in flight — wait for its result rather
-	// than running a redundant handshake.
-	if call, ok := db.dialing[addr]; ok {
-		db.connMu.Unlock()
-		select {
-		case <-call.done:
-		case <-ctx.Done():
-			return nil, false, ctx.Err()
-		}
+	// Join the in-flight dial for addr, or start one (becoming its owner).
+	call, owner := db.dialing[addr], false
+	if call == nil {
+		call = &dialCall{done: make(chan struct{})}
+		db.dialing[addr] = call
+		owner = true
+	}
+	db.connMu.Unlock()
+
+	if owner {
+		go db.dialAndPool(addr, call)
+	}
+
+	// Every caller — owner included — waits the same way: a caller's ctx cancels
+	// only its own wait, never the shared dial.
+	select {
+	case <-call.done:
 		if call.err != nil {
 			return nil, false, call.err
 		}
-		return call.conn, false, nil
+		return call.conn, owner, nil
+	case <-ctx.Done():
+		return nil, false, ctx.Err()
 	}
-	// We own the dial for addr.
-	call := &dialCall{done: make(chan struct{})}
-	db.dialing[addr] = call
-	db.connMu.Unlock()
+}
 
-	// Dial OUTSIDE the lock.
-	//
-	// TODO: C++ FlowTransport deduplicates bidirectional connections via
-	// ConnectionID exchange in ConnectPacket. We don't need this as a pure client
-	// (we never accept incoming connections), but should implement it if we ever
-	// add server-side functionality.
-	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+// dialAndPool runs the single shared dial for addr and publishes the result to all
+// waiters via call. It is bound to db.ctx (not a caller ctx); on database close
+// (db.ctx canceled) the dial aborts and any connection that nonetheless completed
+// is discarded rather than pooled past Close()'s pool drain.
+//
+// TODO: C++ FlowTransport deduplicates bidirectional connections via ConnectionID
+// exchange in ConnectPacket. We don't need this as a pure client (we never accept
+// incoming connections), but should implement it if we ever add server-side
+// functionality.
+func (db *database) dialAndPool(addr string, call *dialCall) {
+	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
 	cancel()
 
@@ -348,12 +364,7 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		call.conn = c
 	}
 	db.connMu.Unlock()
-	close(call.done) // wake coalesced waiters (conn/err already set)
-
-	if call.err != nil {
-		return nil, false, call.err
-	}
-	return c, true, nil
+	close(call.done) // wake all waiters (conn/err already set under the lock)
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
