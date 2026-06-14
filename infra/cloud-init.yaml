@@ -55,6 +55,16 @@ write_files:
         systemctl restart "$UNIT"
         exit 0
       fi
+      # BUSY guard (codex): a running job spawns a Runner.Worker child, and the runner
+      # SERVICE journal goes quiet for the whole job (the job's output goes to the job
+      # log, not the service journal) while load is high. Both the silence and load arms
+      # below would otherwise KILL that healthy long job just because another run is
+      # queued. The wedge we actually heal is the OPPOSITE — IDLE (no Worker) yet jobs
+      # are queued and not picked up. So if a Worker exists, the runner is doing real
+      # work: never restart.
+      if pgrep -f Runner.Worker >/dev/null 2>&1; then
+        exit 0
+      fi
       # SILENCE arm.
       LAST=$(journalctl -u "$UNIT" -n 1 --output=short-unix --no-pager 2>/dev/null | awk '{print int($1)}')
       if [ -z "$LAST" ] || [ "$LAST" -eq 0 ]; then
@@ -222,7 +232,11 @@ runcmd:
     tar xzf "$RUNNER_DIR/runner.tar.gz" -C "$RUNNER_DIR"
     rm "$RUNNER_DIR/runner.tar.gz"
     chown -R runner:runner "$RUNNER_DIR"
-    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace %{ if runner_ephemeral }--ephemeral%{ endif }"
+    # --disableupdate (codex): without it the runner auto-updates itself the moment
+    # GitHub publishes a newer version — OUTSIDE fetch-verified.sh, so the box would
+    # silently stop running the reviewed runner_version/SHA pair. Pinning means the bump
+    # is a deliberate locals.versions edit + re-provision, not a surprise self-update.
+    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
     cd "$RUNNER_DIR"
     ./svc.sh install runner
     ./svc.sh start
