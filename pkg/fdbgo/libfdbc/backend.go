@@ -365,12 +365,43 @@ func fromCgoKeys(ks []cgofdb.Key) []fdb.Key {
 	return out
 }
 
-// convErr maps a cgofdb.Error to an fdb.Error (same raw fdb_error_t code), so the
-// record layer's errors.As(&fdb.Error) / retry classification works identically on
-// this backend. Non-FDB errors (record-layer errors, context errors) pass through.
+// cgoErrShim carries an fdb.Error's raw code so cgofdb's retryable() loop — and
+// this package's database boundary — can recover it via errors.As(&cgofdb.Error),
+// WHILE preserving the original (possibly %w-wrapped) record-layer error so its
+// context survives the cgofdb round-trip on a terminal failure. Without it,
+// toCgoErr would flatten a wrapped fdb.Error to a bare cgofdb.Error{Code} and the
+// operator would lose the record layer's "save record: …" context that the pure-Go
+// backend keeps (Torvalds review).
+type cgoErrShim struct {
+	code int
+	orig error
+}
+
+func (e *cgoErrShim) Error() string { return e.orig.Error() }
+func (e *cgoErrShim) Unwrap() error { return e.orig }
+
+// As lets errors.As(&cgofdb.Error) succeed (cgofdb's retryable() depends on it)
+// without putting a second fdb.Error in the chain that would shadow orig.
+func (e *cgoErrShim) As(target any) bool {
+	if p, ok := target.(*cgofdb.Error); ok {
+		*p = cgofdb.Error{Code: e.code}
+		return true
+	}
+	return false
+}
+
+// convErr maps an error surfacing FROM cgofdb back to the fdb world: our own shim
+// round-tripped intact → the original fdb.Error (context preserved); a plain
+// cgofdb.Error → fdb.Error with the same raw fdb_error_t code (so errors.As /
+// retry classification is identical on this backend); anything else passes
+// through. Nothing is synthesized.
 func convErr(err error) error {
 	if err == nil {
 		return nil
+	}
+	var shim *cgoErrShim
+	if errors.As(err, &shim) {
+		return shim.orig
 	}
 	var ce cgofdb.Error
 	if errors.As(err, &ce) {
@@ -380,9 +411,10 @@ func convErr(err error) error {
 }
 
 // toCgoErr is the inverse, applied on the way OUT of a Transact/ReadTransact
-// callback: it re-wraps an fdb.Error the record layer propagated back into a
-// cgofdb.Error so cgofdb's retryable() loop (which does errors.As(&cgofdb.Error))
-// still recognizes the retryable code and delegates to libfdb_c's OnError.
+// callback: an fdb.Error the record layer propagated back is wrapped in a shim so
+// cgofdb's retryable() loop (errors.As(&cgofdb.Error)) still recognizes the
+// retryable code and delegates to libfdb_c's OnError — and, if the failure is
+// terminal, the original wrapped error (with its context) is what convErr returns.
 // Non-FDB errors (record-layer semantic errors) pass through unchanged so cgofdb
 // treats them as terminal — exactly as it would its own.
 func toCgoErr(err error) error {
@@ -391,7 +423,7 @@ func toCgoErr(err error) error {
 	}
 	var fe fdb.Error
 	if errors.As(err, &fe) {
-		return cgofdb.Error{Code: fe.Code}
+		return &cgoErrShim{code: fe.Code, orig: err}
 	}
 	return err
 }

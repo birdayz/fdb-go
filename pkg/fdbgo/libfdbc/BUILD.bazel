@@ -19,15 +19,19 @@ go_library(
 go_test(
     name = "libfdbc_test",
     size = "medium",
-    srcs = ["differential_test.go"],
+    srcs = [
+        "backend_internal_test.go",
+        "differential_test.go",
+    ],
+    embed = [":libfdbc"],
     deps = [
-        ":libfdbc",
         "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@org_golang_google_protobuf//proto",
     ],
 )

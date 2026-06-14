@@ -4,6 +4,7 @@ package libfdbc_test
 
 import (
 	"context"
+	"encoding/binary"
 	"os"
 	"testing"
 	"time"
@@ -135,6 +136,104 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 			t.Fatalf("expected a split record (>=2 chunks), got %d keys — test data too small", len(goKVs))
 		}
 		assertSameKeyspace(t, "split-records", goKVs, cgoKVs)
+	})
+
+	// The record-store subtests above drive the WritableTransaction adapter through
+	// the record layer; these exercise the wire-critical primitives the record path
+	// may not hit, directly on the raw fdb.WritableTransaction (FDB C++ reviewer's
+	// requested follow-ups): atomic mutations, conflict ranges, versionstamps, and
+	// snapshot reads.
+
+	t.Run("raw_atomic_and_conflict_range_wire_compat", func(t *testing.T) {
+		// Apply the same atomic-mutation + plain-set program through each backend's
+		// WritableTransaction over disjoint prefixes; the resulting bytes must be
+		// identical (atomic ADD/MAX/MIN/BYTE_MAX are little-endian/byte-wise ops the
+		// cluster performs — the client just forwards the opcode+operand). Conflict
+		// ranges are smoke-tested: they must round-trip through the adapter (libfdb_c
+		// returns an error on a bad range; nil here proves the forward is correct).
+		apply := func(db fdb.BackendDatabase, p string) {
+			t.Helper()
+			_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+				tr.Set(fdb.Key(p+"set"), []byte("hello"))
+				tr.Add(fdb.Key(p+"cnt"), le64(5))
+				tr.Add(fdb.Key(p+"cnt"), le64(3)) // → 8
+				tr.Max(fdb.Key(p+"max"), le64(10))
+				tr.Max(fdb.Key(p+"max"), le64(7)) // stays 10
+				tr.Min(fdb.Key(p+"min"), le64(4))
+				tr.ByteMax(fdb.Key(p+"bmax"), []byte("aaa"))
+				tr.ByteMax(fdb.Key(p+"bmax"), []byte("zzz")) // → "zzz"
+				if err := tr.AddReadConflictRange(fdb.KeyRange{Begin: fdb.Key(p), End: fdb.Key(p + "\xff")}); err != nil {
+					return nil, err
+				}
+				if err := tr.AddWriteConflictKey(fdb.Key(p + "set")); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("apply(%q): %v", p, err)
+			}
+		}
+		apply(goRaw, "libfdbc_diff/atom_go/")
+		apply(cgoBackend, "libfdbc_diff/atom_cgo/")
+		goKVs := readSubspaceRelative(t, goRaw, subspace.FromBytes([]byte("libfdbc_diff/atom_go/")))
+		cgoKVs := readSubspaceRelative(t, goRaw, subspace.FromBytes([]byte("libfdbc_diff/atom_cgo/")))
+		assertSameKeyspace(t, "raw-atomic", goKVs, cgoKVs)
+	})
+
+	t.Run("versionstamp_value_roundtrip", func(t *testing.T) {
+		// SetVersionstampedValue + GetVersionstamp: the 10-byte stamp is assigned by
+		// the cluster at commit (differs per txn), so we assert STRUCTURE — the value
+		// read back equals exactly the committed stamp GetVersionstamp returns. Run
+		// both directions (write cgo/read pure-Go and vice versa) to prove the opcode,
+		// the trailing 4-byte LE position suffix, and the post-commit stamp all agree.
+		check := func(writer, reader fdb.BackendDatabase, key fdb.Key) {
+			t.Helper()
+			var stampFut fdb.FutureKey
+			_, err := writer.Transact(func(tr fdb.WritableTransaction) (any, error) {
+				param := make([]byte, 14) // 10-byte stamp placeholder + 4-byte LE offset=0
+				tr.SetVersionstampedValue(key, param)
+				stampFut = tr.GetVersionstamp()
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatalf("versionstamp write: %v", err)
+			}
+			stamp, err := stampFut.Get()
+			if err != nil {
+				t.Fatalf("GetVersionstamp: %v", err)
+			}
+			if len(stamp) != 10 {
+				t.Fatalf("versionstamp len = %d, want 10", len(stamp))
+			}
+			val := readKeyVia(t, reader, key)
+			if string(val) != string(stamp) {
+				t.Fatalf("versionstamp value mismatch: read=%x want(stamp)=%x", val, stamp)
+			}
+		}
+		check(cgoBackend, goRaw, fdb.Key("libfdbc_diff/vs_cgo"))
+		check(goRaw, cgoBackend, fdb.Key("libfdbc_diff/vs_go"))
+	})
+
+	t.Run("snapshot_read", func(t *testing.T) {
+		// Exercise reader.Snapshot() on the cgo backend: a snapshot read of a committed
+		// key returns its value (the adapter forwards a snapshot, not a serializable read).
+		key := fdb.Key("libfdbc_diff/snap_k")
+		if _, err := cgoBackend.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			tr.Set(key, []byte("snapval"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("snapshot seed: %v", err)
+		}
+		got, err := cgoBackend.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+			return rtx.Snapshot().Get(key).Get()
+		})
+		if err != nil {
+			t.Fatalf("snapshot read: %v", err)
+		}
+		if v, _ := got.([]byte); string(v) != "snapval" {
+			t.Fatalf("snapshot read = %q, want %q", v, "snapval")
+		}
 	})
 }
 
@@ -286,6 +385,27 @@ func readSubspaceRelative(t *testing.T, raw fdb.Database, sub subspace.Subspace)
 		t.Fatalf("readSubspaceRelative: %v", err)
 	}
 	return out
+}
+
+// le64 is an 8-byte little-endian operand for FDB atomic ADD/MAX/MIN.
+func le64(n uint64) []byte {
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, n)
+	return b
+}
+
+func readKeyVia(t *testing.T, db fdb.BackendDatabase, key fdb.Key) []byte {
+	t.Helper()
+	v, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return rtx.Get(key).Get()
+	})
+	if err != nil {
+		t.Fatalf("readKeyVia %x: %v", []byte(key), err)
+	}
+	if v == nil {
+		return nil
+	}
+	return v.([]byte)
 }
 
 func assertSameKeyspace(t *testing.T, name string, a, b map[string][]byte) {
