@@ -363,7 +363,6 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 
 	db.connMu.Lock()
 	delete(db.dialing, addr)
-	pooled := false
 	switch {
 	case dialErr != nil:
 		call.err = dialErr
@@ -376,18 +375,17 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	default:
 		db.connPool[addr] = c
 		call.conn = c
-		pooled = true
+		// Clear the failed state on a successful dial HERE — not in a caller (so a
+		// reconnect wakes failure-monitor recovery even if every caller abandoned
+		// its wait), and BEFORE the connection becomes visible (connMu unlock +
+		// close(call.done)). Marking after exposure would race: a waiter could grab
+		// the conn, fail its first RPC and markFailed, and this stale markAlive would
+		// then overwrite that real failure. failureMonitor uses only its own lock
+		// (it never reaches connMu/db), so nesting it here is lock-order-safe.
+		db.failMon.markAlive(addr)
 	}
 	db.connMu.Unlock()
 	close(call.done) // wake all waiters (conn/err already set under the lock)
-
-	// Mark the endpoint alive on a successful dial here — not in a caller — so a
-	// reconnect wakes failure-monitor recovery even if every caller abandoned its
-	// wait (the owner's ctx canceled), which would otherwise leave a healthy
-	// endpoint marked failed until a later RPC happens to succeed.
-	if pooled {
-		db.failMon.markAlive(addr)
-	}
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
