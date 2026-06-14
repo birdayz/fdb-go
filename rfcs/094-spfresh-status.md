@@ -47,7 +47,7 @@ QUALIFY ROW_NUMBER() OVER (
 
 Supported and pinned by real-FDB e2e tests (`pkg/relational/sqldriver/vector_*_e2e_fdb_test.go`):
 - `CREATE VECTOR INDEX … USING HNSW` **or** `USING SPFRESH` (`ddl.go:189`). **SPFresh does
-  NOT support `PARTITION BY`** — it errors at DDL time (`metadata/builder.go:204`,
+  NOT support `PARTITION BY`** — it errors at DDL time (`metadata/builder.go:216`,
   `TestVectorDDL_SPFreshErrors`); partitioned vector indexes are HNSW-only.
 - The Java-exact K-NN form `QUALIFY ROW_NUMBER() OVER (… ORDER BY <distance>(vec, q)) <= K` (`logical_qualify.go`). The SPFresh e2e (`vector_spfresh_e2e_fdb_test.go`) runs it un-partitioned.
 - Distance functions `EUCLIDEAN_DISTANCE`, `EUCLIDEAN_SQUARE_DISTANCE`, `COSINE_DISTANCE`, `DOT_PRODUCT_DISTANCE` (`walk.go:706`).
