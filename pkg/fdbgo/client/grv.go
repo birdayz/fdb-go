@@ -264,16 +264,21 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	// every DEFAULT (cache-off) transaction reaches.
 	isImmediate := b.priority == grvPrioritySystemImmediate
 	if !isImmediate && useGrvCache && !skipGrvCache {
+		// Start the background refresher on the FIRST opted-in request, BEFORE the
+		// freshness check — matching C++ getReadVersion (NativeAPI.actor.cpp:7507-7509),
+		// which launches backgroundGrvUpdater inside the opt-in gate regardless of
+		// whether the cached version is usable ("Upon our first request to use cached
+		// RVs, start the background updater"). Starting it only on a cache HIT (the
+		// prior Go behavior) left a cold/stale cache un-warmed: every opted-in read with
+		// lag > MAX_VERSION_CACHE_LAG fell through to a real GRV and the cache never
+		// caught up, defeating the opt-in entirely for sparse workloads.
+		b.refreshOnce.Do(func() {
+			b.refresherStarted.Store(true)
+			db.wg.Add(1)
+			go b.backgroundRefresher(db)
+		})
 		if v, ok := db.grvCache.tryCache(b.priority); ok {
 			db.metrics.countGRVCacheHit()
-			// Start the background refresher on first cached hit (lazy,
-			// opt-in-driven — matches C++ backgroundGrvUpdater, which never
-			// starts unless a transaction sets USE_GRV_CACHE, :7508).
-			b.refreshOnce.Do(func() {
-				b.refresherStarted.Store(true)
-				db.wg.Add(1)
-				go b.backgroundRefresher(db)
-			})
 			return v, false, nil
 		}
 	}

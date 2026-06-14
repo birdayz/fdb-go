@@ -83,6 +83,44 @@ func TestFDB_GRVCache_OptInOnly(t *testing.T) {
 	}
 }
 
+// TestFDB_GRVCache_RefresherStartsOnOptInMiss pins the codex PR #291 fix: the background
+// GRV refresher starts on the FIRST opt-in request even when the cached version is
+// STALE (a cache MISS), not only on a hit — matching C++ getReadVersion, which launches
+// backgroundGrvUpdater inside the opt-in gate BEFORE the freshness check
+// (NativeAPI.actor.cpp:7507-7509). Starting it only on a hit left a cold/stale cache
+// un-warmed: every sparse opt-in read fell through to a real GRV and the cache never
+// caught up, defeating the opt-in entirely.
+func TestFDB_GRVCache_RefresherStartsOnOptInMiss(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	batcher := db.db.grvBatchers[grvBatcherDefault]
+
+	// Force a guaranteed cache MISS: invalidate() zeroes both the cached version and the
+	// freshness clock, so tryCache returns false regardless of any bootstrap warming.
+	// (updateFromGRV with a past timestamp won't work — updateTime is monotonic and
+	// ignores an older clock.)
+	db.db.grvCache.invalidate()
+	if batcher.refresherStarted.Load() {
+		t.Fatal("refresher started before any opt-in transaction — must be opt-in driven")
+	}
+
+	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
+	tx := db.CreateTransaction()
+	tx.SetUseGrvCache()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("opt-in read on cold cache: %v", err)
+	}
+	if got := db.db.metrics.Snapshot().GRVCacheHits - hitsBefore; got != 0 {
+		t.Fatalf("GRVCacheHits advanced by %d on a cold-cache opt-in, want 0 — this must be the MISS path", got)
+	}
+	if !batcher.refresherStarted.Load() {
+		t.Fatal("background refresher did not start on an opt-in cache MISS — a cold/stale cache stays un-warmed (codex PR #291)")
+	}
+}
+
 // TestFDB_GRVCache_SkipOverridesUse pins that SKIP_GRV_CACHE (1102) wins over
 // USE_GRV_CACHE (1101): a transaction that sets both must NOT consult the cache,
 // matching the C++ gate `useGrvCache && !skipGrvCache` (NativeAPI.actor.cpp:7505).
