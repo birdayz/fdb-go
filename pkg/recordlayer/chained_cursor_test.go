@@ -41,7 +41,10 @@ func TestChainedCursorBasic(t *testing.T) {
 	)
 
 	var results []int64
-	for v := range Seq(cursor, ctx) {
+	for v, iterErr := range Seq2(cursor, ctx) {
+		if iterErr != nil {
+			t.Fatalf("Seq2: %v", iterErr)
+		}
 		results = append(results, v)
 	}
 
@@ -112,7 +115,10 @@ func TestChainedCursorContinuation(t *testing.T) {
 	cursor2 := Chained(gen, encodeInt64, decodeInt64, contBytes)
 
 	var results []int64
-	for v := range Seq(cursor2, ctx) {
+	for v, iterErr := range Seq2(cursor2, ctx) {
+		if iterErr != nil {
+			t.Fatalf("Seq2: %v", iterErr)
+		}
 		results = append(results, v)
 	}
 

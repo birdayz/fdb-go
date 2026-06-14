@@ -453,37 +453,8 @@ var _ = Describe("listCursor / FromList / FromListWithContinuation", func() {
 	})
 })
 
-var _ = Describe("Seq / Seq2 / SeqWithContinuation", func() {
+var _ = Describe("Seq2 / SeqWithContinuation", func() {
 	ctx := context.Background()
-
-	Describe("Seq", func() {
-		It("yields all values from FromList", func() {
-			c := FromList([]int{1, 2, 3})
-			var got []int
-			for v := range Seq(c, ctx) {
-				got = append(got, v)
-			}
-			Expect(got).To(Equal([]int{1, 2, 3}))
-		})
-
-		It("yields nothing from an error cursor", func() {
-			c := &errorCursor[int]{err: errors.New("fail")}
-			var got []int
-			for v := range Seq(c, ctx) {
-				got = append(got, v)
-			}
-			Expect(got).To(BeEmpty())
-		})
-
-		It("yields nothing from an empty cursor", func() {
-			c := Empty[string]()
-			var got []string
-			for v := range Seq(c, ctx) {
-				got = append(got, v)
-			}
-			Expect(got).To(BeEmpty())
-		})
-	})
 
 	Describe("Seq2", func() {
 		It("yields (value, nil) pairs from FromList", func() {

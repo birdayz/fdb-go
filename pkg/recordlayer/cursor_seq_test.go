@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"iter"
 	"slices"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -9,6 +10,20 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// mustSeq drains a cursor into a value-only iter.Seq[T], failing the surrounding
+// Ginkgo test if the cursor surfaces an error (the error-aware replacement for the
+// deleted Seq helper, used to feed the value-only Filter/Limit combinators).
+func mustSeq[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		for v, err := range Seq2(cursor, ctx) {
+			Expect(err).NotTo(HaveOccurred())
+			if !yield(v) {
+				return
+			}
+		}
+	}
+}
 
 var _ = Describe("CursorSeqInterface", func() {
 	var metaData *RecordMetaData
@@ -68,7 +83,8 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			var orderIDs []int64
-			for record := range Seq(cursor, scanCtx) {
+			for record, iterErr := range Seq2(cursor, scanCtx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				order := record.Record.(*gen.Order)
 				orderIDs = append(orderIDs, *order.OrderId)
 			}
@@ -115,13 +131,15 @@ var _ = Describe("CursorSeqInterface", func() {
 
 			// Test slices.Collect (Go 1.23+)
 			cursor := store.ScanRecords(nil, ForwardScan())
-			allRecords := slices.Collect(Seq(cursor, scanCtx))
+			allRecords, allErr := AsList(scanCtx, cursor)
+			Expect(allErr).NotTo(HaveOccurred())
 			Expect(allRecords).To(HaveLen(3))
 
 			// Test manual counting
 			cursor2 := store.ScanRecords(nil, ForwardScan())
 			count := 0
-			for range Seq(cursor2, scanCtx) {
+			for _, iterErr := range Seq2(cursor2, scanCtx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				count++
 			}
 			Expect(count).To(Equal(3))
@@ -130,7 +148,8 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor3 := store.ScanRecords(nil, ForwardScan())
 			var firstRecord *FDBStoredRecord[proto.Message]
 			var found bool
-			for record := range Seq(cursor3, scanCtx) {
+			for record, iterErr := range Seq2(cursor3, scanCtx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				firstRecord = record
 				found = true
 				break
@@ -156,7 +175,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			expensiveOrders := Filter(
-				Seq(cursor, scanCtx),
+				mustSeq(cursor, scanCtx),
 				func(record *FDBStoredRecord[proto.Message]) bool {
 					order := record.Record.(*gen.Order)
 					return *order.Price > 20
@@ -188,7 +207,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			limitedOrders := slices.Collect(
-				Limit(Seq(cursor, scanCtx), 2),
+				Limit(mustSeq(cursor, scanCtx), 2),
 			)
 
 			Expect(limitedOrders).To(HaveLen(2))

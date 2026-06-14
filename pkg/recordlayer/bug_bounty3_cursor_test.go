@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -810,21 +811,19 @@ func TestBugBounty3Cursor_FlatMapOOBStopEndContSkipsRemainingInner(t *testing.T)
 //
 // NOT a real bug, but including the test for documentation.
 
-// === BUG #10: Seq silently swallows cursor results on out-of-band stop ===
+// === BUG #10 (FIXED): out-of-band stops are surfaced, not silently swallowed ===
 //
-// File: cursor.go:152-165
-// Severity: $100 (silent data truncation)
+// The old value-only Seq adapter stopped iteration on either an error OR
+// !result.HasNext(), without distinguishing SourceExhausted from out-of-band
+// stops (ScanLimitReached, etc.). A caller had no way to tell a clean
+// end-of-data from a scan cut short by a limit — silent data truncation.
 //
-// Seq (iter.Seq adapter) stops iteration when either an error occurs OR
-// result.HasNext() is false. It doesn't distinguish between SourceExhausted
-// and out-of-band stops (ScanLimitReached, etc.). If the underlying cursor
-// hits a scan limit, Seq silently stops iterating without any indication to
-// the caller that data was truncated.
-//
-// Callers using `for v := range Seq(cursor, ctx)` have no way to know if they
-// got all the data or if the cursor was cut short by a limit.
+// Fix: the footgun adapter was deleted. The error-aware Seq2 surfaces a
+// *ScanLimitReachedError on the error channel for a non-paginating drain that
+// stops out-of-band, so a consumer can detect truncation. This regression pins
+// that Seq2 both yields all available values AND reports the OOB stop.
 
-func TestBugBounty3Cursor_SeqSilentlyTruncatesOnOOBStop(t *testing.T) {
+func TestBugBounty3Cursor_Seq2SurfacesOOBStop(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -833,25 +832,28 @@ func TestBugBounty3Cursor_SeqSilentlyTruncatesOnOOBStop(t *testing.T) {
 		&BytesContinuation{bytes: []byte{0x42}})
 
 	var results []int
-	for v := range Seq[int](cursor, ctx) {
+	var iterErr error
+	for v, err := range Seq2[int](cursor, ctx) {
+		if err != nil {
+			iterErr = err
+			break
+		}
 		results = append(results, v)
 	}
 
-	// Seq returns [1, 2, 3] — but the caller has NO WAY to know that
-	// the cursor was cut short by ScanLimitReached. They might think
-	// they got all the data.
+	// All available values are yielded...
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d: %v", len(results), results)
 	}
 
-	// This test documents the issue. The fix would be for Seq to use
-	// Seq2 and yield an error for OOB stops, or provide a separate
-	// SeqComplete that panics/errors on truncation.
-	t.Logf("ISSUE: Seq returned %d values but silently swallowed ScanLimitReached.\n"+
-		"Callers using 'for v := range Seq(cursor, ctx)' cannot detect truncation.\n"+
-		"This is by design (Seq drops errors), but surprising for out-of-band stops.\n"+
-		"Consider: Seq2 doesn't help either — it also silently stops on !HasNext().",
-		len(results))
+	// ...and the out-of-band stop is surfaced, not silently swallowed.
+	var scanErr *ScanLimitReachedError
+	if !errors.As(iterErr, &scanErr) {
+		t.Fatalf("expected Seq2 to surface a *ScanLimitReachedError on OOB stop, got %v", iterErr)
+	}
+	if scanErr.Reason != ScanLimitReached {
+		t.Fatalf("expected reason ScanLimitReached, got %v", scanErr.Reason)
+	}
 }
 
 // === BUG #11: filterCursor can consume unlimited records from inner cursor ===

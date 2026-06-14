@@ -318,7 +318,8 @@ var _ = Describe("MillionRecordPerformance", func() {
 			cursor := store.ScanRecords(nil, unlimitedScan)
 			defer func() { _ = cursor.Close() }()
 
-			for range Seq(cursor, ctx) {
+			for _, iterErr := range Seq2(cursor, ctx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				readCount++
 			}
 

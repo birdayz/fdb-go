@@ -16,7 +16,10 @@ func TestDedupCursorBasic(t *testing.T) {
 	)
 
 	var results []int
-	for v := range Seq(cursor, ctx) {
+	for v, err := range Seq2(cursor, ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
 		results = append(results, v)
 	}
 
@@ -42,7 +45,10 @@ func TestDedupCursorAllSame(t *testing.T) {
 	)
 
 	var results []int
-	for v := range Seq(cursor, ctx) {
+	for v, err := range Seq2(cursor, ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
 		results = append(results, v)
 	}
 
@@ -61,7 +67,10 @@ func TestDedupCursorNoDuplicates(t *testing.T) {
 	)
 
 	var results []int
-	for v := range Seq(cursor, ctx) {
+	for v, err := range Seq2(cursor, ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
 		results = append(results, v)
 	}
 
@@ -99,7 +108,10 @@ func TestDedupCursorSingle(t *testing.T) {
 	)
 
 	var results []int
-	for v := range Seq(cursor, ctx) {
+	for v, err := range Seq2(cursor, ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
 		results = append(results, v)
 	}
 
@@ -177,7 +189,10 @@ func TestDedupCursorNilPack(t *testing.T) {
 	)
 
 	var results []int
-	for v := range Seq(cursor, ctx) {
+	for v, err := range Seq2(cursor, ctx) {
+		if err != nil {
+			t.Fatal(err)
+		}
 		results = append(results, v)
 	}
 

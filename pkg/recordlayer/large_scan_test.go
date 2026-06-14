@@ -85,7 +85,8 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 			expectedID := int64(0)
 			recordCount := 0
-			for record := range Seq(cursor, ctx) {
+			for record, iterErr := range Seq2(cursor, ctx) {
+				Expect(iterErr).NotTo(HaveOccurred())
 				order, ok := record.Record.(*gen.Order)
 				if !ok {
 					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
