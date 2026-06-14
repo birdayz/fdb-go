@@ -13,10 +13,29 @@ write_files:
     content: |
       {"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
 
-  # Watchdog: restart the runner if it hasn't picked up a job in 30 minutes.
-  # The runner logs "Running job:" when it starts work and "Listening for Jobs"
-  # when idle. If the last log line is older than 30 min and GitHub has queued
-  # jobs, the listener is stuck on a dead connection.
+  # Supply-chain gate (RFC-108 §1): download an artifact and ABORT provisioning if its
+  # SHA-256 doesn't match the pin. Every tool fetch below goes through this, so a
+  # corrupted / tampered / silently-moved artifact fails loud instead of installing.
+  - path: /usr/local/bin/fetch-verified.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # fetch-verified.sh URL SHA256 DEST
+      set -euo pipefail
+      url="$1"; sha="$2"; dest="$3"
+      curl -fsSL -o "$dest" "$url"
+      echo "$sha  $dest" | sha256sum -c - \
+        || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
+
+  # Watchdog (RFC-108 §4): two arms, both gated on "GitHub has queued runs" so an
+  # idle runner is never restarted.
+  #   SILENCE arm — the listener wedged on a dead connection: logs nothing for > 8 min
+  #     (was 30 min; lowered so a wedge self-heals within one CI-job-length).
+  #   LOAD arm — a thrash-wedge keeps the box BUSY (not silent), so the silence timer
+  #     misses it. This is the failure mode observed live (rapid pushes →
+  #     concurrency-cancel churn → load ~45-63 on a 4-vCPU box → wedged listener +
+  #     orphaned bazel). Restart only if 1-min load > 4×ncpu for two consecutive checks,
+  #     with a 15-min cooldown so a restart can't fire repeatedly mid-spike.
   - path: /usr/local/bin/runner-watchdog.sh
     permissions: "0755"
     content: |
@@ -24,29 +43,49 @@ write_files:
       set -euo pipefail
       UNIT="actions.runner.birdayz-fdb-record-layer-go.gh-runner-fdb.service"
       REPO="birdayz/fdb-record-layer-go"
-      # Check if the service is active.
+      NOW=$(date +%s)
+      queued_runs() {
+        curl -fsSL -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
+          | jq '.total_count // 0'
+      }
+      # Dead service → restart unconditionally.
       if ! systemctl is-active --quiet "$UNIT"; then
         echo "runner not active, restarting"
         systemctl restart "$UNIT"
         exit 0
       fi
-      # Get timestamp of last log line from the runner.
+      # SILENCE arm.
       LAST=$(journalctl -u "$UNIT" -n 1 --output=short-unix --no-pager 2>/dev/null | awk '{print int($1)}')
-      NOW=$(date +%s)
       if [ -z "$LAST" ] || [ "$LAST" -eq 0 ]; then
         echo "no log output found, restarting"
         systemctl restart "$UNIT"
         exit 0
       fi
       AGE=$(( NOW - LAST ))
-      # Only restart if silent AND there are queued/in_progress runs.
-      # If nothing is queued, silence is normal — the runner is just idle.
-      if [ "$AGE" -gt 1800 ]; then
-        QUEUED=$(curl -fsSL -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
-          | jq '.total_count // 0')
-        if [ "$QUEUED" -gt 0 ]; then
-          echo "runner silent for $${AGE}s with $QUEUED queued runs, restarting"
+      if [ "$AGE" -gt 480 ] && [ "$(queued_runs)" -gt 0 ]; then
+        echo "runner silent for $${AGE}s with queued runs, restarting"
+        systemctl restart "$UNIT"
+        exit 0
+      fi
+      # LOAD arm (thrash-wedge).
+      NCPU=$(nproc)
+      LOAD1=$(cut -d' ' -f1 /proc/loadavg)
+      THRESH=$(( 4 * NCPU ))
+      STATEF=/run/runner-watchdog.highload
+      COOLF=/run/runner-watchdog.cooldown
+      if awk -v l="$LOAD1" -v t="$THRESH" 'BEGIN { exit !(l+0 > t+0) }'; then
+        CNT=$(( $(cat "$STATEF" 2>/dev/null || echo 0) + 1 ))
+      else
+        CNT=0
+      fi
+      echo "$CNT" > "$STATEF"
+      if [ "$CNT" -ge 2 ] && [ "$(queued_runs)" -gt 0 ]; then
+        LASTR=$(cat "$COOLF" 2>/dev/null || echo 0)
+        if [ $(( NOW - LASTR )) -gt 900 ]; then
+          echo "runner thrash: load $LOAD1 > $THRESH for $CNT checks with queued runs, restarting"
+          echo "$NOW" > "$COOLF"
+          echo 0 > "$STATEF"
           systemctl restart "$UNIT"
         fi
       fi
@@ -149,38 +188,41 @@ runcmd:
   - systemctl enable --now docker
   - systemctl restart docker
 
-  # FDB client
-  - curl -fsSLO "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-clients_${fdb_version}-1_amd64.deb"
-  - dpkg -i "foundationdb-clients_${fdb_version}-1_amd64.deb"
-  - rm -f "foundationdb-clients_${fdb_version}-1_amd64.deb"
+  # FDB client (pinned + checksummed — RFC-108 §1/§2; version matches MODULE.bazel)
+  - /usr/local/bin/fetch-verified.sh "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-clients_${fdb_version}-1_amd64.deb" "${fdb_clients_sha256}" /tmp/fdb-clients.deb
+  - dpkg -i /tmp/fdb-clients.deb
+  - rm -f /tmp/fdb-clients.deb
 
-  # Bazelisk (pinned)
-  - curl -fsSL -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.28.1/bazelisk-linux-amd64
+  # Bazelisk launcher (pinned + checksummed; reads .bazelversion → Bazel 9.0.1)
+  - /usr/local/bin/fetch-verified.sh "https://github.com/bazelbuild/bazelisk/releases/download/v${bazelisk_version}/bazelisk-linux-amd64" "${bazelisk_sha256}" /usr/local/bin/bazelisk
   - chmod +x /usr/local/bin/bazelisk
   - ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
 
-  # Just (task runner, pinned)
-  - curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.48.1
+  # Just (pinned + checksummed release tarball — no more curl|bash of a remote script)
+  - /usr/local/bin/fetch-verified.sh "https://github.com/casey/just/releases/download/${just_version}/just-${just_version}-x86_64-unknown-linux-musl.tar.gz" "${just_sha256}" /tmp/just.tar.gz
+  - tar xzf /tmp/just.tar.gz -C /usr/local/bin just
+  - rm -f /tmp/just.tar.gz
 
-  # MinIO client (for uploading test reports to Hetzner Object Storage)
-  - curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+  # MinIO client (pinned dated release + checksummed — was the rolling :latest object)
+  - /usr/local/bin/fetch-verified.sh "https://dl.min.io/client/mc/release/linux-amd64/archive/${mc_release}" "${mc_sha256}" /usr/local/bin/mc
   - chmod +x /usr/local/bin/mc
 
   # Runner user
   - useradd -m -s /bin/bash runner
   - usermod -aG docker runner
 
-  # GitHub Actions runner
+  # GitHub Actions runner (pinned version + checksummed — was releases/latest, RFC-108 §1).
+  # --ephemeral (opt-in via runner_ephemeral) gives one-job-per-process fresh state;
+  # continuous ephemeral operation also needs a token-refresh service (a PAT to mint a new
+  # registration token after each job) — that automation is a documented follow-up.
   - |
-    RUNNER_VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | tr -d v)
     RUNNER_DIR="/home/runner/actions-runner"
     mkdir -p "$RUNNER_DIR"
-    cd "$RUNNER_DIR"
-    curl -fsSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
-    tar xzf runner.tar.gz
-    rm runner.tar.gz
+    /usr/local/bin/fetch-verified.sh "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-x64-${runner_version}.tar.gz" "${runner_sha256}" "$RUNNER_DIR/runner.tar.gz"
+    tar xzf "$RUNNER_DIR/runner.tar.gz" -C "$RUNNER_DIR"
+    rm "$RUNNER_DIR/runner.tar.gz"
     chown -R runner:runner "$RUNNER_DIR"
-    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace"
+    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace %{ if runner_ephemeral }--ephemeral%{ endif }"
     cd "$RUNNER_DIR"
     ./svc.sh install runner
     ./svc.sh start

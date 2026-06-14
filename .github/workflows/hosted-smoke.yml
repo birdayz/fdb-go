@@ -1,0 +1,65 @@
+name: Hosted Smoke (reproducibility floor)
+
+# RFC-108 §5: a GitHub-HOSTED reproducibility floor. The heavy gates (1M stress, full
+# -race, the 23 fuzz targets, the libfdb_c differential, all FDB-testcontainer tests) run
+# only on the self-hosted Hetzner box, so an external fork sees a green check it cannot
+# reproduce. This job runs the subset that needs NO self-hosted state and NO Docker/cgo —
+# build + vet + the pure wire/encoding unit tests (the bytes that must match Java/C++, the
+# project's wire-compat hard line) — on a stock `ubuntu-latest` with just the Go toolchain.
+# It is a floor an adopter can re-run on their own infra, explicitly NOT a replacement for
+# the self-hosted gates. (A labelled Docker FDB-testcontainer smoke is future work — see RFC.)
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-smoke:
+    name: Build + vet + pure unit tests (no Docker, no cgo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # The repo builds under Bazel; for this hosted floor we use the Go toolchain
+      # directly. GOWORK=off so an inherited go.work can't break a plain `go` invocation.
+      GOWORK: off
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go (pinned by go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # RFC-108 §1: the build's reproducibility anchors must be present in-repo, so a
+      # checkout builds the same Bazel + deps anywhere. (bazelisk on the self-hosted box
+      # is just a launcher that reads these.)
+      - name: Assert Bazel anchors are committed
+        run: |
+          test -f .bazelversion || { echo "::error::.bazelversion missing"; exit 1; }
+          test -s MODULE.bazel.lock || { echo "::error::MODULE.bazel.lock missing/empty"; exit 1; }
+          echo "Bazel pinned to $(cat .bazelversion); MODULE.bazel.lock present ($(wc -c <MODULE.bazel.lock) bytes)"
+
+      # The cgo/Docker packages (pkg/fdbgo/bench needs libfdb_c; the testcontainer suites
+      # need Docker) are deliberately excluded — this floor is the pure, dependency-free set.
+      - name: Pure packages resolve (no-op guard)
+        id: pkgs
+        run: |
+          PKGS="./pkg/fdbgo/wire/... ./pkg/fdbgo/fdb/tuple/... ./pkg/fdbgo/fdb/subspace/..."
+          n=$(go list $PKGS | wc -l)
+          [ "$n" -gt 0 ] || { echo "::error::pure-package set resolved 0 packages — the smoke floor would be a no-op"; exit 1; }
+          echo "resolved $n pure packages"
+          echo "pkgs=$PKGS" >> "$GITHUB_OUTPUT"
+
+      - name: go vet
+        run: go vet ${{ steps.pkgs.outputs.pkgs }}
+
+      - name: go build
+        run: go build ${{ steps.pkgs.outputs.pkgs }}
+
+      - name: go test (wire / tuple / subspace — wire-compat floor)
+        run: go test -count=1 ${{ steps.pkgs.outputs.pkgs }}
