@@ -340,6 +340,44 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_snapshot_options_no_overflow", func(t *testing.T) {
+		// cgofdb.Snapshot.Options() is self-recursive (`return s.Options()`), so a
+		// snapshot reader's Options() must reuse the parent transaction's handle, not
+		// call the snapshot's. Without the fix this stack-overflows (crashes).
+		_, err := cgoBackend.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+			if err := rtx.Snapshot().Options().SetReadSystemKeys(); err != nil {
+				return nil, err
+			}
+			_, e := rtx.Snapshot().Get(fdb.Key("libfdbc_diff/snap_opt_probe")).Get()
+			return nil, e
+		})
+		if err != nil {
+			t.Fatalf("snapshot Options()/read must work (no overflow), got %v", err)
+		}
+	})
+
+	t.Run("cgo_double_open_close_safe", func(t *testing.T) {
+		// cgofdb.OpenDatabase caches one C handle per cluster file, so two Opens share
+		// it. Closing one must NOT destroy the shared handle the other (and the test's
+		// own cgoBackend) still use, and a double Close on one backend must be a no-op.
+		b1, err := libfdbc.Open(clusterFile)
+		if err != nil {
+			t.Fatalf("open b1: %v", err)
+		}
+		b2, err := libfdbc.Open(clusterFile)
+		if err != nil {
+			t.Fatalf("open b2: %v", err)
+		}
+		b1.Close() // must not destroy the shared handle
+		b1.Close() // idempotent — must not double-decrement the refcount
+		if _, err := b2.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+			return rtx.GetReadVersion().Get()
+		}); err != nil {
+			t.Fatalf("b2 must still work after b1 closed the shared handle: %v", err)
+		}
+		b2.Close()
+	})
+
 	t.Run("range_iterator_contract", func(t *testing.T) {
 		// Drive the cgo backend's GetRange iterator the way the record-layer cursors
 		// do: an Advance/Get loop, an idempotent Get(), and a post-loop Get() to tell

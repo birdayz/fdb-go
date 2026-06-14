@@ -35,6 +35,8 @@ package libfdbc
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -45,11 +47,27 @@ import (
 // binding's header is FDB_API_VERSION 730, matching the 7.3.75 server pin).
 const apiVersion = 730
 
+// cgofdb.OpenDatabase caches one Database (one C fdb_database) per cluster file and
+// hands the SAME handle to every caller. So we refcount per cluster file: each Open
+// shares the cached handle, and only the LAST Close destroys it (cgofdb.Database.
+// Close → fdb_database_destroy) — otherwise closing one backend would invalidate
+// another sharing the same file, and closing both would double-destroy the handle.
+var (
+	openMu   sync.Mutex
+	openRefs = map[string]*sharedDB{}
+)
+
+type sharedDB struct {
+	db   cgofdb.Database
+	refs int
+}
+
 // Open initializes libfdb_c (once-per-process: fdb_select_api_version +
 // fdb_setup_network/fdb_run_network happen lazily on first OpenDatabase inside
 // cgofdb) and opens the cluster. The returned BackendDatabase drives the record
-// layer's Run/RunRead path. There is no runtime teardown — backend selection is a
-// process-launch-time decision (the libfdb_c network thread is one-shot).
+// layer's Run/RunRead path. There is no runtime teardown of the network thread —
+// backend selection is a process-launch-time decision (the libfdb_c network thread
+// is one-shot); only the per-cluster Database handle is refcounted and released.
 func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	// Idempotent for the same version (cgofdb.APIVersion returns nil if already
 	// set to 730, and is internally mutex-guarded). The pure-Go fdb.APIVersion is
@@ -57,11 +75,19 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	if err := cgofdb.APIVersion(apiVersion); err != nil {
 		return nil, convErr(err)
 	}
-	cdb, err := cgofdb.OpenDatabase(clusterFile)
-	if err != nil {
-		return nil, convErr(err)
+	openMu.Lock()
+	defer openMu.Unlock()
+	s, ok := openRefs[clusterFile]
+	if !ok {
+		cdb, err := cgofdb.OpenDatabase(clusterFile)
+		if err != nil {
+			return nil, convErr(err)
+		}
+		s = &sharedDB{db: cdb}
+		openRefs[clusterFile] = s
 	}
-	return &database{db: cdb}, nil
+	s.refs++
+	return &database{db: s.db, clusterFile: clusterFile}, nil
 }
 
 // database adapts cgofdb.Database to fdb.BackendDatabase. It also implements
@@ -72,7 +98,9 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 // canceled/expired context cannot keep executing or commit, matching the pure-Go
 // backend's ctx semantics.
 type database struct {
-	db cgofdb.Database
+	db          cgofdb.Database
+	clusterFile string
+	closed      atomic.Bool
 }
 
 func (d *database) Transact(f func(fdb.WritableTransaction) (any, error)) (any, error) {
@@ -88,7 +116,7 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 			return nil, err
 		}
 		rr, ee := withCancelWatcher(ctx, ctr.Cancel, func() (any, error) {
-			return f(&txn{reader: reader{rt: ctr}, tr: ctr})
+			return f(&txn{reader: reader{rt: ctr, opts: ctr.Options()}, tr: ctr})
 		})
 		if ee == nil {
 			// Match the pure-Go Transact (client/database.go:645): a cancellation or
@@ -139,14 +167,33 @@ func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransacti
 			return nil, err
 		}
 		rr, ee := withCancelWatcher(ctx, crt.Cancel, func() (any, error) {
-			return f(reader{rt: crt})
+			return f(reader{rt: crt, opts: crt.Options()})
 		})
 		return rr, toCgoErr(ee)
 	})
 	return r, mapTransactErr(ctx, e)
 }
 
-func (d *database) Close() { d.db.Close() }
+// Close releases this backend's reference to the shared per-cluster Database
+// handle; the underlying C handle is destroyed only when the last reference for the
+// cluster file closes. Idempotent: a second Close on the same backend is a no-op
+// (so it never double-decrements the shared refcount).
+func (d *database) Close() {
+	if d.closed.Swap(true) {
+		return
+	}
+	openMu.Lock()
+	defer openMu.Unlock()
+	s, ok := openRefs[d.clusterFile]
+	if !ok {
+		return
+	}
+	s.refs--
+	if s.refs <= 0 {
+		s.db.Close()
+		delete(openRefs, d.clusterFile)
+	}
+}
 
 // applyCtxBound is invoked at the start of every cgofdb retry attempt: it bails if
 // the context is already done (so a canceled ctx cannot keep retrying or commit),
@@ -195,7 +242,7 @@ func applyCtxBoundRead(ctx context.Context, rt cgofdb.ReadTransaction) error {
 // the commit, so it can never cancel an in-flight auto-commit: a commit happens only
 // when ctx was live through that point, in which case the watcher took the watchDone
 // branch and exited without cancelling (mirrors the pure-Go detached commit).
-func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, error)) (any, error) {
+func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, error)) (r any, e error) {
 	watchDone := make(chan struct{})
 	go func() {
 		select {
@@ -204,9 +251,23 @@ func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, err
 		case <-watchDone:
 		}
 	}()
-	r, e := fn()
-	close(watchDone)
-	return r, e
+	// Defer so the watcher is stopped even if fn panics (else the goroutine leaks for
+	// a deadline-less ctx). Re-panic for cgofdb's wrapped() panicToError to recover —
+	// translating an fdb.Error panic (e.g. an adapter MustGet) to cgofdb.Error first
+	// so cgofdb's retry classification still recognizes a retryable code.
+	defer func() {
+		close(watchDone)
+		if p := recover(); p != nil {
+			if err, ok := p.(error); ok {
+				var fe fdb.Error
+				if errors.As(err, &fe) {
+					panic(cgofdb.Error{Code: fe.Code})
+				}
+			}
+			panic(p)
+		}
+	}()
+	return fn()
 }
 
 // ctxCausedFailure reports whether e is a failure attributable to the context: the
@@ -232,6 +293,12 @@ func ctxCausedFailure(e error) bool {
 // fdb.ReadTransaction. txn embeds it for the read half of WritableTransaction.
 type reader struct {
 	rt cgofdb.ReadTransaction
+	// opts is the underlying transaction's options handle. It is carried explicitly
+	// rather than fetched via rt.Options() because cgofdb.Snapshot.Options() is
+	// self-recursive (snapshot.go: `return s.Options()`) and stack-overflows — so a
+	// snapshot reader must reuse its parent transaction's options (a snapshot sets
+	// options on the same underlying transaction anyway).
+	opts cgofdb.TransactionOptions
 }
 
 func (r reader) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
@@ -251,8 +318,9 @@ func (r reader) GetReadVersion() fdb.FutureInt64 {
 }
 
 func (r reader) Snapshot() fdb.ReadTransaction {
-	// cgofdb.Snapshot satisfies cgofdb.ReadTransaction, so it slots straight in.
-	return reader{rt: r.rt.Snapshot()}
+	// cgofdb.Snapshot satisfies cgofdb.ReadTransaction, so it slots straight in. Carry
+	// the parent's options handle — cgofdb.Snapshot.Options() stack-overflows.
+	return reader{rt: r.rt.Snapshot(), opts: r.opts}
 }
 
 func (r reader) GetEstimatedRangeSizeBytes(rng fdb.ExactRange) fdb.FutureInt64 {
@@ -264,12 +332,14 @@ func (r reader) GetRangeSplitPoints(rng fdb.ExactRange, chunkSize int64) fdb.Fut
 }
 
 func (r reader) Options() fdb.TransactionOptions {
-	return txOptions{r.rt.Options()}
+	return txOptions{r.opts}
 }
 
 func (r reader) ReadTransact(f func(fdb.ReadTransaction) (any, error)) (any, error) {
 	r2, e := r.rt.ReadTransact(func(crt cgofdb.ReadTransaction) (any, error) {
-		rr, ee := f(reader{rt: crt})
+		// Inherit r.opts: crt is the same underlying transaction (or a snapshot of
+		// it), so its options are r's — and a snapshot's Options() would overflow.
+		rr, ee := f(reader{rt: crt, opts: r.opts})
 		return rr, toCgoErr(ee)
 	})
 	return r2, convErr(e)
