@@ -909,10 +909,11 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
     no 1020 storm → concurrent multi-writer build becomes correct *and* fast without the single-writer
     lock. Applicable to HNSW or a new index.
 
-  **Next step:** write an RFC (scope: which index, the on-disk layout, the query/build algorithm, the
-  Go-only/wire-format declaration, the test plan) before any code. Start with **batched beam search**
-  (wire-neutral, lands on current HNSW) to bank the query win, then prototype **SPFresh** as the
-  native index.
+  **Outcome:** SPFresh was chosen, prototyped, and shipped (RFC-094) — that step is **done**. The one
+  genuinely-still-open, wire-neutral idea from the candidates above is **batched beam search** on the
+  existing HNSW (collapse N sequential hops into batched rounds — the cheapest query-latency win, no
+  format change); DiskANN/Vamana and the atomic-append build primitive remain unscoped parked
+  alternatives. None is open SPFresh work.
 
 - [x] **fdbgo/wire: `TestPrecomputeSize_GetReadVersionRequest` never runs in CI and fails when run.**
   — DONE (RFC-095, wire ground-truth net repair). The hand test was stale (it omitted the 8-byte
