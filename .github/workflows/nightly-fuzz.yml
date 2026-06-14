@@ -86,6 +86,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Check Docker (else the race gate silently no-ops)
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
+
       - name: Run tests with race detector
         run: >
           bazelisk test
@@ -106,6 +110,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Check Docker (else binding stress silently no-ops)
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — binding stress would skip and the gate would silently pass"; exit 1; }
 
       - name: Build
         run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester

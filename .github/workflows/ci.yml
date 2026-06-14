@@ -37,6 +37,14 @@ jobs:
             exit 1
           fi
 
+      - name: Check Docker (else the PRIMARY merge gate silently no-ops)
+        # The whole test suite drives real FDB testcontainers; without Docker every
+        # FDB test hits the allowed `FDB not available (no Docker)` skip and this job
+        # — the gate that BLOCKS MERGES — reports SUCCESS with no coverage (codex,
+        # RFC-107). This matters more than the nightly/race jobs: fail loudly.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
+
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
