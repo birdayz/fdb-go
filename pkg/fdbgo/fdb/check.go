@@ -4,6 +4,7 @@ package fdb
 var (
 	_ Transactor          = Database{}
 	_ Transactor          = Transaction{}
+	_ BackendDatabase     = Database{}
 	_ ReadTransactor      = Database{}
 	_ ReadTransactor      = Transaction{}
 	_ ReadTransactor      = Snapshot{}

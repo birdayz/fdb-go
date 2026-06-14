@@ -129,6 +129,12 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	if r.db.tenant != (fdb.Tenant{}) {
 		createTx = func() (fdb.WritableTransaction, error) { return r.db.tenant.CreateTransaction() }
 	} else {
+		// The manual runner needs a direct (non-retry) transaction, which only the
+		// pure-Go backend can build. On a non-pure-Go backend (RFC-109 escape hatch)
+		// fail fast rather than nil-panic — the gold path is Run/RunRead, not this.
+		if !r.db.db.IsValid() {
+			return nil, &BackendCapabilityError{Op: "FDBDatabaseRunner"}
+		}
 		createTx = func() (fdb.WritableTransaction, error) { return r.db.db.CreateTransaction() }
 	}
 
@@ -197,6 +203,11 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 	if r.db.tenant != (fdb.Tenant{}) {
 		tx, err = r.db.tenant.CreateTransaction()
 	} else {
+		// Direct transaction creation is pure-Go-only (RFC-109); fail fast on a
+		// non-pure-Go backend instead of nil-panicking on a zero Database.
+		if !r.db.db.IsValid() {
+			return nil, &BackendCapabilityError{Op: "FDBDatabaseRunner.OpenContext"}
+		}
 		tx, err = r.db.db.CreateTransaction()
 	}
 	if err != nil {

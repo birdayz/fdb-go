@@ -117,6 +117,23 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 	}
 }
 
+// NewFDBDatabaseWithBackend creates an FDBDatabase driven by a config-selected
+// fdb backend (RFC-109) — e.g. the libfdb_c escape hatch opened via
+// fdb.OpenDatabaseWithBackend. The backend drives the Run / RunRead gold path
+// (record save/load, query, index maintenance) through the Transactor interface.
+//
+// The concrete-db slot is left empty on purpose: CreateTransaction, the manual
+// FDBDatabaseRunner, and LocalityGetBoundaryKeys (online mutual indexing) return
+// concrete pure-Go handles a non-pure-Go backend cannot build, so they are
+// pure-Go-only in v1 and return errBackendNoDirectTx here (fail-fast, not a nil
+// panic) — the same scope boundary the RFC draws around tenants.
+func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
+	return &FDBDatabase{
+		transactor:      backend,
+		storeStateCache: PassThroughStoreStateCache(),
+	}
+}
+
 // NewFDBDatabaseFromTenant creates a new FDBDatabase wrapping an FDB tenant
 // for tenant-isolated operations. All operations will be scoped to the tenant's keyspace.
 func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
@@ -312,6 +329,21 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	return result, nil, nil
 }
 
+// BackendCapabilityError is returned when an operation is not supported on the
+// configured fdb backend. The libfdb_c escape hatch (RFC-109) drives the
+// Run / RunRead gold path through the Transactor interface, but the direct
+// (non-retry) CreateTransaction path, the manual FDBDatabaseRunner, and
+// LocalityGetBoundaryKeys hand back concrete pure-Go handles a non-pure-Go
+// backend cannot build — those are pure-Go-only in v1.
+type BackendCapabilityError struct {
+	Op string // the unavailable operation, e.g. "CreateTransaction"
+}
+
+func (e *BackendCapabilityError) Error() string {
+	return fmt.Sprintf("recordlayer: %s is not supported on this fdb backend "+
+		"(pure-Go-only; the libfdb_c escape hatch covers the Run/RunRead path)", e.Op)
+}
+
 // CreateTransaction creates a new transaction without retry logic.
 // This is primarily used for testing scenarios where manual transaction control is needed,
 // such as testing isolation levels with concurrent transactions.
@@ -319,6 +351,9 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 func (d *FDBDatabase) CreateTransaction() (fdb.Transaction, error) {
 	if d.tenant != (fdb.Tenant{}) {
 		return d.tenant.CreateTransaction()
+	}
+	if !d.db.IsValid() {
+		return fdb.Transaction{}, &BackendCapabilityError{Op: "CreateTransaction"}
 	}
 	return d.db.CreateTransaction()
 }

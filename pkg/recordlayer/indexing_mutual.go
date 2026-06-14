@@ -91,9 +91,11 @@ func (m *mutualIndexBuilder) computeFragments() error {
 	var pkBoundaries [][]byte
 	if len(m.indexer.mutualBoundaries) > 0 {
 		pkBoundaries = m.indexer.mutualBoundaries
-	} else {
-		// Auto-detect shard boundaries via FDB locality API.
-		// On single-node FDB this returns empty (no shard splits) → 1 fragment.
+	} else if m.indexer.db.db.IsValid() {
+		// Auto-detect shard boundaries via FDB locality API (pure-Go backend only:
+		// the libfdb_c escape hatch (RFC-109) does not expose Locality, so a
+		// non-pure-Go backend degrades to a single fragment — the same outcome as
+		// single-node FDB, where this returns empty / no shard splits).
 		recordsSub := m.indexer.subspace.Sub(RecordKey)
 		begin, end := recordsSub.FDBRangeKeys()
 		rawKeys, err := m.indexer.db.db.LocalityGetBoundaryKeys(

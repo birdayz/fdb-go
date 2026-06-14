@@ -190,16 +190,55 @@ transaction-internal or per-transaction:
   `FutureByteSlice` etc. — are already interfaces, so they need no change), but it is real scope the
   v2 RFC under-counted; folded back here for the reviewers. Still a behavior-preserving refactor
   (suite is the regression), still no perf slice (pure-Go impls unchanged).
-- **Phase B — the libfdb_c backend** (`backend_libfdb_c.go`, `//go:build cgo`): `libfdbcDatabase`/
-  `libfdbcTxn` over `cgofdb`, with callback-based future resolution, `OnError` delegation, raw-int
-  options, and 1:1 error mapping. A `//go:build !cgo` stub makes `OpenDatabaseWithBackend(
-  BackendLibFDBC, …)` return a clear *"built without cgo / libfdb_c support"* error (Torvalds — the
-  default build must compile and fail gracefully, not reference a missing type).
-- **Phase C — config switch + differential.** Wire `FDB_BACKEND` / the factory; add the differential
-  suite above (versionstamp-structure, conflict/RYW, snapshot/GRV, record-layer, cross-backend) + the
-  operator runbook ("flip to libfdb_c and back").
+  **Two more return types surfaced the same way and are folded in:** `ReadTransaction.Options()`
+  returned the concrete `TransactionOptions` struct (wraps `*transaction`, 52 option methods) → it
+  becomes an INTERFACE so the cgo backend can forward each option independently (the pure-Go struct
+  is renamed `goTransactionOptions`, one impl). And `ReadTransaction.GetDatabase()` returned the
+  concrete pure-Go `fdb.Database` (a ~40-method handle no cgo backend can build) — it has **zero**
+  production callers and is never invoked through the interface, so it comes **OFF** the
+  `ReadTransaction` interface entirely (concrete-only on `Transaction`/`Snapshot`, same treatment as
+  `Watch`/`Locality`/tenant). After A.2 every method on the read/write interfaces returns an
+  interface, a value struct (`fdb.Error`), or a primitive — so the cgo backend can implement them.
+- **Phase B — the libfdb_c backend** (a SEPARATE package `pkg/fdbgo/libfdbc`, not a `//go:build cgo`
+  file inside `fdb`). Implementation findings that refine the v2 plan (each verified against the
+  cgofdb source / fdb_c.h and re-reviewed):
+  - **Separate package, not same-package.** A `//go:build cgo` file *inside* `pkg/fdbgo/fdb` would
+    make the pure-Go client itself link `libfdb_c` whenever `CGO_ENABLED=1` (the auto `cgo` tag). A
+    separate `pkg/fdbgo/libfdbc` is linked **only when an app imports it** (blank import), so the
+    pure-Go client stays cgo-free. Package `fdb` exposes `Backend`, `BackendDatabase`,
+    `OpenDatabaseWithBackend`, and a `RegisterLibFDBCBackend` hook that `libfdbc`'s `init()` fills —
+    so `fdb` never imports the cgo package. The `//go:build !cgo` stub still exists (in `libfdbc`),
+    returning a clear *"built without cgo"* error so the default `CGO_ENABLED=0` build compiles.
+  - **Build on cgofdb's high-level API, not raw libfdb_c calls.** The v2 RFC mandated
+    `fdb_future_set_callback`→channel because it believed `cgofdb.Future.Get` pins an OS thread per
+    in-flight read. **Reading the binding refutes that** (`bindings/go/src/fdb/futures.go`):
+    `BlockUntilReady` registers `fdb_future_set_callback` and then parks on a `sync.Mutex` — a
+    Go-runtime park that frees the M while the C network thread fires the callback. So cgofdb already
+    does the callback→channel design; forwarding to it inherits correct, non-thread-pinning
+    resolution. `OnError`/retry is delegated to libfdb_c exactly as required (`cgofdb.Database.Transact`
+    runs the retry loop and calls `fdb_transaction_on_error`); we re-wrap `fdb.Error`↔`cgofdb.Error`
+    at the callback boundary so cgofdb's `retryable()` still recognizes the code while the record
+    layer still sees `fdb.Error` (1:1 codes, nothing synthesized).
+  - **Options via cgofdb's typed setters** (its raw `setOpt(code,param)` is unexported). 49 of the 52
+    options map to an identically-named generated setter (same `fdb.options` code); the 3 cgofdb
+    lacks a setter for or that have no libfdb_c analog (`SkipGrvCache`, `WriteConflictsDisabled`,
+    `EnsureMutationCapacity`) are documented per-method no-ops — a known v1 limitation, not a silent
+    divergence.
+  - **Scope: the Transactor-driven gold path.** `BackendDatabase` is `Transactor + Close`; the cgo
+    `database` drives `FDBDatabase.Run`/`RunRead` (record save/load, query, index maintenance). The
+    pure-Go-only direct paths — `CreateTransaction`, the manual `FDBDatabaseRunner`, and
+    `LocalityGetBoundaryKeys` (online mutual indexing) — return concrete pure-Go handles a cgo backend
+    cannot build, so they stay pure-Go-only in v1 (fail-fast `BackendCapabilityError` / graceful
+    single-fragment degradation), the same scope boundary the RFC already draws around tenants.
+- **Phase C — config switch + differential.** `fdb.OpenDatabaseWithBackend(BackendLibFDBC, clusterFile)`
+  + `recordlayer.NewFDBDatabaseWithBackend`. The differential gate is a record-layer test
+  (`pkg/fdbgo/libfdbc/differential_test.go`, `//go:build cgo`) against one real FDB: **cross-backend
+  round-trip** (save through one backend, read through the other on the same subspace — the operator
+  flip), **byte-identical keyspace** (same records saved through each backend on disjoint subspaces;
+  the record + index keyspaces compared byte-for-byte through a neutral reader), and **split-record
+  wire compat** (a >100KB record split across keys, written by cgo, read by pure-Go, byte-compared).
 
-Each phase merges before the next.
+One PR, multiple commits (phases as commits, not stacked PRs) — per the maintainer's call.
 
 ## Reviewers
 

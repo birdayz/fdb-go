@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "libfdbc",
+    srcs = [
+        "backend.go",
+        "backend_stub.go",
+        "options.go",
+        "register.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
+go_test(
+    name = "libfdbc_test",
+    size = "medium",
+    srcs = ["differential_test.go"],
+    deps = [
+        ":libfdbc",
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
