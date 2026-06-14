@@ -10,6 +10,7 @@ var (
 	_ ReadTransaction     = Transaction{}
 	_ ReadTransaction     = Snapshot{}
 	_ WritableTransaction = Transaction{}
+	_ TransactionOptions  = goTransactionOptions{}
 	_ KeyConvertible      = Key{}
 	_ ExactRange          = KeyRange{}
 	_ Range               = KeyRange{}

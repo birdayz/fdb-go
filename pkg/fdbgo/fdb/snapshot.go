@@ -72,7 +72,7 @@ func (sn Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyA
 }
 
 func (sn Snapshot) Options() TransactionOptions {
-	return TransactionOptions{tx: sn.s.tx}
+	return goTransactionOptions{tx: sn.s.tx}
 }
 
 func (sn Snapshot) Cancel() {

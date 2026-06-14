@@ -464,8 +464,9 @@ func TestSnapshotMethods(t *testing.T) {
 			t.Fatalf("got %q, want %q", v, "val")
 		}
 
-		// GetDatabase returns the database
-		snapDB := snap.GetDatabase()
+		// GetDatabase returns the database (concrete-only method, off the
+		// ReadTransaction interface per RFC-109 — type-assert to the impl).
+		snapDB := snap.(fdb.Snapshot).GetDatabase()
 		if snapDB == (fdb.Database{}) {
 			t.Fatal("GetDatabase returned zero value")
 		}
@@ -2108,7 +2109,7 @@ func TestSnapshotGetDatabase(t *testing.T) {
 	db := openTestDB(t)
 
 	_, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		sn := tr.Snapshot()
+		sn := tr.Snapshot().(fdb.Snapshot)
 		snDB := sn.GetDatabase()
 		// Verify the returned database works by running a simple read.
 		_, readErr := snDB.ReadTransact(func(tr2 fdb.ReadTransaction) (any, error) {

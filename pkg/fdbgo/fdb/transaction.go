@@ -355,7 +355,7 @@ func (tr Transaction) OnError(e Error) FutureNil {
 
 // Options returns a TransactionOptions handle.
 func (tr Transaction) Options() TransactionOptions {
-	return TransactionOptions{tx: tr.t}
+	return goTransactionOptions{tx: tr.t}
 }
 
 // SetReadVersion sets the read version for this transaction.

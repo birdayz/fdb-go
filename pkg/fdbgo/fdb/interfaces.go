@@ -35,12 +35,17 @@ type CtxReadTransactor interface {
 
 // ReadTransaction can asynchronously read from a FoundationDB database.
 // Transaction and Snapshot both satisfy ReadTransaction.
+//
+// GetDatabase() is intentionally OFF this interface (RFC-109): it returns the
+// concrete pure-Go fdb.Database (a ~40-method handle a cgo backend cannot
+// build), and nothing in the record layer calls it through the interface — same
+// rationale as Watch/Locality/tenant methods staying concrete-only. It remains a
+// concrete method on Transaction/Snapshot for direct-typed callers.
 type ReadTransaction interface {
 	Get(key KeyConvertible) FutureByteSlice
 	GetKey(sel Selectable) FutureKey
 	GetRange(r Range, options RangeOptions) RangeResult
 	GetReadVersion() FutureInt64
-	GetDatabase() Database
 	Snapshot() ReadTransaction
 	GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64
 	GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray

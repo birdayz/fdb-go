@@ -2,56 +2,119 @@ package fdb
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 
-// TransactionOptions is a handle for setting options that affect a
-// Transaction. Obtained via Transaction.Options().
-type TransactionOptions struct {
+// TransactionOptions sets options that affect a Transaction, obtained via
+// ReadTransaction.Options(). It is an interface so a non-pure-Go backend can
+// provide its own implementation (RFC-109): the pure-Go goTransactionOptions
+// delegates to the client transaction — no-op'ing options the pure-Go client
+// does not model — while the libfdb_c backend forwards each call by raw integer
+// opcode (RFC-109 §"Options by raw integer"). Every option is on the interface
+// precisely so the cgo backend can faithfully forward even those the pure-Go
+// client ignores (e.g. SetServerRequestTracing, SetReadAheadDisable).
+type TransactionOptions interface {
+	SetTimeout(milliseconds int64) error
+	SetRetryLimit(retries int64) error
+	SetPriorityBatch() error
+	SetPrioritySystemImmediate() error
+	SetDebugTransactionIdentifier(id string) error
+	SetNextWriteNoWriteConflictRange() error
+	SetCausalReadRisky() error
+	SetReadYourWritesDisable() error
+	EnsureMutationCapacity(n int)
+	SetWriteConflictsDisabled()
+	SetAccessSystemKeys() error
+	SetReadSystemKeys() error
+	SetLockAware() error
+	SetReadLockAware() error
+	SetLogTransaction() error
+	SetTransactionLoggingEnable(id string) error
+	SetSizeLimit(limit int64) error
+	SetMaxRetryDelay(ms int64) error
+	SetSnapshotRywEnable() error
+	SetSnapshotRywDisable() error
+	SetUseGrvCache() error
+	SetSkipGrvCache() error
+	SetAutoThrottleTag(tag string) error
+	SetTag(tag string) error
+	SetReportConflictingKeys() error
+	SetSpecialKeySpaceRelaxed() error
+	SetSpecialKeySpaceEnableWrites() error
+	SetRawAccess() error
+	SetBypassUnreadable() error
+	SetAutomaticIdempotency() error
+	SetDebugRetryLogging(loggerName string) error
+	SetIncludePortInAddress() error
+	SetCausalReadDisable() error
+	SetCausalWriteRisky() error
+	SetDurabilityRisky() error
+	SetDurabilityDatacenter() error
+	SetDurabilityDevNullIsWebScale() error
+	SetTransactionLoggingMaxFieldLength(maxFieldLength int64) error
+	SetServerRequestTracing() error
+	SetUsedDuringCommitProtectionDisable() error
+	SetReadAheadDisable() error
+	SetReadPriorityHigh() error
+	SetReadPriorityLow() error
+	SetReadPriorityNormal() error
+	SetReadServerSideCacheEnable() error
+	SetReadServerSideCacheDisable() error
+	SetUseProvisionalProxies() error
+	SetBypassStorageQuota() error
+	SetInitializeNewDatabase() error
+	SetAuthorizationToken(token string) error
+	SetSpanParent(parent []byte) error
+	SetExpensiveClearCostEstimationEnable() error
+}
+
+// goTransactionOptions is the pure-Go implementation of TransactionOptions,
+// delegating to the underlying client transaction.
+type goTransactionOptions struct {
 	tx *transaction
 }
 
-func (o TransactionOptions) SetTimeout(milliseconds int64) error {
+func (o goTransactionOptions) SetTimeout(milliseconds int64) error {
 	o.tx.inner.SetTimeout(milliseconds)
 	return nil
 }
 
-func (o TransactionOptions) SetRetryLimit(retries int64) error {
+func (o goTransactionOptions) SetRetryLimit(retries int64) error {
 	o.tx.inner.SetRetryLimit(retries)
 	return nil
 }
 
-func (o TransactionOptions) SetPriorityBatch() error {
+func (o goTransactionOptions) SetPriorityBatch() error {
 	o.tx.inner.SetPriority(client.PriorityBatch)
 	return nil
 }
 
-func (o TransactionOptions) SetPrioritySystemImmediate() error {
+func (o goTransactionOptions) SetPrioritySystemImmediate() error {
 	o.tx.inner.SetPriority(client.PrioritySystemImmediate)
 	return nil
 }
 
-func (o TransactionOptions) SetDebugTransactionIdentifier(_ string) error {
+func (o goTransactionOptions) SetDebugTransactionIdentifier(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetNextWriteNoWriteConflictRange() error {
+func (o goTransactionOptions) SetNextWriteNoWriteConflictRange() error {
 	o.tx.inner.SetNextWriteNoWriteConflictRange()
 	return nil
 }
 
-func (o TransactionOptions) SetCausalReadRisky() error {
+func (o goTransactionOptions) SetCausalReadRisky() error {
 	o.tx.inner.SetCausalReadRisky(true)
 	return nil
 }
 
-func (o TransactionOptions) SetReadYourWritesDisable() error {
+func (o goTransactionOptions) SetReadYourWritesDisable() error {
 	o.tx.inner.SetReadYourWritesDisable()
 	return nil
 }
 
-func (o TransactionOptions) EnsureMutationCapacity(n int) {
+func (o goTransactionOptions) EnsureMutationCapacity(n int) {
 	o.tx.inner.EnsureMutationCapacity(n)
 }
 
-func (o TransactionOptions) SetWriteConflictsDisabled() {
+func (o goTransactionOptions) SetWriteConflictsDisabled() {
 	o.tx.inner.SetWriteConflictsDisabled()
 }
 
@@ -63,17 +126,17 @@ func (o TransactionOptions) SetWriteConflictsDisabled() {
 // explicitly, exactly as a Java/CGo app does — see the tenant operations in
 // database.go. (Previously this method auto-set lock-aware, diverging from C;
 // that coupling is removed.)
-func (o TransactionOptions) SetAccessSystemKeys() error {
+func (o goTransactionOptions) SetAccessSystemKeys() error {
 	o.tx.inner.SetAccessSystemKeys()
 	return nil
 }
 
-func (o TransactionOptions) SetReadSystemKeys() error {
+func (o goTransactionOptions) SetReadSystemKeys() error {
 	o.tx.inner.SetReadSystemKeys()
 	return nil
 }
 
-func (o TransactionOptions) SetLockAware() error {
+func (o goTransactionOptions) SetLockAware() error {
 	o.tx.inner.SetLockAware(true)
 	return nil
 }
@@ -82,170 +145,170 @@ func (o TransactionOptions) SetLockAware() error {
 // this does NOT set lock_aware on the commit path — in C++ FDB,
 // read_lock_aware only bypasses the locked-database check for reads,
 // not commits.
-func (o TransactionOptions) SetReadLockAware() error {
+func (o goTransactionOptions) SetReadLockAware() error {
 	o.tx.inner.SetReadLockAware(true)
 	return nil
 }
 
-func (o TransactionOptions) SetLogTransaction() error {
+func (o goTransactionOptions) SetLogTransaction() error {
 	return nil
 }
 
-func (o TransactionOptions) SetTransactionLoggingEnable(_ string) error {
+func (o goTransactionOptions) SetTransactionLoggingEnable(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetSizeLimit(limit int64) error {
+func (o goTransactionOptions) SetSizeLimit(limit int64) error {
 	o.tx.inner.SetSizeLimit(limit)
 	return nil
 }
 
-func (o TransactionOptions) SetMaxRetryDelay(ms int64) error {
+func (o goTransactionOptions) SetMaxRetryDelay(ms int64) error {
 	o.tx.inner.SetMaxRetryDelay(ms)
 	return nil
 }
 
-func (o TransactionOptions) SetSnapshotRywEnable() error {
+func (o goTransactionOptions) SetSnapshotRywEnable() error {
 	// libfdb_c models this as a counter (enabledCount++), not a no-op: it undoes one prior
 	// SetSnapshotRywDisable. RFC-061.
 	o.tx.inner.SetSnapshotRYWEnable()
 	return nil
 }
 
-func (o TransactionOptions) SetSnapshotRywDisable() error {
+func (o goTransactionOptions) SetSnapshotRywDisable() error {
 	o.tx.inner.SetSnapshotRYWDisable()
 	return nil
 }
 
-func (o TransactionOptions) SetUseGrvCache() error {
+func (o goTransactionOptions) SetUseGrvCache() error {
 	o.tx.inner.SetUseGrvCache()
 	return nil
 }
 
-func (o TransactionOptions) SetSkipGrvCache() error {
+func (o goTransactionOptions) SetSkipGrvCache() error {
 	o.tx.inner.SetSkipGrvCache()
 	return nil
 }
 
-func (o TransactionOptions) SetAutoThrottleTag(_ string) error {
+func (o goTransactionOptions) SetAutoThrottleTag(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetTag(tag string) error {
+func (o goTransactionOptions) SetTag(tag string) error {
 	o.tx.inner.SetTag(tag)
 	return nil
 }
 
-func (o TransactionOptions) SetReportConflictingKeys() error {
+func (o goTransactionOptions) SetReportConflictingKeys() error {
 	return nil
 }
 
-func (o TransactionOptions) SetSpecialKeySpaceRelaxed() error {
+func (o goTransactionOptions) SetSpecialKeySpaceRelaxed() error {
 	return nil
 }
 
-func (o TransactionOptions) SetSpecialKeySpaceEnableWrites() error {
+func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
 	return nil
 }
 
-func (o TransactionOptions) SetRawAccess() error {
+func (o goTransactionOptions) SetRawAccess() error {
 	return nil
 }
 
-func (o TransactionOptions) SetBypassUnreadable() error {
+func (o goTransactionOptions) SetBypassUnreadable() error {
 	o.tx.inner.SetBypassUnreadable(true)
 	return nil
 }
 
-func (o TransactionOptions) SetAutomaticIdempotency() error {
+func (o goTransactionOptions) SetAutomaticIdempotency() error {
 	return nil
 }
 
-func (o TransactionOptions) SetDebugRetryLogging(_ string) error {
+func (o goTransactionOptions) SetDebugRetryLogging(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetIncludePortInAddress() error {
+func (o goTransactionOptions) SetIncludePortInAddress() error {
 	return nil
 }
 
-func (o TransactionOptions) SetCausalReadDisable() error {
+func (o goTransactionOptions) SetCausalReadDisable() error {
 	return nil
 }
 
-func (o TransactionOptions) SetCausalWriteRisky() error {
+func (o goTransactionOptions) SetCausalWriteRisky() error {
 	return nil
 }
 
-func (o TransactionOptions) SetDurabilityRisky() error {
+func (o goTransactionOptions) SetDurabilityRisky() error {
 	return nil
 }
 
-func (o TransactionOptions) SetDurabilityDatacenter() error {
+func (o goTransactionOptions) SetDurabilityDatacenter() error {
 	return nil
 }
 
-func (o TransactionOptions) SetDurabilityDevNullIsWebScale() error {
+func (o goTransactionOptions) SetDurabilityDevNullIsWebScale() error {
 	return nil
 }
 
-func (o TransactionOptions) SetTransactionLoggingMaxFieldLength(_ int64) error {
+func (o goTransactionOptions) SetTransactionLoggingMaxFieldLength(_ int64) error {
 	return nil
 }
 
-func (o TransactionOptions) SetServerRequestTracing() error {
+func (o goTransactionOptions) SetServerRequestTracing() error {
 	return nil
 }
 
-func (o TransactionOptions) SetUsedDuringCommitProtectionDisable() error {
+func (o goTransactionOptions) SetUsedDuringCommitProtectionDisable() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadAheadDisable() error {
+func (o goTransactionOptions) SetReadAheadDisable() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadPriorityHigh() error {
+func (o goTransactionOptions) SetReadPriorityHigh() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadPriorityLow() error {
+func (o goTransactionOptions) SetReadPriorityLow() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadPriorityNormal() error {
+func (o goTransactionOptions) SetReadPriorityNormal() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadServerSideCacheEnable() error {
+func (o goTransactionOptions) SetReadServerSideCacheEnable() error {
 	return nil
 }
 
-func (o TransactionOptions) SetReadServerSideCacheDisable() error {
+func (o goTransactionOptions) SetReadServerSideCacheDisable() error {
 	return nil
 }
 
-func (o TransactionOptions) SetUseProvisionalProxies() error {
+func (o goTransactionOptions) SetUseProvisionalProxies() error {
 	return nil
 }
 
-func (o TransactionOptions) SetBypassStorageQuota() error {
+func (o goTransactionOptions) SetBypassStorageQuota() error {
 	return nil
 }
 
-func (o TransactionOptions) SetInitializeNewDatabase() error {
+func (o goTransactionOptions) SetInitializeNewDatabase() error {
 	return nil
 }
 
-func (o TransactionOptions) SetAuthorizationToken(_ string) error {
+func (o goTransactionOptions) SetAuthorizationToken(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetSpanParent(_ []byte) error {
+func (o goTransactionOptions) SetSpanParent(_ []byte) error {
 	return nil
 }
 
-func (o TransactionOptions) SetExpensiveClearCostEstimationEnable() error {
+func (o goTransactionOptions) SetExpensiveClearCostEstimationEnable() error {
 	return nil
 }
 
