@@ -44,6 +44,11 @@ jobs:
         # non-zero exit). Wall-clock latency is NOT a gate (noisy on a shared self-hosted
         # runner → false reds); it is reported below as a trend instead (RFC-107 §1).
         run: |
+          # pipefail is REQUIRED: GitHub Actions runs `bash -e` but NOT pipefail, so
+          # `bazelisk test … | tee` would return tee's exit (0) and SILENTLY PASS a red
+          # stress run — the cardinal CI sin. With pipefail the bazel non-zero exit
+          # propagates and fails the job.
+          set -o pipefail
           bazelisk test ${{ steps.targets.outputs.labels }} \
             --test_timeout=3600 --test_output=streamed --test_arg=--test.v \
             --nocache_test_results 2>&1 | tee stress-output.txt
