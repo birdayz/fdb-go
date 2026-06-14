@@ -154,8 +154,12 @@ too long for your churn.
 
 ## 6. Known limits
 
-- Bulk build at ≥1M is currently slower than the foreground fill (wave-B
-  flat-scan, TODO #6) — prefer foreground fills for big loads until fixed.
+- Bulk build: the wave-B flat-scan that once made ≥1M builds slow is **FIXED**
+  (two-level routing, RFC-099/101 — old "TODO #6" closed); the post-fix 1M bulk
+  throughput is not separately re-measured (fast at 100k: ≈10.7k vec/s). Bulk build
+  lands the higher, converged-topology recall, so **prefer bulk for big offline
+  loads**; foreground/online fill trades recall for liveness. See the ingest-path
+  tradeoffs in `rfcs/094-spfresh-status.md` ("two ingest paths").
 - Scale validated to 1M vectors; 10M soak pending.
 - Single FDB cluster; multi-tenant via the sweeper; cross-cluster is out of
   scope.

@@ -405,9 +405,11 @@ SQL vector K-NN read path works end-to-end: a partitioned HNSW index +
 `SELECT … WHERE <partition> QUALIFY ROW_NUMBER() OVER (PARTITION BY … ORDER BY
 euclidean_distance(vec, q)) <= K` plans to a BY_DISTANCE vector index scan and executes
 against real FDB returning the k nearest records (`TestFDB_VectorSearch_QualifyE2E`). Also
-fixed a latent vector-scan PK-extraction bug. **Known follow-up:** an *unpartitioned* vector
-index + WHERE-less QUALIFY does not yet match the candidate (Java's vector search is always
-partitioned) — fails to plan rather than returning wrong results; revisit if needed.
+fixed a latent vector-scan PK-extraction bug. **Known follow-up — RESOLVED (RFC-094):** an *unpartitioned* vector
+index + WHERE-less QUALIFY now plans + executes — the SPFresh SQL surface is necessarily
+unpartitioned (SPFresh rejects PARTITION BY) and `TestFDB_VectorSearch_SPFreshE2E` pins it
+(plans to a BY_DISTANCE scan, returns the k nearest). (Java's HNSW vector search is always
+partitioned; the Go SPFresh path lifted that restriction.)
 
 - [x] **9.1 DDL: `CREATE VECTOR INDEX … USING HNSW … PARTITION BY … OPTIONS(…)`** → metadata vector
   `Index` (type `vector`, HNSW options). No `vectorIndexDefinition` handler exists in `pkg/relational`
@@ -941,8 +943,9 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
 All SPFresh tracking — current state, shipped work, open items, frozen
 performance, and measured-negative levers — is consolidated in the authoritative
 tracker **`rfcs/094-spfresh-status.md`**. The former "multi-tenant scale-out" and
-"recall at scale" sections (every item closed) moved there; the SQL surface is
-Phase 9 above (shipped).
+"recall at scale" sections (every item closed) moved there; the SPFresh SQL surface is
+shipped — see the RFC's "Usable from SQL" section (Phase 9 above has the relational-layer
+detail).
 
 Open work (detail + file:line in the RFC):
 - **Tier 1:** SPFresh has no chaos/model-based fault coverage — the whole
