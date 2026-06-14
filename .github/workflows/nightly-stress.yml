@@ -48,6 +48,7 @@ jobs:
           echo "labels=$(echo $STRESS | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Run stress tests
+        id: stress
         # Gate ONLY on correctness: the stress test asserts row counts / results, so a
         # cost-model or executor regression that returns wrong rows fails here (bazel
         # non-zero exit). Wall-clock latency is NOT a gate (noisy on a shared self-hosted
@@ -63,7 +64,10 @@ jobs:
             --nocache_test_results 2>&1 | tee stress-output.txt
 
       - name: Report latency trend (non-gating)
-        if: always()
+        # Run on stress success OR failure, but NOT if the stress step was skipped
+        # (Docker preflight aborted) — else this greps a non-existent output file and
+        # reports a misleading empty trend (codex).
+        if: ${{ !cancelled() && steps.stress.outcome != 'skipped' }}
         # Parse the per-op latency lines the stress test prints and emit them to the job
         # summary as a REPORTED trend. A real regression is visible without flaking the
         # build; an out-of-band alarm on the trend is future work (RFC-107 §1). The
@@ -84,9 +88,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload stress output
-        if: always()
+        if: ${{ !cancelled() && steps.stress.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: stress-output
           path: stress-output.txt
           retention-days: 30
+          if-no-files-found: ignore

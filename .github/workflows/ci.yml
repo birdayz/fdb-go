@@ -46,10 +46,15 @@ jobs:
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
 
       - name: Build, lint & test
+        id: test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
+      # Report/upload run on test success OR failure (always() lost the report on a
+      # red suite) — but NOT when the test step was SKIPPED (e.g. the Docker preflight
+      # aborted first): there's no BEP then, and `> test-report.html` would otherwise
+      # truncate an EMPTY report and publish it, masking the real failure (codex).
       - name: Generate test report
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
@@ -57,7 +62,7 @@ jobs:
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         continue-on-error: true
         env:
           S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
@@ -86,7 +91,7 @@ jobs:
           echo "Archive: https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/${REF}/${SHA}/report.html"
 
       - name: Upload test report as artifact
-        if: always()
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-report
