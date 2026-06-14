@@ -289,6 +289,22 @@ Fix notes:
 - Change to `ri.begin = append(append([]byte(nil), lastKey...), 0)`.
 - Add a unit test with a `Key` whose capacity exceeds its length.
 
+### 16. Low - GRV cache gate omits ratekeeper throttle cooldown
+
+Evidence:
+
+- C++ `TransactionState::getReadVersion` gates the cache block on `rkThrottlingCooledDown(cx.getPtr(), options.priority)` (`/tmp/fdbsrc` 7.3.75, `fdbclient/NativeAPI.actor.cpp:7506`). When the ratekeeper has recently throttled this priority, C++ skips the whole block — it does NOT start `backgroundGrvUpdater` and does NOT serve a cached version, going straight to a real GRV.
+- Go's gate (`pkg/fdbgo/client/grv.go` `getReadVersion`) is `!isImmediate && useGrvCache && !skipGrvCache`, with no throttle-cooldown condition. `tryCache` DOES recheck throttle on the serve path (`grv.go:64-71`), so a stale/throttled cache never serves — but the background refresher now starts under throttle where C++ would not.
+
+Impact:
+
+Correctness is unaffected (the serve path still throttle-gates). Only the timing of the background updater's launch diverges: Go may start it slightly earlier under active throttling. Surfaced by the FDB C++ reviewer on PR #291.
+
+Fix notes:
+
+- Port `rkThrottlingCooledDown` (C++ `NativeAPI.actor.cpp:7480-7499`) + the `GRV_CACHE_RK_COOLDOWN` knob, track `lastRkBatchThrottleTime`/`lastRkDefaultThrottleTime` (already partly modeled via `lastRkBatch`/`lastRkDefault`), and add the cooldown check to the cache gate.
+- Regression: a transaction marked rk-throttled must NOT start the refresher until cooldown elapses.
+
 ## Systemic Prevention Plan
 
 The root problem is not just individual bugs. The client has several places where protocol semantics, retry policy, parser behavior, and lifecycle cleanup are reimplemented by hand. Prevent recurrence by making those invariants centralized, testable, and mandatory in CI.

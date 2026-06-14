@@ -263,6 +263,12 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	// real locked check is at the consumption site (ensureReadVersion), which
 	// every DEFAULT (cache-off) transaction reaches.
 	isImmediate := b.priority == grvPrioritySystemImmediate
+	// NOTE (divergence, TODO_client.md #16): the C++ gate also requires
+	// rkThrottlingCooledDown(cx, priority) (NativeAPI.actor.cpp:7506); under active
+	// ratekeeper throttling C++ skips the whole cache block (no updater start, no cached
+	// serve). Go's gate omits that one condition, so under throttle Go starts the
+	// refresher where C++ would not. tryCache still rechecks throttle on the serve path,
+	// so this only affects WHEN the background updater launches, never correctness.
 	if !isImmediate && useGrvCache && !skipGrvCache {
 		// Start the background refresher on the FIRST opted-in request, BEFORE the
 		// freshness check — matching C++ getReadVersion (NativeAPI.actor.cpp:7507-7509),
