@@ -52,6 +52,35 @@ func (tx *Transaction) readRPCTimeout() time.Duration {
 	return DefaultRPCTimeout
 }
 
+// opContext bounds a read's RPC waits by the transaction's SetTimeout deadline, so
+// an in-flight (slow-but-alive) read is cancelled when the timeout elapses rather
+// than re-sent for ~maxReadTimeoutRetries×readRPCTimeout. This is the Go analog of
+// C++ timebomb (ReadYourWrites.actor.cpp:1567/1576): the deadline races every read
+// the way resetPromise does (`resetPromise.getFuture() || op`). With no timeout set
+// it returns ctx unchanged. The caller MUST call the returned cancel. (RFC-112)
+func (tx *Transaction) opContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if tx.timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, tx.deadline)
+}
+
+// mapTimeout converts a deadline/cancel error caused by THIS transaction's
+// SetTimeout into transaction_timed_out (1031) — matching C++ timebomb, which
+// raises transaction_timed_out, not a generic cancel. If the caller's own context
+// is done it is the caller's cancellation, so the original error is preserved; we
+// synthesize 1031 only when parentCtx is still live and our deadline has passed.
+func (tx *Transaction) mapTimeout(parentCtx context.Context, err error) error {
+	if err == nil || tx.timeout <= 0 || parentCtx.Err() != nil {
+		return err
+	}
+	if (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) &&
+		!time.Now().Before(tx.deadline) {
+		return &wire.FDBError{Code: ErrTransactionTimedOut}
+	}
+	return err
+}
+
 // sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
 // Returns ctx.Err() if the context was cancelled, nil otherwise.
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -74,7 +103,14 @@ var allKeysEnd = []byte{0xFF, 0xFF}
 // within its shard; if the result crosses a shard boundary, it returns a partial
 // resolution (non-zero offset). The client must then locate the new shard and
 // re-issue the request with the updated selector.
-func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	k, err := tx.getKeyImpl(ctx, selectorKey, orEqual, offset)
+	return k, tx.mapTimeout(parentCtx, err)
+}
+
+func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued — the rywDisabled GetKey choke (RFC-059)
 	// Three independent budgets, because getKey's loop iterates for two
 	// unrelated reasons (codex): successful partial selector resolutions
@@ -117,6 +153,9 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 			// RETRYABLE transaction_too_old — same contract as getValue/
 			// getRange. errReplyTimeout must never escape.
 			if isReplyTimeout(err) {
+				if to := tx.checkTimeout(); to != nil { // RFC-112: honor SetTimeout between re-sends
+					return nil, to
+				}
 				timeoutRetries++
 				if timeoutRetries > maxReadTimeoutRetries {
 					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -303,7 +342,14 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 // (no per-read client timeout; re-send until the server replies or the read
 // version ages to transaction_too_old). Other FDB errors (transaction_too_old,
 // etc.) are returned to the caller for handling by the Transact retry loop.
-func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
+func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	v, err := tx.getValueImpl(ctx, key)
+	return v, tx.mapTimeout(parentCtx, err)
+}
+
+func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
@@ -325,6 +371,11 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		// the whole transaction with a fresh read version — the observable
 		// libfdb_c outcome. errReplyTimeout itself must never escape.
 		if isReplyTimeout(err) {
+			// Stop re-sending once the SetTimeout deadline has passed instead of
+			// looping maxReadTimeoutRetries×readRPCTimeout (RFC-112).
+			if to := tx.checkTimeout(); to != nil {
+				return nil, to
+			}
 			timeoutRetries++
 			if timeoutRetries > maxReadTimeoutRetries {
 				return nil, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -511,7 +562,14 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 // NativeAPI.actor.cpp: re-queries same shard on more=true (no re-locate),
 // invalidates entire remaining range on wrong_shard_server, and passes reverse
 // to getKeyRangeLocations so the proxy returns shards in the right order.
-func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+func (tx *Transaction) getRange(parentCtx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	kvs, more, err := tx.getRangeImpl(ctx, begin, end, limit, reverse)
+	return kvs, more, tx.mapTimeout(parentCtx, err)
+}
+
+func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	tx.hadRead.Store(true)         // a read was issued (RFC-059 poison signal)
 	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
 	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
@@ -569,6 +627,9 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 					// RETRYABLE transaction_too_old so the Transact loop retries
 					// with a fresh read version. errReplyTimeout never escapes.
 					if isReplyTimeout(err) {
+						if to := tx.checkTimeout(); to != nil { // RFC-112: honor SetTimeout between re-sends
+							return nil, false, to
+						}
 						timeoutRetries++
 						if timeoutRetries > maxReadTimeoutRetries {
 							return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}

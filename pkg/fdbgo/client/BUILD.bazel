@@ -100,6 +100,7 @@ go_test(
         "ryw_snapshot_cache_test.go",
         "ryw_test.go",
         "setget_test.go",
+        "settimeout_test.go",
         "sizelimits_test.go",
         "snapshot_test.go",
         "tag_throttle_test.go",
