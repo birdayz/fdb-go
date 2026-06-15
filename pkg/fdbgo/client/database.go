@@ -357,34 +357,57 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 // incoming connections), but should implement it if we ever add server-side
 // functionality.
 func (db *database) dialAndPool(addr string, call *dialCall) {
-	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
-	cancel()
+	// RFC-110 (codex P2): a panic in transport.Dial (or the pooling section)
+	// skips the normal delete(db.dialing)+close(call.done) below, leaving the
+	// singleflight entry for addr in db.dialing with call.done NEVER closed —
+	// every later caller in getOrDialConn coalesces onto it and blocks until its
+	// own ctx expires, and no fresh dial ever starts: a permanently poisoned
+	// entry. The backstop publishes the failure so waiters wake and the next
+	// caller re-dials. The connMu section below is closure-scoped so a panic in
+	// it unwinds the lock (else this recover's Lock would deadlock).
+	pb := &panicBackstop{name: "dialAndPool", db: db}
+	defer func() {
+		r := recover()
+		if !pb.recovered(r) {
+			return
+		}
+		db.connMu.Lock()
+		delete(db.dialing, addr)
+		db.connMu.Unlock()
+		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+		close(call.done)
+	}()
 
-	db.connMu.Lock()
-	delete(db.dialing, addr)
-	switch {
-	case dialErr != nil:
-		call.err = dialErr
-	case db.ctx.Err() != nil:
-		// The database closed while we dialed: Close() drains the pool under connMu,
-		// so a conn pooled now would never be reaped (leaking its read/write/monitor
-		// goroutines). Discard it and fail the call.
-		call.err = db.ctx.Err()
-		_ = c.Close()
-	default:
-		db.connPool[addr] = c
-		call.conn = c
-		// Clear the failed state on a successful dial HERE — not in a caller (so a
-		// reconnect wakes failure-monitor recovery even if every caller abandoned
-		// its wait), and BEFORE the connection becomes visible (connMu unlock +
-		// close(call.done)). Marking after exposure would race: a waiter could grab
-		// the conn, fail its first RPC and markFailed, and this stale markAlive would
-		// then overwrite that real failure. failureMonitor uses only its own lock
-		// (it never reaches connMu/db), so nesting it here is lock-order-safe.
-		db.failMon.markAlive(addr)
-	}
-	db.connMu.Unlock()
+	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
+	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
+
+	func() {
+		db.connMu.Lock()
+		defer db.connMu.Unlock()
+		delete(db.dialing, addr)
+		switch {
+		case dialErr != nil:
+			call.err = dialErr
+		case db.ctx.Err() != nil:
+			// The database closed while we dialed: Close() drains the pool under connMu,
+			// so a conn pooled now would never be reaped (leaking its read/write/monitor
+			// goroutines). Discard it and fail the call.
+			call.err = db.ctx.Err()
+			_ = c.Close()
+		default:
+			db.connPool[addr] = c
+			call.conn = c
+			// Clear the failed state on a successful dial HERE — not in a caller (so a
+			// reconnect wakes failure-monitor recovery even if every caller abandoned
+			// its wait), and BEFORE the connection becomes visible (connMu unlock +
+			// close(call.done)). Marking after exposure would race: a waiter could grab
+			// the conn, fail its first RPC and markFailed, and this stale markAlive would
+			// then overwrite that real failure. failureMonitor uses only its own lock
+			// (it never reaches connMu/db), so nesting it here is lock-order-safe.
+			db.failMon.markAlive(addr)
+		}
+	}()
 	close(call.done) // wake all waiters (conn/err already set under the lock)
 }
 
@@ -494,12 +517,25 @@ func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
 	return nil, lastErr
 }
 
-func (db *database) tryOneCoordinator(ctx context.Context, addr string) (*DBInfo, error) {
-	conn, err := db.getOrDial(ctx, addr)
-	if err != nil {
-		return nil, err
+func (db *database) tryOneCoordinator(ctx context.Context, addr string) (info *DBInfo, err error) {
+	// RFC-110 (codex P3): recover on the WORKER. tryAllCoordinators calls this
+	// both from the parallel fan-out goroutines AND directly on the caller's
+	// goroutine for a single coordinator (the common test/dev shape), so a panic
+	// in the dial / openDatabaseCoord decode must become a returned error here to
+	// cover both paths — a recover only on the fan-out closure would miss the
+	// single-coordinator fast path. The fan-out leg then forwards this error like
+	// a failed quorum(ok,1) leg; the direct call returns it to its caller.
+	pb := &panicBackstop{name: "tryOneCoordinator", db: db}
+	defer func() {
+		if r := recover(); pb.recovered(r) {
+			info, err = nil, fmt.Errorf("fdbgo: panic contacting coordinator %s: %v", addr, r)
+		}
+	}()
+	conn, dialErr := db.getOrDial(ctx, addr)
+	if dialErr != nil {
+		return nil, dialErr
 	}
-	info, err := db.openDatabaseCoord(ctx, conn, addr)
+	info, err = db.openDatabaseCoord(ctx, conn, addr)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}

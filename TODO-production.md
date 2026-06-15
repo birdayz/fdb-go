@@ -259,7 +259,13 @@ panic *internally*.
   → generic internal error / `failConnection`. Never splice the panic value into a
   tenant-visible message. Boundaries: (1) db/sql `connection.go:305,336` [new, P0.2];
   (2) FDB `transaction.go:508 panicToError` [**KEEP** — also the `Must*`-API boundary,
-  Apple parity]; (3) the 3 network goroutines [new, P0.2].
+  Apple parity]; (3) the 3 network goroutines [new, P0.2]; (4) **the remaining client
+  background goroutines — `topologyMonitor`, `backgroundRefresher`, the GRV-batch `flush`,
+  `dialAndPool`/`tryOneCoordinator`, and the 6 facade futures — [RFC-110]**: P0.2 scoped
+  recover to only "the 3 network goroutines", leaving these as process-abort surfaces; RFC-110
+  closes that gap with `Net2::run`-faithful semantics (recover→backoff→continue for standing
+  loops, fail-the-batch / fail-the-leg / fail-the-op elsewhere; Go runtime-fatals still crash,
+  matching C++'s deliberate hard-exit classes).
 - **No re-panic, no sentinel-panic taxonomy** (resolved against — bradfitz). It's Java/C++
   exception-taxonomy thinking: destroys the Go stack trace, is already defeated by the
   executor recovers, and the asserts are code bugs not corruption detectors (a panic during

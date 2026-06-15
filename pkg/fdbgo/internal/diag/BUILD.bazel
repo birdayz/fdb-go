@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "diag",
+    srcs = ["diag.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/internal/diag",
+    visibility = ["//pkg/fdbgo:__subpackages__"],
+)

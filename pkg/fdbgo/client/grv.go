@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/internal/diag"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
@@ -236,6 +238,11 @@ type grvBatcher struct {
 	// before the freshness check). Lets a test assert "the refresher never
 	// started for a cache-off process" without a flaky goroutine count.
 	refresherStarted atomic.Bool
+
+	// lastPanicLog rate-limits recoverFlush's diagnostic log across overlapping
+	// flushes (UnixNano; atomic — a new batch can flush while an earlier flush's
+	// RPC is still in flight). RFC-110.
+	lastPanicLog atomic.Int64
 }
 
 type grvRequest struct {
@@ -314,14 +321,32 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 // holding mu, so new requests can queue (and start a new timer) while
 // the RPC is in flight.
 func (b *grvBatcher) flush(db *database) {
-	b.mu.Lock()
-	batch := b.pending
-	b.pending = nil
-	b.mu.Unlock()
+	// Pop the pending batch under a closure-scoped lock (RFC-110: a panic in any
+	// b.mu-holding region must unwind the lock, else later GRV requests blocking
+	// on b.mu.Lock() deadlock — codex P2a).
+	batch := func() []grvRequest {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		p := b.pending
+		b.pending = nil
+		return p
+	}()
 
 	if len(batch) == 0 {
 		return
 	}
+
+	// RFC-110 (codex P1): once the batch is popped, b.pending no longer references
+	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
+	// adaptive-window math) would orphan it, and every waiter blocked on its
+	// req.reply with a non-canceling ctx would hang forever. recoverFlush is the
+	// fail-the-batch backstop: it delivers an error to every popped waiter and
+	// keeps the process alive (the libfdb_c analog: a failed proxy GRV future
+	// resolves with error, not a hung future). This is a one-shot per-batch
+	// callback (not a standing loop) — there is nothing to re-arm, and the next
+	// queued request arms a fresh timer; the log is rate-limited, the metric
+	// counts every occurrence.
+	defer b.recoverFlush(db, batch)
 
 	// Bound the GRV request. C++ cancels the actor when callers drop
 	// the future. Our equivalent: context with timeout. If all callers
@@ -361,21 +386,62 @@ func (b *grvBatcher) flush(db *database) {
 		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
 	}
 
-	// Adaptive batch window.
-	b.mu.Lock()
-	b.batchTime = time.Duration(0.1*float64(elapsed)/2 + 0.9*float64(b.batchTime))
-	if b.batchTime < 100*time.Microsecond {
-		b.batchTime = 100 * time.Microsecond
-	}
-	if b.batchTime > 5*time.Millisecond { // C++ GRV_BATCH_TIMEOUT = 5ms
-		b.batchTime = 5 * time.Millisecond
-	}
-	b.mu.Unlock()
+	// Adaptive batch window (closure-scoped lock: a panic here unwinds b.mu).
+	func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		b.batchTime = time.Duration(0.1*float64(elapsed)/2 + 0.9*float64(b.batchTime))
+		if b.batchTime < 100*time.Microsecond {
+			b.batchTime = 100 * time.Microsecond
+		}
+		if b.batchTime > 5*time.Millisecond { // C++ GRV_BATCH_TIMEOUT = 5ms
+			b.batchTime = 5 * time.Millisecond
+		}
+	}()
 
 	result := grvResult{version: version, locked: locked, err: err}
 	for _, req := range batch {
 		req.reply <- result
 	}
+}
+
+// recoverFlush is flush's deferred RFC-110 backstop. On a recovered panic it
+// FAILS THE BATCH — delivers an error to every popped waiter so none hangs
+// (codex P1) — counts it, and rate-limited-logs. The batch reply channels are
+// cap-1 and unsent on the panic path (the panic precedes the normal delivery
+// loop), so the sends never block even for a waiter that already took its
+// ctx.Done() branch. On the normal path recover() is nil → no-op. flushes are
+// independent one-shots (not a standing loop), so this is fail-the-batch at
+// request rate, not backoff-bounded.
+func (b *grvBatcher) recoverFlush(db *database, batch []grvRequest) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if db != nil {
+		db.metrics.countRecoveredPanic(1)
+	}
+	b.logFlushPanic(r)
+	result := grvResult{err: fmt.Errorf("fdbgo: panic in GRV flush: %v", r)}
+	for _, req := range batch {
+		req.reply <- result
+	}
+}
+
+// logFlushPanic rate-limits recoverFlush's ERROR log to one per panicLogInterval
+// (atomic CAS so overlapping flushes don't all log). The metric counts every
+// panic; the log is the human breadcrumb, not the storm signal.
+func (b *grvBatcher) logFlushPanic(r any) {
+	now := time.Now().UnixNano()
+	last := b.lastPanicLog.Load()
+	if now-last < int64(panicLogInterval) || !b.lastPanicLog.CompareAndSwap(last, now) {
+		return
+	}
+	diag.Recovered("fdbgo: recovered panic in client goroutine",
+		"goroutine", "grvFlush",
+		"err", fmt.Sprintf("%v", r),
+		"stack", string(debug.Stack()),
+	)
 }
 
 // grvRefreshMin is the floor for backgroundRefresher's adaptive delay.
@@ -426,6 +492,15 @@ func nextGRVRefreshDelay(now, lastProxy, lastTime time.Time, grvDelay time.Durat
 func (b *grvBatcher) backgroundRefresher(db *database) {
 	defer db.wg.Done()
 
+	// RFC-110: a panic in the refresh (sendGRVRequest decode, applyGRVReply)
+	// must not abort the host — C++'s backgroundGrvUpdater catches every error,
+	// backs off, and loops, leaving the stale cached version usable. The backstop
+	// recovers + counts + rate-limited-logs; on a recovered panic the next wait
+	// is the backoff (≤1s) instead of the just-in-time refresh delay, so a
+	// deterministic bug re-fires at ≤1/s (the C++ Backoff analog) rather than
+	// hot-spinning at grvRefreshMin (1ms).
+	pb := &panicBackstop{name: "backgroundRefresher", db: db}
+
 	// EMA of GRV RPC latency. C++ initializes to 0.001s (1ms).
 	grvDelay := grvRefreshMin
 
@@ -439,6 +514,9 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			time.Unix(0, db.grvCache.lastTime.Load()),
 			grvDelay,
 		)
+		if bo := pb.backoff(); bo > wait {
+			wait = bo // a recovered panic last iteration: back off, don't hot-spin
+		}
 
 		if !timer.Stop() {
 			select {
@@ -450,26 +528,28 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 
 		select {
 		case <-timer.C:
-			requestTime := time.Now()
-			refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-			// Refresh at this batcher's own priority, not always DEFAULT.
-			// The BATCH batcher must refresh BATCH ratekeeper state
-			// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
-			// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
-			// its tryCache always returns false (refreshOnce never fires).
-			version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
-			refreshCancel()
-			if err == nil {
-				// The refresher ignores the reply's `locked` flag — equivalent
-				// to C++'s background updater, whose non-lock-aware txn THROWS
-				// 1038 on a locked DB after the cache update (:7409 precedes
-				// :7425) and is caught by its own onError loop. Nothing surfaces
-				// to users from a background refresh, and the cached path
-				// fail-opens anyway (RFC-104).
-				b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
-				// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
-				grvDelay = (grvDelay + time.Since(requestTime)) / 2
-			}
+			pb.run(func() {
+				requestTime := time.Now()
+				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+				defer refreshCancel() // RFC-110: release the GRV timer even if sendGRVRequest panics
+				// Refresh at this batcher's own priority, not always DEFAULT.
+				// The BATCH batcher must refresh BATCH ratekeeper state
+				// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
+				// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
+				// its tryCache always returns false (refreshOnce never fires).
+				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
+				if err == nil {
+					// The refresher ignores the reply's `locked` flag — equivalent
+					// to C++'s background updater, whose non-lock-aware txn THROWS
+					// 1038 on a locked DB after the cache update (:7409 precedes
+					// :7425) and is caught by its own onError loop. Nothing surfaces
+					// to users from a background refresh, and the cached path
+					// fail-opens anyway (RFC-104).
+					b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
+					// EMA update: grvDelay = (grvDelay + measured_latency) / 2.
+					grvDelay = (grvDelay + time.Since(requestTime)) / 2
+				}
+			})
 		case <-db.ctx.Done():
 			return
 		}
