@@ -46,6 +46,7 @@ go_test(
         "range_test.go",
         "retry_predicate_pin_test.go",
         "ryw_test.go",
+        "tenant_crud_internal_test.go",
         "tenant_test.go",
         "testmain_test.go",
         "transact_ctx_fdb_test.go",

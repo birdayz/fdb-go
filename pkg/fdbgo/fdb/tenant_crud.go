@@ -41,14 +41,51 @@ const (
 	// tenantModeRequired = 2
 )
 
-// tuplePackInt64 encodes an int64 in FDB tuple format (positive 8-byte int).
-// FDB tuple encoding: 0x1C (intZeroCode + 8) + 8-byte big-endian.
+// tupleIntZeroCode is the FDB tuple type code for integer 0; positive ints use
+// tupleIntZeroCode+n and negatives tupleIntZeroCode-n, where n is the byte width.
+const tupleIntZeroCode = 0x14
+
+// tupleIntSizeLimits[n] is the largest unsigned value representable in n bytes
+// (2^(8n)-1). Mirrors tuple.sizeLimits; inlined to avoid importing the tuple package
+// (which imports fdb → cycle, per the file comment).
+var tupleIntSizeLimits = [9]uint64{
+	1<<(0*8) - 1, 1<<(1*8) - 1, 1<<(2*8) - 1, 1<<(3*8) - 1,
+	1<<(4*8) - 1, 1<<(5*8) - 1, 1<<(6*8) - 1, 1<<(7*8) - 1,
+	1<<(8*8) - 1,
+}
+
+// tupleIntWidth returns the minimal byte width n in [0,8] holding unsigned u.
+func tupleIntWidth(u uint64) int {
+	n := 0
+	for tupleIntSizeLimits[n] < u {
+		n++
+	}
+	return n
+}
+
+// tuplePackInt64 encodes an int64 in FDB tuple format using MINIMAL width — exactly as
+// C++ Tuple::append(int64_t) / TupleCodec<int64_t> (Tuple.cpp:204-227): a type code
+// tupleIntZeroCode ± n followed by the n significant big-endian bytes (n = significant
+// byte count). The tenant nameIndex and lastId are TupleCodec<int64_t>, so a Go client
+// sharing a cluster with libfdb_c/Java MUST emit this canonical minimal form. The previous
+// fixed 9-byte form (0x1C + 8 bytes) was a non-canonical encoding that libfdb_c never
+// produces and that tupleUnpackInt64 could not read back from C/Java-created tenants
+// (small IDs encode to 2–3 bytes there).
 // Avoids importing tuple package (which imports fdb → cycle).
 func tuplePackInt64(v int64) []byte {
-	buf := make([]byte, 9)
-	buf[0] = 0x1C // intZeroCode + 8
-	binary.BigEndian.PutUint64(buf[1:], uint64(v))
-	return buf
+	if v == 0 {
+		return []byte{tupleIntZeroCode}
+	}
+	var scratch [8]byte
+	if v > 0 {
+		n := tupleIntWidth(uint64(v))
+		binary.BigEndian.PutUint64(scratch[:], uint64(v))
+		return append([]byte{byte(tupleIntZeroCode + n)}, scratch[8-n:]...)
+	}
+	n := tupleIntWidth(uint64(-v))
+	offsetEncoded := int64(tupleIntSizeLimits[n]) + v
+	binary.BigEndian.PutUint64(scratch[:], uint64(offsetEncoded))
+	return append([]byte{byte(tupleIntZeroCode - n)}, scratch[8-n:]...)
 }
 
 // tuplePackBytes encodes a byte string in FDB tuple format.
@@ -99,16 +136,41 @@ func tupleUnpackBytes(data []byte) ([]byte, error) {
 	return result, nil
 }
 
-// tupleUnpackInt64 decodes an int64 from FDB tuple format.
-// Expects 9 bytes: 0x1C prefix + 8-byte big-endian uint64.
+// tupleUnpackInt64 decodes an int64 from FDB tuple format (minimal width), matching
+// C++ TupleCodec<int64_t>::unpack. Handles every width n in [0,8] and both signs, so it
+// reads libfdb_c/Java's minimal-width values (a small tenant ID is 2–3 bytes there) AND
+// any legacy fixed 9-byte value an older Go client wrote (n == 8). The stored value is the
+// whole KeyBacked codec output — exactly the encoded integer, no trailing bytes — so the
+// length is checked strictly.
 func tupleUnpackInt64(data []byte) (int64, error) {
-	if len(data) != 9 {
-		return 0, fmt.Errorf("tupleUnpackInt64: expected 9 bytes, got %d", len(data))
+	if len(data) == 0 {
+		return 0, fmt.Errorf("tupleUnpackInt64: empty value")
 	}
-	if data[0] != 0x1C {
-		return 0, fmt.Errorf("tupleUnpackInt64: expected type code 0x1C, got 0x%02X", data[0])
+	code := int(data[0])
+	if code == tupleIntZeroCode {
+		if len(data) != 1 {
+			return 0, fmt.Errorf("tupleUnpackInt64: zero code 0x14 needs 1 byte, got %d", len(data))
+		}
+		return 0, nil
 	}
-	return int64(binary.BigEndian.Uint64(data[1:])), nil
+	neg := code < tupleIntZeroCode
+	n := code - tupleIntZeroCode
+	if neg {
+		n = tupleIntZeroCode - code
+	}
+	if n < 1 || n > 8 {
+		return 0, fmt.Errorf("tupleUnpackInt64: invalid integer type code 0x%02X", data[0])
+	}
+	if len(data) != 1+n {
+		return 0, fmt.Errorf("tupleUnpackInt64: type code 0x%02X needs %d bytes, got %d", data[0], 1+n, len(data))
+	}
+	var bp [8]byte
+	copy(bp[8-n:], data[1:1+n])
+	ret := int64(binary.BigEndian.Uint64(bp[:]))
+	if neg {
+		return ret - int64(tupleIntSizeLimits[n]), nil
+	}
+	return ret, nil
 }
 
 // prependProtocolVersion prepends the 8-byte LE protocol version header to FlatBuffers data.
