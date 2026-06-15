@@ -476,7 +476,10 @@ func (db *database) bootstrap(ctx context.Context) error {
 }
 
 // tryAllCoordinators races all coordinators in parallel, returning the first
-// successful response. Matches C++ quorum(ok,1) pattern.
+// successful response. This is a deliberate divergence from C++, whose
+// monitorProxiesOneGeneration (MonitorLeader.actor.cpp) probes coordinators
+// SEQUENTIALLY round-robin; racing them is benign (same outcome — first success
+// wins — and faster) and never contacts more than the coordinator set.
 func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
 	if len(db.clusterFile.Coordinators) == 0 {
 		// Defensive — production cluster-file parsing rejects empty

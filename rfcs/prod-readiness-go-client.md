@@ -23,8 +23,9 @@ differential gate runs nightly, not per-PR); what remains is bounded *operationa
 > **Production-usable for the common transactional path with known, documented caveats — not yet a
 > blind drop-in `libfdb_c` replacement.** The thing that is hardest to retrofit and most dangerous to
 > get wrong on a shared cluster — wire/data correctness — is the strongest part. The gaps are an
-> availability gap requiring stable coordinators (cluster-file rotation strands the client), a sub-RPC
-> timeout edge, and a set of silently-inert option setters that can surprise a migrator.
+> availability gap requiring stable coordinators (cluster-file rotation strands the client), a
+> transaction-timeout gap (only a `ctx` deadline bounds a hung read; `SetTimeout` doesn't), and a set
+> of silently-inert option setters that can surprise a migrator.
 
 This is a living signal, not a coronation: PR #299 (this work-stream) fixed a *real* cross-client wire
 bug in tenant metadata that had shipped green — proof both that the differential method works and that
@@ -132,7 +133,7 @@ topology + a 5s `topologyMonitor` poll
 (`conn.go:860`) · handshake with a 10s deadline + ctx-cancel watcher (`conn.go:178`) · GRV batching + opt-in
 cache (`grv.go`) · full C++ `QueueModel` power-of-two load balancer with per-server backoff (`loadbalance.go`)
 · request hedging (`hedge.go`) · the `commit_unknown_result` self-conflict + `commitDummyTransaction`
-idempotency dance (`commitpath.go:36`) · retryable set exactly matching C++ `fdb_error_predicate(RETRYABLE)`
+idempotency dance (`commitpath.go:38`) · retryable set exactly matching C++ `fdb_error_predicate(RETRYABLE)`
 (`fdb/error.go:436`) · size limits with correct codes (2101/2102/2103) and C++ check ordering.
 
 **`CRASH_BUG.md`: RESOLVED** (reverse-scan `\xff\xff`-to-storage-server and inverted-range commit SIGSEGVs
@@ -151,11 +152,14 @@ a faithful
    replacement) strands the client on the stale list forever — no ctx rescues it. `libfdb_c` monitors and
    rewrites the cluster file. Single most consequential production gap. (Proxy/GRV-proxy changes *within* a
    fixed coordinator set are handled by the topology poll.)
-2. **Transaction `SetTimeout` does not abort an in-flight RPC.** `checkTimeout` (`transaction.go:1829`) is a
-   synchronous gate called only at op-entry/commit; `tx.timeout` is never threaded into an RPC wait ctx. A
-   `SetTimeout(100ms)` on a single hung read fires at the next op boundary / the fixed 5s `DefaultRPCTimeout`,
-   not at 100ms. C++'s `timebomb` cancels asynchronously. Correct for timeouts ≥5s and for bounding retries;
-   diverges for sub-RPC timeouts on a stuck RPC.
+2. **Transaction `SetTimeout` does not bound an in-flight read.** `checkTimeout` (`transaction.go:1829`) is a
+   synchronous gate run only at op-entry/commit; `tx.timeout` is never threaded into an RPC wait ctx. Worse, a
+   read whose RPC reply times out is *re-sent* up to `maxReadTimeoutRetries` (10) times at `readRPCTimeout` (the
+   5s `DefaultRPCTimeout`) without re-running `checkTimeout` (`readpath.go:121,329,573`), so a single
+   hung-but-alive Get/GetKey/GetRange can run for up to ~50s **regardless of the `SetTimeout` value — even a
+   10s/30s timeout is exceeded.** Only the caller's `ctx` deadline reliably bounds a stuck read (it IS threaded
+   into every `waitReply`); `SetTimeout` is honored only at op boundaries. C++'s `timebomb` cancels
+   asynchronously. This makes a bounded `ctx` on every `Transact` mandatory, not optional.
 
 **MINOR:** no internal max-retry — runtime loops and `bootstrap` block until success or ctx/db.ctx cancel
 (matches C++; callers MUST pass bounded contexts) · location-cache `evictIfNeeded` re-sorts the full slice at
@@ -192,8 +196,9 @@ codec fix + tenant/watch differentials). The remaining open baseline item touchi
 1. **Cluster-file re-watch.** Monitor the cluster file for coordinator-set changes and re-bootstrap the
    coordinator list (port `libfdb_c`'s monitor-and-rewrite). Highest leverage; today a coordinator rotation is
    an unrecoverable strand.
-2. **Thread `SetTimeout` into RPC wait contexts** so a sub-5s transaction timeout cancels an in-flight RPC
-   (port C++ `timebomb` semantics), instead of firing only at op boundaries.
+2. **Thread `SetTimeout` into RPC wait contexts** so a transaction timeout cancels an in-flight RPC (port C++
+   `timebomb` semantics). Today only a caller `ctx` deadline bounds a hung read; `SetTimeout` is honored only at
+   op boundaries, and the read loop re-sends 10× the 5s RPC timeout in between.
 
 **P1 — honesty of surface (cheap, high trust-impact):**
 3. **Split `API_PARITY.md`** into "honored" vs "accepted-but-ignored" option tables, and list NetworkOptions as
@@ -202,11 +207,17 @@ codec fix + tenant/watch differentials). The remaining open baseline item touchi
    inert — silence is the trap.
 4. **Prune `TODO_client.md`** — it reads as a wall of open High-severity bugs but 13/16 are fixed and pinned; a
    future reader concludes the client is unsafe when it isn't.
+5. **Document the bounded-context requirement** in godoc/README: with no internal max-retry, a `Transact`/`Open`
+   against a down cluster blocks until the caller's `ctx` cancels — a real difference from `libfdb_c`'s internal
+   timeouts. Migrators MUST pass bounded contexts.
+6. **`LocalityGetBoundaryKeys` should honor its `readVersion`** (`fdb/database.go:446`): today it ignores the arg
+   and returns current shard boundaries, a semantic divergence for MVCC-consistent boundary lookups — pin the
+   locality read to the supplied version.
 
 **P2 — close the latent gaps:**
-5. **Differential sentinels for the unprobed axes:** `commit_unknown_result (1021)` idempotency, split-points /
+7. **Differential sentinels for the unprobed axes:** `commit_unknown_result (1021)` idempotency, split-points /
    estimated-size *result values*, locality addresses, cross-shard range-merge.
-6. **Promote the gold gates to per-PR** (or a fast subset): the `libfdb_c` differential + the highest-value fuzz
+8. **Promote the gold gates to per-PR** (or a fast subset): the `libfdb_c` differential + the highest-value fuzz
    targets, so regressions are caught before merge, not nightly.
 
 ## Recommendation
