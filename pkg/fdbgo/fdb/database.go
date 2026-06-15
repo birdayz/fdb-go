@@ -200,31 +200,43 @@ func (db Database) Close() {
 	}
 }
 
-// CreateTransaction creates a new Transaction. The returned transaction is bound
-// to context.Background() (no Go-context cancellation — Apple-binding parity);
-// drive its retries with OnError and bound them via SetTimeout / SetRetryLimit
-// (or the database-level defaults). For Go-context cancellation, prefer
-// TransactCtx / ReadTransactCtx over manual CreateTransaction loops.
+// CreateTransaction creates a new Transaction. Database-level option defaults set
+// via Options() (SetTransactionTimeout / SetTransactionRetryLimit / …) are applied
+// to it — matching libfdb_c, where the database transaction defaults are copied
+// into every transaction the database creates. The transaction is bound to
+// context.Background() (no Go-context cancellation — Apple-binding parity); drive
+// its retries with OnError and override an inherited default per-transaction via
+// SetTimeout / SetRetryLimit. For Go-context cancellation, prefer TransactCtx /
+// ReadTransactCtx over a manual CreateTransaction loop.
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
-	return Transaction{t: &transaction{
+	t := &transaction{
 		inner:      tx,
 		db:         db,
 		ctx:        db.d.ctx,
 		commitDone: make(chan struct{}),
-	}}, nil
+	}
+	// Apply DB-level option defaults to manually-created transactions too, exactly
+	// like the Transact* paths. C++ copies the database transaction defaults into
+	// every transaction at construction (ReadYourWrites.actor.cpp); skipping this
+	// left a manual CreateTransaction/OnError loop unbounded even when the caller
+	// had set SetTransactionTimeout/SetTransactionRetryLimit on the database.
+	db.applyTxDefaults(t)
+	return Transaction{t: t}, nil
 }
 
-// Transact runs a transactional function with automatic retry. This is the
-// Apple-binding-compatible no-ctx form: like the Apple Go binding's Transact
-// (bindings/go/src/fdb/database.go — which has no context.Context) and libfdb_c,
-// it carries NO Go-context cancellation and retries via OnError until success or
-// a non-retryable error. By default the retry loop is UNBOUNDED — matching
-// libfdb_c's per-transaction defaults (maxRetries=-1, timeoutInSeconds=0;
-// ReadYourWrites.actor.cpp). Bound it with DatabaseOptions.SetTransactionTimeout
-// / SetTransactionRetryLimit (both honored across retries), or use TransactCtx
-// for Go-context cancellation/deadline (RFC-090).
+// Transact runs a transactional function with automatic retry. This no-ctx form
+// is drop-in compatible with the Apple Go binding: it has no Go-context
+// cancellation and, by default, retries indefinitely on retryable errors. Bound
+// it with DatabaseOptions.SetTransactionTimeout / SetTransactionRetryLimit (an
+// overall budget honored across retries), or use TransactCtx for Go-context
+// cancellation and deadlines.
 func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, error) {
+	// No-ctx ⇒ context.Background(): mirrors the Apple Go binding (no
+	// context.Context anywhere) and libfdb_c's per-transaction defaults
+	// (maxRetries=-1, timeoutInSeconds=0; ReadYourWrites.actor.cpp), which retry
+	// until success / a non-retryable error unless a limit/timeout trips.
+	// TransactCtx is the Go-only additive cancellation extension (RFC-090).
 	return db.TransactCtx(db.d.ctx, f)
 }
 
