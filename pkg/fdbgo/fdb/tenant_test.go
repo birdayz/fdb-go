@@ -44,6 +44,151 @@ func openTestDBWithTenants(t *testing.T) (fdb.Database, *tcfdb.Container) {
 	return db, container
 }
 
+// TestTenant_CreateTransaction_AppliesDatabaseDefaults verifies a tenant-scoped
+// MANUALLY-created transaction inherits database-level option defaults — the same
+// applyTxDefaults parity the Database facade has across Transact/ReadTransact/
+// CreateTransaction. Regression for the divergence where the whole Tenant facade
+// skipped applyTxDefaults, so tenant transactions ignored SetTransactionTimeout.
+func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	// 1ms database-level timeout — must apply to a tenant-scoped manual transaction.
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		tr, err := tenant.CreateTransaction()
+		if err != nil {
+			t.Fatalf("tenant.CreateTransaction: %v", err)
+		}
+		_, rerr := tr.Get(fdb.Key("k")).Get()
+		cerr := tr.Commit().Get()
+		if is1031(rerr) || is1031(cerr) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("tenant CreateTransaction did not inherit the 1ms database timeout (1031 expected) — applyTxDefaults not applied")
+	}
+}
+
+// TestTenant_Reset_PreservesTenantScoping verifies a tenant transaction stays
+// scoped to its tenant after Reset() — C++ reset() preserves the tenant. The
+// facade's prior fresh-inner Reset silently dropped tenant scoping, so a reset
+// tenant transaction wrote the DEFAULT keyspace (data corruption). Regression for
+// that wrong-keyspace divergence (Torvalds).
+func TestTenant_Reset_PreservesTenantScoping(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	key := fdb.Key("scoped-key")
+	want := []byte("tenant-value")
+
+	// Write via a tenant tx that is Reset() BEFORE the write — the write must still
+	// land in the tenant's keyspace, not the default one.
+	tr, err := tenant.CreateTransaction()
+	if err != nil {
+		t.Fatalf("tenant.CreateTransaction: %v", err)
+	}
+	tr.Reset()
+	tr.Set(key, want)
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Read back THROUGH THE TENANT — must see it.
+	got, err := tenant.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(key).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("tenant read: %v", err)
+	}
+	if gb, _ := got.([]byte); string(gb) != string(want) {
+		t.Fatalf("tenant read = %q, want %q — Reset dropped tenant scoping?", gb, want)
+	}
+
+	// The DEFAULT keyspace must NOT have it — proves the reset tenant tx stayed
+	// tenant-scoped instead of leaking the write to the default keyspace.
+	leaked, err := db.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(key).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("default read: %v", err)
+	}
+	if lb, _ := leaked.([]byte); lb != nil {
+		t.Fatalf("default keyspace has %q at the tenant key — reset tenant tx leaked to default (wrong-keyspace write)", lb)
+	}
+}
+
+// TestTenant_Transact_AppliesDatabaseDefaults closes the dimensional-coverage gap
+// @claude flagged: Tenant.Transact (→ TransactCtx → applyTxDefaults, a different
+// call site than Tenant.CreateTransaction) also inherits DB-level option defaults.
+// A 1ms database timeout must time out a tenant Transact.
+func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out (never retryable → escapes Transact)
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		_, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			tr.Get(fdb.Key("k")).MustGet() // GRV round-trip (>1ms) trips the inherited timeout
+			return nil, nil
+		})
+		if is1031(err) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("tenant.Transact did not inherit the 1ms database timeout (1031 expected) — TransactCtx applyTxDefaults not applied")
+	}
+}
+
 func TestTenantCRUD(t *testing.T) {
 	t.Parallel()
 	db, _ := openTestDBWithTenants(t)

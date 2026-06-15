@@ -956,6 +956,111 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 	db.Options().SetTransactionTimeout(0)
 }
 
+// TestCreateTransaction_AppliesDatabaseDefaults verifies a MANUALLY-created
+// transaction inherits database-level option defaults — matching libfdb_c, which
+// copies the database transaction defaults into every transaction it creates.
+// Regression for the divergence where CreateTransaction skipped applyTxDefaults
+// (unlike the Transact* paths), so a manual CreateTransaction/OnError loop stayed
+// unbounded even with SetTransactionTimeout set on the database.
+func TestCreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// 1ms database-level timeout — must apply to a manually-created transaction.
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		tr, err := db.CreateTransaction()
+		if err != nil {
+			t.Fatalf("CreateTransaction: %v", err)
+		}
+		// Read forces a GRV round-trip (>1ms); the inherited 1ms timeout then trips
+		// on the read or the commit — the same path db.Transact's auto-commit takes
+		// in TestDatabaseTransactionTimeout. Without applyTxDefaults in
+		// CreateTransaction the manual tx has no timeout and never trips.
+		_, rerr := tr.Get(fdb.Key(t.Name() + "_key")).Get()
+		cerr := tr.Commit().Get()
+		if is1031(rerr) || is1031(cerr) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("manual CreateTransaction did not inherit the 1ms database timeout (1031 expected) — applyTxDefaults not applied")
+	}
+}
+
+// TestCreateTransaction_ResetPreservesDatabaseDefaults verifies Reset() re-applies
+// inherited DB-level option defaults to the fresh inner transaction — matching C++
+// reset(), which re-copies the database persistent options. Regression for the
+// divergence where Reset swapped in a defaults-less inner (codex).
+func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		tr, err := db.CreateTransaction()
+		if err != nil {
+			t.Fatalf("CreateTransaction: %v", err)
+		}
+		tr.Reset() // fresh inner — the 1ms DB timeout must survive the reset
+		_, rerr := tr.Get(fdb.Key(t.Name() + "_key")).Get()
+		cerr := tr.Commit().Get()
+		if is1031(rerr) || is1031(cerr) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("DB timeout lost after Reset (1031 expected) — applyTxDefaults not re-applied on Reset")
+	}
+}
+
+// TestCreateTransaction_ResetDropsUserOptions verifies a user-facing Reset() DROPS
+// user-set per-tx options — matching C++ reset() (clears persistentOptions), which
+// is distinct from the onError-retry reset (resetRyow) that PRESERVES them so
+// retries keep them. If Reset preserved user options, a user-set 1ms timeout would
+// survive and time out the reused transaction (codex).
+func TestCreateTransaction_ResetDropsUserOptions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t) // no database-level timeout default
+
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	// User-set a 1ms per-tx timeout, then Reset — it must NOT carry over.
+	if err := tr.Options().SetTimeout(1); err != nil {
+		t.Fatalf("SetTimeout: %v", err)
+	}
+	tr.Reset()
+
+	// A normal write+commit on the reset tx must SUCCEED: the user 1ms timeout was
+	// dropped. If it had survived Reset, the >1ms GRV/commit would return 1031.
+	tr.Set(fdb.Key(t.Name()+"_key"), []byte("v"))
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("commit after Reset returned %v — user-set 1ms timeout survived Reset (should be dropped, C++ reset() clears persistentOptions)", err)
+	}
+}
+
 // TestDatabaseTransactionSizeLimit verifies that FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
 // applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:888.
 func TestDatabaseTransactionSizeLimit(t *testing.T) {
