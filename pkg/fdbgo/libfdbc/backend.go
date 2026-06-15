@@ -141,7 +141,15 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 		// layer propagated up — preserving libfdb_c's OnError retry delegation.
 		return rr, toCgoErr(ee)
 	})
-	return r, mapTransactErr(ctx, e)
+	// Mirror the pure-Go TransactCtx (client/database.go:660-667): return a result ONLY
+	// on success. cgofdb hands back the callback's value even when the run errored (a
+	// callback that returned (v, err), or a commit that failed after the callback) — but
+	// the transaction did not commit, so surfacing that value would leak an uncommitted
+	// result through recordlayer.Run. On any error, return nil.
+	if e != nil {
+		return nil, mapTransactErr(ctx, e)
+	}
+	return r, nil
 }
 
 // mapTransactErr maps the error a cgofdb Transact/ReadTransact returned to the fdb
@@ -179,7 +187,15 @@ func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransacti
 		})
 		return rr, toCgoErr(ee)
 	})
-	return r, mapTransactErr(ctx, e)
+	// Mirror the pure-Go ReadTransactCtx (client/database.go:673-688): return a result
+	// ONLY on success. cgofdb hands back the callback's value even when the run errored (a
+	// callback that returned (v, err), or a failed read), so surfacing it would report a
+	// result for a read that did not complete. On any error, return nil. (Reads never
+	// commit — same nil-on-error shape as the write path.)
+	if e != nil {
+		return nil, mapTransactErr(ctx, e)
+	}
+	return r, nil
 }
 
 // Close releases this backend's reference to the shared per-cluster Database
@@ -237,9 +253,11 @@ func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, err
 		}
 	}()
 	// Defer so the watcher is stopped and joined even if fn panics (else the goroutine
-	// leaks for a deadline-less ctx). Re-panic for cgofdb's wrapped() panicToError to
-	// recover — translating an fdb.Error panic (e.g. an adapter MustGet) to cgofdb.Error
-	// first so cgofdb's retry classification still recognizes a retryable code.
+	// leaks for a deadline-less ctx), and so an error panic becomes a returned error
+	// rather than escaping cgofdb. Mirrors the pure-Go backend's panicToError
+	// (fdb/transaction.go:506), which recovers the full error interface — Apple's binding
+	// only recovers cgofdb.Error and re-throws everything else, so a non-fdb error panic
+	// here would otherwise crash the process instead of Transact returning it.
 	defer func() {
 		close(stop)
 		<-exited // join: the watcher has exited (and decided not to cancel) before we return
@@ -247,10 +265,19 @@ func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, err
 			if err, ok := p.(error); ok {
 				var fe fdb.Error
 				if errors.As(err, &fe) {
+					// An fdb.Error panic (e.g. an adapter MustGet on a conflict): re-panic
+					// as cgofdb.Error so cgofdb's wrapped() panicToError recovers it with a
+					// code its retryable() classifier still recognizes for the retry loop.
 					panic(cgofdb.Error{Code: fe.Code})
 				}
+				// A non-FDB error panic (a network/context error, or an app error a MustGet
+				// surfaced): RETURN it as the error. cgofdb's panicToError re-throws a
+				// non-cgofdb.Error panic, which would escape Transact and crash; the pure-Go
+				// backend instead recovers and returns it, so match that.
+				e = err
+				return
 			}
-			panic(p)
+			panic(p) // a non-error panic re-panics (matches both pure-Go and Apple's binding)
 		}
 	}()
 	return fn()

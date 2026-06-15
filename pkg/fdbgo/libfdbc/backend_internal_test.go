@@ -175,18 +175,36 @@ func TestWithCancelWatcher_TranslatesFDBPanic(t *testing.T) {
 	})
 }
 
-// TestWithCancelWatcher_PassesNonFDBPanic proves a non-fdb panic re-panics unchanged —
-// it is neither swallowed nor mistranslated to a cgofdb.Error.
-func TestWithCancelWatcher_PassesNonFDBPanic(t *testing.T) {
+// TestWithCancelWatcher_ReturnsNonFDBErrorPanic proves a non-fdb ERROR panic is converted
+// to the RETURNED error, not re-panicked. cgofdb's panicToError recovers only cgofdb.Error
+// and re-throws anything else, so re-panicking a non-fdb error here would escape Transact
+// and crash the process; the pure-Go backend recovers the full error interface
+// (fdb/transaction.go:506) and returns it. Revert the defer to `panic(p)` for non-fdb
+// errors and this returns e==nil (the panic escapes) — red.
+func TestWithCancelWatcher_ReturnsNonFDBErrorPanic(t *testing.T) {
 	t.Parallel()
 
 	sentinel := errors.New("boom")
+	r, e := withCancelWatcher(context.Background(), func() {}, func() (any, error) {
+		panic(sentinel)
+	})
+	if !errors.Is(e, sentinel) {
+		t.Fatalf("a non-fdb error panic must be returned as the error, got r=%v e=%v", r, e)
+	}
+}
+
+// TestWithCancelWatcher_RepanicsNonErrorPanic proves a non-ERROR panic (e.g. a string)
+// still re-panics unchanged — matching both Apple's binding and the pure-Go panicToError,
+// which only recover the error interface and re-throw everything else.
+func TestWithCancelWatcher_RepanicsNonErrorPanic(t *testing.T) {
+	t.Parallel()
+
 	defer func() {
-		if p := recover(); p != sentinel {
-			t.Fatalf("non-fdb panic must pass through unchanged, got %v", p)
+		if p := recover(); p != "boom-string" {
+			t.Fatalf("a non-error panic must re-panic unchanged, got %v", p)
 		}
 	}()
 	_, _ = withCancelWatcher(context.Background(), func() {}, func() (any, error) {
-		panic(sentinel)
+		panic("boom-string")
 	})
 }

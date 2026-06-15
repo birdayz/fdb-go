@@ -335,8 +335,11 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		defer cancel()
 		key := fdb.Key("libfdbc_diff/deadline_slow_cb")
 		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
-			time.Sleep(300 * time.Millisecond) // outlast the deadline; the watcher cancels here
-			_, e := tr.Get(key).Get()          // now on a canceled transaction → aborts
+			// 5× the deadline: the watcher must fire well before the callback wakes even
+			// on a loaded CI box. Only the ORDERING matters (cancel-before-read), not the
+			// tightness; a miss surfaces as a hard failure, never a false pass.
+			time.Sleep(500 * time.Millisecond)
+			_, e := tr.Get(key).Get() // now on a canceled transaction → aborts
 			return nil, e
 		})
 		if !errors.Is(err, context.DeadlineExceeded) {
@@ -361,6 +364,40 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_backend_returns_non_fdb_error_panic", func(t *testing.T) {
+		// A callback that panics a NON-fdb error must be RETURNED by Transact, not crash
+		// the process. cgofdb's panicToError re-throws non-cgofdb.Error panics, so without
+		// withCancelWatcher converting it the panic escapes Transact; the pure-Go backend
+		// recovers the full error interface (fdb/transaction.go:506) and returns it. Revert
+		// withCancelWatcher to re-panic non-fdb errors and this subtest panics (crashes)
+		// instead of getting a clean error.
+		appErr := errors.New("libfdbc_diff: app panic via callback")
+		_, err := cgoBackend.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			panic(appErr)
+		})
+		if !errors.Is(err, appErr) {
+			t.Fatalf("a non-fdb error panic must be returned by Transact, got %v", err)
+		}
+	})
+
+	t.Run("cgo_backend_discards_result_on_error", func(t *testing.T) {
+		// On any error the backend must return a NIL result — the transaction did not
+		// commit, so surfacing the callback's value would leak an uncommitted result
+		// through recordlayer.Run. cgofdb hands the callback value back alongside the
+		// error; the pure-Go TransactCtx returns nil on error (client/database.go:660-667).
+		// Revert to `return r, mapTransactErr(...)` and res is the leaked value — red.
+		appErr := errors.New("libfdbc_diff: callback error carrying a value")
+		res, err := cgoBackend.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			return "leaked-value", appErr
+		})
+		if !errors.Is(err, appErr) {
+			t.Fatalf("callback error must surface, got %v", err)
+		}
+		if res != nil {
+			t.Fatalf("result must be nil on error, not the callback's value, got %v", res)
+		}
+	})
+
 	t.Run("cgo_mustget_panics_fdb_error", func(t *testing.T) {
 		// A MustGet that errors must panic with an fdb.Error (the same type Get() returns
 		// after convErr), NOT a raw cgofdb.Error. A caller using the backend-agnostic
@@ -377,7 +414,9 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		defer cancel()
 		var recovered any
 		_, _ = ct.ReadTransactCtx(ctx, func(rtx fdb.ReadTransaction) (any, error) {
-			time.Sleep(300 * time.Millisecond) // outlast the deadline; the watcher cancels the tx
+			// 5× the deadline so the watcher cancels well before this wakes even under CI
+			// load; only the cancel-before-read ordering matters, not the margin's tightness.
+			time.Sleep(500 * time.Millisecond)
 			func() {
 				defer func() { recovered = recover() }()
 				_ = rtx.Get(fdb.Key("libfdbc_diff/mustget_panic_probe")).MustGet()
