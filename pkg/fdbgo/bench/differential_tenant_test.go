@@ -75,7 +75,10 @@ func setupSharedTenant(t *testing.T, label string) (gofdb.Tenant, cgofdb.Tenant,
 // the absolute stamp position. Returns the raw key/value pairs sorted by key.
 func tenantRawScan(t *testing.T, prefix []byte) []cgofdb.KeyValue {
 	t.Helper()
-	end := append(append([]byte{}, prefix...), 0xff)
+	end, err := gofdb.Strinc(prefix) // [prefix, strinc(prefix)) covers EVERY key under the prefix, incl. 0xff first bytes
+	if err != nil {
+		t.Fatalf("strinc tenant prefix: %v", err)
+	}
 	r, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
 		if err := tx.Options().SetRawAccess(); err != nil {
 			return nil, err

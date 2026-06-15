@@ -62,6 +62,11 @@ func TestTupleUnpackInt64_LegacyWideForm(t *testing.T) {
 		{[]byte{0x1C, 0, 0, 0, 0, 0, 0, 0, 5}, 5},
 		{[]byte{0x1C, 0, 0, 0, 0, 0, 0, 0, 1}, 1},
 		{[]byte{0x1C, 0, 0, 0, 0, 0, 0, 0, 0}, 0}, // wide-form zero
+		// The old encoder always emitted 0x1C+8 even for negatives (uint64(v) big-endian), so a
+		// legacy -1 is 0x1C followed by 0xFF×8 — must still round-trip to -1 (the n==8 positive
+		// int64 cast wraps correctly). Pins old-cluster negative IDs against a future sign refactor.
+		{[]byte{0x1C, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, -1},
+		{[]byte{0x1C, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00}, -256},
 	}
 	for _, c := range cases {
 		got, err := tupleUnpackInt64(c.data)

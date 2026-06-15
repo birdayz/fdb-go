@@ -142,6 +142,11 @@ func tupleUnpackBytes(data []byte) ([]byte, error) {
 // any legacy fixed 9-byte value an older Go client wrote (n == 8). The stored value is the
 // whole KeyBacked codec output — exactly the encoded integer, no trailing bytes — so the
 // length is checked strictly.
+//
+// Unlike the general tuple decoder (tuple.decodeInt), which returns a uint64 for a positive
+// value whose high bit is set (to avoid the int64 wrap), this always returns int64. That
+// case cannot arise for the only callers — tenant IDs are bounded by maxTenantsPerCluster
+// (1e6) and lastId is a sequential counter that never approaches 2^63.
 func tupleUnpackInt64(data []byte) (int64, error) {
 	if len(data) == 0 {
 		return 0, fmt.Errorf("tupleUnpackInt64: empty value")
