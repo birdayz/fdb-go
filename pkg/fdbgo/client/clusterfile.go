@@ -88,7 +88,16 @@ func coordDedupKey(addr string) string {
 	if err != nil {
 		return addr
 	}
-	return ip.String() + "/" + strconv.Itoa(p) // canonical IP + port
+	// Preserve the address FAMILY: C++ IPAddress is a tagged IPv4-or-IPv6 variant,
+	// so 1.2.3.4 and the IPv4-mapped [::ffff:1.2.3.4] are DISTINCT addresses C++
+	// accepts together. net.IP.String() collapses the mapped form to "1.2.3.4", so
+	// without the family tag Go would over-reject a valid cluster file. The family
+	// is the original token's syntax: a colon in the host means IPv6 (incl. mapped).
+	family := "4"
+	if strings.Contains(host, ":") {
+		family = "6"
+	}
+	return family + "/" + ip.String() + "/" + strconv.Itoa(p)
 }
 
 func allDigits(s string) bool {

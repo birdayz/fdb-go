@@ -59,6 +59,9 @@ func TestParseClusterString_AcceptanceSet(t *testing.T) {
 		"d:i@1.2.3.4:4500:tls",
 		"d:i@h1:4500,h2:4501",
 		"d:i@1.2.3.4:4500,host.example.com:4501",
+		// IPv4 + IPv4-mapped IPv6 are DISTINCT address families in C++ (accepted
+		// together); the dedup key must not collapse them (codex r3).
+		"d:i@1.2.3.4:4500,[::ffff:1.2.3.4]:4500",
 	}
 	for _, s := range accept {
 		if _, err := ParseClusterString(s); err != nil {
