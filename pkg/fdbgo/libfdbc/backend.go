@@ -17,9 +17,14 @@
 //     — a Go-runtime park that frees the M (the network thread fires the callback).
 //     So the callback→channel design the RFC mandated is what cgofdb already does;
 //     forwarding to it inherits correct, non-thread-pinning resolution for free.
-//   - OnError / retry is delegated to libfdb_c, exactly as the RFC requires:
-//     cgofdb.Database.Transact runs the retry loop and calls Transaction.OnError
-//     (fdb_transaction_on_error) itself. We do not re-implement retry on this path.
+//   - OnError / retry backoff is delegated to libfdb_c: tr.OnError
+//     (fdb_transaction_on_error) makes the retry decision and computes+sleeps the
+//     backoff. We drive the retry LOOP ourselves (runLoop) rather than calling
+//     cgofdb.Database.Transact, for one reason only — to bound the OnError backoff WAIT
+//     by the caller ctx (cgofdb's own retryable() loop waits with no ctx, so a
+//     cancel/deadline during the inter-attempt backoff is not honored, violating the
+//     CtxTransactor contract recordlayer.Run relies on). The backoff algorithm stays
+//     libfdb_c's; only the wait is made cancellable. See runLoop.
 //   - FDB error codes map 1:1: cgofdb.Error.Code and fdb.Error.Code are both the
 //     raw fdb_error_t int. We translate the wrapper type at the boundary, never the
 //     code, and synthesize nothing.
@@ -90,16 +95,16 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 }
 
 // database adapts cgofdb.Database to fdb.BackendDatabase. It also implements
-// fdb.CtxTransactor / fdb.CtxReadTransactor so the record layer's runTransactCtx
-// honors a caller context on this backend (not just the pure-Go one): cgofdb owns
-// the retry loop, but we (a) bail before each attempt if the ctx is done and
-// (b) run a cancel watcher that aborts an in-flight read when the ctx is canceled OR
-// its deadline expires. The watcher is the cgo analog of the pure-Go client threading
-// ctx into each read RPC; like pure-Go, the auto-commit is detached from the caller
-// ctx — the watcher is stopped before it and we impose no FDB transaction timeout, so
-// neither a cancel nor a deadline that lands after the callback returned can abort the
-// commit (cf. client/transaction.go:1437, the WithoutCancel commit). See
-// withCancelWatcher.
+// fdb.CtxTransactor / fdb.CtxReadTransactor so the record layer's runTransactCtx honors a
+// caller context on this backend (not just the pure-Go one). We drive the retry loop
+// ourselves (runLoop) and bound every ctx-sensitive wait: (a) bail before each attempt if
+// the ctx is done; (b) a cancel watcher aborts an in-flight read when the ctx is canceled
+// or its deadline expires (the cgo analog of the pure-Go client threading ctx into each
+// read RPC); (c) the inter-attempt OnError backoff wait is ctx-bounded too (runLoop /
+// ctxBoundedWait). Like pure-Go, the auto-commit is detached from the caller ctx — the
+// watcher is stopped before it and no FDB timeout bounds it, so neither a cancel nor a
+// deadline that lands after the callback returned can abort the commit (cf.
+// client/transaction.go:1437, the WithoutCancel commit). See runLoop + withCancelWatcher.
 type database struct {
 	db          cgofdb.Database
 	clusterFile string
@@ -111,45 +116,101 @@ func (d *database) Transact(f func(fdb.WritableTransaction) (any, error)) (any, 
 }
 
 func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.runLoop(ctx, true, func(tr cgofdb.Transaction) (any, error) {
+		return f(&txn{reader: reader{rt: tr, opts: tr.Options()}, tr: tr})
+	})
+}
+
+// runLoop drives the cgofdb retry loop OURSELVES instead of delegating to
+// cgofdb.Database.Transact/ReadTransact. We still delegate the per-error retry decision
+// and backoff COMPUTATION to libfdb_c (tr.OnError computes and sleeps the backoff inside
+// the returned future); we only bound the WAIT on that future by the caller ctx. That is
+// the one thing cgofdb.Transact can't do — its retryable() loop runs OnError(...).Get()
+// with no ctx, so a cancel/deadline during the inter-attempt backoff is not noticed until
+// the next attempt. The pure-Go client bounds the backoff by ctx (transaction.go
+// backoffSleep), and recordlayer.Run's CtxTransactor contract requires it.
+//
+// commit selects the write vs read shape: when true a successful callback is followed by a
+// detached auto-commit (cgofdb.Transact's tr.Commit after the callback); when false there
+// is no commit (cgofdb.ReadTransact). The auto-commit is NOT under the cancel watcher and
+// is bounded by no FDB timeout, so a late cancel/deadline cannot abort it — the commit
+// runs to completion (commit_unknown_result idempotency; pure-Go WithoutCancel commit,
+// client/transaction.go:1437).
+func (d *database) runLoop(ctx context.Context, commit bool, run func(cgofdb.Transaction) (any, error)) (any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	r, e := d.db.Transact(func(ctr cgofdb.Transaction) (any, error) {
-		// Bail before each cgofdb retry attempt if the ctx is already done, so a
-		// canceled/expired context cannot keep retrying (this closure re-runs per
-		// attempt). The deadline is enforced for reads by the cancel watcher, not by
-		// an FDB timeout — see withCancelWatcher.
+	tr, err := d.db.CreateTransaction()
+	if err != nil {
+		return nil, convErr(err) // CreateTransaction failure is non-retryable (cgofdb)
+	}
+	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		rr, ee := withCancelWatcher(ctx, ctr.Cancel, func() (any, error) {
-			return f(&txn{reader: reader{rt: ctr, opts: ctr.Options()}, tr: ctr})
+		// The callback runs under the cancel watcher (reads bounded by ctx; an error panic
+		// from an adapter MustGet is recovered to ee). The commit is NOT under the watcher.
+		rr, ee := withCancelWatcher(ctx, tr.Cancel, func() (any, error) {
+			return run(tr)
 		})
 		if ee == nil {
-			// Match the pure-Go Transact (client/database.go:645): a cancellation or
-			// deadline that arrived DURING the callback aborts BEFORE cgofdb's
-			// auto-commit. Without this the same Run(ctx,…) would commit on the cgo
-			// backend where the pure-Go backend aborts. (ctx.Err() is not an
-			// fdb.Error, so cgofdb's retryable() returns it terminal — no commit, no
-			// retry.) A non-nil callback error takes precedence and is handled below.
+			if !commit {
+				return rr, nil
+			}
+			// Abort before the commit if ctx died DURING the callback (pure-Go parity,
+			// client/database.go:645) — otherwise commit detached and report success.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
+			if ee = convErr(tr.Commit().Get()); ee == nil {
+				return rr, nil
+			}
+			// else: a commit error (not_committed / commit_unknown_result / …) falls
+			// through to the retry classification below.
 		}
-		// Re-wrap fdb.Error back to cgofdb.Error so cgofdb's retryable() loop
-		// (errors.As(&cgofdb.Error)) still recognizes a retryable code the record
-		// layer propagated up — preserving libfdb_c's OnError retry delegation.
-		return rr, toCgoErr(ee)
-	})
-	// Mirror the pure-Go TransactCtx (client/database.go:660-667): return a result ONLY
-	// on success. cgofdb hands back the callback's value even when the run errored (a
-	// callback that returned (v, err), or a commit that failed after the callback) — but
-	// the transaction did not commit, so surfacing that value would leak an uncommitted
-	// result through recordlayer.Run. On any error, return nil.
-	if e != nil {
-		return nil, mapTransactErr(ctx, e)
+		// ee != nil. If ctx already died, surface it now rather than retrying (but a
+		// callback's own application error still wins over ctx.Err() — see mapTransactErr).
+		if ctx.Err() != nil {
+			return nil, mapTransactErr(ctx, ee)
+		}
+		// Only an FDB error is retryable, via OnError; anything else — an app error, a ctx
+		// error, a non-fdb error panic — is terminal.
+		var fe fdb.Error
+		if !errors.As(ee, &fe) {
+			return nil, mapTransactErr(ctx, ee)
+		}
+		// ctx-bounded backoff: nil → OnError reset tr, take another attempt; non-nil →
+		// OnError re-raised a terminal error, or ctx aborted the wait.
+		if berr := d.ctxOnError(ctx, tr, fe.Code); berr != nil {
+			return nil, mapTransactErr(ctx, berr)
+		}
 	}
-	return r, nil
+}
+
+// ctxOnError runs tr.OnError(code) — libfdb_c computes and sleeps the retry backoff inside
+// the returned future — but bounds the WAIT by ctx. A nil return means the error was
+// retryable and tr is reset for another attempt; a non-nil fdb error means OnError
+// re-raised it (terminal); a ctx error means the backoff was aborted by the caller ctx.
+func (d *database) ctxOnError(ctx context.Context, tr cgofdb.Transaction, code int) error {
+	fut := tr.OnError(cgofdb.Error{Code: code})
+	return ctxBoundedWait(ctx, fut.Get, tr.Cancel)
+}
+
+// ctxBoundedWait runs get() (a blocking cgofdb future wait) in a goroutine and returns its
+// result — unless ctx is done first, in which case it calls cancel() to unblock get()
+// (fdb_transaction_cancel errors the in-flight future) and returns ctx.Err(). It always
+// joins the goroutine, so the C future is fully resolved before return (no leak).
+func ctxBoundedWait(ctx context.Context, get func() error, cancel func()) error {
+	done := make(chan error, 1)
+	go func() { done <- get() }()
+	select {
+	case err := <-done:
+		return convErr(err)
+	case <-ctx.Done():
+		cancel()
+		<-done // join: get() has returned (the future errored with transaction_cancelled)
+		return ctx.Err()
+	}
 }
 
 // mapTransactErr maps the error a cgofdb Transact/ReadTransact returned to the fdb
@@ -175,27 +236,9 @@ func (d *database) ReadTransact(f func(fdb.ReadTransaction) (any, error)) (any, 
 }
 
 func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransaction) (any, error)) (any, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	r, e := d.db.ReadTransact(func(crt cgofdb.ReadTransaction) (any, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		rr, ee := withCancelWatcher(ctx, crt.Cancel, func() (any, error) {
-			return f(reader{rt: crt, opts: crt.Options()})
-		})
-		return rr, toCgoErr(ee)
+	return d.runLoop(ctx, false, func(tr cgofdb.Transaction) (any, error) {
+		return f(reader{rt: tr, opts: tr.Options()})
 	})
-	// Mirror the pure-Go ReadTransactCtx (client/database.go:673-688): return a result
-	// ONLY on success. cgofdb hands back the callback's value even when the run errored (a
-	// callback that returned (v, err), or a failed read), so surfacing it would report a
-	// result for a read that did not complete. On any error, return nil. (Reads never
-	// commit — same nil-on-error shape as the write path.)
-	if e != nil {
-		return nil, mapTransactErr(ctx, e)
-	}
-	return r, nil
 }
 
 // Close releases this backend's reference to the shared per-cluster Database
@@ -235,6 +278,11 @@ func (d *database) Close() {
 // takes the no-cancel branch. After fn returns, the goroutine has provably exited (the
 // join) and will not touch the transaction — so a later cancel/deadline cannot abort
 // the in-flight auto-commit, mirroring the pure-Go detached commit.
+//
+// An error panic from fn (e.g. an adapter MustGet on a conflict) is recovered into the
+// returned error, the way the pure-Go backend's panicToError does (fdb/transaction.go:506);
+// runLoop then classifies it (a retryable fdb.Error is retried via OnError, anything else
+// is terminal). A non-error panic re-panics.
 func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, error)) (r any, e error) {
 	stop := make(chan struct{})
 	exited := make(chan struct{})
@@ -252,35 +300,31 @@ func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, err
 		case <-stop:
 		}
 	}()
-	// Defer so the watcher is stopped and joined even if fn panics (else the goroutine
-	// leaks for a deadline-less ctx), and so an error panic becomes a returned error
-	// rather than escaping cgofdb. Mirrors the pure-Go backend's panicToError
-	// (fdb/transaction.go:506), which recovers the full error interface — Apple's binding
-	// only recovers cgofdb.Error and re-throws everything else, so a non-fdb error panic
-	// here would otherwise crash the process instead of Transact returning it.
+	// Two defers (run LIFO): the watcher is stopped + joined FIRST, then an error panic is
+	// recovered into e. recoverErrorPanic must be deferred DIRECTLY — recover() only works
+	// in a function invoked by defer, not one it in turn calls — hence the split rather than
+	// one closure that calls it. The join still runs even on the panic path (registered
+	// last → runs first), so the goroutine never leaks.
+	defer recoverErrorPanic(&e)
 	defer func() {
 		close(stop)
 		<-exited // join: the watcher has exited (and decided not to cancel) before we return
-		if p := recover(); p != nil {
-			if err, ok := p.(error); ok {
-				var fe fdb.Error
-				if errors.As(err, &fe) {
-					// An fdb.Error panic (e.g. an adapter MustGet on a conflict): re-panic
-					// as cgofdb.Error so cgofdb's wrapped() panicToError recovers it with a
-					// code its retryable() classifier still recognizes for the retry loop.
-					panic(cgofdb.Error{Code: fe.Code})
-				}
-				// A non-FDB error panic (a network/context error, or an app error a MustGet
-				// surfaced): RETURN it as the error. cgofdb's panicToError re-throws a
-				// non-cgofdb.Error panic, which would escape Transact and crash; the pure-Go
-				// backend instead recovers and returns it, so match that.
-				e = err
-				return
-			}
-			panic(p) // a non-error panic re-panics (matches both pure-Go and Apple's binding)
-		}
 	}()
 	return fn()
+}
+
+// recoverErrorPanic recovers a panic of an error value into *e (the way the pure-Go
+// backend's panicToError does, fdb/transaction.go:506 — recovering the full error
+// interface, not just fdb.Error). A non-error panic re-panics. MUST be called from a
+// deferred function so the recover() is in scope.
+func recoverErrorPanic(e *error) {
+	if p := recover(); p != nil {
+		if err, ok := p.(error); ok {
+			*e = err
+			return
+		}
+		panic(p)
+	}
 }
 
 // ctxCausedFailure reports whether e is a failure attributable to the context: the
@@ -352,10 +396,17 @@ func (r reader) Options() fdb.TransactionOptions {
 }
 
 func (r reader) ReadTransact(f func(fdb.ReadTransaction) (any, error)) (any, error) {
-	r2, e := r.rt.ReadTransact(func(crt cgofdb.ReadTransaction) (any, error) {
-		// Inherit r.opts: crt is the same underlying transaction (or a snapshot of
-		// it), so its options are r's — and a snapshot's Options() would overflow.
-		rr, ee := f(reader{rt: crt, opts: r.opts})
+	r2, e := r.rt.ReadTransact(func(crt cgofdb.ReadTransaction) (rr any, ee error) {
+		// Recover an adapter MustGet panic (fdb.Error) here: cgofdb's nested ReadTransact
+		// recovers ONLY cgofdb.Error (transaction.go panicToError), so an fdb.Error panic
+		// would otherwise escape this nested call instead of being returned — unlike the
+		// pure-Go Transaction.ReadTransact (fdb/transaction.go:487), which recovers the
+		// full error interface. (cgofdb's nested ReadTransact does not retry, so there is
+		// no backoff to ctx-bound here.)
+		defer recoverErrorPanic(&ee)
+		// Inherit r.opts: crt is the same underlying transaction (or a snapshot of it), so
+		// its options are r's — and a snapshot's Options() would overflow.
+		rr, ee = f(reader{rt: crt, opts: r.opts})
 		return rr, toCgoErr(ee)
 	})
 	return r2, convErr(e)

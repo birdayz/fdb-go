@@ -108,10 +108,18 @@ unrecoverable**. Consequences the implementation MUST honor:
 
 ## Retry / errors — delegate to libfdb_c, map codes 1:1 (FDB C++ dev)
 
-- **`OnError` is driven through `cgofdb.Transaction.OnError`** (libfdb_c's own retry state machine),
-  **not** re-implemented by the Go retry loop. `commit_unknown_result` (1021) idempotency, the
-  `transaction_too_old` (1007) / `not_committed` (1020) classification, and backoff are libfdb_c's
-  job on that backend — the Go `runTransactCtx` loop calls the backend's `OnError` and trusts it.
+- **The retry DECISION and backoff are `cgofdb.Transaction.OnError`'s** (libfdb_c's own retry state
+  machine) — `commit_unknown_result` (1021) idempotency, the `transaction_too_old` (1007) /
+  `not_committed` (1020) classification, and the backoff schedule are libfdb_c's job; the adapter
+  re-raises `fdb.Error` codes 1:1 and trusts `OnError`'s verdict (retryable ⇒ nil ⇒ reset; terminal
+  ⇒ error). **The retry LOOP itself is Go-driven** (`runLoop`), NOT `cgofdb.Database.Transact`, for
+  one reason: cgofdb's own `retryable()` runs `OnError(...).Get()` with no `ctx`, so a cancel/deadline
+  during the inter-attempt backoff is not honored until the next attempt — violating the
+  `CtxTransactor` contract `recordlayer.Run` relies on (pure-Go bounds the backoff via
+  `transaction.go` `backoffSleep`). `runLoop` waits on the `OnError` future under `ctxBoundedWait`
+  (ctx cancel ⇒ cancel the tx ⇒ unblock the future ⇒ return `ctx.Err()`); the backoff *algorithm*
+  stays libfdb_c's, only the *wait* is made cancellable. The auto-commit is detached (no watcher, no
+  FDB timeout), matching the pure-Go `WithoutCancel` commit.
 - **FDB error codes map 1:1.** `cgofdb.Error.Code` and `fdb.Error.Code` are both the raw
   `fdb_error_t` int, so `errors.As`/retry on the numeric code is identical — *provided the adapter
   preserves the integer and synthesizes nothing*. The pure-Go client surfaces a few **client-side**
@@ -215,10 +223,10 @@ transaction-internal or per-transaction:
     `BlockUntilReady` registers `fdb_future_set_callback` and then parks on a `sync.Mutex` — a
     Go-runtime park that frees the M while the C network thread fires the callback. So cgofdb already
     does the callback→channel design; forwarding to it inherits correct, non-thread-pinning
-    resolution. `OnError`/retry is delegated to libfdb_c exactly as required (`cgofdb.Database.Transact`
-    runs the retry loop and calls `fdb_transaction_on_error`); we re-wrap `fdb.Error`↔`cgofdb.Error`
-    at the callback boundary so cgofdb's `retryable()` still recognizes the code while the record
-    layer still sees `fdb.Error` (1:1 codes, nothing synthesized).
+    resolution. The retry *decision* + *backoff* are libfdb_c's (`tr.OnError` → `fdb_transaction_on_error`),
+    but the retry *loop* is Go-driven (`runLoop`, not `cgofdb.Database.Transact`) so the inter-attempt
+    backoff WAIT is ctx-bounded — cgofdb's own `retryable()` waits with no ctx (see the Retry section);
+    error codes map 1:1, nothing synthesized.
   - **Options via cgofdb's typed setters** (its raw `setOpt(code,param)` is unexported). 49 of the 52
     options map to an identically-named generated setter (same `fdb.options` code); the 3 cgofdb
     lacks a setter for or that have no libfdb_c analog (`SkipGrvCache`, `WriteConflictsDisabled`,

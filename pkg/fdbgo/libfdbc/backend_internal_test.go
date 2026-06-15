@@ -149,30 +149,21 @@ func TestWithCancelWatcher_CancelsDuringBlockedCallback(t *testing.T) {
 	}
 }
 
-// TestWithCancelWatcher_TranslatesFDBPanic proves an fdb.Error panic from the callback
-// (e.g. an adapter MustGet on a conflict) is re-panicked as a cgofdb.Error with the
-// same code, so cgofdb's wrapped() panicToError recovers it as a recognized (retryable)
-// code instead of an unrecognized panic. It also exercises the join on the panic path
-// (close(stop) + <-exited run before the recover/re-panic, no leak, no deadlock).
-func TestWithCancelWatcher_TranslatesFDBPanic(t *testing.T) {
+// TestWithCancelWatcher_ReturnsFDBErrorPanic proves an fdb.Error panic from the callback
+// (e.g. an adapter MustGet on a conflict) is recovered into the RETURNED error with its
+// code intact — runLoop then classifies it (a retryable code goes to OnError). It also
+// exercises the join on the panic path (close(stop) + <-exited run before the recover, no
+// leak, no deadlock).
+func TestWithCancelWatcher_ReturnsFDBErrorPanic(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		p := recover()
-		if p == nil {
-			t.Fatal("expected a re-panic")
-		}
-		ce, ok := p.(cgofdb.Error)
-		if !ok {
-			t.Fatalf("panic must be translated to cgofdb.Error, got %T: %v", p, p)
-		}
-		if ce.Code != 1020 {
-			t.Fatalf("translated code = %d, want 1020", ce.Code)
-		}
-	}()
-	_, _ = withCancelWatcher(context.Background(), func() {}, func() (any, error) {
+	_, e := withCancelWatcher(context.Background(), func() {}, func() (any, error) {
 		panic(fdb.Error{Code: 1020})
 	})
+	var fe fdb.Error
+	if !errors.As(e, &fe) || fe.Code != 1020 {
+		t.Fatalf("an fdb.Error panic must be returned as fdb.Error{1020}, got %v", e)
+	}
 }
 
 // TestWithCancelWatcher_ReturnsNonFDBErrorPanic proves a non-fdb ERROR panic is converted
@@ -190,6 +181,51 @@ func TestWithCancelWatcher_ReturnsNonFDBErrorPanic(t *testing.T) {
 	})
 	if !errors.Is(e, sentinel) {
 		t.Fatalf("a non-fdb error panic must be returned as the error, got r=%v e=%v", r, e)
+	}
+}
+
+// TestCtxBoundedWait_AbortsOnCtxCancel proves the ctx-bounded backoff wait (what runLoop
+// uses for tr.OnError) is interrupted by ctx. get() here blocks until the cancel callback
+// releases it — modeling a libfdb_c OnError future that only errors once the transaction is
+// canceled. Without the ctx.Done() arm (the P2-A bug: cgofdb's retryable() backoff has no
+// ctx), ctxBoundedWait would block forever; with it, ctx cancel → cancel() → get() returns
+// → ctx.Err(). Revert ctxBoundedWait to a plain `return convErr(get())` and this deadlocks
+// (caught by the test timeout).
+func TestCtxBoundedWait_AbortsOnCtxCancel(t *testing.T) {
+	t.Parallel()
+
+	released := make(chan struct{})
+	get := func() error {
+		<-released                      // blocks until "the transaction is canceled"
+		return cgofdb.Error{Code: 1025} // transaction_cancelled — what a canceled future returns
+	}
+	cancel := func() { close(released) }
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	go ctxCancel() // ctx fires while get() is blocked
+
+	if err := ctxBoundedWait(ctx, get, cancel); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ctxBoundedWait must return ctx.Err() when ctx fires during the wait, got %v", err)
+	}
+}
+
+// TestCtxBoundedWait_ReturnsResult proves that when the future completes before ctx fires,
+// ctxBoundedWait returns its convErr'd result (nil for a retryable reset; the fdb error
+// OnError re-raised otherwise) and does NOT invoke cancel.
+func TestCtxBoundedWait_ReturnsResult(t *testing.T) {
+	t.Parallel()
+
+	canceled := false
+	noCancel := func() { canceled = true }
+	if err := ctxBoundedWait(context.Background(), func() error { return nil }, noCancel); err != nil {
+		t.Fatalf("retryable reset must return nil, got %v", err)
+	}
+	err := ctxBoundedWait(context.Background(), func() error { return cgofdb.Error{Code: 1007} }, noCancel)
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1007 {
+		t.Fatalf("a terminal OnError must return the convErr'd fdb.Error{1007}, got %v", err)
+	}
+	if canceled {
+		t.Fatal("cancel must not be called when the future completes first")
 	}
 }
 

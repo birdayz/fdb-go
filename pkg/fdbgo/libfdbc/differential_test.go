@@ -436,6 +436,34 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_nested_readtransact_returns_fdb_panic", func(t *testing.T) {
+		// A nested rtx.ReadTransact whose inner MustGet panics (fdb.Error) must RETURN the
+		// error so the CALLER can handle it LOCALLY — not let the panic escape past the
+		// rtx.ReadTransact call. cgofdb's nested ReadTransact recovers only cgofdb.Error
+		// (transaction.go panicToError); pure-Go's Transaction.ReadTransact recovers the
+		// full error interface (fdb/transaction.go:487). Here the outer callback recovers
+		// from the nested error and returns SUCCESS — reachable only if rtx.ReadTransact
+		// returned the error rather than letting the panic blow past it. Revert the nested
+		// reader.ReadTransact recover and the panic escapes → the outer tx fails instead.
+		ct := cgoBackend.(fdb.CtxReadTransactor)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		res, err := ct.ReadTransactCtx(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+			time.Sleep(500 * time.Millisecond) // watcher cancels the tx → the next read errors
+			_, nestedErr := rtx.ReadTransact(func(inner fdb.ReadTransaction) (any, error) {
+				_ = inner.Get(fdb.Key("libfdbc_diff/nested_panic_probe")).MustGet() // panics fdb.Error
+				return nil, nil
+			})
+			if nestedErr == nil {
+				return nil, errors.New("nested MustGet should have errored on the canceled tx")
+			}
+			return "handled-locally", nil // only reachable if the nested error was RETURNED
+		})
+		if err != nil || res != "handled-locally" {
+			t.Fatalf("nested MustGet panic must be returned (caller handles it locally), got res=%v err=%v", res, err)
+		}
+	})
+
 	t.Run("cgo_snapshot_options_no_overflow", func(t *testing.T) {
 		// cgofdb.Snapshot.Options() is self-recursive (`return s.Options()`), so a
 		// snapshot reader's Options() must reuse the parent transaction's handle, not
