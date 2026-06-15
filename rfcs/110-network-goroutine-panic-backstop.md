@@ -184,6 +184,14 @@ a standing loop: the next queued request arms a fresh timer, so there is nothing
 tight spin — a deterministic flush panic fails each batch with an error (callers get the error,
 never hang) at the rate requests arrive, with the same rate-limited logging.
 
+  **The recover must not leave `b.mu` held (codex P2a — a deadlock hazard).** `flush` takes
+  `b.mu` with explicit `Lock()`/`Unlock()` in the adaptive-window math (`grv.go:362-369`); a panic
+  *inside* that locked region does not auto-release the mutex, so a top-level `defer recover()`
+  that completes the batch and returns would leave `b.mu` permanently locked — and every later GRV
+  request blocking on `b.mu.Lock()` (`grv.go:296`) hangs, defeating the whole point. So each
+  `b.mu.Lock()` in `flush` must be paired with a **deferred** unlock (a closure-scoped critical
+  section) so a panic unwinds the lock before the recover completes the popped batch.
+
 **Class B — one-shot dial/RPC workers → recover, deliver the failure through the existing
 result channel / call, never crash:**
 - `client/database.go:359` `dialAndPool` → `transport.Dial` (`:360`) runs **before** the normal
@@ -250,15 +258,23 @@ A deterministic test hook injects a `panic` inside each class's work function (e
 `panicOnNextRefresh` var the goroutine calls, à la the existing fault-injection dialers), and the
 test asserts, against real FDB (testcontainers):
 
-1. **Class A:** a test hook (a `panicOnNextRefresh` var, same fault-injection idiom as the
-   `fault_test.go` dialers) panics once inside `refreshTopology` / `sendGRVRequest` / the flush.
-   Assert: the process survives; `recoveredPanics`/`consecutivePanics` increment; the panic logged
-   once at `slog.Error` with a stack (captured via the shared sink). The "goroutine keeps running"
-   assertion is **signal-driven, not sleep-based** — the hook closes a channel on the *next* real
-   iteration and the test waits on it (no `time.Sleep`-and-hope; CLAUDE.md forbids the flake). A
-   *repeated* deterministic panic asserts the re-fire rate is backoff-bounded (≤1/s, not per-batch)
-   and that the log is rate-limited (1 immediate + suppressed-count), `consecutivePanics` climbing.
-   For GRV: the previously-cached read version stays usable across the panic.
+1. **Class A (standing loops — `topologyMonitor`, `backgroundRefresher`):** a test hook (a
+   `panicOnNextRefresh` var, same fault-injection idiom as the `fault_test.go` dialers) panics once
+   inside `refreshTopology` / the `backgroundRefresher` refresh body. Assert: the process survives;
+   `recoveredPanics`/`consecutivePanics` increment; the panic logged once at `slog.Error` with a
+   stack (captured via the shared sink). The "goroutine keeps running" assertion is
+   **signal-driven, not sleep-based** — the hook closes a channel on the *next* real iteration and
+   the test waits on it (no `time.Sleep`-and-hope; CLAUDE.md forbids the flake). A *repeated*
+   deterministic panic asserts the re-fire rate is **backoff-bounded** (≤1/s) and the log is
+   rate-limited (1 immediate + suppressed-count), `consecutivePanics` climbing. For
+   `backgroundRefresher`: the previously-cached read version stays usable across the panic.
+1b. **Class A-batch (GRV flush — distinct from Class A; codex P2b):** inject a panic in `flush`
+   *after* it pops `b.pending` (incl. while holding `b.mu` in the adaptive-window math). Assert:
+   **every** waiter on the popped batch receives an `err` result (none hangs) — wait on the
+   `req.reply` channels, signal-driven; a **subsequent** GRV request succeeds (proving `b.mu` was
+   *not* left locked — the deadlock guard); counters increment; log rate-limited. This path is
+   **not** backoff-bounded and **not** re-armed — it fails each batch at request-arrival rate, so
+   the test asserts waiter-errors, *not* a ≤1/s re-fire bound.
 2. **Class B:** panic inside `tryOneCoordinator` → `tryAllCoordinators` returns a normal error (the
    race sees one failed leg), the other coordinators still resolve, process survives. Panic inside
    `dialAndPool` → the dial caller gets an error, not a crash.
