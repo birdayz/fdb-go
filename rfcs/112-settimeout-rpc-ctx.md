@@ -47,6 +47,10 @@ Go uses `context` for cancellation; the faithful analog is to bound every read R
   (`ReadYourWrites.actor.cpp:1537`). A hung-but-alive GRV proxy must not run past the timeout.
 - **`GetAddressesForKey`/`GetLocations`** (C++ bounds `getAddressesForKey` by the timebomb too,
   `:1843-1848`).
+- **The pipelined read path** (`GetPipelined`/`PendingGet.Resolve`) — what the `fdb` facade `Get`
+  routes through. Its send-loop dials run under `opContext`, and the deferred reply wait is capped by
+  `pipelineReplyTimeout` (= `min(readRPCTimeout, time-until-deadline)`) so a hung pipelined reply
+  re-drives through `getValue` (bounded + mapped to 1031) at the deadline instead of after a fixed 5s.
 
 `transaction_timed_out` (1031) is already correctly **non-retryable** (`onErrorRetryable`, matching
 C++ `fdb_error_predicate`), so a timed-out read/GRV aborts the whole `Transact` rather than looping.

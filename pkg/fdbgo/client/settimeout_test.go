@@ -121,6 +121,59 @@ func TestSetTimeout_BoundsHungGRV(t *testing.T) {
 	}
 }
 
+// TestSetTimeout_BoundsHungPipelinedRead covers the pipelined read path
+// (GetPipelined/PendingGet.Resolve) — what the fdb facade Get routes through. A
+// dropped reply under SetTimeout(300ms) must return transaction_timed_out (1031)
+// in well under one readRPCTimeout (5s), proving the deferred reply wait is capped
+// by the deadline (RFC-112), not the fixed 5s pipeline timer. Revert-proof:
+// without pipelineReplyTimeout the Resolve waits the full 5s before re-driving.
+func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, dd := newDropReplyTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	dd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.readVersion = rv
+	tx.hasReadVersion = true
+	tx.SetTimeout(300) // ms
+
+	start := time.Now()
+	_, pending, err := tx.GetPipelined(ctx, key)
+	if err == nil && pending != nil {
+		_, err = pending.Resolve()
+	}
+	elapsed := time.Since(start)
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Fatalf("err = %v (%T), want transaction_timed_out (%d)", err, err, ErrTransactionTimedOut)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("pipelined Get took %v — SetTimeout(300ms) did not bound the deferred reply wait", elapsed)
+	}
+}
+
 // TestMapTimeout pins the error-mapping contract (RFC-112): our SetTimeout deadline
 // → 1031; the caller's own cancellation → preserved; no timeout set → preserved.
 func TestMapTimeout(t *testing.T) {

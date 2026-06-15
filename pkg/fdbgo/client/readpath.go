@@ -52,6 +52,26 @@ func (tx *Transaction) readRPCTimeout() time.Duration {
 	return DefaultRPCTimeout
 }
 
+// pipelineReplyTimeout is the deferred (pipelined) read's reply-wait, capped by
+// the SetTimeout deadline so a hung pipelined reply does not run a full
+// readRPCTimeout PAST the transaction timeout (RFC-112). When the timer fires the
+// read re-drives through getValue, which is opContext-bounded and maps a blown
+// deadline to transaction_timed_out (1031). With no timeout set it is the normal
+// readRPCTimeout.
+func (tx *Transaction) pipelineReplyTimeout() time.Duration {
+	d := tx.readRPCTimeout()
+	if tx.timeout > 0 {
+		rem := time.Until(tx.deadline)
+		if rem < 0 {
+			rem = 0
+		}
+		if rem < d {
+			d = rem
+		}
+	}
+	return d
+}
+
 // opContext bounds a read's RPC waits by the transaction's SetTimeout deadline, so
 // an in-flight (slow-but-alive) read is cancelled when the timeout elapses rather
 // than re-sent for ~maxReadTimeoutRetries×readRPCTimeout. This is the Go analog of

@@ -703,11 +703,16 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, fmt.Errorf("no storage servers for key")
 	}
 
+	// Bound the send-loop dials AND (below) the deferred reply wait by the
+	// SetTimeout deadline (RFC-112): the pipelined path is what the fdb facade Get
+	// routes through, so a hung dial/reply here must honor the timeout too.
+	opCtx, opCancel := tx.opContext(ctx)
+	defer opCancel() // dials complete within this function; the reply wait uses the timer
 	// Send request without waiting for response.
 	for _, server := range loc.Servers {
-		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
+		conn, dialErr := tx.db.getOrDial(opCtx, server.Address)
 		if dialErr != nil {
-			tx.db.handleDialError(ctx, server.Address)
+			tx.db.handleDialError(opCtx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -720,7 +725,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		timer := getTimer(DefaultRPCTimeout)
+		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
 		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
