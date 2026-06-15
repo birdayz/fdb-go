@@ -2,6 +2,7 @@ package fdb
 
 import (
 	"bytes"
+	"math"
 	"testing"
 )
 
@@ -33,6 +34,11 @@ func TestTuplePackInt64_FDBVectors(t *testing.T) {
 		{1 << 56, []byte{0x1C, 0x01, 0, 0, 0, 0, 0, 0, 0}},         // first value needing the full 8 bytes
 		{-1, []byte{0x13, 0xFE}},                                   // negative: 0x14-1, one's complement
 		{-256, []byte{0x12, 0xFE, 0xFF}},
+		// int64 boundaries — pin the double-overflow path in Go (not just the C++ maintainer's
+		// cross-range run). MaxInt64 needs the full 8 bytes (0x1C); MinInt64 is the negative
+		// extreme where -v overflows back to MinInt64 and offsetEncoded overflows to MaxInt64.
+		{math.MaxInt64, []byte{0x1C, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}},
+		{math.MinInt64, []byte{0x0C, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}},
 	}
 	for _, c := range cases {
 		got := tuplePackInt64(c.v)

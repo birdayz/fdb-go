@@ -459,11 +459,13 @@ func TestDifferential_TenantCrossClientDelete(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 
-	// cgo creates → go deletes.
+	// cgo creates → go deletes. Cleanup is a best-effort safety net (double-delete after the
+	// successful delete below is harmless) so a mid-flight failure can't leak a tenant.
 	cName := []byte(fmt.Sprintf("xdel_c_%d_%s", os.Getpid(), ns))
 	if err := cgoClient.CreateTenant(cgofdb.Key(cName)); err != nil {
 		t.Fatalf("cgo create: %v", err)
 	}
+	t.Cleanup(func() { clearAndDeleteTenant(cName) })
 	if err := goClient.DeleteTenant(gofdb.Key(cName)); err != nil {
 		t.Fatalf("go DeleteTenant(cgo-created tenant): %v", err)
 	}
@@ -474,6 +476,7 @@ func TestDifferential_TenantCrossClientDelete(t *testing.T) {
 	if err := goClient.CreateTenant(gofdb.Key(gName)); err != nil {
 		t.Fatalf("go create: %v", err)
 	}
+	t.Cleanup(func() { clearAndDeleteTenant(gName) })
 	if err := cgoClient.DeleteTenant(cgofdb.Key(gName)); err != nil {
 		t.Fatalf("cgo DeleteTenant(go-created tenant): %v", err)
 	}
