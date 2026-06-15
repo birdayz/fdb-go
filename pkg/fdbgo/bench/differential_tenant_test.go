@@ -338,6 +338,145 @@ func cgoTenantGet(t *testing.T, tn cgofdb.Tenant, key string) []byte {
 	return b
 }
 
+// tenantName builds a unique tenant name for a (sub)test: pid + test path → parallel-safe.
+func tenantName(t *testing.T) []byte {
+	t.Helper()
+	return []byte(fmt.Sprintf("tcrud_%d_%s", os.Getpid(), strings.ReplaceAll(t.Name(), "/", "_")))
+}
+
+// assertSameTenantCode requires go and cgo to return the same error code, and that code to
+// equal want (libfdb_c is the oracle; if cgo itself differs from want, investigate).
+func assertSameTenantCode(t *testing.T, label string, goCode, cgoCode, want int) {
+	t.Helper()
+	if goCode != cgoCode {
+		t.Fatalf("%s: error code differs: go=%d cgo=%d (want %d)", label, goCode, cgoCode, want)
+	}
+	if goCode != want {
+		t.Fatalf("%s: both returned %d, want %d", label, goCode, want)
+	}
+}
+
+// TestDifferential_TenantCRUDErrors pins go==cgo error CODES across the tenant CRUD error
+// surface. The Go facade returns coded fdb.Error (2131–2136); libfdb_c returns the same FDB
+// codes. Each case drives BOTH clients at identical cluster state and asserts equal codes — a
+// wrong code, or success-where-the-other-errored, is a real interop divergence.
+func TestDifferential_TenantCRUDErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("duplicate_create", func(t *testing.T) {
+		t.Parallel()
+		name := tenantName(t)
+		if err := cgoClient.CreateTenant(cgofdb.Key(name)); err != nil {
+			t.Fatalf("seed create: %v", err)
+		}
+		t.Cleanup(func() { clearAndDeleteTenant(name) })
+		goCode := fdbErrorCode(goClient.CreateTenant(gofdb.Key(name)))
+		cgoCode := fdbErrorCode(cgoClient.CreateTenant(cgofdb.Key(name)))
+		assertSameTenantCode(t, "duplicate_create", goCode, cgoCode, 2132) // tenant_already_exists
+	})
+
+	t.Run("delete_nonexistent", func(t *testing.T) {
+		t.Parallel()
+		name := tenantName(t) // never created
+		goCode := fdbErrorCode(goClient.DeleteTenant(gofdb.Key(name)))
+		cgoCode := fdbErrorCode(cgoClient.DeleteTenant(cgofdb.Key(name)))
+		assertSameTenantCode(t, "delete_nonexistent", goCode, cgoCode, 2131) // tenant_not_found
+	})
+
+	t.Run("delete_nonempty", func(t *testing.T) {
+		t.Parallel()
+		name := tenantName(t)
+		if err := cgoClient.CreateTenant(cgofdb.Key(name)); err != nil {
+			t.Fatalf("seed create: %v", err)
+		}
+		t.Cleanup(func() { clearAndDeleteTenant(name) })
+		tn, err := cgoClient.OpenTenant(cgofdb.Key(name))
+		if err != nil {
+			t.Fatalf("seed open: %v", err)
+		}
+		if _, err := tn.Transact(func(tx cgofdb.Transaction) (any, error) {
+			tx.Set(cgofdb.Key("k"), []byte("v"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("seed write: %v", err)
+		}
+		goCode := fdbErrorCode(goClient.DeleteTenant(gofdb.Key(name)))
+		cgoCode := fdbErrorCode(cgoClient.DeleteTenant(cgofdb.Key(name)))
+		assertSameTenantCode(t, "delete_nonempty", goCode, cgoCode, 2133) // tenant_not_empty
+	})
+
+	t.Run("invalid_name_ff_prefix", func(t *testing.T) {
+		t.Parallel()
+		// FDB forbids tenant names starting with \xff. Both clients must reject with the same
+		// code (don't hard-code it — let the libfdb_c oracle define it, just require agreement
+		// and a non-zero/non-success result).
+		name := append([]byte{0xFF}, tenantName(t)...)
+		goCode := fdbErrorCode(goClient.CreateTenant(gofdb.Key(name)))
+		cgoCode := fdbErrorCode(cgoClient.CreateTenant(cgofdb.Key(name)))
+		if goCode != cgoCode {
+			t.Fatalf("invalid_name: error code differs: go=%d cgo=%d", goCode, cgoCode)
+		}
+		if goCode == 0 {
+			t.Fatalf("invalid_name: both accepted a \\xff-prefixed tenant name (must reject)")
+		}
+	})
+}
+
+// requireTenantAbsent asserts a tenant name is absent on BOTH clients (not listed, OpenTenant
+// fails with tenant_not_found 2131).
+func requireTenantAbsent(t *testing.T, name []byte) {
+	t.Helper()
+	goNames, err := goClient.ListTenants()
+	if err != nil {
+		t.Fatalf("go ListTenants: %v", err)
+	}
+	for _, n := range goNames {
+		if string(n) == string(name) {
+			t.Fatalf("tenant %q still listed by go after delete", name)
+		}
+	}
+	cgoNames, err := cgoClient.ListTenants()
+	if err != nil {
+		t.Fatalf("cgo ListTenants: %v", err)
+	}
+	for _, n := range cgoNames {
+		if string(n) == string(name) {
+			t.Fatalf("tenant %q still listed by cgo after delete", name)
+		}
+	}
+	if code := fdbErrorCode(func() error { _, e := goClient.OpenTenant(gofdb.Key(name)); return e }()); code != 2131 {
+		t.Fatalf("go OpenTenant(deleted) code=%d, want 2131 tenant_not_found", code)
+	}
+}
+
+// TestDifferential_TenantCrossClientDelete pins that each client can DELETE a tenant the OTHER
+// created. go.DeleteTenant must decode the libfdb_c-written nameIndex (the codec path the fix
+// corrected) to find the ID; before the fix this failed. After delete, neither client lists it.
+func TestDifferential_TenantCrossClientDelete(t *testing.T) {
+	t.Parallel()
+	ns := strings.ReplaceAll(t.Name(), "/", "_")
+
+	// cgo creates → go deletes.
+	cName := []byte(fmt.Sprintf("xdel_c_%d_%s", os.Getpid(), ns))
+	if err := cgoClient.CreateTenant(cgofdb.Key(cName)); err != nil {
+		t.Fatalf("cgo create: %v", err)
+	}
+	if err := goClient.DeleteTenant(gofdb.Key(cName)); err != nil {
+		t.Fatalf("go DeleteTenant(cgo-created tenant): %v", err)
+	}
+	requireTenantAbsent(t, cName)
+
+	// go creates → cgo deletes.
+	gName := []byte(fmt.Sprintf("xdel_g_%d_%s", os.Getpid(), ns))
+	if err := goClient.CreateTenant(gofdb.Key(gName)); err != nil {
+		t.Fatalf("go create: %v", err)
+	}
+	if err := cgoClient.DeleteTenant(cgofdb.Key(gName)); err != nil {
+		t.Fatalf("cgo DeleteTenant(go-created tenant): %v", err)
+	}
+	requireTenantAbsent(t, gName)
+}
+
 func TestDifferential_TenantVersionstampedKey(t *testing.T) {
 	t.Parallel()
 	cases := []vsKeyCase{
