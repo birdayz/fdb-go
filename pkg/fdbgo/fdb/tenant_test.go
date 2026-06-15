@@ -147,6 +147,48 @@ func TestTenant_Reset_PreservesTenantScoping(t *testing.T) {
 	}
 }
 
+// TestTenant_Transact_AppliesDatabaseDefaults closes the dimensional-coverage gap
+// @claude flagged: Tenant.Transact (→ TransactCtx → applyTxDefaults, a different
+// call site than Tenant.CreateTransaction) also inherits DB-level option defaults.
+// A 1ms database timeout must time out a tenant Transact.
+func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out (never retryable → escapes Transact)
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		_, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			tr.Get(fdb.Key("k")).MustGet() // GRV round-trip (>1ms) trips the inherited timeout
+			return nil, nil
+		})
+		if is1031(err) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("tenant.Transact did not inherit the 1ms database timeout (1031 expected) — TransactCtx applyTxDefaults not applied")
+	}
+}
+
 func TestTenantCRUD(t *testing.T) {
 	t.Parallel()
 	db, _ := openTestDBWithTenants(t)
