@@ -269,7 +269,13 @@ func atomicReplace(filename string, content []byte) error {
 		return err
 	}
 	if uid >= 0 {
-		_ = os.Chown(tmpName, uid, gid) // best-effort: requires privilege, harmless if it fails
+		// Best-effort, and a deliberate divergence: C++ atomicReplace hard-fails the
+		// whole replace on a chown error (Platform.actor.cpp), abandoning the write so
+		// the original stays intact. We keep the write — the mode (which governs
+		// readability) is already preserved, so the file stays parseable by every
+		// client; only ownership may differ in the rare cross-user case. chown-to-self
+		// (the common single-service-user deployment) always succeeds, so they match.
+		_ = os.Chown(tmpName, uid, gid)
 	}
 	if err := os.Rename(tmpName, filename); err != nil {
 		return err
