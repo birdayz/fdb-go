@@ -28,7 +28,7 @@ func TestDirectoryLayerBasic(t *testing.T) {
 	t.Logf("directory prefix: %v", ds.Bytes())
 
 	// Write data in the directory subspace.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(ds.Pack(tuple.Tuple{"key1"}), []byte("value1"))
 		return nil, nil
 	})
@@ -37,7 +37,7 @@ func TestDirectoryLayerBasic(t *testing.T) {
 	}
 
 	// Read it back.
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(ds.Pack(tuple.Tuple{"key1"})).MustGet(), nil
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestDirectoryLayerMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOrOpen: %v", err)
 	}
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(ds.Pack(tuple.Tuple{"data"}), []byte("hello"))
 		return nil, nil
 	})
@@ -159,7 +159,7 @@ func TestDirectoryLayerMove(t *testing.T) {
 	if string(newDs.Bytes()) != string(ds.Bytes()) {
 		t.Errorf("move changed prefix: old=%q, new=%q", ds.Bytes(), newDs.Bytes())
 	}
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(newDs.Pack(tuple.Tuple{"data"})).MustGet(), nil
 	})
 	if err != nil {
@@ -221,7 +221,7 @@ func TestDirectoryLayerSubdirectory(t *testing.T) {
 	}
 
 	// Write data in child.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(child.Pack(tuple.Tuple{"x"}), []byte("child_data"))
 		return nil, nil
 	})
@@ -243,7 +243,7 @@ func TestDirectoryLayerSubdirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open child: %v", err)
 	}
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(child2.Pack(tuple.Tuple{"x"})).MustGet(), nil
 	})
 	if err != nil {
@@ -468,7 +468,7 @@ func TestDirectoryLayerDataIsolation(t *testing.T) {
 	}
 
 	// Write data into both directories.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(dsA.Pack(tuple.Tuple{"shared_key"}), []byte("from_a"))
 		tr.Set(dsB.Pack(tuple.Tuple{"shared_key"}), []byte("from_b"))
 		return nil, nil
@@ -478,7 +478,7 @@ func TestDirectoryLayerDataIsolation(t *testing.T) {
 	}
 
 	// Read from dir_a — should see "from_a".
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(dsA.Pack(tuple.Tuple{"shared_key"})).MustGet(), nil
 	})
 	if err != nil {
@@ -489,7 +489,7 @@ func TestDirectoryLayerDataIsolation(t *testing.T) {
 	}
 
 	// Read from dir_b — should see "from_b".
-	result, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(dsB.Pack(tuple.Tuple{"shared_key"})).MustGet(), nil
 	})
 	if err != nil {
@@ -500,7 +500,7 @@ func TestDirectoryLayerDataIsolation(t *testing.T) {
 	}
 
 	// Read dir_a's key from dir_b's subspace — should be nil (isolated).
-	result, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		val := tr.Get(dsB.Pack(tuple.Tuple{"only_in_a"})).MustGet()
 		return val, nil
 	})
@@ -532,7 +532,7 @@ func TestDirectoryLayerNewDirectoryLayer(t *testing.T) {
 	}
 
 	// Write and read data.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(ds.Pack(tuple.Tuple{"k1"}), []byte("v1"))
 		return nil, nil
 	})
@@ -540,7 +540,7 @@ func TestDirectoryLayerNewDirectoryLayer(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(ds.Pack(tuple.Tuple{"k1"})).MustGet(), nil
 	})
 	if err != nil {
@@ -582,7 +582,7 @@ func TestDirectoryLayerNewDirectoryLayer(t *testing.T) {
 	rootDir.Remove(db, []string{"custom_dl_root_check"})
 
 	// Also clear the custom DL's metadata subspaces.
-	_, _ = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, _ = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(nodeSS)
 		tr.ClearRange(contentSS)
 		return nil, nil
@@ -615,7 +615,7 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 	}
 
 	// Write and read data at the manual prefix to verify it works.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(ds.Pack(tuple.Tuple{"test"}), []byte("manual"))
 		return nil, nil
 	})
@@ -623,7 +623,7 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(ds.Pack(tuple.Tuple{"test"})).MustGet(), nil
 	})
 	if err != nil {
@@ -643,7 +643,7 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 
 	// Clean up.
 	customDL.Remove(db, []string{"manual_prefix_dir"})
-	_, _ = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, _ = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.ClearRange(nodeSS)
 		tr.ClearRange(contentSS)
 		return nil, nil
@@ -677,7 +677,7 @@ func TestDirectoryLayerPartition(t *testing.T) {
 	t.Logf("child subspace prefix: %x", childDS.Bytes())
 
 	// Write data in the child subspace.
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(childDS.Pack(tuple.Tuple{"hello"}), []byte("world"))
 		return nil, nil
 	})
@@ -686,7 +686,7 @@ func TestDirectoryLayerPartition(t *testing.T) {
 	}
 
 	// Read it back.
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(childDS.Pack(tuple.Tuple{"hello"})).MustGet(), nil
 	})
 	if err != nil {
@@ -823,7 +823,7 @@ func TestDirectoryLayerPartitionData(t *testing.T) {
 
 	// Write data at child.
 	key := childDS.Pack(tuple.Tuple{"record", int64(42)})
-	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+	_, err = db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		tr.Set(key, []byte("data42"))
 		return nil, nil
 	})
@@ -842,7 +842,7 @@ func TestDirectoryLayerPartitionData(t *testing.T) {
 	}
 
 	// Verify data via reopened subspace.
-	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+	result, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 		return tr.Get(childDS2.Pack(tuple.Tuple{"record", int64(42)})).MustGet(), nil
 	})
 	if err != nil {

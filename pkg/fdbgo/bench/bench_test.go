@@ -133,7 +133,8 @@ func BenchmarkGet(b *testing.B) {
 func benchGetGo(b *testing.B, key string) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.Get(gofdb.Key(key)).MustGet(), nil
 		})
 		if err != nil {
@@ -159,7 +160,8 @@ func BenchmarkSet(b *testing.B) {
 	b.Run("Go/100B", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+				tx := txw.(gofdb.Transaction)
 				tx.Set(gofdb.Key(fmt.Sprintf("bench_set_%d", i)), val)
 				return nil, nil
 			})
@@ -182,7 +184,8 @@ func BenchmarkGetRange(b *testing.B) {
 		b.Run(fmt.Sprintf("Go/%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+					tx := txw.(gofdb.Transaction)
 					rr := tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key("bench_range_0000"), End: gofdb.Key(end)}, gofdb.RangeOptions{})
 					return rr.GetSliceWithError()
 				})
@@ -204,7 +207,8 @@ func BenchmarkGetRange(b *testing.B) {
 // within one transaction, then resolve all futures.
 func BenchmarkBatchGet(b *testing.B) {
 	// Seed batch data
-	goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 50; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("bench_batch_%04d", i)), make([]byte, 200))
 		}
@@ -215,7 +219,8 @@ func BenchmarkBatchGet(b *testing.B) {
 		b.Run(fmt.Sprintf("Go/%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+					tx := txw.(gofdb.Transaction)
 					futures := make([]gofdb.FutureByteSlice, n)
 					for j := 0; j < n; j++ {
 						futures[j] = tx.Get(gofdb.Key(fmt.Sprintf("bench_batch_%04d", j)))
@@ -230,7 +235,8 @@ func BenchmarkBatchGet(b *testing.B) {
 		b.Run(fmt.Sprintf("Go-serial/%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+					tx := txw.(gofdb.Transaction)
 					for j := 0; j < n; j++ {
 						tx.Get(gofdb.Key(fmt.Sprintf("bench_batch_%04d", j))).MustGet()
 					}
@@ -317,7 +323,8 @@ func BenchmarkRYW(b *testing.B) {
 	b.Run("Go", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+				tx := txw.(gofdb.Transaction)
 				tx.Set(gofdb.Key("bench_ryw"), []byte("v"))
 				return tx.Get(gofdb.Key("bench_ryw")).MustGet(), nil
 			})
@@ -390,7 +397,8 @@ func TestBenchmarkSanity(t *testing.T) {
 	}
 
 	// RYW: Set + Get in same tx returns identical bytes.
-	goRYW, _ := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goRYW, _ := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Set(gofdb.Key("bench_sanity_ryw"), []byte("sanity"))
 		return tx.Get(gofdb.Key("bench_sanity_ryw")).MustGet(), nil
 	})
@@ -414,7 +422,8 @@ func BenchmarkThroughputRead(b *testing.B) {
 
 	// Seed with 1000 keys of 1KB each.
 	for batch := 0; batch < 10; batch++ {
-		goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			for i := 0; i < batchSize; i++ {
 				key := fmt.Sprintf("bench_tp_%04d", batch*batchSize+i)
 				tx.Set(gofdb.Key(key), make([]byte, valueSize))
@@ -477,7 +486,8 @@ func BenchmarkThroughputWrite(b *testing.B) {
 		b.ReportAllocs()
 		b.SetBytes(int64(batchSize * valueSize))
 		for i := 0; i < b.N; i++ {
-			goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+				tx := txw.(gofdb.Transaction)
 				for j := 0; j < batchSize; j++ {
 					key := fmt.Sprintf("bench_tpw_%d_%04d", i, j)
 					tx.Set(gofdb.Key(key), val)

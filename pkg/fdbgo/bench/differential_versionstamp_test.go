@@ -104,14 +104,16 @@ func runVSKeyCase(t *testing.T, c vsKeyCase) {
 	}
 
 	goMasked := masked(base+"go_", func(template []byte) {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedKey(gofdb.Key(template), []byte("v"))
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("go %s write: %v", c.name, err)
 		}
 	}, func(begin, end []byte) ([]byte, bool) {
-		r, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		r, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, gofdb.RangeOptions{Limit: 1}).GetSliceWithError()
 		})
 		if err != nil {
@@ -204,14 +206,18 @@ func runVSValueCase(t *testing.T, c vsValueCase) {
 	}
 
 	goMasked := masked(base+"go", func(k, template []byte) {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedValue(gofdb.Key(k), template)
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("go %s write: %v", c.name, err)
 		}
 	}, func(k []byte) ([]byte, bool) {
-		r, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) { return tx.Get(gofdb.Key(k)).Get() })
+		r, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
+			return tx.Get(gofdb.Key(k)).Get()
+		})
 		if err != nil {
 			t.Fatalf("go %s read: %v", c.name, err)
 		}
@@ -279,13 +285,15 @@ func TestDifferential_VersionstampTuplePack(t *testing.T) {
 		if err != nil {
 			t.Fatalf("go PackWithVersionstamp: %v", err)
 		}
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedKey(gofdb.Key(key), []byte("v"))
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("go tuple vs write: %v", err)
 		}
-		r, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		r, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key(iso), End: gofdb.Key(append(append([]byte{}, iso...), 0xff))}, gofdb.RangeOptions{Limit: 1}).GetSliceWithError()
 		})
 		if err != nil {
@@ -390,7 +398,8 @@ func TestDifferential_VersionstampErrors(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			goCode := func() int {
-				_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+					tx := txw.(gofdb.Transaction)
 					tx.SetVersionstampedKey(gofdb.Key(c.operand([]byte(base+"go_"+c.name))), []byte("v"))
 					return nil, nil
 				})
@@ -452,7 +461,8 @@ func TestDifferential_VersionstampMultiOp(t *testing.T) {
 	}
 
 	goHex, goStamps := run(base+"go_", func(k1, k2 []byte) {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedKey(gofdb.Key(k1), []byte("v"))
 			tx.SetVersionstampedKey(gofdb.Key(k2), []byte("v"))
 			return nil, nil
@@ -460,7 +470,8 @@ func TestDifferential_VersionstampMultiOp(t *testing.T) {
 			t.Fatalf("go multiop write: %v", err)
 		}
 	}, func(prefix []byte) [][]byte {
-		r, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		r, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key(prefix), End: gofdb.Key(append(append([]byte{}, prefix...), 0xff))}, gofdb.RangeOptions{}).GetSliceWithError()
 		})
 		if err != nil {
@@ -559,7 +570,8 @@ func TestDifferential_GetVersionstamp(t *testing.T) {
 	check("go", func() ([]byte, []byte) {
 		iso := []byte(base + "go_")
 		var gv gofdb.FutureKey
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			data := append(append([]byte{}, iso...), make([]byte, vsStampLen)...)
 			tx.SetVersionstampedKey(gofdb.Key(vsOperand(data, len(iso))), []byte("v"))
 			gv = tx.GetVersionstamp()
@@ -571,7 +583,8 @@ func TestDifferential_GetVersionstamp(t *testing.T) {
 		if err != nil {
 			t.Fatalf("go GetVersionstamp: %v", err)
 		}
-		r, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		r, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key(iso), End: gofdb.Key(append(append([]byte{}, iso...), 0xff))}, gofdb.RangeOptions{Limit: 1}).GetSliceWithError()
 		})
 		if err != nil {

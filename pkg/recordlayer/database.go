@@ -117,6 +117,38 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 	}
 }
 
+// NewFDBDatabaseWithBackend creates an FDBDatabase driven by a build-selected fdb
+// backend (RFC-109) — e.g. the libfdb_c escape hatch, opened via fdbclient.Open
+// (which a build tag points at the pure-Go or libfdb_c client). The backend drives
+// the Run / RunRead gold path (record save/load, query, index maintenance) through
+// the Transactor interface.
+//
+// The concrete-db slot is left empty on purpose: CreateTransaction, the manual
+// FDBDatabaseRunner, and LocalityGetBoundaryKeys (online mutual indexing) return
+// concrete pure-Go handles a non-pure-Go backend cannot build, so they are
+// pure-Go-only in v1 and return errBackendNoDirectTx here (fail-fast, not a nil
+// panic) — the same scope boundary the RFC draws around tenants.
+func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
+	d := &FDBDatabase{
+		transactor:      backend,
+		storeStateCache: PassThroughStoreStateCache(),
+	}
+	// If the selected backend is actually the pure-Go client, keep its concrete
+	// handle so the direct CreateTransaction / FDBDatabaseRunner / locality paths
+	// still work — only a non-pure-Go backend (libfdb_c) genuinely lacks them.
+	// Without this, the pure-Go client via this constructor would needlessly cripple
+	// those paths.
+	if goDB, ok := backend.(fdb.Database); ok {
+		// Match NewFDBDatabase: the record layer reads \xff/metadataVersion, so make
+		// ReadSystemKeys the default on every transaction (including the direct
+		// CreateTransaction path) — otherwise the pure-Go client via this constructor
+		// would behave differently from NewFDBDatabase and fail those reads.
+		goDB.Options().SetReadSystemKeys()
+		d.db = goDB
+	}
+	return d
+}
+
 // NewFDBDatabaseFromTenant creates a new FDBDatabase wrapping an FDB tenant
 // for tenant-isolated operations. All operations will be scoped to the tenant's keyspace.
 func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
@@ -144,7 +176,7 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			transactionID: nextTransactionID.Add(1),
@@ -183,7 +215,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 // the transactor supports it (Database/Tenant via fdb.CtxTransactor), else falls back
 // to the ctx-less Transact (RFC-090). The dispatched commit + commit_unknown barrier
 // run detached regardless, so ctx never cancels an in-flight commit.
-func runTransactCtx(t fdb.Transactor, ctx context.Context, fn func(fdb.Transaction) (any, error)) (any, error) {
+func runTransactCtx(t fdb.Transactor, ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	if ct, ok := t.(fdb.CtxTransactor); ok {
 		return ct.TransactCtx(ctx, fn)
 	}
@@ -220,7 +252,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		if weak.IsCausalReadRisky {
 			tx.Options().SetCausalReadRisky()
@@ -260,7 +292,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	var hasVersionMutations bool
 	var lastCtx *FDBRecordContext
 
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.Transaction) (any, error) {
+	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
 		// Reset on retry — previous attempt's future is stale
 		vsFuture = nil
 		hasVersionMutations = false
@@ -312,6 +344,21 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	return result, nil, nil
 }
 
+// BackendCapabilityError is returned when an operation is not supported on the
+// configured fdb backend. The libfdb_c escape hatch (RFC-109) drives the
+// Run / RunRead gold path through the Transactor interface, but the direct
+// (non-retry) CreateTransaction path, the manual FDBDatabaseRunner, and
+// LocalityGetBoundaryKeys hand back concrete pure-Go handles a non-pure-Go
+// backend cannot build — those are pure-Go-only in v1.
+type BackendCapabilityError struct {
+	Op string // the unavailable operation, e.g. "CreateTransaction"
+}
+
+func (e *BackendCapabilityError) Error() string {
+	return fmt.Sprintf("recordlayer: %s is not supported on this fdb backend "+
+		"(pure-Go-only; the libfdb_c escape hatch covers the Run/RunRead path)", e.Op)
+}
+
 // CreateTransaction creates a new transaction without retry logic.
 // This is primarily used for testing scenarios where manual transaction control is needed,
 // such as testing isolation levels with concurrent transactions.
@@ -319,6 +366,9 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 func (d *FDBDatabase) CreateTransaction() (fdb.Transaction, error) {
 	if d.tenant != (fdb.Tenant{}) {
 		return d.tenant.CreateTransaction()
+	}
+	if !d.db.IsValid() {
+		return fdb.Transaction{}, &BackendCapabilityError{Op: "CreateTransaction"}
 	}
 	return d.db.CreateTransaction()
 }
@@ -373,7 +423,7 @@ type versionMutation struct {
 var nextTransactionID atomic.Int64
 
 type FDBRecordContext struct {
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
 
@@ -446,7 +496,7 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
 // This is primarily used for testing scenarios where direct transaction control is needed.
-func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
+func NewFDBRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
 	return &FDBRecordContext{
 		tx:  tx,
 		ctx: context.Background(),
@@ -454,7 +504,7 @@ func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
 }
 
 // Transaction returns the underlying FDB transaction
-func (rc *FDBRecordContext) Transaction() fdb.Transaction {
+func (rc *FDBRecordContext) Transaction() fdb.WritableTransaction {
 	return rc.tx
 }
 

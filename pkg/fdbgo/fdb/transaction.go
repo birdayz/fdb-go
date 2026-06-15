@@ -188,7 +188,7 @@ func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureK
 }
 
 // Snapshot returns a Snapshot view of this transaction.
-func (tr Transaction) Snapshot() Snapshot {
+func (tr Transaction) Snapshot() ReadTransaction {
 	return Snapshot{s: &snapshot{tx: tr.t}}
 }
 
@@ -355,7 +355,7 @@ func (tr Transaction) OnError(e Error) FutureNil {
 
 // Options returns a TransactionOptions handle.
 func (tr Transaction) Options() TransactionOptions {
-	return TransactionOptions{tx: tr.t}
+	return goTransactionOptions{tx: tr.t}
 }
 
 // SetReadVersion sets the read version for this transaction.
@@ -478,7 +478,7 @@ func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
 // Transact implements Transactor for composability.
 // Catches Error panics from MustGet() and returns them as errors,
 // matching the Apple binding's panicToError recovery.
-func (tr Transaction) Transact(f func(Transaction) (any, error)) (r any, e error) {
+func (tr Transaction) Transact(f func(WritableTransaction) (any, error)) (r any, e error) {
 	defer panicToError(&e)
 	return f(tr)
 }

@@ -43,7 +43,8 @@ func TestDifferential_GRVCacheDefaultSeesCgoSeed(t *testing.T) {
 	// And the converse: cgo sees a Go-committed key (symmetry / sanity).
 	key2 := []byte("differential_grvcache_seed_go")
 	want2 := []byte("from-go")
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Set(gofdb.Key(key2), want2)
 		return nil, nil
 	}); err != nil {

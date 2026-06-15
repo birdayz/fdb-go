@@ -37,7 +37,7 @@ func newPermutedMinMaxIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
 	secondarySubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 	isMax bool,
 ) *permutedMinMaxIndexMaintainer {

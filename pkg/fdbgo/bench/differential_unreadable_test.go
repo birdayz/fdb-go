@@ -113,7 +113,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		t.Parallel()
 		k := pfx + "svv_bypass"
 		op := unreadableSVVOperand()
-		goV, goErr := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		goV, goErr := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			if err := tx.Options().SetBypassUnreadable(); err != nil {
 				return nil, err
 			}
@@ -144,7 +145,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		kGo, kC := pfx+"svv_rywoff_go", pfx+"svv_rywoff_c"
 		// kGo seeded through the GO client (key ownership; the pre-RFC-104
 		// GRV-cache causality requirement is gone) — see the getkey subtest comment.
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.Set(gofdb.Key(kGo), []byte("storage-v"))
 			return nil, nil
 		}); err != nil {
@@ -153,7 +155,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		mustCGo(t, func(tx cgofdb.Transaction) {
 			tx.Set(cgofdb.Key(kC), []byte("storage-v"))
 		})
-		goV, goErr := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		goV, goErr := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			if err := tx.Options().SetReadYourWritesDisable(); err != nil {
 				return nil, err
 			}
@@ -192,7 +195,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		// RFC-104 made the cache opt-in/default-off, so a default Go read now sees
 		// cgo-committed data directly (pinned by TestDifferential_GRVCacheDefaultSeesCgoSeed);
 		// seeding through go here is now just key-ownership hygiene, not a workaround.
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.Set(gofdb.Key(fence), []byte("f"))
 			return nil, nil
 		}); err != nil {
@@ -205,7 +209,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 			fgtErr  error
 		}
 		var goR, cR res
-		_, goErr := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		_, goErr := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedValue(gofdb.Key(k), unreadableSVVOperand())
 			_, fgeErr := tx.GetKey(gofdb.KeySelector{Key: gofdb.Key(k), OrEqual: false, Offset: 1}).Get()
 			fgtKey, fgtErr := tx.GetKey(gofdb.KeySelector{Key: gofdb.Key(k), OrEqual: true, Offset: 1}).Get()
@@ -272,7 +277,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 		// comment. (Pre-RFC-104 a stale go read version could hide a/b here: a
 		// limited scan saw 0 rows, "reached" the pending stamp, and threw a
 		// spurious 1036. RFC-104's fresh-GRV default removed that hazard.)
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.Set(gofdb.Key(a), []byte("va"))
 			tx.Set(gofdb.Key(b), []byte("vb"))
 			return nil, nil
@@ -295,7 +301,8 @@ func TestDifferential_Unreadable(t *testing.T) {
 			t.Fatalf("cgo PrefixRange: %v", err)
 		}
 		var g, c res
-		_, goErr := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		_, goErr := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			tx.SetVersionstampedValue(gofdb.Key(z), unreadableSVVOperand())
 			limited, limErr := tx.GetRange(goRange, gofdb.RangeOptions{Limit: 2}).GetSliceWithError()
 			var keys [][]byte

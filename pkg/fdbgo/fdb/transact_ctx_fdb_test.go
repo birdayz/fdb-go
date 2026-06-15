@@ -26,7 +26,7 @@ func TestFDB_TransactCtx_CancelDuringFnAbortsBeforeCommit(t *testing.T) {
 	key := fdb.Key("rfc090/cancel-before-commit/" + t.Name())
 	ctx, cancel := context.WithCancel(context.Background())
 
-	_, err := db.TransactCtx(ctx, func(tx fdb.Transaction) (any, error) {
+	_, err := db.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
 		tx.Set(key, []byte("v"))
 		cancel() // cancel during fn, before the client loop dispatches the commit
 		return nil, nil
@@ -59,7 +59,7 @@ func TestFDB_TransactCtx_RetryLoopBoundedByCtxDeadline(t *testing.T) {
 
 	attempts := 0
 	start := time.Now()
-	_, err := db.TransactCtx(ctx, func(tx fdb.Transaction) (any, error) {
+	_, err := db.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
 		attempts++
 		return nil, fdb.Error{Code: 1020} // not_committed — always retryable
 	})

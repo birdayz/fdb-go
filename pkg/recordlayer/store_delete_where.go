@@ -331,7 +331,7 @@ func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData
 
 // clearPrefixRange clears all keys under sub.Pack(prefix) using PrefixRange
 // to include the prefix key itself (important for ungrouped aggregate data).
-func clearPrefixRange(tx fdb.Transaction, sub subspace.Subspace, prefix tuple.Tuple) error {
+func clearPrefixRange(tx fdb.WritableTransaction, sub subspace.Subspace, prefix tuple.Tuple) error {
 	key := sub.Pack(prefix)
 	pr, err := fdb.PrefixRange(key)
 	if err != nil {

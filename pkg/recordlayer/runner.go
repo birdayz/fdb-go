@@ -122,11 +122,20 @@ func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRe
 
 // runOnce executes fn in a single transaction, applying context config.
 func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var createTx func() (fdb.Transaction, error)
+	// createTx returns the WritableTransaction interface so the record context can hold
+	// a backend-agnostic handle (RFC-109). CreateTransaction returns the concrete
+	// fdb.Transaction; func return types are invariant, so adapt it through a closure.
+	var createTx func() (fdb.WritableTransaction, error)
 	if r.db.tenant != (fdb.Tenant{}) {
-		createTx = r.db.tenant.CreateTransaction
+		createTx = func() (fdb.WritableTransaction, error) { return r.db.tenant.CreateTransaction() }
 	} else {
-		createTx = r.db.db.CreateTransaction
+		// The manual runner needs a direct (non-retry) transaction, which only the
+		// pure-Go backend can build. On a non-pure-Go backend (RFC-109 escape hatch)
+		// fail fast rather than nil-panic — the gold path is Run/RunRead, not this.
+		if !r.db.db.IsValid() {
+			return nil, &BackendCapabilityError{Op: "FDBDatabaseRunner"}
+		}
+		createTx = func() (fdb.WritableTransaction, error) { return r.db.db.CreateTransaction() }
 	}
 
 	tx, err := createTx()
@@ -189,11 +198,16 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 // the runner's context configuration. Matches Java's FDBDatabaseRunner.openContext().
 // The caller is responsible for committing or cancelling the transaction.
 func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext, error) {
-	var tx fdb.Transaction
+	var tx fdb.WritableTransaction
 	var err error
 	if r.db.tenant != (fdb.Tenant{}) {
 		tx, err = r.db.tenant.CreateTransaction()
 	} else {
+		// Direct transaction creation is pure-Go-only (RFC-109); fail fast on a
+		// non-pure-Go backend instead of nil-panicking on a zero Database.
+		if !r.db.db.IsValid() {
+			return nil, &BackendCapabilityError{Op: "FDBDatabaseRunner.OpenContext"}
+		}
 		tx, err = r.db.db.CreateTransaction()
 	}
 	if err != nil {

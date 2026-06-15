@@ -74,7 +74,8 @@ func runRYWReadDifferential(t *testing.T, label string, seed, pending []fuzzOp) 
 	clearPrefix(t, cPfx)
 
 	if len(seed) > 0 {
-		if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			applyGo(tx, seed, goPfx)
 			return nil, nil
 		}); err != nil {

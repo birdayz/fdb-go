@@ -48,7 +48,7 @@ type spfreshIndexMaintainer struct {
 func newSPFreshIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 	rctx *FDBRecordContext,
 	timer *StoreTimer,

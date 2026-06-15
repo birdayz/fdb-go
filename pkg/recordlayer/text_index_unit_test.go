@@ -1197,7 +1197,7 @@ var _ = Describe("BunchedMap methods", func() {
 	// putEntries inserts N entries with sequential int64 keys into the map within
 	// a single transaction. Each entry's value is a position list [key*10, key*10+1].
 	putEntries := func(bm *BunchedMap, ss subspace.Subspace, n int) {
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			for i := 0; i < n; i++ {
 				k := tuple.Tuple{int64(i)}
 				v := []int{i * 10, i*10 + 1}
@@ -1235,7 +1235,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, 5)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(3)})
 			if err != nil {
 				return nil, err
@@ -1252,7 +1252,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, 5)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(99)})
 			if err != nil {
 				return nil, err
@@ -1267,7 +1267,7 @@ var _ = Describe("BunchedMap methods", func() {
 		ss := bunchedSubspace()
 		bm := NewBunchedMap(10)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(0)})
 			if err != nil {
 				return nil, err
@@ -1291,7 +1291,7 @@ var _ = Describe("BunchedMap methods", func() {
 		putEntries(bm, ss, n)
 
 		// Compact with keyLimit=0 (all at once).
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			cont, err := bm.Compact(tx, ss, 0, nil)
 			if err != nil {
 				return nil, err
@@ -1302,7 +1302,7 @@ var _ = Describe("BunchedMap methods", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Verify all entries still accessible.
-		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			for i := 0; i < n; i++ {
 				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
 				if err != nil {
@@ -1322,7 +1322,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, 10)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			cont, err := bm.Compact(tx, ss, 0, nil)
 			if err != nil {
 				return nil, err
@@ -1345,7 +1345,7 @@ var _ = Describe("BunchedMap methods", func() {
 		calls := 0
 		for {
 			var cont []byte
-			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 				var err error
 				cont, err = bm.Compact(tx, ss, 3, continuation)
 				if err != nil {
@@ -1365,7 +1365,7 @@ var _ = Describe("BunchedMap methods", func() {
 		Expect(calls).To(BeNumerically(">", 1), "small keyLimit should need multiple calls")
 
 		// Verify all entries still readable.
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			for i := 0; i < n; i++ {
 				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
 				if err != nil {
@@ -1386,7 +1386,7 @@ var _ = Describe("BunchedMap methods", func() {
 		putEntries(bm, ss, 30)
 
 		// Compact all.
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, err := bm.Compact(tx, ss, 0, nil)
 			if err != nil {
 				return nil, err
@@ -1396,7 +1396,7 @@ var _ = Describe("BunchedMap methods", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// VerifyIntegrity should pass.
-		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			err := bm.VerifyIntegrity(tx, ss)
 			if err != nil {
 				return nil, err
@@ -1417,7 +1417,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, n)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, nil, 0, false)
 			entries := collectAll(it)
 			Expect(entries).To(HaveLen(n))
@@ -1439,7 +1439,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, n)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, nil, 0, true)
 			entries := collectAll(it)
 			Expect(entries).To(HaveLen(n))
@@ -1463,7 +1463,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		putEntries(bm, ss, n)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, nil, limit, false)
 			entries := collectAll(it)
 			Expect(entries).To(HaveLen(limit))
@@ -1491,7 +1491,7 @@ var _ = Describe("BunchedMap methods", func() {
 
 		// First scan: get first 4 entries.
 		var continuation []byte
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, nil, limit, false)
 			entries := collectAll(it)
 			Expect(entries).To(HaveLen(limit))
@@ -1502,7 +1502,7 @@ var _ = Describe("BunchedMap methods", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Second scan: resume from continuation, get remaining 6 entries.
-		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, continuation, 0, false)
 			entries := collectAll(it)
 			Expect(entries).To(HaveLen(n - limit))
@@ -1524,7 +1524,7 @@ var _ = Describe("BunchedMap methods", func() {
 		ss := bunchedSubspace()
 		bm := NewBunchedMap(10)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			it := bm.Scan(tx, ss, nil, 0, false)
 			entries := collectAll(it)
 			Expect(entries).To(BeEmpty())
@@ -1547,7 +1547,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		timer := NewStoreTimer()
 		bm := NewInstrumentedBunchedMap(10, timer)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10, 20})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1573,7 +1573,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		timer := NewStoreTimer()
 		bm := NewInstrumentedBunchedMap(10, timer)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
 			Expect(err).NotTo(HaveOccurred())
 			_, _, err = bm.Put(tx, ss, tuple.Tuple{int64(2)}, []int{20})
@@ -1584,7 +1584,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 
 		timer.Reset()
 
-		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, _, err := bm.Remove(tx, ss, tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
@@ -1605,7 +1605,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		timer := NewStoreTimer()
 		bm := NewInstrumentedBunchedMap(10, timer)
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
 			Expect(err).NotTo(HaveOccurred())
 			return nil, nil
@@ -1614,7 +1614,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 
 		timer.Reset()
 
-		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
@@ -1633,7 +1633,7 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		ss := bunchedSubspace()
 		bm := NewBunchedMap(10) // no timer
 
-		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
 			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
 			Expect(err).NotTo(HaveOccurred())
 			_, found, err := bm.Get(tx, ss, tuple.Tuple{int64(1)})

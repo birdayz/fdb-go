@@ -588,9 +588,9 @@ type retryOnceTransactor struct {
 	inner fdb.Transactor
 }
 
-func (t *retryOnceTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, error) {
+func (t *retryOnceTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	first := true
-	return t.inner.Transact(func(tx fdb.Transaction) (any, error) {
+	return t.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		res, err := fn(tx)
 		if err != nil {
 			return res, err

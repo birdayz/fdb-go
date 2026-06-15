@@ -176,8 +176,35 @@ func (dl directoryLayer) createOrOpen(rtr fdb.ReadTransaction, tr *fdb.Transacti
 	return dl.contentsOfNode(node, path, layer)
 }
 
+// UnsupportedBackendError is returned by the directory layer's write APIs when the
+// transactor is not the pure-Go fdb backend. The directory layer uses concrete
+// pure-Go transaction features and is out of the RFC-109 libfdb_c escape-hatch
+// scope; calling it with a non-pure-Go (e.g. libfdb_c) backend returns this rather
+// than panicking on the concrete-type assertion.
+type UnsupportedBackendError struct{ Op string }
+
+func (e *UnsupportedBackendError) Error() string {
+	return "directory: " + e.Op + " requires the pure-Go fdb backend " +
+		"(the libfdb_c escape hatch is out of scope — RFC-109)"
+}
+
+// pureGoTx asserts the bound WritableTransaction is the concrete pure-Go
+// fdb.Transaction the directory layer needs, returning UnsupportedBackendError
+// instead of panicking when the transactor is a non-pure-Go backend.
+func pureGoTx(trw fdb.WritableTransaction, op string) (fdb.Transaction, error) {
+	tr, ok := trw.(fdb.Transaction)
+	if !ok {
+		return fdb.Transaction{}, &UnsupportedBackendError{Op: op}
+	}
+	return tr, nil
+}
+
 func (dl directoryLayer) CreateOrOpen(t fdb.Transactor, path []string, layer []byte) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr, perr := pureGoTx(trw, "CreateOrOpen")
+		if perr != nil {
+			return nil, perr
+		}
 		return dl.createOrOpen(tr, &tr, path, layer, nil, true, true)
 	})
 	if e != nil {
@@ -187,7 +214,11 @@ func (dl directoryLayer) CreateOrOpen(t fdb.Transactor, path []string, layer []b
 }
 
 func (dl directoryLayer) Create(t fdb.Transactor, path []string, layer []byte) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr, perr := pureGoTx(trw, "Create")
+		if perr != nil {
+			return nil, perr
+		}
 		return dl.createOrOpen(tr, &tr, path, layer, nil, true, false)
 	})
 	if e != nil {
@@ -200,7 +231,11 @@ func (dl directoryLayer) CreatePrefix(t fdb.Transactor, path []string, layer []b
 	if prefix == nil {
 		prefix = []byte{}
 	}
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr, perr := pureGoTx(trw, "CreatePrefix")
+		if perr != nil {
+			return nil, perr
+		}
 		return dl.createOrOpen(tr, &tr, path, layer, prefix, true, false)
 	})
 	if e != nil {
@@ -278,7 +313,11 @@ func (dl directoryLayer) MoveTo(t fdb.Transactor, newAbsolutePath []string) (Dir
 }
 
 func (dl directoryLayer) Move(t fdb.Transactor, oldPath []string, newPath []string) (DirectorySubspace, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr, perr := pureGoTx(trw, "Move")
+		if perr != nil {
+			return nil, perr
+		}
 		if e := dl.checkVersion(tr, &tr); e != nil {
 			return nil, e
 		}
@@ -340,7 +379,11 @@ func (dl directoryLayer) Move(t fdb.Transactor, oldPath []string, newPath []stri
 }
 
 func (dl directoryLayer) Remove(t fdb.Transactor, path []string) (bool, error) {
-	r, e := t.Transact(func(tr fdb.Transaction) (any, error) {
+	r, e := t.Transact(func(trw fdb.WritableTransaction) (any, error) {
+		tr, perr := pureGoTx(trw, "Remove")
+		if perr != nil {
+			return false, perr
+		}
 		if e := dl.checkVersion(tr, &tr); e != nil {
 			return false, e
 		}

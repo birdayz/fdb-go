@@ -230,7 +230,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 }
 
 // saveLeaderboardDirectory saves the directory to FDB.
-func saveLeaderboardDirectory(tx fdb.Transaction, extraSubspace subspace.Subspace, dir *leaderboardDirectory) error {
+func saveLeaderboardDirectory(tx fdb.WritableTransaction, extraSubspace subspace.Subspace, dir *leaderboardDirectory) error {
 	data, err := dir.toProto().MarshalVT()
 	if err != nil {
 		return fmt.Errorf("saveLeaderboardDirectory: marshal: %w", err)
@@ -288,7 +288,7 @@ func loadLeaderboardSubDirectory(
 // saveLeaderboardSubDirectory persists a per-group sub-directory to FDB.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.saveSubDirectory().
 func saveLeaderboardSubDirectory(
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	extraSubspace subspace.Subspace,
 	sub *leaderboardSubDirectory,
 ) error {

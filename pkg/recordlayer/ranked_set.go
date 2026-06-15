@@ -100,7 +100,7 @@ func newRankedSet(sub subspace.Subspace, config rankedSetConfig) *rankedSet {
 // Init initializes the ranked set by creating sentinel entries at each level.
 // Idempotent — skips levels that already have sentinels.
 // Must be called before first use. Matches Java's rankedSet.init().
-func (rs *rankedSet) Init(tx fdb.Transaction) error {
+func (rs *rankedSet) Init(tx fdb.WritableTransaction) error {
 	for level := 0; level < rs.config.NLevels; level++ {
 		k := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(level), []byte{}}))
 		v, err := tx.Get(k).Get()
@@ -127,7 +127,7 @@ func (rs *rankedSet) InitNeeded(tx fdb.ReadTransaction) (bool, error) {
 // Add inserts a key into the ranked set. Returns true if the set was modified.
 // If CountDuplicates is false and key already exists, returns false.
 // Matches Java's rankedSet.add().
-func (rs *rankedSet) Add(tx fdb.Transaction, key []byte) (bool, error) {
+func (rs *rankedSet) Add(tx fdb.WritableTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, &rankedSetEmptyKeyError{}
 	}
@@ -171,7 +171,7 @@ func (rs *rankedSet) Add(tx fdb.Transaction, key []byte) (bool, error) {
 
 // addInsertLevelKey inserts a new entry for key at the given level.
 // Splits the count from the previous entry by recounting from the level below.
-func (rs *rankedSet) addInsertLevelKey(tx fdb.Transaction, key []byte, level int) error {
+func (rs *rankedSet) addInsertLevelKey(tx fdb.WritableTransaction, key []byte, level int) error {
 	prevKey, err := rs.getPreviousKey(tx, level, key, false)
 	if err != nil {
 		return err
@@ -199,7 +199,7 @@ func (rs *rankedSet) addInsertLevelKey(tx fdb.Transaction, key []byte, level int
 
 // Remove removes a key from the ranked set. Returns true if the key was present.
 // Matches Java's rankedSet.remove().
-func (rs *rankedSet) Remove(tx fdb.Transaction, key []byte) (bool, error) {
+func (rs *rankedSet) Remove(tx fdb.WritableTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, &rankedSetEmptyKeyError{}
 	}
@@ -468,7 +468,7 @@ func (rs *rankedSet) Size(tx fdb.ReadTransaction) (int64, error) {
 }
 
 // Clear removes all entries and reinitializes the ranked set.
-func (rs *rankedSet) Clear(tx fdb.Transaction) error {
+func (rs *rankedSet) Clear(tx fdb.WritableTransaction) error {
 	beginKC, endKC := rs.subspace.FDBRangeKeys()
 	tx.ClearRange(fdb.KeyRange{Begin: beginKC.FDBKey(), End: endKC.FDBKey()})
 	return rs.Init(tx)
@@ -498,7 +498,7 @@ func (rs *rankedSet) countCheckedKey(tx fdb.ReadTransaction, key []byte) (*int64
 //
 // If orEqual is true, the key itself may be returned (used for duplicates
 // where the key already exists at this level).
-func (rs *rankedSet) getPreviousKey(tx fdb.Transaction, level int, key []byte, orEqual bool) ([]byte, error) {
+func (rs *rankedSet) getPreviousKey(tx fdb.WritableTransaction, level int, key []byte, orEqual bool) ([]byte, error) {
 	k := rs.subspace.Pack(tuple.Tuple{int64(level), key})
 	begin := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(level), []byte{}}))
 

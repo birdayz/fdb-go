@@ -26,7 +26,8 @@ func TestInterop_GoWriteCGoRead(t *testing.T) {
 	}
 
 	// Write via Go client.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for k, v := range pairs {
 			tx.Set(gofdb.Key(k), v)
 		}
@@ -76,7 +77,8 @@ func TestInterop_CGoWriteGoRead(t *testing.T) {
 	// Read via Go client. Invalidate GRV cache to see CGo writes.
 	goClient.InvalidateGRVCache()
 	for k, want := range pairs {
-		result, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		result, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.Get(gofdb.Key(k)).MustGet(), nil
 		})
 		if err != nil {
@@ -105,7 +107,8 @@ func TestInterop_MixedWriteBothRead(t *testing.T) {
 	}
 
 	// Go client writes its keys.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for k, v := range goKeys {
 			tx.Set(gofdb.Key(k), v)
 		}
@@ -138,7 +141,8 @@ func TestInterop_MixedWriteBothRead(t *testing.T) {
 	// Go client reads all keys. Invalidate cache to see CGo writes.
 	goClient.InvalidateGRVCache()
 	for k, want := range all {
-		result, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		result, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.Get(gofdb.Key(k)).MustGet(), nil
 		})
 		if err != nil {
@@ -189,7 +193,8 @@ func TestInterop_AtomicAdd(t *testing.T) {
 	}
 
 	// Go client does atomic ADD +7 on keyGoAdd.
-	_, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err = goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Add(gofdb.Key(keyGoAdd), addParam(7))
 		return nil, nil
 	})
@@ -220,7 +225,8 @@ func TestInterop_AtomicAdd(t *testing.T) {
 	// Go reads keyCGoAdd — should be 13.
 	// Invalidate GRV cache so Go sees the CGo write (cache staleness = 100ms).
 	goClient.InvalidateGRVCache()
-	result, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	result, err = goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.Get(gofdb.Key(keyCGoAdd)).MustGet(), nil
 	})
 	if err != nil {
@@ -239,7 +245,8 @@ func TestInterop_AtomicAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init shared: %v", err)
 	}
-	_, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err = goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Add(gofdb.Key(sharedKey), addParam(3))
 		return nil, nil
 	})
@@ -254,7 +261,8 @@ func TestInterop_AtomicAdd(t *testing.T) {
 		t.Fatalf("cgo add shared: %v", err)
 	}
 	goClient.InvalidateGRVCache()
-	result, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	result, err = goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.Get(gofdb.Key(sharedKey)).MustGet(), nil
 	})
 	if err != nil {
@@ -271,7 +279,8 @@ func TestInterop_ClearRange(t *testing.T) {
 	prefix := "interop_cr_"
 
 	// Go writes 10 keys: interop_cr_00 .. interop_cr_09.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 10; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("val_%02d", i)))
 		}
@@ -297,7 +306,8 @@ func TestInterop_ClearRange(t *testing.T) {
 	goClient.InvalidateGRVCache()
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("%s%02d", prefix, i)
-		result, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		result, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			return tx.Get(gofdb.Key(key)).MustGet(), nil
 		})
 		if err != nil {
@@ -320,7 +330,8 @@ func TestInterop_GetRange(t *testing.T) {
 		prefix := "interop_gr_gw_"
 
 		// Go writes 100 keys.
-		_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			for i := 0; i < 100; i++ {
 				tx.Set(gofdb.Key(fmt.Sprintf("%s%04d", prefix, i)), []byte(fmt.Sprintf("v%04d", i)))
 			}
@@ -373,7 +384,8 @@ func TestInterop_GetRange(t *testing.T) {
 
 		// Go reads all 100 via GetRange. Invalidate cache to see CGo writes.
 		goClient.InvalidateGRVCache()
-		result, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		result, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+			tx := txw.(gofdb.Transaction)
 			rr := tx.GetRange(gofdb.KeyRange{
 				Begin: gofdb.Key(prefix + "0000"),
 				End:   gofdb.Key(prefix + "9999"),
@@ -416,7 +428,8 @@ func TestInterop_Versionstamp(t *testing.T) {
 	value := []byte("versionstamped_value")
 
 	// Write via Go client using SetVersionstampedKey.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.SetVersionstampedKey(gofdb.Key(vsKeyTemplate), value)
 		return nil, nil
 	})
@@ -550,7 +563,8 @@ func TestInterop_GetRangeReverse(t *testing.T) {
 	prefix := "interop_rev_"
 
 	// Seed via Go client.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 5; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
 		}
@@ -561,7 +575,8 @@ func TestInterop_GetRangeReverse(t *testing.T) {
 	}
 
 	// Read reverse via Go.
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		rr := tx.GetRange(gofdb.KeyRange{
 			Begin: gofdb.Key(prefix),
 			End:   gofdb.Key(prefix + "\xff"),
@@ -627,7 +642,8 @@ func TestInterop_KeySelector(t *testing.T) {
 	goClient.InvalidateGRVCache()
 
 	// Resolve FirstGreaterOrEqual(prefix+"02") via both clients.
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.GetKey(gofdb.FirstGreaterOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
 	})
 	if err != nil {
@@ -657,7 +673,8 @@ func TestInterop_GetRangeWithLimit(t *testing.T) {
 	prefix := "interop_lim_"
 
 	// Seed via Go.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 10; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
 		}
@@ -668,7 +685,8 @@ func TestInterop_GetRangeWithLimit(t *testing.T) {
 	}
 
 	// Read with limit=3 via both.
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		rr := tx.GetRange(gofdb.KeyRange{
 			Begin: gofdb.Key(prefix),
 			End:   gofdb.Key(prefix + "\xff"),
@@ -709,7 +727,8 @@ func TestInterop_LastLessOrEqual(t *testing.T) {
 	prefix := "interop_lle_"
 
 	// Seed via Go.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 5; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte("v"))
 		}
@@ -722,7 +741,8 @@ func TestInterop_LastLessOrEqual(t *testing.T) {
 	goClient.InvalidateGRVCache()
 
 	// LastLessOrEqual("interop_lle_02") → should return "interop_lle_02" (exact match).
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.GetKey(gofdb.LastLessOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
 	})
 	if err != nil {
@@ -746,7 +766,8 @@ func TestInterop_LastLessOrEqual(t *testing.T) {
 	}
 
 	// LastLessThan("interop_lle_02") → should return "interop_lle_01".
-	goResult2, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult2, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.GetKey(gofdb.LastLessThan(gofdb.Key(prefix + "02"))).MustGet(), nil
 	})
 	if err != nil {
@@ -775,7 +796,8 @@ func TestInterop_SelectorRange(t *testing.T) {
 	prefix := "interop_sr_"
 
 	// Seed via Go.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 10; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
 		}
@@ -789,7 +811,8 @@ func TestInterop_SelectorRange(t *testing.T) {
 
 	// GetRange with SelectorRange: [LastLessOrEqual("03"), FirstGreaterThan("07"))
 	// Should return keys 03, 04, 05, 06, 07.
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		rr := tx.GetRange(gofdb.SelectorRange{
 			Begin: gofdb.LastLessOrEqual(gofdb.Key(prefix + "03")),
 			End:   gofdb.FirstGreaterThan(gofdb.Key(prefix + "07")),
@@ -836,7 +859,8 @@ func TestInterop_SnapshotGetKey(t *testing.T) {
 	prefix := "interop_sks_"
 
 	// Seed via Go.
-	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		for i := 0; i < 5; i++ {
 			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte("v"))
 		}
@@ -848,7 +872,8 @@ func TestInterop_SnapshotGetKey(t *testing.T) {
 
 	// Resolve via Snapshot.GetKey on Go client.
 	goClient.InvalidateGRVCache()
-	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	goResult, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.Snapshot().GetKey(gofdb.FirstGreaterOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
 	})
 	if err != nil {
@@ -884,7 +909,8 @@ func TestInterop_DirectoryLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go CreateOrOpen: %v", err)
 	}
-	_, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	_, err = goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		tx.Set(goDs.Pack(gotuple.Tuple{"msg"}), []byte("from_go"))
 		return nil, nil
 	})
@@ -930,7 +956,8 @@ func TestInterop_DirectoryLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go Open cgo-created dir: %v", err)
 	}
-	result2, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	result2, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		return tx.Get(goDs2.Pack(gotuple.Tuple{"msg"})).MustGet(), nil
 	})
 	if err != nil {

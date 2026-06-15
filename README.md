@@ -88,6 +88,32 @@ typed := recordlayer.NewTypedFDBRecordStore[*pb.Order](store)
 order, err := typed.LoadRecord(ctx, primaryKey)
 ```
 
+## FDB client backend (pure-Go vs libfdb_c)
+
+The record layer runs on either of two wire-compatible FDB clients; a **build tag** picks
+one (there is no runtime flag — the choice is static per binary). Application code is
+backend-agnostic and opens through `fdbclient.Open`:
+
+```go
+import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
+
+db, _ := fdbclient.Open(clusterFile)            // backend-agnostic
+rl := recordlayer.NewFDBDatabaseWithBackend(db)
+```
+
+```sh
+go build ./...                        # default: the from-scratch pure-Go client (no cgo, no libfdb_c)
+CGO_ENABLED=1 go build -tags libfdbc  # Apple's libfdb_c client (the escape hatch)
+```
+
+Exactly one client is linked, so a default build never pulls in cgo or the C library;
+`fdbclient.Backend` (`"pure-go"` / `"libfdb_c"`) reports which one a binary carries. Both
+clients read and write byte-identical records, index entries, and continuations against the
+same cluster — proven by a cross-backend differential suite — so you can flip the tag and
+keep sharing data (with each other, and with Java/C apps). This is the same idiom the
+standard library uses for its `netgo`/`netcgo` resolver split and the sqlite ecosystem uses
+to swap mattn/go-sqlite3 (cgo) for modernc.org/sqlite (pure-Go).
+
 ## SQL engine
 
 Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by a

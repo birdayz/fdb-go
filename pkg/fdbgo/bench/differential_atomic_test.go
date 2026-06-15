@@ -116,7 +116,8 @@ func applyCgoAtomic(tx cgofdb.Transaction, op int, k cgofdb.Key, operand []byte)
 func goFold(t *testing.T, pfx string, c atomicFoldCase) (inTxn, committed string) {
 	t.Helper()
 	k := gofdb.Key(pfx + "go_" + c.name)
-	if _, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+	if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
 		if c.base != nil {
 			tx.Set(k, c.base)
 		}
@@ -130,7 +131,10 @@ func goFold(t *testing.T, pfx string, c atomicFoldCase) (inTxn, committed string
 	}); err != nil {
 		t.Fatalf("go %s txn: %v", c.name, err)
 	}
-	cv, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) { return tx.Get(k).Get() })
+	cv, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+		tx := txw.(gofdb.Transaction)
+		return tx.Get(k).Get()
+	})
 	if err != nil {
 		t.Fatalf("go %s read-back: %v", c.name, err)
 	}

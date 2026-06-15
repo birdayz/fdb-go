@@ -238,7 +238,7 @@ func spfreshGCSweep(ctx context.Context, db *FDBDatabase, s *spfreshStorage, con
 // rule, applied at GC time). The routing cache is the sweep-scoped one the
 // caller loaded once (sweep staleness tolerated: every target is REAL-read
 // verified ACTIVE below before anything is written).
-func spfreshRehome(tx fdb.Transaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cache *spfreshRoutingCache, pk tuple.Tuple, deadID int64, mem []int64) error {
+func spfreshRehome(tx fdb.WritableTransaction, s *spfreshStorage, config SPFreshConfig, quantizer *spfreshQuantizer, cache *spfreshRoutingCache, pk tuple.Tuple, deadID int64, mem []int64) error {
 	data, gerr := tx.Get(s.sidecarKey(pk)).Get()
 	if gerr != nil {
 		return gerr

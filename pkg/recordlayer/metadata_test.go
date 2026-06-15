@@ -129,7 +129,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Manually write a key with an invalid/unknown record type index
-		_, err = sharedDB.db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err = sharedDB.db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			invalidTypeIndex := int64(999)
 			primaryKey := int64(3001)
 
@@ -177,7 +177,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		Expect(buildErr).NotTo(HaveOccurred())
 
 		// Manually write a key with invalid type index
-		_, err := sharedDB.db.Transact(func(tr fdb.Transaction) (any, error) {
+		_, err := sharedDB.db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 			invalidTypeIndex := int64(888)
 			primaryKey := int64(4001)
 

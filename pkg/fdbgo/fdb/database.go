@@ -212,7 +212,7 @@ func (db Database) CreateTransaction() (Transaction, error) {
 }
 
 // Transact runs a transactional function with automatic retry.
-func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, error) {
 	return db.TransactCtx(db.d.ctx, f)
 }
 
@@ -221,7 +221,7 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 // idempotency barrier run on a detached context (in client.Database.Transact), so the
 // caller's ctx never cancels an in-flight commit — which is already bounded by the
 // per-RPC timeout.
-func (db Database) TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error) {
+func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
@@ -340,7 +340,8 @@ func (db Database) OpenTenant(name KeyConvertible) (Tenant, error) {
 		return Tenant{}, errTenantInvalid
 	}
 	var tenantId int64
-	_, err := db.Transact(func(tr Transaction) (any, error) {
+	_, err := db.Transact(func(trw WritableTransaction) (any, error) {
+		tr := trw.(Transaction) // tenant ops are pure-Go only (out of RFC-109 escape-hatch scope)
 		tr.Options().SetReadSystemKeys()
 		tr.Options().SetReadLockAware() // C++ tryGetTenant: READ_SYSTEM_KEYS + READ_LOCK_AWARE
 		var err error
@@ -363,7 +364,8 @@ func (db Database) OpenTenantById(id int64) Tenant {
 // CreateTenant creates a new tenant. Writes to system keys (\xff/tenant/*)
 // matching C++ TenantAPI::createTenantTransaction.
 func (db Database) CreateTenant(name KeyConvertible) error {
-	_, err := db.Transact(func(tr Transaction) (any, error) {
+	_, err := db.Transact(func(trw WritableTransaction) (any, error) {
+		tr := trw.(Transaction) // tenant ops are pure-Go only (out of RFC-109 escape-hatch scope)
 		tr.Options().SetAccessSystemKeys()
 		tr.Options().SetLockAware() // C++ createTenant: ACCESS_SYSTEM_KEYS + LOCK_AWARE
 		_, err := createTenantInternal(tr, name.FDBKey())
@@ -374,7 +376,8 @@ func (db Database) CreateTenant(name KeyConvertible) error {
 
 // DeleteTenant deletes a tenant. Writes to system keys (\xff/tenant/*).
 func (db Database) DeleteTenant(name KeyConvertible) error {
-	_, err := db.Transact(func(tr Transaction) (any, error) {
+	_, err := db.Transact(func(trw WritableTransaction) (any, error) {
+		tr := trw.(Transaction) // tenant ops are pure-Go only (out of RFC-109 escape-hatch scope)
 		tr.Options().SetAccessSystemKeys()
 		tr.Options().SetLockAware() // C++ deleteTenant: ACCESS_SYSTEM_KEYS + LOCK_AWARE
 		return nil, deleteTenantInternal(tr, name.FDBKey())
@@ -384,7 +387,8 @@ func (db Database) DeleteTenant(name KeyConvertible) error {
 
 // ListTenants lists all tenants by scanning the name index.
 func (db Database) ListTenants() ([]Key, error) {
-	result, err := db.Transact(func(tr Transaction) (any, error) {
+	result, err := db.Transact(func(trw WritableTransaction) (any, error) {
+		tr := trw.(Transaction) // tenant ops are pure-Go only (out of RFC-109 escape-hatch scope)
 		tr.Options().SetReadSystemKeys()
 		tr.Options().SetLockAware() // C++ listTenants: READ_SYSTEM_KEYS + LOCK_AWARE
 		return listTenantsInternal(tr)

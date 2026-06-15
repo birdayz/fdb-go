@@ -28,7 +28,7 @@ var errSPFreshNotFound = errors.New("spfresh: not found")
 // fence (RFC-094 §3): the value check covers transactions that start after a
 // flip, the conflict range covers in-flight writers racing one. Returns
 // errSPFreshNotFound when no generation has ever been established.
-func spfreshReadGenerationForWrite(tx fdb.Transaction, s *spfreshStorage) (int64, error) {
+func spfreshReadGenerationForWrite(tx fdb.WritableTransaction, s *spfreshStorage) (int64, error) {
 	data, err := tx.Get(s.metaKey(spfreshMetaGeneration)).Get()
 	if err != nil {
 		return 0, fmt.Errorf("spfresh: read generation: %w", err)
@@ -60,7 +60,7 @@ func spfreshReadGenerationSnapshot(tx fdb.ReadTransaction, s *spfreshStorage) (i
 
 // spfreshSetGeneration writes the current readable generation (the flip).
 // The caller's transaction is the atomic flip boundary.
-func spfreshSetGeneration(tx fdb.Transaction, s *spfreshStorage, gen int64) {
+func spfreshSetGeneration(tx fdb.WritableTransaction, s *spfreshStorage, gen int64) {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(gen))
 	tx.Set(s.metaKey(spfreshMetaGeneration), buf[:])
@@ -75,7 +75,7 @@ const spfreshIDBlockSize = 1 << 16
 // allocator. REAL read-modify-write — contention scope is concurrent
 // claimers only (split/merge/build txs), and each claim amortizes 65k IDs.
 // IDs start at 1; 0 is reserved as "none".
-func spfreshClaimIDBlock(tx fdb.Transaction, s *spfreshStorage) (start int64, err error) {
+func spfreshClaimIDBlock(tx fdb.WritableTransaction, s *spfreshStorage) (start int64, err error) {
 	key := s.metaKey(spfreshMetaIDBlock)
 	data, err := tx.Get(key).Get()
 	if err != nil {
@@ -108,7 +108,7 @@ func spfreshClaimIDBlock(tx fdb.Transaction, s *spfreshStorage) (start int64, er
 // spfreshTakeBuilderToken unconditionally claims build ownership — the
 // maintainer's pre-build clear path, where the generation CAS in the same
 // transaction has already proven the target is not live.
-func spfreshTakeBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) {
+func spfreshTakeBuilderToken(tx fdb.WritableTransaction, s *spfreshStorage, token []byte) {
 	tx.Set(s.metaKey(spfreshMetaBuild), token)
 }
 
@@ -120,7 +120,7 @@ func spfreshTakeBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte
 // a foreign token here may belong to a long-COMPLETED build, not a live one.
 // Direct-driven builders (tests) that mean to supersede one take ownership
 // explicitly via spfreshTakeBuilderToken; the maintainer path always does.
-func spfreshClaimBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
+func spfreshClaimBuilderToken(tx fdb.WritableTransaction, s *spfreshStorage, token []byte) error {
 	key := s.metaKey(spfreshMetaBuild)
 	cur, err := tx.Get(key).Get()
 	if err != nil {
@@ -136,7 +136,7 @@ func spfreshClaimBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byt
 // spfreshVerifyBuilderToken errors unless the ownership slot still carries
 // this build's token. REAL read: the conflict range makes any of our
 // transactions in flight when a takeover commits abort at the resolver.
-func spfreshVerifyBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []byte) error {
+func spfreshVerifyBuilderToken(tx fdb.WritableTransaction, s *spfreshStorage, token []byte) error {
 	cur, err := tx.Get(s.metaKey(spfreshMetaBuild)).Get()
 	if err != nil {
 		return fmt.Errorf("spfresh: read builder token: %w", err)
@@ -149,7 +149,7 @@ func spfreshVerifyBuilderToken(tx fdb.Transaction, s *spfreshStorage, token []by
 
 // --- CENTROIDS / COARSE ---
 
-func spfreshSaveCentroid(tx fdb.Transaction, s *spfreshStorage, cellID, fineID int64, row []byte) {
+func spfreshSaveCentroid(tx fdb.WritableTransaction, s *spfreshStorage, cellID, fineID int64, row []byte) {
 	spfreshAudit("save", cellID, fineID, row[0])
 	tx.Set(s.centroidKey(cellID, fineID), row)
 }
@@ -203,7 +203,7 @@ func SPFreshAuditTrail(fineID int64) []string {
 // spfreshReadCentroidForWrite REAL-reads a fine centroid's state row — the
 // insert/lifecycle fence (RFC-094 §5/§6). Absent (moved by a coarse split, or
 // never existed) returns errSPFreshNotFound; the caller re-routes.
-func spfreshReadCentroidForWrite(tx fdb.Transaction, s *spfreshStorage, cellID, fineID int64) (spfreshCentroidRow, error) {
+func spfreshReadCentroidForWrite(tx fdb.WritableTransaction, s *spfreshStorage, cellID, fineID int64) (spfreshCentroidRow, error) {
 	data, err := tx.Get(s.centroidKey(cellID, fineID)).Get()
 	if err != nil {
 		return spfreshCentroidRow{}, fmt.Errorf("spfresh: read centroid (%d,%d): %w", cellID, fineID, err)
@@ -232,7 +232,7 @@ func spfreshLoadCell(tx fdb.ReadTransaction, s *spfreshStorage, cellID int64) (r
 // based on this read, so a fine lifecycle committing a new child/FORWARD row
 // after a snapshot load would be silently wiped (codex 094.3 r1 P1). The
 // conflict range makes whichever side commits second abort at the resolver.
-func spfreshLoadCellForWrite(tx fdb.Transaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
+func spfreshLoadCellForWrite(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64) (rows []spfreshCellRow, fwdA, fwdB int64, err error) {
 	return spfreshLoadCellRange(tx, s, cellID)
 }
 
@@ -273,7 +273,7 @@ func spfreshLoadCellRange(tx fdb.ReadTransaction, s *spfreshStorage, cellID int6
 
 // spfreshReadCoarseForWrite REAL-reads one COARSE row — the coarse-lifecycle
 // state fence (§6b zombie rules). Absent returns errSPFreshNotFound.
-func spfreshReadCoarseForWrite(tx fdb.Transaction, s *spfreshStorage, cellID int64) (spfreshCentroidRow, error) {
+func spfreshReadCoarseForWrite(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64) (spfreshCentroidRow, error) {
 	data, err := tx.Get(s.coarseKey(cellID)).Get()
 	if err != nil {
 		return spfreshCentroidRow{}, fmt.Errorf("spfresh: read coarse %d: %w", cellID, err)
@@ -284,7 +284,7 @@ func spfreshReadCoarseForWrite(tx fdb.Transaction, s *spfreshStorage, cellID int
 	return decodeCentroidRow(data)
 }
 
-func spfreshSaveCoarse(tx fdb.Transaction, s *spfreshStorage, cellID int64, row []byte) {
+func spfreshSaveCoarse(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64, row []byte) {
 	tx.Set(s.coarseKey(cellID), row)
 }
 
@@ -302,7 +302,7 @@ func spfreshLoadAllCoarse(tx fdb.ReadTransaction, s *spfreshStorage) (ids []int6
 // indexed (Torvalds 094.2 #1: the original snapshot read here was a lost
 // record with a comment claiming otherwise). With it, the coarse commit
 // aborts the save at the resolver and the retry routes itself.
-func spfreshLoadAllCoarseForWrite(tx fdb.Transaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
+func spfreshLoadAllCoarseForWrite(tx fdb.WritableTransaction, s *spfreshStorage) (ids []int64, rows []spfreshCentroidRow, err error) {
 	return spfreshLoadAllCoarseRange(tx, s)
 }
 
@@ -375,7 +375,7 @@ func spfreshLoadPostingSnapshot(tx fdb.ReadTransaction, s *spfreshStorage, fineI
 // conflict range is load-bearing (RFC-094 §6: a concurrent update/delete
 // clearing a parent key must abort this split so its retry sees truth; a
 // snapshot read here would resurrect a moved/deleted entry).
-func spfreshLoadPostingForSplit(tx fdb.Transaction, s *spfreshStorage, fineID int64) ([]spfreshPostingEntry, error) {
+func spfreshLoadPostingForSplit(tx fdb.WritableTransaction, s *spfreshStorage, fineID int64) ([]spfreshPostingEntry, error) {
 	r, err := s.postingRange(fineID)
 	if err != nil {
 		return nil, err
@@ -402,7 +402,7 @@ func spfreshLoadPostingForSplit(tx fdb.Transaction, s *spfreshStorage, fineID in
 
 // spfreshReadMembership REAL-reads a pk's copy-set: the same-pk serialization
 // point for insert/update/delete vs splits (RFC-094 §5).
-func spfreshReadMembership(tx fdb.Transaction, s *spfreshStorage, pk tuple.Tuple) ([]int64, error) {
+func spfreshReadMembership(tx fdb.WritableTransaction, s *spfreshStorage, pk tuple.Tuple) ([]int64, error) {
 	data, err := tx.Get(s.membershipKey(pk)).Get()
 	if err != nil {
 		return nil, fmt.Errorf("spfresh: read membership: %w", err)
@@ -415,14 +415,14 @@ func spfreshReadMembership(tx fdb.Transaction, s *spfreshStorage, pk tuple.Tuple
 
 // --- COUNTERS (advisory; exact only at reconciliation) ---
 
-func spfreshCounterAdd(tx fdb.Transaction, s *spfreshStorage, kind, id int64, delta int64) {
+func spfreshCounterAdd(tx fdb.WritableTransaction, s *spfreshStorage, kind, id int64, delta int64) {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(delta))
 	tx.Add(s.counterKey(kind, id), buf[:])
 }
 
 // spfreshCounterSet writes an exact value (split/merge reconciliation).
-func spfreshCounterSet(tx fdb.Transaction, s *spfreshStorage, kind, id, value int64) {
+func spfreshCounterSet(tx fdb.WritableTransaction, s *spfreshStorage, kind, id, value int64) {
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], uint64(value))
 	tx.Set(s.counterKey(kind, id), buf[:])
@@ -452,7 +452,7 @@ func spfreshCounterReadSnapshot(tx fdb.ReadTransaction, s *spfreshStorage, kind,
 // claim committing concurrently aborts this probe at the resolver — a blind
 // or snapshot-checked Set could clobber a live claim's lease/childIDs (the
 // rev-4 RFC race). Returns true when this tx wrote the task.
-func spfreshTaskSetIfAbsent(tx fdb.Transaction, s *spfreshStorage, kind, id int64) (bool, error) {
+func spfreshTaskSetIfAbsent(tx fdb.WritableTransaction, s *spfreshStorage, kind, id int64) (bool, error) {
 	key := s.taskKey(kind, id)
 	data, err := tx.Get(key).Get()
 	if err != nil {
@@ -475,7 +475,7 @@ var errSPFreshLeaseHeld = errors.New("spfresh: task lease held by another owner"
 // or already-ours rows are (re)claimed with the new lease; a live foreign
 // lease returns errSPFreshLeaseHeld (someone else is mid-lifecycle). Absent
 // rows return errSPFreshNotFound — enqueue first.
-func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, owner string, leaseDeadlineMs, nowMs int64) (spfreshTaskRow, error) {
+func spfreshTaskClaim(tx fdb.WritableTransaction, s *spfreshStorage, kind, id int64, owner string, leaseDeadlineMs, nowMs int64) (spfreshTaskRow, error) {
 	key := s.taskKey(kind, id)
 	data, err := tx.Get(key).Get()
 	if err != nil {
@@ -509,7 +509,7 @@ func spfreshTaskClaim(tx fdb.Transaction, s *spfreshStorage, kind, id int64, own
 // clear message rather than fall into the generic error here.
 const spfreshMaxDeltasPerTx = 0x10000 // 65536
 
-func spfreshAppendDeltas(tx fdb.Transaction, s *spfreshStorage, deltas []spfreshDelta) error {
+func spfreshAppendDeltas(tx fdb.WritableTransaction, s *spfreshStorage, deltas []spfreshDelta) error {
 	for i, d := range deltas {
 		if i >= spfreshMaxDeltasPerTx {
 			return fmt.Errorf("spfresh: too many deltas in one tx: %d", len(deltas))
@@ -555,11 +555,11 @@ func spfreshReadDeltasSince(tx fdb.ReadTransaction, s *spfreshStorage, from fdb.
 
 // --- SIDECAR / STAGING ---
 
-func spfreshSaveSidecar(tx fdb.Transaction, s *spfreshStorage, pk tuple.Tuple, fp16 []byte) {
+func spfreshSaveSidecar(tx fdb.WritableTransaction, s *spfreshStorage, pk tuple.Tuple, fp16 []byte) {
 	tx.Set(s.sidecarKey(pk), fp16)
 }
 
-func spfreshSaveStaging(tx fdb.Transaction, s *spfreshStorage, cellID int64, pk tuple.Tuple, fp16 []byte) {
+func spfreshSaveStaging(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64, pk tuple.Tuple, fp16 []byte) {
 	tx.Set(s.stagingKey(cellID, pk), fp16)
 }
 
@@ -567,7 +567,7 @@ func spfreshSaveStaging(tx fdb.Transaction, s *spfreshStorage, cellID int64, pk 
 // finalizer read whose conflict range serializes it against stragglers that
 // commit during its window (RFC-094 §8); stragglers committing before its
 // read version are returned as data and must be processed, not cleared.
-func spfreshLoadStagingCell(tx fdb.Transaction, s *spfreshStorage, cellID int64) (pks []tuple.Tuple, vecs [][]byte, err error) {
+func spfreshLoadStagingCell(tx fdb.WritableTransaction, s *spfreshStorage, cellID int64) (pks []tuple.Tuple, vecs [][]byte, err error) {
 	r, err := s.stagingCellRange(cellID)
 	if err != nil {
 		return nil, nil, err

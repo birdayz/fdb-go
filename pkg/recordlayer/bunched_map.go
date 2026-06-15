@@ -120,7 +120,7 @@ func joinBytes(slices ...[]byte) []byte {
 // Returns (value, true, nil) if found, (nil, false, nil) if not found.
 // Always adds a read conflict key on the map key for serializability,
 // matching Java's BunchedMap.get() which takes TransactionContext.
-func (m *BunchedMap) Get(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
+func (m *BunchedMap) Get(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
 	subspaceKey := ss.Bytes()
 	kv, found, err := m.entryForKey(tx, subspaceKey, key)
 	if err != nil {
@@ -149,7 +149,7 @@ func (m *BunchedMap) Get(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tup
 // Put inserts or updates a key-value pair in the map.
 // Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.put().
-func (m *BunchedMap) Put(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple, value []int) ([]int, bool, error) {
+func (m *BunchedMap) Put(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple, value []int) ([]int, bool, error) {
 	subspaceKey := ss.Bytes()
 	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 
@@ -205,7 +205,7 @@ func (m *BunchedMap) Put(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tup
 // Remove removes a key from the map.
 // Returns (oldValue, true, nil) if found and removed, (nil, false, nil) if not found.
 // Matches Java's BunchedMap.remove().
-func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
+func (m *BunchedMap) Remove(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
 	subspaceKey := ss.Bytes()
 
 	kv, found, err := m.entryForKey(tx, subspaceKey, key)
@@ -326,7 +326,7 @@ func (m *BunchedMap) VerifyIntegrity(tx fdb.ReadTransaction, ss subspace.Subspac
 // "Grand Theory of Conflict Ranges" (BunchedMap.java lines 234-270):
 // "When reading a map key, add a read conflict key to the corresponding
 // key in the DB regardless of DB keys actually read."
-func (m *BunchedMap) entryForKey(tx fdb.Transaction, subspaceKey []byte, key tuple.Tuple) (fdb.KeyValue, bool, error) {
+func (m *BunchedMap) entryForKey(tx fdb.WritableTransaction, subspaceKey []byte, key tuple.Tuple) (fdb.KeyValue, bool, error) {
 	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 
 	// Add a read conflict key for the map key being accessed.
@@ -372,7 +372,7 @@ func (m *BunchedMap) entryForKey(tx fdb.Transaction, subspaceKey []byte, key tup
 // addEntryListReadConflictRange adds a read conflict range covering all entries
 // in the entry list. Range is [signpostKey, lastEntryKey + 0x00).
 // Matches Java's BunchedMap.addEntryListReadConflictRange().
-func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.Transaction, subspaceKey, keyBytes []byte, entryList []bunchedEntry) {
+func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte, entryList []bunchedEntry) {
 	end := joinBytes(subspaceKey, m.serializer.SerializeKey(entryList[len(entryList)-1].Key), zeroArray)
 	// Ignore errors — matches Java which doesn't check return value.
 	_ = tx.AddReadConflictRange(fdb.KeyRange{
@@ -383,7 +383,7 @@ func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.Transaction, subspaceK
 
 // insertAlone creates a new signpost with a single entry.
 // Matches Java's BunchedMap.insertAlone().
-func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunchedEntry) error {
+func (m *BunchedMap) insertAlone(tx fdb.WritableTransaction, keyBytes []byte, entry bunchedEntry) error {
 	_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
 	valueBytes, err := m.serializer.SerializeEntries([]bunchedEntry{entry})
 	if err != nil {
@@ -397,7 +397,7 @@ func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunc
 // writeEntryListWithoutChecking writes an entry list to FDB with proper conflict ranges
 // but without size checking.
 // Matches Java's BunchedMap.writeEntryListWithoutChecking().
-func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceKey, keyBytes []byte,
+func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry, serializedBytes []byte,
 ) {
 	// Order matters: add read conflict range BEFORE writing (see Java comment about
@@ -424,7 +424,7 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceK
 // writeEntryList serializes and writes an entry list, handling size overflow by splitting.
 // isFirst/isLast indicate position relative to the insertion point.
 // Matches Java's BunchedMap.writeEntryList().
-func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []byte,
+func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry,
 	kvAfter *fdb.KeyValue, isFirst, isLast bool,
 ) error {
@@ -497,7 +497,7 @@ func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []
 // insertAfter tries to prepend the entry into kvAfter's bunch, or creates
 // a standalone signpost if kvAfter doesn't exist or is full.
 // Matches Java's BunchedMap.insertAfter().
-func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byte,
+func (m *BunchedMap) insertAfter(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
 	kvAfter *fdb.KeyValue, entry bunchedEntry,
 ) error {
 	if kvAfter == nil {
@@ -527,7 +527,7 @@ func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byt
 // insertEntry handles the core insertion logic after signpost lookup.
 // Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.insertEntry().
-func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byte,
+func (m *BunchedMap) insertEntry(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
 	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry,
 ) ([]int, bool, error) {
 	if kvBefore == nil {
@@ -620,7 +620,7 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 
 // ContainsKey checks if a key exists in the map.
 // Matches Java's BunchedMap.containsKey().
-func (m *BunchedMap) ContainsKey(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple) (bool, error) {
+func (m *BunchedMap) ContainsKey(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple) (bool, error) {
 	subspaceKey := ss.Bytes()
 	kv, found, err := m.entryForKey(tx, subspaceKey, key)
 	if err != nil {
@@ -651,7 +651,7 @@ func (m *BunchedMap) ContainsKey(tx fdb.Transaction, ss subspace.Subspace, key t
 // continuation token for multi-transaction compaction. Returns (nil, nil) when
 // compaction is complete.
 // Matches Java's BunchedMap.compact().
-func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit int, continuation []byte) ([]byte, error) {
+func (m *BunchedMap) Compact(tx fdb.WritableTransaction, ss subspace.Subspace, keyLimit int, continuation []byte) ([]byte, error) {
 	subspaceKey := ss.Bytes()
 
 	// Build range to read.

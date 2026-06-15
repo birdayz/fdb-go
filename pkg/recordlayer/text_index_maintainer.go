@@ -24,7 +24,7 @@ type textIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	secSubspace   subspace.Subspace // secondary subspace for tokenizer version tracking
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	store         indexStoreContext
 
 	tokenizer                   TextTokenizer
@@ -34,11 +34,11 @@ type textIndexMaintainer struct {
 	bunchedMap                  *BunchedMap
 }
 
-func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) (*textIndexMaintainer, error) {
+func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext) (*textIndexMaintainer, error) {
 	return newTextIndexMaintainerWithTimer(index, indexSubspace, secSubspace, tx, store, nil)
 }
 
-func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
+func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
 	tokenizer, err := getTextTokenizer(index)
 	if err != nil {
 		return nil, fmt.Errorf("text index %q: %w", index.Name, err)

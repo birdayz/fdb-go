@@ -78,11 +78,11 @@ type indexStoreContext interface {
 type standardIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	store         indexStoreContext
 }
 
-func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *standardIndexMaintainer {
+func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext) *standardIndexMaintainer {
 	return &standardIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -339,7 +339,7 @@ func (m *standardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte
 // in the specified subspace. Uses FDB PrefixRange to include the exact prefix key
 // (important for ungrouped aggregate indexes).
 // Shared implementation for all index maintainer types.
-func deleteWhereRange(tx fdb.Transaction, indexSubspace subspace.Subspace, prefix tuple.Tuple) error {
+func deleteWhereRange(tx fdb.WritableTransaction, indexSubspace subspace.Subspace, prefix tuple.Tuple) error {
 	key := indexSubspace.Pack(prefix)
 	pr, err := fdb.PrefixRange(key)
 	if err != nil {

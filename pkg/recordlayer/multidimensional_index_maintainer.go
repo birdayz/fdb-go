@@ -27,7 +27,7 @@ type multidimensionalIndexMaintainer struct {
 func newMultidimensionalIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
-	tx fdb.Transaction,
+	tx fdb.WritableTransaction,
 	store indexStoreContext,
 	numDimensions int,
 ) *multidimensionalIndexMaintainer {

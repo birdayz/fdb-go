@@ -10,7 +10,7 @@
 //	db := fdb.MustOpenDefault()
 //	defer db.Close()
 //
-//	ret, err := db.Transact(func(tr fdb.Transaction) (interface{}, error) {
+//	ret, err := db.Transact(func(tr fdb.WritableTransaction) (interface{}, error) {
 //	    tr.Set(fdb.Key("hello"), []byte("world"))
 //	    return tr.Get(fdb.Key("foo")).MustGet(), nil
 //	})

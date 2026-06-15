@@ -5,7 +5,7 @@ import "context"
 // Transactor can execute a function that requires a Transaction.
 // Both Database and Transaction implement Transactor.
 type Transactor interface {
-	Transact(func(Transaction) (any, error)) (any, error)
+	Transact(func(WritableTransaction) (any, error)) (any, error)
 	ReadTransactor
 }
 
@@ -24,7 +24,7 @@ type ReadTransactor interface {
 // caller's ctx never cancels an in-flight commit (which is already bounded by the
 // per-RPC timeout).
 type CtxTransactor interface {
-	TransactCtx(ctx context.Context, f func(Transaction) (any, error)) (any, error)
+	TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error)
 }
 
 // CtxReadTransactor is the read-side analog of CtxTransactor (bounds the read-retry
@@ -35,13 +35,18 @@ type CtxReadTransactor interface {
 
 // ReadTransaction can asynchronously read from a FoundationDB database.
 // Transaction and Snapshot both satisfy ReadTransaction.
+//
+// GetDatabase() is intentionally OFF this interface (RFC-109): it returns the
+// concrete pure-Go fdb.Database (a ~40-method handle a cgo backend cannot
+// build), and nothing in the record layer calls it through the interface — same
+// rationale as Watch/Locality/tenant methods staying concrete-only. It remains a
+// concrete method on Transaction/Snapshot for direct-typed callers.
 type ReadTransaction interface {
 	Get(key KeyConvertible) FutureByteSlice
 	GetKey(sel Selectable) FutureKey
 	GetRange(r Range, options RangeOptions) RangeResult
 	GetReadVersion() FutureInt64
-	GetDatabase() Database
-	Snapshot() Snapshot
+	Snapshot() ReadTransaction
 	GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64
 	GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray
 	Options() TransactionOptions
@@ -75,6 +80,16 @@ type WritableTransaction interface {
 	CompareAndClear(key KeyConvertible, param []byte)
 	SetVersionstampedKey(key KeyConvertible, param []byte)
 	SetVersionstampedValue(key KeyConvertible, param []byte)
+
+	// []byte fast-path overloads — avoid KeyConvertible boxing on the hot index-
+	// maintenance path (RFC-109: callers invoke these through the interface, so they
+	// must be on it; both backends implement them).
+	SetBytes(key, value []byte)
+	ClearBytes(key []byte)
+	AddBytes(key, param []byte)
+	MaxBytes(key, param []byte)
+	MinBytes(key, param []byte)
+	CompareAndClearBytes(key, param []byte)
 
 	// Conflict ranges
 	AddReadConflictRange(er ExactRange) error

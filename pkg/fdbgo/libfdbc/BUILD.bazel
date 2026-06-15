@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# Only backend_stub.go is built by bazel/gazelle: the real backend (backend.go, options.go)
+# and the differential test are //go:build cgo && libfdbc, and bazel does not set the
+# `libfdbc` tag — so a default `bazelisk build/test //...` never compiles the cgo backend or
+# links libfdb_c. The real backend and the cross-client differential are exercised by
+# `go test -tags libfdbc ./pkg/fdbgo/libfdbc/...`, run in the nightly cgo workflow (which has
+# libfdb_c installed). The stub here just keeps the package importable in the default build.
+go_library(
+    name = "libfdbc",
+    srcs = ["backend_stub.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/fdbgo/fdb"],
+)

@@ -85,7 +85,7 @@ func rangeSetKeyAfter(key []byte) []byte {
 
 // Contains checks if key is in any range in the set.
 // Adds a read conflict on the key for proper isolation.
-func (rs *RangeSet) Contains(tr fdb.Transaction, key []byte) (bool, error) {
+func (rs *RangeSet) Contains(tr fdb.WritableTransaction, key []byte) (bool, error) {
 	if err := rangeSetCheckKey(key); err != nil {
 		return false, err
 	}
@@ -117,7 +117,7 @@ func (rs *RangeSet) Contains(tr fdb.Transaction, key []byte) (bool, error) {
 // If begin is nil, uses FIRST_KEY. If end is nil, uses FINAL_KEY.
 // If requireEmpty is true, only inserts if the range is currently empty (atomic test-and-set).
 // Returns true if the database was modified.
-func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEmpty bool) (bool, error) {
+func (rs *RangeSet) InsertRange(tr fdb.WritableTransaction, begin, end []byte, requireEmpty bool) (bool, error) {
 	beginNonNull := begin
 	if beginNonNull == nil {
 		beginNonNull = rangeSetFirstKey
@@ -261,7 +261,7 @@ func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEm
 // MissingRanges returns the gaps (ranges not in the set) within [begin, end).
 // If begin is nil, uses FIRST_KEY. If end is nil, uses FINAL_KEY.
 // If limit <= 0, returns all gaps.
-func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit int) ([]RangeSetRange, error) {
+func (rs *RangeSet) MissingRanges(tr fdb.WritableTransaction, begin, end []byte, limit int) ([]RangeSetRange, error) {
 	beginNonNull := begin
 	if beginNonNull == nil {
 		beginNonNull = rangeSetFirstKey
@@ -356,7 +356,7 @@ func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit i
 }
 
 // IsEmpty returns true if no ranges have been inserted into this set.
-func (rs *RangeSet) IsEmpty(tr fdb.Transaction) (bool, error) {
+func (rs *RangeSet) IsEmpty(tr fdb.WritableTransaction) (bool, error) {
 	ranges, err := rs.MissingRanges(tr, nil, nil, 1)
 	if err != nil {
 		return false, err
@@ -370,7 +370,7 @@ func (rs *RangeSet) IsEmpty(tr fdb.Transaction) (bool, error) {
 }
 
 // Clear removes all ranges from the set.
-func (rs *RangeSet) Clear(tr fdb.Transaction) {
+func (rs *RangeSet) Clear(tr fdb.WritableTransaction) {
 	begin, end := rs.subspace.FDBRangeKeys()
 	tr.ClearRange(fdb.KeyRange{Begin: begin, End: end})
 }

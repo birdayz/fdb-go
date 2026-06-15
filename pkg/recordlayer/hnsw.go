@@ -11,7 +11,7 @@ package recordlayer
 //
 // This problem does not exist in Go:
 //   - Go's FDB bindings are synchronous. Each Insert/Delete/Search call runs
-//     sequentially on the same fdb.Transaction. There are no concurrent async
+//     sequentially on the same fdb.WritableTransaction. There are no concurrent async
 //     futures within a single transaction.
 //   - Cross-transaction correctness is handled by FDB's serializable isolation.
 //     Concurrent transactions modifying the same HNSW nodes conflict on shared
@@ -303,7 +303,7 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 // primaryKey identifies the record. vector is the float64 vector to index.
 // Wire-compatible with Java's HNSW insert (compact + inlining node formats,
 // deterministic layer assignment, FHT-KAC rotation for RaBitQ).
-func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
+func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64) error {
 	// Fire both existence check and access info read as parallel futures.
 	// Existence check uses layer 0 (always compact format).
 	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
@@ -522,7 +522,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 // When a quantizer is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
 // initializes the FHT-KAC rotator immediately with a zero centroid.
 // Matches Java's Insert.firstInsert().
-func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
+func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
 	info := &hnswAccessInfo{
 		layer:       insertLayer,
 		pk:          primaryKey,
@@ -580,7 +580,7 @@ type aggregatedVector struct {
 // is yet established. transformedVec is the new vector in the current (identity, pre-centroid)
 // transform space. The random is the insert's PK-seeded SplittableRandom, consumed in Java's
 // order (sample, maintain, then the rotator seed at the transition).
-func (g *hnswGraph) addToStatsIfNecessary(tx fdb.Transaction, info *hnswAccessInfo, transformedVec []float64, random *splittableRandom) error {
+func (g *hnswGraph) addToStatsIfNecessary(tx fdb.WritableTransaction, info *hnswAccessInfo, transformedVec []float64, random *splittableRandom) error {
 	if g.config.Quantizer == nil || info == nil || info.hasTransform() {
 		return nil // not RaBitQ, or centroid already established
 	}
@@ -665,7 +665,7 @@ func aggregateVectors(samples []aggregatedVector) (aggregatedVector, error) {
 // per-entry count is in the key, the (raw) vector in the value. The unique key element is random
 // (Java uses UUID.randomUUID); it is ignored on read, so any unique value works and does not
 // affect the order-independent aggregate.
-func (s *hnswStorage) appendSampledVector(tx fdb.Transaction, count int, vec []float64) error {
+func (s *hnswStorage) appendSampledVector(tx fdb.WritableTransaction, count int, vec []float64) error {
 	var uniq [16]byte
 	if _, err := cryptorand.Read(uniq[:]); err != nil {
 		return fmt.Errorf("hnsw stats: sample key entropy: %w", err)
@@ -678,7 +678,7 @@ func (s *hnswStorage) appendSampledVector(tx fdb.Transaction, count int, vec []f
 
 // consumeSampledVectors reads up to numMax SAMPLES entries (snapshot, reverse) and CLEARS each
 // (only the consumed keys take a read-conflict, not the whole range). Java consumeSampledVectors.
-func (s *hnswStorage) consumeSampledVectors(tx fdb.Transaction, numMax int) ([]aggregatedVector, error) {
+func (s *hnswStorage) consumeSampledVectors(tx fdb.WritableTransaction, numMax int) ([]aggregatedVector, error) {
 	r, err := fdb.PrefixRange(s.samplesSubspace.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("hnsw stats: samples range: %w", err)
@@ -703,7 +703,7 @@ func (s *hnswStorage) consumeSampledVectors(tx fdb.Transaction, numMax int) ([]a
 }
 
 // deleteAllSampledVectors clears the whole SAMPLES subspace. Java deleteAllSampledVectors.
-func (s *hnswStorage) deleteAllSampledVectors(tx fdb.Transaction) error {
+func (s *hnswStorage) deleteAllSampledVectors(tx fdb.WritableTransaction) error {
 	r, err := fdb.PrefixRange(s.samplesSubspace.Bytes())
 	if err != nil {
 		return fmt.Errorf("hnsw stats: samples range: %w", err)
@@ -744,7 +744,7 @@ func (s *hnswStorage) aggregatedVectorFromRaw(key, value []byte) (aggregatedVect
 // at once, reducing sequential round-trips from O(topLvl) to O(1) for the read phase.
 // For inlining layers, uses preloadLayerDispatch (already done during search/insert).
 // Repairs are still sequential (each needs neighbor data from FDB).
-func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
+func (g *hnswGraph) Delete(tx fdb.WritableTransaction, primaryKey tuple.Tuple) error {
 	accessInfo, accessErr := g.storage.loadAccessInfo(tx)
 	if accessErr != nil {
 		if e := hnswFatal(accessErr); e != nil {
@@ -1007,7 +1007,7 @@ func (g *hnswGraph) findDeletionRepairCandidates(tx fdb.ReadTransaction, layer i
 // deleteFromLayerRepair deletes deletedPK from one layer and repairs its neighbors against
 // the shared candidate set, then prunes and persists. Returns the first repair candidate as
 // Java's potential new entry node (Delete.deleteFromLayer).
-func (g *hnswGraph) deleteFromLayerRepair(tx fdb.Transaction, layer int, deletedPK tuple.Tuple, deletedNeighbors [][]byte, random *splittableRandom) (tuple.Tuple, []byte, error) {
+func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int, deletedPK tuple.Tuple, deletedNeighbors [][]byte, random *splittableRandom) (tuple.Tuple, []byte, error) {
 	deletedSpan := nestPK(deletedPK)
 	candidates, err := g.findDeletionRepairCandidates(tx, layer, deletedPK, deletedNeighbors, random)
 	if err != nil {
@@ -1658,7 +1658,7 @@ func (s *hnswStorage) cacheStore(key string, node *parsedNode) {
 // saveNodeLayer writes one layer's data for a node in COMPACT format.
 // Key: dataSubspace.Pack(Tuple{layer, primaryKey})  (PK as nested tuple, matching Java)
 // Value: Tuple.Pack(nodeKind, vectorTuple, neighborsTuple)
-func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple) {
+func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple) {
 	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
 	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 
@@ -2013,7 +2013,7 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 }
 
 // deleteNodeLayer removes one layer's data for a node.
-func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
+func (s *hnswStorage) deleteNodeLayer(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple) {
 	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
 	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	tx.Clear(fdb.Key(key))
@@ -2117,7 +2117,7 @@ func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (*hnswAccessInfo, e
 // saveAccessInfo writes the entry point metadata.
 // Wire-compatible with Java's StorageAdapter.writeAccessInfo:
 // Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
-func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, info *hnswAccessInfo) {
+func (s *hnswStorage) saveAccessInfo(tx fdb.WritableTransaction, info *hnswAccessInfo) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
 
 	// Serialize centroid as a vector tuple (or nil).
@@ -2137,13 +2137,13 @@ func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, info *hnswAccessInfo) {
 }
 
 // clearAccessInfo removes the entry point metadata.
-func (s *hnswStorage) clearAccessInfo(tx fdb.Transaction) {
+func (s *hnswStorage) clearAccessInfo(tx fdb.WritableTransaction) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
 	tx.Clear(fdb.Key(key))
 }
 
 // clearAll removes all HNSW graph data (data + access info).
-func (s *hnswStorage) clearAll(tx fdb.Transaction) {
+func (s *hnswStorage) clearAll(tx fdb.WritableTransaction) {
 	for _, ss := range []subspace.Subspace{s.dataSubspace, s.accessSubspace} {
 		r, err := fdb.PrefixRange(ss.Bytes())
 		if err != nil {
@@ -2177,7 +2177,7 @@ func (s *hnswStorage) isInliningLayer(layer int) bool {
 // WITH the reference from search/selection to the write (InliningStorageAdapter writes
 // nodeReference.getVector(), never a cache lookup). A nil entry falls back to the per-tx
 // cache; an unresolvable vector is an ERROR, never a silently dropped edge.
-func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
+func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
 	// Clear all existing edges for this node at this layer.
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	r, err := fdb.PrefixRange(prefix)
@@ -2407,7 +2407,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 // deleteNodeLayerInlining clears outgoing edges for this node at the given
 // inlining layer via a (layer, pk, *) prefix range clear. Incoming edges
 // (where this node is a neighbor of others) are cleaned up by repairNeighbor.
-func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
+func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple) {
 	// Clear outgoing edges: (layer, pk, *).
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	r, err := fdb.PrefixRange(prefix)
@@ -2509,7 +2509,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 // where the vector travels with the reference from search/selection to the write.
 // Compact writes don't need it (nil is fine). Returns an error if an inlining edge's
 // vector cannot be resolved from the provided vecs or the per-tx cache.
-func (s *hnswStorage) saveNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
+func (s *hnswStorage) saveNodeLayerDispatch(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple, neighborVecs [][]byte) error {
 	if s.isInliningLayer(layer) {
 		return s.saveNodeLayerInlining(tx, layer, primaryKey, neighbors, neighborVecs)
 	}
@@ -2574,7 +2574,7 @@ func (s *hnswStorage) loadNodeLayerBatchDispatch(tx fdb.ReadTransaction, layer i
 }
 
 // deleteNodeLayerDispatch deletes a node's layer data in the appropriate format.
-func (s *hnswStorage) deleteNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
+func (s *hnswStorage) deleteNodeLayerDispatch(tx fdb.WritableTransaction, layer int, primaryKey tuple.Tuple) {
 	if s.isInliningLayer(layer) {
 		s.deleteNodeLayerInlining(tx, layer, primaryKey)
 	} else {

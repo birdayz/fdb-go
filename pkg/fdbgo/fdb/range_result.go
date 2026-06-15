@@ -6,8 +6,30 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
 
-// RangeResult is the asynchronous result of a range read.
-type RangeResult struct {
+// RangeResult is the asynchronous result of a range read. It is an INTERFACE (RFC-109)
+// so a non-pure-Go backend (libfdb_c) can return its own implementation; the pure-Go
+// client returns goRangeResult.
+type RangeResult interface {
+	// GetSliceWithError materializes the whole range into a slice.
+	GetSliceWithError() ([]KeyValue, error)
+	// GetSliceOrPanic is GetSliceWithError, panicking on error.
+	GetSliceOrPanic() []KeyValue
+	// Iterator streams the range in batches per the StreamingMode.
+	Iterator() RangeIterator
+}
+
+// RangeIterator streams key-value pairs from a range read. Call Advance() before each
+// Get(); Get() is idempotent (returns the current element without advancing). Interface
+// for the same backend-substitution reason as RangeResult (RFC-109).
+type RangeIterator interface {
+	Advance() bool
+	Get() (KeyValue, error)
+	MustGet() KeyValue
+	SetTraceLog(fn func(iteration, requested, returned int, more bool, err error))
+}
+
+// goRangeResult is the pure-Go client's RangeResult implementation.
+type goRangeResult struct {
 	tx       *transaction
 	r        Range
 	options  RangeOptions
@@ -15,11 +37,11 @@ type RangeResult struct {
 }
 
 func newRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return RangeResult{tx: tx, r: r, options: options}
+	return goRangeResult{tx: tx, r: r, options: options}
 }
 
 func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return RangeResult{tx: tx, r: r, options: options, snapshot: true}
+	return goRangeResult{tx: tx, r: r, options: options, snapshot: true}
 }
 
 // keyAfter returns the smallest key strictly greater than k — a fresh copy of
@@ -46,7 +68,7 @@ func effectiveLimit(limit int) int {
 	return limit
 }
 
-func (rr RangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
+func (rr goRangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
 	if rr.snapshot {
 		snap := rr.tx.inner.Snapshot()
 		if rr.options.Reverse {
@@ -63,7 +85,7 @@ func (rr RangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.K
 // doRangeSnapshot always uses snapshot reads (no conflict ranges added).
 // Used by the iterator for batches after the first — C++ records the full
 // conflict range once at getRange() call time, then fetches lazily.
-func (rr RangeResult) doRangeSnapshot(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
+func (rr goRangeResult) doRangeSnapshot(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
 	snap := rr.tx.inner.Snapshot()
 	if rr.options.Reverse {
 		return snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
@@ -77,7 +99,7 @@ func (rr RangeResult) doRangeSnapshot(begin, end []byte, limit int) ([]client.Ke
 // WARNING: This eagerly loads all matching key-value pairs into memory.
 // For large ranges this can cause excessive memory usage. Prefer
 // Iterator() for streaming large result sets.
-func (rr RangeResult) GetSliceWithError() ([]KeyValue, error) {
+func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
 	begin, end, err := resolveRange(rr.tx, rr.r)
 	if err != nil {
 		return nil, convertError(err)
@@ -95,7 +117,7 @@ func (rr RangeResult) GetSliceWithError() ([]KeyValue, error) {
 }
 
 // GetSliceOrPanic returns all key-value pairs or panics on error.
-func (rr RangeResult) GetSliceOrPanic() []KeyValue {
+func (rr goRangeResult) GetSliceOrPanic() []KeyValue {
 	s, err := rr.GetSliceWithError()
 	if err != nil {
 		panic(err)
@@ -105,12 +127,12 @@ func (rr RangeResult) GetSliceOrPanic() []KeyValue {
 
 // Iterator returns a RangeIterator for streaming through results.
 // The iterator fetches data in batches according to the StreamingMode.
-func (rr RangeResult) Iterator() *RangeIterator {
+func (rr goRangeResult) Iterator() RangeIterator {
 	begin, end, err := resolveRange(rr.tx, rr.r)
 	if err != nil {
-		return &RangeIterator{err: convertError(err)}
+		return &goRangeIterator{err: convertError(err)}
 	}
-	return &RangeIterator{
+	return &goRangeIterator{
 		rr:         rr,
 		begin:      begin,
 		end:        end,
@@ -158,8 +180,8 @@ func batchSize(mode StreamingMode, iteration int, remaining int) int {
 // Fetches data lazily in batches based on the StreamingMode.
 // Call Advance() before each Get(). Get() is idempotent — it returns the
 // current element without advancing. Only Advance() moves forward.
-type RangeIterator struct {
-	rr        RangeResult
+type goRangeIterator struct {
+	rr        goRangeResult
 	begin     []byte
 	end       []byte
 	remaining int
@@ -177,13 +199,13 @@ type RangeIterator struct {
 }
 
 // SetTraceLog sets a callback invoked after each batch fetch. For debugging.
-func (ri *RangeIterator) SetTraceLog(fn func(iteration, requested, returned int, more bool, err error)) {
+func (ri *goRangeIterator) SetTraceLog(fn func(iteration, requested, returned int, more bool, err error)) {
 	ri.traceLog = fn
 }
 
 // Advance moves to the next key-value pair. Returns true if there is a
 // value available via Get(), false at end of iteration or on error.
-func (ri *RangeIterator) Advance() bool {
+func (ri *goRangeIterator) Advance() bool {
 	if ri.err != nil {
 		return false
 	}
@@ -258,7 +280,7 @@ func (ri *RangeIterator) Advance() bool {
 
 // Get returns the current key-value pair. Get is idempotent — calling it
 // multiple times without Advance() returns the same element.
-func (ri *RangeIterator) Get() (KeyValue, error) {
+func (ri *goRangeIterator) Get() (KeyValue, error) {
 	if ri.err != nil {
 		return KeyValue{}, ri.err
 	}
@@ -269,7 +291,7 @@ func (ri *RangeIterator) Get() (KeyValue, error) {
 }
 
 // MustGet returns the current key-value pair or panics.
-func (ri *RangeIterator) MustGet() KeyValue {
+func (ri *goRangeIterator) MustGet() KeyValue {
 	kv, err := ri.Get()
 	if err != nil {
 		panic(err)

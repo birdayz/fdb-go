@@ -21,12 +21,12 @@ import (
 type versionIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
-	tx            fdb.Transaction
+	tx            fdb.WritableTransaction
 	recordContext *FDBRecordContext
 	store         indexStoreContext
 }
 
-func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, recordContext *FDBRecordContext, store indexStoreContext) *versionIndexMaintainer {
+func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, recordContext *FDBRecordContext, store indexStoreContext) *versionIndexMaintainer {
 	return &versionIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,

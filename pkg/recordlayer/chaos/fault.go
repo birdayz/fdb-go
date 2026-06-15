@@ -106,13 +106,13 @@ func (c *ChaosTransactor) InjectOnce(fault FaultType) {
 }
 
 // Transact implements fdb.Transactor. Wraps the inner Transact with fault injection.
-func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, error) {
+func (c *ChaosTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	return c.TransactCtx(context.Background(), fn)
 }
 
 // TransactCtx implements fdb.CtxTransactor — same fault injection, threading ctx to the
 // inner transactor's ctx-aware path when present (RFC-090).
-func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.Transaction) (any, error)) (any, error) {
+func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	runInner := func() (any, error) {
 		if ct, ok := c.inner.(fdb.CtxTransactor); ok {
 			return ct.TransactCtx(ctx, fn)

@@ -324,7 +324,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			return md
 		}
 
-		scanRawEntries := func(tx fdb.Transaction, indexSub subspace.Subspace) []fdb.KeyValue {
+		scanRawEntries := func(tx fdb.WritableTransaction, indexSub subspace.Subspace) []fdb.KeyValue {
 			begin, end := indexSub.FDBRangeKeys()
 			kvs, err := tx.GetRange(
 				fdb.KeyRange{Begin: begin, End: end},
@@ -506,7 +506,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			return md
 		}
 
-		scanRawEntries := func(tx fdb.Transaction, indexSub subspace.Subspace) []fdb.KeyValue {
+		scanRawEntries := func(tx fdb.WritableTransaction, indexSub subspace.Subspace) []fdb.KeyValue {
 			begin, end := indexSub.FDBRangeKeys()
 			kvs, err := tx.GetRange(
 				fdb.KeyRange{Begin: begin, End: end},
