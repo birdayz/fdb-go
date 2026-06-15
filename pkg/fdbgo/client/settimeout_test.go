@@ -15,8 +15,8 @@ import (
 // re-send loop would burn. Deterministic by construction: the reply is dropped, so
 // the SetTimeout deadline always wins (no timer-vs-reply race — the RFC-288 lesson).
 //
-// Revert-proof: remove opContext (and the loop checkTimeout) and the read runs to
-// the re-send cap and returns transaction_too_old after ~50s instead of 1031.
+// Revert-proof: remove opContext and the read runs to the re-send cap and returns
+// transaction_too_old after ~maxReadTimeoutRetries×readRPCTimeout instead of 1031.
 func TestSetTimeout_BoundsHungRead(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -70,6 +70,54 @@ func TestSetTimeout_BoundsHungRead(t *testing.T) {
 	// transaction_timed_out must be terminal, not retried by Transact/OnError.
 	if onErrorRetryable(ErrTransactionTimedOut) {
 		t.Fatal("transaction_timed_out must be non-retryable")
+	}
+}
+
+// TestSetTimeout_BoundsHungGRV is the sibling of the read test for the GRV — the
+// FIRST read RPC every transaction issues. With the reply dropped BEFORE a read
+// version is fetched, SetTimeout(300ms) must bound the in-flight GRV (inside
+// ensureReadVersion) and return transaction_timed_out (1031), not run to the GRV
+// loop's ctx-only bound. Port of C++ RYWImpl::getReadVersion's
+// `choose { getReadVersion() | resetPromise }` (ReadYourWrites.actor.cpp:1537).
+// Revert-proof: without opContext in ensureReadVersion the GRV ignores SetTimeout.
+func TestSetTimeout_BoundsHungGRV(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, dd := newDropReplyTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Warm a full Get so the GRV-proxy connection is dialed and pooled — armAll
+	// only arms connections that already exist, and this test must drop the GRV
+	// reply (not just the storage read) to exercise the ensureReadVersion bound.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+
+	dd.armAll() // every reply (incl. the GRV) is now dropped
+
+	tx := db.CreateTransaction()
+	tx.SetTimeout(300) // ms; no read version pre-set → ensureReadVersion must fetch one
+
+	start := time.Now()
+	_, err := tx.Get(ctx, key)
+	elapsed := time.Since(start)
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Fatalf("err = %v (%T), want transaction_timed_out (%d)", err, err, ErrTransactionTimedOut)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("Get took %v — SetTimeout(300ms) did not bound the in-flight GRV", elapsed)
 	}
 }
 

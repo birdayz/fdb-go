@@ -153,9 +153,6 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			// RETRYABLE transaction_too_old — same contract as getValue/
 			// getRange. errReplyTimeout must never escape.
 			if isReplyTimeout(err) {
-				if to := tx.checkTimeout(); to != nil { // RFC-112: honor SetTimeout between re-sends
-					return nil, to
-				}
 				timeoutRetries++
 				if timeoutRetries > maxReadTimeoutRetries {
 					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -371,11 +368,6 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 		// the whole transaction with a fresh read version — the observable
 		// libfdb_c outcome. errReplyTimeout itself must never escape.
 		if isReplyTimeout(err) {
-			// Stop re-sending once the SetTimeout deadline has passed instead of
-			// looping maxReadTimeoutRetries×readRPCTimeout (RFC-112).
-			if to := tx.checkTimeout(); to != nil {
-				return nil, to
-			}
 			timeoutRetries++
 			if timeoutRetries > maxReadTimeoutRetries {
 				return nil, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -627,9 +619,6 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 					// RETRYABLE transaction_too_old so the Transact loop retries
 					// with a fresh read version. errReplyTimeout never escapes.
 					if isReplyTimeout(err) {
-						if to := tx.checkTimeout(); to != nil { // RFC-112: honor SetTimeout between re-sends
-							return nil, false, to
-						}
 						timeoutRetries++
 						if timeoutRetries > maxReadTimeoutRetries {
 							return nil, false, &wire.FDBError{Code: ErrTransactionTooOld}

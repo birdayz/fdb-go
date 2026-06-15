@@ -1,6 +1,7 @@
 # RFC-112: Thread `SetTimeout` into RPC wait contexts (port C++ `timebomb`)
 
-**Status:** Draft
+**Status:** Accepted (v2 — folds the FDB-C++ + Torvalds impl-review NAK: GRV bounding,
+GetAddressesForKey/GetLocations bounding, dropped the redundant loop `checkTimeout`)
 **Item:** `rfcs/prod-readiness-go-client.md` punch-list **P0.2** (one of the "top 3 to close").
 **Spec:** FoundationDB C++ `libfdb_c` 7.3.75 (`/tmp/fdbsrc`). **Wire-compat impact:** none — pure
 client-side cancellation semantics + an error code (1031). No bytes change.
@@ -31,24 +32,31 @@ Go uses `context` for cancellation; the faithful analog is to bound every read R
 `tx.deadline` and surface 1031 when our deadline (not the caller's ctx) fires.
 
 1. **`opContext(ctx)`** — when `tx.timeout > 0`, return `context.WithDeadline(ctx, tx.deadline)`;
-   else `ctx` unchanged. Threaded at the top of `getValue`/`getKey`/`getRange` so every `waitReply`
-   (which already honors `ctx.Done()`, `rpc.go:64-66`) is cancelled at the deadline — the in-flight
-   read is aborted, not left to run the 10×5s loop. This is the `resetPromise || op` race.
+   else `ctx` unchanged. This is **the fix**: threaded into every read RPC wait so a hung wait
+   (`waitReply`, which already honors `ctx.Done()`, `rpc.go:64-66`) is cancelled at the deadline — the
+   in-flight read is aborted, not left to run the 10×5s loop. The Go analog of the `resetPromise || op`
+   race.
 2. **`mapTimeout(parentCtx, err)`** — convert a deadline/cancel error caused by *our* timeout (the
    `parentCtx` is still live) into `transaction_timed_out` (1031); if `parentCtx` is itself done, it's
    the caller's cancellation — preserve it. Matches C++ raising 1031, not a generic cancel.
-3. **`checkTimeout` in the reply-timeout retry loops** — re-check before each re-send so the loop stops
-   at the deadline instead of re-sending 10×5s (the direct fix for the "re-sends without re-checking"
-   gap; complements (1) by stopping cleanly between sends rather than waiting for the bounded wait to
-   cancel).
 
-Each read entry becomes a thin wrapper: `opContext` → existing body (renamed `*Impl`) →
-`mapTimeout`. `transaction_timed_out` (1031) is already correctly **non-retryable** (`transaction.go`
-`isRetryable`, matching C++), so a timed-out read aborts the whole `Transact` rather than looping.
+`opContext`+`mapTimeout` are threaded at **every read RPC entry**:
+- `getValue`/`getKey`/`getRange` become thin wrappers (`opContext` → `*Impl` → `mapTimeout`).
+- **`ensureReadVersion`** bounds the GRV — the *first* read RPC every transaction issues — matching
+  C++ `RYWImpl::getReadVersion`'s `choose { getReadVersion() | resetPromise }`
+  (`ReadYourWrites.actor.cpp:1537`). A hung-but-alive GRV proxy must not run past the timeout.
+- **`GetAddressesForKey`/`GetLocations`** (C++ bounds `getAddressesForKey` by the timebomb too,
+  `:1843-1848`).
 
-**Scope: the read path.** The commit RPC is deliberately `ctx`-detached for `commit_unknown_result`
-idempotency (RFC-093) and is bounded by `checkTimeout` at `Commit` entry; threading the bomb into the
-detached commit RPC would reintroduce the idempotency hazard, so it stays as-is (documented).
+`transaction_timed_out` (1031) is already correctly **non-retryable** (`onErrorRetryable`, matching
+C++ `fdb_error_predicate`), so a timed-out read/GRV aborts the whole `Transact` rather than looping.
+The reply-timeout retry loops are left unchanged — `opContext` cancels the in-flight wait, so a
+separate loop `checkTimeout` would be redundant (and untested) belt-and-suspenders.
+
+**Scope note: the commit RPC** is deliberately `ctx`-detached for `commit_unknown_result` idempotency
+(RFC-093) and is bounded by `checkTimeout` at `Commit` entry; threading the bomb into the detached
+commit RPC would reintroduce the idempotency hazard, so it stays as-is (a documented divergence — C++'s
+timebomb does bound the in-flight commit, but Go lacks FDB's idempotent commit-retry actor).
 
 ## Executable spec (tests)
 

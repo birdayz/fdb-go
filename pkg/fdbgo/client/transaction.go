@@ -533,13 +533,20 @@ func isTrackableReadError(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	if err := tx.checkCancelled(); err != nil {
 		return err
 	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
+	// Bound the GRV by the SetTimeout deadline too: the GRV is the first read RPC
+	// every transaction issues, and a hung-but-alive GRV proxy must not run past
+	// the timeout (RFC-112; the C++ analog is RYWImpl::getReadVersion's
+	// `choose { getReadVersion() | resetPromise }`, ReadYourWrites.actor.cpp:1537).
+	// A deadline-cancelled GRV is surfaced as transaction_timed_out via mapTimeout.
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op surfaces
 	// client_invalid_operation on every subsequent read AND commit (RFC-059). This is the
 	// single uniform gate: all reads (regular + snapshot), Commit, and GetReadVersion fetch a
@@ -558,7 +565,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
-			return err
+			return tx.mapTimeout(parentCtx, err)
 		}
 		// Database-lock enforcement — the C++ extractReadVersion analog
 		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
@@ -1799,24 +1806,31 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
 }
 
 // GetLocations returns all shard location entries overlapping [begin, end).
-func (tx *Transaction) GetLocations(ctx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
-	return tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+func (tx *Transaction) GetLocations(parentCtx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
+	ctx, cancel := tx.opContext(parentCtx) // bound by SetTimeout (RFC-112)
+	defer cancel()
+	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+	return locs, tx.mapTimeout(parentCtx, err)
 }
 
 // GetAddressesForKey returns the addresses of storage servers responsible for
 // the given key. Uses the location cache (queries cluster on miss).
-func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]string, error) {
+func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte) ([]string, error) {
 	// A cancelled txn returns transaction_cancelled (1025) — C++ getAddressesForKey races
 	// resetPromise at op entry (ReadYourWrites.actor.cpp:1837); this path bypasses
 	// ensureReadVersion, so gate explicitly (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
 	}
+	// C++ getAddressesForKey is also bounded by the timebomb (resetPromise,
+	// ReadYourWrites.actor.cpp:1843-1848) — bound the locate by SetTimeout (RFC-112).
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
 	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 	if err != nil {
 		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
 		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.
-		return nil, tx.trackReadError(fmt.Errorf("locate key: %w", err))
+		return nil, tx.trackReadError(tx.mapTimeout(parentCtx, fmt.Errorf("locate key: %w", err)))
 	}
 	addrs := make([]string, len(loc.Servers))
 	for i, s := range loc.Servers {
