@@ -436,6 +436,23 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_retryable_error_yields_ctx_err_on_cancel", func(t *testing.T) {
+		// A RETRYABLE FDB error racing ctx cancellation must surface ctx.Err(), NOT the FDB
+		// code: OnError's backoff is ctx-bounded, so a cancel during it aborts the retry to
+		// ctx.Err() — exactly as the pure-Go loop does (its backoffSleep returns ctx.Err()).
+		// Without that (the removed short-circuit, or an un-ctx-bounded backoff) the caller
+		// sees a spurious not_committed after their context already expired. (codex #295 r10)
+		ct := cgoBackend.(fdb.CtxTransactor)
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
+			cancel()                          // ctx canceled, then a retryable error is returned
+			return nil, fdb.Error{Code: 1020} // not_committed (retryable)
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a retryable FDB error racing a cancel must return context.Canceled, got %v", err)
+		}
+	})
+
 	t.Run("cgo_preserves_wrapped_error_context_on_terminal", func(t *testing.T) {
 		// A terminal FDB error the callback returns with %w-wrapped context must surface
 		// WITH that context, not a bare fdb.Error{code}. Driving the retry loop ourselves,

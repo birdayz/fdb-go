@@ -168,13 +168,13 @@ func (d *database) runLoop(ctx context.Context, commit bool, run func(cgofdb.Tra
 			// else: a commit error (not_committed / commit_unknown_result / …) falls
 			// through to the retry classification below.
 		}
-		// ee != nil. If ctx already died, surface it now rather than retrying (but a
-		// callback's own application error still wins over ctx.Err() — see mapTransactErr).
-		if ctx.Err() != nil {
-			return nil, mapTransactErr(ctx, ee)
-		}
-		// Only an FDB error is retryable, via OnError; anything else — an app error, a ctx
-		// error, a non-fdb error panic — is terminal.
+		// ee != nil. Only an FDB error goes through OnError; anything else — an app error,
+		// a ctx error, a non-fdb error panic — is terminal. mapTransactErr keeps a callback's
+		// own application error even on a dead ctx (callback-error precedence), and surfaces
+		// ctx.Err() only for a ctx-CAUSED failure. We do NOT short-circuit on ctx.Err() here:
+		// a RETRYABLE FDB error racing a cancel must return ctx.Err() (not the FDB code),
+		// which OnError's ctx-bounded backoff below does — exactly as the pure-Go loop does
+		// (it always calls OnError; OnError bounds only the retryable backoff by ctx).
 		var fe fdb.Error
 		if !errors.As(ee, &fe) {
 			return nil, mapTransactErr(ctx, ee)
@@ -198,12 +198,23 @@ func (d *database) runLoop(ctx context.Context, commit bool, run func(cgofdb.Tra
 	}
 }
 
-// ctxOnError runs tr.OnError(code) — libfdb_c computes and sleeps the retry backoff inside
-// the returned future — but bounds the WAIT by ctx. A nil return means the error was
-// retryable and tr is reset for another attempt; a non-nil fdb error means OnError
-// re-raised it (terminal); a ctx error means the backoff was aborted by the caller ctx.
+// ctxOnError runs tr.OnError(code) — libfdb_c makes the retry decision and (for a retryable
+// code within the retry limit) computes + sleeps the backoff inside the returned future. A
+// nil return means the error was retryable and tr is reset for another attempt; a non-nil
+// fdb error means OnError re-raised it (terminal); a ctx error means the backoff was aborted
+// by the caller ctx.
+//
+// The WAIT is ctx-bounded ONLY for a retryable code — that is the path with a backoff to
+// interrupt, and it mirrors the pure-Go OnError, which consults ctx only on the retryable
+// backoffSleep and returns a terminal error verbatim without touching ctx. A terminal code's
+// OnError re-raises immediately (no backoff), so bounding it by ctx would only let a dead ctx
+// race-replace the real terminal error with ctx.Err() — a divergence. fdb.IsRetryable is the
+// same predicate libfdb_c's OnError uses to decide.
 func (d *database) ctxOnError(ctx context.Context, tr cgofdb.Transaction, code int) error {
 	fut := tr.OnError(cgofdb.Error{Code: code})
+	if !fdb.IsRetryable(code) {
+		return convErr(fut.Get())
+	}
 	return ctxBoundedWait(ctx, fut.Get, tr.Cancel)
 }
 
