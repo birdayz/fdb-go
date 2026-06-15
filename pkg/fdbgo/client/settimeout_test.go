@@ -174,6 +174,59 @@ func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
 	}
 }
 
+// TestSetTimeout_BoundsHungLocate covers the cache-MISS locate (GetKeyServerLocations)
+// on the pipelined path — the first RPC of the send phase. With the location cache
+// invalidated and the locate reply dropped, SetTimeout(300ms) must bound it and
+// return transaction_timed_out (1031), not run a full 5s per proxy. Revert-proof:
+// if the locate uses the bare caller ctx (not opCtx) the locate ignores SetTimeout.
+func TestSetTimeout_BoundsHungLocate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, dd := newDropReplyTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	db.db.locCache.invalidate(key, NoTenantID) // force a cache-miss locate
+	dd.armAll()
+
+	tx := db.CreateTransaction()
+	tx.readVersion = rv
+	tx.hasReadVersion = true
+	tx.SetTimeout(300) // ms
+
+	start := time.Now()
+	_, pending, err := tx.GetPipelined(ctx, key)
+	if err == nil && pending != nil {
+		_, err = pending.Resolve()
+	}
+	elapsed := time.Since(start)
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Fatalf("err = %v (%T), want transaction_timed_out (%d)", err, err, ErrTransactionTimedOut)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("cache-miss locate took %v — SetTimeout(300ms) did not bound it", elapsed)
+	}
+}
+
 // TestMapTimeout pins the error-mapping contract (RFC-112): our SetTimeout deadline
 // → 1031; the caller's own cancellation → preserved; no timeout set → preserved.
 func TestMapTimeout(t *testing.T) {

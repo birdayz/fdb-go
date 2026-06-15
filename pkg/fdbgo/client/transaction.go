@@ -694,20 +694,23 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, nil
 	}
 
+	// Bound the locate, the send-loop dials, AND (below) the deferred reply wait by
+	// the SetTimeout deadline (RFC-112): the pipelined path is what the fdb facade
+	// Get routes through, so a hung locate/dial/reply here must honor the timeout.
+	// opCtx must cover the cache-miss locate too — a hung GetKeyServerLocations is
+	// the first RPC of the send phase.
+	opCtx, opCancel := tx.opContext(ctx)
+	defer opCancel() // dials complete within this function; the reply wait uses the timer
+
 	// Locate shard.
-	loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId)
 	if locErr != nil {
-		return nil, nil, fmt.Errorf("locate key: %w", locErr)
+		return nil, nil, tx.mapTimeout(ctx, fmt.Errorf("locate key: %w", locErr))
 	}
 	if len(loc.Servers) == 0 {
 		return nil, nil, fmt.Errorf("no storage servers for key")
 	}
 
-	// Bound the send-loop dials AND (below) the deferred reply wait by the
-	// SetTimeout deadline (RFC-112): the pipelined path is what the fdb facade Get
-	// routes through, so a hung dial/reply here must honor the timeout too.
-	opCtx, opCancel := tx.opContext(ctx)
-	defer opCancel() // dials complete within this function; the reply wait uses the timer
 	// Send request without waiting for response.
 	for _, server := range loc.Servers {
 		conn, dialErr := tx.db.getOrDial(opCtx, server.Address)
