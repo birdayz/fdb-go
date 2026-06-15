@@ -16,9 +16,10 @@ type DialFunc = transport.DialFunc
 type Option func(*openOptions)
 
 type openOptions struct {
-	dialFn    DialFunc
-	tlsConfig *tls.Config
-	logger    *slog.Logger
+	dialFn          DialFunc
+	tlsConfig       *tls.Config
+	logger          *slog.Logger
+	clusterFilePath string // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -53,6 +54,13 @@ func WithDialFunc(fn DialFunc) Option {
 // string without ":tls".
 func WithTLSConfig(cfg *tls.Config) Option {
 	return func(o *openOptions) { o.tlsConfig = cfg }
+}
+
+// withClusterFilePath records the on-disk cluster-file path so coordinator-set
+// changes can be persisted back to it (RFC-111). Internal — set by OpenDatabase.
+// OpenDatabaseFromConfig leaves it empty (memory-only, no persistence).
+func withClusterFilePath(path string) Option {
+	return func(o *openOptions) { o.clusterFilePath = path }
 }
 
 // WithLogger sets the per-handle logger for the client's operational events

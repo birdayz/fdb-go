@@ -142,13 +142,6 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
 
 	db, err := OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {

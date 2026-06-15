@@ -447,7 +447,7 @@ func TestProxiesChangedBroadcast(t *testing.T) {
 func newTestDatabaseStub() *Database {
 	ctx, cancel := context.WithCancel(context.Background())
 	db := &database{
-		clusterFile:    &ClusterFile{Coordinators: []string{"127.0.0.1:4500"}},
+		connRecord:     newConnRecord(&ClusterFile{Coordinators: []string{"127.0.0.1:4500"}}, "", nil),
 		connPool:       make(map[string]*transport.Conn),
 		topologyKick:   make(chan struct{}, 1),
 		proxiesChanged: make(chan struct{}),

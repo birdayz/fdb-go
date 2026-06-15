@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"strings"
 	"sync"
@@ -24,7 +23,6 @@ type ClusterFile struct {
 	Description  string
 	ID           string
 	Coordinators []string // "host:port" addresses for TCP connection (":tls" suffix stripped)
-	InternalKey  string   // optional: full internal cluster key for request clusterKey field
 	// UseTLS is true when the coordinators carry the ":tls" suffix (FDB
 	// FLAG_TLS). A real cluster is uniformly TLS, so this is a single flag;
 	// mixed TLS/non-TLS coordinators are rejected at parse time.
@@ -87,9 +85,14 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 			isTLS = true
 			addr = addr[:len(addr)-len(":tls")]
 		}
-		// Validate it's host:port.
-		if _, _, err := net.SplitHostPort(addr); err != nil {
-			return nil, fmt.Errorf("invalid coordinator address %q: %w", addr, err)
+		// Validate the token to C++'s acceptance set: a coordinator is valid iff
+		// isHostname(tok) || NetworkAddress::parse(tok) (RFC-111 §8). This is
+		// stricter than a bare net.SplitHostPort (which accepts foo:abc, :1234,
+		// 1.2.3.4.5:port, ...): the cluster file is cross-tool shared state, and the
+		// re-watch persist path must never write a token a C++/Java client can't
+		// parse.
+		if !isHostnameToken(addr) && !isNetworkAddressToken(addr) {
+			return nil, fmt.Errorf("invalid coordinator address %q", addr)
 		}
 		cf.Coordinators = append(cf.Coordinators, addr)
 		if isTLS {
@@ -119,6 +122,11 @@ type DBInfo struct {
 	GRVProxies    []ProxyInfo
 	CommitProxies []ProxyInfo
 	ClusterID     transport.UID
+	// Forward, when non-empty, is the serialized new ClusterConnectionString the
+	// coordinators handed back instead of proxies — the C++ ClientDBInfo.forward
+	// field (CommitProxyInterface.h:132). Set during a `coordinators auto`/`change`
+	// rotation; the proxies on a forward reply are ignored (RFC-111 Path A).
+	Forward string
 }
 
 // ProxyInfo holds addressing info for a proxy.
@@ -145,8 +153,18 @@ type TransactionDefaults struct {
 //
 // Safe for concurrent use by multiple goroutines after creation.
 type database struct {
-	// Immutable after creation.
-	clusterFile *ClusterFile
+	// connRecord owns the mutable active connection string (coordinator set +
+	// cluster key) and its on-disk persistence — the C++ IClusterConnectionRecord
+	// analog. Coordinator rotations are followed here (RFC-111): a forwarded
+	// connection string (Path A) or an externally-rewritten cluster file (Path B)
+	// swaps the active set so a `coordinators auto`/`change` no longer strands us.
+	connRecord *connRecord
+	// forwardHops bounds a pathological coordinator-forward cycle (Go-only
+	// divergence — C++ has no hop bound; RFC-111 §5). Written only by the single
+	// active follow path: bootstrap first, then exclusively the topology-monitor
+	// goroutine (the two never run concurrently, so no atomic is needed). Reset to
+	// 0 on every successful non-forward connect.
+	forwardHops int
 	dialFn      transport.DialFunc // nil = net.DialTimeout
 	// tlsConfig is the single source of truth for transport security: non-nil =>
 	// every connection (coordinators, proxies, storage) is dialed over TLS with
@@ -455,11 +473,27 @@ func (db *database) warmConnections(ctx context.Context) {
 func (db *database) bootstrap(ctx context.Context) error {
 	backoff := 500 * time.Millisecond
 	for {
-		info, err := db.tryAllCoordinators(ctx)
-		if err == nil {
+		snap := db.connRecord.get()
+		info, err := db.tryAllCoordinators(ctx, snap)
+		switch {
+		case err == nil && info.Forward != "":
+			// Path A: a coordinator forwarded us to a new set. Adopt + retry now.
+			if db.followForward(snap, info.Forward) {
+				continue
+			}
+			// self/empty/over-bound forward → fall through to backoff.
+			err = fmt.Errorf("coordinator forward could not be followed")
+		case err == nil:
+			db.forwardHops = 0
 			db.dbInfo.Store(info)
 			close(db.connected)
 			return nil
+		default:
+			// Path B: all coordinators unreachable — another process may have
+			// rotated the set and rewritten the cluster file. Re-read it.
+			if db.connRecord.adoptStoredIfChanged() {
+				continue
+			}
 		}
 
 		timer := time.NewTimer(backoff)
@@ -480,36 +514,36 @@ func (db *database) bootstrap(ctx context.Context) error {
 // monitorProxiesOneGeneration (MonitorLeader.actor.cpp) probes coordinators
 // SEQUENTIALLY round-robin; racing them is benign (same outcome — first success
 // wins — and faster) and never contacts more than the coordinator set.
-func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
-	if len(db.clusterFile.Coordinators) == 0 {
+func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, error) {
+	if snap == nil || len(snap.Coordinators) == 0 {
 		// Defensive — production cluster-file parsing rejects empty
 		// coordinator lists, but a hand-constructed *database in tests can
 		// reach this path. Without the guard, the for-loop below returns
 		// (nil, nil) and refreshTopology eventually nil-derefs in dbInfoEqual.
 		return nil, fmt.Errorf("no coordinators configured")
 	}
-	if len(db.clusterFile.Coordinators) == 1 {
+	if len(snap.Coordinators) == 1 {
 		// Fast path: single coordinator, no goroutine overhead.
-		return db.tryOneCoordinator(ctx, db.clusterFile.Coordinators[0])
+		return db.tryOneCoordinator(ctx, snap, snap.Coordinators[0])
 	}
 
 	type result struct {
 		info *DBInfo
 		err  error
 	}
-	ch := make(chan result, len(db.clusterFile.Coordinators))
+	ch := make(chan result, len(snap.Coordinators))
 	raceCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	for _, addr := range db.clusterFile.Coordinators {
+	for _, addr := range snap.Coordinators {
 		go func(addr string) {
-			info, err := db.tryOneCoordinator(raceCtx, addr)
+			info, err := db.tryOneCoordinator(raceCtx, snap, addr)
 			ch <- result{info, err}
 		}(addr)
 	}
 
 	var lastErr error
-	for range db.clusterFile.Coordinators {
+	for range snap.Coordinators {
 		r := <-ch
 		if r.err == nil {
 			cancel() // cancel remaining attempts
@@ -520,7 +554,7 @@ func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
 	return nil, lastErr
 }
 
-func (db *database) tryOneCoordinator(ctx context.Context, addr string) (info *DBInfo, err error) {
+func (db *database) tryOneCoordinator(ctx context.Context, snap *ClusterFile, addr string) (info *DBInfo, err error) {
 	// RFC-110 (codex P3): recover on the WORKER. tryAllCoordinators calls this
 	// both from the parallel fan-out goroutines AND directly on the caller's
 	// goroutine for a single coordinator (the common test/dev shape), so a panic
@@ -538,7 +572,7 @@ func (db *database) tryOneCoordinator(ctx context.Context, addr string) (info *D
 	if dialErr != nil {
 		return nil, dialErr
 	}
-	info, err = db.openDatabaseCoord(ctx, conn, addr)
+	info, err = db.openDatabaseCoord(ctx, conn, snap, addr)
 	if err != nil {
 		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
 	}
@@ -584,6 +618,9 @@ func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (
 		return nil, err
 	}
 
+	// Remember the file path so coordinator-set changes can be persisted back to it
+	// (RFC-111). OpenDatabaseFromConfig (no path) is memory-only.
+	opts = append(opts, withClusterFilePath(clusterFilePath))
 	return OpenDatabaseFromConfig(ctx, cf, opts...)
 }
 
@@ -608,7 +645,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
-		clusterFile:    cf,
+		connRecord:     newConnRecord(cf, o.clusterFilePath, logger),
 		dialFn:         o.dialFn,
 		tlsConfig:      tlsConfig,
 		logger:         logger,

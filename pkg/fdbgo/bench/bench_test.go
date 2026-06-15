@@ -77,13 +77,6 @@ func TestMain(m *testing.M) {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
 
 	gofdb.MustAPIVersion(730)
 	goClient, err = gofdb.OpenDatabaseFromConfig(ctx, connectCF)

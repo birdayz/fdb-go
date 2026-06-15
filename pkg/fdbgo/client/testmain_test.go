@@ -80,13 +80,6 @@ func startFDBContainer(ctx context.Context) (*tcfdb.Container, *ClusterFile, err
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
 
 	return container, connectCF, nil
 }
