@@ -227,6 +227,60 @@ func TestSetTimeout_BoundsHungLocate(t *testing.T) {
 	}
 }
 
+// TestSetTimeout_BoundsHungMetrics covers GetEstimatedRangeSizeBytes and
+// GetRangeSplitPoints — C++ wraps both in waitOrError(op, resetPromise)
+// (ReadYourWrites.actor.cpp:1863/1879). With the locate reply dropped under
+// SetTimeout(300ms) each must return transaction_timed_out (1031) in <3s, not run
+// to the 5s-per-proxy retry cap. Revert-proof: without opContext on these entry
+// points they ignore SetTimeout (run to all_alternatives_failed/transaction_too_old).
+func TestSetTimeout_BoundsHungMetrics(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, dd := newDropReplyTestDB(t, ctx)
+
+	begin := []byte(t.Name() + "_a")
+	end := []byte(t.Name() + "_z")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(begin, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		_, _, e := tx.GetRange(ctx, begin, end, 10)
+		return nil, e
+	}); err != nil {
+		t.Fatalf("warm: %v", err)
+	}
+
+	check := func(name string, run func(tx *Transaction) error) {
+		db.db.locCache.invalidate(begin, NoTenantID)
+		dd.armAll()
+		tx := db.CreateTransaction()
+		tx.SetTimeout(300)
+		start := time.Now()
+		err := run(tx)
+		elapsed := time.Since(start)
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+			t.Fatalf("%s: err = %v (%T), want transaction_timed_out (%d)", name, err, err, ErrTransactionTimedOut)
+		}
+		if elapsed > 3*time.Second {
+			t.Fatalf("%s took %v — SetTimeout(300ms) did not bound it", name, elapsed)
+		}
+	}
+	check("GetEstimatedRangeSizeBytes", func(tx *Transaction) error {
+		_, e := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
+		return e
+	})
+	check("GetRangeSplitPoints", func(tx *Transaction) error {
+		_, e := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
+		return e
+	})
+}
+
 // TestMapTimeout pins the error-mapping contract (RFC-112): our SetTimeout deadline
 // → 1031; the caller's own cancellation → preserved; no timeout set → preserved.
 func TestMapTimeout(t *testing.T) {

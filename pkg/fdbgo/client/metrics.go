@@ -15,7 +15,17 @@ import (
 // key range. Matches C++ getStorageMetricsLargeKeyRange in NativeAPI.actor.cpp:
 // gets all shard locations, sends WaitMetricsRequest to each with min.bytes=0,
 // max.bytes=-1 (reversed range = immediate response), and sums the bytes.
-func (tx *Transaction) GetEstimatedRangeSizeBytes(ctx context.Context, begin, end []byte) (int64, error) {
+func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, begin, end []byte) (int64, error) {
+	// Bound the locate + WaitMetrics RPCs by SetTimeout (RFC-112): C++ wraps this in
+	// waitOrError(getStorageMetrics(...), resetPromise) (ReadYourWrites.actor.cpp:1863),
+	// so a hung shard-metrics RPC must surface transaction_timed_out at the deadline.
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	n, err := tx.getEstimatedRangeSizeBytesImpl(ctx, begin, end)
+	return n, tx.mapTimeout(parentCtx, err)
+}
+
+func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin, end []byte) (int64, error) {
 	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
 	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
 	if err := tx.checkCancelled(); err != nil {
@@ -137,7 +147,16 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
 // Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
-func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+func (tx *Transaction) GetRangeSplitPoints(parentCtx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// Bound the locate + SplitRange RPCs by SetTimeout (RFC-112): C++ wraps this in
+	// waitOrError(tr.getRangeSplitPoints(...), resetPromise) (ReadYourWrites.actor.cpp:1879).
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	pts, err := tx.getRangeSplitPointsImpl(ctx, begin, end, chunkSize)
+	return pts, tx.mapTimeout(parentCtx, err)
+}
+
+func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
 	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
