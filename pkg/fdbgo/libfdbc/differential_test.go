@@ -436,6 +436,26 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_preserves_wrapped_error_context_on_terminal", func(t *testing.T) {
+		// A terminal FDB error the callback returns with %w-wrapped context must surface
+		// WITH that context, not a bare fdb.Error{code}. Driving the retry loop ourselves,
+		// OnError re-raises the same code on a terminal error; cgofdb's retryable KEEPS the
+		// original wrapped error in that case (database.go:177-183) — runLoop must too.
+		// Revert runLoop to return OnError's bare result and the message context is lost.
+		marker := "libfdbc_diff CTX-MARKER xyz"
+		wrapped := fmt.Errorf("%s: %w", marker, fdb.Error{Code: 1031}) // 1031 transaction_timed_out (terminal)
+		_, err := cgoBackend.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			return nil, wrapped
+		})
+		if err == nil || err.Error() != wrapped.Error() {
+			t.Fatalf("wrapped error context must be preserved on a terminal error\n got=%v\nwant=%v", err, wrapped)
+		}
+		var fe fdb.Error
+		if !errors.As(err, &fe) || fe.Code != 1031 {
+			t.Fatalf("the underlying fdb.Error{1031} must still be reachable via errors.As, got %v", err)
+		}
+	})
+
 	t.Run("cgo_nested_readtransact_returns_fdb_panic", func(t *testing.T) {
 		// A nested rtx.ReadTransact whose inner MustGet panics (fdb.Error) must RETURN the
 		// error so the CALLER can handle it LOCALLY — not let the panic escape past the

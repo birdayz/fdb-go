@@ -179,11 +179,22 @@ func (d *database) runLoop(ctx context.Context, commit bool, run func(cgofdb.Tra
 		if !errors.As(ee, &fe) {
 			return nil, mapTransactErr(ctx, ee)
 		}
-		// ctx-bounded backoff: nil → OnError reset tr, take another attempt; non-nil →
-		// OnError re-raised a terminal error, or ctx aborted the wait.
-		if berr := d.ctxOnError(ctx, tr, fe.Code); berr != nil {
+		// ctx-bounded backoff: nil → OnError reset tr, take another attempt.
+		berr := d.ctxOnError(ctx, tr, fe.Code)
+		if berr == nil {
+			continue
+		}
+		// Terminal (OnError re-raised, or ctx aborted the wait). Mirror cgofdb's retryable
+		// override rule (database.go:177-183): fdb_transaction_on_error almost always
+		// re-raises the SAME code, in which case KEEP the original error ee — preserving the
+		// record layer's %w-wrapped context (what cgoErrShim protected on the old delegated
+		// path). Substitute OnError's error only when it is not an fdb.Error (a ctx abort) or
+		// changed the code.
+		var be fdb.Error
+		if !errors.As(berr, &be) || be.Code != fe.Code {
 			return nil, mapTransactErr(ctx, berr)
 		}
+		return nil, mapTransactErr(ctx, ee)
 	}
 }
 
