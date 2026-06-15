@@ -1,4 +1,4 @@
-# RFC-109: libfdb_c escape hatch — a config-selectable battle-tested backend
+# RFC-109: libfdb_c escape hatch — a build-tag-selectable battle-tested backend
 
 **Status:** DRAFT (v2 — reworked after FDB C++ dev + Torvalds NAK of the v1 "Plan B" inner
 interface). Client launch-readiness #6 (TODO-production P2.2). **`· L` (large)**; phased.
@@ -74,9 +74,16 @@ concrete `Transaction`. So the change is small and reuses what exists:
    `CtxTransactor`) whose `Transact` builds a `libfdbcTxn` that satisfies `WritableTransaction` by
    forwarding to `cgofdb.Transaction`. The record layer calls `tr.Get(...)`/`tr.Set(...)` through
    the interface, blind to the backend.
-4. **Config selects the backend at construction.** `fdb.OpenDatabaseWithBackend(BackendLibFDBC,
-   clusterFile)` (default `BackendGo`), surfaced as a `recordlayer` factory field / `FDB_BACKEND`
-   env. One `fdb.Database`/process = one backend (see lifecycle, below).
+4. **A build tag selects the backend.** Application source is backend-agnostic — it opens through
+   `fdbclient.Open(clusterFile)` — and a build tag, NOT a runtime flag, picks the client:
+   `go build` → pure-Go (default, no cgo); `CGO_ENABLED=1 go build -tags libfdbc` → libfdb_c. This is
+   the standard-library netgo/netcgo idiom and the mattn-go-sqlite3-vs-modernc swap: exactly one
+   client is linked, and a default build never pulls in cgo or the C library. One binary = one
+   backend, which is also the physical reality (see lifecycle, below). *(v1 used a runtime
+   `OpenDatabaseWithBackend(BackendLibFDBC, …)` enum + an `init()` registration; that was replaced
+   with the build tag — since the choice is launch-time-static anyway, a build flag states it plainly
+   and keeps the C dependency out of every build that does not ask for it. The idiom was vetted by
+   stdlib-net and sqlite-driver reviewers + Torvalds.)*
 
 **Why Plan C over Plan B (Torvalds' point, accepted):** one compiler-enforced interface that
 already exists, not a second hand-maintained ~40-method abstraction. The cost is widening a
@@ -95,8 +102,10 @@ unrecoverable**. Consequences the implementation MUST honor:
 
 - The libfdb_c backend **lazily initializes the global network exactly once and never tears it
   down.** Backend selection is therefore a **process-launch-time** decision — there is **no runtime
-  switch** between backends within a live process. The config (`FDB_BACKEND`) is read once at
-  database construction.
+  switch** between backends within a live process. This is exactly why selection is a **build tag**
+  (`fdbclient`, `-tags libfdbc`) and not a runtime config: a binary physically runs one client for
+  its whole life, so encoding the choice in the build is honest and keeps cgo/libfdb_c out of builds
+  that do not opt in.
 - The pure-Go client and libfdb_c **can coexist** in one process (separate stacks, no shared C
   state) — already proven by `bench_test.go:88-101`, which opens both against one cluster. The two
   "API versions" are independent in-process bookkeeping; only libfdb_c touches the C network.
@@ -212,11 +221,13 @@ transaction-internal or per-transaction:
   cgofdb source / fdb_c.h and re-reviewed):
   - **Separate package, not same-package.** A `//go:build cgo` file *inside* `pkg/fdbgo/fdb` would
     make the pure-Go client itself link `libfdb_c` whenever `CGO_ENABLED=1` (the auto `cgo` tag). A
-    separate `pkg/fdbgo/libfdbc` is linked **only when an app imports it** (blank import), so the
-    pure-Go client stays cgo-free. Package `fdb` exposes `Backend`, `BackendDatabase`,
-    `OpenDatabaseWithBackend`, and a `RegisterLibFDBCBackend` hook that `libfdbc`'s `init()` fills —
-    so `fdb` never imports the cgo package. The `//go:build !cgo` stub still exists (in `libfdbc`),
-    returning a clear *"built without cgo"* error so the default `CGO_ENABLED=0` build compiles.
+    separate `pkg/fdbgo/libfdbc` is linked **only when the build asks for it**, so the pure-Go client
+    stays cgo-free. Package `fdb` exposes only the backend-agnostic surface (`BackendDatabase` +
+    `Database.IsValid`); it never imports the cgo package. The selector is the tiny `pkg/fdbgo/fdbclient`
+    shim — `open_purego.go` (`//go:build !libfdbc`) returns the pure-Go client and `open_libfdbc.go`
+    (`//go:build libfdbc`) returns `libfdbc.Open`, so a default build never even imports `libfdbc`. The
+    `//go:build !cgo` stub still exists (in `libfdbc`), returning a clear *"built without cgo"* error
+    for the nonsensical `-tags libfdbc` + `CGO_ENABLED=0` combination — the netgo `cgo_stub.go` pattern.
   - **Build on cgofdb's high-level API, not raw libfdb_c calls.** The v2 RFC mandated
     `fdb_future_set_callback`→channel because it believed `cgofdb.Future.Get` pins an OS thread per
     in-flight read. **Reading the binding refutes that** (`bindings/go/src/fdb/futures.go`):
@@ -238,8 +249,8 @@ transaction-internal or per-transaction:
     `LocalityGetBoundaryKeys` (online mutual indexing) — return concrete pure-Go handles a cgo backend
     cannot build, so they stay pure-Go-only in v1 (fail-fast `BackendCapabilityError` / graceful
     single-fragment degradation), the same scope boundary the RFC already draws around tenants.
-- **Phase C — config switch + differential.** `fdb.OpenDatabaseWithBackend(BackendLibFDBC, clusterFile)`
-  + `recordlayer.NewFDBDatabaseWithBackend`. The differential gate is a record-layer test
+- **Phase C — build-tag switch + differential.** `fdbclient.Open` (build-tag-selected) +
+  `recordlayer.NewFDBDatabaseWithBackend`. The differential gate is a record-layer test
   (`pkg/fdbgo/libfdbc/differential_test.go`, `//go:build cgo`) against one real FDB: **cross-backend
   round-trip** (save through one backend, read through the other on the same subspace — the operator
   flip), **byte-identical keyspace** (same records saved through each backend on disjoint subspaces;

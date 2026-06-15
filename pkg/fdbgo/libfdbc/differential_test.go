@@ -244,9 +244,9 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	// layer not panicking on a non-pure-Go transactor.
 
 	t.Run("pure_go_backend_keeps_direct_paths", func(t *testing.T) {
-		// NewFDBDatabaseWithBackend on the pure-Go backend (what OpenDatabaseWithBackend
-		// (BackendGo, …) returns) must KEEP CreateTransaction — the constructor detects
-		// the concrete fdb.Database and populates its db slot. (codex P2 #1)
+		// NewFDBDatabaseWithBackend on the pure-Go backend (what fdbclient.Open returns
+		// in a default build) must KEEP CreateTransaction — the constructor detects the
+		// concrete fdb.Database and populates its db slot. (codex P2 #1)
 		rlGo := recordlayer.NewFDBDatabaseWithBackend(goRaw)
 		tx, err := rlGo.CreateTransaction()
 		if err != nil {

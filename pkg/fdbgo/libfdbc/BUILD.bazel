@@ -18,7 +18,6 @@ go_library(
         "backend.go",
         "backend_stub.go",
         "options.go",
-        "register.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc",
     visibility = ["//visibility:public"],

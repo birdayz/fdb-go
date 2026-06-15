@@ -117,10 +117,11 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 	}
 }
 
-// NewFDBDatabaseWithBackend creates an FDBDatabase driven by a config-selected
-// fdb backend (RFC-109) — e.g. the libfdb_c escape hatch opened via
-// fdb.OpenDatabaseWithBackend. The backend drives the Run / RunRead gold path
-// (record save/load, query, index maintenance) through the Transactor interface.
+// NewFDBDatabaseWithBackend creates an FDBDatabase driven by a build-selected fdb
+// backend (RFC-109) — e.g. the libfdb_c escape hatch, opened via fdbclient.Open
+// (which a build tag points at the pure-Go or libfdb_c client). The backend drives
+// the Run / RunRead gold path (record save/load, query, index maintenance) through
+// the Transactor interface.
 //
 // The concrete-db slot is left empty on purpose: CreateTransaction, the manual
 // FDBDatabaseRunner, and LocalityGetBoundaryKeys (online mutual indexing) return
@@ -132,16 +133,16 @@ func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
 		transactor:      backend,
 		storeStateCache: PassThroughStoreStateCache(),
 	}
-	// If the selected backend is actually the pure-Go client (BackendGo), keep its
-	// concrete handle so the direct CreateTransaction / FDBDatabaseRunner / locality
-	// paths still work — only a non-pure-Go backend (libfdb_c) genuinely lacks them.
-	// Without this, opening with OpenDatabaseWithBackend(BackendGo, …) would needlessly
-	// cripple those paths.
+	// If the selected backend is actually the pure-Go client, keep its concrete
+	// handle so the direct CreateTransaction / FDBDatabaseRunner / locality paths
+	// still work — only a non-pure-Go backend (libfdb_c) genuinely lacks them.
+	// Without this, the pure-Go client via this constructor would needlessly cripple
+	// those paths.
 	if goDB, ok := backend.(fdb.Database); ok {
 		// Match NewFDBDatabase: the record layer reads \xff/metadataVersion, so make
 		// ReadSystemKeys the default on every transaction (including the direct
-		// CreateTransaction path) — otherwise BackendGo via this constructor would
-		// behave differently from NewFDBDatabase and fail those reads.
+		// CreateTransaction path) — otherwise the pure-Go client via this constructor
+		// would behave differently from NewFDBDatabase and fail those reads.
 		goDB.Options().SetReadSystemKeys()
 		d.db = goDB
 	}
