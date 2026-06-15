@@ -746,11 +746,19 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
        validateVersionstampOffset by 1 reddens offbyone_reject. The differential CORRECTED a
        reviewer assumption: two versionstamped ops in one txn get the SAME stamp (txn-level, not
        per-op batch id; user differentiates via tuple user version).
-       - [ ] **Follow-up (tenant +8 offset):** differentially test the tenant-prefix offset
-         adjustment (`commitpath.go:354-363`, +8 for the 8-byte tenant prefix). Needs tenant
-         harness setup in `pkg/fdbgo/bench` (OpenTenant on both clients; cluster tenant_mode must
-         be enabled). Open a tenant, write a versionstamped key in the tenant txn, read back within
-         the tenant, mask, compare — verify go/cgo adjust the offset by the prefix length identically.
+       - [x] **Follow-up (tenant +8 offset) — DONE + found a BIGGER bug.** Built the tenant
+         differential harness in `pkg/fdbgo/bench` (`differential_tenant_test.go`: shared tenant on
+         both clients; TenantVersionstampedKey masked read-back + raw full-key +8 assertion,
+         TenantVersionstampedValue value-offset-NOT-adjusted, TenantVersionstampErrors boundary).
+         The +8 offset adjustment (`commitpath.go`) was already correct (go==cgo). But the harness
+         immediately surfaced a REAL cross-client wire-compat divergence: the tenant `nameIndex` and
+         `lastId` are `TupleCodec<int64_t>` (minimal-width); `tenant_crud.go` hard-coded the fixed
+         9-byte form (`0x1C`+8) for both pack AND unpack, so a Go client could NOT open/list/delete a
+         tenant created by libfdb_c/Java (`OpenTenant` failed "expected 9 bytes, got 2"), nor create
+         a tenant after one (couldn't decode the C-written `lastId`). Fixed the codec to FDB's real
+         minimal-width tuple-int encoding (Tuple.cpp:204-227); reads legacy 9-byte values too.
+         Pinned by `TestDifferential_TenantCrossClientCRUD` (go↔cgo create/open/write/read/list) +
+         `tenant_crud_internal_test.go` (FDB-spec vectors, round-trip, legacy decode, errors).
      - [x] **[RFC-064 — MERGED #243] explicit conflict-range API differential.** AddReadConflictRange/
        Key + AddWriteConflictRange/Key feed the resolver (isolation) but had no differential coverage
        (RFC-058 covered only getKey-DERIVED conflict ranges). Empirically NO divergence — edges
