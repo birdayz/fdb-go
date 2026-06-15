@@ -200,7 +200,11 @@ func (db Database) Close() {
 	}
 }
 
-// CreateTransaction creates a new Transaction.
+// CreateTransaction creates a new Transaction. The returned transaction is bound
+// to context.Background() (no Go-context cancellation — Apple-binding parity);
+// drive its retries with OnError and bound them via SetTimeout / SetRetryLimit
+// (or the database-level defaults). For Go-context cancellation, prefer
+// TransactCtx / ReadTransactCtx over manual CreateTransaction loops.
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
 	return Transaction{t: &transaction{
@@ -211,7 +215,15 @@ func (db Database) CreateTransaction() (Transaction, error) {
 	}}, nil
 }
 
-// Transact runs a transactional function with automatic retry.
+// Transact runs a transactional function with automatic retry. This is the
+// Apple-binding-compatible no-ctx form: like the Apple Go binding's Transact
+// (bindings/go/src/fdb/database.go — which has no context.Context) and libfdb_c,
+// it carries NO Go-context cancellation and retries via OnError until success or
+// a non-retryable error. By default the retry loop is UNBOUNDED — matching
+// libfdb_c's per-transaction defaults (maxRetries=-1, timeoutInSeconds=0;
+// ReadYourWrites.actor.cpp). Bound it with DatabaseOptions.SetTransactionTimeout
+// / SetTransactionRetryLimit (both honored across retries), or use TransactCtx
+// for Go-context cancellation/deadline (RFC-090).
 func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, error) {
 	return db.TransactCtx(db.d.ctx, f)
 }
@@ -256,6 +268,10 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 }
 
 // ReadTransact runs a read-only transactional function with automatic retry.
+// Like Transact, this is the Apple-binding-compatible no-ctx form: no Go-context
+// cancellation, retries bounded only by SetTransactionTimeout /
+// SetTransactionRetryLimit (default unbounded, matching libfdb_c). Use
+// ReadTransactCtx for Go-context cancellation/deadline (RFC-090).
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
 	return db.ReadTransactCtx(db.d.ctx, f)
 }
