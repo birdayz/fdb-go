@@ -204,15 +204,19 @@ func (d *database) runLoop(ctx context.Context, commit bool, run func(cgofdb.Tra
 // fdb error means OnError re-raised it (terminal); a ctx error means the backoff was aborted
 // by the caller ctx.
 //
-// The WAIT is ctx-bounded ONLY for a retryable code — that is the path with a backoff to
-// interrupt, and it mirrors the pure-Go OnError, which consults ctx only on the retryable
-// backoffSleep and returns a terminal error verbatim without touching ctx. A terminal code's
-// OnError re-raises immediately (no backoff), so bounding it by ctx would only let a dead ctx
-// race-replace the real terminal error with ctx.Err() — a divergence. fdb.IsRetryable is the
-// same predicate libfdb_c's OnError uses to decide.
+// The WAIT is ctx-bounded ONLY when OnError actually retries the code — that is the path
+// with a backoff to interrupt, and it mirrors the pure-Go OnError, which consults ctx only
+// on the retryable backoffSleep and returns a terminal error verbatim without touching ctx.
+// A terminal code's OnError re-raises immediately (no backoff), so bounding it by ctx would
+// only let a dead ctx race-replace the real terminal error with ctx.Err() — a divergence.
+//
+// The gate is fdb.IsOnErrorRetryable, NOT fdb.IsRetryable: the relevant question is whether
+// fdb_transaction_on_error backs off this code, which is a LARGER set than the generic
+// RETRYABLE error-predicate — it also includes blob_granule_request_failed (1079). Gating on
+// IsRetryable would leave 1079's real backoff un-ctx-bounded (a CtxTransactor-contract miss).
 func (d *database) ctxOnError(ctx context.Context, tr cgofdb.Transaction, code int) error {
 	fut := tr.OnError(cgofdb.Error{Code: code})
-	if !fdb.IsRetryable(code) {
+	if !fdb.IsOnErrorRetryable(code) {
 		return convErr(fut.Get())
 	}
 	return ctxBoundedWait(ctx, fut.Get, tr.Cancel)

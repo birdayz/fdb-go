@@ -50,3 +50,40 @@ func TestIsRetryable_PinsFDBErrorPredicate(t *testing.T) {
 		}
 	}
 }
+
+// onErrorRetrySet is the EXACT set fdb_transaction_on_error retries (resets + backs off):
+// the fdb_error_predicate set PLUS the onError-only / Go-extension codes (1079 from C++
+// Transaction::onError, 1039 via the MVC layer — already in the predicate set — and the
+// Go-internal 1200, FDB-7.4+ 1235/1242). MUST mirror client.onErrorRetryable
+// (commitpath.go:231); the libfdb_c backend uses fdb.IsOnErrorRetryable to decide whether a
+// libfdb_c OnError has a backoff worth ctx-bounding.
+var onErrorRetrySet = map[int]bool{
+	1007: true, 1009: true, 1020: true, 1021: true, 1037: true, 1038: true,
+	1039: true, 1042: true, 1051: true, 1078: true,
+	1079: true, // blob_granule_request_failed — the key divergence from IsRetryable
+	1200: true, // all_proxies_unreachable (Go-internal Layer-2)
+	1213: true, 1223: true,
+	1235: true, // transaction_throttled_hot_shard (FDB 7.4+)
+	1242: true, // transaction_rejected_range_locked (FDB 7.4+)
+}
+
+// TestIsOnErrorRetryable_PinsOnErrorSet exhaustively pins fdb.IsOnErrorRetryable and asserts
+// it is a STRICT SUPERSET of IsRetryable — the difference being exactly the onError-only /
+// Go-extension codes. The headline case: IsOnErrorRetryable(1079) is true while
+// IsRetryable(1079) is false, so the libfdb_c backend ctx-bounds 1079's backoff.
+func TestIsOnErrorRetryable_PinsOnErrorSet(t *testing.T) {
+	t.Parallel()
+	for _, code := range allKnownRetryCodes {
+		if got := IsOnErrorRetryable(code); got != onErrorRetrySet[code] {
+			t.Errorf("IsOnErrorRetryable(%d) = %v, want %v (must equal client.onErrorRetryable)", code, got, onErrorRetrySet[code])
+		}
+		// Superset invariant: every IsRetryable code is also OnError-retryable.
+		if IsRetryable(code) && !IsOnErrorRetryable(code) {
+			t.Errorf("IsOnErrorRetryable must be a superset of IsRetryable, but %d is retryable yet not onError-retryable", code)
+		}
+	}
+	if !IsOnErrorRetryable(1079) || IsRetryable(1079) {
+		t.Fatalf("1079 must be onError-retryable (true) but not IsRetryable (false); got onError=%v predicate=%v",
+			IsOnErrorRetryable(1079), IsRetryable(1079))
+	}
+}
