@@ -17,13 +17,25 @@ const (
 // directly to coordinators.
 func (db *database) topologyMonitor() {
 	defer db.wg.Done()
+	// RFC-110: a panic in refreshTopology (a wire-decode invariant, a nil-deref)
+	// must not abort the host — libfdb_c's monitorProxies never lets a round
+	// failure take down the network thread. The backstop recovers + counts +
+	// rate-limited-logs; on a recovered panic we drop out of rapid-poll to the
+	// steady interval so a deterministic bug re-fires at ≤1/steady, not every
+	// 200ms (the monitorProxies post-failed-sweep COORDINATOR_RECONNECTION_DELAY
+	// analog).
+	pb := &panicBackstop{name: "topologyMonitor", db: db}
 	ticker := time.NewTicker(topologySteadyInterval)
 	defer ticker.Stop()
 	rapidLeft := 0
 	for {
 		select {
 		case <-ticker.C:
-			db.refreshTopology()
+			if pb.run(db.refreshTopology) {
+				rapidLeft = 0
+				ticker.Reset(topologySteadyInterval)
+				continue
+			}
 			if rapidLeft > 0 {
 				rapidLeft--
 				if rapidLeft == 0 {
@@ -31,7 +43,11 @@ func (db *database) topologyMonitor() {
 				}
 			}
 		case <-db.topologyKick:
-			db.refreshTopology()
+			if pb.run(db.refreshTopology) {
+				rapidLeft = 0
+				ticker.Reset(topologySteadyInterval)
+				continue
+			}
 			rapidLeft = topologyRapidBurst
 			ticker.Reset(topologyRapidInterval)
 		case <-db.ctx.Done():

@@ -82,6 +82,7 @@ func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.val, f.err = fn()
 	}()
 	return f
@@ -175,6 +176,7 @@ func newFutureNil(fn func() error) FutureNil {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.err = fn()
 	}()
 	return f
@@ -220,6 +222,7 @@ func newFutureKey(fn func() (Key, error)) FutureKey {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.val, f.err = fn()
 	}()
 	return f
@@ -265,6 +268,7 @@ func newFutureInt64(fn func() (int64, error)) FutureInt64 {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.val, f.err = fn()
 	}()
 	return f
@@ -310,6 +314,7 @@ func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.val, f.err = fn()
 	}()
 	return f

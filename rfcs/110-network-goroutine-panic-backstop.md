@@ -1,6 +1,7 @@
 # RFC-110: Network/background-goroutine panic backstop — match `Net2::run`, not "add recover"
 
-**Status:** Draft
+**Status:** Accepted — FDB C++ dev + Torvalds + codex all ACK (RFC reviewed at `1814a5d1`).
+Implementation follows; impl runs the same gauntlet + @claude on the PR.
 **Item:** Production-readiness audit (`docs/review_2026-06-07.md`) Blocker #2 residual — the
 crash-safety hardening (TODO-production P0.2) recovered only "the 3 network goroutines"
 (the `transport/conn.go` read/write/monitor loops) and left the pure-Go client's other

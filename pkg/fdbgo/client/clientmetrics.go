@@ -55,6 +55,34 @@ type ClientMetrics struct {
 	grvCacheHits atomic.Int64
 
 	transactionRetries atomic.Int64 // Go-only aggregate, see doc comment
+
+	// recoveredPanics counts panics recovered by the background-goroutine
+	// backstop (RFC-110) — the analog of C++ Net2::run's SevError "TaskError"
+	// events: a long-lived/background goroutine hit a panic and survived instead
+	// of aborting the host. A steady climb means a loop is stuck re-panicking
+	// (deterministic bug); the rate is the storm signal (the per-occurrence log
+	// is rate-limited). recoveredPanicsConsecutiveMax is the high-water of any
+	// single loop's consecutive-panic streak (unmaskable across loops — a healthy
+	// loop's reset cannot hide a stuck one), so a dashboard can alert "a loop
+	// re-panicked N× in a row." Both are Go-only (C++ has no goroutine model).
+	recoveredPanics               atomic.Int64
+	recoveredPanicsConsecutiveMax atomic.Int64
+}
+
+// countRecoveredPanic records one recovered background-goroutine panic (RFC-110)
+// and raises the consecutive-streak high-water mark. consecutive is the calling
+// backstop's current streak (≥1).
+func (m *ClientMetrics) countRecoveredPanic(consecutive int) {
+	m.recoveredPanics.Add(1)
+	for {
+		cur := m.recoveredPanicsConsecutiveMax.Load()
+		if int64(consecutive) <= cur {
+			return
+		}
+		if m.recoveredPanicsConsecutiveMax.CompareAndSwap(cur, int64(consecutive)) {
+			return
+		}
+	}
 }
 
 // countRetry records an OnError-sanctioned retry of the given error code,
@@ -128,6 +156,9 @@ type ClientMetricsSnapshot struct {
 	GRVCacheHits                              int64 // RFC-104: served from the GRV cache (opt-in)
 
 	TransactionRetries int64
+
+	RecoveredPanics               int64 // RFC-110: panics recovered by the goroutine backstop
+	RecoveredPanicsConsecutiveMax int64 // RFC-110: high-water of any loop's consecutive-panic streak
 }
 
 // Snapshot returns a point-in-time copy of all counters.
@@ -151,6 +182,9 @@ func (m *ClientMetrics) Snapshot() ClientMetricsSnapshot {
 		GRVCacheHits: m.grvCacheHits.Load(),
 
 		TransactionRetries: m.transactionRetries.Load(),
+
+		RecoveredPanics:               m.recoveredPanics.Load(),
+		RecoveredPanicsConsecutiveMax: m.recoveredPanicsConsecutiveMax.Load(),
 	}
 }
 

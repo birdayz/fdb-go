@@ -470,6 +470,7 @@ func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
 	f.init()
 	go func() {
 		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
 		f.val, f.err = fn()
 	}()
 	return f
