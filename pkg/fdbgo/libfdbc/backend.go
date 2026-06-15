@@ -148,10 +148,10 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 // world. On a ctx-CAUSED failure (the ctx error itself, or the transaction_cancelled
 // the cancel watcher induces when ctx is canceled or its deadline expires), it surfaces
 // ctx.Err() so the caller sees context.Canceled/DeadlineExceeded like the pure-Go
-// backend (which threads ctx per-RPC). An
-// application error the callback returned is NOT masked by ctx.Err() — pure-Go gives
-// the callback error precedence (client/database.go:631-637). A successful run
-// (e==nil) is never overridden, even if ctx expired right after the commit.
+// backend (which threads ctx per-RPC). An application error the callback returned is
+// NOT masked by ctx.Err() — pure-Go gives the callback error precedence
+// (client/database.go:631-637). A successful run (e==nil) is never overridden, even if
+// ctx expired right after the commit.
 func mapTransactErr(ctx context.Context, e error) error {
 	if e == nil {
 		return nil
@@ -431,7 +431,12 @@ func (r rangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 }
 
 func (r rangeResult) GetSliceOrPanic() []fdb.KeyValue {
-	return fromCgoKeyValues(r.rr.GetSliceOrPanic())
+	// Panic the converted fdb error, not cgofdb's raw one (see the future MustGet note).
+	kvs, err := r.GetSliceWithError()
+	if err != nil {
+		panic(err)
+	}
+	return kvs
 }
 
 func (r rangeResult) Iterator() fdb.RangeIterator {
@@ -509,34 +514,63 @@ func (i *rangeIterator) SetTraceLog(func(iteration, requested, returned int, mor
 
 // ---- future adapters (cgofdb future -> fdb future) ----
 
+// The MustGet adapters call their OWN Get() (which runs convErr) and panic the
+// converted error — they must NOT delegate to cgofdb's MustGet, which panics a raw
+// cgofdb.Error. A caller using the backend-agnostic fdb.Future interface and
+// recovering/matching fdb.Error must see the same panic type on both backends; the
+// pure-Go future panics the fdb-world error (future.go:66). Inside a Transact callback
+// this fdb.Error panic is bridged back to cgofdb.Error by withCancelWatcher for
+// cgofdb's retry classification.
 type futureByteSlice struct{ f cgofdb.FutureByteSlice }
 
 func (f futureByteSlice) Get() ([]byte, error) { v, e := f.f.Get(); return v, convErr(e) }
-func (f futureByteSlice) MustGet() []byte      { return f.f.MustGet() }
-func (f futureByteSlice) BlockUntilReady()     { f.f.BlockUntilReady() }
-func (f futureByteSlice) IsReady() bool        { return f.f.IsReady() }
-func (f futureByteSlice) Cancel()              { f.f.Cancel() }
+func (f futureByteSlice) MustGet() []byte {
+	v, e := f.Get()
+	if e != nil {
+		panic(e)
+	}
+	return v
+}
+func (f futureByteSlice) BlockUntilReady() { f.f.BlockUntilReady() }
+func (f futureByteSlice) IsReady() bool    { return f.f.IsReady() }
+func (f futureByteSlice) Cancel()          { f.f.Cancel() }
 
 type futureKey struct{ f cgofdb.FutureKey }
 
 func (f futureKey) Get() (fdb.Key, error) { k, e := f.f.Get(); return fdb.Key(k), convErr(e) }
-func (f futureKey) MustGet() fdb.Key      { return fdb.Key(f.f.MustGet()) }
-func (f futureKey) BlockUntilReady()      { f.f.BlockUntilReady() }
-func (f futureKey) IsReady() bool         { return f.f.IsReady() }
-func (f futureKey) Cancel()               { f.f.Cancel() }
+func (f futureKey) MustGet() fdb.Key {
+	k, e := f.Get()
+	if e != nil {
+		panic(e)
+	}
+	return k
+}
+func (f futureKey) BlockUntilReady() { f.f.BlockUntilReady() }
+func (f futureKey) IsReady() bool    { return f.f.IsReady() }
+func (f futureKey) Cancel()          { f.f.Cancel() }
 
 type futureInt64 struct{ f cgofdb.FutureInt64 }
 
 func (f futureInt64) Get() (int64, error) { v, e := f.f.Get(); return v, convErr(e) }
-func (f futureInt64) MustGet() int64      { return f.f.MustGet() }
-func (f futureInt64) BlockUntilReady()    { f.f.BlockUntilReady() }
-func (f futureInt64) IsReady() bool       { return f.f.IsReady() }
-func (f futureInt64) Cancel()             { f.f.Cancel() }
+func (f futureInt64) MustGet() int64 {
+	v, e := f.Get()
+	if e != nil {
+		panic(e)
+	}
+	return v
+}
+func (f futureInt64) BlockUntilReady() { f.f.BlockUntilReady() }
+func (f futureInt64) IsReady() bool    { return f.f.IsReady() }
+func (f futureInt64) Cancel()          { f.f.Cancel() }
 
 type futureNil struct{ f cgofdb.FutureNil }
 
-func (f futureNil) Get() error       { return convErr(f.f.Get()) }
-func (f futureNil) MustGet()         { f.f.MustGet() }
+func (f futureNil) Get() error { return convErr(f.f.Get()) }
+func (f futureNil) MustGet() {
+	if e := f.Get(); e != nil {
+		panic(e)
+	}
+}
 func (f futureNil) BlockUntilReady() { f.f.BlockUntilReady() }
 func (f futureNil) IsReady() bool    { return f.f.IsReady() }
 func (f futureNil) Cancel()          { f.f.Cancel() }
@@ -551,10 +585,17 @@ func (f futureKeyArray) Get() ([]fdb.Key, error) {
 	ks, e := f.f.Get()
 	return fromCgoKeys(ks), convErr(e)
 }
-func (f futureKeyArray) MustGet() []fdb.Key { return fromCgoKeys(f.f.MustGet()) }
-func (f futureKeyArray) BlockUntilReady()   { f.f.(cgofdb.Future).BlockUntilReady() }
-func (f futureKeyArray) IsReady() bool      { return f.f.(cgofdb.Future).IsReady() }
-func (f futureKeyArray) Cancel()            { f.f.(cgofdb.Future).Cancel() }
+
+func (f futureKeyArray) MustGet() []fdb.Key {
+	ks, e := f.Get()
+	if e != nil {
+		panic(e)
+	}
+	return ks
+}
+func (f futureKeyArray) BlockUntilReady() { f.f.(cgofdb.Future).BlockUntilReady() }
+func (f futureKeyArray) IsReady() bool    { return f.f.(cgofdb.Future).IsReady() }
+func (f futureKeyArray) Cancel()          { f.f.(cgofdb.Future).Cancel() }
 
 // ---- type conversions ----
 

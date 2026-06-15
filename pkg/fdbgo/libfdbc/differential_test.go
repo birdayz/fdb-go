@@ -361,6 +361,42 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_mustget_panics_fdb_error", func(t *testing.T) {
+		// A MustGet that errors must panic with an fdb.Error (the same type Get() returns
+		// after convErr), NOT a raw cgofdb.Error. A caller using the backend-agnostic
+		// fdb.Future interface and recovering/matching fdb.Error INSIDE the callback must
+		// behave identically across backends — the pure-Go future panics the fdb-world
+		// error (future.go:66). Revert the adapters to delegate cgofdb's MustGet and the
+		// recovered value is a cgofdb.Error → errors.As(&fdb.Error) below fails.
+		//
+		// Trigger: a deadline expires mid-callback, the cancel watcher cancels the cgo
+		// transaction, and the next read's MustGet panics (transaction_cancelled) —
+		// deterministic, no fault injection.
+		ct := cgoBackend.(fdb.CtxReadTransactor)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		var recovered any
+		_, _ = ct.ReadTransactCtx(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+			time.Sleep(300 * time.Millisecond) // outlast the deadline; the watcher cancels the tx
+			func() {
+				defer func() { recovered = recover() }()
+				_ = rtx.Get(fdb.Key("libfdbc_diff/mustget_panic_probe")).MustGet()
+			}()
+			return nil, nil
+		})
+		if recovered == nil {
+			t.Fatal("MustGet on the canceled transaction must panic")
+		}
+		rerr, ok := recovered.(error)
+		if !ok {
+			t.Fatalf("MustGet panic value must be an error, got %T: %v", recovered, recovered)
+		}
+		var fe fdb.Error
+		if !errors.As(rerr, &fe) {
+			t.Fatalf("MustGet must panic an fdb.Error through the fdb facade, got %T: %v", recovered, recovered)
+		}
+	})
+
 	t.Run("cgo_snapshot_options_no_overflow", func(t *testing.T) {
 		// cgofdb.Snapshot.Options() is self-recursive (`return s.Options()`), so a
 		// snapshot reader's Options() must reuse the parent transaction's handle, not
