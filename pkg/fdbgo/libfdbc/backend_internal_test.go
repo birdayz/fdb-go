@@ -3,8 +3,10 @@
 package libfdbc
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -78,4 +80,113 @@ func TestConvErr_PlainCgoError(t *testing.T) {
 	if !errors.As(out, &fe) || fe.Code != 1007 {
 		t.Fatalf("convErr(cgofdb.Error{1007}) = %v, want fdb.Error{1007}", out)
 	}
+}
+
+// TestWithCancelWatcher_NoCancelAfterCallbackReturns pins the commit-detachment
+// contract (codex #295 r5 P1/P2): once the callback returns successfully, the cancel
+// watcher must NEVER cancel the transaction, even if the ctx is canceled immediately
+// afterward. Otherwise cgofdb's auto-commit — which runs after the callback returns —
+// could be aborted with transaction_cancelled, which the pure-Go backend never does
+// (it detaches the commit via context.WithoutCancel, client/transaction.go:1437).
+//
+// The race is inherent: close(stop) signals the watcher but a concurrently-firing
+// ctx.Done() could still win a naive select. The loop makes the regression
+// deterministic. The fixed watcher (stop-priority re-check + join) records ZERO
+// cancels across every iteration because the join guarantees the goroutine has exited
+// before withCancelWatcher returns — so the later cancel() can never reach cancelTx.
+// Revert withCancelWatcher to the plain-select/no-join form and the goroutine is still
+// live when cancel() fires, both select cases are ready, and ~half the iterations call
+// cancelTx — the assertion fails.
+func TestWithCancelWatcher_NoCancelAfterCallbackReturns(t *testing.T) {
+	t.Parallel()
+
+	const iters = 2000
+	var canceled atomic.Int64
+	for i := 0; i < iters; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		// The callback returns successfully with the ctx still live — in the real path
+		// cgofdb's auto-commit would run now.
+		if _, err := withCancelWatcher(ctx, func() { canceled.Add(1) }, func() (any, error) {
+			return nil, nil
+		}); err != nil {
+			cancel()
+			t.Fatalf("iter %d: withCancelWatcher returned err %v", i, err)
+		}
+		// ctx fires AFTER the callback returned and the watcher was joined: too late to
+		// cancel anything.
+		cancel()
+	}
+	if n := canceled.Load(); n != 0 {
+		t.Fatalf("watcher canceled the transaction %d/%d times AFTER the callback returned "+
+			"successfully — an in-flight auto-commit would be aborted (pure-Go detaches it)", n, iters)
+	}
+}
+
+// TestWithCancelWatcher_CancelsDuringBlockedCallback proves the stop-priority fix did
+// NOT break the legit cancel path: when the ctx fires while the callback is still
+// running (a read stuck on a C future), the watcher must call cancelTx — the cgo analog
+// of unblocking a ctx-bound read RPC. The callback blocks until cancelTx releases it,
+// so the test deadlocks (caught by the test timeout) if the watcher fails to cancel.
+func TestWithCancelWatcher_CancelsDuringBlockedCallback(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	canceledCh := make(chan struct{}, 1)
+	release := make(chan struct{})
+	go cancel() // cancel the ctx while fn is (about to be) blocked
+
+	_, err := withCancelWatcher(ctx, func() { canceledCh <- struct{}{}; close(release) }, func() (any, error) {
+		<-release // unblocked only by the watcher's cancelTx
+		return nil, ctx.Err()
+	})
+	if err == nil {
+		t.Fatal("expected the canceled ctx to surface as the callback error")
+	}
+	select {
+	case <-canceledCh:
+	default:
+		t.Fatal("watcher did not cancel the transaction while the callback was blocked on the ctx")
+	}
+}
+
+// TestWithCancelWatcher_TranslatesFDBPanic proves an fdb.Error panic from the callback
+// (e.g. an adapter MustGet on a conflict) is re-panicked as a cgofdb.Error with the
+// same code, so cgofdb's wrapped() panicToError recovers it as a recognized (retryable)
+// code instead of an unrecognized panic. It also exercises the join on the panic path
+// (close(stop) + <-exited run before the recover/re-panic, no leak, no deadlock).
+func TestWithCancelWatcher_TranslatesFDBPanic(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		p := recover()
+		if p == nil {
+			t.Fatal("expected a re-panic")
+		}
+		ce, ok := p.(cgofdb.Error)
+		if !ok {
+			t.Fatalf("panic must be translated to cgofdb.Error, got %T: %v", p, p)
+		}
+		if ce.Code != 1020 {
+			t.Fatalf("translated code = %d, want 1020", ce.Code)
+		}
+	}()
+	_, _ = withCancelWatcher(context.Background(), func() {}, func() (any, error) {
+		panic(fdb.Error{Code: 1020})
+	})
+}
+
+// TestWithCancelWatcher_PassesNonFDBPanic proves a non-fdb panic re-panics unchanged —
+// it is neither swallowed nor mistranslated to a cgofdb.Error.
+func TestWithCancelWatcher_PassesNonFDBPanic(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("boom")
+	defer func() {
+		if p := recover(); p != sentinel {
+			t.Fatalf("non-fdb panic must pass through unchanged, got %v", p)
+		}
+	}()
+	_, _ = withCancelWatcher(context.Background(), func() {}, func() (any, error) {
+		panic(sentinel)
+	})
 }

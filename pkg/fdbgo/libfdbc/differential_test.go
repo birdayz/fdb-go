@@ -323,6 +323,27 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
+	t.Run("cgo_backend_deadline_aborts_slow_callback", func(t *testing.T) {
+		// With the deadline→SetTimeout conversion removed (codex #295 r5 P1), the cancel
+		// watcher alone must enforce a deadline that expires while the callback runs:
+		// ctx.Done() fires at the deadline, the watcher cancels the cgo transaction
+		// (transaction_cancelled, 1025), the next read aborts, and mapTransactErr
+		// surfaces DeadlineExceeded. Proves dropping SetTimeout did NOT leave deadline
+		// reads unbounded.
+		ct := cgoBackend.(fdb.CtxTransactor)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		key := fdb.Key("libfdbc_diff/deadline_slow_cb")
+		_, err := ct.TransactCtx(ctx, func(tr fdb.WritableTransaction) (any, error) {
+			time.Sleep(300 * time.Millisecond) // outlast the deadline; the watcher cancels here
+			_, e := tr.Get(key).Get()          // now on a canceled transaction → aborts
+			return nil, e
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a deadline expiring during the callback must surface DeadlineExceeded, got %v", err)
+		}
+	})
+
 	t.Run("cgo_backend_preserves_callback_error_over_ctx", func(t *testing.T) {
 		// A callback that returns its OWN application error must surface that error,
 		// not context.Canceled — even when the ctx was also canceled. The pure-Go

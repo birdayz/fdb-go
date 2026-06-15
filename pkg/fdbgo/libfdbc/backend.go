@@ -37,7 +37,6 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -94,9 +93,13 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 // fdb.CtxTransactor / fdb.CtxReadTransactor so the record layer's runTransactCtx
 // honors a caller context on this backend (not just the pure-Go one): cgofdb owns
 // the retry loop, but we (a) bail before each attempt if the ctx is done and
-// (b) bound each attempt's reads+commit by the ctx deadline via SetTimeout — so a
-// canceled/expired context cannot keep executing or commit, matching the pure-Go
-// backend's ctx semantics.
+// (b) run a cancel watcher that aborts an in-flight read when the ctx is canceled OR
+// its deadline expires. The watcher is the cgo analog of the pure-Go client threading
+// ctx into each read RPC; like pure-Go, the auto-commit is detached from the caller
+// ctx — the watcher is stopped before it and we impose no FDB transaction timeout, so
+// neither a cancel nor a deadline that lands after the callback returned can abort the
+// commit (cf. client/transaction.go:1437, the WithoutCancel commit). See
+// withCancelWatcher.
 type database struct {
 	db          cgofdb.Database
 	clusterFile string
@@ -112,7 +115,11 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 		return nil, err
 	}
 	r, e := d.db.Transact(func(ctr cgofdb.Transaction) (any, error) {
-		if err := applyCtxBound(ctx, ctr); err != nil {
+		// Bail before each cgofdb retry attempt if the ctx is already done, so a
+		// canceled/expired context cannot keep retrying (this closure re-runs per
+		// attempt). The deadline is enforced for reads by the cancel watcher, not by
+		// an FDB timeout — see withCancelWatcher.
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		rr, ee := withCancelWatcher(ctx, ctr.Cancel, func() (any, error) {
@@ -139,8 +146,9 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 
 // mapTransactErr maps the error a cgofdb Transact/ReadTransact returned to the fdb
 // world. On a ctx-CAUSED failure (the ctx error itself, or the transaction_cancelled
-// / transaction_timed_out the watcher / deadline induce), it surfaces ctx.Err() so
-// the caller sees context.Canceled/DeadlineExceeded like the pure-Go backend. An
+// the cancel watcher induces when ctx is canceled or its deadline expires), it surfaces
+// ctx.Err() so the caller sees context.Canceled/DeadlineExceeded like the pure-Go
+// backend (which threads ctx per-RPC). An
 // application error the callback returned is NOT masked by ctx.Err() — pure-Go gives
 // the callback error precedence (client/database.go:631-637). A successful run
 // (e==nil) is never overridden, even if ctx expired right after the commit.
@@ -163,7 +171,7 @@ func (d *database) ReadTransactCtx(ctx context.Context, f func(fdb.ReadTransacti
 		return nil, err
 	}
 	r, e := d.db.ReadTransact(func(crt cgofdb.ReadTransaction) (any, error) {
-		if err := applyCtxBoundRead(ctx, crt); err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		rr, ee := withCancelWatcher(ctx, crt.Cancel, func() (any, error) {
@@ -195,68 +203,46 @@ func (d *database) Close() {
 	}
 }
 
-// applyCtxBound is invoked at the start of every cgofdb retry attempt: it bails if
-// the context is already done (so a canceled ctx cannot keep retrying or commit),
-// and bounds this attempt's reads + commit by the remaining ctx deadline via the
-// transaction timeout option (so an expiry mid-attempt aborts it). A deadline-less
-// context (e.g. context.Background()) sets no timeout — behavior is then exactly
-// cgofdb's own (libfdb_c's retry/timeout knobs).
-func applyCtxBound(ctx context.Context, tr cgofdb.Transaction) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		ms := time.Until(dl).Milliseconds()
-		if ms <= 0 {
-			return context.DeadlineExceeded
-		}
-		_ = tr.Options().SetTimeout(ms)
-	}
-	return nil
-}
-
-// applyCtxBoundRead is applyCtxBound for a read transaction (no commit to bound,
-// but the same cancel-before-attempt + deadline-as-timeout semantics).
-func applyCtxBoundRead(ctx context.Context, rt cgofdb.ReadTransaction) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		ms := time.Until(dl).Milliseconds()
-		if ms <= 0 {
-			return context.DeadlineExceeded
-		}
-		_ = rt.Options().SetTimeout(ms)
-	}
-	return nil
-}
-
 // withCancelWatcher runs fn with a goroutine that cancels the cgo transaction (via
-// cancelTx) if ctx is done before fn returns. cgofdb's Get()/range reads block the
-// goroutine on a C future; SetTimeout only bounds DEADLINE contexts, so a
-// deadline-less cancellation would otherwise let a blocked read outlive the cancel
-// (unlike the pure-Go client, which threads ctx into reads). fdb_transaction_cancel
-// unblocks the in-flight future with transaction_cancelled (1025).
+// cancelTx) when ctx is canceled OR its deadline expires before fn returns. cgofdb
+// owns the reads (they block the calling goroutine on a C future), so cancelTx
+// (fdb_transaction_cancel — transaction_cancelled, 1025) is the only hook to abort a
+// read stuck past the ctx. This is the cgo analog of the pure-Go client threading ctx
+// into each read RPC. There is deliberately NO deadline→SetTimeout conversion: pure-Go
+// imposes no FDB transaction timeout from the ctx (it threads ctx per-RPC), and an FDB
+// timeout would also abort cgofdb's auto-commit — which must run detached from the
+// caller ctx (client/transaction.go:1437, the WithoutCancel commit).
 //
-// The watcher is stopped (close(watchDone)) before fn's result is used to decide
-// the commit, so it can never cancel an in-flight auto-commit: a commit happens only
-// when ctx was live through that point, in which case the watcher took the watchDone
-// branch and exited without cancelling (mirrors the pure-Go detached commit).
+// The watcher is stopped AND joined before fn returns, and once stopped it never
+// cancels: when ctx fires, the goroutine re-checks `stop` before calling cancelTx, so
+// a ctx.Done() that races the stop (a deadline expiring just as the callback finishes)
+// takes the no-cancel branch. After fn returns, the goroutine has provably exited (the
+// join) and will not touch the transaction — so a later cancel/deadline cannot abort
+// the in-flight auto-commit, mirroring the pure-Go detached commit.
 func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, error)) (r any, e error) {
-	watchDone := make(chan struct{})
+	stop := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		select {
 		case <-ctx.Done():
-			cancelTx()
-		case <-watchDone:
+			// Prefer stop: if fn has already returned (stop closed), the commit is
+			// detached — do NOT cancel it. Only abort a still-running callback's read.
+			select {
+			case <-stop:
+			default:
+				cancelTx()
+			}
+		case <-stop:
 		}
 	}()
-	// Defer so the watcher is stopped even if fn panics (else the goroutine leaks for
-	// a deadline-less ctx). Re-panic for cgofdb's wrapped() panicToError to recover —
-	// translating an fdb.Error panic (e.g. an adapter MustGet) to cgofdb.Error first
-	// so cgofdb's retry classification still recognizes a retryable code.
+	// Defer so the watcher is stopped and joined even if fn panics (else the goroutine
+	// leaks for a deadline-less ctx). Re-panic for cgofdb's wrapped() panicToError to
+	// recover — translating an fdb.Error panic (e.g. an adapter MustGet) to cgofdb.Error
+	// first so cgofdb's retry classification still recognizes a retryable code.
 	defer func() {
-		close(watchDone)
+		close(stop)
+		<-exited // join: the watcher has exited (and decided not to cancel) before we return
 		if p := recover(); p != nil {
 			if err, ok := p.(error); ok {
 				var fe fdb.Error
@@ -271,20 +257,23 @@ func withCancelWatcher(ctx context.Context, cancelTx func(), fn func() (any, err
 }
 
 // ctxCausedFailure reports whether e is a failure attributable to the context: the
-// context error itself, or the FDB transaction_cancelled (1025) / transaction_timed_out
-// (1031) that the cancel watcher or the deadline SetTimeout induce. An application
-// error the callback returned is not, so it is never masked by ctx.Err().
+// context error itself, or the FDB transaction_cancelled (1025) that the cancel watcher
+// induces when ctx is canceled or its deadline expires during a read. An application
+// error the callback returned is not, so it is never masked by ctx.Err(). We impose no
+// deadline→SetTimeout, so a deadline does not surface as transaction_timed_out (1031)
+// from this backend — the watcher cancels (1025) instead; a 1031 here would be the
+// app's own transaction-timeout option, which is not ctx-caused and must surface as-is.
 func ctxCausedFailure(e error) bool {
 	if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
 		return true
 	}
 	var fe fdb.Error
 	if errors.As(e, &fe) {
-		return fe.Code == 1025 || fe.Code == 1031
+		return fe.Code == 1025
 	}
 	var ce cgofdb.Error
 	if errors.As(e, &ce) {
-		return ce.Code == 1025 || ce.Code == 1031
+		return ce.Code == 1025
 	}
 	return false
 }
