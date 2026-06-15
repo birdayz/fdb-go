@@ -26,6 +26,7 @@ go_test(
         "differential_unreadable_test.go",
         "differential_versionstamp_test.go",
         "differential_vsorder_test.go",
+        "differential_watch_test.go",
         "interop_test.go",
     ],
     data = glob(["testdata/**"]),
