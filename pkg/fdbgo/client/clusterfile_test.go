@@ -66,13 +66,15 @@ func TestParseClusterString_AcceptanceSet(t *testing.T) {
 		}
 	}
 	rejectMatchesCpp := []string{
-		"d:i@foo:abc",           // non-numeric port
-		"d:i@:1234",             // empty host
-		"d:i@host name:4500",    // space in host
-		"d:i@1.2.3.4.5:4500",    // 5 octets — C++ sscanf leaves count!=len
-		"de sc:id@1.2.3.4:4500", // space in description (parseKey)
-		"desc:i!d@1.2.3.4:4500", // punctuation in id (parseKey)
-		"de:sc:id@1.2.3.4:4500", // extra colon → id "sc:id" has non-alnum (parseKey)
+		"d:i@foo:abc",                       // non-numeric port
+		"d:i@:1234",                         // empty host
+		"d:i@host name:4500",                // space in host
+		"d:i@1.2.3.4.5:4500",                // 5 octets — C++ sscanf leaves count!=len
+		"de sc:id@1.2.3.4:4500",             // space in description (parseKey)
+		"desc:i!d@1.2.3.4:4500",             // punctuation in id (parseKey)
+		"de:sc:id@1.2.3.4:4500",             // extra colon → id "sc:id" has non-alnum (parseKey)
+		"d:i@1.1.1.1:4500,1.1.1.1:4500",     // duplicate coordinator (C++ rejects)
+		"d:i@h.example:4500,h.example:4500", // duplicate hostname (C++ rejects)
 	}
 	rejectGoStricter := []string{
 		"d:i@999.999.999.999:4500", // C++ accepts+truncates; net.ParseIP rejects

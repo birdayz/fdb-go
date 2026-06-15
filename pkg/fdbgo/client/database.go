@@ -76,6 +76,7 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 	}
 
 	tlsCount := 0
+	seenCoords := make(map[string]bool)
 	for _, addr := range strings.Split(addrs, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -100,6 +101,14 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 		if !isHostnameToken(addr) && !isNetworkAddressToken(addr) {
 			return nil, fmt.Errorf("invalid coordinator address %q", addr)
 		}
+		// Reject duplicate coordinators — C++ ClusterConnectionString throws
+		// connection_string_invalid on a duplicate address/hostname
+		// (MonitorLeader.actor.cpp:109/117). Keeps Go-accept a subset of C++-accept
+		// so the persist path never writes a dup-coordinator file C++/Java can't read.
+		if seenCoords[addr] {
+			return nil, fmt.Errorf("duplicate coordinator address %q", addr)
+		}
+		seenCoords[addr] = true
 		cf.Coordinators = append(cf.Coordinators, addr)
 		if isTLS {
 			tlsCount++

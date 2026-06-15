@@ -743,6 +743,13 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		tx.readErrMu.Unlock()
 		return nil, p, nil
 	}
+	// If every dial above failed because the SetTimeout deadline expired (opCtx
+	// cancelled), surface transaction_timed_out (1031) rather than the
+	// non-retryable all_alternatives_failed (1006) — a cold-dial expiry is still a
+	// timeout, matching C++ (the timebomb wins the loadBalance race). RFC-112 (codex).
+	if err := opCtx.Err(); err != nil {
+		return nil, nil, tx.mapTimeout(ctx, err)
+	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
