@@ -108,6 +108,14 @@ func bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc)
 
 // OpenDatabase opens a connection using the specified cluster file path.
 // APIVersion must have been called first. See WithTLSConfig / WithDialFunc.
+//
+// Bootstrap is bounded by an internal default timeout (bootstrapContext). There is
+// NO internal max-retry beyond that for the live database: unlike libfdb_c, once
+// open the client retries cluster reconnection indefinitely until the caller's
+// context cancels. Against a permanently down cluster a subsequent bare Transact
+// (which uses context.Background()) blocks forever — bound it with TransactCtx or a
+// transaction SetTimeout (RFC-111 P1.5; see the package doc). Use
+// OpenDatabaseFromConfig to pass a context for bootstrap itself.
 func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
@@ -441,21 +449,51 @@ func (db Database) GetClientStatus() ([]byte, error) {
 }
 
 // LocalityGetBoundaryKeys returns shard boundary keys within the given range.
-// Uses the location cache to find shard boundaries. The limit and readVersion
-// parameters match the Apple binding signature but are advisory.
-func (db Database) LocalityGetBoundaryKeys(r ExactRange, limit int, _ int64) ([]Key, error) {
-	begin, end := r.FDBRangeKeys()
-	ctx := db.d.ctx
-	tx := db.d.inner.CreateTransaction()
-	locs, err := tx.GetLocations(ctx, begin.FDBKey(), end.FDBKey(), limit)
+//
+// It honors readVersion (RFC-111 P1.6): boundary keys live in the
+// \xFF/keyServers/<key> system range, and reading that range AT the supplied read
+// version yields MVCC-consistent boundaries — pinning the result to a snapshot
+// rather than returning whatever the location cache holds now. readVersion == 0
+// means "use a fresh read version" (a normal GRV). This is a 1:1 port of the Apple
+// binding's LocalityGetBoundaryKeys.
+func (db Database) LocalityGetBoundaryKeys(r ExactRange, limit int, readVersion int64) ([]Key, error) {
+	tr, err := db.CreateTransaction()
 	if err != nil {
 		return nil, err
 	}
-	keys := make([]Key, 0, len(locs)+1)
-	for _, loc := range locs {
-		keys = append(keys, Key(loc.ShardBegin))
+	if readVersion != 0 {
+		tr.SetReadVersion(readVersion)
 	}
-	return keys, nil
+	// System keys + lock-aware so a locked database still serves the boundary read,
+	// matching the Apple binding.
+	if err := tr.Options().SetReadSystemKeys(); err != nil {
+		return nil, err
+	}
+	if err := tr.Options().SetLockAware(); err != nil {
+		return nil, err
+	}
+
+	bk, ek := r.FDBRangeKeys()
+	prefix := []byte("\xFF/keyServers/")
+	ffer := KeyRange{
+		Begin: Key(append(append([]byte(nil), prefix...), bk.FDBKey()...)),
+		End:   Key(append(append([]byte(nil), prefix...), ek.FDBKey()...)),
+	}
+
+	kvs, err := tr.Snapshot().GetRange(ffer, RangeOptions{Limit: limit}).GetSliceWithError()
+	if err != nil {
+		return nil, err
+	}
+
+	size := len(kvs)
+	if limit != 0 && limit < size {
+		size = limit
+	}
+	boundaries := make([]Key, size)
+	for i := 0; i < size; i++ {
+		boundaries[i] = kvs[i].Key[len(prefix):] // strip the \xFF/keyServers/ prefix
+	}
+	return boundaries, nil
 }
 
 // RebootWorker is not yet implemented.

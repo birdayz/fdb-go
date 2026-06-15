@@ -1,6 +1,18 @@
 # Native fdb-go Client Bug Findings
 
-Review date: 2026-06-01
+> **STATUS — HISTORICAL AUDIT, NEARLY ALL RESOLVED (do not read as the current bug list).**
+> This is the **2026-06-01** source audit that *bootstrapped* the client's hardening. The
+> overwhelming majority of its findings — including **every High-severity item (1–7)** — have since
+> been fixed and pinned with regression tests (real-FDB / differential / fault-injection). For
+> example: #1 embedded reply-errors, #2 `wrong_shard_server` = 1001, #3 pipelined-read semantics,
+> #4 tenant-commit mutation aliasing, #5 hedge QueueModel accounting, #6 connection-shutdown
+> stranding, #7 transaction concurrency, #8 shape-based `ErrorOr`, #11 TLS, #12 empty-location
+> panic, #16 GRV-cache throttle cooldown — all addressed. The **authoritative current state** of the
+> client is `rfcs/prod-readiness-go-client.md` (the production-readiness assessment) and its
+> punch-list (RFC-111/RFC-112 etc.); a reader wanting "what's left" should start there, NOT here.
+> The detailed findings below are retained as the historical record of the original audit.
+
+Review date: 2026-06-01 (historical — see status banner above)
 
 Scope: `pkg/fdbgo/client`, `pkg/fdbgo/fdb`, `pkg/fdbgo/transport`, and `pkg/fdbgo/wire`.
 

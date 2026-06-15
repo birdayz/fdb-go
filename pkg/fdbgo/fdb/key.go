@@ -24,6 +24,15 @@
 //     like Get/GetRange do not accept a context parameter. Use SetTimeout for
 //     deadlines, or call Cancel() from another goroutine for cancellation.
 //     context.Background() is used internally for all operations.
+//   - No internal max-retry / connection timeout. Unlike libfdb_c (which bounds
+//     connection attempts with its own timeouts), this client retries cluster
+//     connection and transaction onError indefinitely until the caller's
+//     context.Context is cancelled. A bare Transact / OpenDatabase against a down
+//     or unreachable cluster therefore BLOCKS until ctx cancels — and the
+//     no-context Transact uses context.Background() (never cancels). Migrators
+//     MUST bound it: pass a deadline ctx to TransactCtx / OpenDatabaseFromConfig,
+//     and/or set a transaction SetTimeout. This is the single biggest behavioral
+//     difference for an operator (RFC-110/RFC-111 P1.5).
 package fdb
 
 import (
