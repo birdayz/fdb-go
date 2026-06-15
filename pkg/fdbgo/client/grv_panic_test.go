@@ -4,12 +4,18 @@ import (
 	"testing"
 )
 
-// TestGRVFlush_RecoverFailsBatch is the RFC-110 Class A-batch contract: a panic
-// in flush must FAIL the popped batch — every waiter gets an error, none hangs
-// (codex P1) — AND must not leave b.mu locked (codex P2a), or a later GRV request
-// blocking on b.mu.Lock() would deadlock. Drives the exact production shape: a
-// panic while holding b.mu inside a closure-scoped lock, with recoverFlush
-// deferred.
+// TestGRVFlush_RecoverFailsBatch is the RFC-110 Class A-batch contract (codex
+// P1): a panic in flush must FAIL the popped batch — every waiter gets an error,
+// none hangs. recoverFlush is the production backstop and is exercised directly
+// here (deferred around a panic, exactly as flush defers it).
+//
+// It also demonstrates the closure-scoped-lock PATTERN flush uses for codex P2a:
+// a panic inside a `Lock(); defer Unlock()` closure unwinds the mutex. NOTE this
+// is the pattern, not flush's own locked lines — flush's two b.mu regions
+// (pop + adaptive-window arithmetic, grv.go) contain no code that can panic, so
+// the deadlock is a defense-in-depth guarantee for future edits, asserted here at
+// the pattern level rather than by driving flush (which would need a real GRV
+// round / network to reach those lines).
 func TestGRVFlush_RecoverFailsBatch(t *testing.T) {
 	t.Parallel()
 	var db database
@@ -23,8 +29,8 @@ func TestGRVFlush_RecoverFailsBatch(t *testing.T) {
 
 	func() {
 		defer b.recoverFlush(&db, batch)
-		// The adaptive-window region's closure-scoped lock: a panic here must
-		// unwind b.mu (the deferred unlock), then recoverFlush fails the batch.
+		// Same closure-scoped-lock pattern as flush's regions: a panic must unwind
+		// b.mu via the deferred unlock before recoverFlush runs.
 		func() {
 			b.mu.Lock()
 			defer b.mu.Unlock()
@@ -32,9 +38,10 @@ func TestGRVFlush_RecoverFailsBatch(t *testing.T) {
 		}()
 	}()
 
-	// Mutex released — a later flush would block forever otherwise.
+	// The closure-scoped unlock released b.mu through the panic (the pattern that
+	// keeps a future panic in flush's locked regions from deadlocking GRV).
 	if !b.mu.TryLock() {
-		t.Fatal("b.mu left locked after a panic in the locked region (deadlock for future GRV requests)")
+		t.Fatal("closure-scoped lock did not release b.mu on panic")
 	}
 	b.mu.Unlock()
 
