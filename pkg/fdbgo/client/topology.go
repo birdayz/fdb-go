@@ -93,6 +93,9 @@ func (db *database) refreshTopology() {
 		return
 	}
 	db.forwardHops = 0
+	// The new coordinators answered with real proxies — now safe to persist a
+	// forward we adopted in memory on a previous round (deferred-persist, Path A).
+	db.connRecord.persistIfDirty()
 	db.applyDBInfo(newInfo)
 }
 
@@ -120,7 +123,7 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 		return false
 	}
 	db.forwardHops++
-	db.connRecord.setAndPersist(newCF)
+	db.connRecord.setInMemory(newCF) // persisted by persistIfDirty after we connect to the new set
 	db.logger.Info("fdbgo: followed coordinator forward", "from", old.String(), "to", newCF.String())
 	return true
 }

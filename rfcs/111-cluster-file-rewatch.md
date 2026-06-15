@@ -1,7 +1,8 @@
 # RFC-111: Cluster-file re-watch — follow coordinator-set changes (port `libfdb_c` monitor-and-rewrite)
 
-**Status:** Accepted (v3 — Torvalds ACK on v2; addresses FDB-C++ maintainer's v2 NAK: the
-`ParseClusterString` acceptance-set gate, §8)
+**Status:** Accepted (v4 — RFC + impl. Torvalds ACK; FDB-C++ ACK on RFC. v4 folds the FDB-C++
+impl-review NAK: deferred persist (§1/§5), mode-preserving `atomicReplace` (§6), and `parseKey` key
+validation (§8).)
 **Item:** `rfcs/prod-readiness-go-client.md` punch-list **P0.1** ("Cluster-file re-watch") — the
 single most consequential production gap in §3 of that assessment.
 **Spec:** FoundationDB C++ `libfdb_c` at tag **7.3.75** (`/tmp/fdbsrc`). C++ is the spec.
@@ -105,30 +106,36 @@ type connRecord struct {
     cf       *ClusterFile  // current in-memory connection string (coordinators + cluster key)
     filename string        // "" => memory-only (no persistence), like ClusterConnectionMemoryRecord
     logger   *slog.Logger  // persist failures are logged + swallowed here, never returned as fatal
+    dirty    bool          // C++ IClusterConnectionRecord.connectionStringNeedsPersisted
 }
 
-// get snapshots the active connection string under the lock.
-func (r *connRecord) get() *ClusterFile
+func (r *connRecord) get() *ClusterFile   // snapshot under the lock
 
-// setAndPersist swaps the in-memory string UNCONDITIONALLY, then best-effort persists to disk
-// (Path A / forward adopt). The on-disk write is skipped when the file already equals cf (idempotent,
-// matching C++ persist's up-to-date short-circuit). A persist error (EROFS/EPERM/...) is logged and
-// swallowed — adoption already took effect; the connection is never failed by a file-write error
-// (C++ ClusterConnectionFile.actor.cpp:173-178). No-op write when filename=="".
-func (r *connRecord) setAndPersist(cf *ClusterFile)
+// setInMemory swaps the in-memory string and marks it dirty (Path A / forward adopt) — the file is
+// NOT written. Persistence is DEFERRED to persistIfDirty after the new coordinators are confirmed
+// reachable, so a forward to a dead set never clobbers the shared file (C++ makeIntermediateRecord,
+// MonitorLeader.actor.cpp:944).
+func (r *connRecord) setInMemory(cf *ClusterFile)
+
+// persistIfDirty writes the in-memory string to disk when a previously-adopted forward hasn't been
+// persisted yet — called only on a successful non-forward connect (C++ setAndPersistConnectionString
+// at MonitorLeader.actor.cpp:957, gated on connRecord != intermediateConnRecord). Clears dirty whether
+// or not the write succeeds (matches C++ persist's setPersisted()); a write error is logged + swallowed
+// (best-effort), the write is skipped when the file is already up-to-date, and no-op when filename=="".
+func (r *connRecord) persistIfDirty()
 
 // adoptStoredIfChanged is Path B as ONE critical section: re-read the on-disk file, compare to the
 // in-memory string (a.String()==b.String()), and if it changed AND has >=1 coordinator, swap
-// in-memory (the file is already authoritative — no re-persist). Returns whether it changed. Parse
-// errors are logged and treated as "no change" (C++ upToDate swallows file errors, returns false).
+// in-memory (the file is already authoritative — no re-persist, dirty stays false). Returns whether it
+// changed. Parse errors are logged and treated as "no change" (C++ upToDate swallows file errors).
 func (r *connRecord) adoptStoredIfChanged() (changed bool)
 ```
 
-There is **no** `set()` — exactly one in-memory-only mutation (Path B, inside the locked
-`adoptStoredIfChanged`) and one swap+persist (Path A). **Single-writer in practice:** `bootstrap` runs
-fully *before* `topologyMonitor` is started (`database.go:637` then `:649`), and thereafter only the
-single topology-monitor goroutine mutates the record — one writer at a time. The mutex guards readers
-(the coordinator fan-out) against that writer and makes Path B's read-compare-swap atomic.
+Two in-memory swappers (`setInMemory` Path A, `adoptStoredIfChanged` Path B) and one writer
+(`persistIfDirty`), all under the lock. **Single-writer in practice:** `bootstrap` runs fully *before*
+`topologyMonitor` is started (`database.go` bootstrap then `go db.topologyMonitor()`), and thereafter
+only the single topology-monitor goroutine mutates the record — one writer at a time. The mutex guards
+readers (the coordinator fan-out) against that writer and makes Path B's read-compare-swap atomic.
 
 ### 2. Thread the snapshot through the ENTIRE coordinator-contact chain
 
@@ -177,7 +184,9 @@ truth (matches C++ `upToDate`'s `toString()` compare), no separate field compara
 - **`followForward(old, fwd)`**: parse `fwd`; **reject** (log, no adopt, no persist) if it fails to
   parse OR has 0 coordinators (port C++ `ASSERT getNumberOfCoordinators() > 0`, `:946`); if it equals
   the current set (`old.String()==new.String()`, a degenerate self-forward) → ignore; otherwise
-  `setAndPersist(new)` + `kickTopology()`.
+  `setInMemory(new)` + `kickTopology()`. The on-disk file is written by `persistIfDirty` on the *next*
+  successful non-forward connect — never before the new coordinators answer (C++
+  makeIntermediateRecord + deferred setAndPersistConnectionString).
 - **Bounded forward chain (Go-only divergence — see Non-goals).** C++ follows forwards with no hop
   bound, relying on actor fair-scheduling; a Go tight loop would hot-spin on a pathological A→B→A
   forward cycle (the success-forward path re-polls immediately). We add a single `db.forwardHops int`
@@ -191,9 +200,12 @@ truth (matches C++ `upToDate`'s `toString()` compare), no separate field compara
 
 ### 6. `atomicReplace` (port `flow` `atomicReplace`)
 
-Temp-write in the target's directory → `fsync` → `os.Rename` → `fsync` the directory. Content
-byte-identical to C++: the two `#` header lines + `cs.toString()` + `\n`. Any I/O error (incl. an
-unwritable directory) is returned to `setAndPersist`, which logs + swallows it (best-effort).
+Stat the existing file and carry its **mode** (and best-effort uid/gid) onto the replacement — else
+`os.CreateTemp`'s default `0600` would silently tighten a `0644` cluster file and lock out a co-located
+C++/Java client reading the same shared file (C++ `Platform.actor.cpp` `atomicReplace` does this).
+Then temp-write in the target's directory → `fsync` → `chmod`/`chown` → `os.Rename` → `fsync` the
+directory. Content byte-identical to C++: the two `#` header lines + `cs.toString()` + `\n`. Any I/O
+error (incl. an unwritable directory) is returned to `persistIfDirty`, which logs + swallows it.
 
 ### 7. Remove the dead `ClusterFile.InternalKey` field
 
@@ -228,6 +240,12 @@ cannot parse — defeating §4's protection. **Fix:** a token is valid iff
   above; Go `\w` == ECMAScript `\w`).
 - `isNetworkAddressToken` = strip `:tls`, `net.SplitHostPort`, `net.ParseIP(host) != nil` (handles
   IPv4 + bracketed IPv6), and the port is all digits.
+
+The `description:id` **key** is validated the same way (port of C++ `parseKey`,
+`MonitorLeader.actor.cpp:420-432`): description = `[a-zA-Z0-9_]`, id = `[a-zA-Z0-9]`. Without this the
+Go parser accepts keys C++ rejects (`de sc:id@`, `desc:i!d@`, `de:sc:id@`) and the persist path could
+write an unparseable key to the shared file — the subset guarantee must cover the key, not just the
+coordinator tokens.
 
 This same classification drives `String()`'s coord-vs-hostname ordering (§4): IP token ⇒ coord,
 hostname token ⇒ hostname. **One deliberate, documented tightening over C++:** C++'s

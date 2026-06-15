@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Coordinator-token validation, ported 1:1 from C++ (RFC-111 §8). A token is a
@@ -48,6 +49,23 @@ func isNetworkAddressToken(s string) bool {
 		return false
 	}
 	return allDigits(port)
+}
+
+// validClusterKeyPart ports C++ ClusterConnectionString::parseKey char validation
+// (MonitorLeader.actor.cpp:420-432): the description allows [a-zA-Z0-9_], the id
+// allows [a-zA-Z0-9]. Rejecting here keeps Go-accept a subset of C++-accept, so a
+// persisted cluster key is always parseable by a C++/Java client (RFC-111 §8).
+func validClusterKeyPart(s string, allowUnderscore bool) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case allowUnderscore && c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func allDigits(s string) bool {
@@ -112,6 +130,15 @@ type connRecord struct {
 	cf       *ClusterFile
 	filename string // "" => memory-only (no persistence)
 	logger   *slog.Logger
+	// dirty is the C++ IClusterConnectionRecord.connectionStringNeedsPersisted
+	// flag: set when a forward was adopted in memory but not yet written to disk,
+	// cleared once persistIfDirty has run (whether or not the write succeeded —
+	// best-effort, matches C++ persist's setPersisted()). Persisting is DEFERRED
+	// until the new coordinators are confirmed reachable (a successful non-forward
+	// connect), so a forward to a dead set never overwrites the shared cluster file
+	// (C++ makeIntermediateRecord is in-memory; setAndPersistConnectionString runs
+	// only after a normal reply — MonitorLeader.actor.cpp:944-959).
+	dirty bool
 }
 
 func newConnRecord(cf *ClusterFile, filename string, logger *slog.Logger) *connRecord {
@@ -125,26 +152,42 @@ func (r *connRecord) get() *ClusterFile {
 	return r.cf
 }
 
-// setAndPersist swaps the in-memory connection string UNCONDITIONALLY, then
-// best-effort persists it to the cluster file (Path A — forward adopt). A persist
-// error (EROFS/EPERM/...) is logged and swallowed: in-memory adoption already took
-// effect and the connection must never be failed by a file-write error — matching
-// C++ ClusterConnectionFile::persist, which catches the error and returns false,
-// and setAndPersistConnectionString, which discards the bool
-// (ClusterConnectionFile.actor.cpp:54-58, 148-182). The on-disk write is skipped
-// when the file already equals cf (idempotent, matching C++ persist's up-to-date
-// short-circuit).
-func (r *connRecord) setAndPersist(cf *ClusterFile) {
+// setInMemory swaps the in-memory connection string and marks it needs-persist
+// (Path A — forward adopt). The file is NOT written here: persistence is deferred
+// to persistIfDirty after the new coordinators answer, so an unreachable forwarded
+// set never clobbers the cross-tool shared cluster file (C++ makeIntermediateRecord,
+// MonitorLeader.actor.cpp:944).
+func (r *connRecord) setInMemory(cf *ClusterFile) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cf = cf
+	r.dirty = true
+}
+
+// persistIfDirty writes the in-memory connection string to the cluster file when a
+// previously-adopted forward has not yet been persisted — called only after a
+// successful non-forward connect, so the new coordinators are known reachable
+// (C++ setAndPersistConnectionString at MonitorLeader.actor.cpp:957, gated on
+// connRecord != intermediateConnRecord). Best-effort: the dirty flag is cleared
+// regardless of the write outcome (matches C++ persist's setPersisted()), and a
+// write error (EROFS/EPERM/...) is logged + swallowed — the in-memory string is
+// already correct and the connection is never failed by a file-write error
+// (ClusterConnectionFile.actor.cpp:148-182). The write is skipped when the file is
+// already up-to-date.
+func (r *connRecord) persistIfDirty() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.dirty {
+		return
+	}
+	r.dirty = false
 	if r.filename == "" {
 		return // memory-only (ClusterConnectionMemoryRecord)
 	}
-	if stored, err := ParseClusterFile(r.filename); err == nil && stored.String() == cf.String() {
+	if stored, err := ParseClusterFile(r.filename); err == nil && stored.String() == r.cf.String() {
 		return // already up-to-date
 	}
-	if err := persistClusterFile(r.filename, cf); err != nil && r.logger != nil {
+	if err := persistClusterFile(r.filename, r.cf); err != nil && r.logger != nil {
 		r.logger.Warn("fdbgo: failed to persist cluster file (coordinator change still applied in memory)",
 			"filename", r.filename, "error", err)
 	}
@@ -188,9 +231,23 @@ func persistClusterFile(filename string, cf *ClusterFile) error {
 }
 
 // atomicReplace writes content to filename via a temp file + durable rename
-// (port of flow's atomicReplace) so a concurrent reader never sees a torn file.
+// (port of flow's atomicReplace, Platform.actor.cpp) so a concurrent reader never
+// sees a torn file. The existing file's mode (and best-effort uid/gid) are carried
+// onto the replacement: a co-located C++/Java client or tool may read this shared
+// file under a different user, and os.CreateTemp's default 0600 would otherwise
+// silently tighten a 0644 cluster file and lock them out.
 func atomicReplace(filename string, content []byte) error {
 	dir := filepath.Dir(filename)
+
+	mode := os.FileMode(0o644)
+	uid, gid := -1, -1
+	if fi, err := os.Stat(filename); err == nil {
+		mode = fi.Mode().Perm()
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			uid, gid = int(st.Uid), int(st.Gid)
+		}
+	}
+
 	tmp, err := os.CreateTemp(dir, ".fdb.cluster.tmp-*")
 	if err != nil {
 		return err
@@ -207,6 +264,12 @@ func atomicReplace(filename string, content []byte) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	if uid >= 0 {
+		_ = os.Chown(tmpName, uid, gid) // best-effort: requires privilege, harmless if it fails
 	}
 	if err := os.Rename(tmpName, filename); err != nil {
 		return err

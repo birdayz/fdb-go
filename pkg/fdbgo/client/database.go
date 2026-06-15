@@ -69,6 +69,12 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 		ID:          prefix[colonIdx+1:],
 	}
 
+	// Validate the description:id key to C++'s parseKey acceptance set so a
+	// persisted cluster key is always parseable by a C++/Java client (RFC-111 §8).
+	if !validClusterKeyPart(cf.Description, true) || !validClusterKeyPart(cf.ID, false) {
+		return nil, fmt.Errorf("invalid cluster key %q: description must be [a-zA-Z0-9_], id must be [a-zA-Z0-9]", prefix)
+	}
+
 	tlsCount := 0
 	for _, addr := range strings.Split(addrs, ",") {
 		addr = strings.TrimSpace(addr)
@@ -485,6 +491,9 @@ func (db *database) bootstrap(ctx context.Context) error {
 			err = fmt.Errorf("coordinator forward could not be followed")
 		case err == nil:
 			db.forwardHops = 0
+			// New coordinators answered — persist a forward adopted in memory on a
+			// previous iteration now that the set is confirmed reachable (Path A).
+			db.connRecord.persistIfDirty()
 			db.dbInfo.Store(info)
 			close(db.connected)
 			return nil
