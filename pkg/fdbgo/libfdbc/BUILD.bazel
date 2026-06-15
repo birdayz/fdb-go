@@ -1,56 +1,15 @@
-load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_library")
 
-# cgofdb (the Apple cgo binding for libfdb_c) is a cgo-only dependency, needed solely by
-# the //go:build cgo sources (backend.go, options.go). In a pure (CGO_ENABLED=0) build
-# only backend_stub.go compiles, and cgofdb must NOT be pulled in — it cannot build
-# without cgo. Gate the dep on rules_go's `pure` flag so
-# `bazel build --@rules_go//go/config:pure //pkg/fdbgo/libfdbc:libfdbc` works, matching
-# `CGO_ENABLED=0 go build ./pkg/fdbgo/libfdbc/...` (backend_stub.go's purpose). gazelle
-# does not split deps on the cgo build tag, so this select is maintained by hand (# keep).
-config_setting(
-    name = "purego",
-    flag_values = {"@rules_go//go/config:pure": "True"},
-)
-
+# Only backend_stub.go is built by bazel/gazelle: the real backend (backend.go, options.go)
+# and the differential test are //go:build cgo && libfdbc, and bazel does not set the
+# `libfdbc` tag — so a default `bazelisk build/test //...` never compiles the cgo backend or
+# links libfdb_c. The real backend and the cross-client differential are exercised by
+# `go test -tags libfdbc ./pkg/fdbgo/libfdbc/...`, run in the nightly cgo workflow (which has
+# libfdb_c installed). The stub here just keeps the package importable in the default build.
 go_library(
     name = "libfdbc",
-    srcs = [
-        "backend.go",
-        "backend_stub.go",
-        "options.go",
-    ],
+    srcs = ["backend_stub.go"],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc",
     visibility = ["//visibility:public"],
-    deps = [
-        "//pkg/fdbgo/fdb",
-    ] + select({
-        ":purego": [],
-        "//conditions:default": ["@com_github_apple_foundationdb_bindings_go//src/fdb"],
-    }),  # keep
-)
-
-# The test sources are entirely //go:build cgo (they exercise the real libfdb_c backend),
-# so in a pure build they compile to nothing; drop the cgo-only cgofdb dep there too (it
-# cannot build without cgo), the same way the library does (# keep).
-go_test(
-    name = "libfdbc_test",
-    size = "medium",
-    srcs = [
-        "backend_internal_test.go",
-        "differential_test.go",
-    ],
-    embed = [":libfdbc"],
-    deps = [
-        "//gen",
-        "//pkg/fdbgo/fdb",
-        "//pkg/fdbgo/fdb/directory",
-        "//pkg/fdbgo/fdb/subspace",
-        "//pkg/fdbgo/fdb/tuple",
-        "//pkg/recordlayer",
-        "//pkg/testcontainers/foundationdb",
-        "@org_golang_google_protobuf//proto",
-    ] + select({
-        ":purego": [],
-        "//conditions:default": ["@com_github_apple_foundationdb_bindings_go//src/fdb"],
-    }),  # keep
+    deps = ["//pkg/fdbgo/fdb"],
 )

@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build cgo && libfdbc
 
 // Package libfdbc is the config-selectable libfdb_c (Apple CGo) backend for the
 // record layer — RFC-109's escape hatch. It implements the fdb client interfaces
@@ -73,11 +73,18 @@ type sharedDB struct {
 // backend selection is a process-launch-time decision (the libfdb_c network thread
 // is one-shot); only the per-cluster Database handle is refcounted and released.
 func Open(clusterFile string) (fdb.BackendDatabase, error) {
-	// Idempotent for the same version (cgofdb.APIVersion returns nil if already
-	// set to 730, and is internally mutex-guarded). The pure-Go fdb.APIVersion is
-	// independent in-process bookkeeping; only this call touches the C network.
+	// Set BOTH API-version registries to 730. cgofdb.APIVersion touches the C network
+	// (fdb_select_api_version); fdb.APIVersion is the pure-Go facade's independent
+	// in-process bookkeeping that the record layer reads via fdb.GetAPIVersion — notably
+	// tuple.PackWithVersionstamp (record versions, MAX_EVER, SPFresh). Without setting the
+	// facade version, versionstamped writes on this backend would fail with
+	// api_version_unset (2200) even though the cluster opened fine. Both calls are
+	// idempotent (no-op if already 730, error on a mismatched prior version).
 	if err := cgofdb.APIVersion(apiVersion); err != nil {
 		return nil, convErr(err)
+	}
+	if err := fdb.APIVersion(apiVersion); err != nil {
+		return nil, err
 	}
 	openMu.Lock()
 	defer openMu.Unlock()

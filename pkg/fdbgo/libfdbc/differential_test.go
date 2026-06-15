@@ -1,4 +1,4 @@
-//go:build cgo
+//go:build cgo && libfdbc
 
 package libfdbc_test
 
@@ -50,21 +50,24 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 
 	clusterFile := startCluster(t)
 
-	// Both clients use API 730 (the cgofdb binding's header version, matching the
-	// 7.3.75 server). The two API-version registrations are independent in-process
-	// bookkeeping; only the cgo backend touches the libfdb_c network thread.
-	fdb.MustAPIVersion(730)
-	goRaw, err := fdb.OpenDatabase(clusterFile)
-	if err != nil {
-		t.Fatalf("open pure-Go database: %v", err)
-	}
-	defer goRaw.Close()
-
+	// Deliberately NO explicit fdb.MustAPIVersion here, and the libfdb_c backend is opened
+	// FIRST: libfdbc.Open must set BOTH the cgofdb AND the pure-Go facade API version (730).
+	// The record layer reads the facade version via fdb.GetAPIVersion (tuple.PackWithVersionstamp
+	// — record versions, MAX_EVER, SPFresh), and fdb.OpenDatabase below requires it too, so if
+	// libfdbc.Open had not set the facade version this whole test would fail with
+	// api_version_unset (2200). That makes this the regression for codex #295 r13. Both clients
+	// run API 730 (the cgofdb binding's header version, matching the 7.3.75 server).
 	cgoBackend, err := libfdbc.Open(clusterFile)
 	if err != nil {
 		t.Fatalf("open libfdb_c backend: %v", err)
 	}
 	defer cgoBackend.Close()
+
+	goRaw, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatalf("open pure-Go database: %v", err)
+	}
+	defer goRaw.Close()
 
 	goDB := recordlayer.NewFDBDatabase(goRaw)
 	cgoDB := recordlayer.NewFDBDatabaseWithBackend(cgoBackend)

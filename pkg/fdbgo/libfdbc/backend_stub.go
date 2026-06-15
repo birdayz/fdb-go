@@ -1,4 +1,4 @@
-//go:build !cgo
+//go:build !cgo || !libfdbc
 
 // This stub keeps the package compilable when something imports it in a
 // CGO_ENABLED=0 build (e.g. `go build -tags libfdbc` without cgo, or tooling that

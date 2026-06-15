@@ -1,7 +1,9 @@
 # RFC-109: libfdb_c escape hatch — a build-tag-selectable battle-tested backend
 
-**Status:** DRAFT (v2 — reworked after FDB C++ dev + Torvalds NAK of the v1 "Plan B" inner
-interface). Client launch-readiness #6 (TODO-production P2.2). **`· L` (large)**; phased.
+**Status:** IMPLEMENTED (PR #295, stacked). Phases A–C landed; the cgo backend was hardened
+across 11 codex rounds + FDB C++ dev / Torvalds review, and backend selection was finalized
+as a build-tag choice (pkg/fdbgo/fdbclient — netgo/netcgo idiom), vetted by stdlib-net +
+sqlite-driver + Torvalds reviewers. Client launch-readiness #6 (TODO-production P2.2).
 Wire compatibility is the whole point and the hard line.
 
 ## Problem — 86 files bet on a young client with no fallback
@@ -251,11 +253,16 @@ transaction-internal or per-transaction:
     single-fragment degradation), the same scope boundary the RFC already draws around tenants.
 - **Phase C — build-tag switch + differential.** `fdbclient.Open` (build-tag-selected) +
   `recordlayer.NewFDBDatabaseWithBackend`. The differential gate is a record-layer test
-  (`pkg/fdbgo/libfdbc/differential_test.go`, `//go:build cgo`) against one real FDB: **cross-backend
-  round-trip** (save through one backend, read through the other on the same subspace — the operator
-  flip), **byte-identical keyspace** (same records saved through each backend on disjoint subspaces;
-  the record + index keyspaces compared byte-for-byte through a neutral reader), and **split-record
-  wire compat** (a >100KB record split across keys, written by cgo, read by pure-Go, byte-compared).
+  (`pkg/fdbgo/libfdbc/differential_test.go`, `//go:build cgo && libfdbc`) against one real FDB:
+  **cross-backend round-trip** (save through one backend, read through the other on the same subspace
+  — the operator flip), **byte-identical keyspace** (same records saved through each backend on
+  disjoint subspaces; the record + index keyspaces compared byte-for-byte through a neutral reader),
+  and **split-record wire compat** (a >100KB record split across keys, written by cgo, read by pure-Go,
+  byte-compared). Because the cgo backend is gated behind the `libfdbc` tag, this differential is NOT
+  in the per-commit suite (which stays pure-Go, no libfdb_c); it runs in a **nightly** workflow
+  (`.github/workflows/nightly-libfdbc.yml`) via `CGO_ENABLED=1 go test -tags libfdbc`, on the
+  self-hosted box that has libfdb_c + Docker. It opens BOTH clients, so the nightly gate covers the
+  normal and the C-client paths together.
 
 One PR, multiple commits (phases as commits, not stacked PRs) — per the maintainer's call.
 
