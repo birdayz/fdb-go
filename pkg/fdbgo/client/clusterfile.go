@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -66,6 +67,28 @@ func validClusterKeyPart(s string, allowUnderscore bool) bool {
 		}
 	}
 	return true
+}
+
+// coordDedupKey returns the canonical duplicate-detection key for a coordinator
+// (host:port, ":tls" already stripped). For an IP coordinator it normalizes the
+// parsed IP and port so leading-zero ports and compressed/expanded IPv6 collide
+// the way C++ ClusterConnectionString's parsed-NetworkAddress set does
+// (MonitorLeader.actor.cpp:115-121) — a raw-string map would miss those. For a
+// hostname it is the verbatim string (C++ Hostname equality is string-based).
+func coordDedupKey(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return addr // hostname — not an IP
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return addr
+	}
+	return ip.String() + "/" + strconv.Itoa(p) // canonical IP + port
 }
 
 func allDigits(s string) bool {

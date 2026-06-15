@@ -103,12 +103,16 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 		}
 		// Reject duplicate coordinators — C++ ClusterConnectionString throws
 		// connection_string_invalid on a duplicate address/hostname
-		// (MonitorLeader.actor.cpp:109/117). Keeps Go-accept a subset of C++-accept
-		// so the persist path never writes a dup-coordinator file C++/Java can't read.
-		if seenCoords[addr] {
+		// (MonitorLeader.actor.cpp:109/117). Dedup on the CANONICAL parsed form
+		// (coordDedupKey) so normalized duplicates (leading-zero port,
+		// compressed-vs-expanded IPv6) collide the way C++'s NetworkAddress set
+		// does — keeping Go-accept a subset of C++-accept so the persist path never
+		// writes a dup-coordinator file C++/Java can't read.
+		dedupKey := coordDedupKey(addr)
+		if seenCoords[dedupKey] {
 			return nil, fmt.Errorf("duplicate coordinator address %q", addr)
 		}
-		seenCoords[addr] = true
+		seenCoords[dedupKey] = true
 		cf.Coordinators = append(cf.Coordinators, addr)
 		if isTLS {
 			tlsCount++
