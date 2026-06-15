@@ -998,6 +998,42 @@ func TestCreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 	}
 }
 
+// TestCreateTransaction_ResetPreservesDatabaseDefaults verifies Reset() re-applies
+// inherited DB-level option defaults to the fresh inner transaction — matching C++
+// reset(), which re-copies the database persistent options. Regression for the
+// divergence where Reset swapped in a defaults-less inner (codex).
+func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		tr, err := db.CreateTransaction()
+		if err != nil {
+			t.Fatalf("CreateTransaction: %v", err)
+		}
+		tr.Reset() // fresh inner — the 1ms DB timeout must survive the reset
+		_, rerr := tr.Get(fdb.Key(t.Name() + "_key")).Get()
+		cerr := tr.Commit().Get()
+		if is1031(rerr) || is1031(cerr) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("DB timeout lost after Reset (1031 expected) — applyTxDefaults not re-applied on Reset")
+	}
+}
+
 // TestDatabaseTransactionSizeLimit verifies that FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
 // applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:888.
 func TestDatabaseTransactionSizeLimit(t *testing.T) {

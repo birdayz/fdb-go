@@ -44,6 +44,52 @@ func openTestDBWithTenants(t *testing.T) (fdb.Database, *tcfdb.Container) {
 	return db, container
 }
 
+// TestTenant_CreateTransaction_AppliesDatabaseDefaults verifies a tenant-scoped
+// MANUALLY-created transaction inherits database-level option defaults — the same
+// applyTxDefaults parity the Database facade has across Transact/ReadTransact/
+// CreateTransaction. Regression for the divergence where the whole Tenant facade
+// skipped applyTxDefaults, so tenant transactions ignored SetTransactionTimeout.
+func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	// 1ms database-level timeout — must apply to a tenant-scoped manual transaction.
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+	defer db.Options().SetTransactionTimeout(0)
+
+	is1031 := func(err error) bool {
+		fe, ok := err.(fdb.Error)
+		return ok && fe.Code == 1031 // transaction_timed_out
+	}
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		tr, err := tenant.CreateTransaction()
+		if err != nil {
+			t.Fatalf("tenant.CreateTransaction: %v", err)
+		}
+		_, rerr := tr.Get(fdb.Key("k")).Get()
+		cerr := tr.Commit().Get()
+		if is1031(rerr) || is1031(cerr) {
+			timedOut = true
+			break
+		}
+	}
+	if !timedOut {
+		t.Fatal("tenant CreateTransaction did not inherit the 1ms database timeout (1031 expected) — applyTxDefaults not applied")
+	}
+}
+
 func TestTenantCRUD(t *testing.T) {
 	t.Parallel()
 	db, _ := openTestDBWithTenants(t)

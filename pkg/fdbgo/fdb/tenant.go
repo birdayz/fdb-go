@@ -38,6 +38,7 @@ func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (an
 			ctx:        ctx,
 			commitDone: make(chan struct{}),
 		}
+		t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
 		lastTx = txn
 		return f(Transaction{t: txn})
 	})
@@ -69,12 +70,13 @@ func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (an
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tx.SetTenantId(t.tenantId)
-		tr := Transaction{t: &transaction{
+		txn := &transaction{
 			inner: tx,
 			db:    t.db,
 			ctx:   ctx,
-		}}
-		return f(tr)
+		}
+		t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.ReadTransactCtx
+		return f(Transaction{t: txn})
 	})
 	if err != nil {
 		return nil, convertError(err)
@@ -82,15 +84,19 @@ func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (an
 	return result, nil
 }
 
-// CreateTransaction creates a new Transaction scoped to this tenant's
-// key space.
+// CreateTransaction creates a new Transaction scoped to this tenant's key space.
+// Like Database.CreateTransaction, it inherits database-level option defaults set
+// via Options() (SetTransactionTimeout / SetTransactionRetryLimit / …) — matching
+// libfdb_c, where DB transaction defaults are copied into every transaction.
 func (t Tenant) CreateTransaction() (Transaction, error) {
 	tx := t.db.d.inner.CreateTransaction()
 	tx.SetTenantId(t.tenantId)
-	return Transaction{t: &transaction{
+	txn := &transaction{
 		inner:      tx,
 		db:         t.db,
 		ctx:        t.db.d.ctx,
 		commitDone: make(chan struct{}),
-	}}, nil
+	}
+	t.db.applyTxDefaults(txn) // parity with Database.CreateTransaction + the Transact* paths
+	return Transaction{t: txn}, nil
 }

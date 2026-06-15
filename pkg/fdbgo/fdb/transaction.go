@@ -375,6 +375,13 @@ func (tr Transaction) Reset() {
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
 	tr.t.commitDone = make(chan struct{})
 	tr.t.commitErr = nil
+	// Re-apply DB-level option defaults to the fresh inner — C++ reset() re-copies
+	// the database persistent options (ReadYourWrites.actor.cpp). Without this a
+	// reset manual transaction silently loses its inherited timeout/retry/size/
+	// system-key defaults (codex). NOTE: user-set per-tx options and tenant scoping
+	// are NOT yet re-applied here (the fresh-inner approach drops them) — a separate
+	// pre-existing Reset divergence, tracked in TODO-production.
+	tr.t.db.applyTxDefaults(tr.t)
 	old.Cancel()
 	// Unblock any goroutines from GetVersionstamp() calls made before Reset.
 	if oldDone != nil {
