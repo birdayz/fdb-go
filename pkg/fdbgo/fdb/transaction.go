@@ -372,15 +372,22 @@ func (tr Transaction) SetReadVersion(version int64) {
 func (tr Transaction) Reset() {
 	old := tr.t.inner
 	oldDone := tr.t.commitDone
-	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
+	// Match C++ user-facing reset() (ReadYourWrites.actor.cpp:2735-2755): DROP
+	// user-set options, KEEP the tenant, re-apply the database transaction defaults.
+	// A fresh inner drops the user-set per-tx options (writeConflictsDisabled,
+	// user SetTimeout/SetRetryLimit/tags/priority — C++ clears persistentOptions);
+	// SetTenantId re-applies the tenant so a reset tenant tx stays scoped (NOT a
+	// wrong-keyspace write — C++ reset keeps the tenant); applyTxDefaults re-copies
+	// the DB defaults (C++ recopies getTransactionDefaults). NB the onError-RETRY
+	// reset is a DIFFERENT path (client resetRyow) that PRESERVES user options so
+	// retries keep them; that one is client.Transaction.Reset, used in the retry loop.
+	fresh := tr.t.db.d.inner.CreateTransaction()
+	if tid := old.TenantId(); tid >= 0 {
+		fresh.SetTenantId(tid)
+	}
+	tr.t.inner = fresh
 	tr.t.commitDone = make(chan struct{})
 	tr.t.commitErr = nil
-	// Re-apply DB-level option defaults to the fresh inner — C++ reset() re-copies
-	// the database persistent options (ReadYourWrites.actor.cpp). Without this a
-	// reset manual transaction silently loses its inherited timeout/retry/size/
-	// system-key defaults (codex). NOTE: user-set per-tx options and tenant scoping
-	// are NOT yet re-applied here (the fresh-inner approach drops them) — a separate
-	// pre-existing Reset divergence, tracked in TODO-production.
 	tr.t.db.applyTxDefaults(tr.t)
 	old.Cancel()
 	// Unblock any goroutines from GetVersionstamp() calls made before Reset.

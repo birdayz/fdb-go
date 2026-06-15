@@ -90,6 +90,63 @@ func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 	}
 }
 
+// TestTenant_Reset_PreservesTenantScoping verifies a tenant transaction stays
+// scoped to its tenant after Reset() — C++ reset() preserves the tenant. The
+// facade's prior fresh-inner Reset silently dropped tenant scoping, so a reset
+// tenant transaction wrote the DEFAULT keyspace (data corruption). Regression for
+// that wrong-keyspace divergence (Torvalds).
+func TestTenant_Reset_PreservesTenantScoping(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key(t.Name())
+	if err := db.CreateTenant(name); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	key := fdb.Key("scoped-key")
+	want := []byte("tenant-value")
+
+	// Write via a tenant tx that is Reset() BEFORE the write — the write must still
+	// land in the tenant's keyspace, not the default one.
+	tr, err := tenant.CreateTransaction()
+	if err != nil {
+		t.Fatalf("tenant.CreateTransaction: %v", err)
+	}
+	tr.Reset()
+	tr.Set(key, want)
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Read back THROUGH THE TENANT — must see it.
+	got, err := tenant.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(key).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("tenant read: %v", err)
+	}
+	if gb, _ := got.([]byte); string(gb) != string(want) {
+		t.Fatalf("tenant read = %q, want %q — Reset dropped tenant scoping?", gb, want)
+	}
+
+	// The DEFAULT keyspace must NOT have it — proves the reset tenant tx stayed
+	// tenant-scoped instead of leaking the write to the default keyspace.
+	leaked, err := db.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+		return rt.Get(key).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("default read: %v", err)
+	}
+	if lb, _ := leaked.([]byte); lb != nil {
+		t.Fatalf("default keyspace has %q at the tenant key — reset tenant tx leaked to default (wrong-keyspace write)", lb)
+	}
+}
+
 func TestTenantCRUD(t *testing.T) {
 	t.Parallel()
 	db, _ := openTestDBWithTenants(t)

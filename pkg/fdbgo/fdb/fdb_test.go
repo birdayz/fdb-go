@@ -1034,6 +1034,33 @@ func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
 	}
 }
 
+// TestCreateTransaction_ResetDropsUserOptions verifies a user-facing Reset() DROPS
+// user-set per-tx options — matching C++ reset() (clears persistentOptions), which
+// is distinct from the onError-retry reset (resetRyow) that PRESERVES them so
+// retries keep them. If Reset preserved user options, a user-set 1ms timeout would
+// survive and time out the reused transaction (codex).
+func TestCreateTransaction_ResetDropsUserOptions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t) // no database-level timeout default
+
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	// User-set a 1ms per-tx timeout, then Reset — it must NOT carry over.
+	if err := tr.Options().SetTimeout(1); err != nil {
+		t.Fatalf("SetTimeout: %v", err)
+	}
+	tr.Reset()
+
+	// A normal write+commit on the reset tx must SUCCEED: the user 1ms timeout was
+	// dropped. If it had survived Reset, the >1ms GRV/commit would return 1031.
+	tr.Set(fdb.Key(t.Name()+"_key"), []byte("v"))
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("commit after Reset returned %v — user-set 1ms timeout survived Reset (should be dropped, C++ reset() clears persistentOptions)", err)
+	}
+}
+
 // TestDatabaseTransactionSizeLimit verifies that FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
 // applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:888.
 func TestDatabaseTransactionSizeLimit(t *testing.T) {

@@ -437,21 +437,6 @@ deadline surfaces an error after retrying, not an infinite loop;
 `database_bootstrap_test.go` (`TestBootstrapContext`: bootstrap deadline bounded by
 `defaultBootstrapTimeout`).
 
-### [ ] Follow-up — facade `Reset()` drops per-tx options + tenant scoping (codex-surfaced, PR #298) · S
-PR #298 made `fdb.Transaction.Reset()` (transaction.go:372) re-apply DB-level option
-defaults (`applyTxDefaults`), matching C++ `reset()` re-copying persistent options. Two
-PRE-EXISTING divergences remain (Reset swaps in a fresh inner via
-`db.d.inner.CreateTransaction()` and so drops anything not re-applied):
-- **User-set per-tx options lost on Reset** — `tr.Options().SetTimeout(5000)` then `Reset()`
-  → fresh inner has no timeout. C++ `reset()` re-applies the transaction's persistent options.
-- **Tenant scoping lost on Reset (more serious — wrong-keyspace risk).** The facade
-  `transaction` struct stores no `tenantId`, so the fresh inner is NOT tenant-scoped: a reset
-  tenant transaction reads/writes the DEFAULT keyspace. C++ `reset()` preserves the tenant.
-Faithful fix: re-use the inner (`inner.Reset()`, which re-applies its own persistentOptions)
-instead of replacing it, or track tenantId + user options on the facade and re-apply. C++-verify
-first (`ReadYourWritesTransaction::reset` re-applies persistentOptions ~:2751-2753; confirm tenant
-preservation). Own RFC + differential.
-
 ---
 
 ## P1 — High (before relying on it at scale)
