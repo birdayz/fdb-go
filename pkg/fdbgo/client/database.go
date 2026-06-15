@@ -379,8 +379,8 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	}()
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+	defer cancel() // RFC-110: release the dial timer even if transport.Dial panics
 	c, dialErr := transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn)
-	cancel()
 
 	func() {
 		db.connMu.Lock()

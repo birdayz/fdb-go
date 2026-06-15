@@ -531,13 +531,13 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			pb.run(func() {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+				defer refreshCancel() // RFC-110: release the GRV timer even if sendGRVRequest panics
 				// Refresh at this batcher's own priority, not always DEFAULT.
 				// The BATCH batcher must refresh BATCH ratekeeper state
 				// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
 				// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
 				// its tryCache always returns false (refreshOnce never fires).
 				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
-				refreshCancel()
 				if err == nil {
 					// The refresher ignores the reply's `locked` flag — equivalent
 					// to C++'s background updater, whose non-lock-aware txn THROWS
