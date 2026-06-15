@@ -152,22 +152,18 @@ action matched to the C++ analog. (Already-correct: the 3 `transport/conn.go` lo
 (backoff + rate-limited log + counters), *continue the loop* (do not exit):**
 - `client/topology.go:18` `topologyMonitor` (launched `database.go:610`)
 - `client/grv.go:426` `backgroundRefresher` (launched `grv.go:285`)
-- `client/grv.go:299` `time.AfterFunc(b.flush)` GRV-batch timer
 
   Continuing-the-loop is the `monitorProxies`/`backgroundGrvUpdater` self-heal. But "continue"
   is **not** "re-run immediately": a *deterministic* panic (a real bug, e.g. `writer.go:73`)
-  would otherwise re-fire every iteration — and the GRV `AfterFunc` flush fires **per-batch**
-  (potentially thousands/sec under load), a genuine hot loop that buries the log signal. The
-  C++-faithful fix is exactly what `backgroundGrvUpdater` already does on *any* error: apply an
-  exponential `Backoff` (0.01→1.0s, ×2, jittered; `NativeAPI.actor.cpp:1305-1319`,
-  `DatabaseContext.h:852-865`), and `monitorProxies` delays `COORDINATOR_RECONNECTION_DELAY=1.0s`
-  after a failed sweep (`MonitorLeader.actor.cpp:975-979`, `ClientKnobs.cpp:52`). So **a recovered
-  panic enters the same backoff path the loop uses for errors**, capping the re-panic rate at
-  ≤1/s. For the GRV `AfterFunc`, that means re-arm the timer with the backoff floor on a recovered
-  panic instead of re-firing per-batch; for `topologyMonitor`, drop out of rapid-poll to the
-  steady 5s (or the 1s sweep floor). This bounds the hot loop *and* matches C++ more faithfully
-  than a bare "continue". The stale GRV cache stays usable across the panic, matching
-  `backgroundGrvUpdater`'s success-only monotonic cache write.
+  would otherwise re-fire every iteration. The C++-faithful fix is exactly what
+  `backgroundGrvUpdater` already does on *any* error: apply an exponential `Backoff` (0.01→1.0s,
+  ×2, jittered; `NativeAPI.actor.cpp:1305-1319`, `DatabaseContext.h:852-865`), and `monitorProxies`
+  delays `COORDINATOR_RECONNECTION_DELAY=1.0s` after a failed sweep
+  (`MonitorLeader.actor.cpp:975-979`, `ClientKnobs.cpp:52`). So **a recovered panic enters the same
+  backoff path the loop uses for errors**, capping the re-panic rate at ≤1/s; for `topologyMonitor`
+  that means dropping out of rapid-poll to the steady 5s (or the 1s sweep floor). The stale GRV
+  cache stays usable across the panic, matching `backgroundGrvUpdater`'s success-only monotonic
+  cache write.
 
   Logging is **rate-limited** (the bare-`slog.Error`-every-interval death Torvalds flagged): log
   the first occurrence immediately with full stack, then at most once per minute carrying a
@@ -175,15 +171,38 @@ action matched to the C++ analog. (Already-correct: the 3 `transport/conn.go` lo
   `.suppressFor(1.0)` (`MonitorLeader.actor.cpp:519-523`). Discoverability comes from the
   counters, not the log volume (next section).
 
+**Class A-batch — the GRV request batcher (`grv.go:309` `time.AfterFunc(b.flush)`) → recover MUST
+complete the popped batch with an error *before* returning (then log):** `flush` pops
+`batch := b.pending; b.pending = nil` under `b.mu` (`grv.go:317-319`) and only delivers results to
+each `req.reply` at the very end (`grv.go:371-373`). A panic anywhere in between (in
+`sendGRVRequest`, `applyGRVReply`, or the adaptive-window math) would orphan the popped batch:
+every waiter blocked on `select { case <-req.reply; case <-ctx.Done() }` (`grv.go:303-308`) with a
+non-canceling ctx **hangs forever** (codex P1). The `batch` slice is local to `flush`, so a
+`defer recover()` inside `flush` can — and must — deliver `grvResult{err: <panic-as-error>}` to
+**every** `req.reply` in `batch` before returning. This is a one-shot per-batch timer callback, not
+a standing loop: the next queued request arms a fresh timer, so there is nothing to "re-arm" and no
+tight spin — a deterministic flush panic fails each batch with an error (callers get the error,
+never hang) at the rate requests arrive, with the same rate-limited logging.
+
 **Class B — one-shot dial/RPC workers → recover, deliver the failure through the existing
 result channel / call, never crash:**
-- `client/database.go:359` `dialAndPool` → set `call.err`, `close(call.done)`
-- `client/database.go:421` `warmConnections` fan-out → the recover must land where the panic can
-  actually originate. The fan-out goroutine only calls `db.getOrDial` → `dialAndPool`; the real
-  wire-parse panic surface is inside `dialAndPool`/`transport.Dial`, so the backstop belongs on
-  `dialAndPool` (covering both the warm path and the cold path), not just the fan-out wrapper.
-- `client/database.go:479` `tryAllCoordinators` fan-out → recover → send `result{err}` into the
-  buffered `ch` (matches a single failed coordinator leaf actor / `quorum` leg)
+- `client/database.go:359` `dialAndPool` → `transport.Dial` (`:360`) runs **before** the normal
+  `db.connMu.Lock(); delete(db.dialing, addr)` cleanup (`:362-363`). A panic in `Dial` therefore
+  leaves the in-flight `dialCall` in `db.dialing[addr]` with `call.done` **never closed** — every
+  later caller in `getOrDialConn` coalesces onto it (`database.go:325-330`) and blocks until *its
+  own* ctx expires, and no fresh dial ever starts for that addr: a permanently poisoned
+  singleflight entry (codex P2). The recover MUST, under `connMu`: `delete(db.dialing, addr)`, set
+  `call.err`, and `close(call.done)` — wake the waiters with an error and let the next caller start
+  a clean dial.
+- `client/database.go:497` `tryOneCoordinator` (the per-coordinator worker) → put the recover
+  **here, on the unit of work**, converting a panic to a returned error — not only on the fan-out
+  goroutine. `tryAllCoordinators` calls `tryOneCoordinator` two ways: the parallel fan-out
+  (`database.go:479`) **and a direct call on the caller's goroutine when there is a single
+  coordinator** (`database.go:466-468`, the common test/dev shape). A recover only on the fan-out
+  goroutine would miss the single-coordinator fast path entirely (codex P3). Recovering inside
+  `tryOneCoordinator` covers both paths uniformly (emergent fix, CLAUDE.md #10): the fan-out leg
+  forwards the returned error via the buffered `ch` (matching a failed `quorum(ok,1)` leg), and the
+  single-coordinator direct call returns the error to its caller.
 
 **Class C — facade-future helpers → recover, store the panic as `f.err`, still `close(f.done)`
 (fail this op only):**
@@ -245,8 +264,12 @@ test asserts, against real FDB (testcontainers):
    `dialAndPool` → the dial caller gets an error, not a crash.
 3. **Class C:** panic inside a facade future's `fn()` → `future.Get()` returns an error, the host
    survives.
-4. **Crash-still-happens guard:** a `runtime`-fatal (e.g. deliberate nil map write in a unit test,
-   not on the FDB path) is *not* swallowed — documents that we match C++'s hard-exit classes.
+4. **Crash-still-happens guard:** prove the fatal class is *not* swallowed — via a **subprocess
+   helper** (re-invoke the test binary with an env flag) that triggers a genuine Go runtime-fatal
+   (concurrent map write / stack overflow / true OOM — these call `fatalthrow` and **bypass**
+   `recover()`), asserting the child exits non-zero with `fatal error:`. NOTE (codex P2): a
+   nil-map assignment or nil-pointer deref is an *ordinary, recoverable* panic — the backstop
+   *would* catch it — so it is **not** a valid example for this guard.
 5. **Revert-prove:** back out each backstop, confirm the matching test panics the test binary
    (process dies), restore. `-race` the touched packages, `--runs_per_test=10`.
 
