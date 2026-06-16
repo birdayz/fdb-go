@@ -59,6 +59,19 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6)
+
+`cmd/fdb-schema-extract/main.cpp` has no `extractType<WatchValueRequest>()` /
+`extractType<WatchValueReply>()` (37 other types are registered). The committed
+`pkg/fdbgo/wire/types/watchvalue*_generated.go` were produced out-of-band (commit `52c70585`),
+so `just generate-wire-types` (which `rm`s `*_generated.go` then restores only extractor-emitted
+types) DROPS them — a regen footgun. RFC-115 §6 restored them after its regen; the proper fix is
+to register both in `main.cpp` (`extractType<WatchValueRequest>(outDir, "WatchValueRequest")`,
+same for the reply) so a regen reproduces them. WatchValueReply also carries an inline
+`Optional<Error>`, so re-emitting it picks up the §6 union fix too. Not caught by per-PR CI
+(`just generate` ≠ `just generate-wire-types`). Verify the re-emitted bytes are wire-identical
+to the committed files before landing.
+
 ### [x] fdbgo/client: read-path RPC reply timeout is retryable, not a terminal leak (C++ divergence) — FIXED (PR #288)
 
 Shipped in PR #288 (merge `48106b7d`). `waitReply` (rpc.go) now returns an internal

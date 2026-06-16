@@ -1,6 +1,23 @@
 # RFC-115: Production-readiness round 2, wave 2 — degraded-cluster behavior, tracing, verification depth (`pkg/fdbgo`)
 
-**Status:** Accepted (RFC). Reviewed clean: **FDB C++ maintainer ACK** (validated every C++ claim against
+**Status:** Implemented (all six items committed on `rfc/115-degraded-cluster-tracing-verification`;
+pending PR gauntlet + merge). Per-item commits & gating reviews:
+
+| Item | Commit | Gating review |
+|------|--------|---------------|
+| §3 coordinator non-bug (doc only) | `8dac3a3b` | n/a (retired — verified non-bug) |
+| §2 bounded `GetRange` (opt-in cap + `Mode` doc) | `abef40a1` | n/a (no wire / no divergence) |
+| §5 wire-oracle + fuzz-smoke per-PR | `658ccac5` | n/a (CI) |
+| §1 dead-server LB exclusion (+ growth/cap test) | `a89085fb`, `01c83759` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
+| §4 tracing: propagation + OTEL export (+ NAK fix) | `67d71777`, `0c2eba6c` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
+| §6 inline-error `Optional<Error>` union marshal | `a467a4d2` | **FDB-C-dev ACK** (wire-byte byte-identical to C++) |
+
+**Follow-on filed (pre-existing, surfaced by §6's regen):** the schema extractor (`cmd/fdb-schema-extract/main.cpp`)
+has no `extractType<WatchValueRequest>` / `<WatchValueReply>`, so a `just generate-wire-types` drops the
+committed `watchvalue*_generated.go` (the recipe `rm`s then restores only extractor-emitted types). They
+were restored here (the watch path needs them); registering them in the extractor is tracked in TODO.md.
+
+**Original RFC review (design):** **FDB C++ maintainer ACK** (validated every C++ claim against
 `/tmp/fdbsrc` 7.3.75; ACK'd the §1 *timed re-admission* recovery design — full `connectionKeeper` port NOT
 required — and the §3 quorum non-bug; required citation fixes folded: `LoadBalance.actor.h:607`→`:790`,
 `SPAN_PARENT` 33-byte = `8+16+8+1`, `Optional<Error>` is a union not a bare table). **Torvalds ACK**
