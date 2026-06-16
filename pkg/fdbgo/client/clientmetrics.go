@@ -84,7 +84,7 @@ type ClientMetrics struct {
 	readLatency   latencySketch // GetValue round-trip       (C++ readLatencies,   NativeAPI.actor.cpp:3698)
 	commitLatency latencySketch // commit round-trip          (C++ commitLatencies, :6681)
 	grvLatency    latencySketch // GRV round-trip             (C++ GRVLatencies,    :7417)
-	totalLatency  latencySketch // commit: now-creationTime   (C++ latencies,       :6682)
+	totalLatency  latencySketch // commit: now−metricStart    (≈ C++ latencies/trState->startTime, :6682)
 }
 
 // observeReadLatency/Commit/GRV/Total record one latency sample (RFC-114). nil-safe
