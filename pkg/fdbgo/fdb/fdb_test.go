@@ -1155,13 +1155,20 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	}
 
 	// A negative limit means "unlimited" (range-read semantics) and must NOT panic
-	// via make([]Key, negative) (codex). Returns all boundaries, like limit 0.
-	neg, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, -1, 0)
+	// via make([]Key, negative) (codex). It must equal limit=0 (also unlimited) —
+	// compared against a fresh limit=0 baseline, not the limit=100 `keys` above,
+	// which would differ on a cluster with >100 boundaries (codex).
+	full := fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}
+	unlimited, err := db.LocalityGetBoundaryKeys(full, 0, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys(limit=0): %v", err)
+	}
+	neg, err := db.LocalityGetBoundaryKeys(full, -1, 0)
 	if err != nil {
 		t.Fatalf("LocalityGetBoundaryKeys(limit=-1): %v", err)
 	}
-	if len(neg) != len(keys) {
-		t.Fatalf("negative limit (%d boundaries) should equal unlimited (%d)", len(neg), len(keys))
+	if len(neg) != len(unlimited) {
+		t.Fatalf("negative limit (%d boundaries) should equal limit=0 unlimited (%d)", len(neg), len(unlimited))
 	}
 }
 
