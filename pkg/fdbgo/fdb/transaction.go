@@ -439,12 +439,12 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	// read version could be cleared to 0 by commit before the async poll sends the
 	// watch. Capturing both here and threading them through keeps only the
 	// long-poll asynchronous.
-	value, readVersion, setupErr := inner.WatchSetup(ctx, k)
+	value, readVersion, span, setupErr := inner.WatchSetup(ctx, k)
 	return newFutureNil(func() error {
 		if setupErr != nil {
 			return convertError(setupErr)
 		}
-		return convertError(inner.WatchPoll(ctx, k, value, readVersion))
+		return convertError(inner.WatchPoll(ctx, k, value, readVersion, span))
 	})
 }
 

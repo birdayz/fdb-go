@@ -64,7 +64,8 @@ func childSpanContext(parent types.SpanContext) types.SpanContext {
 // (cross-process trace propagation); it never emits this format. The 8-byte version
 // header is consumed but not validated — SpanContext has a fixed 3-field layout with
 // no version-conditional serialization, so a compatible parent from any FDB build
-// decodes identically (and we don't reject, to avoid being stricter than C++).
+// decodes identically. We don't reject on the version header — being laxer than C++'s
+// BinaryReader here can't cause a wire divergence (the field layout is version-independent).
 func parseSpanParent(b []byte) (types.SpanContext, error) {
 	if len(b) != spanParentSize {
 		return types.SpanContext{}, fmt.Errorf("SPAN_PARENT: got %d bytes, want %d (8-byte version header + 16+8+1 SpanContext)", len(b), spanParentSize)
@@ -90,7 +91,11 @@ func otelSpanContext(sc types.SpanContext) oteltrace.SpanContext {
 	var tid oteltrace.TraceID
 	var sid oteltrace.SpanID
 	copy(tid[:], sc.TraceID[:])
-	binary.BigEndian.PutUint64(sid[:], sc.SpanID)
+	// Little-endian to stay CONSISTENT with the traceID, whose 16 bytes are the wire
+	// UID's two little-endian uint64 halves copied verbatim above (@claude #303). The
+	// otel IDs only need to be deterministic for correlation; LE keeps the spanID's byte
+	// order matching the wire's uint64 encoding rather than mixing endiannesses.
+	binary.LittleEndian.PutUint64(sid[:], sc.SpanID)
 	var flags oteltrace.TraceFlags
 	if isSampled(sc) {
 		flags = flags.WithSampled(true)
