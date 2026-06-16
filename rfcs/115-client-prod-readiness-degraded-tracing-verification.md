@@ -1,6 +1,13 @@
 # RFC-115: Production-readiness round 2, wave 2 — degraded-cluster behavior, tracing, verification depth (`pkg/fdbgo`)
 
-**Status:** Draft. Closes the remaining RFC-113 punch-list after RFC-114 (R2-CRITICAL #1 latency + #2
+**Status:** Accepted (RFC). Reviewed clean: **FDB C++ maintainer ACK** (validated every C++ claim against
+`/tmp/fdbsrc` 7.3.75; ACK'd the §1 *timed re-admission* recovery design — full `connectionKeeper` port NOT
+required — and the §3 quorum non-bug; required citation fixes folded: `LoadBalance.actor.h:607`→`:790`,
+`SPAN_PARENT` 33-byte = `8+16+8+1`, `Optional<Error>` is a union not a bare table). **Torvalds ACK**
+(conditions met: §1 structural fork resolved to one path; §1 proof gate is the clock-free *selection*
+assertion, latency is corroboration only). `/code-review` clean (conventions + consistency). The gating
+§1/§4 ACKs re-apply to each impl HEAD, not just this RFC.
+Closes the remaining RFC-113 punch-list after RFC-114 (R2-CRITICAL #1 latency + #2
 connection-failure visibility) merged in #302. This wave covers the SERIOUS degraded-cluster items
 (#3 bounded `GetRange`, #4 dead-server LB exclusion, #5 coordinator quorum) and the MEDIUM
 verification-depth + tracing items (#6 wire-oracle/fuzz per-PR, #7 inline-error verification, #8
@@ -77,7 +84,8 @@ if (!IFailureMonitor::failureMonitor().getState(thisStream->getEndpoint()).faile
 }
 ```
 
-`basicLoadBalance` applies the same gate (`:607`: `if (!IFailureMonitor::...getState(...).failed) break;`).
+`basicLoadBalance` applies the same gate (`:790`: `if (!IFailureMonitor::...getState(...).failed) break;`;
+its own all-down branch is at `:804`).
 So C++ layers **two** independent gates: (1) `IFailureMonitor.failed` (connection health, binary) and
 (2) `QueueData.failedUntil` (per-error timed backoff). Go currently implements **only (2)**.
 
@@ -145,19 +153,27 @@ failedSince+backoff`; past the window it is re-admitted (one probe), a real read
 self-healed on recovery — using Go's existing dial-on-demand + `markAlive` machinery rather than a
 persistent-peer reconnect loop.
 
-> **FDB-C-dev decision point.** (c) is the minimal, reuse-the-existing-machinery option. The strict
-> 1:1 alternative is to add a background re-probe of failed storage endpoints (a `connectionKeeper`
-> analog: re-dial with backoff, `markAlive` on success) so the gate can stay purely binary like C++.
-> That is heavier and introduces a new background goroutine class. **I recommend (c)** (smaller,
-> proven primitives, same observable behavior) and want the FDB-C-dev's ACK on the structural choice
-> before implementing — this is the one place the design genuinely diverges from C++'s structure.
+> **FDB-C-dev decision point — RESOLVED (ACK'd).** The structural choice is settled: implement **(c)**,
+> the timed re-admission probe. The FDB C++ maintainer ACK'd (c) as a *faithful observable substitute* —
+> excluded-while-down, self-heals when a real read re-dials past the window and `markAlive` clears the
+> flag, never permanently strands — and explicitly confirmed the **full `connectionKeeper` port is NOT
+> required**. Critically, there is **no correctness hole on the all-down path**: C++'s `quorum(ok,1)` is
+> *not* an unconditional block — it is wrapped in `allAlternativesFailedDelay` (`LoadBalance.actor.h:634`)
+> and rides the same 5 s / `ctx` transaction ceiling that Go's "try-anyway" fallback honors, so
+> Go-re-dialing-as-probe and C++-waiting-on-keeper-flip reach the same end-state and neither surfaces an
+> error the other wouldn't. The discarded 1:1 alternative (a background `connectionKeeper` analog) is
+> recorded here only as the rejected option; do not implement it. (The gating ACK still applies to the
+> impl HEAD, not just this RFC.)
 
 ### Executable spec (proof)
 
 - **Deterministic fault test** (`client/fault_test.go`, extend `dropReplyConn`/`faultDialer`): a 3-replica
-  shard where one replica's conn is dead. Assert (1) while ≥1 live replica exists, the dead server is
-  **never** returned as `chooseTopTwo` primary or hedge target (so no dial-timeout is incurred — measure
-  that the read completes in ≪ `DefaultRPCTimeout`); (2) after the backoff window the dead endpoint is
+  shard where one replica's conn is dead. Assert (1) — **the hard gate, asserted with no clock** — while
+  ≥1 live replica exists, the dead server is **never** returned by `chooseServer`/`chooseTopTwo` as
+  primary or hedge target (a pure selection assertion). The fact that the read then completes well under
+  `DefaultRPCTimeout` (no dial-timeout paid) is a latency *observable* used only as corroboration, **never**
+  the pass/fail condition — a timing measurement must not be the gate (§5 discipline / the #288 lesson);
+  (2) after the backoff window the dead endpoint is
   re-admitted as a probe and, once its conn is restored, a subsequent read selects it again (recovery, no
   permanent exclusion); (3) all-failed → the read still attempts (no deadlock), governed by `ctx`.
   **Make the race structurally impossible to lose** (drop the reply / hold the dial), never a timing
@@ -268,8 +284,9 @@ Every request type carries a `SpanContext` slot (`GetValueRequest` slot 5, `GetR
 `GetKeyRequest`, `WatchValueRequest` — confirmed across `wire/types/*request*_generated.go`) but it is
 **always zero-valued** (no assignment to `.TraceID`/`.SpanID` outside generated/test code). The tracing
 transaction options — `SetDebugTransactionIdentifier`, `SetLogTransaction`, `SetTransactionLoggingEnable`,
-`SetServerRequestTracing` (`fdb/options.go:116/175/179/290`) — are accepted-but-ignored no-ops, and there
-is **no `SPAN_PARENT`** option at all.
+`SetServerRequestTracing` (`fdb/options.go:116/175/179/290`) — are accepted-but-ignored no-ops, and the
+`SetSpanParent` option that exists (`fdb/options.go:340`) is an accepted-but-ignored no-op stub that
+**discards** its bytes (so distributed-trace-parent injection silently does nothing).
 
 ### C++ spec — a default client does NOT send a zero `SpanContext`
 
@@ -286,9 +303,11 @@ emits).
 - `TRACING_SAMPLE_RATE` default = **`0.0`** (`flow/Knobs.cpp:88`) → a default client emits a random
   **unsampled** span on every request.
 - Stamped on every outgoing request: GRV (`:985-986`), GetValue (`:3677-3678`), commit (`:6169`).
-- **`SPAN_PARENT`** option (`:7126-7133`): a **33-byte** serialized parent `SpanContext`;
-  `span.setParent(...)` copies the parent's `traceID`+flags and assigns a fresh random `spanID`
-  (`Tracing.h:237-242`) — the distributed-tracing injection hook.
+- **`SPAN_PARENT`** option (`:7126-7133`): a **33-byte** serialized parent `SpanContext` — the size
+  check at `:7128` is exact. The 33 bytes are **8 (the `IncludeVersion` protocol-version header) + 16
+  (`traceID`, 2×uint64) + 8 (`spanID`) + 1 (`flags`)**; Go MUST emit/parse the 8-byte version prefix, not
+  just the 25-byte struct body. `span.setParent(...)` copies the parent's `traceID`+flags and assigns a
+  fresh random `spanID` (`Tracing.h:237-242`) — the distributed-tracing injection hook.
 - Default tracer is `NoopTracer` (`fdbclient/Tracing.actor.cpp:323`); `LogfileTracer` /
   `FastUDPTracer` are opt-in export backends (`openTracer`, `:329-350`).
 
@@ -378,7 +397,9 @@ Real FDB delivers read-path wrong-shard / future-version / process-behind via th
 `LoadBalancedReply.error` (`Optional<Error>`) field — `storageserver.actor.cpp` `sendErrorWithPenalty`
 — **not** the root `ErrorOr` union. On the read side Go parses it correctly via `wire.ReadInlineReplyError`
 (the generated `.Error` field mis-decodes it — a documented schema-extractor bug, since `Optional<Error>`
-is a nested Error **TABLE** via a `RelativeOffset`, not a length-prefixed string). But:
+serializes as a flatbuffers **union**: a **1-byte type tag** + a **4-byte `RelativeOffset`** to a nested
+Error table — *not* a bare table and *not* a length-prefixed string; `LoadBalancedReply.error` is the
+`Optional<Error>` at `LoadBalance.actor.h:72-76`). But:
 
 1. the **generated writer** still mis-encodes `Optional<Error>` (schema-extractor bug), and
 2. the fault harness (`client/fault_test.go`) can only inject a **root** `ErrorOr`, so the inline-error
@@ -388,7 +409,8 @@ is a nested Error **TABLE** via a `RelativeOffset`, not a length-prefixed string
 
 ### Proposed change
 
-1. **Fix the `Optional<Error>` marshal in the schema extractor** (`cmd/fdb-schema-extract` — fix the
+1. **Fix the `Optional<Error>` marshal in the schema extractor** so the **writer emits the union type
+   tag + RelativeOffset** (the missing piece today), regenerating byte-identical to C++ (`cmd/fdb-schema-extract` — fix the
    *extractor*, regenerate; **never** hand-edit generated code, per the wire-types rule), so a reply error
    the client emits encodes byte-identical to C++.
 2. **Build the inline-error fault path** (extend `fault_test.go`): an `inlineErrorConn` that replaces the
