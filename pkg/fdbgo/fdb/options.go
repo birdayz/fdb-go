@@ -235,7 +235,11 @@ func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
 
 func (o goTransactionOptions) SetRawAccess() error {
 	// Fails unsafe if ignored: raw access bypasses tenant-mode scoping; a silent
-	// no-op would tenant-scope a read meant for the raw keyspace.
+	// no-op would tenant-scope a read meant for the raw keyspace. NOTE: this is
+	// intentionally stricter than libfdb_c, which rejects RAW_ACCESS only when a
+	// tenant is set and otherwise accepts it as a no-op (NativeAPI.actor.cpp). We
+	// reject unconditionally — fail-safe and simpler; a no-tenant caller that set it
+	// defensively gets a clear error rather than a silent mismatch.
 	return &UnsupportedOptionError{Option: "raw_access"}
 }
 

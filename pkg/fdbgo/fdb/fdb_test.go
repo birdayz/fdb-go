@@ -1141,6 +1141,18 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	if len(pinned) != len(keys) {
 		t.Fatalf("pinned-version boundaries (%d) != fresh (%d) on a quiescent cluster", len(pinned), len(keys))
 	}
+
+	// Discriminating proof the readVersion is actually threaded into the boundary
+	// read (not ignored): an ancient version (1, far below the MVCC floor) must
+	// FAIL — client-side validateVersion / the storage server rejects it with
+	// transaction_too_old (1007). With the old impl (readVersion ignored, location
+	// cache) this would spuriously succeed. There is no Transact retry wrapper
+	// here, so the error surfaces immediately instead of being retried away.
+	if _, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, 100, 1); err == nil {
+		t.Fatal("LocalityGetBoundaryKeys(readVersion=1) succeeded — the ancient version was ignored, not threaded into the read")
+	} else {
+		t.Logf("ancient readVersion=1 correctly rejected: %v", err)
+	}
 }
 
 func TestGetClientStatus(t *testing.T) {

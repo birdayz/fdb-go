@@ -43,7 +43,7 @@ if you need them.
 | Option | Why it must not be a silent no-op |
 |---|---|
 | `SetAuthorizationToken` | The request would be sent **unauthenticated** — auth bypass / wrong tenant scoping. |
-| `SetRawAccess` | Bypasses tenant-mode scoping; a silent no-op would tenant-scope a read meant for the raw keyspace (wrong data on a shared cluster). |
+| `SetRawAccess` | Bypasses tenant-mode scoping; a silent no-op would tenant-scope a read meant for the raw keyspace (wrong data on a shared cluster). *Stricter than libfdb_c, which rejects raw-access only under a tenant and otherwise no-ops it; the pure-Go backend rejects unconditionally (fail-safe).* |
 | `SetAutomaticIdempotency` | Caller expects auto idempotency IDs so a `commit_unknown_result` is safely retryable; the pure-Go client does not generate them. |
 
 ### Accepted but ignored — no-op (fails **safe**)
