@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -380,4 +381,298 @@ func TestFDB_Metrics_OversizedCommitCountsStarted(t *testing.T) {
 	if d := s.TransactionsCommitCompleted - base.TransactionsCommitCompleted; d != 0 {
 		t.Errorf("CommitCompleted delta = %d, want 0", d)
 	}
+}
+
+// TestClientMetrics_ConnectionFailureVisible pins RFC-114 R2-CRITICAL #2: the
+// single failure sink (handleConnError) increments the counter, emits a Warn
+// carrying the address, AND still marks the endpoint failed (the pre-existing
+// behavior must be preserved). Unit-level via the per-handle logger — never
+// slog.SetDefault. Revert-proof: removing the counter or the Warn reddens this.
+func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
+	t.Parallel()
+	h := &capturingHandler{level: slog.LevelWarn}
+	db := &database{logger: slog.New(h), failMon: newFailureMonitor()}
+
+	const addr = "10.0.0.7:4500"
+	db.handleConnError(addr)
+
+	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 1 {
+		t.Errorf("ClientConnectionFailures = %d, want 1", c)
+	}
+	if got := h.count(); got != 1 {
+		t.Fatalf("expected 1 Warn record, got %d", got)
+	}
+	h.mu.Lock()
+	rec := h.records[0]
+	h.mu.Unlock()
+	if rec.Level != slog.LevelWarn {
+		t.Errorf("connection-failure event level = %v, want WARN", rec.Level)
+	}
+	var sawAddr bool
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == "address" && a.Value.String() == addr {
+			sawAddr = true
+		}
+		return true
+	})
+	if !sawAddr {
+		t.Error("connection-failure event missing address attr")
+	}
+	if !db.failMon.isFailed(addr) {
+		t.Error("handleConnError must still mark the endpoint failed (behavior preserved)")
+	}
+
+	// Storm hygiene: a repeat failure on the same (still-failed) endpoint ticks the
+	// COUNTER (rate signal) but does NOT re-Warn (edge-triggered, no log melt).
+	db.handleConnError(addr)
+	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 2 {
+		t.Errorf("ClientConnectionFailures = %d after a repeat, want 2 (counter ticks every event)", c)
+	}
+	if got := h.count(); got != 1 {
+		t.Errorf("Warn count = %d after a repeat failure, want 1 (edge-triggered, not per-event)", got)
+	}
+	// Recovery re-arms the edge: a failure after markAlive Warns again.
+	db.failMon.markAlive(addr)
+	db.handleConnError(addr)
+	if got := h.count(); got != 2 {
+		t.Errorf("Warn count = %d after recover→fail, want 2 (re-armed)", got)
+	}
+}
+
+// TestFollowForward_CountsCoordinatorChange pins RFC-114: a followed coordinator
+// forward increments CoordinatorChanges; a refused (degenerate self) forward does
+// not. Mirrors the TestFollowForward_Adopts harness.
+func TestFollowForward_CountsCoordinatorChange(t *testing.T) {
+	t.Parallel()
+	start := &ClusterFile{Description: "old", ID: "a", Coordinators: []string{"1.1.1.1:4500"}}
+	db := newFollowTestDB(t, start, "") // memory-only record; no disk needed
+
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 0 {
+		t.Fatalf("CoordinatorChanges = %d before any forward, want 0", c)
+	}
+	// A self-forward is refused and must NOT count.
+	if db.followForward(start, start.String()) {
+		t.Fatal("self-forward should be refused")
+	}
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 0 {
+		t.Errorf("CoordinatorChanges = %d after a refused self-forward, want 0", c)
+	}
+	// A distinct, valid forward is adopted and counts once.
+	if !db.followForward(start, "new:b@2.2.2.2:4500") {
+		t.Fatal("valid distinct forward refused")
+	}
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 1 {
+		t.Errorf("CoordinatorChanges = %d after a followed forward, want 1", c)
+	}
+}
+
+// TestFDB_Metrics_LatencyRecorded pins RFC-114 R2-CRITICAL #1: read/commit/GRV/
+// total latency distributions are populated by real transactions. Counts are
+// tied to the commit-completed delta (exact regardless of retries) and the read
+// count, so removing any sample site zeroes its category and reddens the test.
+func TestFDB_Metrics_LatencyRecorded(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 5
+	base := db.Metrics()
+	for i := 0; i < n; i++ {
+		k := []byte(fmt.Sprintf("%s_k%d", t.Name(), i))
+		if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			if _, err := tx.Get(ctx, k); err != nil { // one read → one read-latency sample
+				return nil, err
+			}
+			tx.Set(k, []byte("v"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("transact %d: %v", i, err)
+		}
+	}
+	s := db.Metrics()
+
+	// Each successful commit records one commit-latency AND one total-latency
+	// sample; tie to the commit-completed delta so the invariant is exact whether
+	// or not any attempt retried (a retried commit still completes exactly once).
+	commits := s.TransactionsCommitCompleted - base.TransactionsCommitCompleted
+	if commits != n {
+		t.Fatalf("commit-completed delta = %d, want %d", commits, n)
+	}
+	if d := s.CommitLatency.Count - base.CommitLatency.Count; d != commits {
+		t.Errorf("CommitLatency.Count delta = %d, want %d (== commits)", d, commits)
+	}
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != commits {
+		t.Errorf("TransactionLatency.Count delta = %d, want %d (== commits)", d, commits)
+	}
+	if d := s.ReadLatency.Count - base.ReadLatency.Count; d < n {
+		t.Errorf("ReadLatency.Count delta = %d, want >= %d", d, n)
+	}
+	if d := s.GRVLatency.Count - base.GRVLatency.Count; d < 1 {
+		t.Errorf("GRVLatency.Count delta = %d, want >= 1", d)
+	}
+
+	for name, st := range map[string]LatencyStats{
+		"read": s.ReadLatency, "commit": s.CommitLatency, "grv": s.GRVLatency, "transaction": s.TransactionLatency,
+	} {
+		if st.Count == 0 {
+			t.Errorf("%s latency: count 0 — sample site missing?", name)
+			continue
+		}
+		if !(st.Max > 0 && st.Median > 0 && st.P99 > 0 && st.Mean > 0 && st.Min > 0) {
+			t.Errorf("%s latency: non-positive stat (min=%g max=%g median=%g p99=%g mean=%g)", name, st.Min, st.Max, st.Median, st.P99, st.Mean)
+		}
+		// Monotone: Min ≤ median ≤ p90 ≤ p99 ≤ Max (small slack on the quantile-vs-Max
+		// edge, where a bucket representative can sit a bucket-width above the true max).
+		if !(st.Min <= st.Median && st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
+			t.Errorf("%s latency: not ordered (min=%g median=%g p90=%g p99=%g max=%g)", name, st.Min, st.Median, st.P90, st.P99, st.Max)
+		}
+		if st.Sum <= 0 {
+			t.Errorf("%s latency: sum=%g, want > 0", name, st.Sum)
+		}
+	}
+}
+
+// TestFDB_Metrics_PipelinedReadLatencySampled pins RFC-114's pipelined read-latency
+// sample (the Resolve happy path) INDEPENDENTLY of the sync getValue sample: it
+// drives reads only through GetPipelined→Resolve, so deleting the pipelined observe
+// site zeroes the delta and reddens this. (Torvalds revert-proof catch — the main
+// latency test exercises only the sync path.)
+func TestFDB_Metrics_PipelinedReadLatencySampled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 4
+	keys := make([][]byte, n)
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := range keys {
+			keys[i] = []byte(fmt.Sprintf("%s_k%d", t.Name(), i))
+			tx.Set(keys[i], []byte("v"))
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	base := db.Metrics()
+	// A fresh transaction so the seeded keys are NOT in this tx's RYW writes — each
+	// GetPipelined sends a real request and Resolve takes the happy reply path.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, k := range keys {
+			_, p, err := tx.GetPipelined(ctx, k)
+			if err != nil {
+				return nil, err
+			}
+			if p == nil {
+				return nil, fmt.Errorf("expected a pipelined read for committed key %q, got cache hit", k)
+			}
+			if _, err := p.Resolve(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("pipelined reads: %v", err)
+	}
+	s := db.Metrics()
+	if d := s.ReadLatency.Count - base.ReadLatency.Count; d < n {
+		t.Errorf("ReadLatency.Count delta = %d, want >= %d (pipelined Resolve happy path unmeasured?)", d, n)
+	}
+	if s.ReadLatency.Max <= 0 {
+		t.Errorf("ReadLatency.Max = %g, want > 0", s.ReadLatency.Max)
+	}
+}
+
+// TestFDB_Metrics_TransactionLatencyResetsOnReuse pins RFC-114's metricStart reuse
+// boundary (codex catch): a Transaction reused after a successful commit measures the
+// NEXT transaction fresh, excluding the idle gap before it begins. Revert-proof: drop
+// the postCommitReset clear (or the first-GRV re-stamp) and commit2 folds in the sleep.
+func TestFDB_Metrics_TransactionLatencyResetsOnReuse(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const idle = 400 * time.Millisecond
+	tx := db.CreateTransaction()
+	tx.Set([]byte(t.Name()+"_a"), []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit1: %v", err)
+	}
+	base := db.Metrics()
+	time.Sleep(idle) // idle gap that must NOT be charged to the reused transaction
+
+	// Measure the reused transaction's own wall time. The total-latency sample is a
+	// sub-interval of it (first GRV → commit success), so with the reuse boundary
+	// working the sample is ≤ wall; if broken it folds in the idle sleep and exceeds
+	// wall by ≈ idle. Comparing the sample to the MEASURED wall (not a fixed threshold)
+	// is robust to testcontainer jitter — a slow commit grows both sides together.
+	t0 := time.Now()
+	tx.Set([]byte(t.Name()+"_b"), []byte("v")) // reuse the same (auto-reset) handle
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit2 (reuse): %v", err)
+	}
+	wall := time.Since(t0)
+	s := db.Metrics()
+
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
+		t.Fatalf("TransactionLatency.Count delta = %d, want 1 (the reused commit)", d)
+	}
+	assertReusedCommitLatency(t, s, base, wall, idle)
+}
+
+// assertReusedCommitLatency pins the post-base commit's total-latency sample (isolated
+// via the Sum delta, since the sketch's Max is cumulative) ≤ its measured wall time +
+// a small slack. The sample is genuinely a sub-interval of wall, so this holds for any
+// commit speed (jitter-robust); a broken reuse boundary folds in the idle gap, pushing
+// the sample to ≈ idle + wall ≫ wall + slack. Revert-proof against idle ≫ slack.
+func assertReusedCommitLatency(t *testing.T, s, base ClientMetricsSnapshot, wall, idle time.Duration) {
+	t.Helper()
+	const slack = 100 * time.Millisecond
+	if slack >= idle {
+		t.Fatalf("test bug: slack %v must be < idle %v for a valid discriminator", slack, idle)
+	}
+	sample := s.TransactionLatency.Sum - base.TransactionLatency.Sum // the one new commit's latency
+	if sample > (wall + slack).Seconds() {
+		t.Errorf("reused-commit total latency = %gs, want ≤ wall %gs + slack %gs (idle gap folded in?)",
+			sample, wall.Seconds(), slack.Seconds())
+	}
+}
+
+// TestFDB_Metrics_TransactionLatencyResetsOnUserReset pins the user-Reset() metric
+// boundary (codex + Torvalds catch): a handle that reads then Reset()s without
+// committing must measure the NEXT transaction fresh. The clear lives in Reset(), NOT
+// the OnError-shared reset(). Revert-proof: drop the Reset() metricStart clear and the
+// post-Reset commit folds in the idle gap below.
+func TestFDB_Metrics_TransactionLatencyResetsOnUserReset(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const idle = 400 * time.Millisecond
+	tx := db.CreateTransaction()
+	if _, err := tx.Get(ctx, []byte(t.Name()+"_probe")); err != nil { // first GRV stamps metricStart
+		t.Fatalf("probe read: %v", err)
+	}
+	base := db.Metrics()
+	time.Sleep(idle)
+	t0 := time.Now()
+	tx.Reset() // new logical transaction — must re-anchor metricStart (cleared here)
+	tx.Set([]byte(t.Name()+"_k"), []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit after reset: %v", err)
+	}
+	wall := time.Since(t0)
+	s := db.Metrics()
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
+		t.Fatalf("TransactionLatency.Count delta = %d, want 1", d)
+	}
+	assertReusedCommitLatency(t, s, base, wall, idle)
 }

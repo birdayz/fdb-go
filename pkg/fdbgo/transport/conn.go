@@ -132,6 +132,10 @@ type writeReq struct {
 type Response struct {
 	Body []byte
 	Err  error
+	// RecvAt is when the read loop delivered this reply (≈ arrival time). Set only
+	// on a successful body delivery; lets a caller measure send→receive latency
+	// independent of when it gets around to consuming the reply (RFC-114).
+	RecvAt time.Time
 }
 
 // DialFunc is the signature for custom dialers. Same as net.Dialer.DialContext.
@@ -744,7 +748,7 @@ func (c *Conn) readLoop() {
 		}
 		c.pendingMu.Unlock()
 		if ok {
-			ch <- Response{Body: body}
+			ch <- Response{Body: body, RecvAt: time.Now()}
 		}
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}

@@ -188,6 +188,15 @@ type Transaction struct {
 	deadline     time.Time
 	creationTime time.Time // set on construction and user Reset(), NOT on OnError retry
 
+	// metricStart anchors the RFC-114 total-transaction-latency sample. Kept SEPARATE
+	// from creationTime (which anchors the timeout deadline) so the metric boundary
+	// moves on commit-reuse without disturbing timeout semantics. Stamped lazily at the
+	// transaction's first GRV (ensureReadVersion, ≈ C++ trState->startTime), CLEARED on
+	// both reuse boundaries (postCommitReset and user Reset()) so the next transaction
+	// re-stamps fresh, but — like creationTime — NOT reset on OnError, so total latency
+	// still spans retries (the documented divergence from C++, which resets per attempt).
+	metricStart time.Time
+
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
 	// when retryCount >= retryLimit.
 	retryLimit    int
@@ -560,6 +569,14 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		return err
 	}
 	tx.readVersionMu.Lock()
+	if tx.metricStart.IsZero() {
+		// RFC-114 total-latency anchor: stamp at this transaction's FIRST GRV (the
+		// first read, or the commit-path GRV for a write-only txn) — ≈ C++
+		// trState->startTime, set at getReadVersion. Cleared on commit-reuse
+		// (postCommitReset), NOT on OnError, so it spans retries but excludes the
+		// idle gap before a reused handle's next transaction begins.
+		tx.metricStart = time.Now()
+	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
 		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
@@ -722,6 +739,11 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
+		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
+		// enqueues onto the write channel, so for a very fast read the write+read loops
+		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
+		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
+		sentAt := time.Now()
 		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
@@ -729,7 +751,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}
+		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer, sentAt: sentAt}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
 		// barrier) and a post-reset late Resolve must not poison the next
@@ -763,6 +785,7 @@ type PendingGet struct {
 	conn        *transport.Conn
 	ctx         context.Context
 	timer       *time.Timer
+	sentAt      time.Time // RFC-114: send time, for the pipelined read-latency sample
 	flushed     bool
 	gen         uint64 // read incarnation at issue (see Transaction.readGen)
 
@@ -832,6 +855,17 @@ func (p *PendingGet) resolve() ([]byte, error) {
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId)
 			return p.resolveFull()
+		}
+		// RFC-114: pipelined GetValue round-trip latency — the path the fdb facade
+		// Get routes through. Measured from send (sentAt) to reply DELIVERY
+		// (resp.RecvAt, stamped by the read loop), NOT to Resolve-call time — so a
+		// caller that batches GetPipelined and resolves the futures later records the
+		// true RPC round-trip, not its own future-wait (the async-facade case). Sampled
+		// on a successful reply only (mirroring the sync getValue sample); the
+		// wrong-shard/transport/flush/timeout arms re-drive through getValue, which
+		// samples there, so a read is counted exactly once.
+		if err == nil && p.tx.db != nil && !resp.RecvAt.IsZero() {
+			p.tx.db.metrics.observeReadLatency(resp.RecvAt.Sub(p.sentAt))
 		}
 		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
 		// C++ read future; this is its final outcome.
@@ -1456,13 +1490,29 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
 	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	commitStart := time.Now()
 	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
 		return err
 	}
 
 	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
+	// RFC-114: on the same success, sample the commit round-trip (C++
+	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
+	// now-metricStart (C++ latencies, :6682). Read-only txns return at the fast
+	// path above and never reach here, so they contribute to neither — matching C++.
+	// Divergence (documented in RFC-114): metricStart is NOT reset on OnError retry,
+	// so total latency spans all retries (whole-transaction wall-clock), whereas C++
+	// resets trState->startTime per attempt and measures only the current attempt's
+	// GRV→commit. Identical for a no-retry commit (the common case). metricStart is
+	// re-anchored on commit-reuse (postCommitReset), so a reused handle measures only
+	// the transaction that just committed, not the prior one.
 	if tx.db != nil {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
+		now := time.Now()
+		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
+		if !tx.metricStart.IsZero() {
+			tx.db.metrics.observeTotalLatency(now.Sub(tx.metricStart))
+		}
 	}
 
 	// Feed committed version to GRV cache so a later opted-in read sees this
@@ -1515,6 +1565,13 @@ func (tx *Transaction) Reset() {
 	tx.backoff = 0
 	// C++ reset() updates creationTime = now(), restarting timeout window.
 	tx.creationTime = time.Now()
+	// RFC-114: Reset() begins a NEW logical transaction, so clear the total-latency
+	// anchor here too (re-stamped at the next first GRV) — otherwise a handle that
+	// reads/abandons work then Reset()s without committing would fold that pre-Reset
+	// work + idle into the next commit's total latency. This clear lives in Reset(),
+	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
+	// spans retries).
+	tx.metricStart = time.Time{}
 	tx.reset()
 }
 
@@ -2251,6 +2308,13 @@ func (tx *Transaction) postCommitReset() {
 	tx.pendingReads = nil
 	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
+	// RFC-114: a committed, auto-reset handle begins a NEW logical transaction, so
+	// CLEAR the total-latency anchor — the next transaction re-stamps it at ITS first
+	// GRV (ensureReadVersion), excluding any idle gap before its first op. (creationTime/
+	// deadline are deliberately left alone — this is the metric boundary, not a timeout
+	// reset.) Without this, a reused handle's next commit would measure from the prior
+	// transaction's start, folding in its work + the idle time between them.
+	tx.metricStart = time.Time{}
 	// committedVersion and txnBatchId preserved intentionally.
 }
 

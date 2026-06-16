@@ -384,6 +384,15 @@ func (b *grvBatcher) flush(db *database) {
 		// counters — fixing either would need per-waiter counting at the
 		// consumption site, machinery a counter doesn't justify. RFC-097.
 		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
+		// RFC-114: GRV round-trip latency (C++ GRVLatencies, NativeAPI.actor.cpp:7417).
+		// Divergence (documented in RFC-114), on TWO axes: (1) count — Go samples
+		// once per GRV BATCH, so Count is proxy round-trips, whereas C++ samples
+		// per-transaction in extractReadVersion (Count == read-versions-completed);
+		// (2) semantics — Go measures only the proxy RPC round-trip, whereas C++'s
+		// latency = replyTime − startTime also folds in the per-transaction
+		// batch-window queueing. Go's is the cleaner RPC-latency SLI. Cache hits
+		// never reach here (they return before the flush — C++ parity, as above).
+		db.metrics.observeGRVLatency(elapsed)
 	}
 
 	// Adaptive batch window (closure-scoped lock: a panic here unwinds b.mu).
@@ -650,7 +659,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				if ctx.Err() != nil {
 					return 0, false, false, false, nil, 0, ctx.Err()
 				}
-				db.failMon.markFailed(proxy.Address)
+				// RFC-114: a GRV proxy that stops replying (TCP may stay open) is a
+				// real endpoint failure — route through the observability sink so it
+				// counts + Warns like any other conn failure, not a silent markFailed.
+				db.recordConnFailure(proxy.Address)
 				continue
 			}
 			replyHandle.Release()

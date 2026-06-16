@@ -18,11 +18,18 @@ func newFailureMonitor() *failureMonitor {
 	}
 }
 
-// markFailed records that an endpoint is unhealthy.
-func (fm *failureMonitor) markFailed(addr string) {
+// markFailed records that an endpoint is unhealthy. Returns true only on the
+// alive→failed transition (the first failure of an episode), so a caller can
+// edge-trigger a log without storming on every retry that re-hits a dead peer —
+// the symmetric counterpart to markAlive's transition-only signal.
+func (fm *failureMonitor) markFailed(addr string) (newlyFailed bool) {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
+	if fm.failed[addr] {
+		return false
+	}
 	fm.failed[addr] = true
+	return true
 }
 
 // markAlive records that an endpoint is healthy. If the endpoint was

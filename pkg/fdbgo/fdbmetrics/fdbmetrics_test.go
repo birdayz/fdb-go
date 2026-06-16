@@ -22,6 +22,9 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionReadVersionsCompleted: 42,
 		GRVCacheHits:                     9,
 		TransactionRetries:               4,
+		ClientConnectionFailures:         2,
+		CoordinatorChanges:               1,
+		ReadLatency:                      client.LatencyStats{Count: 100, Sum: 1.5, Mean: 0.015, Median: 0.001, P90: 0.005, P99: 0.02, Max: 0.03},
 	}}
 
 	rec := httptest.NewRecorder()
@@ -42,13 +45,24 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_grv_cache_hits_total 9",
 		"fdb_client_transaction_retries_total 4",
 		"fdb_client_transactions_throttled_total 0",
+		// RFC-114 counters.
+		"# TYPE fdb_client_connection_failures_total counter",
+		"fdb_client_connection_failures_total 2",
+		"fdb_client_coordinator_changes_total 1",
+		// RFC-114 latency summary.
+		"# TYPE fdb_client_read_latency_seconds summary",
+		`fdb_client_read_latency_seconds{quantile="0.5"} 0.001`,
+		`fdb_client_read_latency_seconds{quantile="0.9"} 0.005`,
+		`fdb_client_read_latency_seconds{quantile="0.99"} 0.02`,
+		"fdb_client_read_latency_seconds_sum 1.5",
+		"fdb_client_read_latency_seconds_count 100",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("exposition missing %q\nbody:\n%s", want, body)
 		}
 	}
-	// Every defined counter renders HELP+TYPE+value.
-	if got := strings.Count(body, "# TYPE "); got != len(counters) {
-		t.Errorf("rendered %d TYPE lines, want %d", got, len(counters))
+	// Every defined counter and summary renders a TYPE line.
+	if got, want := strings.Count(body, "# TYPE "), len(counters)+len(summaries); got != want {
+		t.Errorf("rendered %d TYPE lines, want %d", got, want)
 	}
 }

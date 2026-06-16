@@ -123,7 +123,8 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 		return false
 	}
 	db.forwardHops++
-	db.connRecord.setInMemory(newCF) // persisted by persistIfDirty after we connect to the new set
+	db.connRecord.setInMemory(newCF)    // persisted by persistIfDirty after we connect to the new set
+	db.metrics.countCoordinatorChange() // RFC-114: a coordinator-set rotation was followed
 	db.logger.Info("fdbgo: followed coordinator forward", "from", old.String(), "to", newCF.String())
 	return true
 }
@@ -166,7 +167,23 @@ func (db *database) handleConnError(addr string) {
 		delete(db.connPool, addr)
 	}
 	db.connMu.Unlock()
-	db.failMon.markFailed(addr)
+	db.recordConnFailure(addr)
+}
+
+// recordConnFailure marks an endpoint failed and makes the failure observable
+// (RFC-114). It is the SINGLE observability sink for endpoint failures: the COUNTER
+// ticks on every event (the rate signal, like logRetryEvent's counter), but the Warn
+// is edge-triggered on the alive→failed transition so a flapping or down peer hit by
+// the ~18 retry arms doesn't melt the log (the storm-hygiene rule logRetryEvent
+// follows; one Warn per failure episode, re-armed by markAlive). Every failure path
+// routes here — handleConnError (after pool eviction) and the GRV proxy-timeout path
+// (sendGRVRequest) — so none is invisible.
+func (db *database) recordConnFailure(addr string) {
+	newlyFailed := db.failMon.markFailed(addr)
+	db.metrics.countConnectionFailure()
+	if newlyFailed && db.logger != nil {
+		db.logger.Warn("fdbgo: connection to server failed", "address", addr)
+	}
 }
 
 // dbInfoEqual returns true if two DBInfo have identical proxy lists.

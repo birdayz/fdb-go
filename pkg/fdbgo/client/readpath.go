@@ -362,7 +362,17 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	start := time.Now()
 	v, err := tx.getValueImpl(ctx, key)
+	if err == nil && tx.db != nil {
+		// RFC-114: GetValue read latency (C++ readLatencies, NativeAPI.actor.cpp:3698),
+		// sampled on the successful reply only. Divergence (documented in RFC-114):
+		// `start` is taken before getValueImpl, so on the cold path this span includes
+		// the locate + any wrong-shard retry loop, whereas C++ resets startTimeD per
+		// attempt (:3660) and measures only the final physical-read RPC. Identical on
+		// the common single-RPC happy path; Go over-measures under a wrong-shard storm.
+		tx.db.metrics.observeReadLatency(time.Since(start))
+	}
 	return v, tx.mapTimeout(parentCtx, err)
 }
 
