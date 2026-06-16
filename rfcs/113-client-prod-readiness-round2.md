@@ -81,7 +81,8 @@ surfaced as p90/p98/median/max in the **`TransactionMetrics` TraceEvent** (`Nati
 the client status JSON.) RFC-097 deliberately scoped these out. This is the single biggest operability gap.
 
 **2. Connection / dial failures are invisible.** `handleDialError` (`client/database.go:316`) and
-`handleConnError` feed `failMon.markFailed` (`client/failure_monitor.go:22`) but emit **no slog event
+`handleConnError` (`client/topology.go:162` — evicts the pooled conn + calls `failMon.markFailed`, nothing
+else) feed `failMon.markFailed` (`client/failure_monitor.go:22`) but emit **no slog event
 and increment no counter**. The entire `client/`+`transport/` layer has ~8 log sites total — cluster-file
 persist warnings (`clusterfile.go:223/245`), coordinator-forward warnings (`topology.go:114/121/127`),
 the RFC-097 retry event (`clientmetrics.go:196`), and one transport panic-backstop `Error`
@@ -110,8 +111,11 @@ total byte/row ceiling; the common facade path `GetSliceWithError` ignores `Stre
 `effectiveLimit → math.MaxInt32` (`fdb/range_result.go:64,102`). A large unbounded scan materializes
 the entire result (≈×2 with the return copy) and OOMs the process instead of returning a clean error.
 The bounded path (`Iterator()`) exists, but the `RangeOptions.Mode` doc — *"Ignored by the pure Go
-client (all reads use exact mode internally)"* (`fdb/range.go:125`) — actively steers users **away**
-from it. The 80 KB per-reply limit bounds each round-trip, not the total. **Caveat (codex catch):** the
+client (all reads use exact mode internally)"* (`fdb/range.go:125`) — is **factually wrong, not merely
+misleading** (@claude catch): `Iterator().Advance()` **does** honor `Mode` via `batchSize(...)`
+(`fdb/range_result.go:227`); `Mode` is ignored *only* by `GetSliceWithError`. So the doc both (a) claims
+a no-op that isn't, and (b) steers users toward the unbounded `GetSliceWithError` and **away** from the
+mode-respecting `Iterator()`. The 80 KB per-reply limit bounds each round-trip, not the total. **Caveat (codex catch):** the
 Apple Go binding over `libfdb_c` *also* implements `GetSliceWithError` by appending batches until the
 range is exhausted — the C API bounds each *batch*, never the total, and never returns a clean "too big"
 error. So a *default-on* total-byte ceiling that errors would make Go's facade **diverge from the cgo
