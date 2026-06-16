@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
 
@@ -257,6 +260,15 @@ type database struct {
 	// RFC-115 §2). 0 = unlimited (default, oracle-matching). Read-only after open
 	// (set once in the constructor), so no atomic needed.
 	rangeByteCeiling int64
+
+	// Distributed-trace sample rate (WithTracingSampleRate, RFC-115 §4). 0.0 =
+	// unsampled (default, matches C++ TRACING_SAMPLE_RATE). Read-only after open.
+	tracingSampleRate float64
+
+	// OpenTelemetry export backend (WithTracer, RFC-115 §4 Layer 2). Never nil after
+	// open — defaulted to a no-op tracer (C++ NoopTracer analog) so the span-emission
+	// paths are unconditional and allocation-free when unset. Read-only after open.
+	tracer oteltrace.Tracer
 
 	// Lifecycle.
 	ctx       context.Context
@@ -689,21 +701,29 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	failMon := newFailureMonitor()
 	queueModel := newQueueModel()
 	queueModel.failMon = failMon
+	// Default to a no-op tracer (C++ NoopTracer) so span emission is unconditional and
+	// zero-cost when WithTracer is unset (RFC-115 §4 Layer 2).
+	tracer := o.tracer
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer("fdbgo")
+	}
 	db := &database{
-		connRecord:       newConnRecord(cf, o.clusterFilePath, logger),
-		dialFn:           o.dialFn,
-		tlsConfig:        tlsConfig,
-		logger:           logger,
-		rangeByteCeiling: o.rangeByteCeiling,
-		connPool:         make(map[string]*transport.Conn),
-		dialing:          make(map[string]*dialCall),
-		topologyKick:     make(chan struct{}, 1),
-		proxiesChanged:   make(chan struct{}),
-		connected:        make(chan struct{}),
-		ctx:              bgCtx,
-		cancel:           cancel,
-		failMon:          failMon,
-		queueModel:       queueModel,
+		connRecord:        newConnRecord(cf, o.clusterFilePath, logger),
+		dialFn:            o.dialFn,
+		tlsConfig:         tlsConfig,
+		logger:            logger,
+		rangeByteCeiling:  o.rangeByteCeiling,
+		tracingSampleRate: o.tracingSampleRate,
+		tracer:            tracer,
+		connPool:          make(map[string]*transport.Conn),
+		dialing:           make(map[string]*dialCall),
+		topologyKick:      make(chan struct{}, 1),
+		proxiesChanged:    make(chan struct{}),
+		connected:         make(chan struct{}),
+		ctx:               bgCtx,
+		cancel:            cancel,
+		failMon:           failMon,
+		queueModel:        queueModel,
 		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
 		locCache: locationCache{
 			maxSize: 600_000,
@@ -846,6 +866,9 @@ func (d *Database) CreateTransaction() *Transaction {
 	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
+	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
+	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
+	tx.regenerateSpan()
 	return tx
 }
 

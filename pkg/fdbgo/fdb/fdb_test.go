@@ -2195,8 +2195,13 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetUseProvisionalProxies()).NotTo(HaveOccurred())
 	g.Expect(opts.SetBypassStorageQuota()).NotTo(HaveOccurred())
 	g.Expect(opts.SetInitializeNewDatabase()).NotTo(HaveOccurred())
-	g.Expect(opts.SetSpanParent([]byte{1, 2, 3})).NotTo(HaveOccurred())
 	g.Expect(opts.SetExpensiveClearCostEstimationEnable()).NotTo(HaveOccurred())
+
+	// SetSpanParent is no longer a stub (RFC-115 §4): it parses a 33-byte IncludeVersion
+	// SpanContext and links the transaction's trace to it. A wrong-length value errors; a
+	// valid 33-byte value succeeds.
+	g.Expect(opts.SetSpanParent([]byte{1, 2, 3})).To(HaveOccurred())
+	g.Expect(opts.SetSpanParent(make([]byte, 33))).NotTo(HaveOccurred())
 
 	// Non-stub options that actually do something — verify they don't error.
 	g.Expect(opts.SetNextWriteNoWriteConflictRange()).NotTo(HaveOccurred())

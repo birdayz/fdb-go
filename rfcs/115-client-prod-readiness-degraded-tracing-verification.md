@@ -302,7 +302,11 @@ emits).
   FLOW_KNOBS->TRACING_SAMPLE_RATE`, else `unsampled`.
 - `TRACING_SAMPLE_RATE` default = **`0.0`** (`flow/Knobs.cpp:88`) → a default client emits a random
   **unsampled** span on every request.
-- Stamped on every outgoing request: GRV (`:985-986`), GetValue (`:3677-3678`), commit (`:6169`).
+- Stamped on outgoing requests, per-op CHILD context for reads/GRV, TX context for commit: GetValue
+  (`:3677-3678`, the getValue child), **GRV** (`getConsistentReadVersion` child `:7238`, request
+  `GetReadVersionRequest req(span.context,…)` `:7244` — *not* `:985`, which is the causal-risky
+  `attemptGRVFromOldProxies` path), **commit** (`:6169`, `CommitTransactionRequest(trState->spanContext)`
+  — the **tx-level** span; the `NAPI:tryCommit` child `:6569` is never reassigned onto the wire request).
 - **`SPAN_PARENT`** option (`:7126-7133`): a **33-byte** serialized parent `SpanContext` — the size
   check at `:7128` is exact. The 33 bytes are **8 (the `IncludeVersion` protocol-version header) + 16
   (`traceID`, 2×uint64) + 8 (`spanID`) + 1 (`flags`)**; Go MUST emit/parse the 8-byte version prefix, not
@@ -311,24 +315,72 @@ emits).
 - Default tracer is `NoopTracer` (`fdbclient/Tracing.actor.cpp:323`); `LogfileTracer` /
   `FastUDPTracer` are opt-in export backends (`openTracer`, `:329-350`).
 
-### Proposed Go change (scope split: wire-faithful core vs. export extension)
+### Proposed Go change — two layers: wire propagation (done) + OpenTelemetry export
 
-**Core (wire-faithful, this RFC):**
-1. **Per-transaction `SpanContext`:** generate a random `traceID` (2×uint64) + `spanID` (uint64) at
-   transaction start, flag **unsampled** by default (sampled iff a configurable sample rate fires;
-   default rate `0.0` → unsampled, matching `TRACING_SAMPLE_RATE`). Stamp it into every request type that
-   carries the slot. Regenerate per transaction / on `Reset()` (C++ `cloneAndReset` →
-   `generateSpanID`).
-2. **`SPAN_PARENT` option:** accept the 33-byte serialized parent context, deserialize, and use it as the
-   transaction's parent (copy `traceID`+flags, fresh `spanID`) — the cross-process correlation hook.
-3. Wire the existing trace no-op options to their real local effect where cheap (`DEBUG_TRANSACTION_IDENTIFIER`
-   sets a client-side debug id; `SERVER_REQUEST_TRACING` marks server-side tracing) — matching C++
-   `setOption` semantics (`NativeAPI.actor.cpp:6998-7059`). (Trace-*log* emission is the export concern,
-   below.)
+**Layer 1 — wire propagation.** Per-transaction random `SpanContext`
+(traceID 2×uint64 + spanID + flags), **unsampled** by default (sample-rate knob, default `0.0` =
+`TRACING_SAMPLE_RATE`), regenerated per tx and per attempt (`reset()` ≈ C++ `cloneAndReset`). `SPAN_PARENT`
+(33-byte `IncludeVersion` parent) parsed + linked. Stamped on the per-tx requests.
 
-**Export (Go extension, follow-on — NOT required for wire fidelity):** an otel/`slog`-style hook to
-*emit* spans (the `LogfileTracer`/`FastUDPTracer` analog). Out of scope for the wire-faithful core;
-filed as a follow-on so the core ships without waiting on a collector integration.
+> **Correction the full model must make (FDB-C-dev CONFIRMED):** **reads + GRV** stamp that operation's
+> **child-span context** (not the tx span) — `GetValueRequest(span.context)` (`NativeAPI.actor.cpp:3677`,
+> `span` = the `NAPI:getValue` child at `:3623`); GRV `GetReadVersionRequest req(span.context,…)`
+> (`:7244`, the `getConsistentReadVersion` child `:7238`). **Commit is the exception:**
+> `CommitTransactionRequest(trState->spanContext)` (`:6169`) stamps the **tx-level** span — the
+> `NAPI:tryCommit` child (`:6569`) is created for export but **never** reassigned onto the wire request,
+> so commit on the wire legitimately carries the tx span. Layer-1 as landed stamps the *tx-level*
+> `spanContext` on **every** request (right for commit, but for reads/GRV it sends the tx spanID instead
+> of a per-op child spanID). The full model fixes **reads + GRV only**: derive a **child** `SpanContext`
+> (tx traceID + fresh spanID + tx flags) and stamp it on those requests; **leave commit on the tx span**
+> (matching C++ — "fixing" commit to a child would *diverge*). Each per-op child is also the otel span's
+> seed context, so a server-side read/GRV span nests under the client's per-op span.
+
+**Layer 2 — OpenTelemetry export backend (THIS change).** The export half is the analog of C++'s
+pluggable `ITracer` (`NoopTracer` default, `LogfileTracer`/`FastUDPTracer` backends). Go takes the
+**official, minimal OpenTelemetry interface dependency** rather than porting FDB's bespoke UDP tracer —
+an allowed read-side/observability extension (no wire impact; propagation in Layer 1 stays C++-faithful):
+
+- **Dependency (minimal, interface-only):** `go.opentelemetry.io/otel/trace` — a **standalone module**
+  whose only runtime dep is the small `go.opentelemetry.io/otel` root API (no SDK, no exporters, no
+  gRPC/protobuf; those modules are pulled only by the *consumer* when they wire an exporter). Both are
+  already *indirect* deps of `pkg/fdbgo`; this promotes them to direct. **No custom `Span` type and NO
+  separate module** — building our own would re-implement the light interface OTEL already maintains.
+  (Decision: precedent is CockroachDB, which exposes `SetOpenTelemetryTracer(oteltrace.Tracer)` and takes
+  `otel/trace` in core; CRDB keeps its *own* `Span` only because it feeds `SHOW TRACE` — an internal
+  reader the thin Go client does not have, so we skip it.)
+- **API:** `WithTracer(trace.Tracer) Option` on the database. Default is
+  `noop.NewTracerProvider().Tracer("fdbgo")` (`go.opentelemetry.io/otel/trace/noop`) — zero telemetry,
+  zero cost when unset, the `NoopTracer` analog. The consumer constructs their own `TracerProvider`
+  (OTLP/Jaeger/Datadog/…) and passes its `Tracer`.
+- **Span model (C++-faithful granularity):** a `"Transaction"` parent span (started at the first GRV,
+  ended on commit success / reset / Reset / Cancel) + per-operation **child** spans `fdbgo.getValue` /
+  `fdbgo.getKey` / `fdbgo.getRange` (the C++ `NAPI:getValue/getKey/getRange` reads). Each child is started
+  at the op (covering its retry loop) and ended on completion, recorded only when sampled. **Commit** has
+  no separate child span — the `"Transaction"` span ends at commit success (`postCommitReset`), so its
+  duration captures the commit (C++'s off-wire `NAPI:tryCommit` child folded in; a dedicated commit child
+  would outlive its parent given the end-on-commit hook). **GRV (batched across txns), watch (async
+  long-poll), and locate (shared location cache) get no child span** — they are not cleanly per-tx in
+  Go's architecture; documented follow-on.
+- **IDs — Layer 1 is the SOLE authority; otel consumes (Torvalds).** Layer 1 (Go) generates the wire
+  `SpanContext` **unconditionally**, tracer or not — so the wire always carries a real unsampled span
+  (C++-default-faithful) and there is exactly one ID generator. When a tracer is set, the otel
+  `"Transaction"` span is **seeded with Layer-1's txTraceID** (via `trace.NewSpanContext` +
+  `trace.ContextWithSpanContext` as the remote root) so the whole otel client waterfall shares the
+  traceID that's on the wire; FDB server-side spans (also under that traceID) land in the same trace.
+  No reverse flow — the otel span never drives the wire IDs. (Per-op spanID parity between the otel span
+  and the wire is not required for correlation; shared traceID is. This avoids fighting otel's
+  `tracer.Start` minting and needs no custom span — the reason CRDB keeps its own `Span` is to record a
+  predetermined spanID, which we don't need since we have no `SHOW TRACE`.) A `SPAN_PARENT`-injected
+  parent seeds Layer-1's traceID, which the otel root then inherits.
+- Wire the trace no-op options to their real effect where cheap (`DEBUG_TRANSACTION_IDENTIFIER` →
+  span attribute; `SERVER_REQUEST_TRACING`) — C++ `setOption` (`NativeAPI.actor.cpp:6998-7059`).
+
+**Layer-2 design review status:** **FDB-C-dev ACK** (granularity faithful, ID-unification wire-neutral,
+sampling gate matches `Span::~Span` `Tracing.actor.cpp:383`; corrections folded: GRV cite `:7244`,
+commit stamps the tx span not a child). **Torvalds ACK** (dep call honest, per-op spans zero-cost under
+noop, ID-invariant fixed to Layer-1-sole-authority). **Decision: this ships in the SAME PR as the rest of
+RFC-115** (not split) — closing the whole punch-list in one change, as one logical commit-per-item on the
+branch. Re-review the implementation at HEAD (gating).
 
 ### Executable spec (proof)
 

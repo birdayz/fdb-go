@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"log/slog"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
 
@@ -16,11 +18,13 @@ type DialFunc = transport.DialFunc
 type Option func(*openOptions)
 
 type openOptions struct {
-	dialFn           DialFunc
-	tlsConfig        *tls.Config
-	logger           *slog.Logger
-	clusterFilePath  string // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
-	rangeByteCeiling int64  // opt-in GetRange materialization ceiling (RFC-115 §2); 0 = unlimited (default)
+	dialFn            DialFunc
+	tlsConfig         *tls.Config
+	logger            *slog.Logger
+	clusterFilePath   string           // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
+	rangeByteCeiling  int64            // opt-in GetRange materialization ceiling (RFC-115 §2); 0 = unlimited (default)
+	tracingSampleRate float64          // distributed-trace sample rate (RFC-115 §4); 0.0 = unsampled (default, matches C++ TRACING_SAMPLE_RATE)
+	tracer            oteltrace.Tracer // OpenTelemetry export backend (RFC-115 §4 Layer 2); nil → noop (no telemetry)
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -78,6 +82,29 @@ func withClusterFilePath(path string) Option {
 // one reply (~80 KB) before the check fires.
 func WithRangeByteCeiling(n int64) Option {
 	return func(o *openOptions) { o.rangeByteCeiling = n }
+}
+
+// WithTracingSampleRate sets the fraction (0.0–1.0) of transactions whose trace span
+// is flagged SAMPLED. The default 0.0 matches C++ FLOW_KNOBS->TRACING_SAMPLE_RATE: every
+// transaction still carries a real, randomly-generated SpanContext on every request
+// (wire-faithful with C++), but flagged unsampled so collectors drop it. Raise it to
+// emit sampled spans for a fraction of transactions. RFC-115 §4.
+func WithTracingSampleRate(rate float64) Option {
+	return func(o *openOptions) { o.tracingSampleRate = rate }
+}
+
+// WithTracer sets the OpenTelemetry tracer used to EXPORT client-side trace spans
+// (the C++ ITracer analog — NoopTracer default, pluggable backend). The pure-Go
+// client always GENERATES + propagates a SpanContext on the wire (RFC-115 §4 Layer 1)
+// regardless of this; WithTracer adds the export half. Pass any
+// go.opentelemetry.io/otel/trace.Tracer (from your OTLP/Jaeger/Datadog TracerProvider);
+// the client emits a "Transaction" span plus per-operation child spans (getValue,
+// getRange, commit, GRV, …), seeded with the same traceID it puts on the wire so
+// FDB server-side spans land in the same trace. nil (the default) → an internal no-op
+// tracer: zero telemetry, zero allocation on the hot path, no OTEL SDK pulled in.
+// Spans are recorded only for sampled transactions (see WithTracingSampleRate).
+func WithTracer(t oteltrace.Tracer) Option {
+	return func(o *openOptions) { o.tracer = t }
 }
 
 // WithLogger sets the per-handle logger for the client's operational events

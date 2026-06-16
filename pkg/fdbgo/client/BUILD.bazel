@@ -24,6 +24,7 @@ go_library(
         "ryw_getkey.go",
         "ryw_snapshot_cache.go",
         "sizelimits.go",
+        "span.go",
         "tag_throttle.go",
         "tls.go",
         "topology.go",
@@ -36,6 +37,8 @@ go_library(
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
+        "@io_opentelemetry_go_otel_trace//:trace",
+        "@io_opentelemetry_go_otel_trace//noop",
     ],
 )
 
@@ -107,6 +110,8 @@ go_test(
         "settimeout_test.go",
         "sizelimits_test.go",
         "snapshot_test.go",
+        "span_otel_test.go",
+        "span_test.go",
         "tag_throttle_test.go",
         "tenant_commit_test.go",
         "testmain_test.go",
@@ -132,5 +137,7 @@ go_test(
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_onsi_gomega//:gomega",
         "@com_github_zeebo_xxh3//:xxh3",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
     ],
 )

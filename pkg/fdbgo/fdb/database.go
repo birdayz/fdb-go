@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
 
@@ -96,6 +98,18 @@ func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 // An opt-in OOM safety valve; for large result sets prefer the bounded Iterator()
 // (which honors StreamingMode). RFC-115 §2.
 func WithRangeByteCeiling(n int64) Option { return client.WithRangeByteCeiling(n) }
+
+// WithTracingSampleRate sets the fraction (0.0–1.0) of transactions whose trace span
+// is flagged sampled. Default 0.0 matches C++ TRACING_SAMPLE_RATE — every transaction
+// still carries a real (randomly-generated, wire-faithful) SpanContext, flagged
+// unsampled. RFC-115 §4.
+func WithTracingSampleRate(rate float64) Option { return client.WithTracingSampleRate(rate) }
+
+// WithTracer sets the OpenTelemetry tracer that EXPORTS client-side trace spans
+// (a "Transaction" span + per-operation child spans), seeded with the same traceID the
+// client puts on the wire. Pass any go.opentelemetry.io/otel/trace.Tracer; nil (the
+// default) is a no-op (zero telemetry, no OTEL SDK pulled in). RFC-115 §4 Layer 2.
+func WithTracer(t oteltrace.Tracer) Option { return client.WithTracer(t) }
 
 // defaultBootstrapTimeout bounds the initial coordinator connection so an
 // unreachable cluster fails fast instead of blocking forever (a control-plane
@@ -449,7 +463,8 @@ func (db Database) GetClientStatus() ([]byte, error) {
 	if info == nil {
 		return []byte(`{"connected":false}`), nil
 	}
-	return fmt.Appendf(nil,
+	return fmt.Appendf(
+		nil,
 		`{"connected":true,"grv_proxies":%d,"commit_proxies":%d}`,
 		len(info.GRVProxies), len(info.CommitProxies),
 	), nil

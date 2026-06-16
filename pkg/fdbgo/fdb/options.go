@@ -337,8 +337,10 @@ func (o goTransactionOptions) SetAuthorizationToken(_ string) error {
 	return &UnsupportedOptionError{Option: "authorization_token"}
 }
 
-func (o goTransactionOptions) SetSpanParent(_ []byte) error {
-	return nil
+func (o goTransactionOptions) SetSpanParent(parent []byte) error {
+	// RFC-115 §4: inject a parent trace context (33-byte IncludeVersion-serialized
+	// SpanContext) so this transaction's span links to the caller's trace.
+	return o.tx.inner.SetSpanParent(parent)
 }
 
 func (o goTransactionOptions) SetExpensiveClearCostEstimationEnable() error {

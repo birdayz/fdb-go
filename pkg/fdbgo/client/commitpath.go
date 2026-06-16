@@ -427,9 +427,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 			ReadSnapshot:        tx.readVersion,
 			Lock_aware:          tx.lockAware,
 		},
-		Flags:      flags,
-		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+		Flags:       flags,
+		Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		TenantInfo:  types.TenantInfo{TenantId: tx.tenantId},
+		SpanContext: tx.spanContext, // RFC-115 §4
 	}
 
 	// Marshal with pooled buffer.
