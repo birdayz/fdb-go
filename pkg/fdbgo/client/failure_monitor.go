@@ -64,7 +64,12 @@ func newFailureMonitor() *failureMonitor {
 // failure WITHIN an active window (a same-episode retry hit) only refreshes the
 // deadline — so repeated retry hits in one outage don't inflate the backoff.
 func (fm *failureMonitor) markFailed(addr string) (newlyFailed bool) {
-	now := nowSeconds()
+	return fm.markFailedAt(addr, nowSeconds())
+}
+
+// markFailedAt is markFailed with an injectable clock, so the window-growth/cap
+// transitions can be driven deterministically in tests without a real-time wait.
+func (fm *failureMonitor) markFailedAt(addr string, now float64) (newlyFailed bool) {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	e, ok := fm.failed[addr]

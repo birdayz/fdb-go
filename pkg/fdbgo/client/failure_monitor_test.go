@@ -1,6 +1,7 @@
 package client
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -159,6 +160,45 @@ func TestFailureMonitorExclusionWindow(t *testing.T) {
 	fm.markFailed(addr)
 	if fm.excludedUntil(addr) < prevUntil {
 		t.Fatal("in-window re-failure must not shrink the deadline")
+	}
+}
+
+// TestFailureMonitorWindowGrowthAndCap drives the re-admission window through its
+// growth (a probe re-failing PAST the window) and the 30s cap, deterministically via
+// markFailedAt's injectable clock — the dimensions the within-window no-shrink test
+// can't reach (Torvalds §1 follow-up).
+func TestFailureMonitorWindowGrowthAndCap(t *testing.T) {
+	t.Parallel()
+	fm := newFailureMonitor()
+	addr := "10.0.0.10:4500"
+
+	now := 0.0
+	fm.markFailedAt(addr, now) // first failure → initial window
+	if w := fm.excludedUntil(addr) - now; w != connFailureInitialWindow {
+		t.Fatalf("initial window = %v, want %v", w, connFailureInitialWindow)
+	}
+
+	// Each re-failure with now PAST excludedUntil grows the window ×growth, capped.
+	prev := connFailureInitialWindow
+	for i := 0; i < 25; i++ {
+		now += 1000 // always past excludedUntil → the growth branch
+		fm.markFailedAt(addr, now)
+		w := fm.excludedUntil(addr) - now
+		want := math.Min(prev*connFailureWindowGrowth, connFailureMaxWindow)
+		if math.Abs(w-want) > 1e-9 {
+			t.Fatalf("growth step %d: window = %v, want %v", i, w, want)
+		}
+		prev = w
+	}
+	if got := fm.excludedUntil(addr) - now; math.Abs(got-connFailureMaxWindow) > 1e-9 {
+		t.Fatalf("window after 25 growths = %v, want cap %v", got, connFailureMaxWindow)
+	}
+
+	// A within-window re-failure (now < excludedUntil) must NOT grow the window.
+	capped := fm.excludedUntil(addr) - now
+	fm.markFailedAt(addr, now+1) // now+1 ≪ excludedUntil (= now + 30)
+	if w := fm.excludedUntil(addr) - (now + 1); math.Abs(w-capped) > 1e-9 {
+		t.Fatalf("within-window re-failure changed window: %v != %v", w, capped)
 	}
 }
 
