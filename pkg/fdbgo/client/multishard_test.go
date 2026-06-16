@@ -539,10 +539,11 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	points := result.([][]byte)
 	// GetRangeSplitPoints queries only begin's shard. This env forces many tiny
-	// shards (~27KB each) which are smaller than the 100KB chunk, so 0 points is
-	// the correct answer here — the populated-reply path (RFC-010 #8) is proven
-	// by TestGetRangeSplitPoints (single large shard) and the wire-level
-	// TestReadErrorOr_OneFieldSuccess. Just validate any returned points are in range.
+	// shards (~27KB each) smaller than the 100KB chunk, so there are no INTERNAL
+	// split points — the result is just the framing [begin, end] (C++ always frames
+	// the range bounds, NativeAPI.actor.cpp:8177/8189). The populated-reply path
+	// (RFC-010 #8) is proven by TestGetRangeSplitPoints (single large shard) and the
+	// wire-level TestReadErrorOr_OneFieldSuccess. Just validate the points are in range.
 	t.Logf("split points (100KB chunks): %d points across %d shards", len(points), env.numShards)
 	for i, p := range points {
 		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0),

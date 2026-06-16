@@ -3807,10 +3807,15 @@ func TestGetRangeSplitPoints_CPort(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Call with a 100 000-byte chunk size. On small ranges the result will be
-	// empty; that is correct — the only requirement is no error.
+	// Call with a 100 000-byte chunk size. C++ getRangeSplitPoints ALWAYS frames
+	// the result with the range bounds — results = [begin, <internal splits>, end]
+	// (NativeAPI.actor.cpp:8177/8189) — so even a small range that fits in one chunk
+	// returns [begin, end], NOT an empty slice. (The go-vs-cgo differential
+	// TestDifferential_GetRangeSplitPoints caught the old impl returning [].)
+	begin := []byte(pfx)
+	end := []byte(pfx + "~")
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 100_000)
+		return tx.GetRangeSplitPoints(ctx, begin, end, 100_000)
 	})
 	if err != nil {
 		t.Fatalf("GetRangeSplitPoints: %v", err)
@@ -3819,6 +3824,16 @@ func TestGetRangeSplitPoints_CPort(t *testing.T) {
 	t.Logf("split points: %d", len(points))
 	for i, p := range points {
 		t.Logf("  split[%d]: %q", i, p)
+	}
+	// Framing: first point is begin, last is end, at least the two bounds present.
+	if len(points) < 2 {
+		t.Fatalf("expected at least [begin,end] framing, got %d points", len(points))
+	}
+	if !bytes.Equal(points[0], begin) {
+		t.Fatalf("first split point = %q, want begin %q", points[0], begin)
+	}
+	if !bytes.Equal(points[len(points)-1], end) {
+		t.Fatalf("last split point = %q, want end %q", points[len(points)-1], end)
 	}
 }
 

@@ -178,7 +178,21 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 
 		points, err := tx.sendSplitRange(ctx, begin, end, chunkSize, loc.Servers)
 		if err == nil {
-			return points, nil
+			// C++ getRangeSplitPoints ALWAYS frames the result with the range bounds:
+			// results = [begin, <server split points>, end]
+			// (NativeAPI.actor.cpp:8177 push_back(begin), :8189-8191 append end). The
+			// storage server returns only the INTERNAL split points (empty for a range
+			// that fits in one chunk), so a small range must yield [begin, end] — not []
+			// as the raw reply would suggest. This Go path handles the single-shard
+			// case; multi-shard internal-boundary insertion (C++ :8179-8182) is a
+			// known remaining limitation, not exercised by a single-shard range.
+			result := make([][]byte, 0, len(points)+2)
+			result = append(result, append([]byte(nil), begin...))
+			result = append(result, points...)
+			if !bytes.Equal(result[len(result)-1], end) {
+				result = append(result, append([]byte(nil), end...))
+			}
+			return result, nil
 		}
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(begin, tx.tenantId)
