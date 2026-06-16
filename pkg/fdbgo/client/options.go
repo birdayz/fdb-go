@@ -16,10 +16,11 @@ type DialFunc = transport.DialFunc
 type Option func(*openOptions)
 
 type openOptions struct {
-	dialFn          DialFunc
-	tlsConfig       *tls.Config
-	logger          *slog.Logger
-	clusterFilePath string // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
+	dialFn           DialFunc
+	tlsConfig        *tls.Config
+	logger           *slog.Logger
+	clusterFilePath  string // internal: set by OpenDatabase for cluster-file persistence (RFC-111)
+	rangeByteCeiling int64  // opt-in GetRange materialization ceiling (RFC-115 §2); 0 = unlimited (default)
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -61,6 +62,22 @@ func WithTLSConfig(cfg *tls.Config) Option {
 // OpenDatabaseFromConfig leaves it empty (memory-only, no persistence).
 func withClusterFilePath(path string) Option {
 	return func(o *openOptions) { o.clusterFilePath = path }
+}
+
+// WithRangeByteCeiling bounds how many bytes a single GetRange may materialize
+// into memory before it fails with a *RangeMaterializationLimitError, instead of
+// OOM-ing the process on a runaway unbounded scan. n ≤ 0 (the default) means
+// UNLIMITED — matching libfdb_c, whose GetSliceWithError equivalent also
+// materializes a range unbounded and never returns a "too big" error. This is a
+// Go-only OPT-IN OOM safety valve, off by default so the default facade behavior
+// stays oracle-matching; an operator sets a ceiling (e.g. 256<<20) as a
+// last-resort guard. The bounded, streaming Iterator() honors StreamingMode and
+// is the right tool for large result sets; this ceiling is the backstop for code
+// that calls GetSliceWithError on an unexpectedly huge range. The cap bounds
+// total materialized key+value bytes; a single read may overshoot it by at most
+// one reply (~80 KB) before the check fires.
+func WithRangeByteCeiling(n int64) Option {
+	return func(o *openOptions) { o.rangeByteCeiling = n }
 }
 
 // WithLogger sets the per-handle logger for the client's operational events

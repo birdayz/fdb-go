@@ -90,6 +90,13 @@ func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
+// WithRangeByteCeiling bounds how many bytes a single GetRange may materialize
+// before it fails with a *client.RangeMaterializationLimitError, instead of OOM-ing
+// on a runaway unbounded scan. n ≤ 0 (the default) is UNLIMITED, matching libfdb_c.
+// An opt-in OOM safety valve; for large result sets prefer the bounded Iterator()
+// (which honors StreamingMode). RFC-115 §2.
+func WithRangeByteCeiling(n int64) Option { return client.WithRangeByteCeiling(n) }
+
 // defaultBootstrapTimeout bounds the initial coordinator connection so an
 // unreachable cluster fails fast instead of blocking forever (a control-plane
 // footgun). It applies to bootstrap only — never to ongoing operations.

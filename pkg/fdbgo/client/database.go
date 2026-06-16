@@ -253,6 +253,11 @@ type database struct {
 	// Default: true (always on, same as C++).
 	hedgeEnabled atomic.Bool
 
+	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
+	// RFC-115 §2). 0 = unlimited (default, oracle-matching). Read-only after open
+	// (set once in the constructor), so no atomic needed.
+	rangeByteCeiling int64
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -679,19 +684,20 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
-		connRecord:     newConnRecord(cf, o.clusterFilePath, logger),
-		dialFn:         o.dialFn,
-		tlsConfig:      tlsConfig,
-		logger:         logger,
-		connPool:       make(map[string]*transport.Conn),
-		dialing:        make(map[string]*dialCall),
-		topologyKick:   make(chan struct{}, 1),
-		proxiesChanged: make(chan struct{}),
-		connected:      make(chan struct{}),
-		ctx:            bgCtx,
-		cancel:         cancel,
-		failMon:        newFailureMonitor(),
-		queueModel:     newQueueModel(),
+		connRecord:       newConnRecord(cf, o.clusterFilePath, logger),
+		dialFn:           o.dialFn,
+		tlsConfig:        tlsConfig,
+		logger:           logger,
+		rangeByteCeiling: o.rangeByteCeiling,
+		connPool:         make(map[string]*transport.Conn),
+		dialing:          make(map[string]*dialCall),
+		topologyKick:     make(chan struct{}, 1),
+		proxiesChanged:   make(chan struct{}),
+		connected:        make(chan struct{}),
+		ctx:              bgCtx,
+		cancel:           cancel,
+		failMon:          newFailureMonitor(),
+		queueModel:       newQueueModel(),
 		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
 		locCache: locationCache{
 			maxSize: 600_000,

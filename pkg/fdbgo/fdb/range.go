@@ -122,7 +122,13 @@ type RangeOptions struct {
 	Limit int
 
 	// Mode sets the streaming mode of the range read.
-	// Ignored by the pure Go client (all reads use exact mode internally).
+	//
+	// Honored by Iterator(): Advance() sizes each batch from Mode (Iterator
+	// doubles, Exact/WantAll fetch in one go, Small/Medium/Large/Serial use fixed
+	// sizes) — the right tool for large or unbounded result sets. Ignored ONLY by
+	// GetSliceWithError, which always fetches the whole range in exact mode and
+	// materializes it into one slice regardless of Mode; for an unexpectedly large
+	// range prefer Iterator() (or set WithRangeByteCeiling as an OOM backstop).
 	Mode StreamingMode
 
 	// Reverse indicates that the read should be performed in reverse

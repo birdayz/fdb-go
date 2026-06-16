@@ -591,12 +591,30 @@ func (tx *Transaction) getRange(parentCtx context.Context, begin, end []byte, li
 	return kvs, more, tx.mapTimeout(parentCtx, err)
 }
 
+// RangeMaterializationLimitError is returned by a GetRange that would materialize
+// more than the opt-in WithRangeByteCeiling cap (RFC-115 §2) — an OOM safety valve,
+// off by default. libfdb_c has no such ceiling (its GetSliceWithError equivalent also
+// materializes unbounded and never returns a "too big" error), so this NEVER fires
+// unless the operator opts in via WithRangeByteCeiling; the default facade behavior
+// stays oracle-matching. Match it with errors.As. For large scans, prefer the bounded,
+// StreamingMode-honoring Iterator() instead of raising the ceiling.
+type RangeMaterializationLimitError struct {
+	LimitBytes   int64 // the configured WithRangeByteCeiling
+	ReachedBytes int64 // total key+value bytes materialized when the cap was exceeded
+}
+
+func (e *RangeMaterializationLimitError) Error() string {
+	return fmt.Sprintf("fdbgo: GetRange materialized %d bytes, exceeding the configured WithRangeByteCeiling of %d bytes; use Iterator() for large/unbounded scans",
+		e.ReachedBytes, e.LimitBytes)
+}
+
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	tx.hadRead.Store(true)         // a read was issued (RFC-059 poison signal)
 	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
 	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []KeyValue
+	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
 	remaining := limit
 	if remaining <= 0 {
 		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
@@ -688,6 +706,18 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 
 				allKVs = append(allKVs, kvs...)
 				remaining -= len(kvs)
+
+				// RFC-115 §2: opt-in OOM ceiling. Checked AFTER each batch append so a
+				// runaway unbounded scan errors instead of OOM-ing; the overshoot is at
+				// most one reply (~80 KB). 0 = unlimited (default, oracle-matching).
+				if ceiling := tx.db.rangeByteCeiling; ceiling > 0 {
+					for _, kv := range kvs {
+						materializedBytes += int64(len(kv.Key) + len(kv.Value))
+					}
+					if materializedBytes > ceiling {
+						return nil, false, &RangeMaterializationLimitError{LimitBytes: ceiling, ReachedBytes: materializedBytes}
+					}
+				}
 
 				if remaining <= 0 {
 					// Limit reached. C++ getExactRange sets
