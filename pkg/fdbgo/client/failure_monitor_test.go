@@ -111,6 +111,57 @@ func TestFailureMonitorMultipleRecoveries(t *testing.T) {
 	}
 }
 
+// TestFailureMonitorExclusionWindow pins the RFC-115 §1 timed re-admission: a failed
+// endpoint is `excluded` only within its window, re-admitted after it (so a read
+// re-probes it — Go's dial-on-demand substitute for C++'s background reconnect),
+// markAlive clears it immediately, and a fresh failure starts at the initial window.
+// Uses the now-param of excluded() so it is fully deterministic (no fake clock, no race).
+func TestFailureMonitorExclusionWindow(t *testing.T) {
+	t.Parallel()
+	fm := newFailureMonitor()
+	addr := "10.0.0.9:4500"
+
+	if fm.excluded(addr, nowSeconds()) {
+		t.Fatal("fresh endpoint must not be excluded")
+	}
+
+	fm.markFailed(addr)
+	base := fm.excludedUntil(addr)
+	if base == 0 {
+		t.Fatal("markFailed must set an excludedUntil deadline")
+	}
+	// Within the window → excluded; past it → re-admitted (the probe window).
+	if !fm.excluded(addr, base-0.001) {
+		t.Fatal("must be excluded inside the re-admission window")
+	}
+	if fm.excluded(addr, base+0.001) {
+		t.Fatal("must be re-admitted (not excluded) past the window")
+	}
+	// Still failed (in the set) past the window — only markAlive/dial-success clears it.
+	if !fm.isFailed(addr) {
+		t.Fatal("endpoint is still failed past the window until markAlive")
+	}
+
+	// markAlive clears failed + exclusion immediately.
+	fm.markAlive(addr)
+	if fm.excluded(addr, base-0.001) || fm.isFailed(addr) {
+		t.Fatal("markAlive must clear failed + exclusion")
+	}
+
+	// A fresh failure starts a fresh window at the initial size.
+	fm.markFailed(addr)
+	w1 := fm.excludedUntil(addr) - nowSeconds()
+	if w1 < connFailureInitialWindow-0.5 || w1 > connFailureInitialWindow+0.5 {
+		t.Fatalf("first window ≈ %v, want ≈ %v", w1, connFailureInitialWindow)
+	}
+	// An in-window re-failure must not shrink the deadline (same-episode retry hits).
+	prevUntil := fm.excludedUntil(addr)
+	fm.markFailed(addr)
+	if fm.excludedUntil(addr) < prevUntil {
+		t.Fatal("in-window re-failure must not shrink the deadline")
+	}
+}
+
 func TestFailureMonitorMultiEndpoint(t *testing.T) {
 	t.Parallel()
 	fm := newFailureMonitor()

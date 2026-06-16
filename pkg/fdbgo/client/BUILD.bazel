@@ -79,6 +79,7 @@ go_test(
         "isolation_test.go",
         "limits_test.go",
         "lint_test.go",
+        "loadbalance_failmon_test.go",
         "loadbalance_test.go",
         "locality_test.go",
         "locality_unit2_test.go",

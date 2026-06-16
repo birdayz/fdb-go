@@ -23,6 +23,15 @@ import (
 type QueueModel struct {
 	mu      sync.Mutex
 	servers map[string]*queueData
+
+	// failMon, when set, is the connection failure monitor consulted BEFORE the
+	// per-server QueueModel backoff in chooseServer/chooseTopTwo, matching C++
+	// loadBalance's IFailureMonitor.failed gate (LoadBalance.actor.h:499 — failure
+	// gate first, QueueModel `failedUntil` second). Wired by the database constructor;
+	// nil in unit tests that exercise pure QueueModel scoring (then nothing is
+	// excluded — the pre-RFC-115 behavior). RFC-115 §1. Lock order is always
+	// QueueModel.mu → failureMonitor.mu.
+	failMon *failureMonitor
 }
 
 // queueData matches C++ QueueData. One per storage server endpoint.
@@ -105,6 +114,13 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 	// Build list of available (non-failed) server indices.
 	available := make([]int, 0, len(servers))
 	for i, s := range servers {
+		// RFC-115 §1: failure-monitor gate FIRST (C++ LoadBalance.actor.h:499), then
+		// the QueueModel backoff (:501). Skip a connection-dead server so a read
+		// doesn't pay a dial-timeout selecting it; the failure monitor's timed
+		// re-admission re-probes it after a window.
+		if q.failMon != nil && q.failMon.excluded(s.Address, now) {
+			continue
+		}
 		d := q.getOrCreate(s.Address)
 		if now > d.failedUntil {
 			available = append(available, i)
@@ -112,16 +128,11 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 	}
 
 	if len(available) == 0 {
-		// All servers failed — pick the one whose failedUntil expires soonest.
-		bestIdx := 0
-		bestExpiry := math.MaxFloat64
-		for i, s := range servers {
-			d := q.getOrCreate(s.Address)
-			if d.failedUntil < bestExpiry {
-				bestExpiry = d.failedUntil
-				bestIdx = i
-			}
-		}
+		// Every replica is connection-dead and/or in QueueModel backoff. Go has no
+		// background connectionKeeper to wait on (unlike C++'s quorum(ok,1) block),
+		// so don't stall — try the one that becomes eligible soonest; the dial IS
+		// the probe (and the read's sequential fallback covers the rest).
+		bestIdx := q.soonestEligible(servers)
 		return servers[bestIdx], bestIdx
 	}
 
@@ -144,6 +155,30 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 		return servers[idxA], idxA
 	}
 	return servers[idxB], idxB
+}
+
+// soonestEligible returns the index of the server that exits exclusion/backoff
+// soonest — the least-bad pick when every replica is currently failed (the
+// "try anyway" probe). It folds both gates: the failure-monitor re-admission
+// deadline (excludedUntil) and the QueueModel future_version backoff (failedUntil),
+// taking the later of the two per server, then the earliest across servers. Caller
+// must hold q.mu. RFC-115 §1.
+func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
+	bestIdx := 0
+	bestAt := math.MaxFloat64
+	for i, s := range servers {
+		at := q.getOrCreate(s.Address).failedUntil
+		if q.failMon != nil {
+			if eu := q.failMon.excludedUntil(s.Address); eu > at {
+				at = eu
+			}
+		}
+		if at < bestAt {
+			bestAt = at
+			bestIdx = i
+		}
+	}
+	return bestIdx
 }
 
 // secondDelay returns the hedge delay for speculative second requests.
@@ -184,6 +219,11 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 	var candidates []ranked
 
 	for i, s := range servers {
+		// RFC-115 §1: failure-monitor gate first (C++ LoadBalance.actor.h:499), so a
+		// connection-dead server is never picked as hedge primary OR target.
+		if q.failMon != nil && q.failMon.excluded(s.Address, now) {
+			continue
+		}
 		d := q.getOrCreate(s.Address)
 		if now <= d.failedUntil {
 			continue
@@ -192,7 +232,8 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 	}
 
 	if len(candidates) == 0 {
-		return 0, -1
+		// All replicas failed — probe the soonest-eligible one, no hedge.
+		return q.soonestEligible(servers), -1
 	}
 	if len(candidates) == 1 {
 		return candidates[0].idx, -1

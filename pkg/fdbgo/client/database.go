@@ -683,6 +683,12 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	}
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	// Create the failure monitor first so the QueueModel can consult it for the
+	// read load-balancing exclusion gate (RFC-115 §1; C++ loadBalance gates on
+	// IFailureMonitor.failed before the QueueModel).
+	failMon := newFailureMonitor()
+	queueModel := newQueueModel()
+	queueModel.failMon = failMon
 	db := &database{
 		connRecord:       newConnRecord(cf, o.clusterFilePath, logger),
 		dialFn:           o.dialFn,
@@ -696,8 +702,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		connected:        make(chan struct{}),
 		ctx:              bgCtx,
 		cancel:           cancel,
-		failMon:          newFailureMonitor(),
-		queueModel:       newQueueModel(),
+		failMon:          failMon,
+		queueModel:       queueModel,
 		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
 		locCache: locationCache{
 			maxSize: 600_000,
