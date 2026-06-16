@@ -167,46 +167,73 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	if tx.rywPoisonErr != nil {
 		return nil, tx.rywPoisonErr
 	}
+	// C++ uses std::numeric_limits<int>::max() (CLIENT_KNOBS->TOO_MANY) to fetch ALL
+	// shard locations overlapping [begin,end) at once (NativeAPI.actor.cpp:8153-8159).
+	const shardLimit = math.MaxInt32
+
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, begin, tx.tenantId)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId)
 		if err != nil {
-			return nil, fmt.Errorf("locate for split points: %w", err)
+			return nil, fmt.Errorf("locate range for split points: %w", err)
 		}
-		if len(loc.Servers) == 0 {
+		if len(locations) == 0 {
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		points, err := tx.sendSplitRange(ctx, begin, end, chunkSize, loc.Servers)
-		if err == nil {
-			// C++ getRangeSplitPoints ALWAYS frames the result with the range bounds:
-			// results = [begin, <server split points>, end]
-			// (NativeAPI.actor.cpp:8177 push_back(begin), :8189-8191 append end). The
-			// storage server returns only the INTERNAL split points (empty for a range
-			// that fits in one chunk), so a small range must yield [begin, end] — not []
-			// as the raw reply would suggest. This Go path handles the single-shard
-			// case; multi-shard internal-boundary insertion (C++ :8179-8182) is a
-			// known remaining limitation, not exercised by a single-shard range.
-			result := make([][]byte, 0, len(points)+2)
-			result = append(result, append([]byte(nil), begin...))
+		// Port of C++ getRangeSplitPoints assembly (NativeAPI.actor.cpp:8164-8191):
+		// results = [begin, (for each shard i>0) shard[i].begin, <shard i split points>..., end].
+		// The result is ALWAYS framed by the range bounds, and each internal shard
+		// boundary is itself a split point — so a range spanning N shards yields the
+		// N-1 internal boundaries even when no shard has an internal chunk split.
+		result := make([][]byte, 0, len(locations)+2)
+		result = append(result, append([]byte(nil), begin...)) // push_back(keys.begin)
+		retry, opFailed := false, false
+		for i, loc := range locations {
+			// partBegin/partEnd per C++ :8165-8166: first shard starts at keys.begin,
+			// last ends at keys.end, interior shards use their own bounds.
+			partBegin := loc.ShardBegin
+			if i == 0 {
+				partBegin = begin
+			}
+			partEnd := loc.ShardEnd
+			if i == len(locations)-1 || partEnd == nil || bytes.Compare(partEnd, end) > 0 {
+				partEnd = end
+			}
+			// Insert the internal shard boundary BEFORE this shard's points (C++ :8179-8182).
+			if i > 0 {
+				result = append(result, append([]byte(nil), loc.ShardBegin...))
+			}
+			points, perr := tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
+			if perr != nil {
+				if isWrongShardServer(perr) || isAllAlternativesFailed(perr) {
+					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
+					if serr := sleepCtx(ctx, wrongShardRetryDelay); serr != nil {
+						return nil, serr
+					}
+					retry = true
+					break
+				}
+				// operation_failed (4) = endpoint unsupported (old FDB): degrade to no
+				// split points, matching the prior graceful fallback.
+				if isOperationFailed(perr) {
+					opFailed = true
+					break
+				}
+				return nil, perr
+			}
 			result = append(result, points...)
-			if !bytes.Equal(result[len(result)-1], end) {
-				result = append(result, append([]byte(nil), end...))
-			}
-			return result, nil
 		}
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(begin, tx.tenantId)
-			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-				return nil, err
-			}
+		if retry {
 			continue
 		}
-		// operation_failed (4) = endpoint not supported (e.g., old FDB version).
-		// Return empty split points — the data fits in one shard.
-		if isOperationFailed(err) {
+		if opFailed {
 			return nil, nil
 		}
-		return nil, err
+		// C++ :8189-8191: append keys.end unless the last point already is it.
+		if !bytes.Equal(result[len(result)-1], end) {
+			result = append(result, append([]byte(nil), end...))
+		}
+		return result, nil
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
