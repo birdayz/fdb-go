@@ -103,6 +103,13 @@ func WithTracingSampleRate(rate float64) Option {
 // FDB server-side spans land in the same trace. nil (the default) → an internal no-op
 // tracer: zero telemetry, zero allocation on the hot path, no OTEL SDK pulled in.
 // Spans are recorded only for sampled transactions (see WithTracingSampleRate).
+//
+// CAVEAT (span lifetime): the per-transaction "Transaction" span ends on commit
+// success, OnError retry, Reset, or Cancel. Database.Transact/TransactCtx always hit
+// one of these, so they are safe. A RAW Database.CreateTransaction() handle that you
+// read from (starting the span) and then ABANDON without committing/Reset/Cancel will
+// LEAK that span (it is never ended) — only matters with a real tracer AND a sampled
+// transaction. Always Reset() or Cancel() a raw handle you don't commit.
 func WithTracer(t oteltrace.Tracer) Option {
 	return func(o *openOptions) { o.tracer = t }
 }

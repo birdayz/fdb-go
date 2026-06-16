@@ -213,7 +213,7 @@ type Transaction struct {
 	// OpenTelemetry export (RFC-115 §4 Layer 2). The long-lived "Transaction" otel span
 	// (C++ NativeAPI.actor.cpp:6186) + the context that carries it for parenting per-op
 	// child spans. Lazily started at the first GRV of a SAMPLED transaction, ended on
-	// commit success / reset / Reset / Close. Nil for an unsampled tx (the default) — so
+	// commit success / reset / Reset / Cancel. Nil for an unsampled tx (the default) — so
 	// unsampled txns never touch traceMu and allocate nothing (the C++ NoopTracer effect).
 	// traceMu guards both fields: ensureTxSpan (under readVersionMu at first GRV) and
 	// startOpSpan (concurrent pipelined reads) and endTxSpan all serialize through it;
@@ -1634,12 +1634,19 @@ func (tx *Transaction) ensureTxSpan() {
 		return
 	}
 	tx.traceMu.Lock()
-	defer tx.traceMu.Unlock()
-	if tx.txSpan != nil {
+	already := tx.txSpan != nil
+	tx.traceMu.Unlock()
+	if already {
 		return
 	}
+	// Start OUTSIDE traceMu (mirroring startOpSpan) so a re-entrant tracer can't deadlock;
+	// safe against a double-start because ensureTxSpan runs only at the first GRV under
+	// readVersionMu (single-entry), so no concurrent ensureTxSpan can race it.
 	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(tx.spanContext))
-	tx.traceCtx, tx.txSpan = tx.db.tracer.Start(parent, "Transaction", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	ctx, span := tx.db.tracer.Start(parent, "Transaction", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	tx.traceMu.Lock()
+	tx.traceCtx, tx.txSpan = ctx, span
+	tx.traceMu.Unlock()
 }
 
 // startOpSpan starts a per-operation child span under the "Transaction" span (the C++
@@ -1665,7 +1672,11 @@ func (tx *Transaction) startOpSpan(name string) oteltrace.Span {
 }
 
 // endTxSpan ends the "Transaction" otel span (C++ ~Span on tx end). Idempotent; called
-// on commit success and on every reuse/teardown boundary (reset / Reset / Close).
+// on commit success (postCommitReset), on OnError retry / user Reset (reset), and on
+// Cancel. NOTE: there is no Transaction.Close(); a raw CreateTransaction handle that is
+// first-GRV'd and then abandoned WITHOUT commit/Reset/Cancel never ends its span (a leak
+// — only with a real WithTracer + a sampled tx). The common Transact/TransactCtx path is
+// always safe (it commits or resets). See WithTracer / CreateTransaction for the caveat.
 func (tx *Transaction) endTxSpan() {
 	tx.traceMu.Lock()
 	defer tx.traceMu.Unlock()
