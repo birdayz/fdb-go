@@ -33,6 +33,19 @@ C++ tracks six latency/size distributions on `DatabaseContext` as `DDSketch<doub
 Surfaced in the `TransactionMetrics` TraceEvent (`:661-693`): the aggregate `latencies` emits
 mean/median/**p90/p98**/max; the per-category ones emit mean/median/max.
 
+**Sampling divergences (documented; FDB-C-dev review).** The *sites* match C++; the measured *span*
+and *population* differ on three axes, all local-metric (zero wire) and all identical on the common
+no-retry / single-RPC path:
+- **`readLatencies`** — Go's `start` is taken before `getValueImpl`, so on the cold path the span
+  includes the locate + any wrong-shard retry loop; C++ resets `startTimeD` per loop attempt (`:3659`)
+  and measures only the final physical-read RPC. Go over-measures under a wrong-shard storm.
+- **`GRVLatencies`** — Go samples once per GRV **batch** (Count = proxy round-trips; span = RPC only);
+  C++ samples per **transaction** in `extractReadVersion` (Count = read-versions-completed; span also
+  folds in the per-transaction batch-window queueing). Go's is the cleaner RPC-latency SLI.
+- **`latencies` (total tx)** — Go measures `now − creationTime`, and `creationTime` is **not** reset on
+  OnError retry, so it spans all retries (whole-transaction wall-clock); C++ measures
+  `now − trState->startTime`, reset per attempt (`reset()`→ fresh GRV), excluding retry/backoff.
+
 **DDSketch port (`DDSketchBase`, `DDSketch.h:86-168`):** `addSample(v)`: `v ≤ EPS(1e-18)` →
 `zeroPopulationSize++`; else bucket `index = ⌈log(v)/log(γ)⌉`, `count[index]++`; track
 `populationSize`, `sum`, `min`, `max`. `percentile(p)`: `rank = p·(pop−1)`; if `rank < zeroPop` → 0;

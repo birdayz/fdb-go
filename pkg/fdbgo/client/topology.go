@@ -167,12 +167,15 @@ func (db *database) handleConnError(addr string) {
 		delete(db.connPool, addr)
 	}
 	db.connMu.Unlock()
-	db.failMon.markFailed(addr)
+	newlyFailed := db.failMon.markFailed(addr)
 	// RFC-114: make the failure visible. This is the single sink both
-	// handleConnError and a live-ctx handleDialError route through, so the
-	// counter + Warn live here once (no double-count from handleDialError).
+	// handleConnError and a live-ctx handleDialError route through. The COUNTER
+	// ticks on every event (the rate signal, like logRetryEvent's counter), but
+	// the Warn is edge-triggered on the alive→failed transition so a flapping or
+	// down peer hit by ~18 retry arms doesn't melt the log (the storm-hygiene rule
+	// logRetryEvent follows; one Warn per failure episode, re-armed by markAlive).
 	db.metrics.countConnectionFailure()
-	if db.logger != nil {
+	if newlyFailed && db.logger != nil {
 		db.logger.Warn("fdbgo: connection to server failed", "address", addr)
 	}
 }

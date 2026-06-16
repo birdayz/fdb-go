@@ -421,6 +421,22 @@ func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
 	if !db.failMon.isFailed(addr) {
 		t.Error("handleConnError must still mark the endpoint failed (behavior preserved)")
 	}
+
+	// Storm hygiene: a repeat failure on the same (still-failed) endpoint ticks the
+	// COUNTER (rate signal) but does NOT re-Warn (edge-triggered, no log melt).
+	db.handleConnError(addr)
+	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 2 {
+		t.Errorf("ClientConnectionFailures = %d after a repeat, want 2 (counter ticks every event)", c)
+	}
+	if got := h.count(); got != 1 {
+		t.Errorf("Warn count = %d after a repeat failure, want 1 (edge-triggered, not per-event)", got)
+	}
+	// Recovery re-arms the edge: a failure after markAlive Warns again.
+	db.failMon.markAlive(addr)
+	db.handleConnError(addr)
+	if got := h.count(); got != 2 {
+		t.Errorf("Warn count = %d after recover→fail, want 2 (re-armed)", got)
+	}
 }
 
 // TestFollowForward_CountsCoordinatorChange pins RFC-114: a followed coordinator
@@ -504,16 +520,69 @@ func TestFDB_Metrics_LatencyRecorded(t *testing.T) {
 			t.Errorf("%s latency: count 0 — sample site missing?", name)
 			continue
 		}
-		if !(st.Max > 0 && st.Median > 0 && st.P99 > 0 && st.Mean > 0) {
-			t.Errorf("%s latency: non-positive stat (max=%g median=%g p99=%g mean=%g)", name, st.Max, st.Median, st.P99, st.Mean)
+		if !(st.Max > 0 && st.Median > 0 && st.P99 > 0 && st.Mean > 0 && st.Min > 0) {
+			t.Errorf("%s latency: non-positive stat (min=%g max=%g median=%g p99=%g mean=%g)", name, st.Min, st.Max, st.Median, st.P99, st.Mean)
 		}
-		// Monotone, with a small slack on Max (a bucket representative can sit a
-		// bucket-width above the true max).
-		if !(st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
-			t.Errorf("%s latency: not ordered (median=%g p90=%g p99=%g max=%g)", name, st.Median, st.P90, st.P99, st.Max)
+		// Monotone: Min ≤ median ≤ p90 ≤ p99 ≤ Max (small slack on the quantile-vs-Max
+		// edge, where a bucket representative can sit a bucket-width above the true max).
+		if !(st.Min <= st.Median && st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
+			t.Errorf("%s latency: not ordered (min=%g median=%g p90=%g p99=%g max=%g)", name, st.Min, st.Median, st.P90, st.P99, st.Max)
 		}
 		if st.Sum <= 0 {
 			t.Errorf("%s latency: sum=%g, want > 0", name, st.Sum)
 		}
+	}
+}
+
+// TestFDB_Metrics_PipelinedReadLatencySampled pins RFC-114's pipelined read-latency
+// sample (the Resolve happy path) INDEPENDENTLY of the sync getValue sample: it
+// drives reads only through GetPipelined→Resolve, so deleting the pipelined observe
+// site zeroes the delta and reddens this. (Torvalds revert-proof catch — the main
+// latency test exercises only the sync path.)
+func TestFDB_Metrics_PipelinedReadLatencySampled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 4
+	keys := make([][]byte, n)
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := range keys {
+			keys[i] = []byte(fmt.Sprintf("%s_k%d", t.Name(), i))
+			tx.Set(keys[i], []byte("v"))
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	base := db.Metrics()
+	// A fresh transaction so the seeded keys are NOT in this tx's RYW writes — each
+	// GetPipelined sends a real request and Resolve takes the happy reply path.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, k := range keys {
+			_, p, err := tx.GetPipelined(ctx, k)
+			if err != nil {
+				return nil, err
+			}
+			if p == nil {
+				return nil, fmt.Errorf("expected a pipelined read for committed key %q, got cache hit", k)
+			}
+			if _, err := p.Resolve(); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("pipelined reads: %v", err)
+	}
+	s := db.Metrics()
+	if d := s.ReadLatency.Count - base.ReadLatency.Count; d < n {
+		t.Errorf("ReadLatency.Count delta = %d, want >= %d (pipelined Resolve happy path unmeasured?)", d, n)
+	}
+	if s.ReadLatency.Max <= 0 {
+		t.Errorf("ReadLatency.Max = %g, want > 0", s.ReadLatency.Max)
 	}
 }

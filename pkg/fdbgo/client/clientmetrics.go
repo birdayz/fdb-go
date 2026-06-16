@@ -115,7 +115,8 @@ type LatencyStats struct {
 	Median float64 // p50
 	P90    float64
 	P99    float64
-	Max    float64
+	Min    float64 // exact (C++ DDSketchBase::min)
+	Max    float64 // exact (C++ DDSketchBase::max)
 }
 
 // countRecoveredPanic records one recovered background-goroutine panic (RFC-110)

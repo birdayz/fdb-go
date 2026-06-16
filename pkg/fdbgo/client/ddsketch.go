@@ -112,6 +112,7 @@ func (s *latencySketch) stats() LatencyStats {
 	}
 	st.Sum = s.sum
 	st.Mean = s.sum / float64(s.populationSize)
+	st.Min = s.minValue
 	st.Max = s.maxValue
 
 	idxs := make([]int, 0, len(s.buckets))

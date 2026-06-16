@@ -385,9 +385,13 @@ func (b *grvBatcher) flush(db *database) {
 		// consumption site, machinery a counter doesn't justify. RFC-097.
 		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
 		// RFC-114: GRV round-trip latency (C++ GRVLatencies, NativeAPI.actor.cpp:7417).
-		// Sampled once per GRV batch (the proxy round-trip), so Count is GRV
-		// round-trips, not transactions — the cleaner RPC-latency SLI. Cache hits
-		// never reach here (C++ parity, as above).
+		// Divergence (documented in RFC-114), on TWO axes: (1) count — Go samples
+		// once per GRV BATCH, so Count is proxy round-trips, whereas C++ samples
+		// per-transaction in extractReadVersion (Count == read-versions-completed);
+		// (2) semantics — Go measures only the proxy RPC round-trip, whereas C++'s
+		// latency = replyTime − startTime also folds in the per-transaction
+		// batch-window queueing. Go's is the cleaner RPC-latency SLI. Cache hits
+		// never reach here (they return before the flush — C++ parity, as above).
 		db.metrics.observeGRVLatency(elapsed)
 	}
 

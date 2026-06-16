@@ -1476,6 +1476,10 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
 	// now-creationTime (C++ latencies, :6682). Read-only txns return at the fast
 	// path above and never reach here, so they contribute to neither — matching C++.
+	// Divergence (documented in RFC-114): creationTime is NOT reset on OnError retry,
+	// so total latency spans all retries (whole-transaction wall-clock), whereas C++
+	// resets trState->startTime per attempt and measures only the current attempt's
+	// GRV→commit. Identical for a no-retry commit (the common case).
 	if tx.db != nil {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
 		now := time.Now()
