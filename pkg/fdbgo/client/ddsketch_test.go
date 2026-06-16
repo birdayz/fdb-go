@@ -47,9 +47,12 @@ func TestDDSketch_RelativeErrorGuarantee(t *testing.T) {
 			t.Errorf("p%.0f: got %.6f want %.6f rel-err %.4f > %.4f", c.p*100, c.got, want, rel, bound)
 		}
 	}
-	// Mean and Max are exact (not bucketed).
+	// Mean, Min and Max are exact (not bucketed).
 	if rel := math.Abs(st.Max-trueQuantile(samples, 1.0)) / st.Max; rel != 0 {
 		t.Errorf("Max not exact: got %.6f want %.6f", st.Max, trueQuantile(samples, 1.0))
+	}
+	if st.Min != trueQuantile(samples, 0.0) {
+		t.Errorf("Min not exact: got %.6f want %.6f", st.Min, trueQuantile(samples, 0.0))
 	}
 	wantMean := 0.0
 	for _, v := range samples {
@@ -75,8 +78,8 @@ func TestDDSketch_Edges(t *testing.T) {
 	var one latencySketch
 	one.addSample(2.5)
 	st := one.stats()
-	if st.Count != 1 || st.Max != 2.5 || st.Mean != 2.5 {
-		t.Errorf("single-sample stats = %+v, want count1 max2.5 mean2.5", st)
+	if st.Count != 1 || st.Max != 2.5 || st.Min != 2.5 || st.Mean != 2.5 {
+		t.Errorf("single-sample stats = %+v, want count1 min/max/mean 2.5", st)
 	}
 	if rel := math.Abs(st.Median-2.5) / 2.5; rel > 0.0201 {
 		t.Errorf("single-sample median = %.6f, want ~2.5", st.Median)
@@ -88,7 +91,7 @@ func TestDDSketch_Edges(t *testing.T) {
 		zeros.addSample(0)
 	}
 	st = zeros.stats()
-	if st.Count != 10 || st.Median != 0 || st.P99 != 0 || st.Max != 0 || st.Mean != 0 {
+	if st.Count != 10 || st.Median != 0 || st.P99 != 0 || st.Max != 0 || st.Min != 0 || st.Mean != 0 {
 		t.Errorf("all-zero stats = %+v, want count10 and zeros", st)
 	}
 
@@ -137,12 +140,12 @@ func FuzzDDSketch(f *testing.F) {
 		if st.Count != int64(len(data)) {
 			t.Fatalf("Count = %d, want %d", st.Count, len(data))
 		}
-		for _, v := range []float64{st.Mean, st.Median, st.P90, st.P99, st.Max, st.Sum} {
+		for _, v := range []float64{st.Mean, st.Median, st.P90, st.P99, st.Min, st.Max, st.Sum} {
 			if math.IsNaN(v) || math.IsInf(v, 0) {
 				t.Fatalf("non-finite stat in %+v", st)
 			}
 		}
-		if len(data) > 0 && !(st.Median <= st.P90 && st.P90 <= st.P99) {
+		if len(data) > 0 && !(st.Min <= st.Median && st.Median <= st.P90 && st.P90 <= st.P99) {
 			t.Fatalf("quantiles not monotone: %+v", st)
 		}
 	})

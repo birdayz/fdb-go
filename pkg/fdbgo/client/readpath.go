@@ -369,7 +369,7 @@ func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, 
 		// sampled on the successful reply only. Divergence (documented in RFC-114):
 		// `start` is taken before getValueImpl, so on the cold path this span includes
 		// the locate + any wrong-shard retry loop, whereas C++ resets startTimeD per
-		// attempt (:3659) and measures only the final physical-read RPC. Identical on
+		// attempt (:3660) and measures only the final physical-read RPC. Identical on
 		// the common single-RPC happy path; Go over-measures under a wrong-shard storm.
 		tx.db.metrics.observeReadLatency(time.Since(start))
 	}

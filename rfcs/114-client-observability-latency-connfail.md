@@ -37,7 +37,7 @@ mean/median/**p90/p98**/max; the per-category ones emit mean/median/max.
 and *population* differ on three axes, all local-metric (zero wire) and all identical on the common
 no-retry / single-RPC path:
 - **`readLatencies`** — Go's `start` is taken before `getValueImpl`, so on the cold path the span
-  includes the locate + any wrong-shard retry loop; C++ resets `startTimeD` per loop attempt (`:3659`)
+  includes the locate + any wrong-shard retry loop; C++ resets `startTimeD` per loop attempt (`:3660`)
   and measures only the final physical-read RPC. Go over-measures under a wrong-shard storm.
 - **`GRVLatencies`** — Go samples once per GRV **batch** (Count = proxy round-trips; span = RPC only);
   C++ samples per **transaction** in `extractReadVersion` (Count = read-versions-completed; span also
