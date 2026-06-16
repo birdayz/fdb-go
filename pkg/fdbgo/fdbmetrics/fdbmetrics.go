@@ -112,6 +112,42 @@ var counters = []counterDef{
 		"fdb_client_transaction_retries_total", "All OnError-sanctioned retries (Go aggregate; includes codes C++ retries without a counter).",
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionRetries },
 	},
+	{
+		"fdb_client_connection_failures_total", "Connection/dial failures recorded by the failure monitor (RFC-114; Go-only observability).",
+		func(s client.ClientMetricsSnapshot) int64 { return s.ClientConnectionFailures },
+	},
+	{
+		"fdb_client_coordinator_changes_total", "Followed coordinator-set forwards (RFC-114; Go-only observability).",
+		func(s client.ClientMetricsSnapshot) int64 { return s.CoordinatorChanges },
+	},
+}
+
+// summaryDef binds an exposition name + help to a latency distribution
+// (RFC-114). Rendered as a Prometheus summary with all-time DDSketch quantiles.
+type summaryDef struct {
+	name string
+	help string
+	get  func(s client.ClientMetricsSnapshot) client.LatencyStats
+}
+
+// summaries are the read/commit/GRV/total latency distributions, in seconds.
+var summaries = []summaryDef{
+	{
+		"fdb_client_read_latency_seconds", "GetValue read round-trip latency (DDSketch, all-time).",
+		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.ReadLatency },
+	},
+	{
+		"fdb_client_commit_latency_seconds", "Commit round-trip latency (DDSketch, all-time).",
+		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.CommitLatency },
+	},
+	{
+		"fdb_client_grv_latency_seconds", "GetReadVersion round-trip latency (DDSketch, all-time).",
+		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.GRVLatency },
+	},
+	{
+		"fdb_client_transaction_latency_seconds", "Total transaction latency, start to commit (DDSketch, all-time).",
+		func(s client.ClientMetricsSnapshot) client.LatencyStats { return s.TransactionLatency },
+	},
 }
 
 // WriteText renders one snapshot in the Prometheus text exposition format.
@@ -120,6 +156,20 @@ func WriteText(w io.Writer, s client.ClientMetricsSnapshot) error {
 	for _, c := range counters {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n",
 			c.name, c.help, c.name, c.name, c.get(s)); err != nil {
+			return err
+		}
+	}
+	for _, d := range summaries {
+		st := d.get(s)
+		// A summary exposes its quantiles plus _sum and _count. All-time DDSketch
+		// quantiles (not a decay window) — honest, and matches the sketch.
+		if _, err := fmt.Fprintf(w,
+			"# HELP %s %s\n# TYPE %s summary\n"+
+				"%s{quantile=\"0.5\"} %g\n%s{quantile=\"0.9\"} %g\n%s{quantile=\"0.99\"} %g\n"+
+				"%s_sum %g\n%s_count %d\n",
+			d.name, d.help, d.name,
+			d.name, st.Median, d.name, st.P90, d.name, st.P99,
+			d.name, st.Sum, d.name, st.Count); err != nil {
 			return err
 		}
 	}

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -379,5 +380,140 @@ func TestFDB_Metrics_OversizedCommitCountsStarted(t *testing.T) {
 	}
 	if d := s.TransactionsCommitCompleted - base.TransactionsCommitCompleted; d != 0 {
 		t.Errorf("CommitCompleted delta = %d, want 0", d)
+	}
+}
+
+// TestClientMetrics_ConnectionFailureVisible pins RFC-114 R2-CRITICAL #2: the
+// single failure sink (handleConnError) increments the counter, emits a Warn
+// carrying the address, AND still marks the endpoint failed (the pre-existing
+// behavior must be preserved). Unit-level via the per-handle logger — never
+// slog.SetDefault. Revert-proof: removing the counter or the Warn reddens this.
+func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
+	t.Parallel()
+	h := &capturingHandler{level: slog.LevelWarn}
+	db := &database{logger: slog.New(h), failMon: newFailureMonitor()}
+
+	const addr = "10.0.0.7:4500"
+	db.handleConnError(addr)
+
+	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 1 {
+		t.Errorf("ClientConnectionFailures = %d, want 1", c)
+	}
+	if got := h.count(); got != 1 {
+		t.Fatalf("expected 1 Warn record, got %d", got)
+	}
+	h.mu.Lock()
+	rec := h.records[0]
+	h.mu.Unlock()
+	if rec.Level != slog.LevelWarn {
+		t.Errorf("connection-failure event level = %v, want WARN", rec.Level)
+	}
+	var sawAddr bool
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == "address" && a.Value.String() == addr {
+			sawAddr = true
+		}
+		return true
+	})
+	if !sawAddr {
+		t.Error("connection-failure event missing address attr")
+	}
+	if !db.failMon.isFailed(addr) {
+		t.Error("handleConnError must still mark the endpoint failed (behavior preserved)")
+	}
+}
+
+// TestFollowForward_CountsCoordinatorChange pins RFC-114: a followed coordinator
+// forward increments CoordinatorChanges; a refused (degenerate self) forward does
+// not. Mirrors the TestFollowForward_Adopts harness.
+func TestFollowForward_CountsCoordinatorChange(t *testing.T) {
+	t.Parallel()
+	start := &ClusterFile{Description: "old", ID: "a", Coordinators: []string{"1.1.1.1:4500"}}
+	db := newFollowTestDB(t, start, "") // memory-only record; no disk needed
+
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 0 {
+		t.Fatalf("CoordinatorChanges = %d before any forward, want 0", c)
+	}
+	// A self-forward is refused and must NOT count.
+	if db.followForward(start, start.String()) {
+		t.Fatal("self-forward should be refused")
+	}
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 0 {
+		t.Errorf("CoordinatorChanges = %d after a refused self-forward, want 0", c)
+	}
+	// A distinct, valid forward is adopted and counts once.
+	if !db.followForward(start, "new:b@2.2.2.2:4500") {
+		t.Fatal("valid distinct forward refused")
+	}
+	if c := db.metrics.Snapshot().CoordinatorChanges; c != 1 {
+		t.Errorf("CoordinatorChanges = %d after a followed forward, want 1", c)
+	}
+}
+
+// TestFDB_Metrics_LatencyRecorded pins RFC-114 R2-CRITICAL #1: read/commit/GRV/
+// total latency distributions are populated by real transactions. Counts are
+// tied to the commit-completed delta (exact regardless of retries) and the read
+// count, so removing any sample site zeroes its category and reddens the test.
+func TestFDB_Metrics_LatencyRecorded(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const n = 5
+	base := db.Metrics()
+	for i := 0; i < n; i++ {
+		k := []byte(fmt.Sprintf("%s_k%d", t.Name(), i))
+		if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			if _, err := tx.Get(ctx, k); err != nil { // one read → one read-latency sample
+				return nil, err
+			}
+			tx.Set(k, []byte("v"))
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("transact %d: %v", i, err)
+		}
+	}
+	s := db.Metrics()
+
+	// Each successful commit records one commit-latency AND one total-latency
+	// sample; tie to the commit-completed delta so the invariant is exact whether
+	// or not any attempt retried (a retried commit still completes exactly once).
+	commits := s.TransactionsCommitCompleted - base.TransactionsCommitCompleted
+	if commits != n {
+		t.Fatalf("commit-completed delta = %d, want %d", commits, n)
+	}
+	if d := s.CommitLatency.Count - base.CommitLatency.Count; d != commits {
+		t.Errorf("CommitLatency.Count delta = %d, want %d (== commits)", d, commits)
+	}
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != commits {
+		t.Errorf("TransactionLatency.Count delta = %d, want %d (== commits)", d, commits)
+	}
+	if d := s.ReadLatency.Count - base.ReadLatency.Count; d < n {
+		t.Errorf("ReadLatency.Count delta = %d, want >= %d", d, n)
+	}
+	if d := s.GRVLatency.Count - base.GRVLatency.Count; d < 1 {
+		t.Errorf("GRVLatency.Count delta = %d, want >= 1", d)
+	}
+
+	for name, st := range map[string]LatencyStats{
+		"read": s.ReadLatency, "commit": s.CommitLatency, "grv": s.GRVLatency, "transaction": s.TransactionLatency,
+	} {
+		if st.Count == 0 {
+			t.Errorf("%s latency: count 0 — sample site missing?", name)
+			continue
+		}
+		if !(st.Max > 0 && st.Median > 0 && st.P99 > 0 && st.Mean > 0) {
+			t.Errorf("%s latency: non-positive stat (max=%g median=%g p99=%g mean=%g)", name, st.Max, st.Median, st.P99, st.Mean)
+		}
+		// Monotone, with a small slack on Max (a bucket representative can sit a
+		// bucket-width above the true max).
+		if !(st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
+			t.Errorf("%s latency: not ordered (median=%g p90=%g p99=%g max=%g)", name, st.Median, st.P90, st.P99, st.Max)
+		}
+		if st.Sum <= 0 {
+			t.Errorf("%s latency: sum=%g, want > 0", name, st.Sum)
+		}
 	}
 }

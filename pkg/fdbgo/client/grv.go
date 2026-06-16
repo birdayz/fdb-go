@@ -384,6 +384,11 @@ func (b *grvBatcher) flush(db *database) {
 		// counters — fixing either would need per-waiter counting at the
 		// consumption site, machinery a counter doesn't justify. RFC-097.
 		db.metrics.countGRVBatchCompleted(b.priority, len(batch))
+		// RFC-114: GRV round-trip latency (C++ GRVLatencies, NativeAPI.actor.cpp:7417).
+		// Sampled once per GRV batch (the proxy round-trip), so Count is GRV
+		// round-trips, not transactions — the cleaner RPC-latency SLI. Cache hits
+		// never reach here (C++ parity, as above).
+		db.metrics.observeGRVLatency(elapsed)
 	}
 
 	// Adaptive batch window (closure-scoped lock: a panic here unwinds b.mu).

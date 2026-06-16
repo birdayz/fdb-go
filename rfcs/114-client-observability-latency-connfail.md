@@ -86,11 +86,12 @@ is slog events at the unified failure sink + Go-only counters (the precedent is 
   `handleConnError`, `topology.go:162` — the single sink both `handleConnError` and a live-ctx
   `handleDialError` route through) and `coordinatorChanges` (incremented when a coordinator forward is
   followed, `topology.go:127`).
-- **slog**: `handleConnError` → `Warn("fdb client connection failed", "address", addr)`;
-  `handleDialError` → `Debug` with the dial error detail (it already routes to `handleConnError` for the
-  Warn + counter when the ctx is live, so no double-count/double-Warn); coordinator change keeps its
-  existing `Info` log (`topology.go:127`) + the new counter. All guarded `db.logger != nil` /
-  `Enabled()` like RFC-097.
+- **slog**: `handleConnError` (`topology.go:162`) → `Warn("fdbgo: connection to server failed",
+  "address", addr)` + the counter — the **single failure sink** (a live-ctx `handleDialError` already
+  routes here, so the Warn + counter live here once, no double-count). `handleDialError` itself is left
+  unchanged (threading the dial error through its 4 call sites for a Debug line isn't worth the churn;
+  the Warn at the sink already names the failed address). Coordinator change keeps its existing `Info`
+  log (`topology.go:127`) + the new counter. Logging guarded `db.logger != nil` like RFC-097.
 - **Snapshot + `fdbmetrics`**: `ClientConnectionFailures`, `CoordinatorChanges` →
   `fdb_client_connection_failures_total`, `fdb_client_coordinator_changes_total` (counters).
 

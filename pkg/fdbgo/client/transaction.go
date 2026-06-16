@@ -729,7 +729,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}
+		// sentAt anchors the RFC-114 read-latency sample: the deferred frame is on
+		// the wire (SendFrameDeferred above), so now() ≈ send time.
+		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer, sentAt: time.Now()}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
 		// barrier) and a post-reset late Resolve must not poison the next
@@ -763,6 +765,7 @@ type PendingGet struct {
 	conn        *transport.Conn
 	ctx         context.Context
 	timer       *time.Timer
+	sentAt      time.Time // RFC-114: send time, for the pipelined read-latency sample
 	flushed     bool
 	gen         uint64 // read incarnation at issue (see Transaction.readGen)
 
@@ -832,6 +835,13 @@ func (p *PendingGet) resolve() ([]byte, error) {
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId)
 			return p.resolveFull()
+		}
+		// RFC-114: pipelined GetValue round-trip latency — the path the fdb facade
+		// Get routes through. Sampled on a successful reply only (mirroring the sync
+		// getValue sample); the wrong-shard/transport/flush/timeout arms re-drive
+		// through getValue, which samples there, so a read is counted exactly once.
+		if err == nil && p.tx.db != nil {
+			p.tx.db.metrics.observeReadLatency(time.Since(p.sentAt))
 		}
 		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
 		// C++ read future; this is its final outcome.
@@ -1456,13 +1466,23 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
 	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
+	commitStart := time.Now()
 	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
 		return err
 	}
 
 	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
+	// RFC-114: on the same success, sample the commit round-trip (C++
+	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
+	// now-creationTime (C++ latencies, :6682). Read-only txns return at the fast
+	// path above and never reach here, so they contribute to neither — matching C++.
 	if tx.db != nil {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
+		now := time.Now()
+		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
+		if !tx.creationTime.IsZero() {
+			tx.db.metrics.observeTotalLatency(now.Sub(tx.creationTime))
+		}
 	}
 
 	// Feed committed version to GRV cache so a later opted-in read sees this

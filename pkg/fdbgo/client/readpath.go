@@ -362,7 +362,14 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	start := time.Now()
 	v, err := tx.getValueImpl(ctx, key)
+	if err == nil && tx.db != nil {
+		// RFC-114: GetValue round-trip latency (C++ readLatencies,
+		// NativeAPI.actor.cpp:3698), sampled on the successful reply only —
+		// a failed/retry-exhausted read does not sample, matching C++.
+		tx.db.metrics.observeReadLatency(time.Since(start))
+	}
 	return v, tx.mapTimeout(parentCtx, err)
 }
 

@@ -123,7 +123,8 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 		return false
 	}
 	db.forwardHops++
-	db.connRecord.setInMemory(newCF) // persisted by persistIfDirty after we connect to the new set
+	db.connRecord.setInMemory(newCF)    // persisted by persistIfDirty after we connect to the new set
+	db.metrics.countCoordinatorChange() // RFC-114: a coordinator-set rotation was followed
 	db.logger.Info("fdbgo: followed coordinator forward", "from", old.String(), "to", newCF.String())
 	return true
 }
@@ -167,6 +168,13 @@ func (db *database) handleConnError(addr string) {
 	}
 	db.connMu.Unlock()
 	db.failMon.markFailed(addr)
+	// RFC-114: make the failure visible. This is the single sink both
+	// handleConnError and a live-ctx handleDialError route through, so the
+	// counter + Warn live here once (no double-count from handleDialError).
+	db.metrics.countConnectionFailure()
+	if db.logger != nil {
+		db.logger.Warn("fdbgo: connection to server failed", "address", addr)
+	}
 }
 
 // dbInfoEqual returns true if two DBInfo have identical proxy lists.

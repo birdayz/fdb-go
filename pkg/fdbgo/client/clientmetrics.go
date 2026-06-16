@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync/atomic"
+	"time"
 )
 
 // ClientMetrics holds the per-Database transaction counters — the operational
@@ -67,6 +68,54 @@ type ClientMetrics struct {
 	// re-panicked N× in a row." Both are Go-only (C++ has no goroutine model).
 	recoveredPanics               atomic.Int64
 	recoveredPanicsConsecutiveMax atomic.Int64
+
+	// clientConnectionFailures and coordinatorChanges (RFC-114) are Go-only
+	// observability — C++ has no DatabaseContext CounterCollection twin; it emits
+	// connection-lifecycle TraceEvents and drives IFailureMonitor. The precedent
+	// for a Go-only observability counter is recoveredPanics above. Incremented at
+	// the single connection-failure sink (handleConnError, topology.go) and on a
+	// followed coordinator forward (topology.go) respectively.
+	clientConnectionFailures atomic.Int64
+	coordinatorChanges       atomic.Int64
+
+	// Latency distributions (RFC-114) — ports of DatabaseContext's
+	// DDSketch<double> members, sampled in SECONDS to match C++ now()-as-double.
+	// Each zero value is ready to use (lazy bucket map), so no constructor.
+	readLatency   latencySketch // GetValue round-trip       (C++ readLatencies,   NativeAPI.actor.cpp:3698)
+	commitLatency latencySketch // commit round-trip          (C++ commitLatencies, :6681)
+	grvLatency    latencySketch // GRV round-trip             (C++ GRVLatencies,    :7417)
+	totalLatency  latencySketch // commit: now-creationTime   (C++ latencies,       :6682)
+}
+
+// observeReadLatency/Commit/GRV/Total record one latency sample (RFC-114). nil-safe
+// for hand-constructed test databases is unnecessary — the sketches are value
+// fields of ClientMetrics, always present.
+func (m *ClientMetrics) observeReadLatency(d time.Duration)   { m.readLatency.addSample(d.Seconds()) }
+func (m *ClientMetrics) observeCommitLatency(d time.Duration) { m.commitLatency.addSample(d.Seconds()) }
+func (m *ClientMetrics) observeGRVLatency(d time.Duration)    { m.grvLatency.addSample(d.Seconds()) }
+func (m *ClientMetrics) observeTotalLatency(d time.Duration)  { m.totalLatency.addSample(d.Seconds()) }
+
+// countConnectionFailure records one connection/dial failure (RFC-114), the
+// single sink handleConnError routes through.
+func (m *ClientMetrics) countConnectionFailure() { m.clientConnectionFailures.Add(1) }
+
+// countCoordinatorChange records one followed coordinator forward (RFC-114).
+func (m *ClientMetrics) countCoordinatorChange() { m.coordinatorChanges.Add(1) }
+
+// LatencyStats is a point-in-time summary of one latency distribution (RFC-114),
+// in SECONDS. Unlike the monotonic counters, these are instantaneous distribution
+// reads — diffing two snapshots is not meaningful. Median/P90/P99 are DDSketch
+// quantiles (±0.5% relative error). C++ emits p90/p98 only for the aggregate
+// transaction latency; Go exposes per-category median/p90/p99 — a local-metric
+// superset (p99 is the conventional Prometheus tail, vs C++'s trace-only p98).
+type LatencyStats struct {
+	Count  int64
+	Sum    float64 // seconds — the summary _sum (and Mean = Sum/Count)
+	Mean   float64
+	Median float64 // p50
+	P90    float64
+	P99    float64
+	Max    float64
 }
 
 // countRecoveredPanic records one recovered background-goroutine panic (RFC-110)
@@ -159,6 +208,15 @@ type ClientMetricsSnapshot struct {
 
 	RecoveredPanics               int64 // RFC-110: panics recovered by the goroutine backstop
 	RecoveredPanicsConsecutiveMax int64 // RFC-110: high-water of any loop's consecutive-panic streak
+
+	ClientConnectionFailures int64 // RFC-114: connection/dial failures (Go-only observability)
+	CoordinatorChanges       int64 // RFC-114: followed coordinator forwards (Go-only observability)
+
+	// Latency distributions (RFC-114), seconds. Instantaneous reads, not monotonic.
+	ReadLatency        LatencyStats // GetValue round-trip
+	CommitLatency      LatencyStats // commit round-trip
+	GRVLatency         LatencyStats // GRV round-trip
+	TransactionLatency LatencyStats // total transaction latency (C++ "latencies")
 }
 
 // Snapshot returns a point-in-time copy of all counters.
@@ -185,6 +243,14 @@ func (m *ClientMetrics) Snapshot() ClientMetricsSnapshot {
 
 		RecoveredPanics:               m.recoveredPanics.Load(),
 		RecoveredPanicsConsecutiveMax: m.recoveredPanicsConsecutiveMax.Load(),
+
+		ClientConnectionFailures: m.clientConnectionFailures.Load(),
+		CoordinatorChanges:       m.coordinatorChanges.Load(),
+
+		ReadLatency:        m.readLatency.stats(),
+		CommitLatency:      m.commitLatency.stats(),
+		GRVLatency:         m.grvLatency.stats(),
+		TransactionLatency: m.totalLatency.stats(),
 	}
 }
 
