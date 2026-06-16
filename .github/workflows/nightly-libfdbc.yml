@@ -22,8 +22,11 @@ on:
   workflow_dispatch: # manual trigger
 
 concurrency:
-  group: libfdbc-differential-${{ github.ref }}
-  cancel-in-progress: true
+  # Qualify scheduled runs with run_id so a master push (same refs/heads/master ref)
+  # can never cancel the nightly gold-gate run. Only PR iterations cancel-in-progress;
+  # every master push (merge) is gated to completion.
+  group: libfdbc-differential-${{ github.event_name == 'schedule' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   libfdbc-differential:

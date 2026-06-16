@@ -15,17 +15,30 @@ on:
   workflow_dispatch:
 
 concurrency:
+  # Only PR iterations cancel-in-progress; every master push is gated to completion.
   group: pr-fuzz-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   oracle-fuzz-smoke:
     name: Wire encode/decode fuzz smoke (20s/target)
     runs-on: [self-hosted, linux, x64, hetzner]
     timeout-minutes: 25
+    env:
+      # The repo has a go.work; the bare `go test` below must NOT resolve a different
+      # module graph than Bazel built the oracle with (matches nightly-libfdbc.yml).
+      GOWORK: "off"
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Check Docker (the oracle build genrule runs `docker run`)
+        # //cmd/fdb-diff-oracle:diff_oracle_bin builds via a `docker run` genrule, so a
+        # cold-cache build needs the Docker daemon. Per-PR hits the daytime box where the
+        # oracle may not be warm; fail loud with a clear message instead of a confusing
+        # genrule error deep in the build step.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the fdb-diff-oracle build genrule (docker run) needs it"; exit 1; }
 
       - name: Build C++ oracle
         run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
@@ -48,9 +61,11 @@ jobs:
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -count=1 ./cmd/fdb-diff-oracle/
 
       - name: Fuzz every oracle-compared type (20s each — smoke)
-        # Discover EVERY Fuzz* (same no-op guard as the nightly job); 20s/target keeps a
-        # ~17-target run near 6 minutes. A new corpus entry that crashes still reproduces
-        # quickly here.
+        # Discover EVERY Fuzz* (same no-op guard as the nightly job). 20s/target is ~6min
+        # of fuzzing across ~17 targets, but each target is a separate `go test`
+        # process (compile + corpus replay), so real wall time is ~10-15min — hence the
+        # 25-min job timeout. The deterministic seed-corpus replay (TestDiff above) is
+        # what reliably catches a reproducible regression; the 20s is exploratory smoke.
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
