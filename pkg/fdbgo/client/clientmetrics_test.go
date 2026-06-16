@@ -586,3 +586,39 @@ func TestFDB_Metrics_PipelinedReadLatencySampled(t *testing.T) {
 		t.Errorf("ReadLatency.Max = %g, want > 0", s.ReadLatency.Max)
 	}
 }
+
+// TestFDB_Metrics_TransactionLatencyResetsOnReuse pins RFC-114's metricStart reuse
+// boundary (codex catch): a Transaction reused after a successful commit measures the
+// NEXT transaction fresh, excluding the idle gap before it begins. Revert-proof: drop
+// the postCommitReset clear (or the first-GRV re-stamp) and commit2 folds in the sleep.
+func TestFDB_Metrics_TransactionLatencyResetsOnReuse(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const idle = 400 * time.Millisecond
+	tx := db.CreateTransaction()
+	tx.Set([]byte(t.Name()+"_a"), []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit1: %v", err)
+	}
+	base := db.Metrics()
+	time.Sleep(idle)                           // idle gap that must NOT be charged to the reused transaction
+	tx.Set([]byte(t.Name()+"_b"), []byte("v")) // reuse the same (auto-reset) handle
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit2 (reuse): %v", err)
+	}
+	s := db.Metrics()
+
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
+		t.Fatalf("TransactionLatency.Count delta = %d, want 1 (the reused commit)", d)
+	}
+	// Both samples (commit1 + commit2) are fast commits; the cumulative Max must stay
+	// well under the idle gap. If the reuse boundary were broken, commit2 would measure
+	// ≈ idle and Max would cross it.
+	if s.TransactionLatency.Max >= idle.Seconds() {
+		t.Errorf("TransactionLatency.Max = %gs, want < %gs (reused txn folded in the idle gap)", s.TransactionLatency.Max, idle.Seconds())
+	}
+}

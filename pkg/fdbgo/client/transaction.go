@@ -188,6 +188,15 @@ type Transaction struct {
 	deadline     time.Time
 	creationTime time.Time // set on construction and user Reset(), NOT on OnError retry
 
+	// metricStart anchors the RFC-114 total-transaction-latency sample. Kept SEPARATE
+	// from creationTime (which anchors the timeout deadline) so the metric boundary
+	// moves on commit-reuse without disturbing timeout semantics. Stamped lazily at the
+	// transaction's first GRV (ensureReadVersion, ≈ C++ trState->startTime), CLEARED on
+	// commit-reuse (postCommitReset) so the next transaction re-stamps fresh, but — like
+	// creationTime — NOT reset on OnError, so total latency still spans retries (the
+	// documented divergence from C++, which resets per attempt).
+	metricStart time.Time
+
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
 	// when retryCount >= retryLimit.
 	retryLimit    int
@@ -560,6 +569,14 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		return err
 	}
 	tx.readVersionMu.Lock()
+	if tx.metricStart.IsZero() {
+		// RFC-114 total-latency anchor: stamp at this transaction's FIRST GRV (the
+		// first read, or the commit-path GRV for a write-only txn) — ≈ C++
+		// trState->startTime, set at getReadVersion. Cleared on commit-reuse
+		// (postCommitReset), NOT on OnError, so it spans retries but excludes the
+		// idle gap before a reused handle's next transaction begins.
+		tx.metricStart = time.Now()
+	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
 		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
@@ -837,11 +854,15 @@ func (p *PendingGet) resolve() ([]byte, error) {
 			return p.resolveFull()
 		}
 		// RFC-114: pipelined GetValue round-trip latency — the path the fdb facade
-		// Get routes through. Sampled on a successful reply only (mirroring the sync
-		// getValue sample); the wrong-shard/transport/flush/timeout arms re-drive
-		// through getValue, which samples there, so a read is counted exactly once.
-		if err == nil && p.tx.db != nil {
-			p.tx.db.metrics.observeReadLatency(time.Since(p.sentAt))
+		// Get routes through. Measured from send (sentAt) to reply DELIVERY
+		// (resp.RecvAt, stamped by the read loop), NOT to Resolve-call time — so a
+		// caller that batches GetPipelined and resolves the futures later records the
+		// true RPC round-trip, not its own future-wait (the async-facade case). Sampled
+		// on a successful reply only (mirroring the sync getValue sample); the
+		// wrong-shard/transport/flush/timeout arms re-drive through getValue, which
+		// samples there, so a read is counted exactly once.
+		if err == nil && p.tx.db != nil && !resp.RecvAt.IsZero() {
+			p.tx.db.metrics.observeReadLatency(resp.RecvAt.Sub(p.sentAt))
 		}
 		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
 		// C++ read future; this is its final outcome.
@@ -1476,16 +1497,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
 	// now-creationTime (C++ latencies, :6682). Read-only txns return at the fast
 	// path above and never reach here, so they contribute to neither — matching C++.
-	// Divergence (documented in RFC-114): creationTime is NOT reset on OnError retry,
+	// Divergence (documented in RFC-114): metricStart is NOT reset on OnError retry,
 	// so total latency spans all retries (whole-transaction wall-clock), whereas C++
 	// resets trState->startTime per attempt and measures only the current attempt's
-	// GRV→commit. Identical for a no-retry commit (the common case).
+	// GRV→commit. Identical for a no-retry commit (the common case). metricStart is
+	// re-anchored on commit-reuse (postCommitReset), so a reused handle measures only
+	// the transaction that just committed, not the prior one.
 	if tx.db != nil {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
 		now := time.Now()
 		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
-		if !tx.creationTime.IsZero() {
-			tx.db.metrics.observeTotalLatency(now.Sub(tx.creationTime))
+		if !tx.metricStart.IsZero() {
+			tx.db.metrics.observeTotalLatency(now.Sub(tx.metricStart))
 		}
 	}
 
@@ -2275,6 +2298,13 @@ func (tx *Transaction) postCommitReset() {
 	tx.pendingReads = nil
 	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
+	// RFC-114: a committed, auto-reset handle begins a NEW logical transaction, so
+	// CLEAR the total-latency anchor — the next transaction re-stamps it at ITS first
+	// GRV (ensureReadVersion), excluding any idle gap before its first op. (creationTime/
+	// deadline are deliberately left alone — this is the metric boundary, not a timeout
+	// reset.) Without this, a reused handle's next commit would measure from the prior
+	// transaction's start, folding in its work + the idle time between them.
+	tx.metricStart = time.Time{}
 	// committedVersion and txnBatchId preserved intentionally.
 }
 

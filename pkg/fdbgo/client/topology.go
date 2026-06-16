@@ -167,13 +167,19 @@ func (db *database) handleConnError(addr string) {
 		delete(db.connPool, addr)
 	}
 	db.connMu.Unlock()
+	db.recordConnFailure(addr)
+}
+
+// recordConnFailure marks an endpoint failed and makes the failure observable
+// (RFC-114). It is the SINGLE observability sink for endpoint failures: the COUNTER
+// ticks on every event (the rate signal, like logRetryEvent's counter), but the Warn
+// is edge-triggered on the alive→failed transition so a flapping or down peer hit by
+// the ~18 retry arms doesn't melt the log (the storm-hygiene rule logRetryEvent
+// follows; one Warn per failure episode, re-armed by markAlive). Every failure path
+// routes here — handleConnError (after pool eviction) and the GRV proxy-timeout path
+// (sendGRVRequest) — so none is invisible.
+func (db *database) recordConnFailure(addr string) {
 	newlyFailed := db.failMon.markFailed(addr)
-	// RFC-114: make the failure visible. This is the single sink both
-	// handleConnError and a live-ctx handleDialError route through. The COUNTER
-	// ticks on every event (the rate signal, like logRetryEvent's counter), but
-	// the Warn is edge-triggered on the alive→failed transition so a flapping or
-	// down peer hit by ~18 retry arms doesn't melt the log (the storm-hygiene rule
-	// logRetryEvent follows; one Warn per failure episode, re-armed by markAlive).
 	db.metrics.countConnectionFailure()
 	if newlyFailed && db.logger != nil {
 		db.logger.Warn("fdbgo: connection to server failed", "address", addr)

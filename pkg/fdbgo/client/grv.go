@@ -659,7 +659,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				if ctx.Err() != nil {
 					return 0, false, false, false, nil, 0, ctx.Err()
 				}
-				db.failMon.markFailed(proxy.Address)
+				// RFC-114: a GRV proxy that stops replying (TCP may stay open) is a
+				// real endpoint failure — route through the observability sink so it
+				// counts + Warns like any other conn failure, not a silent markFailed.
+				db.recordConnFailure(proxy.Address)
 				continue
 			}
 			replyHandle.Release()
