@@ -514,6 +514,18 @@ func FuzzGetReadVersionReply(f *testing.F) {
 	})
 }
 
+// inlineErrorCode mirrors the C++ oracle (cpp/main.cpp:541-543): the inline reply Error
+// code is the first 2 bytes of the fuzz errorData as a little-endian uint16 (0 if fewer
+// than 2 bytes). RFC-115 §6 changed the reply Error field from Optional<bytes> to the
+// Optional<Error> union, so the Go side must build types.Error{ErrorCode} exactly the way
+// the oracle does Error(code) — keeping the differential structural-equal.
+func inlineErrorCode(errorData []byte) uint16 {
+	if len(errorData) >= 2 {
+		return binary.LittleEndian.Uint16(errorData)
+	}
+	return 0
+}
+
 // 8. GetValueReply
 func FuzzGetValueReply(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
@@ -541,7 +553,7 @@ func FuzzGetValueReply(f *testing.F) {
 		goMsg := &types.GetValueReply{Penalty: penalty, Cached: cached}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		if hasValue {
 			goMsg.HasValue = true
@@ -585,7 +597,7 @@ func FuzzGetKeyReply(f *testing.F) {
 		goMsg := &types.GetKeyReply{Penalty: penalty, Cached: cached}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		goBytes := goMsg.MarshalFDB()
 
@@ -635,7 +647,7 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 		}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		goBytes := goMsg.MarshalFDB()
 
