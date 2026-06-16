@@ -97,9 +97,13 @@ transaction options (`SetDebugTransactionIdentifier`, `SetLogTransaction`, `SetT
 correlate a slow Go transaction into FDB's own trace events. (The RFC-109 `libfdb_c` backend *does*
 forward these — the escape hatch restores tracing the pure-Go client lacks.)
 
-### SERIOUS — degraded-cluster behavior diverges from `libfdb_c` (availability/latency, not corruption)
+### SERIOUS — degraded-cluster behavior (availability/latency, not corruption)
 
-**4. Unbounded `GetRange` materializes the whole result → OOM, not a clean error.** *(verified)*
+*(Divergence status differs per item: #5 is a true `libfdb_c` divergence; #4 is a hazard **shared with**
+the cgo oracle, not a divergence; #6a is unconfirmed.)*
+
+**4. Unbounded `GetRange` materializes the whole result → OOM (a hazard shared with `libfdb_c`, not a
+divergence).** *(verified)*
 `getRangeImpl` (`client/readpath.go:584`) sets `remaining = math.MaxInt` when `limit<=0`
 (`readpath.go:592`) and accumulates every shard into one `allKVs` slice (`readpath.go:679`) with no
 total byte/row ceiling; the common facade path `GetSliceWithError` ignores `StreamingMode` and uses
@@ -182,8 +186,12 @@ the client — remains open.)
    high-value, pairs with #1.
 
 **R2-SERIOUS — degraded-cluster correctness of behavior:**
-3. **Bound `GetRange` against OOM.** A configurable total-byte ceiling that returns a clean error (or
-   transparently forces the bounded iterator) above the cap; fix the misleading `RangeOptions.Mode` doc.
+3. **Bound `GetRange` against OOM — without changing default behavior.** This is a hazard shared with
+   the cgo oracle (whose `GetSliceWithError` also materializes unbounded), **not** a divergence to
+   "fix" — so the default must stay oracle-matching. Deliverables: (a) fix the misleading
+   `RangeOptions.Mode` doc and point users at the bounded `Iterator()`; (b) offer any total-byte/row
+   ceiling as an **opt-in** option (off by default) that errors above the cap. Do **not** make the
+   default `GetSliceWithError` return a clean "too big" error — that would diverge from the cgo oracle.
 4. **Consult the failure monitor in load-balancing.** Filter `chooseServer`/`chooseTopTwo` candidates
    through `failMon.isFailed` before the QueueModel, matching C++ `loadBalance`.
 5. **Coordinator quorum — verify, don't pre-commit (finding #6a).** First confirm whether the libfdb_c
