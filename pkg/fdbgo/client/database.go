@@ -532,10 +532,22 @@ func (db *database) bootstrap(ctx context.Context) error {
 }
 
 // tryAllCoordinators races all coordinators in parallel, returning the first
-// successful response. This is a deliberate divergence from C++, whose
-// monitorProxiesOneGeneration (MonitorLeader.actor.cpp) probes coordinators
-// SEQUENTIALLY round-robin; racing them is benign (same outcome — first success
-// wins — and faster) and never contacts more than the coordinator set.
+// successful response.
+//
+// First-reply-wins is C++-FAITHFUL, not a divergence. The libfdb_c client adopts
+// cluster topology on the FIRST successful coordinator reply, NOT on a majority
+// quorum: monitorProxiesOneGeneration probes coordinators round-robin and adopts
+// the first successful OpenDatabaseCoordRequest reply (MonitorLeader.actor.cpp:919-937);
+// the `majority` bool that getLeader() computes (:578, `bestCount >= nominees.size()/2+1`)
+// is SERVER-SIDE leader-election metadata and does NOT gate the client's topology
+// adoption (monitorLeaderOneGeneration calls getLeader() on whatever nominees have
+// arrived, with no quorum wait, :604/:634). Adding a coordinator quorum here would
+// make Go STRICTER than libfdb_c — a conformance violation, not a robustness fix
+// (RFC-115 §3, FDB-C-dev verified). The ONLY Go-vs-C++ difference is the probing
+// shape: Go races the set in parallel where C++ goes sequential round-robin — benign
+// (identical first-success outcome, lower latency) and never contacts more than the
+// coordinator set. (Cluster-file re-read stays failure-gated to match C++'s
+// allConnectionsFailed path, :888-900 — RFC-111; do not add a periodic timer.)
 func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, error) {
 	if snap == nil || len(snap.Coordinators) == 0 {
 		// Defensive — production cluster-file parsing rejects empty

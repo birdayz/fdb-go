@@ -300,3 +300,13 @@ path is identical to Java, only the execute-then-throw side effect differs.
 | Leader-election (`getLeader`) forward path | Present | N/A | The Go client uses only `OpenDatabaseCoordRequest`; the leader-nominee RPC path does not exist here. |
 | IPv6 coordinator re-rendering | Canonicalized via boost `address_v6::to_string` in `toString` | Re-emitted verbatim from the stored token | Unreachable on real inputs (forward/file strings are always `toString()`-normalized); only a hand-written uppercase/expanded IPv6 in a user file would round-trip differently — and Go-accept ⊆ C++-accept still holds. |
 | `atomicReplace` chown error | Hard-fails the whole replace; original file untouched | Keeps the write (mode already preserved → still parseable); only ownership may differ | Best-effort chown suits a client lib; chown-to-self (single-service-user deployment) always succeeds, so they match in practice. |
+| Coordinator probing shape | Sequential round-robin (`monitorProxiesOneGeneration`) | Parallel race (`tryAllCoordinators`) | Benign: identical first-success outcome, lower latency; never contacts more than the coordinator set. |
+
+**Coordinator topology adoption is a CONFIRMED NON-divergence (RFC-115 §3, FDB-C-dev verified).** The
+libfdb_c client adopts cluster topology on the **first successful** coordinator reply, **not** a majority
+quorum: `monitorProxiesOneGeneration` adopts the first successful `OpenDatabaseCoordRequest`
+(`MonitorLeader.actor.cpp:919-937`), and the `majority` bool in `getLeader()` (`:578`) is server-side
+leader-election metadata, not a client adoption gate (`monitorLeaderOneGeneration` calls `getLeader()`
+with no quorum wait, `:604`/`:634`). Go's first-reply-wins therefore **matches** C++ semantics; adding a
+quorum would make Go *stricter* than libfdb_c — a conformance violation. (Cluster-file re-read is
+failure-gated in both, `:888-900` — RFC-111.)
