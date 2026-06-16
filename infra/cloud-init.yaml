@@ -8,7 +8,22 @@ packages:
   - git
   - jq
 
+# This box is 7.6 GB RAM with the FDB-container suite running at --local_test_jobs=4
+# (each test spawns a multi-GB FDB server). With NO swap, a memory spike OOM-kills test
+# processes and can wedge the whole runner — zero headroom (observed: 10 OOM-kills in a
+# 42-day session, culminating in an sshd-starving wedge). A swap file converts those fatal
+# OOM-kills into survivable slowdowns; swappiness=10 keeps tests on RAM until real pressure
+# so the common path stays fast. NOTE: this only buys headroom — for real capacity, bump
+# server_type (e.g. cx33 -> a 16 GB type) or lower --local_test_jobs.
+swap:
+  filename: /swapfile
+  size: 4294967296 # 4 GiB
+
 write_files:
+  - path: /etc/sysctl.d/99-ci-swap.conf
+    content: |
+      vm.swappiness=10
+
   - path: /etc/docker/daemon.json
     content: |
       {"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}

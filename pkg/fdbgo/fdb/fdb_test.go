@@ -1122,6 +1122,54 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 		t.Fatal("expected at least one boundary key")
 	}
 	t.Logf("got %d boundary keys", len(keys))
+
+	// readVersion is honored (RFC-111 P1.6): reading the \xFF/keyServers/ range AT
+	// a fetched read version returns without error and yields the same boundaries on
+	// a quiescent cluster — proving the supplied version is threaded into the
+	// boundary read (the old impl ignored it and hit the location cache).
+	rvAny, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		return tr.GetReadVersion().Get()
+	})
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	rv := rvAny.(int64)
+	pinned, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, 100, rv)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys(readVersion=%d): %v", rv, err)
+	}
+	if len(pinned) != len(keys) {
+		t.Fatalf("pinned-version boundaries (%d) != fresh (%d) on a quiescent cluster", len(pinned), len(keys))
+	}
+
+	// Discriminating proof the readVersion is actually threaded into the boundary
+	// read (not ignored): an ancient version (1, far below the MVCC floor) must
+	// FAIL — client-side validateVersion / the storage server rejects it with
+	// transaction_too_old (1007). With the old impl (readVersion ignored, location
+	// cache) this would spuriously succeed. There is no Transact retry wrapper
+	// here, so the error surfaces immediately instead of being retried away.
+	if _, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, 100, 1); err == nil {
+		t.Fatal("LocalityGetBoundaryKeys(readVersion=1) succeeded — the ancient version was ignored, not threaded into the read")
+	} else {
+		t.Logf("ancient readVersion=1 correctly rejected: %v", err)
+	}
+
+	// A negative limit means "unlimited" (range-read semantics) and must NOT panic
+	// via make([]Key, negative) (codex). It must equal limit=0 (also unlimited) —
+	// compared against a fresh limit=0 baseline, not the limit=100 `keys` above,
+	// which would differ on a cluster with >100 boundaries (codex).
+	full := fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}
+	unlimited, err := db.LocalityGetBoundaryKeys(full, 0, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys(limit=0): %v", err)
+	}
+	neg, err := db.LocalityGetBoundaryKeys(full, -1, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys(limit=-1): %v", err)
+	}
+	if len(neg) != len(unlimited) {
+		t.Fatalf("negative limit (%d boundaries) should equal limit=0 unlimited (%d)", len(neg), len(unlimited))
+	}
 }
 
 func TestGetClientStatus(t *testing.T) {
@@ -2127,9 +2175,7 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetReportConflictingKeys()).NotTo(HaveOccurred())
 	g.Expect(opts.SetSpecialKeySpaceRelaxed()).NotTo(HaveOccurred())
 	g.Expect(opts.SetSpecialKeySpaceEnableWrites()).NotTo(HaveOccurred())
-	g.Expect(opts.SetRawAccess()).NotTo(HaveOccurred())
 	g.Expect(opts.SetBypassUnreadable()).NotTo(HaveOccurred())
-	g.Expect(opts.SetAutomaticIdempotency()).NotTo(HaveOccurred())
 	g.Expect(opts.SetDebugRetryLogging("test")).NotTo(HaveOccurred())
 	g.Expect(opts.SetIncludePortInAddress()).NotTo(HaveOccurred())
 	g.Expect(opts.SetCausalReadDisable()).NotTo(HaveOccurred())
@@ -2149,7 +2195,6 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetUseProvisionalProxies()).NotTo(HaveOccurred())
 	g.Expect(opts.SetBypassStorageQuota()).NotTo(HaveOccurred())
 	g.Expect(opts.SetInitializeNewDatabase()).NotTo(HaveOccurred())
-	g.Expect(opts.SetAuthorizationToken("token")).NotTo(HaveOccurred())
 	g.Expect(opts.SetSpanParent([]byte{1, 2, 3})).NotTo(HaveOccurred())
 	g.Expect(opts.SetExpensiveClearCostEstimationEnable()).NotTo(HaveOccurred())
 
@@ -2162,6 +2207,26 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetTag("test-tag")).NotTo(HaveOccurred())
 	g.Expect(opts.SetSizeLimit(10_000_000)).NotTo(HaveOccurred())
 	g.Expect(opts.SetMaxRetryDelay(1000)).NotTo(HaveOccurred())
+
+	// Options that fail UNSAFE if silently ignored (RFC-111 P1.3): the pure-Go
+	// backend rejects them with UnsupportedOptionError rather than the old silent
+	// no-op (a migration trap — e.g. an ignored auth token = auth bypass). The
+	// libfdb_c backend still forwards them.
+	for _, tc := range []struct {
+		name string
+		set  func() error
+	}{
+		{"authorization_token", func() error { return opts.SetAuthorizationToken("token") }},
+		{"raw_access", opts.SetRawAccess},
+		{"automatic_idempotency", opts.SetAutomaticIdempotency},
+	} {
+		err := tc.set()
+		g.Expect(err).To(HaveOccurred(), tc.name+" must reject, not silently no-op")
+		var uoe *fdb.UnsupportedOptionError
+		g.Expect(errors.As(err, &uoe)).To(BeTrue(), tc.name+" must return *fdb.UnsupportedOptionError")
+		g.Expect(uoe.Option).To(Equal(tc.name))
+		g.Expect(uoe.FDBCode()).To(Equal(2007))
+	}
 }
 
 // TestSnapshotGetKey verifies that snapshot GetKey works with key selectors.

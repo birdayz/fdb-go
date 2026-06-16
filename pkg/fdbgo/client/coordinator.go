@@ -11,10 +11,10 @@ import (
 
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
 // and returns the parsed ClientDBInfo with proxy addresses and tokens.
-func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, addr string) (*DBInfo, error) {
+func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, snap *ClusterFile, addr string) (*DBInfo, error) {
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body := buildOpenDatabaseCoordRequest(db.clusterFile, replyToken)
+	body := buildOpenDatabaseCoordRequest(snap, replyToken)
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {
@@ -130,6 +130,14 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 		if err == nil {
 			info.ID = parseUID(idR)
 		}
+	}
+
+	// forward (Optional<Value>): when present, the coordinators handed back a new
+	// connection string instead of proxies (a `coordinators auto`/`change`
+	// rotation). Read exactly as types.ClientDBInfo.UnmarshalFromReader does —
+	// slot-3 presence tag + slot-4 value (RFC-111 §3).
+	if r.FieldPresent(types.ClientDBInfoSlotForward) && r.ReadUint8(types.ClientDBInfoSlotForward) > 0 {
+		info.Forward = string(r.ReadBytes(types.ClientDBInfoSlotForward + 1))
 	}
 
 	return info, nil

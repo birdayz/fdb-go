@@ -72,15 +72,6 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	internalClusterKey := internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			internalClusterKey += ","
-		}
-		internalClusterKey += a
-	}
-	t.Logf("internal cluster key: %s", internalClusterKey)
-	connectCF.InternalKey = internalClusterKey
 
 	// Create database and connect.
 	db, err := OpenDatabaseFromConfig(ctx, connectCF)
@@ -318,15 +309,6 @@ func TestGetRange(t *testing.T) {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	internalClusterKey := internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			internalClusterKey += ","
-		}
-		internalClusterKey += a
-	}
-	connectCF.InternalKey = internalClusterKey
-
 	db, err := OpenDatabaseFromConfig(ctx, connectCF)
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)

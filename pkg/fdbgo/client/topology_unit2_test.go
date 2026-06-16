@@ -197,7 +197,7 @@ func TestTopologyMonitor_ShutsDownOnCtxDone(t *testing.T) {
 		proxiesChanged: make(chan struct{}),
 		failMon:        newFailureMonitor(),
 		connPool:       make(map[string]*transport.Conn),
-		clusterFile:    &ClusterFile{Coordinators: nil},
+		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil),
 	}
 	// Seed dbInfo so refreshTopology has something to compare against.
 	// With Coordinators: nil, tryAllCoordinators returns an
@@ -233,7 +233,7 @@ func TestTopologyMonitor_ConsumesKickWithoutBlocking(t *testing.T) {
 		proxiesChanged: make(chan struct{}),
 		failMon:        newFailureMonitor(),
 		connPool:       make(map[string]*transport.Conn),
-		clusterFile:    &ClusterFile{Coordinators: nil}, // tryAllCoordinators returns error → refreshTopology no-ops
+		connRecord:     newConnRecord(&ClusterFile{Coordinators: nil}, "", nil), // tryAllCoordinators errors → refreshTopology no-ops
 	}
 	db.dbInfo.Store(&DBInfo{})
 

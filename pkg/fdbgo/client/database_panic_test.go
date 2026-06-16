@@ -62,7 +62,8 @@ func TestTryOneCoordinator_PanicReturnsError(t *testing.T) {
 		connPool: make(map[string]*transport.Conn),
 		dialFn:   panicDialFn,
 	}
-	if _, err := db.tryOneCoordinator(context.Background(), "127.0.0.1:4500"); err == nil {
+	snap := &ClusterFile{Coordinators: []string{"127.0.0.1:4500"}}
+	if _, err := db.tryOneCoordinator(context.Background(), snap, "127.0.0.1:4500"); err == nil {
 		t.Fatal("tryOneCoordinator returned nil err for a panicking dial — the fast path would crash the host")
 	}
 }

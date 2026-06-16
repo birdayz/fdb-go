@@ -8,6 +8,11 @@ const (
 	topologySteadyInterval = 5 * time.Second        // background poll when idle
 	topologyRapidInterval  = 200 * time.Millisecond // fast retry after a kick
 	topologyRapidBurst     = 10                     // rapid refreshes before reverting
+	// maxForwardHops bounds a pathological coordinator-forward cycle (RFC-111 §5).
+	// C++ has no hop bound (actor fair-scheduling paces it); a Go tight loop needs
+	// one. Reset on every successful non-forward connect, so a legitimate long
+	// rotation chain still progresses.
+	maxForwardHops = 10
 )
 
 // topologyMonitor periodically refreshes the cluster topology from coordinators.
@@ -66,13 +71,61 @@ func (db *database) kickTopology() {
 }
 
 // refreshTopology races all coordinators in parallel to fetch fresh ClientDBInfo.
-// On success, atomically swaps dbInfo if proxies changed.
+// On success, atomically swaps dbInfo if proxies changed. It also follows a
+// coordinator-set rotation: a forwarded connection string (Path A) or, when every
+// coordinator is unreachable, an externally-rewritten cluster file (Path B) — so a
+// `coordinators auto`/`change` no longer strands the client (RFC-111).
 func (db *database) refreshTopology() {
-	newInfo, err := db.tryAllCoordinators(db.ctx)
+	snap := db.connRecord.get()
+	newInfo, err := db.tryAllCoordinators(db.ctx, snap)
 	if err != nil {
+		// Path B: all coordinators unreachable — adopt a rotated set from the file.
+		if db.connRecord.adoptStoredIfChanged() {
+			db.kickTopology()
+		}
 		return
 	}
+	if newInfo.Forward != "" {
+		// Path A: a coordinator forwarded us to a new set. Adopt + re-poll now.
+		if db.followForward(snap, newInfo.Forward) {
+			db.kickTopology()
+		}
+		return
+	}
+	db.forwardHops = 0
+	// The new coordinators answered with real proxies — now safe to persist a
+	// forward we adopted in memory on a previous round (deferred-persist, Path A).
+	db.connRecord.persistIfDirty()
 	db.applyDBInfo(newInfo)
+}
+
+// followForward adopts a forwarded connection string (RFC-111 Path A). Returns
+// true when a new, distinct coordinator set was adopted (the caller should re-poll
+// immediately). It refuses (returns false) an unparseable or zero-coordinator
+// forward (port of C++ ASSERT getNumberOfCoordinators() > 0,
+// MonitorLeader.actor.cpp:946 — a soft reject, never a panic) and a degenerate
+// self-forward, and stops following once forwardHops exceeds maxForwardHops to
+// bound a pathological A->B->A cycle (Go-only divergence; C++ relies on actor
+// fair-scheduling). forwardHops is written only by the single active follow path
+// (bootstrap, then exclusively this monitor goroutine), so no atomic is needed.
+func (db *database) followForward(old *ClusterFile, fwd string) bool {
+	newCF, err := ParseClusterString(fwd)
+	if err != nil || len(newCF.Coordinators) == 0 {
+		db.logger.Warn("fdbgo: ignoring invalid coordinator forward", "forward", fwd, "error", err)
+		return false
+	}
+	if newCF.String() == old.String() {
+		return false // degenerate self-forward — not a real change
+	}
+	if db.forwardHops >= maxForwardHops {
+		db.logger.Warn("fdbgo: coordinator forward chain exceeded bound; backing off",
+			"hops", db.forwardHops, "forward", fwd)
+		return false
+	}
+	db.forwardHops++
+	db.connRecord.setInMemory(newCF) // persisted by persistIfDirty after we connect to the new set
+	db.logger.Info("fdbgo: followed coordinator forward", "from", old.String(), "to", newCF.String())
+	return true
 }
 
 // applyDBInfo replaces dbInfo and broadcasts the proxy-changed channel

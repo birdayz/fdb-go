@@ -533,13 +533,20 @@ func isTrackableReadError(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	if err := tx.checkCancelled(); err != nil {
 		return err
 	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
+	// Bound the GRV by the SetTimeout deadline too: the GRV is the first read RPC
+	// every transaction issues, and a hung-but-alive GRV proxy must not run past
+	// the timeout (RFC-112; the C++ analog is RYWImpl::getReadVersion's
+	// `choose { getReadVersion() | resetPromise }`, ReadYourWrites.actor.cpp:1537).
+	// A deadline-cancelled GRV is surfaced as transaction_timed_out via mapTimeout.
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op surfaces
 	// client_invalid_operation on every subsequent read AND commit (RFC-059). This is the
 	// single uniform gate: all reads (regular + snapshot), Commit, and GetReadVersion fetch a
@@ -558,7 +565,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
-			return err
+			return tx.mapTimeout(parentCtx, err)
 		}
 		// Database-lock enforcement — the C++ extractReadVersion analog
 		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
@@ -687,10 +694,18 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, nil
 	}
 
+	// Bound the locate, the send-loop dials, AND (below) the deferred reply wait by
+	// the SetTimeout deadline (RFC-112): the pipelined path is what the fdb facade
+	// Get routes through, so a hung locate/dial/reply here must honor the timeout.
+	// opCtx must cover the cache-miss locate too — a hung GetKeyServerLocations is
+	// the first RPC of the send phase.
+	opCtx, opCancel := tx.opContext(ctx)
+	defer opCancel() // dials complete within this function; the reply wait uses the timer
+
 	// Locate shard.
-	loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId)
 	if locErr != nil {
-		return nil, nil, fmt.Errorf("locate key: %w", locErr)
+		return nil, nil, tx.mapTimeout(ctx, fmt.Errorf("locate key: %w", locErr))
 	}
 	if len(loc.Servers) == 0 {
 		return nil, nil, fmt.Errorf("no storage servers for key")
@@ -698,9 +713,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 
 	// Send request without waiting for response.
 	for _, server := range loc.Servers {
-		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
+		conn, dialErr := tx.db.getOrDial(opCtx, server.Address)
 		if dialErr != nil {
-			tx.db.handleDialError(ctx, server.Address)
+			tx.db.handleDialError(opCtx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -713,7 +728,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		timer := getTimer(DefaultRPCTimeout)
+		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
 		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
@@ -727,6 +742,13 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		tx.pendingReads[p] = struct{}{}
 		tx.readErrMu.Unlock()
 		return nil, p, nil
+	}
+	// If every dial above failed because the SetTimeout deadline expired (opCtx
+	// cancelled), surface transaction_timed_out (1031) rather than the
+	// non-retryable all_alternatives_failed (1006) — a cold-dial expiry is still a
+	// timeout, matching C++ (the timebomb wins the loadBalance race). RFC-112 (codex).
+	if err := opCtx.Err(); err != nil {
+		return nil, nil, tx.mapTimeout(ctx, err)
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -1799,24 +1821,31 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
 }
 
 // GetLocations returns all shard location entries overlapping [begin, end).
-func (tx *Transaction) GetLocations(ctx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
-	return tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+func (tx *Transaction) GetLocations(parentCtx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
+	ctx, cancel := tx.opContext(parentCtx) // bound by SetTimeout (RFC-112)
+	defer cancel()
+	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+	return locs, tx.mapTimeout(parentCtx, err)
 }
 
 // GetAddressesForKey returns the addresses of storage servers responsible for
 // the given key. Uses the location cache (queries cluster on miss).
-func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]string, error) {
+func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte) ([]string, error) {
 	// A cancelled txn returns transaction_cancelled (1025) — C++ getAddressesForKey races
 	// resetPromise at op entry (ReadYourWrites.actor.cpp:1837); this path bypasses
 	// ensureReadVersion, so gate explicitly (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
 	}
+	// C++ getAddressesForKey is also bounded by the timebomb (resetPromise,
+	// ReadYourWrites.actor.cpp:1843-1848) — bound the locate by SetTimeout (RFC-112).
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
 	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 	if err != nil {
 		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
 		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.
-		return nil, tx.trackReadError(fmt.Errorf("locate key: %w", err))
+		return nil, tx.trackReadError(tx.mapTimeout(parentCtx, fmt.Errorf("locate key: %w", err)))
 	}
 	addrs := make([]string, len(loc.Servers))
 	for i, s := range loc.Servers {

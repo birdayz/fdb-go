@@ -65,6 +65,28 @@ type TransactionOptions interface {
 	SetExpensiveClearCostEstimationEnable() error
 }
 
+// UnsupportedOptionError is returned by the pure-Go backend for a transaction
+// option that alters security / access / idempotency semantics but that the
+// pure-Go client does not model. These fail LOUD instead of the old silent no-op:
+// silently ignoring such an option is a migration trap — e.g. an ignored
+// authorization token means the request is sent unauthenticated (auth bypass), and
+// an ignored raw-access flag means a tenant-scoped read instead of the raw
+// keyspace. The libfdb_c backend forwards these options normally; pure-Go callers
+// that need them must use that backend. Options that fail SAFE when ignored (the
+// causal/durability knobs — ignoring keeps the STRONGER guarantee) remain
+// accepted-but-ignored and are documented in API_PARITY.md. Resolves to FDB
+// invalid_option (2007).
+type UnsupportedOptionError struct{ Option string }
+
+func (e *UnsupportedOptionError) Error() string {
+	return "fdbgo: transaction option " + e.Option + " is not supported by the pure-Go client " +
+		"(silently ignoring it would change security/access semantics; use the libfdb_c backend if you need it)"
+}
+
+// FDBCode reports the FDB error code (invalid_option, 2007) so callers that map on
+// the numeric code treat it like libfdb_c rejecting an option.
+func (e *UnsupportedOptionError) FDBCode() int { return 2007 }
+
 // goTransactionOptions is the pure-Go implementation of TransactionOptions,
 // delegating to the underlying client transaction.
 type goTransactionOptions struct {
@@ -212,7 +234,13 @@ func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
 }
 
 func (o goTransactionOptions) SetRawAccess() error {
-	return nil
+	// Fails unsafe if ignored: raw access bypasses tenant-mode scoping; a silent
+	// no-op would tenant-scope a read meant for the raw keyspace. NOTE: this is
+	// intentionally stricter than libfdb_c, which rejects RAW_ACCESS only when a
+	// tenant is set and otherwise accepts it as a no-op (NativeAPI.actor.cpp). We
+	// reject unconditionally — fail-safe and simpler; a no-tenant caller that set it
+	// defensively gets a clear error rather than a silent mismatch.
+	return &UnsupportedOptionError{Option: "raw_access"}
 }
 
 func (o goTransactionOptions) SetBypassUnreadable() error {
@@ -221,7 +249,10 @@ func (o goTransactionOptions) SetBypassUnreadable() error {
 }
 
 func (o goTransactionOptions) SetAutomaticIdempotency() error {
-	return nil
+	// Fails unsafe if ignored: the caller expects automatic idempotency IDs so a
+	// commit_unknown_result can be safely retried; the pure-Go client does not
+	// generate them, so report it rather than imply a guarantee it can't keep.
+	return &UnsupportedOptionError{Option: "automatic_idempotency"}
 }
 
 func (o goTransactionOptions) SetDebugRetryLogging(_ string) error {
@@ -301,7 +332,9 @@ func (o goTransactionOptions) SetInitializeNewDatabase() error {
 }
 
 func (o goTransactionOptions) SetAuthorizationToken(_ string) error {
-	return nil
+	// Fails unsafe if ignored: the request would be sent UNAUTHENTICATED (auth
+	// bypass / wrong tenant scoping). The most dangerous silent no-op of the set.
+	return &UnsupportedOptionError{Option: "authorization_token"}
 }
 
 func (o goTransactionOptions) SetSpanParent(_ []byte) error {

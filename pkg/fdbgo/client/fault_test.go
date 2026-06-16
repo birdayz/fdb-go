@@ -136,13 +136,6 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
 
 	fd := &faultDialer{}
 	db := newTestDatabase(t, ctx, connectCF, fd.dial)
@@ -353,9 +346,9 @@ func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongSh
 }
 
 // startProxyFDB starts an FDB container and returns a ClusterFile whose
-// Coordinators are the external (dial-through) addresses while
-// InternalKey/Description/ID carry the container-internal cluster identity —
-// the shape a frame-proxying dialer (wrongShardDialer, dropReplyDialer) needs.
+// Coordinators are the external (dial-through) addresses while Description/ID
+// carry the container-internal cluster identity — the shape a frame-proxying
+// dialer (wrongShardDialer, dropReplyDialer) needs.
 // Container teardown is registered on t.Cleanup with a FRESH context: t.Cleanup
 // runs AFTER the caller's `defer cancel()`, so terminating on the (cancelled)
 // test ctx makes testcontainers bail with context.Canceled and leak the
@@ -394,13 +387,6 @@ func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
 		Description:  internalCF.Description,
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
-	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
 	}
 	return connectCF
 }

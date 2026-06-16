@@ -538,17 +538,36 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 	})
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	points := result.([][]byte)
-	// GetRangeSplitPoints queries only begin's shard. This env forces many tiny
-	// shards (~27KB each) which are smaller than the 100KB chunk, so 0 points is
-	// the correct answer here — the populated-reply path (RFC-010 #8) is proven
-	// by TestGetRangeSplitPoints (single large shard) and the wire-level
-	// TestReadErrorOr_OneFieldSuccess. Just validate any returned points are in range.
+	// GetRangeSplitPoints fetches ALL shards overlapping the range and frames the
+	// result [begin, <each internal shard boundary>, <per-shard chunk splits>, end]
+	// (C++ NativeAPI.actor.cpp:8164-8191). This env forces many tiny shards (~27KB)
+	// smaller than the 100KB chunk, so there are no per-shard chunk splits — but each
+	// INTERNAL SHARD BOUNDARY is itself a split point. So a multi-shard range must
+	// return MORE than the bare [begin,end] framing: it must include the boundaries.
+	// (This is what the go-vs-cgo differential + the single-shard CPort test miss; it
+	// pins the multi-shard assembly so a regression to single-shard locate goes red.)
 	t.Logf("split points (100KB chunks): %d points across %d shards", len(points), env.numShards)
+	g.Expect(len(points)).To(gomega.BeNumerically(">=", 2), "result must be framed by [begin,end]")
+	g.Expect([]byte(points[0])).To(gomega.Equal(begin), "first split point must be begin")
+	g.Expect([]byte(points[len(points)-1])).To(gomega.Equal(end), "last split point must be end")
+	if env.numShards > 1 {
+		g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
+			"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
+	}
+	// Ascending and in range. NOTE: the STRICT (`<`) check is valid only because
+	// this env's chunkSize (100KB) exceeds the shard size (~27KB), so every shard
+	// returns ZERO per-shard chunk splits and the result is just distinct shard
+	// boundaries. Across a real shard SEAM with per-shard splits, FDB can emit a
+	// split point equal to the next inserted boundary (StorageMetrics.actor.cpp:533
+	// breaks on strict `>`), so strict-ascending is NOT a general invariant — if
+	// chunkSize is ever lowered below the shard size, relax this to `<=`.
 	for i, p := range points {
-		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0),
-			"split point %d below range: %x", i, p)
-		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0),
-			"split point %d above range: %x", i, p)
+		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0), "split point %d below range: %x", i, p)
+		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0), "split point %d above range: %x", i, p)
+		if i > 0 {
+			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<", 0),
+				"split points must be strictly ascending (chunkSize>shard ⇒ no per-shard splits): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
+		}
 	}
 }
 
