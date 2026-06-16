@@ -622,3 +622,36 @@ func TestFDB_Metrics_TransactionLatencyResetsOnReuse(t *testing.T) {
 		t.Errorf("TransactionLatency.Max = %gs, want < %gs (reused txn folded in the idle gap)", s.TransactionLatency.Max, idle.Seconds())
 	}
 }
+
+// TestFDB_Metrics_TransactionLatencyResetsOnUserReset pins the user-Reset() metric
+// boundary (codex + Torvalds catch): a handle that reads then Reset()s without
+// committing must measure the NEXT transaction fresh. The clear lives in Reset(), NOT
+// the OnError-shared reset(). Revert-proof: drop the Reset() metricStart clear and the
+// post-Reset commit folds in the idle gap below.
+func TestFDB_Metrics_TransactionLatencyResetsOnUserReset(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const idle = 400 * time.Millisecond
+	tx := db.CreateTransaction()
+	if _, err := tx.Get(ctx, []byte(t.Name()+"_probe")); err != nil { // first GRV stamps metricStart
+		t.Fatalf("probe read: %v", err)
+	}
+	base := db.Metrics()
+	time.Sleep(idle)
+	tx.Reset() // new logical transaction — must re-anchor metricStart (cleared here)
+	tx.Set([]byte(t.Name()+"_k"), []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit after reset: %v", err)
+	}
+	s := db.Metrics()
+	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
+		t.Fatalf("TransactionLatency.Count delta = %d, want 1", d)
+	}
+	if s.TransactionLatency.Max >= idle.Seconds() {
+		t.Errorf("TransactionLatency.Max = %gs, want < %gs (post-Reset txn folded in the idle gap)", s.TransactionLatency.Max, idle.Seconds())
+	}
+}

@@ -28,7 +28,7 @@ C++ tracks six latency/size distributions on `DatabaseContext` as `DDSketch<doub
 | `readLatencies` | GetValue reply (`NativeAPI.actor.cpp:3698`) | `getValue` round-trip (`client/readpath.go`) |
 | `commitLatencies` | commit success (`:6681`) | commit round-trip (`client/commitpath.go`) |
 | `GRVLatencies` | GRV reply (`:7417`) | GRV reply applied (`client/grv.go`) |
-| `latencies` (total tx) | commit success (`:6682`, `now()-startTime`) | `now − tx.creationTime` at commit success |
+| `latencies` (total tx) | commit success (`:6682`, `now()-startTime`) | `now − tx.metricStart` (stamped at first GRV) at commit success |
 
 Surfaced in the `TransactionMetrics` TraceEvent (`:661-693`): the aggregate `latencies` emits
 mean/median/**p90/p98**/max; the per-category ones emit mean/median/max.
@@ -42,9 +42,14 @@ no-retry / single-RPC path:
 - **`GRVLatencies`** — Go samples once per GRV **batch** (Count = proxy round-trips; span = RPC only);
   C++ samples per **transaction** in `extractReadVersion` (Count = read-versions-completed; span also
   folds in the per-transaction batch-window queueing). Go's is the cleaner RPC-latency SLI.
-- **`latencies` (total tx)** — Go measures `now − creationTime`, and `creationTime` is **not** reset on
-  OnError retry, so it spans all retries (whole-transaction wall-clock); C++ measures
-  `now − trState->startTime`, reset per attempt (`reset()`→ fresh GRV), excluding retry/backoff.
+- **`latencies` (total tx)** — Go measures `now − metricStart`, stamped at the transaction's first GRV
+  (≈ C++ `trState->startTime`, also set at getReadVersion). `metricStart` is **not** reset on OnError
+  retry, so it spans all retries (whole-transaction wall-clock) where C++ resets per attempt
+  (`reset()`→ fresh GRV), excluding retry/backoff. It **is** cleared on the commit-reuse boundary
+  (`postCommitReset`) and on user `Reset()`, so a reused handle re-anchors fresh at its next first GRV
+  (excluding the idle gap), rather than folding in the prior transaction. (Kept separate from
+  `creationTime`, which anchors the timeout deadline, so the metric boundary moves without disturbing
+  timeout semantics.)
 
 **DDSketch port (`DDSketchBase`, `DDSketch.h:86-168`):** `addSample(v)`: `v ≤ EPS(1e-18)` →
 `zeroPopulationSize++`; else bucket `index = ⌈log(v)/log(γ)⌉`, `count[index]++`; track
@@ -77,7 +82,8 @@ the representative value `2·γ^index/(1+γ)`. `mean = sum/pop`, `median = perce
   does not sample, matching C++ which samples on the reply handler):
   - `getValue` → `readLatency` (C++ readLatencies; getKey/getRange are *not* separately tracked by C++
     either — out of scope, noted).
-  - commit success → `commitLatency` (round-trip) **and** `totalLatency` (`now − tx.creationTime`).
+  - commit success → `commitLatency` (round-trip) **and** `totalLatency` (`now − tx.metricStart`,
+    metricStart stamped at the first GRV; see the divergence note above).
   - GRV reply applied → `grvLatency` (the per-batch GRV round-trip; cache hits don't sample, matching
     C++ whose cached path returns before the sample).
 - **`ClientMetricsSnapshot`** gains a `LatencyStats{Count, Sum, Mean, Median, P90, P99, Max}` (seconds)

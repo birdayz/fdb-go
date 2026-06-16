@@ -739,6 +739,11 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
+		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
+		// enqueues onto the write channel, so for a very fast read the write+read loops
+		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
+		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
+		sentAt := time.Now()
 		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
@@ -746,9 +751,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		// sentAt anchors the RFC-114 read-latency sample: the deferred frame is on
-		// the wire (SendFrameDeferred above), so now() ≈ send time.
-		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer, sentAt: time.Now()}
+		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer, sentAt: sentAt}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
 		// barrier) and a post-reset late Resolve must not poison the next
@@ -1495,7 +1498,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// C++ ++transactionsCommitCompleted on tryCommit success (:6673). RFC-097.
 	// RFC-114: on the same success, sample the commit round-trip (C++
 	// commitLatencies, NativeAPI.actor.cpp:6681) and the total transaction latency
-	// now-creationTime (C++ latencies, :6682). Read-only txns return at the fast
+	// now-metricStart (C++ latencies, :6682). Read-only txns return at the fast
 	// path above and never reach here, so they contribute to neither — matching C++.
 	// Divergence (documented in RFC-114): metricStart is NOT reset on OnError retry,
 	// so total latency spans all retries (whole-transaction wall-clock), whereas C++
@@ -1562,6 +1565,13 @@ func (tx *Transaction) Reset() {
 	tx.backoff = 0
 	// C++ reset() updates creationTime = now(), restarting timeout window.
 	tx.creationTime = time.Now()
+	// RFC-114: Reset() begins a NEW logical transaction, so clear the total-latency
+	// anchor here too (re-stamped at the next first GRV) — otherwise a handle that
+	// reads/abandons work then Reset()s without committing would fold that pre-Reset
+	// work + idle into the next commit's total latency. This clear lives in Reset(),
+	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
+	// spans retries).
+	tx.metricStart = time.Time{}
 	tx.reset()
 }
 
