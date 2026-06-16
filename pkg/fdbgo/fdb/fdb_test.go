@@ -1153,6 +1153,16 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	} else {
 		t.Logf("ancient readVersion=1 correctly rejected: %v", err)
 	}
+
+	// A negative limit means "unlimited" (range-read semantics) and must NOT panic
+	// via make([]Key, negative) (codex). Returns all boundaries, like limit 0.
+	neg, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, -1, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys(limit=-1): %v", err)
+	}
+	if len(neg) != len(keys) {
+		t.Fatalf("negative limit (%d boundaries) should equal unlimited (%d)", len(neg), len(keys))
+	}
 }
 
 func TestGetClientStatus(t *testing.T) {
