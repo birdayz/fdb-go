@@ -605,21 +605,42 @@ func TestFDB_Metrics_TransactionLatencyResetsOnReuse(t *testing.T) {
 		t.Fatalf("commit1: %v", err)
 	}
 	base := db.Metrics()
-	time.Sleep(idle)                           // idle gap that must NOT be charged to the reused transaction
+	time.Sleep(idle) // idle gap that must NOT be charged to the reused transaction
+
+	// Measure the reused transaction's own wall time. The total-latency sample is a
+	// sub-interval of it (first GRV → commit success), so with the reuse boundary
+	// working the sample is ≤ wall; if broken it folds in the idle sleep and exceeds
+	// wall by ≈ idle. Comparing the sample to the MEASURED wall (not a fixed threshold)
+	// is robust to testcontainer jitter — a slow commit grows both sides together.
+	t0 := time.Now()
 	tx.Set([]byte(t.Name()+"_b"), []byte("v")) // reuse the same (auto-reset) handle
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit2 (reuse): %v", err)
 	}
+	wall := time.Since(t0)
 	s := db.Metrics()
 
 	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
 		t.Fatalf("TransactionLatency.Count delta = %d, want 1 (the reused commit)", d)
 	}
-	// Both samples (commit1 + commit2) are fast commits; the cumulative Max must stay
-	// well under the idle gap. If the reuse boundary were broken, commit2 would measure
-	// ≈ idle and Max would cross it.
-	if s.TransactionLatency.Max >= idle.Seconds() {
-		t.Errorf("TransactionLatency.Max = %gs, want < %gs (reused txn folded in the idle gap)", s.TransactionLatency.Max, idle.Seconds())
+	assertReusedCommitLatency(t, s, base, wall, idle)
+}
+
+// assertReusedCommitLatency pins the post-base commit's total-latency sample (isolated
+// via the Sum delta, since the sketch's Max is cumulative) ≤ its measured wall time +
+// a small slack. The sample is genuinely a sub-interval of wall, so this holds for any
+// commit speed (jitter-robust); a broken reuse boundary folds in the idle gap, pushing
+// the sample to ≈ idle + wall ≫ wall + slack. Revert-proof against idle ≫ slack.
+func assertReusedCommitLatency(t *testing.T, s, base ClientMetricsSnapshot, wall, idle time.Duration) {
+	t.Helper()
+	const slack = 100 * time.Millisecond
+	if slack >= idle {
+		t.Fatalf("test bug: slack %v must be < idle %v for a valid discriminator", slack, idle)
+	}
+	sample := s.TransactionLatency.Sum - base.TransactionLatency.Sum // the one new commit's latency
+	if sample > (wall + slack).Seconds() {
+		t.Errorf("reused-commit total latency = %gs, want ≤ wall %gs + slack %gs (idle gap folded in?)",
+			sample, wall.Seconds(), slack.Seconds())
 	}
 }
 
@@ -642,16 +663,16 @@ func TestFDB_Metrics_TransactionLatencyResetsOnUserReset(t *testing.T) {
 	}
 	base := db.Metrics()
 	time.Sleep(idle)
+	t0 := time.Now()
 	tx.Reset() // new logical transaction — must re-anchor metricStart (cleared here)
 	tx.Set([]byte(t.Name()+"_k"), []byte("v"))
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit after reset: %v", err)
 	}
+	wall := time.Since(t0)
 	s := db.Metrics()
 	if d := s.TransactionLatency.Count - base.TransactionLatency.Count; d != 1 {
 		t.Fatalf("TransactionLatency.Count delta = %d, want 1", d)
 	}
-	if s.TransactionLatency.Max >= idle.Seconds() {
-		t.Errorf("TransactionLatency.Max = %gs, want < %gs (post-Reset txn folded in the idle gap)", s.TransactionLatency.Max, idle.Seconds())
-	}
+	assertReusedCommitLatency(t, s, base, wall, idle)
 }

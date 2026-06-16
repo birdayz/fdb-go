@@ -192,9 +192,9 @@ type Transaction struct {
 	// from creationTime (which anchors the timeout deadline) so the metric boundary
 	// moves on commit-reuse without disturbing timeout semantics. Stamped lazily at the
 	// transaction's first GRV (ensureReadVersion, ≈ C++ trState->startTime), CLEARED on
-	// commit-reuse (postCommitReset) so the next transaction re-stamps fresh, but — like
-	// creationTime — NOT reset on OnError, so total latency still spans retries (the
-	// documented divergence from C++, which resets per attempt).
+	// both reuse boundaries (postCommitReset and user Reset()) so the next transaction
+	// re-stamps fresh, but — like creationTime — NOT reset on OnError, so total latency
+	// still spans retries (the documented divergence from C++, which resets per attempt).
 	metricStart time.Time
 
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
