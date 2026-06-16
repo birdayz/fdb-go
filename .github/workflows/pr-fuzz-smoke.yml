@@ -1,0 +1,84 @@
+name: PR fuzz smoke (wire encode/decode)
+
+# RFC prod-readiness P2.8: a FAST per-PR subset of the nightly fuzz gold gate, so an
+# obvious wire encode/decode regression is caught before merge instead of on the next
+# nightly. This runs the SAME cmd/fdb-diff-oracle fuzz targets the nightly job runs
+# (the highest-value wire targets: every Go encode/decode compared against the linked
+# C++ oracle), but for a short 20s each instead of 6 minutes — enough to catch a
+# reproducible regression on the seed corpus without lengthening every PR by hours.
+# The full-depth (6m/target) nightly job remains the exhaustive gate.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pr-fuzz-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oracle-fuzz-smoke:
+    name: Wire encode/decode fuzz smoke (20s/target)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build C++ oracle
+        run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
+
+      - name: Resolve Bazel Go SDK
+        id: go-sdk
+        run: |
+          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not found — trying system go"
+            GO_BIN=go
+          fi
+          echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
+          echo "Using Go: $GO_BIN ($($GO_BIN version))"
+
+      - name: Deterministic oracle tests (seed corpus regression)
+        run: |
+          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
+          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -count=1 ./cmd/fdb-diff-oracle/
+
+      - name: Fuzz every oracle-compared type (20s each — smoke)
+        # Discover EVERY Fuzz* (same no-op guard as the nightly job); 20s/target keeps a
+        # ~17-target run near 6 minutes. A new corpus entry that crashes still reproduces
+        # quickly here.
+        run: |
+          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
+          GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
+          if [ -z "$TARGETS" ]; then
+            echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz smoke is a no-op"
+            exit 1
+          fi
+          echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets"
+          FAILED=0
+          for target in $TARGETS; do
+            echo "=== $target (20s) ==="
+            OUTPUT=$(timeout 60 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
+                -run='^$' -fuzz="^${target}\$" -fuzztime=20s ./cmd/fdb-diff-oracle/ 2>&1) || {
+              echo "FAIL: $target (exit code $?)"
+              echo "$OUTPUT"
+              FAILED=1
+            }
+            echo "$OUTPUT" | tail -3
+            echo ""
+          done
+          exit $FAILED
+
+      - name: Upload failing fuzz seeds
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-fuzz-smoke-seeds
+          path: cmd/fdb-diff-oracle/testdata/fuzz/**
+          retention-days: 30
+          if-no-files-found: ignore

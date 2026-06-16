@@ -1,18 +1,29 @@
-name: Nightly libfdb_c differential
+name: libfdb_c differential (per-PR + nightly)
 
 # The libfdb_c (cgo) backend is gated behind the `libfdbc` build tag (pkg/fdbgo/fdbclient),
-# so the per-commit suite builds and tests ONLY the pure-Go client and never needs libfdb_c
-# or cgo. This nightly job is the cross-client gold gate: it builds the real cgo backend
+# so the main bazel suite builds and tests ONLY the pure-Go client and never needs libfdb_c
+# or cgo. This job is the cross-client gold gate: it builds the real cgo backend
 # (-tags libfdbc) and runs the differential, which opens BOTH the pure-Go client and libfdb_c
 # against one real FoundationDB (testcontainers) and asserts byte-identical records, index
 # entries, split records, and continuations — the wire compatibility that is the whole point.
 # Runs on the self-hosted box, which has libfdb_c + Docker installed.
+#
+# RFC prod-readiness P2.8: PROMOTED to per-PR (push + pull_request), in parallel with the
+# main CI job, so a wire-compat regression is caught BEFORE merge, not on the next nightly.
+# The schedule is retained as a backstop.
 
 on:
+  push:
+    branches: [master]
+  pull_request:
   schedule:
     # 3:37 AM UTC daily (off-minute, after the fuzz job at :17)
     - cron: '37 3 * * *'
   workflow_dispatch: # manual trigger
+
+concurrency:
+  group: libfdbc-differential-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   libfdbc-differential:
