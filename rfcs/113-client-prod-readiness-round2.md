@@ -13,9 +13,13 @@ and **degraded-cluster behavior**, not common-path wire correctness.
 C++ is the spec; the differential oracle is the Apple CGo binding over `libfdb_c`.
 **Scope:** `pkg/fdbgo` only (`client/`, `transport/`, `fdb/`, `wire/`). NOT the record layer / SQL / planner.
 
-**Wire-compat impact: none for any item here.** That is itself the headline finding — round 1 closed
-the wire-correctness axis (the hard line, and the strongest part of the client); what remains is
-operability and availability/latency under a degrading cluster. No item below proposes a byte change.
+**Wire-compat impact: no schema/format change and no compatibility impact for any item here.** That is
+itself the headline finding — round 1 closed the wire-correctness axis (the hard line, and the
+strongest part of the client); what remains is operability and availability/latency under a degrading
+cluster. One caveat for implementers: the tracing item (R2-MEDIUM #8) *populates* an existing, currently
+all-zero `SpanContext` request field — that changes the serialized request bytes (zero → a real trace
+id), wire-*compatibly* (the field already exists in the schema and servers already parse it), so its
+implementation still goes through wire review even though it is not a format change.
 
 ---
 
@@ -103,8 +107,13 @@ total byte/row ceiling; the common facade path `GetSliceWithError` ignores `Stre
 the entire result (≈×2 with the return copy) and OOMs the process instead of returning a clean error.
 The bounded path (`Iterator()`) exists, but the `RangeOptions.Mode` doc — *"Ignored by the pure Go
 client (all reads use exact mode internally)"* (`fdb/range.go:125`) — actively steers users **away**
-from it. The 80 KB per-reply limit bounds each round-trip, not the total. Fix is OOM-safety + honest
-docs (a byte ceiling that errors, or forces the iterator), not a wire change.
+from it. The 80 KB per-reply limit bounds each round-trip, not the total. **Caveat (codex catch):** the
+Apple Go binding over `libfdb_c` *also* implements `GetSliceWithError` by appending batches until the
+range is exhausted — the C API bounds each *batch*, never the total, and never returns a clean "too big"
+error. So a *default-on* total-byte ceiling that errors would make Go's facade **diverge from the cgo
+oracle**, not match it. The fix must be OOM-safety + honest docs **without** changing default behavior:
+correct the misleading `Mode` doc + point users at the bounded `Iterator()`, and offer any hard ceiling
+as an **opt-in** option (off by default), not a default clean-error. Not a wire change.
 
 **5. Dead servers are not excluded from read load-balancing.** *(verified)* `chooseServer`/`chooseTopTwo`
 (`client/loadbalance.go:95-228`) build the candidate set purely from `now > d.failedUntil`
@@ -119,11 +128,15 @@ to a dead shard, and a divergence from the spec.
 **6. Coordinator robustness — one real residual, one confirmed non-bug.** Round 1 called the parallel
 first-reply-wins coordinator probe (`client/database.go`) "benign … same outcome, faster"; a fresh
 pessimistic read, validated against the C++ 7.3.75 source, splits it:
-- *(a)* **No coordinator quorum (real divergence).** `tryAllCoordinators` (`database.go:539`) is
-  first-reply-wins, not the C++ majority quorum. C++ `getLeader()` computes
-  `majority = bestCount >= nominees.size()/2 + 1` (`MonitorLeader.actor.cpp:578`) on the leader/connection
-  record. A single stale or partitioned coordinator can hand the Go client topology it adopts and must
-  re-correct on the next failed RPC. This is a genuine robustness gap worth an explicit decision.
+- *(a)* **No coordinator quorum — divergence UNCONFIRMED, verify before acting (codex catch).**
+  `tryAllCoordinators` (`database.go:539`) is first-reply-wins. C++ `getLeader()` *does* compute
+  `majority = bestCount >= nominees.size()/2 + 1` (`MonitorLeader.actor.cpp:578`) — but that majority bool
+  governs leader *election* on the coordination record; it is **not yet confirmed** that the libfdb_c
+  *client*'s coordinator-contact path (`OpenDatabaseCoordRequest` / `monitorProxies`) gates topology
+  *adoption* on it rather than also taking the first successful reply. If the C++ client also takes
+  first-success, then Go matches it and **adding a quorum would make Go *stricter* than libfdb_c** — a
+  conformance violation, not a fix. Confirm the client-side gating first; file only if a true divergence
+  is proven.
 - *(b)* **Cluster-file re-read is failure-triggered — and this MATCHES C++ (confirmed non-bug).** My
   initial read suspected Go lacked a "healthy-timer" re-read that C++ had. **It checked out the other
   way:** C++ has no such timer either. `ClusterConnectionFile.actor.cpp` exposes only on-demand
@@ -173,11 +186,12 @@ the client — remains open.)
    transparently forces the bounded iterator) above the cap; fix the misleading `RangeOptions.Mode` doc.
 4. **Consult the failure monitor in load-balancing.** Filter `chooseServer`/`chooseTopTwo` candidates
    through `failMon.isFailed` before the QueueModel, matching C++ `loadBalance`.
-5. **Coordinator quorum decision (finding #6a).** Either adopt majority-quorum leader determination on
-   the coordinator/connection record (port C++ `getLeader()`'s `bestCount >= n/2+1`), or document
-   first-reply-wins as a deliberate, bounded divergence with the stale-topology self-correction as the
-   mitigation. Finding #6b (failure-gated cluster-file re-read) is **already C++-faithful — close as a
-   non-bug**; do not add a periodic timer.
+5. **Coordinator quorum — verify, don't pre-commit (finding #6a).** First confirm whether the libfdb_c
+   *client* coordinator-contact path gates topology adoption on `getLeader()`'s majority or also takes
+   first-success. **Only if** a true divergence is proven, decide between porting the quorum and
+   documenting first-reply-wins as deliberate — but do **not** add a quorum if C++ takes first-success
+   (that would make Go stricter than libfdb_c). Finding #6b (failure-gated cluster-file re-read) is
+   **already C++-faithful — close as a non-bug**; do not add a periodic timer.
 
 **R2-MEDIUM — verification depth:**
 6. **Promote the wire-type oracle + high-value fuzz to per-PR** (or a fast subset), so a wire regression
