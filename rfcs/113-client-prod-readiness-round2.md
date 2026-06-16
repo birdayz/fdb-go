@@ -52,8 +52,9 @@ called out as such rather than re-filed.
   "unrecoverable strand on `coordinators auto`" gap is closed for the *forward-following* path.
 - **RFC-112** — `SetTimeout` threaded into every read RPC wait ctx + GRV + locality (round-1 P0.2). A
   hung-but-alive read now aborts at the tx deadline, not after `10×5s`.
-- **RFC-097** — `ClientMetrics` (17 C++-named counters), `fdbmetrics` Prometheus text handler, slog
-  retry events. RFC-097 explicitly **deferred** latency/histograms and per-request byte counters
+- **RFC-097** — `ClientMetrics` (17 counters: 13 C++-named + 4 Go-only — `grvCacheHits`,
+  `transactionRetries`, `recoveredPanics`, `recoveredPanicsConsecutiveMax`), `fdbmetrics` Prometheus
+  text handler, slog retry events. RFC-097 explicitly **deferred** latency/histograms and per-request byte counters
   ("C++ has ~40 more counters — out of scope until something needs them"). Finding #1 below is exactly
   that deferral coming due.
 - **RFC-106/106b** — statement resource limits; the per-query MEMORY budget (106b) is a `pkg/relational`
@@ -68,9 +69,12 @@ called out as such rather than re-filed.
 **1. No latency metrics anywhere.** `ClientMetrics` is 17 monotonic counters and zero histograms —
 no GRV / read / commit latency distribution (`grep -ic 'histogram\|latency\|percentile\|observe'
 client/clientmetrics.go` → `0`). Tail latency is the first SLI an operator pages on, and it is
-invisible. **C++ anchor:** `DatabaseContext` tracks GRV/read/commit latency distributions
-(`ContinuousSample`/latency bands, surfaced in `TransactionMetrics` trace + client status JSON);
-RFC-097 deliberately scoped these out. This is the single biggest operability gap.
+invisible. **C++ anchor (verified, 7.3.75):** `DatabaseContext` holds six latency distributions as
+**`DDSketch<double>`** — `latencies, readLatencies, commitLatencies, GRVLatencies, mutationsPerCommit,
+bytesPerCommit` (`DatabaseContext.h:657`) — fed via `.addSample()` at the read/commit/GRV sites and
+surfaced as p90/p98/median/max in the **`TransactionMetrics` TraceEvent** (`NativeAPI.actor.cpp:661`).
+(Note: 7.3 uses `DDSketch`, not the pre-7.x `ContinuousSample`; these surface in the trace event, *not*
+the client status JSON.) RFC-097 deliberately scoped these out. This is the single biggest operability gap.
 
 **2. Connection / dial failures are invisible.** `handleDialError` (`client/database.go:316`) and
 `handleConnError` feed `failMon.markFailed` (`client/failure_monitor.go:22`) but emit **no slog event
@@ -79,7 +83,8 @@ persist warnings (`clusterfile.go:223/245`), coordinator-forward warnings (`topo
 the RFC-097 retry event (`clientmetrics.go:196`), and one transport panic-backstop `Error`
 (`transport/conn.go:632`). A flapping proxy or a dead storage server produces **no log and no metric** —
 you debug it from latency symptoms alone. There is no connection-failure / coordinator-change /
-dial-failure counter at all.
+dial-failure counter at all (the only failure-adjacent counter is RFC-110's `recoveredPanics`, which is
+orthogonal — goroutine-panic recovery, not connection health).
 
 **3. No distributed tracing.** The `SpanContext` wire field is serialized into every request but is
 always zero-valued (no assignment to `.TraceID`/`.SpanID` outside generated/test code); all tracing
@@ -111,18 +116,23 @@ full dial-timeout per read before the sequential fallback (`readpath.go`) rescue
 QueueModel. Correctness is preserved (fallback finds a live server); it is wasted latency on every read
 to a dead shard, and a divergence from the spec.
 
-**6. Coordinator robustness — two residuals to confirm against RFC-111.** Round 1 called the parallel
+**6. Coordinator robustness — one real residual, one confirmed non-bug.** Round 1 called the parallel
 first-reply-wins coordinator probe (`client/database.go`) "benign … same outcome, faster"; a fresh
-pessimistic read flags two edges worth an explicit decision rather than an assumption:
-- *(a)* **No coordinator quorum.** `tryAllCoordinators` is first-reply-wins, not the C++ majority quorum
-  on the connection/leader record. A single stale or partitioned coordinator can hand back topology the
-  client adopts and must re-correct on the next failed RPC. C++ requires a quorum.
-- *(b)* **Re-read is failure-triggered, not periodic.** RFC-111 follows coordinator *forwards* on
-  rotation, but a re-read of the on-disk cluster file appears to fire only on coordinator contact
-  failure, not on a healthy timer — so an operator rewriting `fdb.cluster` to a new set while the *old*
-  set still answers (no forward) may not be picked up. C++ `ClusterConnectionFile` re-reads on a timer
-  regardless of health. **This needs verification against RFC-111's actual mechanism before filing as a
-  bug** — it may be fully or partially covered. Confirm, then either close or file.
+pessimistic read, validated against the C++ 7.3.75 source, splits it:
+- *(a)* **No coordinator quorum (real divergence).** `tryAllCoordinators` (`database.go:539`) is
+  first-reply-wins, not the C++ majority quorum. C++ `getLeader()` computes
+  `majority = bestCount >= nominees.size()/2 + 1` (`MonitorLeader.actor.cpp:578`) on the leader/connection
+  record. A single stale or partitioned coordinator can hand the Go client topology it adopts and must
+  re-correct on the next failed RPC. This is a genuine robustness gap worth an explicit decision.
+- *(b)* **Cluster-file re-read is failure-triggered — and this MATCHES C++ (confirmed non-bug).** My
+  initial read suspected Go lacked a "healthy-timer" re-read that C++ had. **It checked out the other
+  way:** C++ has no such timer either. `ClusterConnectionFile.actor.cpp` exposes only on-demand
+  `upToDate()`; the actual adoption of a rewritten on-disk cluster string happens in
+  `monitorProxiesOneGeneration` **only under `allConnectionsFailed`** (`MonitorLeader.actor.cpp:888`,
+  gated by `COORDINATOR_RECONNECTION_DELAY`). So an operator rewriting `fdb.cluster` while the old
+  coordinators still answer is not picked up *in C++ either*. RFC-111's forward-following +
+  failure-gated re-read is therefore C++-faithful — **close this as a non-bug / document the behavior**,
+  do NOT add a periodic timer (it would diverge from C++).
 
 ### MEDIUM — verification depth on the error/fault paths
 
@@ -163,9 +173,11 @@ the client — remains open.)
    transparently forces the bounded iterator) above the cap; fix the misleading `RangeOptions.Mode` doc.
 4. **Consult the failure monitor in load-balancing.** Filter `chooseServer`/`chooseTopTwo` candidates
    through `failMon.isFailed` before the QueueModel, matching C++ `loadBalance`.
-5. **Coordinator robustness decision (finding #6).** Confirm the RFC-111 mechanism; then either add the
-   periodic cluster-file re-read + quorum-on-coordinator-record, or document the parallel-first-wins +
-   forward-only-re-read behavior as a deliberate, bounded divergence.
+5. **Coordinator quorum decision (finding #6a).** Either adopt majority-quorum leader determination on
+   the coordinator/connection record (port C++ `getLeader()`'s `bestCount >= n/2+1`), or document
+   first-reply-wins as a deliberate, bounded divergence with the stale-topology self-correction as the
+   mitigation. Finding #6b (failure-gated cluster-file re-read) is **already C++-faithful — close as a
+   non-bug**; do not add a periodic timer.
 
 **R2-MEDIUM — verification depth:**
 6. **Promote the wire-type oracle + high-value fuzz to per-PR** (or a fast subset), so a wire regression
