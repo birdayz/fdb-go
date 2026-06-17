@@ -139,33 +139,40 @@ resource "hcloud_server" "runner" {
     mc_sha256           = local.versions.mc_sha256
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
   })
+
+  lifecycle {
+    # The grandfathered runner sits on Hetzner's old (cheaper) price tier; a replacement
+    # would cost more, so it must never be destroyed/replaced. prevent_destroy hard-blocks
+    # any plan that would do so (e.g. a user_data/runner-token ForceNew) — `tofu apply`
+    # ERRORS instead of recreating. This is also what makes hcloud_volume.runner_data's
+    # direct reference to this resource safe: a stray token change can't silently take the
+    # box (and its attached volume) down.
+    prevent_destroy = true
+  }
 }
 
-# --- Persistent build/cache data volume (RFC-115 / RFC-108 CI hardening) ---
+# --- Persistent build/cache data volume (RFC-115 §7 / RFC-108 CI hardening) ---
 #
 # The wire-oracle CI job builds FoundationDB from source (the fdb_cmake_build genrule:
 # ~14 min, multi-GB build tree + a 0.76 GB tar) inside Docker. On the 75 GB root disk —
 # already ~64 GB used by the 21.5 GB FDB build image + the 13 GB Bazel cache — the cold
 # build+tar runs the disk out of space, the genrule's action fails, and since Bazel never
-# caches a FAILED action it cold-rebuilds and re-fails every run. A 100 GB ext4 volume for
-# Docker's data-root (and the build scratch) gives that build real headroom so the action
-# succeeds ONCE and Bazel caches it normally thereafter (no remote/disk_cache needed).
+# caches a FAILED action it cold-rebuilds and re-fails every run. This 100 GB ext4 volume
+# holds Docker's data-root AND Bazel's output base so that build has real headroom and the
+# action succeeds ONCE, then caches normally (no remote/disk_cache needed). cloud-init.yaml
+# links it to a stable /mnt/ci-data and points Docker (daemon.json data-root) + the runner's
+# Bazel cache (~/.cache/bazel symlink) at it — without that wiring the volume would just sit
+# idle and the build would still fill the root disk.
 #
-# Attached via a DATA lookup of the live server rather than hcloud_server.runner so a
-# `tofu apply -target=hcloud_volume.runner_data` can create+format+mount the volume without
-# pulling the managed server into the graph — the server's user_data embeds a one-time
-# runner-registration token (ForceNew), so coupling the volume apply to it would risk
-# replacing the runner. ext4 (not xfs): the Bazel cache + Docker layers are millions of
-# small files, ext4's conservative sweet spot; xfs's large-file/parallelism edge isn't the
-# bottleneck here.
-data "hcloud_server" "runner_lookup" {
-  name = "gh-runner-fdb"
-}
-
+# server_id references the managed hcloud_server.runner (NOT a data lookup) so a fresh
+# `tofu apply` provisions server-then-volume in ONE graph; the server's prevent_destroy
+# makes that reference safe (a token/user_data ForceNew can't silently replace the box+volume).
+# ext4 (not xfs): the Bazel cache + Docker layers are millions of small files, ext4's
+# conservative sweet spot; xfs's large-file/parallelism edge isn't the bottleneck here.
 resource "hcloud_volume" "runner_data" {
   name      = "gh-runner-fdb-data"
   size      = 100
-  server_id = data.hcloud_server.runner_lookup.id
+  server_id = hcloud_server.runner.id
   format    = "ext4"
   automount = true
 }

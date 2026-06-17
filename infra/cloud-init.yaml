@@ -26,7 +26,7 @@ write_files:
 
   - path: /etc/docker/daemon.json
     content: |
-      {"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
+      {"data-root": "/mnt/ci-data/docker", "default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
 
   # Supply-chain gate (RFC-108 §1): download an artifact and ABORT provisioning if its
   # SHA-256 doesn't match the pin. Every tool fetch below goes through this, so a
@@ -209,6 +209,23 @@ write_files:
       WantedBy=timers.target
 
 runcmd:
+  # CI data volume (RFC-115 §7): the 100GB ext4 volume (hcloud_volume.runner_data) is
+  # ext4-formatted by tofu and auto-mounted by Hetzner at /mnt/HC_Volume_<id>. Link it to a
+  # STABLE /mnt/ci-data and create Docker + Bazel subdirs on it BEFORE Docker starts, so
+  # Docker's data-root (/etc/docker/daemon.json) is valid on first boot. Without this the
+  # wire-oracle FDB-from-source build fills the 75GB root disk and the genrule OOMs. Fail
+  # loud if the volume never mounts (a silent fall-back to root re-creates the disk bug).
+  - |
+    set -eu
+    for i in $(seq 1 90); do
+      VOL=$(ls -d /mnt/HC_Volume_* 2>/dev/null | head -1) || true
+      [ -n "$${VOL:-}" ] && mountpoint -q "$VOL" && break
+      sleep 2
+    done
+    [ -n "$${VOL:-}" ] && mountpoint -q "$VOL" || { echo "::error::CI data volume not mounted"; exit 1; }
+    ln -sfn "$VOL" /mnt/ci-data
+    mkdir -p /mnt/ci-data/docker /mnt/ci-data/bazel
+
   # Docker
   - systemctl enable --now docker
   - systemctl restart docker
@@ -245,6 +262,14 @@ runcmd:
   # Runner user
   - useradd -m -s /bin/bash runner
   - usermod -aG docker runner
+
+  # Bazel output base on the CI volume (RFC-115 §7): symlink the runner's bazel cache to
+  # /mnt/ci-data/bazel so all build outputs — incl. the wire-oracle's bazel-out tar — land
+  # on the 100GB volume, not the root disk. (Bazel's --output_user_root defaults to
+  # ~/.cache/bazel, so the symlink is sufficient; no flag needed.)
+  - install -d -o runner -g runner /mnt/ci-data/bazel /home/runner/.cache
+  - ln -sfn /mnt/ci-data/bazel /home/runner/.cache/bazel
+  - chown -h runner:runner /home/runner/.cache/bazel
 
   # GitHub Actions runner (pinned version + checksummed — was releases/latest, RFC-108 §1).
   # --ephemeral (opt-in via runner_ephemeral) gives one-job-per-process fresh state;
