@@ -34,10 +34,13 @@ jobs:
           echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
-      - name: Run deterministic tests
+      - name: Run deterministic tests (TestDiff + all fuzz seed corpora)
+        # `^Fuzz` is load-bearing: -run=TestDiff alone does NOT replay the Fuzz* seed
+        # corpora (same fix as per-PR ci.yml wire-oracle). The active 6-min fuzz below
+        # supersedes this; it's a fast fail-fast pre-check.
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
-          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
+          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
       - name: Fuzz ALL oracle-compared types (6min each)
         # RFC-107: discover EVERY Fuzz* in cmd/fdb-diff-oracle rather than a hard-coded

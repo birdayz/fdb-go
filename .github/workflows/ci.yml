@@ -99,13 +99,19 @@ jobs:
           retention-days: 30
 
   wire-oracle:
-    name: Wire-type oracle (deterministic + fuzz smoke)
+    name: Wire-type oracle (deterministic)
     # RFC-115 §5. The cross-client DATA-plane differential is already per-PR
     # (nightly-libfdbc.yml). This promotes the cmd/fdb-diff-oracle WIRE-type oracle —
     # nightly-only until now (nightly-fuzz.yml) — to per-PR, so a marshal regression in
     # a less-traveled reply type (e.g. the 8 reply-parse types) reddens BEFORE merge,
-    # not ~a day later. The deep 17×6min ACTIVE fuzz stays nightly; this is the fast
-    # deterministic gate + a short fuzz smoke.
+    # not ~a day later.
+    #
+    # Per-PR is DETERMINISTIC ONLY: TestDiff* + every Fuzz* SEED corpus replayed against
+    # the C++ oracle. ACTIVE fuzzing (new-input discovery) is deliberately NOT a per-PR
+    # gate — it is non-deterministic in WHAT it finds, so it reddens PRs on pre-existing
+    # divergences unrelated to the change. (It did exactly that here: it surfaced the
+    # latent IPAddress variant-marshal wire bug — real, but pre-existing — fixed in this
+    # RFC §7.) Active fuzzing is the (revived) nightly net's job (nightly-fuzz.yml §7).
     runs-on: [self-hosted, linux, x64, hetzner]
     timeout-minutes: 20
     steps:
@@ -131,49 +137,16 @@ jobs:
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
       - name: Deterministic wire-type oracle (TestDiff + all fuzz seed corpora)
-        # `go test` runs every TestDiff* against the C++ oracle AND replays all Fuzz* SEED
-        # corpora (go test exercises the seed corpus even without -fuzz), so a marshal
-        # regression in ANY oracle-compared type reddens HERE, per-PR. Seconds-scale.
+        # Runs every TestDiff* against the C++ oracle AND replays all Fuzz* SEED corpora
+        # (committed under testdata/fuzz + each f.Add). The `^Fuzz` in -run is load-bearing:
+        # without it `go test` does NOT exercise the Fuzz functions at all, so -run=TestDiff
+        # alone silently skipped the seed corpora (the comment used to overclaim). With it,
+        # a marshal regression in ANY oracle-compared type — or on any accumulated
+        # interesting seed — reddens HERE, per-PR. Deterministic, ~0.1s. Active fuzzing
+        # (new-input discovery) stays nightly (nightly-fuzz.yml §7).
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
-          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
-
-      - name: Fuzz smoke (12s/target, all oracle-compared types)
-        # A short active-fuzz tail on top of the seed replay — catches an obvious marshal
-        # break on FRESH inputs without the nightly's ~1h45m cost. Discover EVERY Fuzz*
-        # (no hard-coded list — the nightly's lesson) and FAIL on empty discovery so the
-        # gate can never silently no-op. ~17 × 12s ≈ 3.5 min.
-        run: |
-          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
-          GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
-          TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
-          if [ -z "$TARGETS" ]; then
-            echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz smoke is a no-op"
-            exit 1
-          fi
-          echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets"
-          FAILED=0
-          for target in $TARGETS; do
-            echo "=== $target (12s) ==="
-            OUTPUT=$(timeout 30 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
-                -run='^$' -fuzz="^${target}\$" -fuzztime=12s ./cmd/fdb-diff-oracle/ 2>&1) || {
-              echo "FAIL: $target (exit code $?)"
-              echo "$OUTPUT"
-              FAILED=1
-            }
-            echo "$OUTPUT" | tail -3
-            echo ""
-          done
-          exit $FAILED
-
-      - name: Upload failing fuzz seeds
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: wire-oracle-fuzz-seeds
-          path: cmd/fdb-diff-oracle/testdata/fuzz/**
-          retention-days: 30
-          if-no-files-found: ignore
+          DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
   govulncheck:
     name: Vulnerability scan
