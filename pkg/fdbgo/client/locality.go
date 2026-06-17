@@ -97,7 +97,7 @@ type LocationResult struct {
 // On cache miss, queries a commit proxy.
 // Returns the servers AND the shard boundaries so callers can clamp requests.
 // O(log N) via binary search on the sorted entries.
-func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64) (LocationResult, error) {
+func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext) (LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled specially in C++ client.
 	// Don't send GetKeyServerLocationsRequest for it — clamp to normal key range.
 	if len(key) >= 2 && key[0] == 0xff && key[1] == 0xff {
@@ -115,7 +115,7 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 	lc.mu.RUnlock()
 
 	// Cache miss — query commit proxy.
-	return lc.refresh(db, ctx, key, tenantId)
+	return lc.refresh(db, ctx, key, tenantId, span)
 }
 
 // lookupLocked finds the entry containing key for the given tenant.
@@ -263,10 +263,15 @@ func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
 	lc.entries = lc.entries[:dst]
 }
 
-// refresh queries commit proxies for the location of a single key.
-func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64) (LocationResult, error) {
+// refresh queries commit proxies for the location of a single key. `span` is the
+// issuing transaction's span; the getKeyLocation CHILD is derived once here and
+// reused across the queryLocations proxy retries — matching C++ getKeyLocation_internal
+// (NativeAPI.actor.cpp:3017 `Span("NAPI:getKeyLocation", spanContext)`, built once
+// before basicLoadBalance).
+func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext) (LocationResult, error) {
+	child := childSpanContext(span)
 	entries, err := lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
-		return buildGetKeyServerLocationsRequest(key, tenantId, replyToken)
+		return buildGetKeyServerLocationsRequest(key, tenantId, child, replyToken)
 	})
 	if err != nil {
 		return LocationResult{}, err
@@ -300,7 +305,7 @@ func (lc *locationCache) evictIfNeeded() {
 // On cache miss for any sub-range, queries a commit proxy for the missing range.
 // C++ getKeyRangeLocations equivalent. The reverse parameter is forwarded to the
 // commit proxy so it returns shards in the right order for the scan direction.
-func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]LocationResult, error) {
+func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64, span types.SpanContext) ([]LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled like locate().
 	if len(begin) >= 2 && begin[0] == 0xff && begin[1] == 0xff {
 		begin = []byte{0xff}
@@ -359,7 +364,7 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 		}
 
 		// Cache miss — refresh the missing sub-range.
-		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit, reverse, tenantId)
+		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit, reverse, tenantId, span)
 		if err != nil {
 			return nil, err
 		}
@@ -542,18 +547,22 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 	}
 }
 
-func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]locationEntry, error) {
+func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64, span types.SpanContext) ([]locationEntry, error) {
+	child := childSpanContext(span) // getKeyRangeLocations child, reused across proxy retries (:3184)
 	return lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
-		return buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, replyToken)
+		return buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, child, replyToken)
 	})
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
-// Single-key lookup: no End field set.
-func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, replyToken transport.UID) []byte {
+// Single-key lookup: no End field set. `span` is the getKeyLocation child span
+// (derived once in refresh, reused across proxy retries) — stamped verbatim, matching
+// C++ GetKeyServerLocationsRequest(span.context,…) (NativeAPI.actor.cpp:3037).
+func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
 	req := types.GetKeyServerLocationsRequest{
 		Begin:            key,
 		Limit:            100,
+		SpanContext:      span,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: tenantId},
 		MinTenantVersion: LatestVersion,
@@ -565,13 +574,14 @@ func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, replyToken tr
 // C++ getKeyRangeLocations sends both begin and end to get all overlapping shards.
 // The reverse flag tells the commit proxy to return shards from end→begin order,
 // matching C++ NativeAPI.actor.cpp:2241.
-func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, reverse bool, tenantId int64, replyToken transport.UID) []byte {
+func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, reverse bool, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
 	req := types.GetKeyServerLocationsRequest{
 		Begin:            begin,
 		HasEnd:           true,
 		End:              end,
 		Limit:            int32(limit),
 		Reverse:          reverse,
+		SpanContext:      span, // getKeyRangeLocations child (NativeAPI.actor.cpp:3197)
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: tenantId},
 		MinTenantVersion: LatestVersion,

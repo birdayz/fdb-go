@@ -42,7 +42,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	const shardLimit = math.MaxInt32
 
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.spanContext)
 		if err != nil {
 			return 0, fmt.Errorf("locate range for metrics: %w", err)
 		}
@@ -172,7 +172,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	const shardLimit = math.MaxInt32
 
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.spanContext)
 		if err != nil {
 			return nil, fmt.Errorf("locate range for split points: %w", err)
 		}

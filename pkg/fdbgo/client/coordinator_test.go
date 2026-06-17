@@ -110,7 +110,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try location lookup
 	t.Log("Attempting GetKeyServerLocations...")
-	loc, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"), NoTenantID)
+	loc, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"), NoTenantID, types.SpanContext{})
 	if locErr != nil {
 		t.Logf("Locate: %v", locErr)
 	} else {
