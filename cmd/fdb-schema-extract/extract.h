@@ -344,7 +344,12 @@ private:
 
         fields.push_back(fd);
         fieldIndex++;
-        slotIndex += (fd.kind == FieldKind::Optional) ? 2 : 1;
+        // A union occupies TWO vtable slots — a 1-byte type tag + a 4-byte
+        // RelativeOffset (flat_buffers.h:951-956). BOTH Optional<T> (FieldKind::Optional)
+        // and std::variant (FieldKind::Variant) are unions, so a field following either
+        // must skip 2 slots. (Latent for IPAddress, the lone variant-only type, but
+        // correct for any future variant followed by another field.)
+        slotIndex += (fd.kind == FieldKind::Optional || fd.kind == FieldKind::Variant) ? 2 : 1;
     }
 };
 

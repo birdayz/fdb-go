@@ -290,6 +290,14 @@ private:
                     if (alt.kind == FieldKind::Scalar && alt.size == 4) {
                         fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffUint32(%s + 1)\n",
                                 gn.c_str(), a, rv, slot.c_str());
+                    } else if (alt.kind == FieldKind::VectorLike || alt.kind == FieldKind::DynamicSize) {
+                        // C++ union vector alternative (use_indirection==true,
+                        // flat_buffers.h:872-877): the RelativeOffset points at a
+                        // count-prefixed vector [count u32][data]. ReadBytes follows the
+                        // reloff AND skips the 4-byte count; ReadRelOffRaw would return the
+                        // count bytes, not the payload (the latent IPv6 read bug).
+                        fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadBytes(%s + 1)\n",
+                                gn.c_str(), a, rv, slot.c_str());
                     } else {
                         fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffRaw(%s + 1, %d)\n",
                                 gn.c_str(), a, rv, slot.c_str(), alt.size);
@@ -331,6 +339,26 @@ private:
                 } else {
                     fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
                 }
+                break;
+            case FieldKind::Variant:
+                // C++ union save (SaveAlternative, flat_buffers.h:837-855): reserve the
+                // OUT-OF-LINE payload of the ACTIVE alternative. Scalar alt
+                // (use_indirection==false, :848): a bare value at cbs+sizeof, no length
+                // prefix → ps.Write(cbs+size). Vector-like alt (use_indirection==true,
+                // :845): a count-prefixed vector → VisitDynamicSize. The 1-byte tag +
+                // 4-byte reloff live INLINE in self (no payload), so tag 0 reserves nothing.
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    if (alt.kind == FieldKind::Scalar) {
+                        fprintf(f, "\tcase %zu:\n\t\tps.Write(ps.CurrentBufferSize + %d)\n",
+                                a + 1, alt.size);
+                    } else {
+                        fprintf(f, "\tcase %zu:\n\t\tps.VisitDynamicSize(len(m.%sAlt%zu))\n",
+                                a + 1, gn.c_str(), a);
+                    }
+                }
+                fprintf(f, "\t}\n");
                 break;
             case FieldKind::VectorOfStruct:
                 fprintf(f, "\t{\n");
@@ -397,6 +425,9 @@ private:
             case FieldKind::VectorOfStruct:
                 fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Off").c_str());
                 break;
+            case FieldKind::Variant:
+                fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Off").c_str());
+                break;
             default: break;
             }
         }
@@ -423,6 +454,28 @@ private:
                     fprintf(f, "\tif m.Has%s { %s, _ = wb.VisitDynamicSize(m.%s) }\n",
                             gn.c_str(), (safeParam(gn) + "Off").c_str(), gn.c_str());
                 }
+                break;
+            case FieldKind::Variant:
+                // C++ SaveAlternative (flat_buffers.h:837-855): write the ACTIVE
+                // alternative's payload out-of-line and capture its RelativeOffset.
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    if (alt.kind == FieldKind::Scalar) {
+                        // use_indirection==false (:848): write(&v, cbs+sizeof, sizeof);
+                        // reloff = the new cbs. Bare LE scalar, no count prefix.
+                        // (The lone scalar alternative in the schema is uint32/size 4.)
+                        fprintf(f, "\tcase %zu:\n", a + 1);
+                        fprintf(f, "\t\twb.WriteUint32(uint32(m.%sAlt%zu), wb.CurrentBufferSize+%d)\n",
+                                gn.c_str(), a, alt.size);
+                        fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
+                    } else {
+                        // use_indirection==true (:845-846): count-prefixed vector.
+                        fprintf(f, "\tcase %zu:\n\t\t%s, _ = wb.VisitDynamicSize(m.%sAlt%zu)\n",
+                                a + 1, (safeParam(gn) + "Off").c_str(), gn.c_str(), a);
+                    }
+                }
+                fprintf(f, "\t}\n");
                 break;
             case FieldKind::VectorOfStruct: {
                 auto offVar = safeParam(gn) + "Off";
@@ -462,7 +515,7 @@ private:
             if (fd.size == 0) continue;
             if (fd.kind == FieldKind::Scalar || fd.kind == FieldKind::DynamicSize ||
                 fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::VectorOfStruct ||
-                fd.kind == FieldKind::Optional ||
+                fd.kind == FieldKind::Optional || fd.kind == FieldKind::Variant ||
                 (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0])) {
                 needsVt = true; break;
             }
@@ -521,6 +574,19 @@ private:
             case FieldKind::Optional:
                 fprintf(f, "\tif m.Has%s {\n", gn.c_str());
                 fprintf(f, "\t\tselfW.WriteScalar([]byte{1}, int(vt[%s+2]))\n", slot.c_str());
+                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+1+2]))\n",
+                        (safeParam(gn) + "Off").c_str(), slot.c_str());
+                fprintf(f, "\t}\n");
+                break;
+            case FieldKind::Variant:
+                // C++ union (flat_buffers.h:951,956): a 1-byte fb_type_tag at vtable slot
+                // N, a 4-byte RelativeOffset at slot N+1. m.%sTag IS the fb tag (variant
+                // index+1: 1=first alt, 2=second alt) — written verbatim, matching the
+                // read side (ReadUint8). Tag 0 = empty/unset: self is already zeroed, so
+                // both slots stay 0 (the `++i` empty arm, flat_buffers.h:957-959).
+                fprintf(f, "\tif m.%sTag != 0 {\n", gn.c_str());
+                fprintf(f, "\t\tselfW.WriteScalar([]byte{m.%sTag}, int(vt[%s+2]))\n",
+                        gn.c_str(), slot.c_str());
                 fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+1+2]))\n",
                         (safeParam(gn) + "Off").c_str(), slot.c_str());
                 fprintf(f, "\t}\n");
