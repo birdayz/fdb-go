@@ -1098,6 +1098,13 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 	// commit/reset's regenerateSpan (RFC-115 §4 — same reason readVersion is passed in).
 	watchCtx := tx.getWatchCtx(ctx)
 
+	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
+	// reused across the wrong-shard retry loop — matching C++ watchValue's single
+	// `state Span span("NAPI:watchValue", parameters->spanContext)` (NativeAPI.actor.cpp:3933),
+	// whose span.context is stamped on the request (:3965). locate below is passed the
+	// raw tx span (C++ hands getKeyLocation parameters->spanContext, not the watch child).
+	watchSpan := childSpanContext(span)
+
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, locErr := tx.db.locCache.locate(tx.db, watchCtx, key, tx.tenantId, span)
 		if locErr != nil {
@@ -1107,7 +1114,7 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, span, loc.Servers)
+		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, watchSpan, loc.Servers)
 		if watchErr == nil {
 			return nil
 		}
@@ -1121,6 +1128,24 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 		return watchErr
 	}
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// buildWatchValueRequest constructs a WatchValueRequest. `span` is the watchValue
+// CHILD span (derived once in WatchPoll, reused across the wrong-shard retry loop) —
+// stamped verbatim, matching C++ WatchValueRequest(span.context,…) (NativeAPI.actor.cpp:3965).
+func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
+	req := types.WatchValueRequest{
+		Key:         key,
+		Version:     readVersion,
+		Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		TenantInfo:  types.TenantInfo{TenantId: tenantId},
+		SpanContext: span,
+	}
+	if value != nil {
+		req.HasValue = true
+		req.Value = value
+	}
+	return req.MarshalFDB()
 }
 
 func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo) error {
@@ -1139,18 +1164,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
-		req := types.WatchValueRequest{
-			Key:         key,
-			Version:     readVersion,
-			Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo:  types.TenantInfo{TenantId: tenantId},
-			SpanContext: span, // RFC-115 §4
-		}
-		if value != nil {
-			req.HasValue = true
-			req.Value = value
-		}
-		reqData := req.MarshalFDB()
+		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, replyToken)
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 
 		delta := tx.db.queueModel.startRequest(server.Address)
