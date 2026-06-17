@@ -150,7 +150,10 @@ struct GoEmitterV5 {
                 break;
             case FieldKind::Optional:
                 fprintf(f, "\tHas%s bool   // slot %d, optional tag\n", gn.c_str(), fd.vtableSlot);
-                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                if (fd.optScalar) {
+                    // Optional<scalar> (Optional<UID>): fixed-size scalar value, not []byte.
+                    fprintf(f, "\t%s    %s // slot %d, optional scalar value\n", gn.c_str(), fd.scalar.goType, fd.vtableSlot + 1);
+                } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: value is a nested Go struct, not []byte.
                     fprintf(f, "\t%s    %s // slot %d, optional nested value\n", gn.c_str(), fd.nestedGoType, fd.vtableSlot + 1);
                 } else {
@@ -269,7 +272,13 @@ private:
             case FieldKind::Optional:
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
                         rv, slot.c_str(), rv, slot.c_str());
-                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                if (fd.optScalar) {
+                    // Optional<scalar> (Optional<UID>): the union RelativeOffset points at a
+                    // BARE fixed-size scalar (no length prefix, unlike ReadBytes). Read raw +
+                    // copy into the fixed array.
+                    fprintf(f, "\t\tcopy(m.%s[:], %s.ReadRelOffRaw(%s + 1, %d))\n",
+                            gn.c_str(), rv, slot.c_str(), fd.size);
+                } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: read as nested reader, unmarshal.
                     fprintf(f, "\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n", rv, slot.c_str());
                     fprintf(f, "\t\t\tm.%s.UnmarshalFromReader(nr)\n", gn.c_str());
@@ -334,7 +343,12 @@ private:
                     fprintf(f, "\tm.%s.precomputeSize(ps)\n", gn.c_str());
                 break;
             case FieldKind::Optional:
-                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                if (fd.optScalar) {
+                    // Optional<scalar> (Optional<UID>): reserve a BARE fixed-size scalar
+                    // payload (no length prefix) — C++ SaveAlternative writes it at cbs+sizeof
+                    // (flat_buffers.h:848), same as the Variant scalar arm.
+                    fprintf(f, "\tif m.Has%s { ps.Write(ps.CurrentBufferSize + %d) }\n", gn.c_str(), fd.size);
+                } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     fprintf(f, "\tif m.Has%s { m.%s.precomputeSize(ps) }\n", gn.c_str(), gn.c_str());
                 } else {
                     fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
@@ -447,7 +461,16 @@ private:
                             (safeParam(gn) + "Start").c_str(), gn.c_str());
                 break;
             case FieldKind::Optional:
-                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                if (fd.optScalar) {
+                    // Optional<scalar> (Optional<UID>): write the bare fixed-size scalar
+                    // OUT-OF-LINE at cbs+size (C++ SaveAlternative, flat_buffers.h:848); the
+                    // 1-byte tag + 4-byte reloff (written into self below) point at it. No
+                    // length prefix — same as the Variant scalar arm, but always present-gated.
+                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                    fprintf(f, "\t\twb.Write(m.%s[:], wb.CurrentBufferSize+%d)\n", gn.c_str(), fd.size);
+                    fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
+                    fprintf(f, "\t}\n");
+                } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     fprintf(f, "\tif m.Has%s { %s = m.%s.writeToBuffer(wb, vtableStart, tmpl) }\n",
                             gn.c_str(), (safeParam(gn) + "Off").c_str(), gn.c_str());
                 } else {
@@ -1275,6 +1298,7 @@ int main(int argc, char** argv) {
 
     // Extract ALL types.
     extractType<GetValueReply>(outDir, "GetValueReply");
+    extractType<WatchValueReply>(outDir, "WatchValueReply");
     extractType<GetKeyValuesReply>(outDir, "GetKeyValuesReply");
     extractType<GetKeyReply>(outDir, "GetKeyReply");
     extractType<GetReadVersionReply>(outDir, "GetReadVersionReply");
@@ -1282,6 +1306,7 @@ int main(int argc, char** argv) {
     extractType<CommitID>(outDir, "CommitID");
 
     extractType<GetValueRequest>(outDir, "GetValueRequest");
+    extractType<WatchValueRequest>(outDir, "WatchValueRequest");
     extractType<GetKeyValuesRequest>(outDir, "GetKeyValuesRequest");
     extractType<GetKeyRequest>(outDir, "GetKeyRequest");
     extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");

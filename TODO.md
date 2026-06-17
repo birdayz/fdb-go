@@ -59,7 +59,7 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6)
+### [x] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6) — DONE (branch `wire/watchvalue-extractor-registration`, stacked on #303)
 
 `cmd/fdb-schema-extract/main.cpp` has no `extractType<WatchValueRequest>()` /
 `extractType<WatchValueReply>()` (37 other types are registered). The committed
@@ -71,6 +71,29 @@ same for the reply) so a regen reproduces them. WatchValueReply also carries an 
 `Optional<Error>`, so re-emitting it picks up the §6 union fix too. Not caught by per-PR CI
 (`just generate` ≠ `just generate-wire-types`). Verify the re-emitted bytes are wire-identical
 to the committed files before landing.
+
+**DONE.** Registered both in the extractor (`extract.h` REGISTER_FIELD_NAMES + `REGISTER_GO_TYPE(ReplyPromise<WatchValueReply>)`;
+`main.cpp` `extractType<>`); a regen now PRODUCES them. The regen surfaced — and this branch also fixes — **two
+deeper extractor wire bugs** the registration depended on:
+1. **`Optional<UID>` mis-emitted as `[]byte`.** `scalar_traits<UID>` (flow/IRandom.h) ⇒ UID is a fixed 16-byte
+   scalar, so `Optional<UID>` (the `debugID` on requests) must be `[16]byte` (a bare 16-byte OOL scalar behind
+   the union RelativeOffset, C++ `SaveAlternative` flat_buffers.h:848), not a length-prefixed vector. Added an
+   `Optional<scalar>` codegen path (restricted to UID — the lone fixed-array struct-scalar). Fixed `DebugID` on
+   `WatchValueRequest`/`GetReadVersionRequest`/`CommitTransactionRequest`/`StorageServerInterface`/`TenantMapEntry`/
+   `ReadOptions`. Verified byte-faithful vs the C++ oracle (un-skipped `debugID`: 4M+ execs, 0 mismatches).
+   (Correction to the note above: `WatchValueReply` has NO `Optional<Error>` — it's just `{version int64, cached bool}`.)
+2. **`ReadOptions` field-name mis-registration → a live client bug.** The old `REGISTER_FIELD_NAMES(ReadOptions,
+   "type","cacheResult","lockAware")` mis-mapped the slots: C++ serialize order is
+   `(type, cacheResult, debugID, consistencyCheckStartVersion, lockAware)`, so the generated "LockAware" (slot 2-3)
+   was actually `debugID` (Optional<UID>) and the real `lockAware` is a bool at slot 6. The client
+   (`readpath.go`) set the debugID field thinking it was lockAware → **lock-aware reads never actually requested
+   lock-aware**. Fixed the registration (5 names, serialize order) + the client (`ReadOptions{LockAware: true}`);
+   the round-trip unit tests now assert the real bool.
+
+**Follow-up filed:** **`Optional<primitive-scalar>` codegen** — `Optional<int64>`/`<Version>`/`<bool>` (e.g.
+`ReadOptions.consistencyCheckStartVersion`) are ALSO mis-emitted as `[]byte` today; the `Optional<scalar>` fix here
+is deliberately restricted to UID (`[16]byte`, array-sliceable) because primitives need per-type encode/decode at a
+RelativeOffset + their own oracle coverage (the oracle skips them now). Those stay `[]byte` until a dedicated change.
 
 ### [ ] fdbgo/client: stamp the GRV request with a trace SpanContext (RFC-115 §4 tracing follow-on)
 

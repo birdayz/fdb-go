@@ -213,8 +213,8 @@ func TestBuildGetValueRequest_LockAwareSetsOptions(t *testing.T) {
 	if !req.HasOptions {
 		t.Fatal("HasOptions: got false, want true (lockAware=true)")
 	}
-	if !req.Options.HasLockAware {
-		t.Error("Options.HasLockAware: got false, want true")
+	if !req.Options.LockAware {
+		t.Error("Options.LockAware: got false, want true (lock-aware reads must set the real lockAware bool, not the debugID field)")
 	}
 }
 
@@ -281,9 +281,9 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	if err := req.UnmarshalFDB(body); err != nil {
 		t.Fatalf("UnmarshalFDB: %v", err)
 	}
-	if !req.HasOptions || !req.Options.HasLockAware {
-		t.Errorf("lock-aware not set: HasOptions=%v Options.HasLockAware=%v",
-			req.HasOptions, req.Options.HasLockAware)
+	if !req.HasOptions || !req.Options.LockAware {
+		t.Errorf("lock-aware not set: HasOptions=%v Options.LockAware=%v",
+			req.HasOptions, req.Options.LockAware)
 	}
 }
 

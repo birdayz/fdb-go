@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	ReadOptionsSlotType        = 0
-	ReadOptionsSlotCacheResult = 1
-	ReadOptionsSlotLockAware   = 2
-	ReadOptionsSlotField_4     = 4
-	ReadOptionsSlotField_6     = 6
+	ReadOptionsSlotType                         = 0
+	ReadOptionsSlotCacheResult                  = 1
+	ReadOptionsSlotDebugID                      = 2
+	ReadOptionsSlotConsistencyCheckStartVersion = 4
+	ReadOptionsSlotLockAware                    = 6
 )
 
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
@@ -21,13 +21,13 @@ var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
 const ReadOptionsMaxAlign = 4
 
 type ReadOptions struct {
-	Type         int32  // slot 0
-	CacheResult  bool   // slot 1
-	HasLockAware bool   // slot 2, optional tag
-	LockAware    []byte // slot 3, optional value
-	HasField_4   bool   // slot 4, optional tag
-	Field_4      []byte // slot 5, optional value
-	Field_6      bool   // slot 6
+	Type                            int32    // slot 0
+	CacheResult                     bool     // slot 1
+	HasDebugID                      bool     // slot 2, optional tag
+	DebugID                         [16]byte // slot 3, optional scalar value
+	HasConsistencyCheckStartVersion bool     // slot 4, optional tag
+	ConsistencyCheckStartVersion    []byte   // slot 5, optional value
+	LockAware                       bool     // slot 6
 }
 
 func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
@@ -37,16 +37,16 @@ func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
 	if r.FieldPresent(ReadOptionsSlotCacheResult) {
 		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
 	}
-	if r.FieldPresent(ReadOptionsSlotLockAware) && r.ReadUint8(ReadOptionsSlotLockAware) > 0 {
-		m.LockAware = r.ReadBytes(ReadOptionsSlotLockAware + 1)
-		m.HasLockAware = true
+	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
+		copy(m.DebugID[:], r.ReadRelOffRaw(ReadOptionsSlotDebugID+1, 16))
+		m.HasDebugID = true
 	}
-	if r.FieldPresent(ReadOptionsSlotField_4) && r.ReadUint8(ReadOptionsSlotField_4) > 0 {
-		m.Field_4 = r.ReadBytes(ReadOptionsSlotField_4 + 1)
-		m.HasField_4 = true
+	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
+		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.HasConsistencyCheckStartVersion = true
 	}
-	if r.FieldPresent(ReadOptionsSlotField_6) {
-		m.Field_6 = r.ReadBool(ReadOptionsSlotField_6)
+	if r.FieldPresent(ReadOptionsSlotLockAware) {
+		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
 	}
 }
 
@@ -61,16 +61,16 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(ReadOptionsSlotCacheResult) {
 		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
 	}
-	if r.FieldPresent(ReadOptionsSlotLockAware) && r.ReadUint8(ReadOptionsSlotLockAware) > 0 {
-		m.LockAware = r.ReadBytes(ReadOptionsSlotLockAware + 1)
-		m.HasLockAware = true
+	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
+		copy(m.DebugID[:], r.ReadRelOffRaw(ReadOptionsSlotDebugID+1, 16))
+		m.HasDebugID = true
 	}
-	if r.FieldPresent(ReadOptionsSlotField_4) && r.ReadUint8(ReadOptionsSlotField_4) > 0 {
-		m.Field_4 = r.ReadBytes(ReadOptionsSlotField_4 + 1)
-		m.HasField_4 = true
+	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
+		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.HasConsistencyCheckStartVersion = true
 	}
-	if r.FieldPresent(ReadOptionsSlotField_6) {
-		m.Field_6 = r.ReadBool(ReadOptionsSlotField_6)
+	if r.FieldPresent(ReadOptionsSlotLockAware) {
+		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
 	}
 	return nil
 }
@@ -79,11 +79,11 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasLockAware {
-		ps.VisitDynamicSize(len(m.LockAware))
+	if m.HasDebugID {
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
-	if m.HasField_4 {
-		ps.VisitDynamicSize(len(m.Field_4))
+	if m.HasConsistencyCheckStartVersion {
+		ps.VisitDynamicSize(len(m.ConsistencyCheckStartVersion))
 	}
 	{
 		n := ps.GetMessageWriter(int(ReadOptionsVTable[1]))
@@ -96,13 +96,14 @@ func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
 // Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	var lockAwareOff int
-	var field_4Off int
-	if m.HasLockAware {
-		lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware)
+	var debugIDOff int
+	var consistencyCheckStartVersionOff int
+	if m.HasDebugID {
+		wb.Write(m.DebugID[:], wb.CurrentBufferSize+16)
+		debugIDOff = wb.CurrentBufferSize
 	}
-	if m.HasField_4 {
-		field_4Off, _ = wb.VisitDynamicSize(m.Field_4)
+	if m.HasConsistencyCheckStartVersion {
+		consistencyCheckStartVersionOff, _ = wb.VisitDynamicSize(m.ConsistencyCheckStartVersion)
 	}
 	selfW := wb.GetMessageWriter(int(ReadOptionsVTable[1]), true)
 	selfStart := selfW.FinalLocation
@@ -121,16 +122,16 @@ func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	if m.CacheResult {
 		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotCacheResult+2]))
 	}
-	if m.Field_6 {
-		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_6+2]))
-	}
-	if m.HasLockAware {
+	if m.LockAware {
 		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotLockAware+2]))
-		selfW.WriteRelativeOffset(lockAwareOff, int(vt[ReadOptionsSlotLockAware+1+2]))
 	}
-	if m.HasField_4 {
-		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_4+2]))
-		selfW.WriteRelativeOffset(field_4Off, int(vt[ReadOptionsSlotField_4+1+2]))
+	if m.HasDebugID {
+		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotDebugID+2]))
+		selfW.WriteRelativeOffset(debugIDOff, int(vt[ReadOptionsSlotDebugID+1+2]))
+	}
+	if m.HasConsistencyCheckStartVersion {
+		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotConsistencyCheckStartVersion+2]))
+		selfW.WriteRelativeOffset(consistencyCheckStartVersionOff, int(vt[ReadOptionsSlotConsistencyCheckStartVersion+1+2]))
 	}
 	selfW.WriteToAt(selfStart)
 	return selfStart

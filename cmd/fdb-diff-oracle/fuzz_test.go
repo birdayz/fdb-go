@@ -75,18 +75,15 @@ func FuzzGetReadVersionRequest(f *testing.F) {
 			tags = r.bytes()
 		}
 		hasDebugID := r.bool()
-		var debugID []byte
-		if hasDebugID {
-			debugID = r.bytes()
-		}
+		// DebugID is Optional<UID> — a bare 16-byte OOL scalar behind the union
+		// RelativeOffset (C++ scalar_traits<UID>). Constrain to exactly 16 bytes so
+		// the C++ oracle (which only sets debugID when size==16) round-trips it.
+		debugUID := r.uid()
 		maxVersion := r.int64()
 
-		// C++ oracle skips Tags (TransactionTagMap) and DebugID (Optional<UID>)
-		// because they're complex structured types. Keep Go side in sync.
+		// C++ oracle still skips Tags (TransactionTagMap, a complex structured map).
 		_ = hasTags
 		_ = tags
-		_ = hasDebugID
-		_ = debugID
 
 		goMsg := &types.GetReadVersionRequest{
 			TransactionCount: transactionCount,
@@ -94,10 +91,14 @@ func FuzzGetReadVersionRequest(f *testing.F) {
 			MaxVersion:       maxVersion,
 			Reply:            types.ReplyPromise{},
 		}
+		if hasDebugID {
+			goMsg.HasDebugID = true
+			goMsg.DebugID = debugUID
+		}
 		goBytes := goMsg.MarshalFDB()
 
 		cppBytes, err := o.SerializeGetReadVersionRequest(
-			transactionCount, flags, false, nil, false, nil, maxVersion)
+			transactionCount, flags, false, nil, hasDebugID, debugUID[:], maxVersion)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
@@ -393,10 +394,9 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 
 		flags := r.uint32()
 		hasDebugID := r.bool()
-		var debugID []byte
-		if hasDebugID {
-			debugID = r.bytes()
-		}
+		// DebugID is Optional<UID> — a bare 16-byte OOL scalar behind the union
+		// RelativeOffset (C++ scalar_traits<UID>). Constrain to exactly 16 bytes.
+		debugUID := r.uid()
 		hasCommitCostEstimation := r.bool()
 		var commitCostEstimation []byte
 		if hasCommitCostEstimation {
@@ -410,9 +410,7 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 		tenantId := r.int64()
 		idempotencyId := r.bytes()
 
-		// C++ oracle skips DebugID, CommitCostEstimation, TagSet, IdempotencyId
-		_ = hasDebugID
-		_ = debugID
+		// C++ oracle still skips CommitCostEstimation, TagSet, IdempotencyId.
 		_ = hasCommitCostEstimation
 		_ = commitCostEstimation
 		_ = hasTagSet
@@ -430,11 +428,15 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 			Flags:      flags,
 			TenantInfo: types.TenantInfo{TenantId: tenantId},
 		}
+		if hasDebugID {
+			goMsg.HasDebugID = true
+			goMsg.DebugID = debugUID
+		}
 		goBytes := goMsg.MarshalFDB()
 
 		cppBytes, err := o.SerializeCommitTransactionRequest(
 			readSnapshot, mutations, readCRs, writeCRs,
-			flags, false, nil, false, nil, false, nil, tenantId, nil)
+			flags, hasDebugID, debugUID[:], false, nil, false, nil, tenantId, nil)
 		if err != nil {
 			// Oracle may crash or return errors on edge cases (e.g. C++ type
 			// construction failures). Log the error so skip rate is visible in
@@ -1015,12 +1017,16 @@ func TestDiffGetReadVersionRequest(t *testing.T) {
 	t.Parallel()
 	o := startOracle(t)
 	// Basic test: no optionals
-	testGetReadVersionRequestBasic(t, o, 1, 1, -1)
-	testGetReadVersionRequestBasic(t, o, 0, 0, 0)
-	testGetReadVersionRequestBasic(t, o, 0xFFFFFFFF, 0xFFFFFFFF, -1)
+	testGetReadVersionRequestBasic(t, o, 1, 1, -1, false, [16]byte{})
+	testGetReadVersionRequestBasic(t, o, 0, 0, 0, false, [16]byte{})
+	testGetReadVersionRequestBasic(t, o, 0xFFFFFFFF, 0xFFFFFFFF, -1, false, [16]byte{})
+	// DebugID present (Optional<UID> 16-byte bare scalar). Non-zero so the
+	// per-PR deterministic gate covers the union RelativeOffset payload.
+	testGetReadVersionRequestBasic(t, o, 7, 3, 100,
+		true, [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 0xCA, 0xFE, 0xBA, 0xBE})
 }
 
-func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, flags uint32, maxVersion int64) {
+func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, flags uint32, maxVersion int64, hasDebugID bool, debugID [16]byte) {
 	t.Helper()
 	goMsg := &types.GetReadVersionRequest{
 		TransactionCount: transactionCount,
@@ -1028,8 +1034,16 @@ func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, f
 		MaxVersion:       maxVersion,
 		Reply:            types.ReplyPromise{},
 	}
+	if hasDebugID {
+		goMsg.HasDebugID = true
+		goMsg.DebugID = debugID
+	}
 	goBytes := goMsg.MarshalFDB()
-	cppBytes, err := o.SerializeGetReadVersionRequest(transactionCount, flags, false, nil, false, nil, maxVersion)
+	var debugIDBytes []byte
+	if hasDebugID {
+		debugIDBytes = debugID[:]
+	}
+	cppBytes, err := o.SerializeGetReadVersionRequest(transactionCount, flags, false, nil, hasDebugID, debugIDBytes, maxVersion)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
@@ -1189,6 +1203,37 @@ func TestDiffCommitTransactionRequest(t *testing.T) {
 		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
+		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
+
+	// Commit with a non-zero DebugID (Optional<UID> 16-byte bare scalar) so the
+	// per-PR deterministic gate covers the union RelativeOffset payload.
+	debugID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	goMsg2 := &types.CommitTransactionRequest{
+		Transaction: types.CommitTransactionRef{
+			ReadSnapshot: 42,
+			Mutations: []types.MutationRef{
+				{MutType: 0, Param1: []byte("key1"), Param2: []byte("val1")},
+			},
+		},
+		Reply:      types.ReplyPromise{},
+		Flags:      0,
+		HasDebugID: true,
+		DebugID:    debugID,
+		TenantInfo: types.TenantInfo{TenantId: -1},
+	}
+	goBytes2 := goMsg2.MarshalFDB()
+	cppBytes2, err := o.SerializeCommitTransactionRequest(
+		42,
+		[]Mutation{{Type: 0, Param1: []byte("key1"), Param2: []byte("val1")}},
+		nil, nil,
+		0, true, debugID[:], false, nil, false, nil, -1, nil)
+	if err != nil {
+		t.Fatalf("oracle error: %v", err)
+	}
+	if cppBytes2 == nil {
+		t.Fatal("oracle returned error response")
+	}
+	compareBytesStructural(t, goBytes2, cppBytes2, "CommitTransactionRequest",
 		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
 }
 
@@ -1689,10 +1734,15 @@ func unmarshalGetReadVersionRequest2(data []byte) (types.GetReadVersionRequest, 
 
 func equalGetReadVersionRequest(a, b types.GetReadVersionRequest) bool {
 	// Compare fields that both Go and C++ oracle set.
-	// Tags and DebugID are skipped by the C++ oracle (complex structured types).
+	// Tags is skipped by the C++ oracle (complex structured map). DebugID
+	// (Optional<UID>, 16-byte bare scalar behind the union RelativeOffset) IS
+	// now set on both sides and compared here — both values are round-tripped
+	// from the respective serialized bytes (anti-self-confirming).
 	return a.TransactionCount == b.TransactionCount &&
 		a.Flags == b.Flags &&
-		a.MaxVersion == b.MaxVersion
+		a.MaxVersion == b.MaxVersion &&
+		a.HasDebugID == b.HasDebugID &&
+		a.DebugID == b.DebugID
 }
 
 func unmarshalGetValueRequest(data []byte) (types.GetValueRequest, error) {
@@ -1773,6 +1823,11 @@ func equalCommitTransactionRequest(a, b types.CommitTransactionRequest) bool {
 		return false
 	}
 	if a.TenantInfo.TenantId != b.TenantInfo.TenantId {
+		return false
+	}
+	// DebugID (Optional<UID>, 16-byte bare scalar behind the union RelativeOffset)
+	// is set on both sides; both are round-tripped from the serialized bytes.
+	if a.HasDebugID != b.HasDebugID || a.DebugID != b.DebugID {
 		return false
 	}
 	if len(a.Transaction.Mutations) != len(b.Transaction.Mutations) {

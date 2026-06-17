@@ -166,33 +166,143 @@ func FuzzWaitMetricsRequest_RoundTrip(f *testing.F) {
 	})
 }
 
-// FuzzWatchValueRequest_MarshalNoPanic. WatchValueRequest has no
-// UnmarshalFDB (server-only), so we can't round-trip. Smoke fuzz: random
-// fields, MarshalFDB must not panic and must produce parseable bytes.
-func FuzzWatchValueRequest_MarshalNoPanic(f *testing.F) {
+// uid16 drains 16 bytes into a [16]byte for the Optional<UID> DebugID field.
+func (f *fuzzData) uid16() [16]byte {
+	var out [16]byte
+	for i := range out {
+		out[i] = f.byte()
+	}
+	return out
+}
+
+// FuzzWatchValueRequest_RoundTrip pins Marshal→Unmarshal symmetry for
+// WatchValueRequest now that the schema extractor emits the symmetric
+// UnmarshalFDB/UnmarshalFromReader pair. The critical field is DebugID
+// (Optional<UID> — a 16-byte bare scalar behind the union RelativeOffset);
+// a slot/offset bug in either direction shows up as a round-trip mismatch.
+func FuzzWatchValueRequest_RoundTrip(f *testing.F) {
 	f.Add([]byte{4, 1, 2, 3, 4, 1, 2, 0, 0xAA, 0, 0, 0, 0, 0, 0, 0})
 	f.Add([]byte{0})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fd := &fuzzData{b: data}
+		hasValue := fd.bool()
+		hasTags := fd.bool()
+		hasDebugID := fd.bool()
 		req := &WatchValueRequest{
-			Key:      fd.bytesN(64),
-			HasValue: fd.bool(),
-			Value:    fd.bytesN(64),
-			Version:  fd.int64(),
+			Key:        fd.bytesN(64),
+			HasValue:   hasValue,
+			Version:    fd.int64(),
+			HasTags:    hasTags,
+			HasDebugID: hasDebugID,
+			DebugID:    fd.uid16(),
+		}
+		if hasValue {
+			req.Value = fd.bytesN(64)
+		}
+		if hasTags {
+			req.Tags = fd.bytesN(64)
 		}
 
-		// Must not panic.
-		bytes := req.MarshalFDB()
-
-		// Bytes must form a valid wire object that the generic Reader can
-		// parse without panicking — catches malformed vtable/RelativeOffset
-		// emission. We don't decode field values (no Unmarshal exists).
-		_, err := wire.NewReader(bytes)
-		if err != nil {
+		buf := req.MarshalFDB()
+		if _, err := wire.NewReader(buf); err != nil {
 			t.Fatalf("MarshalFDB produced unparseable bytes: %v", err)
 		}
+
+		var got WatchValueRequest
+		if err := got.UnmarshalFDB(buf); err != nil {
+			t.Fatalf("UnmarshalFDB: %v", err)
+		}
+		if !equalBytes(got.Key, req.Key) {
+			t.Errorf("Key: got %x want %x", got.Key, req.Key)
+		}
+		if got.Version != req.Version {
+			t.Errorf("Version: got %d want %d", got.Version, req.Version)
+		}
+		if got.HasValue != req.HasValue {
+			t.Errorf("HasValue: got %v want %v", got.HasValue, req.HasValue)
+		}
+		if req.HasValue && !equalBytes(got.Value, req.Value) {
+			t.Errorf("Value: got %x want %x", got.Value, req.Value)
+		}
+		if got.HasTags != req.HasTags {
+			t.Errorf("HasTags: got %v want %v", got.HasTags, req.HasTags)
+		}
+		if req.HasTags && !equalBytes(got.Tags, req.Tags) {
+			t.Errorf("Tags: got %x want %x", got.Tags, req.Tags)
+		}
+		if got.HasDebugID != req.HasDebugID {
+			t.Errorf("HasDebugID: got %v want %v", got.HasDebugID, req.HasDebugID)
+		}
+		if req.HasDebugID && got.DebugID != req.DebugID {
+			t.Errorf("DebugID: got %x want %x", got.DebugID, req.DebugID)
+		}
 	})
+}
+
+// TestWatchValueRequest_RoundTrip is the deterministic counterpart: a fully
+// populated WatchValueRequest (non-zero DebugID, SpanContext, TenantInfo) must
+// round-trip every field. Pins the new symmetric UnmarshalFDB and the
+// Optional<UID> [16]byte DebugID slot specifically.
+func TestWatchValueRequest_RoundTrip(t *testing.T) {
+	t.Parallel()
+	debugID := [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 0xCA, 0xFE, 0xBA, 0xBE}
+	req := &WatchValueRequest{
+		Key:         []byte("watched-key"),
+		Version:     0x0123456789ABCDEF,
+		HasDebugID:  true,
+		DebugID:     debugID,
+		Reply:       ReplyPromise{Token: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}},
+		SpanContext: SpanContext{TraceID: [16]byte{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1}, SpanID: 0xCAFE, Flags: 1},
+		TenantInfo:  TenantInfo{TenantId: 42},
+	}
+	buf := req.MarshalFDB()
+
+	var got WatchValueRequest
+	if err := got.UnmarshalFDB(buf); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if !bytes.Equal(got.Key, req.Key) {
+		t.Errorf("Key: got %q want %q", got.Key, req.Key)
+	}
+	if got.Version != req.Version {
+		t.Errorf("Version: got %#x want %#x", got.Version, req.Version)
+	}
+	if !got.HasDebugID {
+		t.Error("HasDebugID: got false, want true")
+	}
+	if got.DebugID != debugID {
+		t.Errorf("DebugID: got %x want %x", got.DebugID, debugID)
+	}
+	if got.Reply.Token != req.Reply.Token {
+		t.Errorf("Reply.Token: got %x want %x", got.Reply.Token, req.Reply.Token)
+	}
+	if got.SpanContext.TraceID != req.SpanContext.TraceID ||
+		got.SpanContext.SpanID != req.SpanContext.SpanID ||
+		got.SpanContext.Flags != req.SpanContext.Flags {
+		t.Errorf("SpanContext: got %+v want %+v", got.SpanContext, req.SpanContext)
+	}
+	if got.TenantInfo.TenantId != req.TenantInfo.TenantId {
+		t.Errorf("TenantInfo.TenantId: got %d want %d", got.TenantInfo.TenantId, req.TenantInfo.TenantId)
+	}
+}
+
+// TestWatchValueReply_RoundTrip pins the WatchValueReply symmetric methods.
+func TestWatchValueReply_RoundTrip(t *testing.T) {
+	t.Parallel()
+	reply := &WatchValueReply{Version: 0x7FFFFFFFFFFFFFFF, Cached: true}
+	buf := reply.MarshalFDB()
+
+	var got WatchValueReply
+	if err := got.UnmarshalFDB(buf); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if got.Version != reply.Version {
+		t.Errorf("Version: got %#x want %#x", got.Version, reply.Version)
+	}
+	if got.Cached != reply.Cached {
+		t.Errorf("Cached: got %v want %v", got.Cached, reply.Cached)
+	}
 }
 
 func equalBytes(a, b []byte) bool {

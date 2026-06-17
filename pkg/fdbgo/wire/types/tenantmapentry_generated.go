@@ -33,14 +33,14 @@ var TenantMapEntryTemplate = wire.NewMessageTemplate(
 const TenantMapEntryMaxAlign = 8
 
 type TenantMapEntry struct {
-	Id                       int64  // slot 0
-	TenantName               []byte // slot 1
-	TenantLockState          uint8  // slot 2
-	HasTenantLockId          bool   // slot 3, optional tag
-	TenantLockId             []byte // slot 4, optional value
-	HasTenantGroup           bool   // slot 5, optional tag
-	TenantGroup              []byte // slot 6, optional value
-	ConfigurationSequenceNum int64  // slot 7
+	Id                       int64    // slot 0
+	TenantName               []byte   // slot 1
+	TenantLockState          uint8    // slot 2
+	HasTenantLockId          bool     // slot 3, optional tag
+	TenantLockId             [16]byte // slot 4, optional scalar value
+	HasTenantGroup           bool     // slot 5, optional tag
+	TenantGroup              []byte   // slot 6, optional value
+	ConfigurationSequenceNum int64    // slot 7
 }
 
 func (m *TenantMapEntry) UnmarshalFromReader(r *wire.Reader) {
@@ -54,7 +54,7 @@ func (m *TenantMapEntry) UnmarshalFromReader(r *wire.Reader) {
 		m.TenantLockState = r.ReadUint8(TenantMapEntrySlotTenantLockState)
 	}
 	if r.FieldPresent(TenantMapEntrySlotTenantLockId) && r.ReadUint8(TenantMapEntrySlotTenantLockId) > 0 {
-		m.TenantLockId = r.ReadBytes(TenantMapEntrySlotTenantLockId + 1)
+		copy(m.TenantLockId[:], r.ReadRelOffRaw(TenantMapEntrySlotTenantLockId+1, 16))
 		m.HasTenantLockId = true
 	}
 	if r.FieldPresent(TenantMapEntrySlotTenantGroup) && r.ReadUint8(TenantMapEntrySlotTenantGroup) > 0 {
@@ -81,7 +81,7 @@ func (m *TenantMapEntry) UnmarshalFDB(data []byte) error {
 		m.TenantLockState = r.ReadUint8(TenantMapEntrySlotTenantLockState)
 	}
 	if r.FieldPresent(TenantMapEntrySlotTenantLockId) && r.ReadUint8(TenantMapEntrySlotTenantLockId) > 0 {
-		m.TenantLockId = r.ReadBytes(TenantMapEntrySlotTenantLockId + 1)
+		copy(m.TenantLockId[:], r.ReadRelOffRaw(TenantMapEntrySlotTenantLockId+1, 16))
 		m.HasTenantLockId = true
 	}
 	if r.FieldPresent(TenantMapEntrySlotTenantGroup) && r.ReadUint8(TenantMapEntrySlotTenantGroup) > 0 {
@@ -100,7 +100,7 @@ func (m *TenantMapEntry) UnmarshalFDB(data []byte) error {
 func (m *TenantMapEntry) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.TenantName))
 	if m.HasTenantLockId {
-		ps.VisitDynamicSize(len(m.TenantLockId))
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	if m.HasTenantGroup {
 		ps.VisitDynamicSize(len(m.TenantGroup))
@@ -121,7 +121,8 @@ func (m *TenantMapEntry) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, 
 	var tenantGroupOff int
 	tenantNameOff, _ = wb.VisitDynamicSize(m.TenantName)
 	if m.HasTenantLockId {
-		tenantLockIdOff, _ = wb.VisitDynamicSize(m.TenantLockId)
+		wb.Write(m.TenantLockId[:], wb.CurrentBufferSize+16)
+		tenantLockIdOff = wb.CurrentBufferSize
 	}
 	if m.HasTenantGroup {
 		tenantGroupOff, _ = wb.VisitDynamicSize(m.TenantGroup)

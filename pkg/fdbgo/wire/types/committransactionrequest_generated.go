@@ -49,7 +49,7 @@ type CommitTransactionRequest struct {
 	Reply                   ReplyPromise         // slot 1, nested
 	Flags                   uint32               // slot 2
 	HasDebugID              bool                 // slot 3, optional tag
-	DebugID                 []byte               // slot 4, optional value
+	DebugID                 [16]byte             // slot 4, optional scalar value
 	HasCommitCostEstimation bool                 // slot 5, optional tag
 	CommitCostEstimation    []byte               // slot 6, optional value
 	HasTagSet               bool                 // slot 7, optional tag
@@ -71,7 +71,7 @@ func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
 		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
+		copy(m.DebugID[:], r.ReadRelOffRaw(CommitTransactionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
@@ -111,7 +111,7 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
+		copy(m.DebugID[:], r.ReadRelOffRaw(CommitTransactionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
@@ -144,7 +144,7 @@ func (m *CommitTransactionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Transaction.precomputeSize(ps)
 	m.Reply.precomputeSize(ps)
 	if m.HasDebugID {
-		ps.VisitDynamicSize(len(m.DebugID))
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	if m.HasCommitCostEstimation {
 		ps.VisitDynamicSize(len(m.CommitCostEstimation))
@@ -177,7 +177,8 @@ func (m *CommitTransactionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableS
 	transactionStart = m.Transaction.writeToBuffer(wb, vtableStart, tmpl)
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	if m.HasDebugID {
-		debugIDOff, _ = wb.VisitDynamicSize(m.DebugID)
+		wb.Write(m.DebugID[:], wb.CurrentBufferSize+16)
+		debugIDOff = wb.CurrentBufferSize
 	}
 	if m.HasCommitCostEstimation {
 		commitCostEstimationOff, _ = wb.VisitDynamicSize(m.CommitCostEstimation)
