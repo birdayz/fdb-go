@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestSetTimeout_BoundsHungRead is the RFC-112 gold test: a read whose reply is
@@ -38,7 +39,7 @@ func TestSetTimeout_BoundsHungRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestSetTimeout_BoundsHungPipelinedRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestSetTimeout_BoundsHungLocate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("warm read: %v", err)
 	}
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

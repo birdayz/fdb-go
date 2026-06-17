@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -1160,7 +1161,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 
 	// tx1 gets a read version (establishes its snapshot).
 	tx1 := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -1214,7 +1215,7 @@ func TestCommitDoesNotReset_CPort(t *testing.T) {
 
 	// tx1: set and commit.
 	tx1 := db.CreateTransaction()
-	rv1, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv1, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV for tx1: %v", err)
 	}
@@ -2402,7 +2403,7 @@ func TestRYWDisable_CPort(t *testing.T) {
 	pfx := "c_rywd_"
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -2436,7 +2437,7 @@ func TestSnapshotRYWEnable_CPort(t *testing.T) {
 	pfx := "c_sryw_"
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -2471,7 +2472,7 @@ func TestSnapshotRYWDisable_CPort(t *testing.T) {
 	pfx := "c_snrd_"
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -2598,7 +2599,7 @@ func TestWatchRYWDisable_CPort(t *testing.T) {
 	db := openTestDB(t, ctx)
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -2634,7 +2635,7 @@ func TestCannotReadSystemKey_CPort(t *testing.T) {
 	db := openTestDB(t, ctx)
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -2664,7 +2665,7 @@ func TestReadSystemKey_CPort(t *testing.T) {
 	db := openTestDB(t, ctx)
 
 	tx := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestDatabaseDefaultsPropagateToTransaction verifies that database-level
@@ -198,7 +200,7 @@ func TestAddConflictRanges(t *testing.T) {
 
 	// tx1: add explicit read conflict range, then write a different key.
 	tx1 := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

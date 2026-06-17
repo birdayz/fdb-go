@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // Correctness tests run against a real FDB 7.3.75 testcontainer.
@@ -360,7 +362,7 @@ func TestSnapshotRead(t *testing.T) {
 	// With snapshot read: tx1 should succeed (no read conflict range).
 
 	tx1 := db.CreateTransaction()
-	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx1.SetReadVersion(rv)
 
 	// Snapshot read — no conflict range added.
@@ -391,7 +393,7 @@ func TestSnapshotRead(t *testing.T) {
 
 	// Verify: now do a regular read that WOULD conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv3, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx3.SetReadVersion(rv3)
 
 	// Regular read — adds conflict range.
@@ -437,7 +439,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddReadConflictKey: tx1 adds explicit read conflict (no actual read),
 	// tx2 writes the same key. tx1 should conflict on commit.
 	tx1 := db.CreateTransaction()
-	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictKey(keyMain)
 	tx1.Set(keyOther, []byte("unrelated"))
@@ -460,7 +462,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddWriteConflictKey: tx3 adds explicit write conflict on a key
 	// that tx4 also writes. tx4 reads it first, so tx4 should conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv3, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx3.SetReadVersion(rv3)
 
 	tx4 := db.CreateTransaction()
@@ -601,7 +603,7 @@ func TestAddReadConflictRange(t *testing.T) {
 
 	// tx1: add read conflict range [pfx+a, pfx+d) — covers a, b, c.
 	tx1 := db.CreateTransaction()
-	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictRange([]byte(pfx+"a"), []byte(pfx+"d"))
 	tx1.Set([]byte(pfx+"unrelated"), []byte("x"))
@@ -634,7 +636,7 @@ func TestAddWriteConflictRange(t *testing.T) {
 
 	// tx1 reads a key in the range [pfx+a, pfx+d).
 	tx1 := db.CreateTransaction()
-	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx1.SetReadVersion(rv)
 	_, _ = tx1.Get(ctx, []byte(pfx+"b")) // adds read conflict for pfx+b
 	tx1.Set([]byte(pfx+"b"), []byte("from_tx1"))
@@ -732,7 +734,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a transaction and get the versionstamp.
 	tx1 := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -760,7 +762,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a second transaction — its versionstamp should be greater.
 	tx2 := db.CreateTransaction()
-	rv2, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv2, _, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	tx2.SetReadVersion(rv2)
 	tx2.Set([]byte(pfx+"key2"), []byte("val2"))
 	if err := tx2.Commit(ctx); err != nil {
@@ -1180,7 +1182,7 @@ func TestWriteWriteConflict(t *testing.T) {
 
 	// tx1 and tx2 both start at the same read version.
 	tx1 := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -1264,7 +1266,7 @@ func TestReadWriteConflict(t *testing.T) {
 
 	// txA reads a range — establishes read conflict on [pfx+a, pfx+d).
 	txA := db.CreateTransaction()
-	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
