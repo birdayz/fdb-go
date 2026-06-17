@@ -141,6 +141,35 @@ resource "hcloud_server" "runner" {
   })
 }
 
+# --- Persistent build/cache data volume (RFC-115 / RFC-108 CI hardening) ---
+#
+# The wire-oracle CI job builds FoundationDB from source (the fdb_cmake_build genrule:
+# ~14 min, multi-GB build tree + a 0.76 GB tar) inside Docker. On the 75 GB root disk —
+# already ~64 GB used by the 21.5 GB FDB build image + the 13 GB Bazel cache — the cold
+# build+tar runs the disk out of space, the genrule's action fails, and since Bazel never
+# caches a FAILED action it cold-rebuilds and re-fails every run. A 100 GB ext4 volume for
+# Docker's data-root (and the build scratch) gives that build real headroom so the action
+# succeeds ONCE and Bazel caches it normally thereafter (no remote/disk_cache needed).
+#
+# Attached via a DATA lookup of the live server rather than hcloud_server.runner so a
+# `tofu apply -target=hcloud_volume.runner_data` can create+format+mount the volume without
+# pulling the managed server into the graph — the server's user_data embeds a one-time
+# runner-registration token (ForceNew), so coupling the volume apply to it would risk
+# replacing the runner. ext4 (not xfs): the Bazel cache + Docker layers are millions of
+# small files, ext4's conservative sweet spot; xfs's large-file/parallelism edge isn't the
+# bottleneck here.
+data "hcloud_server" "runner_lookup" {
+  name = "gh-runner-fdb"
+}
+
+resource "hcloud_volume" "runner_data" {
+  name      = "gh-runner-fdb-data"
+  size      = 100
+  server_id = data.hcloud_server.runner_lookup.id
+  format    = "ext4"
+  automount = true
+}
+
 # --- Object Storage (test reports) ---
 
 resource "minio_s3_bucket" "reports" {
