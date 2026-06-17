@@ -1,9 +1,16 @@
 # RFC-116: Operation-span attribution on the GRV, watch, and locate requests (`pkg/fdbgo`)
 
-**Status:** Accepted (RFC review: **FDB C++ maintainer ACK** — every `file:line` re-verified at
-7.3.75, fresh-root batch-span port faithful, "thread a tx span" confirmed as the divergence to avoid;
-**Torvalds ACK** — executable spec real + revert-provable, concurrency respected, scope cohesive).
-Re-review the implementation at HEAD (gating).
+**Status:** Implemented (three per-path commits on `rfc/116-operation-span-attribution`, each through
+the full `just test` gate). RFC review: **FDB C++ maintainer ACK** + **Torvalds ACK** (fresh-root
+batch-span port faithful, "thread a tx span" confirmed as the divergence to avoid, executable spec
+real + revert-provable). Implementation re-review (FDB-C-dev + Torvalds + codex + @claude) gating
+before merge.
+
+| Path | Commit | C++ spec |
+|------|--------|----------|
+| GRV — readVersionBatcher fresh-root span | `16847239` | `NativeAPI.actor.cpp:7334/7345/7385/7238/7245` |
+| locate — getKeyLocation child (once per refresh) | `a6f08a2a` | `:3017/3037`, range `:3184/3197` |
+| watch — watchValue child (once per WatchPoll) | `7fdfd24d` | `:3933/3965` |
 
 **Closes:** RFC-115 §4's explicitly-documented tracing follow-on — *"GRV (batched across txns),
 watch (async long-poll), and locate (shared location cache) get no [operation] span … not cleanly
@@ -171,9 +178,17 @@ proof is behavioral (below).
 
 ### 3. locate child span
 
-- `locate`/`locateRange`/`refresh` (`locality.go`) gain a `span types.SpanContext` parameter;
-  `buildGetKeyServerLocationsRequest` stamps `childSpanContext(span)` (`Tracing.h:3017` child).
-  Thread `tx.spanContext` from the read callers (`readpath.go:165,391,642`), the watch locate
+- `locate`/`locateRange`/`refresh`/`refreshRange` (`locality.go`) gain a `span types.SpanContext`
+  parameter (the tx span). **`refresh`/`refreshRange` derive the `getKeyLocation` child ONCE**
+  (`childSpanContext(span)`) and the builders stamp it **verbatim**. *Refinement found while reading
+  the C++:* the RFC draft proposed applying `childSpanContext` inside the builder, but
+  `queryLocations` rebuilds the request **per proxy attempt** (`locality.go:488`), so a builder-side
+  derivation would mint a **fresh child per retry** — a divergence from C++, whose
+  `getKeyLocation_internal` builds the `Span` **once** before `basicLoadBalance` and reuses
+  `span.context` across its retries (`NativeAPI.actor.cpp:3017→3037`). Deriving once in `refresh`
+  (the `getKeyLocation_internal` analog) and reusing it across proxy retries is the faithful port —
+  the same single-child-per-operation shape as watch's once-per-`WatchPoll` derivation.
+- Thread `tx.spanContext` from the read callers (`readpath.go:165,391,642`), the watch locate
   (`readpath.go:1102`, the captured `txSpan`), the metrics/estimation callers (`metrics.go:45,175`),
   and `transaction.go:751,2010,2027`.
 
@@ -190,15 +205,23 @@ each **revert-proven** (back out the stamp → test reddens):
   - ≥1 sampled tx → **sampled** flag set **and** traceID **non-zero** **and** the traceID is **not
     equal** to the sampled tx's traceID (proves the fresh-root model, catching the naive
     "thread the tx span" mistake). Mixed sampled+unsampled order-independence.
-- **GRV — wire round-trip**: a batch with a sampled tx produces a `GetReadVersionRequest` whose
-  marshalled-then-parsed `SpanContext` is sampled + non-zero (the stamp reaches the wire bytes).
-- **watch**: the `WatchValueRequest` carries a span with the **same traceID** and **same flags** as
-  the tx span but a **different spanID** (child, not raw tx span). Revert (`span` → keep raw) → red.
-- **locate**: a cache-miss `GetKeyServerLocationsRequest` carries a span that is a **child** of the
-  issuing tx span (same traceID/flags, fresh spanID); a sampled tx yields a sampled locate span.
-  Revert (drop the stamp) → span goes zero → red.
-- `-race` over `//pkg/fdbgo/client` for the touched paths; `--runs_per_test=10` on the watch/locate
-  tests (async + shared-cache concurrency).
+- **GRV — wire round-trip** (`TestBuildGetReadVersionRequest_RoundTrip`): a stamped span
+  marshals/parses back byte-identical on `GetReadVersionRequest`. **Revert** (drop the `SpanContext`
+  field in `buildGetReadVersionRequest`) → zero → red.
+
+The watch/locate paths are proven at the **same bar RFC-115 §4 used for the reads** — the
+`childSpanContext` call-site derivation is covered by `TestChildSpanContext` (child = same
+traceID/flags, fresh spanID) plus the reviewed call site; the **builder round-trip** proves the
+chosen span reaches the wire, revert-proven by dropping the field:
+
+- **watch** (`TestBuildWatchValueRequest_RoundTrip` + `_NoValue`): `buildWatchValueRequest` stamps
+  the span (the watchValue child `WatchPoll` derives) verbatim; key/version/value/tenant/reply-token
+  round-trip. **Revert** (drop the field) → zero → red. Watch FDB integration tests + `-race`
+  (async watch goroutine + shared locate cache) stay green.
+- **locate** (`TestBuildGetKeyServerLocationsRequest_RoundTrip`, `…RangeRequest_Forward`):
+  the builder stamps the `getKeyLocation` child (derived once in `refresh`) verbatim. **Revert**
+  (drop the field) → zero → red.
+- `-race` over `//pkg/fdbgo/client` for the touched async/shared-cache paths.
 
 No `cmd/fdb-diff-oracle` change: the `SpanContext` **encoding** is unchanged (RFC-115 §4 already
 pinned it); this RFC changes only **which** context is stamped, which the byte oracle doesn't model.
