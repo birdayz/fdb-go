@@ -1,7 +1,8 @@
 # RFC-115: Production-readiness round 2, wave 2 — degraded-cluster behavior, tracing, verification depth (`pkg/fdbgo`)
 
-**Status:** Implemented (all six items committed on `rfc/115-degraded-cluster-tracing-verification`;
-pending PR gauntlet + merge). Per-item commits & gating reviews:
+**Status:** Implemented (six items + a §7 follow-up committed on
+`rfc/115-degraded-cluster-tracing-verification`; pending PR gauntlet + merge). Per-item commits &
+gating reviews:
 
 | Item | Commit | Gating review |
 |------|--------|---------------|
@@ -11,6 +12,14 @@ pending PR gauntlet + merge). Per-item commits & gating reviews:
 | §1 dead-server LB exclusion (+ growth/cap test) | `a89085fb`, `01c83759` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
 | §4 tracing: propagation + OTEL export (+ NAK fix) | `67d71777`, `0c2eba6c` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
 | §6 inline-error `Optional<Error>` union marshal | `a467a4d2` | **FDB-C-dev ACK** (wire-byte byte-identical to C++) |
+| §7 IPAddress **variant-marshal** wire fix + §5 gate correction + nightly revive | _(this PR)_ | **FDB-C-dev** (v4+v6 byte-identical to C++) |
+
+**§7 (added during the PR gauntlet — the gate caught a real bug).** §5's per-PR *active* fuzz smoke,
+once it finally ran (after a CI disk fix — see below), reddened on `FuzzNetworkAddress`/`FuzzEndpoint`:
+a **pre-existing, latent `IPAddress` variant-marshal wire divergence** that a manually-disabled nightly
+had been hiding for ~2 months. Rather than defer, §7 fixes it properly (extractor variant codegen + the
+oracle's own ctor bug + IPv6 coverage), corrects §5's gate design (per-PR = *deterministic*; active
+fuzz is the nightly's job), and revives the nightly net. Full detail in §7 below.
 
 **Follow-on filed (pre-existing, surfaced by §6's regen):** the schema extractor (`cmd/fdb-schema-extract/main.cpp`)
 has no `extractType<WatchValueRequest>` / `<WatchValueReply>`, so a `just generate-wire-types` drops the
@@ -45,7 +54,9 @@ materialization/docs, coordinator-quorum non-bug, CI gating). **Two touch bytes:
 request schema and servers already parse it); (b) the inline-error marshal fix (#7) corrects a
 known-mis-encoded `Optional<Error>` writer in the **generated** wire types so a reply error the client
 *emits* is byte-identical to C++. Both go through full wire review even though neither is a *format*
-change.
+change. **§7 (added during the gauntlet) is a third byte-touching fix:** the `IPAddress` variant marshal
+— Go was dropping the address payload entirely, so every `NetworkAddress`/`Endpoint` it emitted was
+truncated; the regenerated writer is now byte-identical to C++ for both IPv4 and IPv6.
 
 ---
 
@@ -502,6 +513,92 @@ must match C++); the fault-injection plumbing is test-only.
 
 ---
 
+## §7 (PR-gauntlet follow-up) — IPAddress variant-marshal wire fix + §5 gate correction + nightly revival
+
+### How this surfaced
+
+§5 promoted the wire-oracle to per-PR with a 12s *active* fuzz smoke. That smoke had never actually run:
+the `cmd/fdb-schema-extract:fdb_cmake_build` genrule builds FoundationDB from source (~14 min) and the
+single self-hosted runner's 75 GB root disk (89% full) ran out of space *packaging the build tar* — the
+genrule compiled `libfdb_c.so` then died on the `tar`, so Bazel never cached the **failed** action and
+every run cold-rebuilt + re-failed. Fixed by attaching a **100 GB ext4 data volume** (OpenTofu
+`hcloud_volume.runner_data`, attached via a `data` lookup so applying it can never replace the
+grandfathered server) and relocating Bazel's output base onto it — the FDB build now succeeds once and
+caches normally. **This was not a `--disk_cache` problem** (the action never *succeeded* to be cached);
+it was disk headroom.
+
+With the job finally running, the active fuzz reddened on `FuzzNetworkAddress` + `FuzzEndpoint` — **not**
+a §5 regression but a **pre-existing latent wire bug** (the generated `IPAddress` types are untouched by
+this branch; the targets exist on master). Two distinct, pre-existing problems:
+
+### Problem A — `IPAddress` variant payload not serialized (real Go↔C++ wire divergence)
+
+`IPAddress` (`flow/IPAddress.h`) is a flatbuffers **union** over `uint32_t` (IPv4) / `std::array<uint8_t,16>`
+(IPv6): a 1-byte type tag + a 4-byte `RelativeOffset` to the payload (`flat_buffers.h:946-960`). Go's
+generated `(*IPAddress).writeToBuffer` wrote **only the table soffset** — neither tag nor payload — so
+every serialized `NetworkAddress`/`Endpoint` carried a **truncated address**. Root cause: the schema
+extractor (`cmd/fdb-schema-extract/main.cpp`) had a `FieldKind::Variant` case on the **read** side
+(`emitReads`) but **none** in `emitPrecomputeSize`/`emitWriteToBuffer` — variant fields fell to
+`default: break`, emitting no payload. A latent slot-advance bug (`extract.h` — a union consumes **2**
+vtable slots, not 1) and an IPv6 read bug (`ReadRelOffRaw(slot+1, 4)` returned the 4 **count** bytes of
+the count-prefixed vector, not the 16 address bytes) compounded it.
+
+**Fix (extractor, regenerate — never hand-edit generated code):** add `FieldKind::Variant` to both write
+passes — IPv4 (`use_indirection==false`, `flat_buffers.h:848`) writes a bare LE `uint32` at `cbs+4`; IPv6
+(`use_indirection==true`) writes a count-prefixed vector via `VisitDynamicSize`; both reached through the
+union tag + reloff. Fix the IPv6 read to `ReadBytes` and the 2-slot advance. Regenerated
+`ipaddress_generated.go` is byte-faithful to C++ for both alternatives.
+
+### Problem B — the oracle mis-constructed the NetworkAddress (oracle bug, not Go)
+
+`cmd/fdb-diff-oracle/cpp/main.cpp` built `NetworkAddress(IPAddress(ip), port, flags, fromHostname)`, which
+binds the `(IPAddress, port, bool isPublic, bool isTLS, fromHostname=False)` ctor — so `flags`→`isPublic`
+(the serialized flags became `(isPublic?0:FLAG_PRIVATE)|…`, dropping the requested value) and
+`fromHostname`→`isTLS`. The **un-hacked** comparator (now comparing the full struct incl. `Ip`+`Flags`,
+not just `Port`+`FromHostname`) surfaced it. **Fix:** set the `NetworkAddress` fields directly so the
+oracle serializes exactly the `(ip, port, flags, fromHostname)` requested. (The Go side was already
+correct — a real client setting `flags` serializes `flags`.)
+
+### §5 gate-design correction
+
+A per-PR **active** fuzz is the wrong gate: it is non-deterministic in *what* it finds, so it reddens PRs
+on pre-existing divergences unrelated to the change (exactly what happened here). Corrected: **per-PR is
+deterministic-only** — `TestDiff*` + replay of **every** `Fuzz*` SEED corpus. Bonus gap fixed:
+`-run=TestDiff` did **not** replay the seed corpora (`go test` only exercises `Fuzz*` when they match
+`-run`; the step's comment overclaimed) → now `-run='TestDiff|^Fuzz'`, verified to replay all seeds in
+~0.1s. **Active fuzzing (new-input discovery) is the nightly's job**, not a per-PR gate.
+
+### IPv6 oracle coverage (no fake checkbox)
+
+The fuzz exercised only IPv4 (`AddrTag=1`; the oracle took a `uint32`). Added a `TYPE_NETWORK_ADDRESS_V6`
+oracle handler + `SerializeNetworkAddressV6` client + `FuzzNetworkAddressV6` + deterministic
+`TestDiffNetworkAddressV6`, so the IPv6 alternative (count-prefixed 16-byte vector behind the union
+reloff) is verified **against C++**, not merely round-tripped in Go (a round-trip alone could hide a
+read+write-symmetric bug).
+
+### Nightly revival
+
+`nightly-fuzz.yml` was **`disabled_manually`** — red since early April (the `IPAddress` diff-fuzz
+divergence above, plus a binding-stress failure and a "runner lost communication" infra death) and then
+silenced: the forbidden "red CI → disable it" pattern. The wire divergence is now fixed; binding-stress
+passes locally (10/10) so its April failure was the resource/runner-death class, mitigated by the §7
+volume + freed root disk; the deterministic `-run` gap is fixed there too. **Action: re-enable the
+workflow (`gh workflow enable "Nightly Fuzz"`) after this PR merges** (so it runs against fixed master,
+not the still-divergent master) and monitor the first run.
+
+### Executable spec (proof)
+
+`TestDiffNetworkAddress` (v4) + `TestDiffNetworkAddressV6` (v6, with `FLAG_TLS` + `FromHostname`) +
+`TestDiffEndpoint` green against the C++ oracle; `FuzzNetworkAddress` / `FuzzEndpoint` /
+`FuzzNetworkAddressV6` clean at >4M execs each; all 17 oracle fuzz targets pass. Revert-prove: back out
+the extractor variant codegen → the IP stops serializing and the un-hacked comparator reddens.
+
+**Wire-compat impact: a wire-correctness fix** — emitted `IPAddress`/`NetworkAddress`/`Endpoint` bytes
+now match C++ for both address families (they did not before). Plus the CI `infra/main.tf` volume (no
+runtime wire effect).
+
+---
+
 ## Priority & sequencing (one PR, one logical change per commit)
 
 | # | Item | Tier | Divergence? | Wire bytes? | Rough size |
@@ -512,6 +609,7 @@ must match C++); the fault-injection plumbing is test-only.
 | §4 | Distributed tracing (`SpanContext` + `SPAN_PARENT`) | MEDIUM | behavioral | **yes (compatible)** | medium |
 | §5 | Wire-oracle + fuzz-smoke per-PR | MEDIUM | n/a (CI) | none | small |
 | §6 | Inline-error verification (`Optional<Error>`) | MEDIUM | wire-correctness | **yes** | small–medium |
+| §7 | IPAddress variant marshal + §5 gate fix + nightly revive | (gauntlet) | **yes (true, pre-existing)** | **yes** | medium |
 
 **Recommended commit order:** §3 (doc-only, retires an item) → §2 (small, no wire) → §5 (CI gate, makes
 §6 cheaper to verify) → §6 (wire-correctness fix the oracle now covers) → §1 (the real divergence; needs
