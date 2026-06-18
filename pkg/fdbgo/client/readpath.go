@@ -621,9 +621,13 @@ func (e *RangeMaterializationLimitError) Error() string {
 }
 
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
-	tx.hadRead.Store(true)         // a read was issued (RFC-059 poison signal)
-	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
-	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
+	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
+	// getRangeShardLimit is locations fetched per locateRange RPC. NOT C++ GET_RANGE_SHARD_LIMIT
+	// (=2, ClientKnobs.cpp:101) — a deliberate Go perf deviation: pre-fetch up to 100 shard locations
+	// per RPC (fewer, larger locate calls) vs C++ getExactRange's batch-of-2. Correctness-neutral: both
+	// loop until the range is exhausted and return identical KVs; only the locate-RPC count differs.
+	const getRangeShardLimit = 100
+	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []KeyValue
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling

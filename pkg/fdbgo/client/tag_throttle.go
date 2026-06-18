@@ -9,8 +9,10 @@ import (
 
 // Tag throttle knobs — matching C++ CLIENT_KNOBS defaults from NativeAPI.actor.cpp.
 const (
-	// tagThrottleRecheckInterval matches C++ CLIENT_KNOBS->TAG_THROTTLE_RECHECK_INTERVAL.
-	tagThrottleRecheckInterval = 7 * time.Second
+	// tagThrottleRecheckInterval matches C++ CLIENT_KNOBS->TAG_THROTTLE_RECHECK_INTERVAL = 5.0
+	// (ClientKnobs.cpp:296). It caps the tag-throttle retry backoff (getBackoff,
+	// NativeAPI.actor.cpp:6100: min(TAG_THROTTLE_RECHECK_INTERVAL, throttleDuration)). Was erroneously 7s.
+	tagThrottleRecheckInterval = 5 * time.Second
 
 	// proxyMaxTagThrottleDuration matches C++ CLIENT_KNOBS->PROXY_MAX_TAG_THROTTLE_DURATION.
 	proxyMaxTagThrottleDuration = 5 * time.Second

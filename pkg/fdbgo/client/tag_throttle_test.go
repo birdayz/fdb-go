@@ -312,6 +312,28 @@ func TestNextBackoffTagThrottled(t *testing.T) {
 	}
 }
 
+// TestNextBackoff_TagThrottleCapAtRecheckInterval pins the tag-throttle backoff CAP at
+// TAG_THROTTLE_RECHECK_INTERVAL = 5s (C++ ClientKnobs.cpp:296; getBackoff NativeAPI.actor.cpp:6100),
+// using a throttle duration that EXCEEDS the cap so the cap (not the duration) dominates. Revert-proof:
+// with the prior erroneous 7s constant a 20s throttle backs off 7s and this fails.
+func TestNextBackoff_TagThrottleCapAtRecheckInterval(t *testing.T) {
+	t.Parallel()
+
+	db := &database{}
+	// Throttle "slow" for ~20s — well above the 5s recheck cap.
+	info := map[string]clientTagThrottleLimits{
+		"slow": {tpsRate: 0, expiration: time.Now().Add(20 * time.Second)},
+	}
+	db.tagThrottles.replace(PriorityDefault, info)
+
+	tx := &Transaction{db: db, priority: PriorityDefault, tags: []string{"slow"}}
+	delay := tx.nextBackoff(ErrTagThrottled)
+	// min(TAG_THROTTLE_RECHECK_INTERVAL=5s, throttleDuration~20s) = 5s exactly.
+	if delay != 5*time.Second {
+		t.Fatalf("tag-throttle backoff must cap at 5s (TAG_THROTTLE_RECHECK_INTERVAL), got %v", delay)
+	}
+}
+
 func TestNextBackoffNoTagsNormalBackoff(t *testing.T) {
 	t.Parallel()
 
