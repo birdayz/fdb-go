@@ -36,6 +36,7 @@ const (
 	typeEndpoint                     = 16
 	typeReplyPromise                 = 17
 	typeNetworkAddressV6             = 18
+	typeReadOptions                  = 19
 )
 
 // fuzzReader consumes bytes from a single []byte fuzz input.
@@ -1049,6 +1050,49 @@ func (o *Oracle) SerializeReplyPromise(token [16]byte) ([]byte, error) {
 		return nil, err
 	}
 	if err := o.writeUID(token); err != nil {
+		return nil, err
+	}
+	return o.readResponse()
+}
+
+// SerializeReadOptions sends a ReadOptions (carried inside a GetValueRequest with key="ro")
+// to the oracle. Exercises RFC-117's Optional<Version> consistencyCheckStartVersion + the
+// sibling Optional<UID> debugID + lockAware. The field order matches the C++ handleReadOptions.
+func (o *Oracle) SerializeReadOptions(
+	roType int32, cacheResult bool,
+	hasDebugID bool, debugID [16]byte,
+	hasCCSV bool, ccsv int64,
+	lockAware bool,
+) ([]byte, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if err := o.writeU8(typeReadOptions); err != nil {
+		return nil, err
+	}
+	if err := o.writeI32(roType); err != nil {
+		return nil, err
+	}
+	if err := o.writeBool(cacheResult); err != nil {
+		return nil, err
+	}
+	if err := o.writeBool(hasDebugID); err != nil {
+		return nil, err
+	}
+	if hasDebugID {
+		if err := o.writeUID(debugID); err != nil {
+			return nil, err
+		}
+	}
+	if err := o.writeBool(hasCCSV); err != nil {
+		return nil, err
+	}
+	if hasCCSV {
+		if err := o.writeI64(ccsv); err != nil {
+			return nil, err
+		}
+	}
+	if err := o.writeBool(lockAware); err != nil {
 		return nil, err
 	}
 	return o.readResponse()

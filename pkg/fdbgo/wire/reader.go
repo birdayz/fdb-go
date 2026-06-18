@@ -804,6 +804,29 @@ func (r *Reader) ReadRelOffUint32(vtableSlot int) uint32 {
 	return binary.LittleEndian.Uint32(r.data[target:])
 }
 
+// ReadRelOffUint64 reads a uint64 at a RelativeOffset target — the 8-byte sibling
+// of ReadRelOffUint32. Used for Optional<scalar> / variant alternatives whose inner
+// is an 8-byte scalar written bare out-of-line behind the union RelativeOffset
+// (C++ SaveAlternative non-indirection arm, flat_buffers.h:848), e.g.
+// Optional<Version> (int64) consistencyCheckStartVersion. Bounds-checked like the
+// uint32 sibling: a short/absent buffer returns 0 rather than panicking (the
+// generated decode must not panic on a truncated field).
+func (r *Reader) ReadRelOffUint64(vtableSlot int) uint64 {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 || int(off)+4 > len(r.object) {
+		return 0
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return 0
+	}
+	target := r.objPos + int(off) + int(relOffset)
+	if target+8 > len(r.data) {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(r.data[target:])
+}
+
 func (r *Reader) ReadIPv4(vtableSlot int) uint32 {
 	off := r.fieldOffset(vtableSlot)
 	if off < 4 || int(off)+4 > len(r.object) {
