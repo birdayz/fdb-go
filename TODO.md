@@ -155,6 +155,37 @@ the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin
 commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
 SimTransport commit_unknown_result behavioral test.
 
+### [ ] fdbgo/client: transaction-level options are PRESERVED across `onError` retry; C++ resets them to DB defaults — needs its own RFC (found by the quality-grind options audit, 2026-06-19)
+
+C++ `Transaction::resetImpl` (`NativeAPI.actor.cpp:6166`, called by `tr.reset()` on the RYW onError
+path, `ReadYourWrites.actor.cpp:1417`) does `trState = trState->cloneAndReset(...)`, and
+`cloneAndReset` (`:3515`) builds a FRESH `TransactionState` whose `options` are DB-default-constructed
+— it copies the old options ONLY `if (!cx->apiVersionAtLeast(16))` (ancient APIs). So for every modern
+app, a retry RESETS `priority`→DEFAULT, `causalReadRisky`→0 (grvFlags), `lockAware`→`cx->lockAware`,
+tx-level `sizeLimit`→DB default, `tags`→empty, `snapshotRYWDisableCount`→DB default, then re-applies
+ONLY the persistent options (timeout/retry_limit/max_retry_delay/auth_token, `persistent="true"` in
+`fdb.options`). Go's `reset()` (`transaction.go:2481`, comment ~`:2528`) instead PRESERVES
+priority/causalReadRisky/lockAware/readLockAware/sizeLimit/tags/snapshotRYWDisableCount — the comment
+asserts this "matches C++", which `cloneAndReset` disproves.
+
+Wire-visible on the retry: a transaction-level `SetPriorityBatch`/`SetCausalReadRisky`/`SetLockAware`
+keeps sending its flags on the retry GRV/commit where libfdb_c reverts to the DB default.
+**Why an RFC, not a grind fix:** the faithful fix re-seeds the tx-level options from the DB defaults on
+reset (factor out CreateTransaction's seeding, call it from reset, preserve only the 4 persistent
+options) — a change to the hot retry path with per-option DB-default subtleties (lockAware→cx default,
+not false; causalReadRisky consistency), and the existing code deliberately chose the wrong behavior, so
+it needs FDB-C-dev design review. Pin with a unit test (set a tx-level option → reset → assert reverted
+to DB default; persistent options survive).
+
+**Other options-audit findings (silent no-ops where C++ acts — `fdb/options.go`):** `REPORT_CONFLICTING_KEYS`
+(sets `commit.report_conflicting_keys`; Go field exists at `committransactionref_generated.go` slot 4
+but always false), transaction `TAG`/`AUTO_THROTTLE_TAG` (never populate the GRV/commit/read `Tags`
+slot — tag throttling non-functional; also no `tag_too_long`/`too_many_tags` validation),
+`READ_SERVER_SIDE_CACHE_*` + `READ_PRIORITY_*` (set `ReadOptions.cacheResult`/`.type`; Go no-ops),
+`INITIALIZE_NEW_DATABASE` (forces readVersion=0), `USE_PROVISIONAL_PROXIES` (GRV flag bit 2). Per the
+conformance principle, the silently-ignored ones should at least LOUDLY reject (UnsupportedOptionError)
+rather than no-op — but each is a small feature, scoped separately.
+
 **Minor OnError/knob-audit findings (same grind, low priority — note, don't necessarily fix):**
 hedge `secondDelay` uses a fixed `2.0×primary-latency` where C++ uses a runtime-adaptive
 `secondMultiplier (≥1.0) × second-best latency + BASE_SECOND_REQUEST_TIME(0.5ms)`
