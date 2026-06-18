@@ -260,6 +260,13 @@ FieldKind classifyField() {
 // Uses explicit specializations to avoid template metaprogramming issues.
 template <class T> const char* optionalInnerGoType() { return ""; }
 template <> inline const char* optionalInnerGoType<Optional<ReadOptions>>() { return "ReadOptions"; }
+// RFC-115 §6: Optional<Error> (the inline LoadBalancedReply.error on read replies) is a
+// flatbuffers UNION — a 1-byte present tag + a RelativeOffset to a nested Error table —
+// NOT Optional<bytes>. Without this specialization the writer emitted a length-prefixed
+// byte vector (mis-marshal); registering Error as the struct inner makes the generated
+// writer emit the nested-Error-table-via-offset that the reader (wire.ReadInlineReplyError)
+// and C++ expect. Error has uint16 errorCode at slot 0 (REGISTER_FIELD_NAMES(Error,...)).
+template <> inline const char* optionalInnerGoType<Optional<Error>>() { return "Error"; }
 
 // ============================================================
 // 4. FieldDesc + FieldCollector
@@ -337,7 +344,12 @@ private:
 
         fields.push_back(fd);
         fieldIndex++;
-        slotIndex += (fd.kind == FieldKind::Optional) ? 2 : 1;
+        // A union occupies TWO vtable slots — a 1-byte type tag + a 4-byte
+        // RelativeOffset (flat_buffers.h:951-956). BOTH Optional<T> (FieldKind::Optional)
+        // and std::variant (FieldKind::Variant) are unions, so a field following either
+        // must skip 2 slots. (Latent for IPAddress, the lone variant-only type, but
+        // correct for any future variant followed by another field.)
+        slotIndex += (fd.kind == FieldKind::Optional || fd.kind == FieldKind::Variant) ? 2 : 1;
     }
 };
 

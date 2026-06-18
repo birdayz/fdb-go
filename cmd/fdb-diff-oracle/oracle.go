@@ -35,6 +35,7 @@ const (
 	typeNetworkAddress               = 15
 	typeEndpoint                     = 16
 	typeReplyPromise                 = 17
+	typeNetworkAddressV6             = 18
 )
 
 // fuzzReader consumes bytes from a single []byte fuzz input.
@@ -970,6 +971,32 @@ func (o *Oracle) SerializeNetworkAddress(
 		return nil, err
 	}
 	if err := o.writeU32(ipAddr); err != nil {
+		return nil, err
+	}
+	if err := o.writeU16(port); err != nil {
+		return nil, err
+	}
+	if err := o.writeU16(flags); err != nil {
+		return nil, err
+	}
+	if err := o.writeBool(fromHostname); err != nil {
+		return nil, err
+	}
+	return o.readResponse()
+}
+
+// SerializeNetworkAddressV6 sends an IPv6 NetworkAddress to the oracle (16-byte address),
+// exercising the IPAddress variant tag=2 (count-prefixed vector) marshal path.
+func (o *Oracle) SerializeNetworkAddressV6(
+	ip16 [16]byte, port, flags uint16, fromHostname bool,
+) ([]byte, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if err := o.writeU8(typeNetworkAddressV6); err != nil {
+		return nil, err
+	}
+	if err := o.writeBytes(ip16[:]); err != nil {
 		return nil, err
 	}
 	if err := o.writeU16(port); err != nil {

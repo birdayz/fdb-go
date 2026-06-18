@@ -1,6 +1,7 @@
 package client
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -108,6 +109,96 @@ func TestFailureMonitorMultipleRecoveries(t *testing.T) {
 	case <-ch2:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("second recovery should signal on fresh channel")
+	}
+}
+
+// TestFailureMonitorExclusionWindow pins the RFC-115 §1 timed re-admission: a failed
+// endpoint is `excluded` only within its window, re-admitted after it (so a read
+// re-probes it — Go's dial-on-demand substitute for C++'s background reconnect),
+// markAlive clears it immediately, and a fresh failure starts at the initial window.
+// Uses the now-param of excluded() so it is fully deterministic (no fake clock, no race).
+func TestFailureMonitorExclusionWindow(t *testing.T) {
+	t.Parallel()
+	fm := newFailureMonitor()
+	addr := "10.0.0.9:4500"
+
+	if fm.excluded(addr, nowSeconds()) {
+		t.Fatal("fresh endpoint must not be excluded")
+	}
+
+	fm.markFailed(addr)
+	base := fm.excludedUntil(addr)
+	if base == 0 {
+		t.Fatal("markFailed must set an excludedUntil deadline")
+	}
+	// Within the window → excluded; past it → re-admitted (the probe window).
+	if !fm.excluded(addr, base-0.001) {
+		t.Fatal("must be excluded inside the re-admission window")
+	}
+	if fm.excluded(addr, base+0.001) {
+		t.Fatal("must be re-admitted (not excluded) past the window")
+	}
+	// Still failed (in the set) past the window — only markAlive/dial-success clears it.
+	if !fm.isFailed(addr) {
+		t.Fatal("endpoint is still failed past the window until markAlive")
+	}
+
+	// markAlive clears failed + exclusion immediately.
+	fm.markAlive(addr)
+	if fm.excluded(addr, base-0.001) || fm.isFailed(addr) {
+		t.Fatal("markAlive must clear failed + exclusion")
+	}
+
+	// A fresh failure starts a fresh window at the initial size.
+	fm.markFailed(addr)
+	w1 := fm.excludedUntil(addr) - nowSeconds()
+	if w1 < connFailureInitialWindow-0.5 || w1 > connFailureInitialWindow+0.5 {
+		t.Fatalf("first window ≈ %v, want ≈ %v", w1, connFailureInitialWindow)
+	}
+	// An in-window re-failure must not shrink the deadline (same-episode retry hits).
+	prevUntil := fm.excludedUntil(addr)
+	fm.markFailed(addr)
+	if fm.excludedUntil(addr) < prevUntil {
+		t.Fatal("in-window re-failure must not shrink the deadline")
+	}
+}
+
+// TestFailureMonitorWindowGrowthAndCap drives the re-admission window through its
+// growth (a probe re-failing PAST the window) and the 30s cap, deterministically via
+// markFailedAt's injectable clock — the dimensions the within-window no-shrink test
+// can't reach (Torvalds §1 follow-up).
+func TestFailureMonitorWindowGrowthAndCap(t *testing.T) {
+	t.Parallel()
+	fm := newFailureMonitor()
+	addr := "10.0.0.10:4500"
+
+	now := 0.0
+	fm.markFailedAt(addr, now) // first failure → initial window
+	if w := fm.excludedUntil(addr) - now; w != connFailureInitialWindow {
+		t.Fatalf("initial window = %v, want %v", w, connFailureInitialWindow)
+	}
+
+	// Each re-failure with now PAST excludedUntil grows the window ×growth, capped.
+	prev := connFailureInitialWindow
+	for i := 0; i < 25; i++ {
+		now += 1000 // always past excludedUntil → the growth branch
+		fm.markFailedAt(addr, now)
+		w := fm.excludedUntil(addr) - now
+		want := math.Min(prev*connFailureWindowGrowth, connFailureMaxWindow)
+		if math.Abs(w-want) > 1e-9 {
+			t.Fatalf("growth step %d: window = %v, want %v", i, w, want)
+		}
+		prev = w
+	}
+	if got := fm.excludedUntil(addr) - now; math.Abs(got-connFailureMaxWindow) > 1e-9 {
+		t.Fatalf("window after 25 growths = %v, want cap %v", got, connFailureMaxWindow)
+	}
+
+	// A within-window re-failure (now < excludedUntil) must NOT grow the window.
+	capped := fm.excludedUntil(addr) - now
+	fm.markFailedAt(addr, now+1) // now+1 ≪ excludedUntil (= now + 30)
+	if w := fm.excludedUntil(addr) - (now + 1); math.Abs(w-capped) > 1e-9 {
+		t.Fatalf("within-window re-failure changed window: %v != %v", w, capped)
 	}
 }
 

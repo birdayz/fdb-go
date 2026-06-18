@@ -35,7 +35,7 @@ const GetValueReplyMaxAlign = 8
 type GetValueReply struct {
 	Penalty  float64 // slot 0
 	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
+	Error    Error   // slot 2, optional nested value
 	HasValue bool    // slot 3, optional tag
 	Value    []byte  // slot 4, optional value
 	Cached   bool    // slot 5
@@ -46,7 +46,9 @@ func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
 		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
 	}
 	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetValueReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
@@ -67,7 +69,9 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
 	}
 	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetValueReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
@@ -85,7 +89,7 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetValueReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasError {
-		ps.VisitDynamicSize(len(m.Error))
+		m.Error.precomputeSize(ps)
 	}
 	if m.HasValue {
 		ps.VisitDynamicSize(len(m.Value))
@@ -104,7 +108,7 @@ func (m *GetValueReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, t
 	var error_Off int
 	var valueOff int
 	if m.HasError {
-		error_Off, _ = wb.VisitDynamicSize(m.Error)
+		error_Off = m.Error.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	if m.HasValue {
 		valueOff, _ = wb.VisitDynamicSize(m.Value)

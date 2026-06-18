@@ -167,8 +167,9 @@ func TestBuildGetValueRequest_RoundTrip(t *testing.T) {
 		tenantID int64 = 7
 	)
 	replyToken := transport.UID{First: 0xAA, Second: 0xBB}
+	span := types.SpanContext{TraceID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, SpanID: 0x1234, Flags: 1}
 
-	body, bufp := buildGetValueRequest(key, version, false, tenantID, replyToken, transport.UID{})
+	body, bufp := buildGetValueRequest(key, version, false, tenantID, span, replyToken, transport.UID{})
 	defer getValueBufPool.Put(bufp)
 
 	var req types.GetValueRequest
@@ -177,6 +178,10 @@ func TestBuildGetValueRequest_RoundTrip(t *testing.T) {
 	}
 	if string(req.Key) != string(key) {
 		t.Errorf("Key: got %q, want %q", req.Key, key)
+	}
+	// RFC-115 §4: the trace span must round-trip (not the all-zero span we used to send).
+	if req.SpanContext.TraceID != span.TraceID || req.SpanContext.SpanID != span.SpanID || req.SpanContext.Flags != span.Flags {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
 	}
 	if req.Version != version {
 		t.Errorf("Version: got %d, want %d", req.Version, version)
@@ -198,7 +203,7 @@ func TestBuildGetValueRequest_RoundTrip(t *testing.T) {
 func TestBuildGetValueRequest_LockAwareSetsOptions(t *testing.T) {
 	t.Parallel()
 	body, bufp := buildGetValueRequest([]byte("k"), 1, true /*lockAware*/, 0,
-		transport.UID{First: 1, Second: 2}, transport.UID{})
+		types.SpanContext{}, transport.UID{First: 1, Second: 2}, transport.UID{})
 	defer getValueBufPool.Put(bufp)
 
 	var req types.GetValueRequest
@@ -228,7 +233,7 @@ func TestBuildGetKeyValuesRequest_RoundTrip(t *testing.T) {
 	replyToken := transport.UID{First: 0x1234, Second: 0x5678}
 
 	body, bufp := buildGetKeyValuesRequest(begin, end, version, limit, false, tenantID,
-		replyToken, transport.UID{})
+		types.SpanContext{}, replyToken, transport.UID{})
 	defer getKeyValuesBufPool.Put(bufp)
 
 	var req types.GetKeyValuesRequest
@@ -268,7 +273,7 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	t.Parallel()
 	body, bufp := buildGetKeyValuesRequest(
 		[]byte("a"), []byte("z"), 1, 10, true /*lockAware*/, 0,
-		transport.UID{First: 1, Second: 2}, transport.UID{},
+		types.SpanContext{}, transport.UID{First: 1, Second: 2}, transport.UID{},
 	)
 	defer getKeyValuesBufPool.Put(bufp)
 

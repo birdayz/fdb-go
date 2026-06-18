@@ -1,0 +1,636 @@
+# RFC-115: Production-readiness round 2, wave 2 — degraded-cluster behavior, tracing, verification depth (`pkg/fdbgo`)
+
+**Status:** Implemented (six items + a §7 follow-up committed on
+`rfc/115-degraded-cluster-tracing-verification`; pending PR gauntlet + merge). Per-item commits &
+gating reviews:
+
+| Item | Commit | Gating review |
+|------|--------|---------------|
+| §3 coordinator non-bug (doc only) | `8dac3a3b` | n/a (retired — verified non-bug) |
+| §2 bounded `GetRange` (opt-in cap + `Mode` doc) | `abef40a1` | n/a (no wire / no divergence) |
+| §5 wire-oracle + fuzz-smoke per-PR | `658ccac5` | n/a (CI) |
+| §1 dead-server LB exclusion (+ growth/cap test) | `a89085fb`, `01c83759` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
+| §4 tracing: propagation + OTEL export (+ NAK fix) | `67d71777`, `0c2eba6c` | **FDB-C-dev + Torvalds ACK** on impl HEAD |
+| §6 inline-error `Optional<Error>` union marshal | `a467a4d2` | **FDB-C-dev ACK** (wire-byte byte-identical to C++) |
+| §7 IPAddress **variant-marshal** wire fix + §5 gate correction + nightly revive | _(this PR)_ | **FDB-C-dev** (v4+v6 byte-identical to C++) |
+
+**§7 (added during the PR gauntlet — the gate caught a real bug).** §5's per-PR *active* fuzz smoke,
+once it finally ran (after a CI disk fix — see below), reddened on `FuzzNetworkAddress`/`FuzzEndpoint`:
+a **pre-existing, latent `IPAddress` variant-marshal wire divergence** that a manually-disabled nightly
+had been hiding for ~2 months. Rather than defer, §7 fixes it properly (extractor variant codegen + the
+oracle's own ctor bug + IPv6 coverage), corrects §5's gate design (per-PR = *deterministic*; active
+fuzz is the nightly's job), and revives the nightly net. Full detail in §7 below.
+
+**Follow-on filed (pre-existing, surfaced by §6's regen):** the schema extractor (`cmd/fdb-schema-extract/main.cpp`)
+has no `extractType<WatchValueRequest>` / `<WatchValueReply>`, so a `just generate-wire-types` drops the
+committed `watchvalue*_generated.go` (the recipe `rm`s then restores only extractor-emitted types). They
+were restored here (the watch path needs them); registering them in the extractor is tracked in TODO.md.
+
+**Original RFC review (design):** **FDB C++ maintainer ACK** (validated every C++ claim against
+`/tmp/fdbsrc` 7.3.75; ACK'd the §1 *timed re-admission* recovery design — full `connectionKeeper` port NOT
+required — and the §3 quorum non-bug; required citation fixes folded: `LoadBalance.actor.h:607`→`:790`,
+`SPAN_PARENT` 33-byte = `8+16+8+1`, `Optional<Error>` is a union not a bare table). **Torvalds ACK**
+(conditions met: §1 structural fork resolved to one path; §1 proof gate is the clock-free *selection*
+assertion, latency is corroboration only). `/code-review` clean (conventions + consistency). The gating
+§1/§4 ACKs re-apply to each impl HEAD, not just this RFC.
+Closes the remaining RFC-113 punch-list after RFC-114 (R2-CRITICAL #1 latency + #2
+connection-failure visibility) merged in #302. This wave covers the SERIOUS degraded-cluster items
+(#3 bounded `GetRange`, #4 dead-server LB exclusion, #5 coordinator quorum) and the MEDIUM
+verification-depth + tracing items (#6 wire-oracle/fuzz per-PR, #7 inline-error verification, #8
+distributed tracing). Per the user's scoping decision this is **one RFC for the whole remaining
+punch-list**; implementation still lands as **one logical change per commit** (each item independently
+revert-provable) on a single stacked branch, driven via the `fdb-client-engineer` workflow
+(FDB-C-dev + Torvalds + `/code-review` on the RFC, then again on each impl delta; codex + @claude on
+the PR).
+**Spec:** FoundationDB C++ `libfdb_c` at tag **7.3.75** (the `foundationdb` pin in `MODULE.bazel`);
+the differential oracle is the Apple CGo binding over `libfdb_c`. C++ is the spec.
+**Scope:** `pkg/fdbgo` only (`client/`, `transport/`, `fdb/`, `wire/`, `cmd/fdb-schema-extract`,
+`cmd/fdb-diff-oracle`) + `.github/workflows`. NOT the record layer / SQL / planner.
+
+**Wire-compat impact summary.** Five of six items are **zero-wire** (LB selection, `GetRange`
+materialization/docs, coordinator-quorum non-bug, CI gating). **Two touch bytes:** (a) the tracing item
+(#8) *populates* the currently all-zero `SpanContext` request field → the serialized request bytes change
+(zero → a real, default-**unsampled** trace id), wire-**compatibly** (the field already exists in every
+request schema and servers already parse it); (b) the inline-error marshal fix (#7) corrects a
+known-mis-encoded `Optional<Error>` writer in the **generated** wire types so a reply error the client
+*emits* is byte-identical to C++. Both go through full wire review even though neither is a *format*
+change. **§7 (added during the gauntlet) is a third byte-touching fix:** the `IPAddress` variant marshal
+— Go was dropping the address payload entirely, so every `NetworkAddress`/`Endpoint` it emitted was
+truncated; the regenerated writer is now byte-identical to C++ for both IPv4 and IPv6.
+
+---
+
+## Where round 2 stands after #302
+
+RFC-114 (#302, now HEAD on master) closed both R2-CRITICAL operability gaps: latency DDSketches
+(read/commit/GRV/total, Prometheus summaries) and connection-failure visibility (counters + a single
+edge-triggered `Warn` sink at `recordConnFailure`, `topology.go:181`). **Wire-correctness was already
+launch-grade; observability is now adequate to operate the client.** What remains is exactly the class
+RFC-113 tiered as SERIOUS/MEDIUM: how the client *behaves when the cluster degrades*, plus tracing and
+verification depth. None requires an architectural change; the sharpest one (#4) is a true `libfdb_c`
+divergence whose fix is gated on getting the *recovery* mechanism right (§1).
+
+This wave does **not** re-open anything #302 closed and explicitly **retires #5** as a verified
+non-bug (§3) — adding a quorum there would make Go *stricter* than `libfdb_c`, a conformance
+violation, not a fix.
+
+---
+
+## §1 (R2-SERIOUS #4) — dead storage servers are not excluded from read load-balancing  *(true C++ divergence)*
+
+### Problem (Go, verified `file:line`)
+
+`chooseServer` (`client/loadbalance.go:95`) and `chooseTopTwo` (`:171`) build their candidate set
+**purely** from the QueueModel's timed backoff — `now > d.failedUntil` (`:109`, `:188`). And
+`failedUntil` is written in **exactly one place**: the `futureVersion` branch of `endRequestFull`
+(`:274-279`, error codes 1009/1037). It is **never** set from the connection failure monitor.
+`failMon.isFailed` (`client/failure_monitor.go:59`) is documented *"Used by tests only."* — the load
+balancer never consults it.
+
+Consequence: a storage server whose TCP connection just died (so `recordConnFailure` →
+`failMon.markFailed`, `topology.go:181-182`) **keeps being selected as the hedge primary and the hedge
+target** on the very next read to its shard. The read pays a full dial timeout (`DefaultRPCTimeout`,
+the `getOrDial` ctx at `database.go:418`) before the sequential fallback (`readpath.go:512-527`)
+rescues it from a live replica. Correctness is preserved (the fallback finds a live server); it is
+**wasted tail latency on every read to a dead shard**, and a divergence from the C++ load balancer.
+The failure monitor wired for RFC-114's observability is exactly the signal the LB should consult —
+so the plumbing already exists.
+
+### C++ spec (`fdbrpc/include/fdbrpc/LoadBalance.actor.h`, 7.3.75)
+
+The failure-monitor gate is a **separate, earlier** filter than the QueueModel backoff:
+
+```cpp
+// loadBalance(), :499 — failure-monitor gate FIRST
+if (!IFailureMonitor::failureMonitor().getState(thisStream->getEndpoint()).failed) {
+    auto const& qd = model->getMeasurement(thisStream->getEndpoint().token.first());
+    if (now() > qd.failedUntil) {                       // :501 — QueueModel backoff SECOND
+        double thisMetric = qd.smoothOutstanding.smoothTotal();
+        ...
+} else {
+    ++badServers;                                       // failed alternative skipped
+}
+```
+
+`basicLoadBalance` applies the same gate (`:790`: `if (!IFailureMonitor::...getState(...).failed) break;`;
+its own all-down branch is at `:804`).
+So C++ layers **two** independent gates: (1) `IFailureMonitor.failed` (connection health, binary) and
+(2) `QueueData.failedUntil` (per-error timed backoff). Go currently implements **only (2)**.
+
+The **all-down** branch (`:617-637`) blocks until a server recovers, rather than picking a known-dead one:
+
+```cpp
+if (!stream && !firstRequestData.isValid()) {            // Everything is down!
+    std::vector<Future<Void>> ok(alternatives->size());
+    for (int i = 0; i < ok.size(); i++)
+        ok[i] = IFailureMonitor::failureMonitor().onStateEqual(
+            alternatives->get(i, channel).getEndpoint(), FailureStatus(false));
+    Future<Void> okFuture = quorum(ok, 1);
+    if (!alternatives->alwaysFresh()) wait(allAlternativesFailedDelay(okFuture));
+    else wait(okFuture);
+}
+```
+
+### The recovery question (the crux — what re-admits an excluded server)
+
+C++ can afford a *binary* failure gate because **FlowTransport self-heals failed peers in the
+background, independent of any LB traffic**:
+
+- `connectionKeeper` (`fdbrpc/FlowTransport.actor.cpp:804-819`) keeps reconnecting a peer **even when
+  it has zero outstanding/unsent messages** — the `retryConnect` path breaks the idle wait after
+  `FAILURE_DETECTION_DELAY`/`SERVER_REQUEST_INTERVAL` and re-dials (`:840`).
+- On a successful (re)connect it calls `IFailureMonitor::...setStatus(dest, FailureStatus(false))`
+  (`:847`), and on failure `setStatus(..., true)` after `FAILURE_DETECTION_DELAY` (`:944`).
+- `connectionMonitor` (`:641-722`) actively pings idle connections (`CONNECTION_MONITOR_LOOP_TIME` /
+  `CONNECTION_MONITOR_TIMEOUT`), throwing `connection_failed()` on ping timeout.
+- A Peer is only evicted from the `peers` map when fully dereferenced (`:1025-1035`) — there is **no**
+  time-based GC; until then it silently reconnects.
+
+**Go has no equivalent.** The pure-Go client is **dial-on-demand**: `handleConnError` *evicts* the
+dead conn from the pool and marks it failed (`topology.go:163-171`), and `markAlive` fires **only** on
+a subsequent successful `getOrDial` (`database.go:438-445`). `transport/conn.go`'s `connectionMonitor`
+(`:864`) pings *existing pooled* conns but there is no background reconnect of an *evicted* peer. So if
+the LB simply skips `failMon.isFailed` servers, a server that recovers is **never re-dialed and stays
+permanently excluded** from any shard where a live replica exists — a worse bug than the one we're
+fixing. **The fix is the gate *plus* a recovery path; the gate alone is incorrect.**
+
+### Proposed Go change
+
+**(a) Add the failure-monitor gate, 1:1 with `:499`.** In `chooseServer`/`chooseTopTwo` candidate
+construction, skip `failMon.isFailed(addr)` endpoints **before** the existing `now > failedUntil` /
+QueueModel scoring. (Drop the "tests only" comment on `isFailed`.) This is the binary connection-health
+gate (1), layered above the existing timed backoff (2) — matching C++'s two-gate structure exactly.
+
+**(b) All-candidates-failed → fall back to "try anyway", NOT a blocking quorum.** C++ blocks on
+`quorum(ok,1)` of `onStateEqual(FailureStatus(false))` because its background keeper will flip a peer
+healthy without any request. Go's dial-on-demand model makes the *dial attempt itself the probe*: when
+every candidate is `isFailed`, keep the existing all-failed branch (`loadbalance.go:114-126`,
+soonest-`failedUntil`) so a real read re-dials a candidate — success → `markAlive`, failure → fast
+re-fail. A read therefore never stalls forever waiting on recovery (it either recovers via the dial or
+fails fast and the tx retry loop / `ctx` deadline governs), which is the Go-faithful equivalent of the
+C++ block. **Documented divergence** (Go has no `connectionKeeper`); DIVERGENCES.md gets the entry.
+
+**(c) Recovery via a timed re-admission probe (RECOMMENDED) — the piece Go must add in lieu of the
+keeper.** Give `failureMonitor` a per-endpoint `failedSince` + bounded backoff so the LB *re-admits* an
+excluded endpoint as a probe candidate after a window, even while no live replica forces a dial there.
+Concretely: the candidate filter skips an endpoint iff `failMon.isFailed(addr) && now <
+failedSince+backoff`; past the window it is re-admitted (one probe), a real read dials it, and
+`markAlive` (already wired, `database.go:445`) clears the flag on success while another failure re-stamps
+`failedSince` with grown backoff (reuse the `futureVersionBackoff` growth/cap constants,
+`loadbalance.go:56-58`). This reproduces the **observable** C++ end-state — excluded while down,
+self-healed on recovery — using Go's existing dial-on-demand + `markAlive` machinery rather than a
+persistent-peer reconnect loop.
+
+> **FDB-C-dev decision point — RESOLVED (ACK'd).** The structural choice is settled: implement **(c)**,
+> the timed re-admission probe. The FDB C++ maintainer ACK'd (c) as a *faithful observable substitute* —
+> excluded-while-down, self-heals when a real read re-dials past the window and `markAlive` clears the
+> flag, never permanently strands — and explicitly confirmed the **full `connectionKeeper` port is NOT
+> required**. Critically, there is **no correctness hole on the all-down path**: C++'s `quorum(ok,1)` is
+> *not* an unconditional block — it is wrapped in `allAlternativesFailedDelay` (`LoadBalance.actor.h:634`)
+> and rides the same 5 s / `ctx` transaction ceiling that Go's "try-anyway" fallback honors, so
+> Go-re-dialing-as-probe and C++-waiting-on-keeper-flip reach the same end-state and neither surfaces an
+> error the other wouldn't. The discarded 1:1 alternative (a background `connectionKeeper` analog) is
+> recorded here only as the rejected option; do not implement it. (The gating ACK still applies to the
+> impl HEAD, not just this RFC.)
+
+### Executable spec (proof)
+
+- **Deterministic fault test** (`client/fault_test.go`, extend `dropReplyConn`/`faultDialer`): a 3-replica
+  shard where one replica's conn is dead. Assert (1) — **the hard gate, asserted with no clock** — while
+  ≥1 live replica exists, the dead server is **never** returned by `chooseServer`/`chooseTopTwo` as
+  primary or hedge target (a pure selection assertion). The fact that the read then completes well under
+  `DefaultRPCTimeout` (no dial-timeout paid) is a latency *observable* used only as corroboration, **never**
+  the pass/fail condition — a timing measurement must not be the gate (§5 discipline / the #288 lesson);
+  (2) after the backoff window the dead endpoint is
+  re-admitted as a probe and, once its conn is restored, a subsequent read selects it again (recovery, no
+  permanent exclusion); (3) all-failed → the read still attempts (no deadlock), governed by `ctx`.
+  **Make the race structurally impossible to lose** (drop the reply / hold the dial), never a timing
+  gamble — per the §5 discipline (the #288 lesson). **Revert-prove:** remove the `isFailed` skip → the
+  "dead server not chosen" assertion reddens; remove the timed re-admission → the recovery assertion
+  reddens.
+- `-race` over `//pkg/fdbgo/client`, `--runs_per_test=10` to prove the recovery determinism.
+
+**Wire-compat impact: none** (server selection only; identical bytes on the wire).
+
+---
+
+## §2 (R2-SERIOUS #3) — unbounded `GetRange` materializes the whole result → OOM  *(shared hazard, NOT a divergence)*
+
+### Problem (Go, verified `file:line`)
+
+`getRangeImpl` (`client/readpath.go:594`) sets `remaining = math.MaxInt` when `limit<=0` (`:601-602`)
+and accumulates every shard into one `allKVs` slice (`:689`) with no total byte/row ceiling. The common
+facade path `GetSliceWithError` (`fdb/range_result.go:102`) uses `effectiveLimit` → `math.MaxInt32`
+(`:64-68`, `:107`) and **ignores `StreamingMode`**. A large unbounded scan materializes the entire
+result (≈×2 with the return copy at `:112-115`) and OOMs the process. The 80 KB per-reply limit bounds
+each round-trip, not the total.
+
+The `RangeOptions.Mode` doc is **factually wrong** (`fdb/range.go:125`): *"Ignored by the pure Go client
+(all reads use exact mode internally)."* In fact `Iterator().Advance()` **does** honor `Mode` via
+`batchSize(...)` (`fdb/range_result.go:152`); `Mode` is ignored **only** by `GetSliceWithError`. So the
+doc both (a) claims a no-op that isn't and (b) steers users toward the unbounded `GetSliceWithError` and
+**away** from the mode-respecting `Iterator()`.
+
+### Why this is NOT a divergence to "fix" by default
+
+The Apple Go binding over `libfdb_c` *also* implements `GetSliceWithError` by appending batches until the
+range is exhausted — the C API bounds each *batch*, never the *total*, and never returns a clean "too
+big" error. A **default-on** total-byte ceiling that errors would make Go's facade **diverge from the
+cgo oracle**. The default must stay oracle-matching; the fix is OOM-*safety* + honest docs **without**
+changing default behavior.
+
+### Proposed Go change
+
+1. **Correct the `Mode` doc** (`fdb/range.go:125`): state that `Mode` is honored by `Iterator()` (the
+   streaming path) and ignored by `GetSliceWithError` (which always fetches all), and point users at
+   `Iterator()` for large/unbounded ranges. Keep the existing `GetSliceWithError` `WARNING` godoc
+   (`range_result.go:99-101`).
+2. **Opt-in total ceiling, off by default.** Add an opt-in option (e.g. a `RangeOptions` field or a
+   per-transaction/database knob — exact surface decided in review) bounding total rows and/or bytes
+   materialized by `GetSliceWithError`/`getRangeImpl`; when exceeded, return a **structured error**
+   (`errors.As`-matchable, carrying the cap and the count reached). **Default unset → behavior is exactly
+   today's** (oracle-matching unbounded append). Never a default clean-error.
+
+### Executable spec (proof)
+
+- **FDB integration test** (real testcontainer): with the opt-in cap set low, a scan that exceeds it
+  returns the structured error (not OOM, not a silent truncation); with the cap unset, the same scan
+  returns the full result unchanged (oracle-matching). **Revert-prove:** removing the cap check makes the
+  "errors above cap" assertion red.
+- A `godoc`/doc test (or a `// Mode is honored by Iterator()` assertion in an existing range test)
+  pinning the corrected behavior so the doc can't silently rot back.
+
+**Wire-compat impact: none.**
+
+---
+
+## §3 (R2-SERIOUS #5) — coordinator quorum  *(VERIFIED NON-BUG — close, document, no code)*
+
+RFC-113 flagged this **"verify before acting, do not make Go stricter than `libfdb_c`."** Verified
+against the 7.3.75 client source — **Go already matches C++; there is no divergence.**
+
+`tryAllCoordinators` (`client/database.go:539`) is first-reply-wins. The C++ **client** is too:
+
+- `getLeader()` computes `majority = bestCount >= nominees.size()/2 + 1`
+  (`fdbclient/MonitorLeader.actor.cpp:578`) — but that bool is **server-side leader-election metadata**;
+  the function returns the most-voted leader **regardless** of `majority`.
+- `monitorLeaderOneGeneration` (`:583-636`) aggregates whatever nominee replies have arrived and calls
+  `getLeader(nominees)` **without** any `quorum(...)` wait — it acts on the current best, even if only
+  one coordinator has answered.
+- `monitorProxiesOneGeneration` (`:840-982`) contacts coordinators **round-robin, one at a time**, and
+  adopts the **first successful** `OpenDatabaseCoordRequest` reply (`:919-937`): `repFuture =
+  clientLeaderServer.openDatabase.tryGetReply(req, ...)` → `if (rep.present()) { successIndex = index;
+  allConnectionsFailed = false; }`. There is **no** `quorum(...)`, no majority gate on client topology
+  adoption.
+
+So **adding a coordinator quorum to Go would make it *stricter* than `libfdb_c`** — a conformance
+violation, not a fix.
+
+Also reconfirmed (RFC-113 #6b): cluster-file re-read is **failure-gated** in C++ too — only adopted
+under `allConnectionsFailed && storedConnectionString.getNumberOfCoordinators() > 0`
+(`MonitorLeader.actor.cpp:888-900`), where `allConnectionsFailed` is set after cycling all coordinators
+with no success (`:975-979`, gated by `COORDINATOR_RECONNECTION_DELAY`). RFC-111's forward-following +
+failure-gated re-read is therefore C++-faithful; **do not add a periodic timer.**
+
+### Action
+
+No code change. **Close as a verified non-bug.** Add a code comment at `tryAllCoordinators`
+(`database.go:539`) documenting that first-reply-wins is **deliberate C++-faithful** behavior (cite
+`MonitorLeader.actor.cpp:919-937` + `:578` for the majority-is-server-side distinction), so the next
+auditor doesn't re-file it. Update DIVERGENCES.md / the TODO mark accordingly.
+
+**Wire-compat impact: none** (no change).
+
+---
+
+## §4 (R2-MEDIUM #8) — distributed tracing: populate `SpanContext`, honor `SPAN_PARENT`
+
+### Problem (Go, verified `file:line`)
+
+Every request type carries a `SpanContext` slot (`GetValueRequest` slot 5, `GetReadVersionRequest` slot 6,
+`CommitTransactionRequest` slot 9, `GetKeyServerLocationsRequest` slot 6, plus `GetKeyValuesRequest`,
+`GetKeyRequest`, `WatchValueRequest` — confirmed across `wire/types/*request*_generated.go`) but it is
+**always zero-valued** (no assignment to `.TraceID`/`.SpanID` outside generated/test code). The tracing
+transaction options — `SetDebugTransactionIdentifier`, `SetLogTransaction`, `SetTransactionLoggingEnable`,
+`SetServerRequestTracing` (`fdb/options.go:116/175/179/290`) — are accepted-but-ignored no-ops, and the
+`SetSpanParent` option that exists (`fdb/options.go:340`) is an accepted-but-ignored no-op stub that
+**discards** its bytes (so distributed-trace-parent injection silently does nothing).
+
+### C++ spec — a default client does NOT send a zero `SpanContext`
+
+This reframes RFC-113's "lower urgency, just populate it": C++ generates a **random, default-unsampled**
+span **per transaction** and stamps it on every request. Go sending all-zero is therefore a *behavioral*
+divergence (minor — both wire-parse; servers ignore unsampled spans — but not byte-for-byte what C++
+emits).
+
+- `SpanContext` = `{ UID traceID /*2×uint64*/, uint64 spanID, TraceFlags m_Flags /*uint8*/ }`,
+  default `unsampled` (`fdbclient/include/fdbclient/Tracing.h:46-61`).
+- `generateSpanID()` (`fdbclient/NativeAPI.actor.cpp:3458-3471`) **always** generates a random
+  `traceID`+`spanID`; the **sampled** flag is set iff `deterministicRandom()->random01() <=
+  FLOW_KNOBS->TRACING_SAMPLE_RATE`, else `unsampled`.
+- `TRACING_SAMPLE_RATE` default = **`0.0`** (`flow/Knobs.cpp:88`) → a default client emits a random
+  **unsampled** span on every request.
+- Stamped on outgoing requests, per-op CHILD context for reads/GRV, TX context for commit: GetValue
+  (`:3677-3678`, the getValue child), **GRV** (`getConsistentReadVersion` child `:7238`, request
+  `GetReadVersionRequest req(span.context,…)` `:7244` — *not* `:985`, which is the causal-risky
+  `attemptGRVFromOldProxies` path), **commit** (`:6169`, `CommitTransactionRequest(trState->spanContext)`
+  — the **tx-level** span; the `NAPI:tryCommit` child `:6569` is never reassigned onto the wire request).
+- **`SPAN_PARENT`** option (`:7126-7133`): a **33-byte** serialized parent `SpanContext` — the size
+  check at `:7128` is exact. The 33 bytes are **8 (the `IncludeVersion` protocol-version header) + 16
+  (`traceID`, 2×uint64) + 8 (`spanID`) + 1 (`flags`)**; Go MUST emit/parse the 8-byte version prefix, not
+  just the 25-byte struct body. `span.setParent(...)` copies the parent's `traceID`+flags and assigns a
+  fresh random `spanID` (`Tracing.h:237-242`) — the distributed-tracing injection hook.
+- Default tracer is `NoopTracer` (`fdbclient/Tracing.actor.cpp:323`); `LogfileTracer` /
+  `FastUDPTracer` are opt-in export backends (`openTracer`, `:329-350`).
+
+### Proposed Go change — two layers: wire propagation (done) + OpenTelemetry export
+
+**Layer 1 — wire propagation.** Per-transaction random `SpanContext`
+(traceID 2×uint64 + spanID + flags), **unsampled** by default (sample-rate knob, default `0.0` =
+`TRACING_SAMPLE_RATE`), regenerated per tx and per attempt (`reset()` ≈ C++ `cloneAndReset`). `SPAN_PARENT`
+(33-byte `IncludeVersion` parent) parsed + linked. Stamped on the per-tx requests.
+
+> **Correction the full model must make (FDB-C-dev CONFIRMED):** **reads + GRV** stamp that operation's
+> **child-span context** (not the tx span) — `GetValueRequest(span.context)` (`NativeAPI.actor.cpp:3677`,
+> `span` = the `NAPI:getValue` child at `:3623`); GRV `GetReadVersionRequest req(span.context,…)`
+> (`:7244`, the `getConsistentReadVersion` child `:7238`). **Commit is the exception:**
+> `CommitTransactionRequest(trState->spanContext)` (`:6169`) stamps the **tx-level** span — the
+> `NAPI:tryCommit` child (`:6569`) is created for export but **never** reassigned onto the wire request,
+> so commit on the wire legitimately carries the tx span. Layer-1 as landed stamps the *tx-level*
+> `spanContext` on **every** request (right for commit, but for reads/GRV it sends the tx spanID instead
+> of a per-op child spanID). The full model fixes **reads + GRV only**: derive a **child** `SpanContext`
+> (tx traceID + fresh spanID + tx flags) and stamp it on those requests; **leave commit on the tx span**
+> (matching C++ — "fixing" commit to a child would *diverge*). Each per-op child is also the otel span's
+> seed context, so a server-side read/GRV span nests under the client's per-op span.
+
+**Layer 2 — OpenTelemetry export backend (THIS change).** The export half is the analog of C++'s
+pluggable `ITracer` (`NoopTracer` default, `LogfileTracer`/`FastUDPTracer` backends). Go takes the
+**official, minimal OpenTelemetry interface dependency** rather than porting FDB's bespoke UDP tracer —
+an allowed read-side/observability extension (no wire impact; propagation in Layer 1 stays C++-faithful):
+
+- **Dependency (minimal, interface-only):** `go.opentelemetry.io/otel/trace` — a **standalone module**
+  whose only runtime dep is the small `go.opentelemetry.io/otel` root API (no SDK, no exporters, no
+  gRPC/protobuf; those modules are pulled only by the *consumer* when they wire an exporter). Both are
+  already *indirect* deps of `pkg/fdbgo`; this promotes them to direct. **No custom `Span` type and NO
+  separate module** — building our own would re-implement the light interface OTEL already maintains.
+  (Decision: precedent is CockroachDB, which exposes `SetOpenTelemetryTracer(oteltrace.Tracer)` and takes
+  `otel/trace` in core; CRDB keeps its *own* `Span` only because it feeds `SHOW TRACE` — an internal
+  reader the thin Go client does not have, so we skip it.)
+- **API:** `WithTracer(trace.Tracer) Option` on the database. Default is
+  `noop.NewTracerProvider().Tracer("fdbgo")` (`go.opentelemetry.io/otel/trace/noop`) — zero telemetry,
+  zero cost when unset, the `NoopTracer` analog. The consumer constructs their own `TracerProvider`
+  (OTLP/Jaeger/Datadog/…) and passes its `Tracer`.
+- **Span model (C++-faithful granularity):** a `"Transaction"` parent span (started at the first GRV,
+  ended on commit success / reset / Reset / Cancel) + per-operation **child** spans `fdbgo.getValue` /
+  `fdbgo.getKey` / `fdbgo.getRange` (the C++ `NAPI:getValue/getKey/getRange` reads). Each child is started
+  at the op (covering its retry loop) and ended on completion, recorded only when sampled. **Commit** has
+  no separate child span — the `"Transaction"` span ends at commit success (`postCommitReset`), so its
+  duration captures the commit (C++'s off-wire `NAPI:tryCommit` child folded in; a dedicated commit child
+  would outlive its parent given the end-on-commit hook). **GRV (batched across txns), watch (async
+  long-poll), and locate (shared location cache) get no child span** — they are not cleanly per-tx in
+  Go's architecture; documented follow-on.
+- **IDs — Layer 1 is the SOLE authority; otel consumes (Torvalds).** Layer 1 (Go) generates the wire
+  `SpanContext` **unconditionally**, tracer or not — so the wire always carries a real unsampled span
+  (C++-default-faithful) and there is exactly one ID generator. When a tracer is set, the otel
+  `"Transaction"` span is **seeded with Layer-1's txTraceID** (via `trace.NewSpanContext` +
+  `trace.ContextWithSpanContext` as the remote root) so the whole otel client waterfall shares the
+  traceID that's on the wire; FDB server-side spans (also under that traceID) land in the same trace.
+  No reverse flow — the otel span never drives the wire IDs. (Per-op spanID parity between the otel span
+  and the wire is not required for correlation; shared traceID is. This avoids fighting otel's
+  `tracer.Start` minting and needs no custom span — the reason CRDB keeps its own `Span` is to record a
+  predetermined spanID, which we don't need since we have no `SHOW TRACE`.) A `SPAN_PARENT`-injected
+  parent seeds Layer-1's traceID, which the otel root then inherits.
+- Wire the trace no-op options to their real effect where cheap (`DEBUG_TRANSACTION_IDENTIFIER` →
+  span attribute; `SERVER_REQUEST_TRACING`) — C++ `setOption` (`NativeAPI.actor.cpp:6998-7059`).
+
+**Layer-2 design review status:** **FDB-C-dev ACK** (granularity faithful, ID-unification wire-neutral,
+sampling gate matches `Span::~Span` `Tracing.actor.cpp:383`; corrections folded: GRV cite `:7244`,
+commit stamps the tx span not a child). **Torvalds ACK** (dep call honest, per-op spans zero-cost under
+noop, ID-invariant fixed to Layer-1-sole-authority). **Decision: this ships in the SAME PR as the rest of
+RFC-115** (not split) — closing the whole punch-list in one change, as one logical commit-per-item on the
+branch. Re-review the implementation at HEAD (gating).
+
+### Executable spec (proof)
+
+- **Fixed-context differential** (the differential can't match C++'s *random* ids, so pin the
+  *encoding*): serialize a **fixed** `SpanContext` through the Go wire type and assert byte-identical to
+  the C++/cgo encoding of the same fixed context (extend `cmd/fdb-diff-oracle` with a `SpanContext`
+  fixture, or a hand-pinned golden against `libfdb_c`). Round-trip `SPAN_PARENT`'s 33-byte format
+  byte-exact.
+- **Behavioral test:** a transaction's requests now carry a **non-zero, unsampled** span; two txns get
+  **distinct** trace ids; `Reset()` re-anchors a fresh id; `SPAN_PARENT` makes the child's `traceID`
+  equal the injected parent's. Revert-prove (drop the stamp → span goes zero).
+- Fuzz the `SpanContext` (de)serializer in `cmd/fdb-diff-oracle` (it is already in the
+  discover-all-`Fuzz*` set, §5).
+
+**Wire-compat impact: YES (bytes change, compatibly).** Request bytes go from a zero `SpanContext` to a
+real (default-unsampled) one — the field already exists in the schema and servers already parse it, so
+this is wire-**compatible**, but because it changes serialized bytes it goes through full wire review and
+the fixed-context differential above.
+
+---
+
+## §5 (R2-MEDIUM #6) — promote the wire-type oracle + a fuzz smoke to per-PR
+
+### Problem / current state (verified)
+
+The cross-client **data-plane** differential is **already per-PR** (`nightly-libfdbc.yml` runs on
+`push` + `pull_request`, RFC P2.8 — header lines 11-13). What remains **nightly-only** is the
+`cmd/fdb-diff-oracle` **wire-type** oracle + the deep fuzz, in `nightly-fuzz.yml` (`schedule: cron '17 3
+* * *'` — **not** referenced in `ci.yml`):
+
+- *"Run deterministic tests"* (`nightly-fuzz.yml:37-40`): `go test -run=TestDiff` against the C++ oracle
+  binary — **fast** (seconds), corpus + seed replay across all oracle-compared types.
+- *"Fuzz ALL oracle-compared types"* (`:42-69`): every discovered `Fuzz*` at **6 min each** (~1h45m) —
+  **too slow for per-PR**.
+
+So a wire regression in a less-traveled reply type (e.g. one of the 8 reply-parse types — `GetValueReply`,
+`GetKeyReply`, `GetKeyValuesReply`, `GetReadVersionReply`, `Error`, `Endpoint`, `ClientDBInfo`,
+`OpenDatabaseCoordRequest`) can merge green and live ~a day until the nightly.
+
+### Proposed change
+
+- **Promote the fast `TestDiff*` deterministic wire-oracle tests to per-PR** (`ci.yml`): build
+  `//cmd/fdb-diff-oracle:diff_oracle_bin` and run `go test -run=TestDiff ./cmd/fdb-diff-oracle/` on the
+  self-hosted box (it has the C++ toolchain). Seconds-scale; catches a deterministic wire regression in
+  any oracle-compared type before merge.
+- **Add a short fuzz *smoke* per-PR:** seed-corpus replay (`go test -run=^$ -fuzz=… -fuzztime=15s` per
+  target, or a fixed corpus replay) — a fast tail that surfaces an obvious marshal break without the
+  1h45m nightly cost. **Keep the deep 17×6min fuzz nightly** (it stays the exhaustive net).
+- Keep the empty-discovery no-op guard (`nightly-fuzz.yml:52-55`) on the per-PR variant so the gate can't
+  silently become a no-op.
+
+### Executable spec (proof)
+
+Add the `ci.yml` step(s); deliberately break a reply marshal on a branch and confirm the **per-PR** job
+reddens (revert-prove the gate, not just its presence).
+
+**Wire-compat impact: none** (CI gating only).
+
+---
+
+## §6 (R2-MEDIUM #7) — close the inline-error verification gap
+
+### Problem (verified, from RFC-113 #8 + the skill wire-truths)
+
+Real FDB delivers read-path wrong-shard / future-version / process-behind via the **inline**
+`LoadBalancedReply.error` (`Optional<Error>`) field — `storageserver.actor.cpp` `sendErrorWithPenalty`
+— **not** the root `ErrorOr` union. On the read side Go parses it correctly via `wire.ReadInlineReplyError`
+(the generated `.Error` field mis-decodes it — a documented schema-extractor bug, since `Optional<Error>`
+serializes as a flatbuffers **union**: a **1-byte type tag** + a **4-byte `RelativeOffset`** to a nested
+Error table — *not* a bare table and *not* a length-prefixed string; `LoadBalancedReply.error` is the
+`Optional<Error>` at `LoadBalance.actor.h:72-76`). But:
+
+1. the **generated writer** still mis-encodes `Optional<Error>` (schema-extractor bug), and
+2. the fault harness (`client/fault_test.go`) can only inject a **root** `ErrorOr`, so the inline-error
+   arm of `parseGetKeyReply`/`parseGetKeyValuesReply` is exercised **only by hand-pinned fixtures, never
+   on a real reply** — the one place "byte-identical on the wire" is asserted but unproven on the read
+   error path.
+
+### Proposed change
+
+1. **Fix the `Optional<Error>` marshal in the schema extractor** so the **writer emits the union type
+   tag + RelativeOffset** (the missing piece today), regenerating byte-identical to C++ (`cmd/fdb-schema-extract` — fix the
+   *extractor*, regenerate; **never** hand-edit generated code, per the wire-types rule), so a reply error
+   the client emits encodes byte-identical to C++.
+2. **Build the inline-error fault path** (extend `fault_test.go`): an `inlineErrorConn` that replaces the
+   next reply frame with a *successful* reply carrying a **non-empty** `LoadBalancedReply.error` (the
+   deferred `SimTransport` sliver, scoped to exactly this path), driving `parseGetKeyReply` /
+   `parseGetKeyValuesReply`'s inline arm end-to-end.
+
+### Executable spec (proof)
+
+- **Anti-self-confirming:** inject the **canonical literal** `1001` (wrong_shard_server), **never** the
+  code-under-test's own `ErrWrongShardServer` constant (the §"Testing discipline" P6 rule — injecting the
+  constant passes for any value it holds, exactly how the 1062 bug stayed green).
+- Assert the client surfaces the right code from an **inline** reply (and that a `1006`/all-alternatives
+  inline error is absorbed, never surfaced). Round-trip the fixed `Optional<Error>` encoding against the
+  C++ oracle (a `cmd/fdb-diff-oracle` fixture). Revert-prove: back out the marshal fix → the byte-equality
+  assertion reddens.
+
+**Wire-compat impact: the marshal fix is a wire-correctness fix** (the emitted `Optional<Error>` bytes
+must match C++); the fault-injection plumbing is test-only.
+
+---
+
+## §7 (PR-gauntlet follow-up) — IPAddress variant-marshal wire fix + §5 gate correction + nightly revival
+
+### How this surfaced
+
+§5 promoted the wire-oracle to per-PR with a 12s *active* fuzz smoke. That smoke had never actually run:
+the `cmd/fdb-schema-extract:fdb_cmake_build` genrule builds FoundationDB from source (~14 min) and the
+single self-hosted runner's 75 GB root disk (89% full) ran out of space *packaging the build tar* — the
+genrule compiled `libfdb_c.so` then died on the `tar`, so Bazel never cached the **failed** action and
+every run cold-rebuilt + re-failed. Fixed by attaching a **100 GB ext4 data volume** (OpenTofu
+`hcloud_volume.runner_data`, attached via a `data` lookup so applying it can never replace the
+grandfathered server) and relocating Bazel's output base onto it — the FDB build now succeeds once and
+caches normally. **This was not a `--disk_cache` problem** (the action never *succeeded* to be cached);
+it was disk headroom.
+
+With the job finally running, the active fuzz reddened on `FuzzNetworkAddress` + `FuzzEndpoint` — **not**
+a §5 regression but a **pre-existing latent wire bug** (the generated `IPAddress` types are untouched by
+this branch; the targets exist on master). Two distinct, pre-existing problems:
+
+### Problem A — `IPAddress` variant payload not serialized (real Go↔C++ wire divergence)
+
+`IPAddress` (`flow/IPAddress.h`) is a flatbuffers **union** over `uint32_t` (IPv4) / `std::array<uint8_t,16>`
+(IPv6): a 1-byte type tag + a 4-byte `RelativeOffset` to the payload (`flat_buffers.h:946-960`). Go's
+generated `(*IPAddress).writeToBuffer` wrote **only the table soffset** — neither tag nor payload — so
+every serialized `NetworkAddress`/`Endpoint` carried a **truncated address**. Root cause: the schema
+extractor (`cmd/fdb-schema-extract/main.cpp`) had a `FieldKind::Variant` case on the **read** side
+(`emitReads`) but **none** in `emitPrecomputeSize`/`emitWriteToBuffer` — variant fields fell to
+`default: break`, emitting no payload. A latent slot-advance bug (`extract.h` — a union consumes **2**
+vtable slots, not 1) and an IPv6 read bug (`ReadRelOffRaw(slot+1, 4)` returned the 4 **count** bytes of
+the count-prefixed vector, not the 16 address bytes) compounded it.
+
+**Fix (extractor, regenerate — never hand-edit generated code):** add `FieldKind::Variant` to both write
+passes — IPv4 (`use_indirection==false`, `flat_buffers.h:848`) writes a bare LE `uint32` at `cbs+4`; IPv6
+(`use_indirection==true`) writes a count-prefixed vector via `VisitDynamicSize`; both reached through the
+union tag + reloff. Fix the IPv6 read to `ReadBytes` and the 2-slot advance. Regenerated
+`ipaddress_generated.go` is byte-faithful to C++ for both alternatives.
+
+### Problem B — the oracle mis-constructed the NetworkAddress (oracle bug, not Go)
+
+`cmd/fdb-diff-oracle/cpp/main.cpp` built `NetworkAddress(IPAddress(ip), port, flags, fromHostname)`, which
+binds the `(IPAddress, port, bool isPublic, bool isTLS, fromHostname=False)` ctor — so `flags`→`isPublic`
+(the serialized flags became `(isPublic?0:FLAG_PRIVATE)|…`, dropping the requested value) and
+`fromHostname`→`isTLS`. The **un-hacked** comparator (now comparing the full struct incl. `Ip`+`Flags`,
+not just `Port`+`FromHostname`) surfaced it. **Fix:** set the `NetworkAddress` fields directly so the
+oracle serializes exactly the `(ip, port, flags, fromHostname)` requested. (The Go side was already
+correct — a real client setting `flags` serializes `flags`.)
+
+### §5 gate-design correction
+
+A per-PR **active** fuzz is the wrong gate: it is non-deterministic in *what* it finds, so it reddens PRs
+on pre-existing divergences unrelated to the change (exactly what happened here). Corrected: **per-PR is
+deterministic-only** — `TestDiff*` + replay of **every** `Fuzz*` SEED corpus. Bonus gap fixed:
+`-run=TestDiff` did **not** replay the seed corpora (`go test` only exercises `Fuzz*` when they match
+`-run`; the step's comment overclaimed) → now `-run='TestDiff|^Fuzz'`, verified to replay all seeds in
+~0.1s. **Active fuzzing (new-input discovery) is the nightly's job**, not a per-PR gate.
+
+### IPv6 oracle coverage (no fake checkbox)
+
+The fuzz exercised only IPv4 (`AddrTag=1`; the oracle took a `uint32`). Added a `TYPE_NETWORK_ADDRESS_V6`
+oracle handler + `SerializeNetworkAddressV6` client + `FuzzNetworkAddressV6` + deterministic
+`TestDiffNetworkAddressV6`, so the IPv6 alternative (count-prefixed 16-byte vector behind the union
+reloff) is verified **against C++**, not merely round-tripped in Go (a round-trip alone could hide a
+read+write-symmetric bug).
+
+### Nightly revival
+
+`nightly-fuzz.yml` was **`disabled_manually`** — red since early April (the `IPAddress` diff-fuzz
+divergence above, plus a binding-stress failure and a "runner lost communication" infra death) and then
+silenced: the forbidden "red CI → disable it" pattern. The wire divergence is now fixed; binding-stress
+passes locally (10/10) so its April failure was the resource/runner-death class, mitigated by the §7
+volume + freed root disk; the deterministic `-run` gap is fixed there too. **Action: re-enable the
+workflow (`gh workflow enable "Nightly Fuzz"`) after this PR merges** (so it runs against fixed master,
+not the still-divergent master) and monitor the first run.
+
+### Executable spec (proof)
+
+`TestDiffNetworkAddress` (v4) + `TestDiffNetworkAddressV6` (v6, with `FLAG_TLS` + `FromHostname`) +
+`TestDiffEndpoint` green against the C++ oracle; `FuzzNetworkAddress` / `FuzzEndpoint` /
+`FuzzNetworkAddressV6` clean at >4M execs each; all 17 oracle fuzz targets pass. Revert-prove: back out
+the extractor variant codegen → the IP stops serializing and the un-hacked comparator reddens.
+
+**Wire-compat impact: a wire-correctness fix** — emitted `IPAddress`/`NetworkAddress`/`Endpoint` bytes
+now match C++ for both address families (they did not before). Plus the CI `infra/main.tf` volume (no
+runtime wire effect).
+
+---
+
+## Priority & sequencing (one PR, one logical change per commit)
+
+| # | Item | Tier | Divergence? | Wire bytes? | Rough size |
+|---|------|------|-------------|-------------|-----------|
+| §1 | Dead-server LB exclusion + recovery | SERIOUS | **Yes (true)** | none | medium (recovery design) |
+| §2 | Bounded `GetRange` (opt-in cap + `Mode` doc) | SERIOUS | no (shared hazard) | none | small |
+| §3 | Coordinator quorum | SERIOUS | **no — verified non-bug** | none | doc-only |
+| §4 | Distributed tracing (`SpanContext` + `SPAN_PARENT`) | MEDIUM | behavioral | **yes (compatible)** | medium |
+| §5 | Wire-oracle + fuzz-smoke per-PR | MEDIUM | n/a (CI) | none | small |
+| §6 | Inline-error verification (`Optional<Error>`) | MEDIUM | wire-correctness | **yes** | small–medium |
+| §7 | IPAddress variant marshal + §5 gate fix + nightly revive | (gauntlet) | **yes (true, pre-existing)** | **yes** | medium |
+
+**Recommended commit order:** §3 (doc-only, retires an item) → §2 (small, no wire) → §5 (CI gate, makes
+§6 cheaper to verify) → §6 (wire-correctness fix the oracle now covers) → §1 (the real divergence; needs
+the recovery-design ACK) → §4 (wire-byte change; lands last so the differential/oracle are already
+per-PR). §1 and §4 are the two that **must** carry an FDB-C-dev ACK on the implementation HEAD, not just
+the RFC.
+
+## Recommendation / grade
+
+With #302 merged, the client sits at **~8/10** (wire-correct + observable). This wave targets
+**unqualified solo-production operability**: §1 removes the per-read dial-timeout penalty to dead shards
+(the last SERIOUS *latency-under-degradation* divergence), §2 removes the OOM foot-gun, §3 confirms the
+coordinator path is already correct, §4 brings tracing to C++ behavioral parity + distributed-trace
+injection, and §5/§6 close the verification depth on the read error path. **Top two to land first for
+operability impact: §1 (dead-server exclusion) and §4 (tracing) — both gated on an FDB-C-dev ACK of the
+design before code.**
+
+## What this is NOT
+
+- Not a periodic coordinator/cluster-file timer (§3 — would diverge from C++).
+- Not a default-on `GetRange` ceiling (§2 — would diverge from the cgo oracle).
+- Not a trace *export* backend (§4 core — that's a follow-on Go extension).
+- Not a full `connectionKeeper` port (§1 — recommended recovery reuses dial-on-demand + `markAlive`;
+  the keeper analog is the documented heavier alternative pending FDB-C-dev's structural ACK).

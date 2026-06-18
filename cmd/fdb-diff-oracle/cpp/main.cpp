@@ -56,6 +56,7 @@ enum MsgType : uint8_t {
     TYPE_NETWORK_ADDRESS = 15,
     TYPE_ENDPOINT = 16,
     TYPE_REPLY_PROMISE = 17,
+    TYPE_NETWORK_ADDRESS_V6 = 18,
 };
 
 // --- Buffered binary stdin reader ---
@@ -757,7 +758,46 @@ static bool handleNetworkAddress() {
     if (!readU16(flags)) return false;
     if (!readBool(fromHostname)) return false;
 
-    NetworkAddress addr(IPAddress(ipAddr), port, flags, fromHostname);
+    // Set fields DIRECTLY — NOT NetworkAddress(ip, port, flags, fromHostname): that 4-arg
+    // form binds the (IPAddress, port, bool isPublic, bool isTLS, fromHostname=False) ctor,
+    // so `flags`→isPublic and `fromHostname`→isTLS, and the on-wire flags become
+    // (isPublic?0:FLAG_PRIVATE)|(isTLS?FLAG_TLS:0) — NOT the requested flags. The oracle
+    // must serialize the EXACT (ip, port, flags, fromHostname) it was given.
+    NetworkAddress addr;
+    addr.ip = IPAddress(ipAddr);
+    addr.port = port;
+    addr.flags = flags;
+    addr.fromHostname = fromHostname;
+
+    auto buf = serializeMessage(addr);
+    writeResponse(buf.data(), buf.size());
+    return true;
+}
+
+static bool handleNetworkAddressV6() {
+    std::string v6;
+    uint16_t port, flags;
+    bool fromHostname;
+
+    if (!readBytes(v6)) return false;
+    if (v6.size() != 16) return false;
+    if (!readU16(port)) return false;
+    if (!readU16(flags)) return false;
+    if (!readBool(fromHostname)) return false;
+
+    // IPv6 NetworkAddress: build an IPAddress from the 16-byte store, then set the
+    // NetworkAddress fields directly (the 4-arg ctor misbinds flags→isPublic — see
+    // handleNetworkAddress). This exercises the Go IPAddress variant tag=2 (IPv6) marshal:
+    // a count-prefixed 16-byte vector behind the union RelativeOffset.
+    IPAddress::IPAddressStore store;
+    for (size_t i = 0; i < 16; i++)
+        store[i] = (uint8_t)v6[i];
+
+    NetworkAddress addr;
+    addr.ip = IPAddress(store);
+    addr.port = port;
+    addr.flags = flags;
+    addr.fromHostname = fromHostname;
 
     auto buf = serializeMessage(addr);
     writeResponse(buf.data(), buf.size());
@@ -778,9 +818,16 @@ static bool handleEndpoint() {
     if (!readUID(token)) return false;
 
     // Construct Endpoint by setting fields directly (avoids choosePrimaryAddress
-    // which depends on g_network local address TLS state).
+    // which depends on g_network local address TLS state). Set the NetworkAddress fields
+    // directly too — the 4-arg NetworkAddress(ip, port, flags, fromHostname) ctor misbinds
+    // flags→isPublic / fromHostname→isTLS (see handleNetworkAddress).
     Endpoint ep;
-    ep.addresses.address = NetworkAddress(IPAddress(ipAddr), port, flags, fromHostname);
+    NetworkAddress na;
+    na.ip = IPAddress(ipAddr);
+    na.port = port;
+    na.flags = flags;
+    na.fromHostname = fromHostname;
+    ep.addresses.address = na;
     ep.token = token;
 
     auto buf = serializeMessage(ep);
@@ -865,6 +912,9 @@ int main() {
             break;
         case TYPE_NETWORK_ADDRESS:
             ok = handleNetworkAddress();
+            break;
+        case TYPE_NETWORK_ADDRESS_V6:
+            ok = handleNetworkAddressV6();
             break;
         case TYPE_ENDPOINT:
             ok = handleEndpoint();

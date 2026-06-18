@@ -38,7 +38,7 @@ const GetKeyValuesReplyMaxAlign = 8
 type GetKeyValuesReply struct {
 	Penalty  float64 // slot 0
 	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
+	Error    Error   // slot 2, optional nested value
 	Data     []byte  // slot 3
 	Version  int64   // slot 4
 	More     bool    // slot 5
@@ -51,7 +51,9 @@ func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
 		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
 	}
 	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyValuesReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetKeyValuesReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetKeyValuesReplySlotData) {
@@ -80,7 +82,9 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
 	}
 	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyValuesReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetKeyValuesReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetKeyValuesReplySlotData) {
@@ -106,7 +110,7 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyValuesReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasError {
-		ps.VisitDynamicSize(len(m.Error))
+		m.Error.precomputeSize(ps)
 	}
 	ps.VisitDynamicSize(len(m.Data))
 	{
@@ -123,7 +127,7 @@ func (m *GetKeyValuesReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart in
 	var error_Off int
 	var dataOff int
 	if m.HasError {
-		error_Off, _ = wb.VisitDynamicSize(m.Error)
+		error_Off = m.Error.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	dataOff, _ = wb.VisitDynamicSize(m.Data)
 	selfW := wb.GetMessageWriter(int(GetKeyValuesReplyVTable[1]), true)

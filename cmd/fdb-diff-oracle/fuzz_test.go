@@ -514,6 +514,18 @@ func FuzzGetReadVersionReply(f *testing.F) {
 	})
 }
 
+// inlineErrorCode mirrors the C++ oracle (cpp/main.cpp:541-543): the inline reply Error
+// code is the first 2 bytes of the fuzz errorData as a little-endian uint16 (0 if fewer
+// than 2 bytes). RFC-115 §6 changed the reply Error field from Optional<bytes> to the
+// Optional<Error> union, so the Go side must build types.Error{ErrorCode} exactly the way
+// the oracle does Error(code) — keeping the differential structural-equal.
+func inlineErrorCode(errorData []byte) uint16 {
+	if len(errorData) >= 2 {
+		return binary.LittleEndian.Uint16(errorData)
+	}
+	return 0
+}
+
 // 8. GetValueReply
 func FuzzGetValueReply(f *testing.F) {
 	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
@@ -541,7 +553,7 @@ func FuzzGetValueReply(f *testing.F) {
 		goMsg := &types.GetValueReply{Penalty: penalty, Cached: cached}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		if hasValue {
 			goMsg.HasValue = true
@@ -585,7 +597,7 @@ func FuzzGetKeyReply(f *testing.F) {
 		goMsg := &types.GetKeyReply{Penalty: penalty, Cached: cached}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		goBytes := goMsg.MarshalFDB()
 
@@ -635,7 +647,7 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 		}
 		if hasError {
 			goMsg.HasError = true
-			goMsg.Error = errorData
+			goMsg.Error = types.Error{ErrorCode: inlineErrorCode(errorData)}
 		}
 		goBytes := goMsg.MarshalFDB()
 
@@ -937,6 +949,44 @@ func FuzzEndpoint(f *testing.F) {
 	})
 }
 
+// FuzzNetworkAddressV6 — the IPv6 IPAddress alternative (AddrTag=2): the 16-byte address
+// is a COUNT-PREFIXED vector behind the union RelativeOffset, vs FuzzNetworkAddress's IPv4
+// bare-uint32 (AddrTag=1). Pins the variant-marshal fix (RFC-115 §7) for BOTH alternatives
+// against the C++ oracle — the read side (ReadBytes, skips the count) and write side
+// (VisitDynamicSize) for IPv6 were both wrong before the fix.
+func FuzzNetworkAddressV6(f *testing.F) {
+	f.Add([]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xbb, 0x01, 0, 0, 0})
+	f.Add(make([]byte, 21))
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		v6 := r.uid() // 16 bytes
+		port := r.uint16()
+		flags := r.uint16()
+		fromHostname := r.bool()
+
+		goMsg := &types.NetworkAddress{
+			Ip:           types.IPAddress{AddrTag: 2, AddrAlt1: v6[:]},
+			Port:         port,
+			Flags:        flags,
+			FromHostname: fromHostname,
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeNetworkAddressV6(v6, port, flags, fromHostname)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytesStructural(t, goBytes, cppBytes, "NetworkAddressV6",
+			unmarshalNetworkAddress, equalNetworkAddress)
+	})
+}
+
 // 18. ReplyPromise
 //
 // C++ ReplyPromise<T>::file_identifier depends on the template parameter T,
@@ -1161,6 +1211,31 @@ func TestDiffNetworkAddress(t *testing.T) {
 		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "NetworkAddress",
+		unmarshalNetworkAddress, equalNetworkAddress)
+}
+
+func TestDiffNetworkAddressV6(t *testing.T) {
+	t.Parallel()
+	o := startOracle(t)
+
+	// IPv6 (AddrTag=2): 16-byte address as a count-prefixed vector; non-zero Flags +
+	// FromHostname exercise those fields against the (fixed) oracle construction too.
+	v6 := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	goMsg := &types.NetworkAddress{
+		Ip:           types.IPAddress{AddrTag: 2, AddrAlt1: v6[:]},
+		Port:         4500,
+		Flags:        2, // FLAG_TLS
+		FromHostname: true,
+	}
+	goBytes := goMsg.MarshalFDB()
+	cppBytes, err := o.SerializeNetworkAddressV6(v6, 4500, 2, true)
+	if err != nil {
+		t.Fatalf("oracle error: %v", err)
+	}
+	if cppBytes == nil {
+		t.Fatal("oracle returned error response")
+	}
+	compareBytesStructural(t, goBytes, cppBytes, "NetworkAddressV6",
 		unmarshalNetworkAddress, equalNetworkAddress)
 }
 
@@ -1483,11 +1558,19 @@ func unmarshalNetworkAddress(data []byte) (types.NetworkAddress, error) {
 }
 
 func equalNetworkAddress(a, b types.NetworkAddress) bool {
-	// NOTE: IPAddress variant payload is not written by Go's MarshalFDB (known bug
-	// in generated writeToBuffer for variant types). The missing variant data shifts
-	// field positions, so Ip AND Flags decode differently between Go and C++ bytes.
-	// Only Port and FromHostname are at positions unaffected by the IP size divergence.
-	return a.Port == b.Port && a.FromHostname == b.FromHostname
+	// FULL comparison: the IPAddress variant payload IS now written by Go's MarshalFDB
+	// (the extractor's FieldKind::Variant codegen, RFC-115 §7). Ip (tag + IPv4 uint32 /
+	// IPv6 bytes) and Flags must match the C++ oracle exactly.
+	return equalIPAddress(a.Ip, b.Ip) &&
+		a.Port == b.Port &&
+		a.Flags == b.Flags &&
+		a.FromHostname == b.FromHostname
+}
+
+func equalIPAddress(a, b types.IPAddress) bool {
+	return a.AddrTag == b.AddrTag &&
+		a.AddrAlt0 == b.AddrAlt0 &&
+		bytes.Equal(a.AddrAlt1, b.AddrAlt1)
 }
 
 func unmarshalGetReadVersionReply(data []byte) (types.GetReadVersionReply, error) {
@@ -1589,11 +1672,10 @@ func unmarshalEndpoint(data []byte) (types.Endpoint, error) {
 }
 
 func equalEndpoint(a, b types.Endpoint) bool {
-	// NOTE: IPAddress variant payload not serialized by Go MarshalFDB (known bug).
-	// Compare Endpoint token and address Port/FromHostname only.
+	// FULL comparison: IPAddress variant payload IS now serialized (RFC-115 §7).
+	// Token, address Ip (tag + payload), Port, Flags, FromHostname must all match C++.
 	return a.Token == b.Token &&
-		a.Addresses.Address.Port == b.Addresses.Address.Port &&
-		a.Addresses.Address.FromHostname == b.Addresses.Address.FromHostname
+		equalNetworkAddress(a.Addresses.Address, b.Addresses.Address)
 }
 
 // --- Additional unmarshal/equal helpers for request types ---

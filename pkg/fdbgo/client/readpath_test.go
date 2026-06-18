@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestGetKey_AllKeysEndSelector verifies the allKeysEnd short-circuit in getKey.
@@ -279,7 +281,7 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 	var captured []byte
 	var capturedRV int64
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		v, rv, err := tx.WatchSetup(ctx, key)
+		v, rv, _, err := tx.WatchSetup(ctx, key)
 		captured, capturedRV = v, rv
 		return nil, err
 	}); err != nil {
@@ -299,7 +301,7 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, e := db.Transact(ctx, func(tx *Transaction) (any, error) {
-			return nil, tx.WatchPoll(ctx, key, captured, capturedRV)
+			return nil, tx.WatchPoll(ctx, key, captured, capturedRV, types.SpanContext{})
 		})
 		done <- e
 	}()
@@ -344,7 +346,7 @@ func TestWatch_ReadVersionSurvivesReset(t *testing.T) {
 
 	// Watch setup on a manual transaction; capture value + read version.
 	tx := db.CreateTransaction()
-	value, rv, err := tx.WatchSetup(ctx, key)
+	value, rv, _, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		t.Fatalf("WatchSetup: %v", err)
 	}
@@ -367,7 +369,7 @@ func TestWatch_ReadVersionSurvivesReset(t *testing.T) {
 	// Poll with the captured read version — must fire even though tx.readVersion
 	// is now 0 (reset). Before the fix, sendWatch read tx.readVersion = 0.
 	done := make(chan error, 1)
-	go func() { done <- tx.WatchPoll(ctx, key, value, rv) }()
+	go func() { done <- tx.WatchPoll(ctx, key, value, rv, types.SpanContext{}) }()
 	select {
 	case err := <-done:
 		if err != nil {

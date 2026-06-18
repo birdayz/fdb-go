@@ -12,8 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // ErrNeedFullRYW is returned by GetPipelined when the key has pending atomics
@@ -196,6 +199,28 @@ type Transaction struct {
 	// re-stamps fresh, but — like creationTime — NOT reset on OnError, so total latency
 	// still spans retries (the documented divergence from C++, which resets per attempt).
 	metricStart time.Time
+
+	// Distributed-tracing span (RFC-115 §4). spanContext is stamped on every outgoing
+	// request (GRV, read, commit, watch); a fresh one is generated per transaction and
+	// per attempt (≈ C++ generateSpanID at cloneAndReset, NativeAPI.actor.cpp:3458).
+	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
+	// span to a caller-injected parent trace, persisting that linkage across retries.
+	// Written only at construction / reset() / SetSpanParent (never concurrently with a
+	// send), and captured by value at send time — so no mutex (like lockAware/tenantId).
+	spanContext types.SpanContext
+	spanParent  *types.SpanContext
+
+	// OpenTelemetry export (RFC-115 §4 Layer 2). The long-lived "Transaction" otel span
+	// (C++ NativeAPI.actor.cpp:6186) + the context that carries it for parenting per-op
+	// child spans. Lazily started at the first GRV of a SAMPLED transaction, ended on
+	// commit success / reset / Reset / Cancel. Nil for an unsampled tx (the default) — so
+	// unsampled txns never touch traceMu and allocate nothing (the C++ NoopTracer effect).
+	// traceMu guards both fields: ensureTxSpan (under readVersionMu at first GRV) and
+	// startOpSpan (concurrent pipelined reads) and endTxSpan all serialize through it;
+	// lock order is readVersionMu → traceMu, never the reverse.
+	traceMu  sync.Mutex
+	txSpan   oteltrace.Span
+	traceCtx context.Context
 
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
 	// when retryCount >= retryLimit.
@@ -576,6 +601,9 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		// (postCommitReset), NOT on OnError, so it spans retries but excludes the
 		// idle gap before a reused handle's next transaction begins.
 		tx.metricStart = time.Now()
+		// RFC-115 §4 Layer 2: start the "Transaction" otel span at the same first-GRV
+		// anchor (single-entry, under readVersionMu). No-op unless sampled + a real tracer.
+		tx.ensureTxSpan()
 	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
@@ -736,7 +764,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
-		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.spanContext), replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
 		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
@@ -1548,6 +1576,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
 	tx.cancelWatches()
+	tx.endTxSpan() // RFC-115 §4 Layer 2: end the "Transaction" otel span on teardown
 	tx.state.Store(int32(txStateCancelled))
 }
 
@@ -1573,6 +1602,103 @@ func (tx *Transaction) Reset() {
 	// spans retries).
 	tx.metricStart = time.Time{}
 	tx.reset()
+}
+
+// regenerateSpan refreshes the transaction's trace span — a fresh span per
+// transaction/attempt, matching C++ generateSpanID at cloneAndReset
+// (NativeAPI.actor.cpp:3458). With an injected SPAN_PARENT the parent's traceID +
+// flags are inherited and only the spanID is fresh (a child span on the caller's
+// trace); otherwise a brand-new random span, sampled per the DB's sample rate
+// (default unsampled). RFC-115 §4.
+func (tx *Transaction) regenerateSpan() {
+	if tx.spanParent != nil {
+		tx.spanContext = childSpanContext(*tx.spanParent)
+		return
+	}
+	// tx.db is nil for directly-constructed Transactions in some unit tests (which call
+	// reset()/postCommitReset() without a Database) — default to the unsampled rate.
+	var rate float64
+	if tx.db != nil {
+		rate = tx.db.tracingSampleRate
+	}
+	tx.spanContext = newSpanContext(rate)
+}
+
+// ensureTxSpan lazily starts the "Transaction" otel span for a SAMPLED transaction
+// (C++ NativeAPI.actor.cpp:6186), seeded with the tx's wire traceID (otelSpanContext)
+// so the otel tree and FDB server-side spans share one trace. No-op when unsampled (so
+// unsampled txns allocate nothing) or when the Transaction span already exists. Called
+// at the first GRV under readVersionMu — the single-entry tx-start point.
+func (tx *Transaction) ensureTxSpan() {
+	if !isSampled(tx.spanContext) {
+		return
+	}
+	tx.traceMu.Lock()
+	already := tx.txSpan != nil
+	tx.traceMu.Unlock()
+	if already {
+		return
+	}
+	// Start OUTSIDE traceMu (mirroring startOpSpan) so a re-entrant tracer can't deadlock;
+	// safe against a double-start because ensureTxSpan runs only at the first GRV under
+	// readVersionMu (single-entry), so no concurrent ensureTxSpan can race it.
+	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(tx.spanContext))
+	ctx, span := tx.db.tracer.Start(parent, "Transaction", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	tx.traceMu.Lock()
+	tx.traceCtx, tx.txSpan = ctx, span
+	tx.traceMu.Unlock()
+}
+
+// startOpSpan starts a per-operation child span under the "Transaction" span (the C++
+// NAPI:* children, e.g. NativeAPI.actor.cpp:3623). Returns nil when the tx is unsampled
+// or the Transaction span hasn't started yet — callers use:
+//
+//	if sp := tx.startOpSpan("fdbgo.getValue"); sp != nil { defer sp.End() }
+//
+// The per-op otel span carries an otel-minted spanID under the shared traceID; the wire
+// SpanContext is generated independently by Layer 1 (single ID authority).
+func (tx *Transaction) startOpSpan(name string) oteltrace.Span {
+	if !isSampled(tx.spanContext) {
+		return nil
+	}
+	tx.traceMu.Lock()
+	parent := tx.traceCtx
+	tx.traceMu.Unlock()
+	if parent == nil {
+		return nil
+	}
+	_, span := tx.db.tracer.Start(parent, name, oteltrace.WithSpanKind(oteltrace.SpanKindClient))
+	return span
+}
+
+// endTxSpan ends the "Transaction" otel span (C++ ~Span on tx end). Idempotent; called
+// on commit success (postCommitReset), on OnError retry / user Reset (reset), and on
+// Cancel. NOTE: there is no Transaction.Close(); a raw CreateTransaction handle that is
+// first-GRV'd and then abandoned WITHOUT commit/Reset/Cancel never ends its span (a leak
+// — only with a real WithTracer + a sampled tx). The common Transact/TransactCtx path is
+// always safe (it commits or resets). See WithTracer / CreateTransaction for the caveat.
+func (tx *Transaction) endTxSpan() {
+	tx.traceMu.Lock()
+	defer tx.traceMu.Unlock()
+	if tx.txSpan != nil {
+		tx.txSpan.End()
+		tx.txSpan = nil
+		tx.traceCtx = nil
+	}
+}
+
+// SetSpanParent injects a parent trace context (FDBTransactionOptions::SPAN_PARENT,
+// NativeAPI.actor.cpp:7126): a 33-byte IncludeVersion-serialized SpanContext. The
+// transaction's span becomes a child of it (inherit traceID + flags, fresh spanID),
+// and the linkage persists across retries (regenerateSpan honors spanParent).
+func (tx *Transaction) SetSpanParent(b []byte) error {
+	parent, err := parseSpanParent(b)
+	if err != nil {
+		return err
+	}
+	tx.spanParent = &parent
+	tx.spanContext = childSpanContext(parent)
+	return nil
 }
 
 // cancelWatches cancels any in-flight Watch() calls by cancelling the
@@ -2315,6 +2441,12 @@ func (tx *Transaction) postCommitReset() {
 	// reset.) Without this, a reused handle's next commit would measure from the prior
 	// transaction's start, folding in its work + the idle time between them.
 	tx.metricStart = time.Time{}
+	// RFC-115 §4 Layer 2: end this committed transaction's "Transaction" otel span and
+	// re-anchor a fresh wire span — a reused handle begins a NEW logical transaction, so
+	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
+	// starts a fresh Transaction span via ensureTxSpan.
+	tx.endTxSpan()
+	tx.regenerateSpan()
 	// committedVersion and txnBatchId preserved intentionally.
 }
 
@@ -2358,6 +2490,12 @@ func (tx *Transaction) reset() {
 	// Clear accumulated proxy tag throttle duration on retry.
 	// Tags themselves are preserved across reset (C++ keeps tags across retries).
 	tx.proxyTagThrottledDuration = 0
+	// End the prior attempt's "Transaction" otel span and generate a fresh wire span
+	// per attempt (≈ C++ generateSpanID at cloneAndReset, RFC-115 §4). An injected
+	// SPAN_PARENT linkage is preserved (regenerateSpan honors spanParent). The next
+	// attempt's first GRV re-starts a fresh Transaction span (ensureTxSpan).
+	tx.endTxSpan()
+	tx.regenerateSpan()
 	// Preserved across reset (match C++ persistent option re-application):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
 	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled,

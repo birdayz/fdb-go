@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
 
@@ -252,6 +255,20 @@ type database struct {
 	// secondDelay if the primary is slow. Matches C++ BACKUP_REQUEST_DELAY.
 	// Default: true (always on, same as C++).
 	hedgeEnabled atomic.Bool
+
+	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
+	// RFC-115 §2). 0 = unlimited (default, oracle-matching). Read-only after open
+	// (set once in the constructor), so no atomic needed.
+	rangeByteCeiling int64
+
+	// Distributed-trace sample rate (WithTracingSampleRate, RFC-115 §4). 0.0 =
+	// unsampled (default, matches C++ TRACING_SAMPLE_RATE). Read-only after open.
+	tracingSampleRate float64
+
+	// OpenTelemetry export backend (WithTracer, RFC-115 §4 Layer 2). Never nil after
+	// open — defaulted to a no-op tracer (C++ NoopTracer analog) so the span-emission
+	// paths are unconditional and allocation-free when unset. Read-only after open.
+	tracer oteltrace.Tracer
 
 	// Lifecycle.
 	ctx       context.Context
@@ -532,10 +549,22 @@ func (db *database) bootstrap(ctx context.Context) error {
 }
 
 // tryAllCoordinators races all coordinators in parallel, returning the first
-// successful response. This is a deliberate divergence from C++, whose
-// monitorProxiesOneGeneration (MonitorLeader.actor.cpp) probes coordinators
-// SEQUENTIALLY round-robin; racing them is benign (same outcome — first success
-// wins — and faster) and never contacts more than the coordinator set.
+// successful response.
+//
+// First-reply-wins is C++-FAITHFUL, not a divergence. The libfdb_c client adopts
+// cluster topology on the FIRST successful coordinator reply, NOT on a majority
+// quorum: monitorProxiesOneGeneration probes coordinators round-robin and adopts
+// the first successful OpenDatabaseCoordRequest reply (MonitorLeader.actor.cpp:919-937);
+// the `majority` bool that getLeader() computes (:578, `bestCount >= nominees.size()/2+1`)
+// is SERVER-SIDE leader-election metadata and does NOT gate the client's topology
+// adoption (monitorLeaderOneGeneration calls getLeader() on whatever nominees have
+// arrived, with no quorum wait, :604/:634). Adding a coordinator quorum here would
+// make Go STRICTER than libfdb_c — a conformance violation, not a robustness fix
+// (RFC-115 §3, FDB-C-dev verified). The ONLY Go-vs-C++ difference is the probing
+// shape: Go races the set in parallel where C++ goes sequential round-robin — benign
+// (identical first-success outcome, lower latency) and never contacts more than the
+// coordinator set. (Cluster-file re-read stays failure-gated to match C++'s
+// allConnectionsFailed path, :888-900 — RFC-111; do not add a periodic timer.)
 func (db *database) tryAllCoordinators(ctx context.Context, snap *ClusterFile) (*DBInfo, error) {
 	if snap == nil || len(snap.Coordinators) == 0 {
 		// Defensive — production cluster-file parsing rejects empty
@@ -666,20 +695,35 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	}
 
 	bgCtx, cancel := context.WithCancel(context.Background())
+	// Create the failure monitor first so the QueueModel can consult it for the
+	// read load-balancing exclusion gate (RFC-115 §1; C++ loadBalance gates on
+	// IFailureMonitor.failed before the QueueModel).
+	failMon := newFailureMonitor()
+	queueModel := newQueueModel()
+	queueModel.failMon = failMon
+	// Default to a no-op tracer (C++ NoopTracer) so span emission is unconditional and
+	// zero-cost when WithTracer is unset (RFC-115 §4 Layer 2).
+	tracer := o.tracer
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer("fdbgo")
+	}
 	db := &database{
-		connRecord:     newConnRecord(cf, o.clusterFilePath, logger),
-		dialFn:         o.dialFn,
-		tlsConfig:      tlsConfig,
-		logger:         logger,
-		connPool:       make(map[string]*transport.Conn),
-		dialing:        make(map[string]*dialCall),
-		topologyKick:   make(chan struct{}, 1),
-		proxiesChanged: make(chan struct{}),
-		connected:      make(chan struct{}),
-		ctx:            bgCtx,
-		cancel:         cancel,
-		failMon:        newFailureMonitor(),
-		queueModel:     newQueueModel(),
+		connRecord:        newConnRecord(cf, o.clusterFilePath, logger),
+		dialFn:            o.dialFn,
+		tlsConfig:         tlsConfig,
+		logger:            logger,
+		rangeByteCeiling:  o.rangeByteCeiling,
+		tracingSampleRate: o.tracingSampleRate,
+		tracer:            tracer,
+		connPool:          make(map[string]*transport.Conn),
+		dialing:           make(map[string]*dialCall),
+		topologyKick:      make(chan struct{}, 1),
+		proxiesChanged:    make(chan struct{}),
+		connected:         make(chan struct{}),
+		ctx:               bgCtx,
+		cancel:            cancel,
+		failMon:           failMon,
+		queueModel:        queueModel,
 		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
 		locCache: locationCache{
 			maxSize: 600_000,
@@ -822,6 +866,9 @@ func (d *Database) CreateTransaction() *Transaction {
 	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
+	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
+	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
+	tx.regenerateSpan()
 	return tx
 }
 

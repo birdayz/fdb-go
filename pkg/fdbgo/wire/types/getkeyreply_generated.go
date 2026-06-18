@@ -36,7 +36,7 @@ const GetKeyReplyMaxAlign = 8
 type GetKeyReply struct {
 	Penalty  float64 // slot 0
 	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
+	Error    Error   // slot 2, optional nested value
 	// Sel: unregistered nested struct at slot 3
 	Cached bool // slot 4
 }
@@ -46,7 +46,9 @@ func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
 		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
 	}
 	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetKeyReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetKeyReplySlotCached) {
@@ -63,7 +65,9 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
 	}
 	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
+		if nr, err := r.ReadNestedReader(GetKeyReplySlotError + 1); err == nil {
+			m.Error.UnmarshalFromReader(nr)
+		}
 		m.HasError = true
 	}
 	if r.FieldPresent(GetKeyReplySlotCached) {
@@ -77,7 +81,7 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasError {
-		ps.VisitDynamicSize(len(m.Error))
+		m.Error.precomputeSize(ps)
 	}
 	{
 		n := ps.GetMessageWriter(int(GetKeyReplyVTable[1]))
@@ -92,7 +96,7 @@ func (m *GetKeyReply) precomputeSize(ps *wire.PrecomputeSize) int {
 func (m *GetKeyReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var error_Off int
 	if m.HasError {
-		error_Off, _ = wb.VisitDynamicSize(m.Error)
+		error_Off = m.Error.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	selfW := wb.GetMessageWriter(int(GetKeyReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation

@@ -38,6 +38,8 @@ use_repo(
     "com_github_testcontainers_testcontainers_go",
     "com_github_zeebo_xxh3",
     "in_gopkg_yaml_v3",
+    "io_opentelemetry_go_otel_sdk",
+    "io_opentelemetry_go_otel_trace",
     "land_charm_fang_v2",
     "land_charm_lipgloss_v2",
     "org_golang_google_protobuf",

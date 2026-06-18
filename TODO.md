@@ -90,6 +90,31 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6)
+
+`cmd/fdb-schema-extract/main.cpp` has no `extractType<WatchValueRequest>()` /
+`extractType<WatchValueReply>()` (37 other types are registered). The committed
+`pkg/fdbgo/wire/types/watchvalue*_generated.go` were produced out-of-band (commit `52c70585`),
+so `just generate-wire-types` (which `rm`s `*_generated.go` then restores only extractor-emitted
+types) DROPS them — a regen footgun. RFC-115 §6 restored them after its regen; the proper fix is
+to register both in `main.cpp` (`extractType<WatchValueRequest>(outDir, "WatchValueRequest")`,
+same for the reply) so a regen reproduces them. WatchValueReply also carries an inline
+`Optional<Error>`, so re-emitting it picks up the §6 union fix too. Not caught by per-PR CI
+(`just generate` ≠ `just generate-wire-types`). Verify the re-emitted bytes are wire-identical
+to the committed files before landing.
+
+### [ ] fdbgo/client: stamp the GRV request with a trace SpanContext (RFC-115 §4 tracing follow-on)
+
+RFC-115 §4 stamps the per-op child SpanContext on reads (getValue/getKey/getRange) and the tx
+span on commit, but the GetReadVersion request still carries a ZERO SpanContext, so a GRV-only
+traced transaction (and the first GRV RPC of any traced transaction) is not correlated with the
+generated wire trace id on the server side. C++ stamps the `getConsistentReadVersion` child span
+(`NativeAPI.actor.cpp:7244`). The Go GRV path is BATCHED across transactions (`grv.go`
+`buildGetReadVersionRequest` serves one request for many txns), so per-tx span attribution on the
+shared request is a separate effort — thread a representative (initiating) tx span through the GRV
+batcher. Likewise watch (async long-poll) and getKeyServerLocations (shared location cache). Codex
+flagged the GRV gap on PR #303 (P2); documented as follow-on in RFC-115 §4.
+
 ### [x] fdbgo/client: read-path RPC reply timeout is retryable, not a terminal leak (C++ divergence) — FIXED (PR #288)
 
 Shipped in PR #288 (merge `48106b7d`). `waitReply` (rpc.go) now returns an internal

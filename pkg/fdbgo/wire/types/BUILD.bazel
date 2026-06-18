@@ -59,6 +59,7 @@ go_test(
         "erroror_test.go",
         "gkslr_manual_test.go",
         "ground_truth_test.go",
+        "inline_error_test.go",
         "key_value_vector_test.go",
         "keyrangeref_test.go",
         "locations_marshal_test.go",

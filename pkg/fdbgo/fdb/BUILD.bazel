@@ -26,6 +26,7 @@ go_library(
         "//pkg/fdbgo/internal/diag",
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 

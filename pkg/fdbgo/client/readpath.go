@@ -126,6 +126,9 @@ var allKeysEnd = []byte{0xFF, 0xFF}
 func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if sp := tx.startOpSpan("fdbgo.getKey"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getKey)
+		defer sp.End()
+	}
 	k, err := tx.getKeyImpl(ctx, selectorKey, orEqual, offset)
 	return k, tx.mapTimeout(parentCtx, err)
 }
@@ -235,6 +238,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
+	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -253,6 +257,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 				Version:                readVersion,
 				Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 				TenantInfo:             types.TenantInfo{TenantId: tenantId},
+				SpanContext:            span,
 				SsLatestCommitVersions: emptyVersionVector,
 			}
 			if lockAware {
@@ -362,6 +367,9 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if sp := tx.startOpSpan("fdbgo.getValue"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getValue)
+		defer sp.End()
+	}
 	start := time.Now()
 	v, err := tx.getValueImpl(ctx, key)
 	if err == nil && tx.db != nil {
@@ -442,6 +450,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
+	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
@@ -452,7 +461,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, replyToken, server.Token)
+			body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, span, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
 			start := time.Now()
@@ -550,7 +559,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.spanContext), replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -587,8 +596,28 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 func (tx *Transaction) getRange(parentCtx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if sp := tx.startOpSpan("fdbgo.getRange"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getRange)
+		defer sp.End()
+	}
 	kvs, more, err := tx.getRangeImpl(ctx, begin, end, limit, reverse)
 	return kvs, more, tx.mapTimeout(parentCtx, err)
+}
+
+// RangeMaterializationLimitError is returned by a GetRange that would materialize
+// more than the opt-in WithRangeByteCeiling cap (RFC-115 §2) — an OOM safety valve,
+// off by default. libfdb_c has no such ceiling (its GetSliceWithError equivalent also
+// materializes unbounded and never returns a "too big" error), so this NEVER fires
+// unless the operator opts in via WithRangeByteCeiling; the default facade behavior
+// stays oracle-matching. Match it with errors.As. For large scans, prefer the bounded,
+// StreamingMode-honoring Iterator() instead of raising the ceiling.
+type RangeMaterializationLimitError struct {
+	LimitBytes   int64 // the configured WithRangeByteCeiling
+	ReachedBytes int64 // total key+value bytes materialized when the cap was exceeded
+}
+
+func (e *RangeMaterializationLimitError) Error() string {
+	return fmt.Sprintf("fdbgo: GetRange materialized %d bytes, exceeding the configured WithRangeByteCeiling of %d bytes; use Iterator() for large/unbounded scans",
+		e.ReachedBytes, e.LimitBytes)
 }
 
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
@@ -597,6 +626,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []KeyValue
+	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
 	remaining := limit
 	if remaining <= 0 {
 		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
@@ -689,6 +719,18 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 				allKVs = append(allKVs, kvs...)
 				remaining -= len(kvs)
 
+				// RFC-115 §2: opt-in OOM ceiling. Checked AFTER each batch append so a
+				// runaway unbounded scan errors instead of OOM-ing; the overshoot is at
+				// most one reply (~80 KB). 0 = unlimited (default, oracle-matching).
+				if ceiling := tx.db.rangeByteCeiling; ceiling > 0 {
+					for _, kv := range kvs {
+						materializedBytes += int64(len(kv.Key) + len(kv.Value))
+					}
+					if materializedBytes > ceiling {
+						return nil, false, &RangeMaterializationLimitError{LimitBytes: ceiling, ReachedBytes: materializedBytes}
+					}
+				}
+
 				if remaining <= 0 {
 					// Limit reached. C++ getExactRange sets
 					// output.more = (data.size() == limit) — always true when
@@ -776,6 +818,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
+	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -785,7 +828,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body, poolBuf := buildGetKeyValuesRequest(begin, end, readVersion, wireLimit, lockAware, tenantId, replyToken, server.Token)
+			body, poolBuf := buildGetKeyValuesRequest(begin, end, readVersion, wireLimit, lockAware, tenantId, span, replyToken, server.Token)
 			gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -869,7 +912,7 @@ func isFutureVersionOrProcessBehind(err error) bool {
 	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetKeyValuesRequest{
 		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -878,6 +921,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 		LimitBytes:             replyByteLimit,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:             types.TenantInfo{TenantId: tenantId},
+		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
 	if lockAware {
@@ -930,12 +974,13 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:             types.TenantInfo{TenantId: tenantId},
+		SpanContext:            span, // RFC-115 §4
 		SsLatestCommitVersions: emptyVersionVector,
 	}
 	if lockAware {
@@ -979,11 +1024,11 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
-	value, readVersion, err := tx.WatchSetup(ctx, key)
+	value, readVersion, span, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		return err
 	}
-	return tx.WatchPoll(ctx, key, value, readVersion)
+	return tx.WatchPoll(ctx, key, value, readVersion, span)
 }
 
 // WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
@@ -1003,19 +1048,25 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 //     future goroutine runs — sending the watch at version 0, which can error or
 //     register incorrectly. So the read version is captured synchronously here and
 //     threaded through to sendWatch.
-func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, error) {
+func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, error) {
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
-		return nil, 0, &wire.FDBError{Code: 1034} // watches_disabled
+		return nil, 0, types.SpanContext{}, &wire.FDBError{Code: 1034} // watches_disabled
 	}
 
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, 0, err
+		return nil, 0, types.SpanContext{}, err
 	}
 	tx.readVersionMu.Lock()
 	readVersion := tx.readVersion
 	tx.readVersionMu.Unlock()
+	// Capture the trace span here, SYNCHRONOUSLY — same reason as readVersion: the async
+	// WatchPoll must NOT read tx.spanContext later, because a `w := tr.Watch(k)` inside
+	// Database.Transact commits and postCommitReset()s the tx (regenerateSpan rewrites
+	// spanContext) before the future goroutine runs — reading it there is a data race
+	// (RFC-115 §4). Threaded through to sendWatch.
+	span := tx.spanContext
 
 	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
 	tx.AddReadConflictKey(key)
@@ -1030,7 +1081,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// resolved the opposite way the finding suggested: the C++ source shows
 	// watch errors are deliberately excluded).
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
-	return value, readVersion, err
+	return value, readVersion, span, err
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
@@ -1039,9 +1090,12 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 // (also captured by WatchSetup — NOT re-read from the possibly-reset transaction).
 // Retries on wrong_shard_server with cache invalidation. Intended to run in the
 // watch future's goroutine.
-func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVersion int64) error {
+func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext) error {
 	// Use the transaction's watch context so Reset()/Cancel() cancels in-flight watches.
 	// Matches C++ resetRyow() → resetPromise.sendError(transaction_cancelled).
+	// span is captured synchronously by WatchSetup and passed in (NOT re-read here): this
+	// runs in the async watch future, and re-reading tx.spanContext would race a concurrent
+	// commit/reset's regenerateSpan (RFC-115 §4 — same reason readVersion is passed in).
 	watchCtx := tx.getWatchCtx(ctx)
 
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
@@ -1053,7 +1107,7 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, loc.Servers)
+		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, span, loc.Servers)
 		if watchErr == nil {
 			return nil
 		}
@@ -1069,7 +1123,7 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, servers []ServerInfo) error {
+func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo) error {
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)
 
@@ -1086,10 +1140,11 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		req := types.WatchValueRequest{
-			Key:        key,
-			Version:    readVersion,
-			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo: types.TenantInfo{TenantId: tenantId},
+			Key:         key,
+			Version:     readVersion,
+			Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			TenantInfo:  types.TenantInfo{TenantId: tenantId},
+			SpanContext: span, // RFC-115 §4
 		}
 		if value != nil {
 			req.HasValue = true

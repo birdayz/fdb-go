@@ -29,7 +29,7 @@ func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
 		case 1:
 			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
 		case 2:
-			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
+			m.AddrAlt1 = r.ReadBytes(IPAddressSlotAddr + 1)
 		}
 	}
 }
@@ -45,7 +45,7 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 		case 1:
 			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
 		case 2:
-			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
+			m.AddrAlt1 = r.ReadBytes(IPAddressSlotAddr + 1)
 		}
 	}
 	return nil
@@ -55,6 +55,12 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *IPAddress) precomputeSize(ps *wire.PrecomputeSize) int {
+	switch m.AddrTag {
+	case 1:
+		ps.Write(ps.CurrentBufferSize + 4)
+	case 2:
+		ps.VisitDynamicSize(len(m.AddrAlt1))
+	}
 	{
 		n := ps.GetMessageWriter(int(IPAddressVTable[1]))
 		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(IPAddressVTable[1])-4, 4)+4)
@@ -66,13 +72,26 @@ func (m *IPAddress) precomputeSize(ps *wire.PrecomputeSize) int {
 // Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *IPAddress) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var addrOff int
+	switch m.AddrTag {
+	case 1:
+		wb.WriteUint32(uint32(m.AddrAlt0), wb.CurrentBufferSize+4)
+		addrOff = wb.CurrentBufferSize
+	case 2:
+		addrOff, _ = wb.VisitDynamicSize(m.AddrAlt1)
+	}
 	selfW := wb.GetMessageWriter(int(IPAddressVTable[1]), true)
 	selfStart := selfW.FinalLocation
+	vt := IPAddressVTable
 	{
 		soff := int32(vtableStart - tmpl.VTableOffset(IPAddressVTable) - selfStart)
 		var b [4]byte
 		binary.LittleEndian.PutUint32(b[:], uint32(soff))
 		selfW.WriteScalar(b[:], 0)
+	}
+	if m.AddrTag != 0 {
+		selfW.WriteScalar([]byte{m.AddrTag}, int(vt[IPAddressSlotAddr+2]))
+		selfW.WriteRelativeOffset(addrOff, int(vt[IPAddressSlotAddr+1+2]))
 	}
 	selfW.WriteToAt(selfStart)
 	return selfStart
