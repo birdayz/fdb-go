@@ -223,6 +223,10 @@ func inlineErrorReply(code uint16, penalty float64) []byte {
 // (a buggy resume that skips the remainder is caught), not only no-dup. Returns the
 // body unchanged if it is not a success ErrorOr<reply>, or if it already has ≤ keep
 // rows (defensive — should not happen on an armAddr'd storage conn with > keep keys).
+//
+// The decode→truncate→re-encode does NOT re-emit the reply's Arena field (the
+// generated GetKeyValuesReply.writeToBuffer omits it); harmless because the Go
+// client never reads Arena (a server-side memory hint) — rows come from Data.
 func partialBatchReply(body []byte, keep int) []byte {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(body, &r); err != nil {
@@ -334,6 +338,14 @@ func TestPartialBatchReply_RoundTrip(t *testing.T) {
 	if got.HasError {
 		t.Error("spurious inline error after re-marshal")
 	}
+
+	// Defensive early-return: keep >= the row count returns the body unchanged
+	// (nothing to truncate). Pins the len(kvs) <= keep arm of partialBatchReply.
+	for _, keep := range []int{3, 5} {
+		if out := partialBatchReply(in, keep); !bytes.Equal(out, in) {
+			t.Errorf("partialBatchReply(in, %d) with 3 rows should return body unchanged, got %d bytes (want %d)", keep, len(out), len(in))
+		}
+	}
 }
 
 // TestSimRangeWrongShardMidScan is RFC-118 Gap 3: a wrong_shard_server (1001)
@@ -408,6 +420,11 @@ func TestSimRangeWrongShardMidScan(t *testing.T) {
 					return body, false
 				}
 			})
+			// Wrong-shard invalidates the location cache, NOT the connection pool —
+			// so the post-fault retry reuses THIS simConn at idx=2 (the "default:
+			// pass-through" arm), not a fresh idx=0 conn that would re-trigger the
+			// partial→1001 loop. The arm-by-addr keeps the rewrites off the
+			// coordinator/proxy (locate) conns the relocate touches.
 			sd.armAddr(storageAddrFor(t, db, ctx, begin))
 
 			tx := db.CreateTransaction()

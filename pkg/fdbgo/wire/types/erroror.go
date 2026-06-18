@@ -291,7 +291,10 @@ var errorOrInlineErrorTemplate = wire.NewMessageTemplate(
 // inline-error slots (Penalty@0, HasError@1, Error@2) are IDENTICAL across
 // GetValueReply / GetKeyReply / GetKeyValuesReply (TestLoadBalancedReplyErrorSlots),
 // this single frame is decoded identically by all three read parsers, so one builder
-// covers all of them.
+// covers all of them. The footer carries GetValueReplyFileID for all three (a real
+// server would send the per-RPC fileID), which is fine: ReadErrorOrInto does not
+// validate the fileID, and TestMarshalErrorOrInlineError_RoundTrip pins the decode
+// through every parser.
 func MarshalErrorOrInlineError(code uint16, penalty float64) []byte {
 	reply := &GetValueReply{Penalty: penalty, HasError: true, Error: Error{ErrorCode: code}}
 	return marshalErrorOrValue(errorOrInlineErrorTemplate, GetValueReplyFileID, reply.precomputeSize, reply.writeToBuffer)
