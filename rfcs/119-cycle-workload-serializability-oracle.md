@@ -1,9 +1,16 @@
 # RFC-119 — Cycle workload: a pure-client serializability oracle
 
-**Status:** Draft
+**Status:** Accepted
 **Item:** TODO.md "Native fdbgo client" → **C3. Ride their test designs** (now `# NEXT` item 1).
 First increment of C3: port FDB's `Cycle` workload. Follow-ups (named in §7) port the other four.
 **Spec:** `fdbserver/workloads/Cycle.actor.cpp` @ tag **7.3.75** (`/tmp/fdbsrc`).
+
+**Reviews (RFC stage):** FDB C++ maintainer — ACK conditional on findings 2–4 + the §4 table
+extension (retry-counter prose, hard-fail on missing read, range-clear is load-bearing, invalid-value
+3 arms, range bound = `%016x` key band, `clientId==0` checker) — **all folded in** (§2 step 3/5, §3,
+§4). Torvalds — ACK; conditions (land both teeth tests, non-timing-dependent anti-vacuity,
+context-bounded workload) **folded in** (§4). Test-only, zero wire impact → differential-vs-libfdb_c
+gates N/A.
 
 ---
 
@@ -51,15 +58,28 @@ order-preserving, so the range read returns nodes in index order.
 2. read the 3-edge chain: `r2 = fromValue(get(key(r)))`, `r3 = fromValue(get(key(r2)))`,
    `r4 = fromValue(get(key(r3)))` (`:172-183`). I.e. `r → r2 → r3 → r4`. A missing read is a
    `CycleBadRead` SevError (`:173-182`);
-3. `clear(keyRange(r), AddConflictRange::True)` — a single-key-range clear immediately overwritten
-   by the following set; "Shouldn't have an effect, but will break with wrong ordering" (`:187-189`);
+3. `clear(keyRange(r), AddConflictRange::True)` — a **range** clear over `[key(r), key(r)+" end")`
+   (`keyRange`, `:127-131`), immediately overwritten by the following `set(key(r), …)`. The C++
+   comment "Shouldn't have an effect, but will break with wrong ordering" (`:189`) is **not**
+   decoration: it is load-bearing coverage of the clear-then-set **mutation-ordering** path (the
+   set at `key(r)` must apply *after* the clear of the range containing it), and
+   `AddConflictRange::True` (`:188`) makes the cleared range participate in conflict detection. The
+   port keeps it as a **range** clear (not a point `Clear`), spanning just past the single key to
+   exercise the range-clear path (`:185-186`);
 4. the swap (`:190-192`): `set(key(r), value(r3))`, `set(key(r2), value(r4))`,
    `set(key(r3), value(r2))`. This transposes r2 and r3 in the ring:
-   `r → r2 → r3 → r4` becomes `r → r3 → r2 → r4`. **The swap preserves the single-cycle
-   property** — it is the move whose serial composition keeps exactly one Hamiltonian cycle, and
-   which under *non*-serializable interleaving corrupts the ring (splits it / orphans a node);
-5. `commit()`; on `transaction_too_old`/`not_committed` bump a counter and `onError(e)` retry
-   (`:200-207`).
+   `r → r2 → r3 → r4` becomes `r → r3 → r2 → r4` (predecessor→r and r4→successor edges untouched).
+   **The swap preserves the single-cycle property** — it is the move whose serial composition keeps
+   exactly one Hamiltonian cycle, and which under *non*-serializable interleaving corrupts the ring
+   (splits it / orphans a node);
+5. `commit()`; **a missing read** (`!v.present()`) at any of the three gets is a `badRead`
+   **SevError** that fails the test in Sim2 (`:173-182`, `:136-142`) — the Go port must hard-fail
+   on a nil read inside the swap txn, not swallow it as a transient. On error, C++ **always** calls
+   `wait(tr.onError(e))` (`:205`, unconditional for every error — `transaction_too_old`/
+   `not_committed` just additionally bump per-code *perf* counters at `:201-204`; the generic
+   `retries` counter at `:207` is also perf). So the Go port does **not** special-case any code: the
+   production `db.Transact` retry loop (classify → backoff → retry) IS the faithful analog of
+   `onError`. The counters are perf metrics, dropped.
 
 **The check** (`cycleCheckData`, `:230-293`). One client reads the whole range at a single read
 version (`:316-319`) and walks the ring from index 0, following `i = fromValue(data[i].value)`
@@ -67,7 +87,9 @@ exactly `nodeCount` times. It fails (SevError `TestFailure`) iff:
 - `data.size() != nodeCount` — "Node count changed" (`:231`);
 - it returns to 0 before `nodeCount` steps — "Cycle got shorter" (`c && !i`, `:250`);
 - `data[i].key != key(i)` — "Key changed" (`:259`) (range dense & ordered);
-- a value decodes outside `[0, nodeCount)` — "Invalid value" (`:269`);
+- "Invalid value" (`:269`) — note this is **three** sub-checks: `i != d` (the value did not
+  decode to a clean integer / non-integral), `i < 0`, and `i >= nodeCount`. The Go port's unit
+  table must cover both the out-of-`[0,N)` arm and a malformed/non-integer-value arm;
 - after `nodeCount` steps `i != 0` — "Cycle got longer" (`:277`).
 
 Passing ⇔ the data is exactly one Hamiltonian cycle over all N nodes. That is the serializability
@@ -104,31 +126,54 @@ decimal for values) instead of porting `doubleToTestKey`'s `bits(double)` hex. T
 diverging (CLAUDE.md: diverge only when test-internal + cleaner, and document it).
 
 `clientTxn` uses `db.Transact(ctx, fn)` — the production retry loop already does the C++
-`onError(e)` handling (classify → backoff → retry on `transaction_too_old`/`not_committed`), so the
-Go client loop IS the port of `:200-207`. The `clear(keyRange(r), AddConflictRange::True)` maps to
-`tx.ClearRange(key(r), key(r)+" end")` (single-key-spanning range; the AddConflictRange::True is
-the FDB default for ClearRange, so no extra call).
+`onError(e)` handling (classify → backoff → retry), so the Go client loop IS the faithful port of
+the unconditional `:205` `onError`. Inside `fn`: read the chain; **if any `Get` returns nil, return
+a hard error** (the `badRead` SevError, finding 3 — and since this is *inside* `fn`, the retry loop
+will re-attempt on a transient version error but a genuinely-absent key after a successful read is a
+real failure that surfaces). The `clear(keyRange(r), AddConflictRange::True)` maps to
+`tx.ClearRange(key(r), append(key(r), " end"...))` — a **range** clear (finding 4); the Go client's
+`ClearRange` adds a `[begin,end)` write-conflict range by default
+(`transaction.go` `ClearRange`→`addWriteConflictLocked`, shipped at commit), matching
+`AddConflictRange::True`, so no extra call.
+
+`check` reads via `db.Transact` (one txn = one read version = one consistent snapshot, faithful to
+the C++ single-`getReadVersion` read at `:316-319`), `GetRange` over the **full `%016x` key band**
+`[key(0), <prefix end>)` (covering all N keys — *not* a fraction band; finding 6), then walks the
+in-memory `data` snapshot purely (no second read version). The Go single-process port is the C++
+`clientId==0` checker (`:309`) by construction — `check` is called **once**. The
+`minExpectedTransactionsPerSecond` rate-floor (`:296-308`) is a perf SLA, not an invariant — dropped
+(the anti-vacuity assertion in §4 is the faithful, non-timing-dependent analog).
 
 ## 4. Executable spec — exactly what the test proves
 
-1. **`TestCycle_SerializableUnderConcurrency`** (real FDB, testcontainers): setup a ring of
-   N=1000 nodes; run A=16 goroutines each doing T swap-txns concurrently (real FDB conflict
-   detection is the chaos source, exactly as the C++ workload relies on the real cluster);
-   `check` passes — the ring is still exactly one Hamiltonian cycle of length N. Run the check
-   10× (determinism). Assert a non-trivial number of swaps actually committed (anti-vacuity: the
-   workload must have *done* work, not no-op).
-2. **Revert-proof (the teeth):** a sub-test that deliberately applies a **non-atomic** swap (two
-   separate committed txns instead of one — i.e. break isolation by splitting the swap across
-   commits, allowing an interleave) drives `check` **red** with "Cycle got shorter/longer". This
-   proves the check actually detects a broken ring, not just that the happy path passes.
-   (Equivalently: a unit test that hands `check`'s walk a hand-corrupted ring — split into two
-   cycles, an orphan, a changed key — and asserts each named failure mode fires. Pure, fast,
-   deterministic, no FDB.)
-3. **`check` unit test** (no FDB): table of corrupt rings (size-off, short-cycle, long-cycle,
-   key-changed, value-out-of-range) → each maps to the matching `cycleCheckData` failure.
+All three ship in this PR (the FDB revert-proof and the pure-unit table are **both** required, not
+alternatives — the unit table is the deterministic regression that survives if the FDB repro is
+ever stressed):
 
-The teeth here are item 2/3: the value of a serializability oracle is entirely in *whether the
-check catches a broken ring*. A green happy-path alone is a fake checkbox.
+1. **`TestCycle_SerializableUnderConcurrency`** (real FDB, testcontainers): setup a ring of
+   N=1000 nodes; run A=16 goroutines each doing swap-txns concurrently until a shared work budget
+   is consumed (real FDB conflict detection is the chaos source, exactly as the C++ workload relies
+   on the real cluster). The **whole workload is bounded by a `context.WithTimeout`** so a
+   conflict-livelock fails fast rather than hanging the 30s-cascade. Then `check` passes — the ring
+   is still exactly one Hamiltonian cycle of length N; run `check` a few times (determinism).
+   **Anti-vacuity, non-timing-dependent (Torvalds):** count *actually-committed* swaps via an
+   atomic counter and assert `> 0` (a small constant well below any rate floor) — **no** "≥K in T
+   seconds" rate assertion, no `time.Sleep`. The point is "work happened," not "work happened
+   fast."
+2. **`TestCycle_DetectsBrokenRing` — FDB revert-proof (the teeth):** deliberately apply a
+   **non-atomic** swap (split the swap's three sets across two separate committed txns, so a
+   concurrent reader can interleave on a transiently non-cyclic ring — a real isolation break) and
+   assert `check` goes **red** with "cycle got shorter/longer". Proves the check detects a broken
+   ring on real FDB, not just that the happy path passes.
+3. **`TestCycle_Check_*` unit tests (no FDB), the deterministic teeth:** hand `check`'s walk a
+   table of corrupt rings, each pinning one `cycleCheckData` failure mode 1:1 — **all five**:
+   node-count-changed, cycle-got-shorter (early return to 0), key-changed (non-dense/out-of-order
+   range), invalid-value (**both** out-of-`[0,N)` *and* malformed/non-integer, per finding 1), and
+   cycle-got-longer (end ≠ 0). Plus a **missing-read** unit (nil value mid-walk → failure, the
+   `badRead` analog). Pure, fast, deterministic.
+
+The teeth are items 2+3: the value of a serializability oracle is entirely in *whether the check
+catches a broken ring*. A green happy-path alone is a fake checkbox.
 
 ## 5. Wire-compat impact
 

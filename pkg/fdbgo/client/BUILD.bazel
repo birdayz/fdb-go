@@ -66,6 +66,7 @@ go_test(
         "coordinator_forward_test.go",
         "coordinator_test.go",
         "correctness_test.go",
+        "cycle_workload_test.go",
         "database_panic_test.go",
         "database_test.go",
         "ddsketch_test.go",
