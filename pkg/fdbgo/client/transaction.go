@@ -168,12 +168,17 @@ type Transaction struct {
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
 	// use goroutines, so concurrent Get/Set calls on the same transaction race.
-	conflictMu       sync.Mutex
-	mutations        []Mutation
-	readConflicts    []KeyRange
-	writeConflicts   []KeyRange
-	conflictBuf      []byte       // batch-allocated backing store for conflict range keys
-	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
+	conflictMu     sync.Mutex
+	mutations      []Mutation
+	readConflicts  []KeyRange
+	writeConflicts []KeyRange
+	// singleKeyClearCount counts single-key Clear() calls (NOT ClearRange). C++ charges a
+	// single-key clear's mutation part sizeof(KeyRangeRef), not sizeof(MutationRef) (RYW:2431);
+	// a single-key clear is shape-indistinguishable from ClearRange(k, k+\0) in tx.mutations, so
+	// GetApproximateSize uses this count to apply the cheaper charge. Guarded by conflictMu.
+	singleKeyClearCount int
+	conflictBuf         []byte       // batch-allocated backing store for conflict range keys
+	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
 
 	retryCount int
 	backoff    time.Duration
@@ -1145,6 +1150,7 @@ func (tx *Transaction) Clear(key []byte) {
 		Key:   key,
 		Value: end,
 	})
+	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
 	tx.addWriteConflictLocked(key, end)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
@@ -1942,12 +1948,19 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 	tx.hasRetryLimit = true
 }
 
-// C++ sizeof constants for approximate size calculation.
-// MutationRef: uint8 type + 2×StringRef (16 bytes each) + Optional<uint32> + Optional<uint16> + bool ≈ 48 bytes.
-// KeyRangeRef: 2×StringRef (16 bytes each) = 32 bytes.
+// C++ sizeof constants for approximate size calculation. flow/Arena.h:370 wraps StringRef in
+// `#pragma pack(push, 4)`, so StringRef is 12 bytes (8-byte data pointer + 4-byte length, NO tail
+// padding up to 16) — NOT 16. Therefore, under that 4-byte packing:
+//
+//	sizeof(KeyRangeRef) = 2×StringRef          = 24   (FDBTypes.h:315 — {const KeyRef begin, end})
+//	sizeof(MutationRef) = uint8 type + 2×StringRef(12) + Optional<uint32>(8) + Optional<uint16>(4)
+//	                      + bool, all 4-aligned  = 44   (CommitTransaction.h:67)
+//
+// The earlier 48/32 assumed natural 8-byte StringRef alignment and missed the pack(4); both
+// over-counted. Verified byte-exact against libfdb_c by bench TestDifferential_ApproximateSize.
 const (
-	sizeofMutationRef = 48
-	sizeofKeyRangeRef = 32
+	sizeofMutationRef = 44
+	sizeofKeyRangeRef = 24
 )
 
 // GetApproximateSize returns the approximate size of the transaction's mutations
@@ -1975,6 +1988,12 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	for _, r := range tx.writeConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
+	// C++ charges a single-key clear's MUTATION part sizeof(KeyRangeRef), not sizeof(MutationRef)
+	// (ReadYourWrites.actor.cpp:2431 — it is modeled as a range entry in the write map). The mutation
+	// loop above charged every MutClearRange sizeofMutationRef; a single-key clear is shape-
+	// indistinguishable from a ClearRange(k, k+\x00), so correct the overcharge here from the Clear()-
+	// call count (the write-conflict half already matched: both charge sizeof(KeyRangeRef)).
+	size -= int64(tx.singleKeyClearCount) * (sizeofMutationRef - sizeofKeyRangeRef)
 	return size
 }
 
@@ -1988,6 +2007,11 @@ func (tx *Transaction) GetApproximateSize() int64 {
 // iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
 // likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
 func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
+	// FOLLOW-UP (separate divergence, unproven here): C++'s transaction_too_large (2101) check sizes
+	// the SERIALIZED request via expectedSize() (data + MutationRef::OVERHEAD_BYTES, NativeAPI:6829),
+	// NOT the getApproximateSize sizeof-overhead accounting used below. This shares sizeofMutationRef/
+	// sizeofKeyRangeRef with GetApproximateSize (now the correct 44/24), which over-counts the 2101
+	// size vs libfdb_c — Go rejects large txns slightly earlier. Closing that needs its own differential.
 	var size int64
 	for _, m := range muts {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
@@ -2414,6 +2438,7 @@ func (tx *Transaction) postCommitReset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
 	// Return conflict buffer to pool for reuse by next transaction.
 	if tx.conflictBufOwner != nil {
 		tx.conflictBufOwner.b = tx.conflictBuf[:0]
@@ -2471,6 +2496,7 @@ func (tx *Transaction) reset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.singleKeyClearCount = 0          // cleared with mutations (GetApproximateSize accounting)
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
