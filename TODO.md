@@ -12,6 +12,10 @@ Post RFC-115/116/117. The pure-Go client (`pkg/fdbgo`) is launch-ready on correc
 compatibility; everything below is polish/safety/perf/infra — **none gates adoption**. Priority order
 (from the RFC-115/watchvalue session handoff). Each is a fresh `fdb-client-engineer` RFC cycle.
 
+> **All `# NEXT` items are now closed:** D1 (RFC-118), B2 (RFC-109), C3 (RFC-057), the GRV-cache
+> divergence (RFC-104), and B1/CI-off-the-box (untracked, owner decision). The next engineer should
+> pull the lowest-numbered unchecked item from the phases below, not from here.
+
 > **CI: the single self-hosted box is intentional — NOT a tracked problem.** We work locally + sequentially;
 > the slowness during the RFC-115→117 merge wave was a one-off (four PRs squeezed through one runner at once).
 > Don't re-file a "second / ephemeral runner" or "CI reproducibility off the box" item. (The §7 CI-volume
@@ -23,12 +27,16 @@ compatibility; everything below is polish/safety/perf/infra — **none gates ado
 > the 5 s MVCC edge is characterized (RFC-056 #235, TODO `C2-followup`) as accepted perf/timing, not a wire
 > bug. Don't re-file.
 
-- [ ] **D1 — `SimTransport`** (frame-level fault injection) for faithful inline-error / timing tests.
-  PARTIALLY addressed by RFC-115 §6's `inlineErrorConn` (`client/fault_test.go`) + #304's debugID oracle
-  un-skip; the general `SimTransport` harness is still open (the C4 deferred Phase-0 test gaps).
-- [ ] **B2 — libfdb_c escape hatch** (launch-stack item 6): a `Database`/`Transaction` `Backend` interface
-  + a CGo-backed impl, switchable via config. **Explicitly DE-PRIORITIZED — a just-before-launch safety
-  net, NOT an adoption blocker. Do last, if at all.**
+- [x] **D1 — `SimTransport`** (frame-level fault injection) — DONE (RFC-118; FDB-C-dev + Torvalds +
+  /code-review ACK; PR gauntlet codex/@claude/CI pending push). One rule-driven proxy-frame loop
+  (`simConn` + a per-frame intercept callback) consolidates the bespoke `wrongShardConn`/`dropReplyConn`;
+  faithful inline-error injection via the `ErrorOr<reply>`(tag=value) channel real FDB uses for read
+  errors (`types.MarshalErrorOrInlineError`). Closes the four C4 deferred Phase-0 test gaps below.
+- [x] **B2 — libfdb_c escape hatch** — DONE (RFC-109, PR #295). `BackendDatabase` interface
+  (`pkg/fdbgo/fdb/backend.go`) + a CGo-backed impl over `cgofdb` (`pkg/fdbgo/libfdbc/backend.go`),
+  selected at BUILD time via the `libfdbc` build tag (`pkg/fdbgo/fdbclient`, netgo/netcgo idiom) —
+  NOT runtime config, because libfdb_c's network thread is process-global + unrecoverable so there is
+  no live switch between backends anyway (FDB-C-dev + Torvalds vetted; hardened across 11 codex rounds).
 
 > Shipped this session (stacked on `master`, merging bottom-up #303→#304→#305/#306):
 > **RFC-116** (#305) GRV/watch/locate operation-span attribution; **RFC-117** (#306)
@@ -80,12 +88,16 @@ each on its own stacked branch.
    coverage), and `steps.<id>.outcome != 'skipped'` guards so a skipped preflight can't publish an
    empty report. (Also fixed the `codex` CLI hang via a new `codexreview` tool in the codex-review
    skill — root cause: `codex exec` blocks on open stdin.) (TODO-production P1.6.)
-5. **[ ] CI reproducibility — off the single Hetzner box.** `M/L` · Torvalds + codex. All jobs run on
-   one self-hosted Hetzner runner → unreproducible green + bus-factor. Provide a containerized/
-   ephemeral runner OR document the requirement and pin tool/image versions with checksums. (TODO-prod P1.8.)
-6. **[ ] libfdb_c escape hatch (Backend interface + CGo-backed impl).** `L` · fdb-client-review.
-   **De-prioritized: just-before-launch safety net, not a blocker.** Define a `Database`/`Transaction`
-   `Backend` interface; add a libfdb_c-backed impl; switch via config. (TODO-production P2.2.)
+5. **[~] CI reproducibility — off the single Hetzner box. UNTRACKED (owner decision, 2026-06-18).**
+   The single self-hosted box is intentional: we work locally + sequentially; the RFC-115→117
+   merge-wave slowness was a one-off (four PRs through one runner), not cache thrash (warm cache
+   confirmed). Don't re-file a 2nd/ephemeral-runner or CI-reproducibility item. See the `# NEXT`
+   CI note for the full rationale. Revisit only if the box actually starts failing on disk. (Was
+   TODO-prod P1.8.)
+6. **[x] libfdb_c escape hatch (Backend interface + CGo-backed impl) — DONE (RFC-109, PR #295).**
+   `BackendDatabase` interface + a CGo-backed impl over `cgofdb`, selected at BUILD time via the
+   `libfdbc` build tag (not runtime config: libfdb_c's network thread is process-global + unrecoverable
+   so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
 
@@ -901,23 +913,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   READ_LOCK_AWARE ok, unlock+poll recovery) — revert-proven red without the check — plus the
   production-parser `locked` assert in the `GetReadVersionReply_locked` reply vector.
 
-- [ ] **GRV cache is ALWAYS-ON in Go; opt-in (USE_GRV_CACHE) in C++ (divergence, filed by
-  RFC-096).** C++ serves cached read versions only when the app sets `USE_GRV_CACHE`
-  (`NativeAPI.actor.cpp:7505` gate; default false, `:6148`; the `DEBUG_USE_GRV_CACHE_CHANCE`
-  knob is -1.0 = never). Go's `grvCache.tryCache` serves every DEFAULT/BATCH transaction and a
-  background refresher keeps it perpetually warm — i.e. Go gives every app C++'s opt-in behavior
-  by default. Observable consequences beyond perf: staleness windows C++ default apps never see
-  (RFC-096 had to carry `locked` through the cache to compensate — revisit that check's shape if
-  this closes). Closing means adding the `USE_GRV_CACHE` transaction/database option and gating
-  `tryCache` + the refresher on it, matching `:7504-7518` exactly. Needs its own RFC (perf
-  implications: today's cache is why Go GRV latency is flat under load); fdb-client-review gates.
-  **DEMONSTRATED wrong-answer (RFC-098 differential, full-suite run): a Go transaction served a
-  cached version OLDER than a libfdb_c-committed seed — the seed keys were invisible (GetKey
-  resolved past them; a limited GetRange saw 0 of 2 rows). libfdb_c's default (real GRV per txn)
-  guarantees external causality; Go's always-on cache silently does not. The differential tests
-  now seed through the Go client to stay deterministic
-  (`pkg/fdbgo/bench/differential_unreadable_test.go`, getkey subtest comment) — those comments
-  are removable when this closes. Upgraded from perf-flavored divergence to correctness bug.**
+- [x] **GRV cache is ALWAYS-ON in Go; opt-in (USE_GRV_CACHE) in C++ — DONE (RFC-104).** Closed:
+  the cache is now opt-in, default off. Cache READS are gated on the transaction's `useGrvCache`
+  (`SetUseGrvCache`/USE_GRV_CACHE 1101; `SetSkipGrvCache`/SKIP_GRV_CACHE 1102, skip wins) at
+  `grv.go:284` and the background refresher only starts on the first opted-in request
+  (`grv.go:293`) — matching C++ `NativeAPI.actor.cpp:7504-7517` (gate `:7505`, default false
+  `:6148`). The opted-in cached path fail-opens on `locked` exactly as C++ does (`:7514-7516`), so
+  RFC-096's `lastLocked` ride-along — which existed ONLY to compensate for the previous always-on
+  cache — was removed (`grv.go:38-45`). The RFC-098 wrong-answer (a default Go txn serving a
+  version older than a libfdb_c-committed seed) no longer reproduces: a DEFAULT Go read now sees
+  cgo-committed data directly. Pinned by `TestFDB_GRVCache_OptInOnly`,
+  `TestFDB_GRVCache_RefresherStartsOnOptInMiss`, `TestFDB_GRVCache_SkipOverridesUse`
+  (`client/grv_cache_optin_test.go`) + `TestDifferential_GRVCacheDefaultSeesCgoSeed`
+  (`bench/differential_grvcache_test.go`). Differential-test causality comments already rewritten
+  to "key-ownership hygiene, not a workaround" (`bench/differential_unreadable_test.go`).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
@@ -927,21 +936,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   testcontainers (and later `SimTransport`). Reimplement the harness; reuse the proven scenarios.
   Extends the existing `pkg/recordlayer/chaos` model-based approach + `cmd/fdb-binding-stress`.
 
-- [ ] **C4. Deferred Phase-0 test gaps (need `SimTransport` / faithful inline-error injection).**
-  A coverage audit (codex) found these error/edge dimensions; the cheap deterministic ones were
-  closed inline, these need infra and fold into the `SimTransport` build:
-    - **Inline `LoadBalancedReply.error` on the `parseGetKeyReply` / `parseGetKeyValuesReply`
-      parsers specifically.** The decode helper (`wire.ReadInlineReplyError`) and the slot
-      constants are unit-pinned, but no test feeds those two parsers a *faithful* reply carrying an
-      inline error, because the generated writer mis-marshals `Optional<Error>` (as length-prefixed
-      bytes, not a nested Error table) — and the current fault harness injects ROOT `ErrorOr` errors,
-      whereas real FDB delivers read wrong-shard via the INLINE field. `SimTransport` (or a
-      hand-built fixture) must emit a correct nested-Error inline reply.
-    - **`PendingGet.Resolve` flush-error arm** (needs a conn whose `Flush()` errors).
-    - **Range wrong-shard across a partial continuation / `more=true`** (inject `1001` on the 2nd
-      `GetKeyValues` frame mid-scan; assert no dup/drop, correct `more`; forward + reverse).
-    - **`future_version` (1009) / `process_behind` (1037) read-path QueueModel backoff wiring**
-      (assert `failedUntil` advances and the address is deprioritized).
+- [x] **C4. Deferred Phase-0 test gaps — DONE (RFC-118 SimTransport).** All four closed with
+  revert-proven regressions (`client/simtransport_test.go`, migrated `client/fault_test.go`):
+    - **Inline `LoadBalancedReply.error` on `parseGetKeyReply` / `parseGetKeyValuesReply` / `parseGetValueReply`** —
+      the `TestWrongShardServer_*` tests now inject through the faithful inline channel
+      (`ErrorOr<reply>` tag=value + nested inline error, `types.MarshalErrorOrInlineError`), the way
+      real FDB delivers a read wrong-shard. (RFC-115 §6 had already fixed the `Optional<Error>`
+      marshal — the "generated writer mis-marshals" caveat above was stale.)
+    - **`PendingGet.Resolve` flush-error arm** — a `Close()`d real conn → `Flush()` returns
+      `errConnClosed` deterministically (`TestPipelinedGet_Resolve_FlushErrorRetries`).
+    - **Range wrong-shard mid-scan (`more=true`), fwd+rev** — `flipMoreReply` forces a continuation,
+      1001 injected on the continuation frame; asserts no dup/drop (`TestSimRangeWrongShardMidScan`).
+    - **`future_version` (1009) / `process_behind` (1037) → QueueModel backoff** — inline 1009/1037
+      on a read advances `failedUntil` + grows `futureVersionBackoff`
+      (`TestSimInlineFutureVersion_QueueModelBackoff`; single-SS asserts QueueModel state, the cause).
 
 ---
 

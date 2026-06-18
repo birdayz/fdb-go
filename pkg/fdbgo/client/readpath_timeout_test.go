@@ -22,8 +22,8 @@ import (
 // RETRYABLE transaction_too_old (1007) so the Transact loop retries with a
 // fresh read version — the observable libfdb_c contract.
 //
-// Determinism: the timeout is driven by a dropReplyDialer (fault_test.go) that
-// SILENTLY DROPS every server reply once armed, combined with a small
+// Determinism: the timeout is driven by a drop-reply simDialer (newDropReplyTestDB,
+// simtransport_test.go) that SILENTLY DROPS every server reply once armed, combined with a small
 // rpcTimeoutOverride. The reply never arrives, so the per-read timer ALWAYS
 // fires — there is no timer-vs-real-reply race. (An earlier version set
 // rpcTimeoutOverride = 1ns over a real connection and hoped the timer beat the
@@ -80,7 +80,7 @@ func TestReadPath_ReplyTimeout_SurfacesRetryable(t *testing.T) {
 	}
 
 	// Warm the location cache for every key/range the test reads, with
-	// successful reads, so once we arm the dropReplyDialer the ONLY RPCs are the
+	// successful reads, so once we arm the drop-reply dialer the ONLY RPCs are the
 	// read-under-test's storage reads — no GetKeyServerLocations during the
 	// fault window (which uses DefaultRPCTimeout and would hang on a dropped
 	// reply).

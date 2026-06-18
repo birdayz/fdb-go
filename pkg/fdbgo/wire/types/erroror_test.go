@@ -113,6 +113,50 @@ func TestReadInlineReplyError(t *testing.T) {
 	}
 }
 
+// TestMarshalErrorOrInlineError_RoundTrip validates the fault-injection envelope
+// (RFC-118): MarshalErrorOrInlineError must produce a frame that the production
+// read-reply decode path (ReadErrorOrInto → UnmarshalFromReader →
+// ReadInlineReplyError) reads as a SUCCESS ErrorOr whose nested reply carries the
+// inline error. It must decode identically through all three read reply types'
+// SlotError (the single frame serves all three parsers). Penalty must survive too.
+func TestMarshalErrorOrInlineError_RoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, code := range []uint16{1001, 1009, 1037} {
+		buf := MarshalErrorOrInlineError(code, 1.5)
+
+		// The ErrorOr root must be a SUCCESS union (tag=value), NOT the error tag —
+		// the error rides the INLINE field, exactly as the storage server sends it.
+		r, err := wire.ReadErrorOr(buf)
+		if err != nil {
+			t.Fatalf("code %d: ReadErrorOr (expected success tag) returned error: %v", code, err)
+		}
+		// Penalty (slot 0) round-trips.
+		var reply GetValueReply
+		reply.UnmarshalFromReader(r)
+		if reply.Penalty != 1.5 {
+			t.Errorf("code %d: Penalty = %v, want 1.5", code, reply.Penalty)
+		}
+		// The inline error decodes at every read reply's SlotError (all == 1).
+		for name, slot := range map[string]int{
+			"GetValueReply":     GetValueReplySlotError,
+			"GetKeyReply":       GetKeyReplySlotError,
+			"GetKeyValuesReply": GetKeyValuesReplySlotError,
+		} {
+			r2, err := wire.ReadErrorOr(buf)
+			if err != nil {
+				t.Fatalf("code %d/%s: ReadErrorOr: %v", code, name, err)
+			}
+			ferr := wire.ReadInlineReplyError(r2, slot)
+			if ferr == nil {
+				t.Fatalf("code %d/%s: expected inline error at slot %d, got nil", code, name, slot)
+			}
+			if ferr.Code != int(code) {
+				t.Errorf("code %d/%s: decoded inline code %d", code, name, ferr.Code)
+			}
+		}
+	}
+}
+
 // TestReadInlineReplyError_Absent: a reply with no inline error returns nil (the
 // common success case must not be misread as an error). VoidReply success lands
 // on EnsureTable<Void>, which has no error field at the queried slot.
