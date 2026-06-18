@@ -235,7 +235,15 @@ static bool handleGetReadVersionRequest() {
     req.transactionCount = transactionCount;
     req.flags = flags;
     // tags: TransactionTagMap, complex structured type — skip
-    // debugID: Optional<UID>, structured — skip
+    // debugID: Optional<UID>. A UID is two uint64 (first==bytes 0..7, second==8..15),
+    // serialized as a 16-byte bare scalar behind the union RelativeOffset
+    // (scalar_traits<UID>). Set it from the 16 raw bytes when present.
+    if (hasDebugID && debugID.size() == 16) {
+        uint64_t a, b;
+        memcpy(&a, debugID.data(), 8);
+        memcpy(&b, debugID.data() + 8, 8);
+        req.debugID = UID(a, b);
+    }
     req.maxVersion = maxVersion;
 
     auto buf = serializeMessage(req);
@@ -445,7 +453,14 @@ static bool handleCommitTransactionRequest() {
     if (!readBool(hasDebugID)) return false;
     if (hasDebugID) {
         if (!readBytes(debugID)) return false;
-        // Optional<UID> - structured, skip setting
+        // Optional<UID>: 16-byte bare scalar (scalar_traits<UID>) behind the
+        // union RelativeOffset. Set from the 16 raw bytes when present.
+        if (debugID.size() == 16) {
+            uint64_t a, b;
+            memcpy(&a, debugID.data(), 8);
+            memcpy(&b, debugID.data() + 8, 8);
+            req.debugID = UID(a, b);
+        }
     }
 
     if (!readBool(hasCommitCostEstimation)) return false;

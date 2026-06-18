@@ -262,7 +262,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			}
 			if lockAware {
 				req.HasOptions = true
-				req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
+				req.Options = types.ReadOptions{LockAware: true}
 			}
 			bufp := getKeyBufPool.Get().(*[]byte)
 			reqData := req.MarshalFDBPooled(*bufp)
@@ -926,7 +926,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
+		req.Options = types.ReadOptions{LockAware: true}
 	}
 	bufp := getKeyValuesBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)
@@ -985,7 +985,7 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
+		req.Options = types.ReadOptions{LockAware: true}
 	}
 	bufp := getValueBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)

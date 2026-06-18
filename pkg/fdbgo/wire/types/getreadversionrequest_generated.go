@@ -41,7 +41,7 @@ type GetReadVersionRequest struct {
 	Flags            uint32       // slot 1
 	Tags             []byte       // slot 2
 	HasDebugID       bool         // slot 3, optional tag
-	DebugID          []byte       // slot 4, optional value
+	DebugID          [16]byte     // slot 4, optional scalar value
 	Reply            ReplyPromise // slot 5, nested
 	SpanContext      SpanContext  // slot 6, nested
 	MaxVersion       int64        // slot 7
@@ -58,7 +58,7 @@ func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
 		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
+		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
 	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
@@ -87,7 +87,7 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
+		copy(m.DebugID[:], r.ReadRelOffRaw(GetReadVersionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
 	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
@@ -108,7 +108,7 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 func (m *GetReadVersionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Tags))
 	if m.HasDebugID {
-		ps.VisitDynamicSize(len(m.DebugID))
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
@@ -129,7 +129,8 @@ func (m *GetReadVersionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStar
 	var spanContextStart int
 	tagsOff, _ = wb.VisitDynamicSize(m.Tags)
 	if m.HasDebugID {
-		debugIDOff, _ = wb.VisitDynamicSize(m.DebugID)
+		wb.Write(m.DebugID[:], wb.CurrentBufferSize+16)
+		debugIDOff = wb.CurrentBufferSize
 	}
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)

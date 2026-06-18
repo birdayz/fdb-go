@@ -3,6 +3,8 @@
 package types
 
 import (
+	"encoding/binary"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
@@ -16,8 +18,8 @@ var WatchValueReplyVTable = wire.VTable{8, 13, 4, 12}
 const WatchValueReplyFileID uint32 = 3
 
 var WatchValueReplyVTableClosure = []wire.VTable{
-	{8, 13, 4, 12},
 	{6, 8, 4},
+	{8, 13, 4, 12},
 }
 
 var WatchValueReplyTemplate = wire.NewMessageTemplate(
@@ -52,4 +54,172 @@ func (m *WatchValueReply) UnmarshalFDB(data []byte) error {
 		m.Cached = r.ReadBool(WatchValueReplySlotCached)
 	}
 	return nil
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *WatchValueReply) precomputeSize(ps *wire.PrecomputeSize) int {
+	{
+		n := ps.GetMessageWriter(int(WatchValueReplyVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(WatchValueReplyVTable[1])-4, 8)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *WatchValueReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	selfW := wb.GetMessageWriter(int(WatchValueReplyVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := WatchValueReplyVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(WatchValueReplyVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
+		selfW.WriteScalar(b[:], int(vt[WatchValueReplySlotVersion+2]))
+	}
+	if m.Cached {
+		selfW.WriteScalar([]byte{1}, int(vt[WatchValueReplySlotCached+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *WatchValueReply) MarshalFDB() []byte {
+	t := WatchValueReplyTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
+	fakeRootW := wb.GetMessageWriter(8, true)
+	fakeRootStart := fakeRootW.FinalLocation
+	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
+	fakeRootW.WriteToAt(fakeRootStart)
+
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(fakeRootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], WatchValueReplyFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
+	return buf
+}
+
+// MarshalFDBPooled is like MarshalFDB but reuses dst if capacity is sufficient.
+func (m *WatchValueReply) MarshalFDBPooled(dst []byte) []byte {
+	t := WatchValueReplyTemplate
+	packedVT := t.PackedVTables()
+
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	var buf []byte
+	if cap(dst) >= totalSize {
+		buf = dst[:totalSize]
+		for i := range buf {
+			buf[i] = 0
+		}
+	} else {
+		buf = make([]byte, totalSize)
+	}
+
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	fakeRootW := wb.GetMessageWriter(8, true)
+	fakeRootStart := fakeRootW.FinalLocation
+	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
+	fakeRootW.WriteToAt(fakeRootStart)
+
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(fakeRootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], WatchValueReplyFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
+	return buf
+}
+
+// ParseWatchValueReplyVectorFromReader reads a FlatBuffers vector of WatchValueReply.
+func ParseWatchValueReplyVectorFromReader(r *wire.Reader, slot int) []WatchValueReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]WatchValueReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem WatchValueReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

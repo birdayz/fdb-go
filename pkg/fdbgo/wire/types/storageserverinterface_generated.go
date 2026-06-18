@@ -27,9 +27,9 @@ type StorageServerInterface struct {
 	WatchValue [16]byte // slot 0
 	// Field_1: unregistered nested struct at slot 1
 	// Field_2: unregistered nested struct at slot 2
-	HasField_3 bool   // slot 3, optional tag
-	Field_3    []byte // slot 4, optional value
-	Field_5    bool   // slot 5
+	HasField_3 bool     // slot 3, optional tag
+	Field_3    [16]byte // slot 4, optional scalar value
+	Field_5    bool     // slot 5
 }
 
 func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
@@ -37,7 +37,7 @@ func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
-		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
+		copy(m.Field_3[:], r.ReadRelOffRaw(StorageServerInterfaceSlotField_3+1, 16))
 		m.HasField_3 = true
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
@@ -54,7 +54,7 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
-		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
+		copy(m.Field_3[:], r.ReadRelOffRaw(StorageServerInterfaceSlotField_3+1, 16))
 		m.HasField_3 = true
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
@@ -68,7 +68,7 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *StorageServerInterface) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasField_3 {
-		ps.VisitDynamicSize(len(m.Field_3))
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	{
 		n := ps.GetMessageWriter(int(StorageServerInterfaceVTable[1]))
@@ -83,7 +83,8 @@ func (m *StorageServerInterface) precomputeSize(ps *wire.PrecomputeSize) int {
 func (m *StorageServerInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var field_3Off int
 	if m.HasField_3 {
-		field_3Off, _ = wb.VisitDynamicSize(m.Field_3)
+		wb.Write(m.Field_3[:], wb.CurrentBufferSize+16)
+		field_3Off = wb.CurrentBufferSize
 	}
 	selfW := wb.GetMessageWriter(int(StorageServerInterfaceVTable[1]), true)
 	selfStart := selfW.FinalLocation

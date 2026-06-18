@@ -9,14 +9,14 @@ import (
 )
 
 const (
-	WatchValueRequestSlotKey        = 0
-	WatchValueRequestSlotValue      = 1  // optional tag
-	WatchValueRequestSlotVersion    = 3  // int64
-	WatchValueRequestSlotTags       = 4  // optional tag
-	WatchValueRequestSlotDebugID    = 6  // optional tag
-	WatchValueRequestSlotReply      = 8  // nested
-	WatchValueRequestSlotSpanCtx    = 9  // nested
-	WatchValueRequestSlotTenantInfo = 10 // nested
+	WatchValueRequestSlotKey         = 0
+	WatchValueRequestSlotValue       = 1
+	WatchValueRequestSlotVersion     = 3
+	WatchValueRequestSlotTags        = 4
+	WatchValueRequestSlotDebugID     = 6
+	WatchValueRequestSlotReply       = 8
+	WatchValueRequestSlotSpanContext = 9
+	WatchValueRequestSlotTenantInfo  = 10
 )
 
 var WatchValueRequestVTable = wire.VTable{26, 43, 12, 40, 16, 4, 41, 20, 42, 24, 28, 32, 36}
@@ -24,11 +24,11 @@ var WatchValueRequestVTable = wire.VTable{26, 43, 12, 40, 16, 4, 41, 20, 42, 24,
 const WatchValueRequestFileID uint32 = 14747733
 
 var WatchValueRequestVTableClosure = []wire.VTable{
+	{6, 20, 4},
+	{10, 17, 4, 16, 12},
+	{6, 8, 4},
 	{10, 29, 4, 20, 28},
 	{26, 43, 12, 40, 16, 4, 41, 20, 42, 24, 28, 32, 36},
-	{10, 17, 4, 16, 12},
-	{6, 20, 4},
-	{6, 8, 4},
 }
 
 var WatchValueRequestTemplate = wire.NewMessageTemplate(
@@ -45,14 +45,80 @@ type WatchValueRequest struct {
 	HasTags     bool         // slot 4, optional tag
 	Tags        []byte       // slot 5, optional value
 	HasDebugID  bool         // slot 6, optional tag
-	DebugID     [16]byte     // slot 7, optional value (UID)
+	DebugID     [16]byte     // slot 7, optional scalar value
 	Reply       ReplyPromise // slot 8, nested
 	SpanContext SpanContext  // slot 9, nested
 	TenantInfo  TenantInfo   // slot 10, nested
 }
 
+func (m *WatchValueRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(WatchValueRequestSlotKey) {
+		m.Key = r.ReadBytes(WatchValueRequestSlotKey)
+	}
+	if r.FieldPresent(WatchValueRequestSlotValue) && r.ReadUint8(WatchValueRequestSlotValue) > 0 {
+		m.Value = r.ReadBytes(WatchValueRequestSlotValue + 1)
+		m.HasValue = true
+	}
+	if r.FieldPresent(WatchValueRequestSlotVersion) {
+		m.Version = r.ReadInt64(WatchValueRequestSlotVersion)
+	}
+	if r.FieldPresent(WatchValueRequestSlotTags) && r.ReadUint8(WatchValueRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(WatchValueRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	if r.FieldPresent(WatchValueRequestSlotDebugID) && r.ReadUint8(WatchValueRequestSlotDebugID) > 0 {
+		copy(m.DebugID[:], r.ReadRelOffRaw(WatchValueRequestSlotDebugID+1, 16))
+		m.HasDebugID = true
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
+	}
+}
+
+func (m *WatchValueRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(WatchValueRequestSlotKey) {
+		m.Key = r.ReadBytes(WatchValueRequestSlotKey)
+	}
+	if r.FieldPresent(WatchValueRequestSlotValue) && r.ReadUint8(WatchValueRequestSlotValue) > 0 {
+		m.Value = r.ReadBytes(WatchValueRequestSlotValue + 1)
+		m.HasValue = true
+	}
+	if r.FieldPresent(WatchValueRequestSlotVersion) {
+		m.Version = r.ReadInt64(WatchValueRequestSlotVersion)
+	}
+	if r.FieldPresent(WatchValueRequestSlotTags) && r.ReadUint8(WatchValueRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(WatchValueRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	if r.FieldPresent(WatchValueRequestSlotDebugID) && r.ReadUint8(WatchValueRequestSlotDebugID) > 0 {
+		copy(m.DebugID[:], r.ReadRelOffRaw(WatchValueRequestSlotDebugID+1, 16))
+		m.HasDebugID = true
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(WatchValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
+	}
+	return nil
+}
+
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Fields processed in SERIALIZE ORDER: key, value, version, tags, debugID, reply, spanContext, tenantInfo.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *WatchValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Key))
 	if m.HasValue {
@@ -60,6 +126,9 @@ func (m *WatchValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	}
 	if m.HasTags {
 		ps.VisitDynamicSize(len(m.Tags))
+	}
+	if m.HasDebugID {
+		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
@@ -73,14 +142,15 @@ func (m *WatchValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
 // Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *WatchValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var keyOff int
 	var valueOff int
 	var tagsOff int
+	var debugIDOff int
 	var replyStart int
 	var spanContextStart int
 	var tenantInfoStart int
-
 	keyOff, _ = wb.VisitDynamicSize(m.Key)
 	if m.HasValue {
 		valueOff, _ = wb.VisitDynamicSize(m.Value)
@@ -88,59 +158,43 @@ func (m *WatchValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart in
 	if m.HasTags {
 		tagsOff, _ = wb.VisitDynamicSize(m.Tags)
 	}
+	if m.HasDebugID {
+		wb.Write(m.DebugID[:], wb.CurrentBufferSize+16)
+		debugIDOff = wb.CurrentBufferSize
+	}
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
 	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
-
 	selfW := wb.GetMessageWriter(int(WatchValueRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := WatchValueRequestVTable
-
-	// VTable back-pointer
 	{
 		soff := int32(vtableStart - tmpl.VTableOffset(WatchValueRequestVTable) - selfStart)
 		var b [4]byte
 		binary.LittleEndian.PutUint32(b[:], uint32(soff))
 		selfW.WriteScalar(b[:], 0)
 	}
-
-	// version (int64) at vt[slot 3 + 2] = vt[5]
 	{
 		var b [8]byte
 		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
 		selfW.WriteScalar(b[:], int(vt[WatchValueRequestSlotVersion+2]))
 	}
-
-	// key (RelativeOffset) at vt[slot 0 + 2] = vt[2]
 	selfW.WriteRelativeOffset(keyOff, int(vt[WatchValueRequestSlotKey+2]))
-
-	// value (optional)
 	if m.HasValue {
 		selfW.WriteScalar([]byte{1}, int(vt[WatchValueRequestSlotValue+2]))
 		selfW.WriteRelativeOffset(valueOff, int(vt[WatchValueRequestSlotValue+1+2]))
 	}
-
-	// tags (optional)
 	if m.HasTags {
 		selfW.WriteScalar([]byte{1}, int(vt[WatchValueRequestSlotTags+2]))
 		selfW.WriteRelativeOffset(tagsOff, int(vt[WatchValueRequestSlotTags+1+2]))
 	}
-
-	// debugID (optional UID — 16 bytes inline)
 	if m.HasDebugID {
 		selfW.WriteScalar([]byte{1}, int(vt[WatchValueRequestSlotDebugID+2]))
-		selfW.WriteScalar(m.DebugID[:], int(vt[WatchValueRequestSlotDebugID+1+2]))
+		selfW.WriteRelativeOffset(debugIDOff, int(vt[WatchValueRequestSlotDebugID+1+2]))
 	}
-
-	// reply (nested RelativeOffset)
 	selfW.WriteRelativeOffset(replyStart, int(vt[WatchValueRequestSlotReply+2]))
-
-	// spanContext (nested RelativeOffset)
-	selfW.WriteRelativeOffset(spanContextStart, int(vt[WatchValueRequestSlotSpanCtx+2]))
-
-	// tenantInfo (nested RelativeOffset)
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[WatchValueRequestSlotSpanContext+2]))
 	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[WatchValueRequestSlotTenantInfo+2]))
-
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }
@@ -196,4 +250,83 @@ func (m *WatchValueRequest) MarshalFDB() []byte {
 	wire.ReleaseWriteToBuffer(wb)
 	wire.ReleasePrecomputeSize(ps)
 	return buf
+}
+
+// MarshalFDBPooled is like MarshalFDB but reuses dst if capacity is sufficient.
+func (m *WatchValueRequest) MarshalFDBPooled(dst []byte) []byte {
+	t := WatchValueRequestTemplate
+	packedVT := t.PackedVTables()
+
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	var buf []byte
+	if cap(dst) >= totalSize {
+		buf = dst[:totalSize]
+		for i := range buf {
+			buf[i] = 0
+		}
+	} else {
+		buf = make([]byte, totalSize)
+	}
+
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	fakeRootW := wb.GetMessageWriter(8, true)
+	fakeRootStart := fakeRootW.FinalLocation
+	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
+	fakeRootW.WriteToAt(fakeRootStart)
+
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(fakeRootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], WatchValueRequestFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
+	return buf
+}
+
+// ParseWatchValueRequestVectorFromReader reads a FlatBuffers vector of WatchValueRequest.
+func ParseWatchValueRequestVectorFromReader(r *wire.Reader, slot int) []WatchValueRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]WatchValueRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem WatchValueRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

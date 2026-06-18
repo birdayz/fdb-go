@@ -60,6 +60,7 @@ REGISTER_GO_TYPE(Endpoint, "Endpoint");
 
 // ReplyPromise<T> — all instantiations share same vtable.
 REGISTER_GO_TYPE(ReplyPromise<GetValueReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<WatchValueReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetKeyValuesReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetKeyReply>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<GetReadVersionReply>, "ReplyPromise");
@@ -91,6 +92,8 @@ struct FieldNames {
 // Field names for all extracted types.
 REGISTER_FIELD_NAMES(GetValueRequest, "key", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
 REGISTER_FIELD_NAMES(GetValueReply, "penalty", "error", "value", "cached");
+REGISTER_FIELD_NAMES(WatchValueRequest, "key", "value", "version", "tags", "debugID", "reply", "spanContext", "tenantInfo");
+REGISTER_FIELD_NAMES(WatchValueReply, "version", "cached");
 REGISTER_FIELD_NAMES(GetKeyValuesRequest, "begin", "end", "version", "limit", "limitBytes", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions", "arena");
 REGISTER_FIELD_NAMES(GetKeyValuesReply, "penalty", "error", "data", "version", "more", "cached", "arena");
 REGISTER_FIELD_NAMES(GetKeyRequest, "sel", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
@@ -115,7 +118,12 @@ REGISTER_FIELD_NAMES(IPAddress, "addr");
 REGISTER_FIELD_NAMES(KeyRangeRef, "begin", "end");
 REGISTER_FIELD_NAMES(KeySelectorRef, "key", "orEqual", "offset");
 REGISTER_FIELD_NAMES(SpanContext, "traceID", "spanID", "flags");
-REGISTER_FIELD_NAMES(ReadOptions, "type", "cacheResult", "lockAware");
+// C++ serialize order (FDBTypes.h): serializer(ar, type, cacheResult, debugID,
+// consistencyCheckStartVersion, lockAware). The old 3-name list mis-mapped the slots —
+// it named slot 2 "lockAware" when slot 2-3 is actually Optional<UID> debugID, and the
+// real `lockAware` (bool) is slot 6. That broke the client's lock-aware reads (they set
+// the debugID field, never the lockAware bool). Five names, in serialize order, fixes it.
+REGISTER_FIELD_NAMES(ReadOptions, "type", "cacheResult", "debugID", "consistencyCheckStartVersion", "lockAware");
 REGISTER_FIELD_NAMES(StorageMetrics, "bytes", "bytesWrittenPerKSecond", "iosPerKSecond", "bytesReadPerKSecond", "opsReadPerKSecond");
 REGISTER_FIELD_NAMES(TenantMapEntry, "id", "tenantName", "tenantLockState", "tenantLockId", "tenantGroup", "configurationSequenceNum");
 REGISTER_FIELD_NAMES(WaitMetricsRequest, "keys", "min", "max", "reply", "tenantInfo", "minVersion");
@@ -268,6 +276,46 @@ template <> inline const char* optionalInnerGoType<Optional<ReadOptions>>() { re
 // and C++ expect. Error has uint16 errorCode at slot 0 (REGISTER_FIELD_NAMES(Error,...)).
 template <> inline const char* optionalInnerGoType<Optional<Error>>() { return "Error"; }
 
+// Optional<scalar-T> introspection. Optional<UID> (the debugID on requests) is a flatbuffers
+// UNION whose single alternative is the fixed-size SCALAR UID (scalar_traits<UID>,
+// flow/IRandom.h => 16 bytes; use_indirection==false), so it serializes as a bare 16-byte
+// scalar behind the union RelativeOffset (SaveAlternative, flat_buffers.h:848), NOT a
+// length-prefixed byte vector. optionalInnerGoType above only whitelists STRUCT inners; this
+// captures a SCALAR inner so the codegen emits a fixed-size scalar ([16]byte / ReadUID) rather
+// than []byte. (Optional<UID> debugID is the only Optional<scalar> in the schema; every other
+// Optional<...> is genuinely dynamic-size and stays []byte.) NOTE fb_size<Optional<UID>> is the
+// union's RelativeOffset size (4), so the inner scalar's size (16) must be queried separately.
+template <class T> struct optional_inner_t { static constexpr bool is = false; };
+template <class T> struct optional_inner_t<Optional<T>> { using type = T; static constexpr bool is = true; };
+
+template <class T> bool optionalInnerIsScalar() {
+    if constexpr (optional_inner_t<T>::is) {
+        using Inner = typename optional_inner_t<T>::type;
+        // ONLY UID — the lone fixed 16-byte struct-scalar (scalar_traits<UID>) — gets the
+        // out-of-line fixed-ARRAY scalar codegen here (read via copy(m.X[:], ...), write via
+        // wb.Write(m.X[:], ...)). Primitive Optional<scalar> (Optional<int64>/<bool>/<enum>,
+        // e.g. ReadOptions' fields) is ALSO mis-emitted as []byte today, but fixing it needs
+        // per-type scalar encode/decode at a RelativeOffset — a separate, broader change with
+        // its own oracle coverage. Those stay []byte (pre-existing) until then (TODO.md).
+        return std::is_same_v<Inner, UID>;
+    }
+    return false;
+}
+template <class T> ScalarInfo optionalInnerScalarInfo() {
+    if constexpr (optional_inner_t<T>::is) {
+        using Inner = typename optional_inner_t<T>::type;
+        if constexpr (detail::is_scalar<Inner>) return scalarInfoFor<Inner>();
+    }
+    return {};
+}
+template <class T> int optionalInnerScalarSize() {
+    if constexpr (optional_inner_t<T>::is) {
+        using Inner = typename optional_inner_t<T>::type;
+        if constexpr (detail::is_scalar<Inner>) return (int)detail::fb_size<Inner>;
+    }
+    return 0;
+}
+
 // ============================================================
 // 4. FieldDesc + FieldCollector
 // ============================================================
@@ -281,6 +329,7 @@ struct FieldDesc {
     std::vector<VariantAlt> variantAlts;
     int vtableSlot;
     uint32_t size;
+    bool optScalar = false; // Optional<scalar-T> (e.g. Optional<UID>): inner is a fixed-size scalar
 };
 
 template <class ParentT>
@@ -333,10 +382,20 @@ private:
             }
             break;
         case FieldKind::Optional:
-            // Check if inner type is a struct (has serialize method).
             // C++ Optional<T> via union_like_traits: alternatives = pack<T>.
-            // If T is expect_serialize_member, it's serialized as EnsureTable<T> (nested object).
-            fd.nestedGoType = optionalInnerGoType<T>();
+            if (optionalInnerIsScalar<T>()) {
+                // Optional<scalar-T> (Optional<UID> debugID): the alternative is a fixed-size
+                // scalar — capture its ScalarInfo + REAL size (fb_size<Optional<UID>> is the
+                // union's 4-byte RelativeOffset, not the inner 16), so the codegen emits the
+                // [16]byte scalar path (bare scalar behind the union reloff), not []byte.
+                fd.optScalar = true;
+                fd.scalar = optionalInnerScalarInfo<T>();
+                fd.size = (uint32_t)optionalInnerScalarSize<T>();
+            } else {
+                // Struct inner (Optional<ReadOptions>/<Error>) → nested table via EnsureTable<T>;
+                // everything else → length-prefixed bytes.
+                fd.nestedGoType = optionalInnerGoType<T>();
+            }
             break;
         default:
             break;
