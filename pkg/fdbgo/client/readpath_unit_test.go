@@ -216,6 +216,15 @@ func TestBuildGetValueRequest_LockAwareSetsOptions(t *testing.T) {
 	if !req.Options.LockAware {
 		t.Error("Options.LockAware: got false, want true (lock-aware reads must set the real lockAware bool, not the debugID field)")
 	}
+	// C++ LOCK_AWARE inits a default ReadOptions (type=NORMAL(3), cacheResult=true) then sets
+	// lockAware (NativeAPI.actor.cpp:7072; FDBTypes.h:1748). Sending Type=0(EAGER)/CacheResult=false
+	// is wire-wrong on every lock-aware read.
+	if req.Options.Type != readTypeNormal {
+		t.Errorf("Options.Type: got %d, want %d (ReadType::NORMAL)", req.Options.Type, readTypeNormal)
+	}
+	if !req.Options.CacheResult {
+		t.Error("Options.CacheResult: got false, want true (C++ ReadOptions default ctor)")
+	}
 }
 
 // ============================================================================
@@ -284,6 +293,14 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	if !req.HasOptions || !req.Options.LockAware {
 		t.Errorf("lock-aware not set: HasOptions=%v Options.LockAware=%v",
 			req.HasOptions, req.Options.LockAware)
+	}
+	// C++ lock-aware reads send type=NORMAL(3)/cacheResult=true (default ReadOptions ctor), not
+	// Type=0(EAGER)/CacheResult=false. (NativeAPI.actor.cpp:7072; FDBTypes.h:1748)
+	if req.Options.Type != readTypeNormal {
+		t.Errorf("Options.Type: got %d, want %d (ReadType::NORMAL)", req.Options.Type, readTypeNormal)
+	}
+	if !req.Options.CacheResult {
+		t.Error("Options.CacheResult: got false, want true (C++ ReadOptions default ctor)")
 	}
 }
 

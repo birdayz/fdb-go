@@ -43,6 +43,19 @@ const (
 	maxSelectorResolutionSteps = 1000
 )
 
+// readTypeNormal is C++ ReadType::NORMAL (FDBTypes.h:1732, enum value 3) — the read-priority rank
+// the storage server applies. NOT EAGER (0).
+const readTypeNormal int32 = 3
+
+// lockAwareReadOptions is the ReadOptions a lock-aware read sends. C++ LOCK_AWARE/READ_LOCK_AWARE
+// initialize a DEFAULT ReadOptions (NativeAPI.actor.cpp:7072-7090) whose ctor sets
+// type=NORMAL(3), cacheResult=true (FDBTypes.h:1748), THEN set lockAware=true. Sending only
+// {LockAware:true} (Type=0/EAGER, CacheResult=false) is wire-wrong: it lands the read in the EAGER
+// SS read-priority rank and disables result caching, diverging from libfdb_c on every lock-aware read.
+func lockAwareReadOptions() types.ReadOptions {
+	return types.ReadOptions{Type: readTypeNormal, CacheResult: true, LockAware: true}
+}
+
 // readRPCTimeout is the per-RPC reply timeout for this transaction's reads:
 // the transaction's override when set (test-only), else DefaultRPCTimeout.
 func (tx *Transaction) readRPCTimeout() time.Duration {
@@ -262,7 +275,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			}
 			if lockAware {
 				req.HasOptions = true
-				req.Options = types.ReadOptions{LockAware: true}
+				req.Options = lockAwareReadOptions()
 			}
 			bufp := getKeyBufPool.Get().(*[]byte)
 			reqData := req.MarshalFDBPooled(*bufp)
@@ -930,7 +943,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{LockAware: true}
+		req.Options = lockAwareReadOptions()
 	}
 	bufp := getKeyValuesBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)
@@ -989,7 +1002,7 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{LockAware: true}
+		req.Options = lockAwareReadOptions()
 	}
 	bufp := getValueBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)
