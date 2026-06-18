@@ -23,9 +23,11 @@ compatibility; everything below is polish/safety/perf/infra — **none gates ado
 > the 5 s MVCC edge is characterized (RFC-056 #235, TODO `C2-followup`) as accepted perf/timing, not a wire
 > bug. Don't re-file.
 
-- [ ] **D1 — `SimTransport`** (frame-level fault injection) for faithful inline-error / timing tests.
-  PARTIALLY addressed by RFC-115 §6's `inlineErrorConn` (`client/fault_test.go`) + #304's debugID oracle
-  un-skip; the general `SimTransport` harness is still open (the C4 deferred Phase-0 test gaps).
+- [x] **D1 — `SimTransport`** (frame-level fault injection) — DONE (RFC-118; FDB-C-dev + Torvalds +
+  /code-review ACK; PR gauntlet codex/@claude/CI pending push). One rule-driven proxy-frame loop
+  (`simConn` + a per-frame intercept callback) consolidates the bespoke `wrongShardConn`/`dropReplyConn`;
+  faithful inline-error injection via the `ErrorOr<reply>`(tag=value) channel real FDB uses for read
+  errors (`types.MarshalErrorOrInlineError`). Closes the four C4 deferred Phase-0 test gaps below.
 - [ ] **B2 — libfdb_c escape hatch** (launch-stack item 6): a `Database`/`Transaction` `Backend` interface
   + a CGo-backed impl, switchable via config. **Explicitly DE-PRIORITIZED — a just-before-launch safety
   net, NOT an adoption blocker. Do last, if at all.**
@@ -927,21 +929,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   testcontainers (and later `SimTransport`). Reimplement the harness; reuse the proven scenarios.
   Extends the existing `pkg/recordlayer/chaos` model-based approach + `cmd/fdb-binding-stress`.
 
-- [ ] **C4. Deferred Phase-0 test gaps (need `SimTransport` / faithful inline-error injection).**
-  A coverage audit (codex) found these error/edge dimensions; the cheap deterministic ones were
-  closed inline, these need infra and fold into the `SimTransport` build:
-    - **Inline `LoadBalancedReply.error` on the `parseGetKeyReply` / `parseGetKeyValuesReply`
-      parsers specifically.** The decode helper (`wire.ReadInlineReplyError`) and the slot
-      constants are unit-pinned, but no test feeds those two parsers a *faithful* reply carrying an
-      inline error, because the generated writer mis-marshals `Optional<Error>` (as length-prefixed
-      bytes, not a nested Error table) — and the current fault harness injects ROOT `ErrorOr` errors,
-      whereas real FDB delivers read wrong-shard via the INLINE field. `SimTransport` (or a
-      hand-built fixture) must emit a correct nested-Error inline reply.
-    - **`PendingGet.Resolve` flush-error arm** (needs a conn whose `Flush()` errors).
-    - **Range wrong-shard across a partial continuation / `more=true`** (inject `1001` on the 2nd
-      `GetKeyValues` frame mid-scan; assert no dup/drop, correct `more`; forward + reverse).
-    - **`future_version` (1009) / `process_behind` (1037) read-path QueueModel backoff wiring**
-      (assert `failedUntil` advances and the address is deprioritized).
+- [x] **C4. Deferred Phase-0 test gaps — DONE (RFC-118 SimTransport).** All four closed with
+  revert-proven regressions (`client/simtransport_test.go`, migrated `client/fault_test.go`):
+    - **Inline `LoadBalancedReply.error` on `parseGetKeyReply` / `parseGetKeyValuesReply` / `parseGetValueReply`** —
+      the `TestWrongShardServer_*` tests now inject through the faithful inline channel
+      (`ErrorOr<reply>` tag=value + nested inline error, `types.MarshalErrorOrInlineError`), the way
+      real FDB delivers a read wrong-shard. (RFC-115 §6 had already fixed the `Optional<Error>`
+      marshal — the "generated writer mis-marshals" caveat above was stale.)
+    - **`PendingGet.Resolve` flush-error arm** — a `Close()`d real conn → `Flush()` returns
+      `errConnClosed` deterministically (`TestPipelinedGet_Resolve_FlushErrorRetries`).
+    - **Range wrong-shard mid-scan (`more=true`), fwd+rev** — `flipMoreReply` forces a continuation,
+      1001 injected on the continuation frame; asserts no dup/drop (`TestSimRangeWrongShardMidScan`).
+    - **`future_version` (1009) / `process_behind` (1037) → QueueModel backoff** — inline 1009/1037
+      on a read advances `failedUntil` + grows `futureVersionBackoff`
+      (`TestSimInlineFutureVersion_QueueModelBackoff`; single-SS asserts QueueModel state, the cause).
 
 ---
 

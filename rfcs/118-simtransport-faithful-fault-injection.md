@@ -1,10 +1,14 @@
 # RFC-118: `SimTransport` — faithful frame-level fault injection, closing the C4 read-path test gaps (`pkg/fdbgo`)
 
-**Status:** Accepted (RFC review: **FDB C++ maintainer ACK** — faithfulness model verified against
-7.3.75, inline channel + `canReplyWith` gate + QueueModel backoff all confirmed, no read error
-reaches the root channel so the root→inline upgrade loses no coverage; **Torvalds ACK** with three
-impl conditions, pinned in "Implementation contract" below). Implementation re-review (FDB-C-dev +
-Torvalds + /code-review + codex + @claude) gates before merge.
+**Status:** Implemented (branch `client/close-grv-cache-and-simtransport`; full pre-commit
+`just test` + `-race` green; all four gaps revert-proven). RFC review: **FDB C++ maintainer ACK**
+(faithfulness model verified against 7.3.75 — inline channel + `canReplyWith` gate + QueueModel
+backoff confirmed; no read error reaches the root channel, so the root→inline upgrade loses no
+coverage) + **Torvalds ACK** (three impl conditions, pinned in "Implementation contract" below).
+Implementation re-review: **FDB C++ maintainer ACK** + **Torvalds ACK** (both on the impl HEAD,
+two nits fixed: derive the envelope vtable closures from the reply types' own `VTableClosure`;
+read QueueModel fields under `mu`) + **/code-review high** (no correctness findings). **PR gauntlet
+(codex + @claude + CI) pending push/PR** — not yet run (the branch is local).
 
 **Closes:** `TODO.md` **D1** (`SimTransport`) and the four **C4 deferred Phase-0 test gaps**
 (TODO "C4. Deferred Phase-0 test gaps"):
