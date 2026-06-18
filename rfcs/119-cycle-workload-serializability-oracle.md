@@ -160,11 +160,13 @@ ever stressed):
    atomic counter and assert `> 0` (a small constant well below any rate floor) — **no** "≥K in T
    seconds" rate assertion, no `time.Sleep`. The point is "work happened," not "work happened
    fast."
-2. **`TestCycle_DetectsBrokenRing` — FDB revert-proof (the teeth):** deliberately apply a
-   **non-atomic** swap (split the swap's three sets across two separate committed txns, so a
-   concurrent reader can interleave on a transiently non-cyclic ring — a real isolation break) and
-   assert `check` goes **red** with "cycle got shorter/longer". Proves the check detects a broken
-   ring on real FDB, not just that the happy path passes.
+2. **`TestCycle_DetectsBrokenRing` — FDB revert-proof (the teeth):** deterministically install (via
+   one committed txn) the kind of corrupted ring a lost-isolation interleave would produce — redirect
+   one pointer to skip a node (`key(0) → node 2`, orphaning node 1) — and assert `check` goes **red**
+   with the exact "cycle got shorter" failure (message pinned, not just non-nil). Installing the
+   broken state directly rather than racing two split commits keeps the teeth **deterministic** — no
+   flaky concurrency-timing repro (Torvalds + FDB-C-dev both preferred this over the split-commit
+   sketch) — while still proving the check detects a broken ring read back from real FDB.
 3. **`TestCycle_Check_*` unit tests (no FDB), the deterministic teeth:** hand `check`'s walk a
    table of corrupt rings, each pinning one `cycleCheckData` failure mode 1:1 — **all five**:
    node-count-changed, cycle-got-shorter (early return to 0), key-changed (non-dense/out-of-order
