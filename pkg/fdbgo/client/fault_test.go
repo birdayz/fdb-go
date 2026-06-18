@@ -215,140 +215,10 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 }
 
-func buildFDBErrorResponse(errorCode int32) []byte {
-	return (&types.ErrorOrError{ErrorCode: uint16(errorCode)}).MarshalFDB()
-}
-
-// wrongShardConn wraps a net.Conn with a pipe-based proxy goroutine.
-// The proxy reads complete frames from the real connection and writes them
-// to a pipe. When armed, it replaces the next non-PING frame's body with
-// crafted ErrorOr bytes. This ensures frame boundary alignment — no
-// production code changes needed.
-type wrongShardConn struct {
-	net.Conn
-	pr       *io.PipeReader
-	injectCh chan struct{} // buffered; send to arm
-	errBody  []byte
-}
-
-func newWrongShardConn(c net.Conn, errBody []byte) *wrongShardConn {
-	pr, pw := io.Pipe()
-	wsc := &wrongShardConn{
-		Conn:     c,
-		pr:       pr,
-		injectCh: make(chan struct{}, 1),
-		errBody:  errBody,
-	}
-	go wsc.proxyLoop(pw)
-	return wsc
-}
-
-func (w *wrongShardConn) Read(b []byte) (int, error) {
-	return w.pr.Read(b)
-}
-
-func (w *wrongShardConn) proxyLoop(pw *io.PipeWriter) {
-	defer pw.Close()
-
-	// Forward the ConnectPacket (44 bytes) before entering frame mode.
-	var cpBuf [transport.ConnectPacketSize]byte
-	if _, err := io.ReadFull(w.Conn, cpBuf[:]); err != nil {
-		pw.CloseWithError(err)
-		return
-	}
-	if _, err := pw.Write(cpBuf[:]); err != nil {
-		return
-	}
-
-	// Forward frames, optionally replacing the next non-PING response.
-	pingToken := transport.WellKnownToken(transport.WLTokenPingPacket)
-	for {
-		token, body, err := transport.ReadFrame(w.Conn, false)
-		if err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-
-		// Check if we should inject.
-		select {
-		case <-w.injectCh:
-			if token == pingToken {
-				// PING — pass through, re-queue the inject signal.
-				w.injectCh <- struct{}{}
-			} else {
-				// Replace body with error response.
-				body = w.errBody
-			}
-		default:
-		}
-
-		if err := transport.WriteFrame(pw, token, body, false); err != nil {
-			return
-		}
-	}
-}
-
-func (w *wrongShardConn) arm() {
-	select {
-	case w.injectCh <- struct{}{}:
-	default:
-	}
-}
-
-// wrongShardDialer creates wrongShardConns and can arm them for fault injection.
-type wrongShardDialer struct {
-	mu      sync.Mutex
-	conns   []*wrongShardConn
-	errBody []byte
-}
-
-func (d *wrongShardDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	c, err := net.DialTimeout(network, addr, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	wc := newWrongShardConn(c, d.errBody)
-	d.mu.Lock()
-	d.conns = append(d.conns, wc)
-	d.mu.Unlock()
-	return wc, nil
-}
-
-// armAll arms all existing connections to replace the next frame.
-func (d *wrongShardDialer) armAll() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, c := range d.conns {
-		c.arm()
-	}
-}
-
-// newWrongShardTestDB starts an FDB container and returns a Database that dials
-// through a wrongShardDialer; wd.armAll() then replaces the next server frame
-// with an injected wrong_shard_server error. The injected code is the canonical
-// literal 1001, NOT the ErrWrongShardServer constant — injecting the
-// code-under-test's own constant would make the test self-confirming (RFC-010 P6).
-// Cleanup is registered via t.Cleanup.
-func newWrongShardTestDB(t *testing.T, ctx context.Context) (*Database, *wrongShardDialer) {
-	t.Helper()
-	connectCF := startProxyFDB(t, ctx)
-
-	const wrongShardServerCode = 1001 // canonical wrong_shard_server (see func doc)
-	errBody := buildFDBErrorResponse(wrongShardServerCode)
-	if _, parseErr := wire.ReadErrorOr(errBody); parseErr == nil {
-		t.Fatal("buildFDBErrorResponse should produce an error response")
-	}
-
-	wd := &wrongShardDialer{errBody: errBody}
-	db := newTestDatabase(t, ctx, connectCF, wd.dial)
-	t.Cleanup(func() { db.Close() })
-	return db, wd
-}
-
 // startProxyFDB starts an FDB container and returns a ClusterFile whose
 // Coordinators are the external (dial-through) addresses while Description/ID
 // carry the container-internal cluster identity — the shape a frame-proxying
-// dialer (wrongShardDialer, dropReplyDialer) needs.
+// dialer (simDialer) needs.
 // Container teardown is registered on t.Cleanup with a FRESH context: t.Cleanup
 // runs AFTER the caller's `defer cancel()`, so terminating on the (cancelled)
 // test ctx makes testcontainers bail with context.Canceled and leak the
@@ -391,109 +261,38 @@ func startProxyFDB(t *testing.T, ctx context.Context) *ClusterFile {
 	return connectCF
 }
 
-// dropReplyConn proxies frames like wrongShardConn, but when armed it silently
-// DROPS every non-PING server reply instead of forwarding it. The client's RPC
-// reply then never arrives, so the per-read reply timer fires deterministically
-// — there is no timer-vs-real-reply race (the flaw of a tiny rpcTimeoutOverride
-// against a real connection: on a fast box the real reply can win every time,
-// as the getKey subtest did in CI). PINGs still pass through so the connection
-// is not torn down as dead. Used to drive the read path's errReplyTimeout retry
-// loop to its retryable transaction_too_old exhaustion.
-type dropReplyConn struct {
-	net.Conn
-	pr       *io.PipeReader
-	dropping atomic.Bool
-}
-
-func newDropReplyConn(c net.Conn) *dropReplyConn {
-	pr, pw := io.Pipe()
-	d := &dropReplyConn{Conn: c, pr: pr}
-	go d.proxyLoop(pw)
-	return d
-}
-
-func (d *dropReplyConn) Read(b []byte) (int, error) { return d.pr.Read(b) }
-
-func (d *dropReplyConn) proxyLoop(pw *io.PipeWriter) {
-	defer pw.Close()
-
-	var cpBuf [transport.ConnectPacketSize]byte
-	if _, err := io.ReadFull(d.Conn, cpBuf[:]); err != nil {
-		pw.CloseWithError(err)
-		return
-	}
-	if _, err := pw.Write(cpBuf[:]); err != nil {
-		return
-	}
-
-	pingToken := transport.WellKnownToken(transport.WLTokenPingPacket)
-	for {
-		token, body, err := transport.ReadFrame(d.Conn, false)
-		if err != nil {
-			pw.CloseWithError(err)
-			return
-		}
-		if d.dropping.Load() && token != pingToken {
-			continue // swallow the reply: the client's RPC reply timer fires
-		}
-		if err := transport.WriteFrame(pw, token, body, false); err != nil {
-			return
-		}
-	}
-}
-
-// dropReplyDialer creates dropReplyConns and can arm them to start dropping.
-type dropReplyDialer struct {
-	mu    sync.Mutex
-	conns []*dropReplyConn
-}
-
-func (d *dropReplyDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
-	c, err := net.DialTimeout(network, addr, 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	dc := newDropReplyConn(c)
-	d.mu.Lock()
-	d.conns = append(d.conns, dc)
-	d.mu.Unlock()
-	return dc, nil
-}
-
-// armAll makes every existing connection drop all subsequent non-PING replies.
-func (d *dropReplyDialer) armAll() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, c := range d.conns {
-		c.dropping.Store(true)
-	}
-}
-
 // newDropReplyTestDB starts an FDB container and returns a Database that dials
-// through a dropReplyDialer. After warming the location cache + read version,
-// dd.armAll() makes subsequent read replies vanish, so the read path times out
-// deterministically (no race) and exercises its errReplyTimeout retry loop.
-func newDropReplyTestDB(t *testing.T, ctx context.Context) (*Database, *dropReplyDialer) {
-	t.Helper()
-	connectCF := startProxyFDB(t, ctx)
-	dd := &dropReplyDialer{}
-	db := newTestDatabase(t, ctx, connectCF, dd.dial)
-	t.Cleanup(func() { db.Close() })
+// through a simDialer preset to DROP every armed non-PING reply (the former
+// dropReplyConn, now a simConn intercept). After warming the location cache +
+// read version, dd.armAll() makes subsequent read replies vanish, so the read
+// path times out deterministically — no timer-vs-real-reply race (the flaw of a
+// tiny rpcTimeoutOverride against a real connection: on a fast box the real reply
+// can win every time, as the getKey subtest did in CI) — exercising the
+// errReplyTimeout retry loop to its retryable transaction_too_old exhaustion.
+// PINGs still pass through (simConn never drops them) so the connection is not
+// torn down as dead.
+func newDropReplyTestDB(t *testing.T, ctx context.Context) (*Database, *simDialer) {
+	db, dd := newSimTestDB(t, ctx)
+	dd.setIntercept(dropAll())
 	return db, dd
 }
 
 // TestWrongShardServer_FaultInjection verifies that an injected wrong_shard_server
-// (1001) reply on the synchronous read path triggers location-cache invalidation
-// and an automatic retry: the client receives 1001, invalidates the cache,
-// re-queries the proxy for fresh locations, and retries the read to success.
-// (See newWrongShardTestDB for why the injected code is the literal 1001.)
+// (1001) reply on the synchronous getValue path triggers location-cache
+// invalidation and an automatic retry: the client receives 1001, invalidates the
+// cache, re-queries the proxy for fresh locations, and retries the read to
+// success. The 1001 is injected through the FAITHFUL channel — the inline
+// LoadBalancedReply.error of a GetValueReply (RFC-118), how real FDB delivers a
+// read wrong_shard (storageserver.actor.cpp sendErrorWithPenalty), NOT a root
+// ErrorOr. The injected code is the canonical literal 1001, never the
+// ErrWrongShardServer constant (anti-self-confirming, fault_test.go P6).
 func TestWrongShardServer_FaultInjection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	db, wd := newWrongShardTestDB(t, ctx)
+	db, sd := newSimTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
 	expected := []byte("correct_value")
@@ -524,11 +323,14 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 
-	// Arm: the next frame read on any connection will be replaced with 1001.
-	wd.armAll()
+	// Arm only the storage connection: its first reply becomes an inline-error
+	// GetValueReply(1001); the relocate's GetKeyServerLocations (on the proxy
+	// conn) and the retry pass through.
+	sd.setIntercept(replaceFirst(inlineErrorReply(1001, injectPenalty)))
+	sd.armAddr(storageAddrFor(t, db, ctx, key))
 
 	// Read with pre-set read version. The first getValue attempt will get
-	// a replaced frame (1001), causing cache invalidation and retry.
+	// the inline 1001, causing cache invalidation and retry.
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
 	got, err := tx.Get(ctx, key)
@@ -538,17 +340,18 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	if string(got) != string(expected) {
 		t.Fatalf("Get value: got %q, want %q", got, expected)
 	}
-	t.Log("wrong_shard_server fault injection: retry succeeded with correct value")
+	t.Log("inline wrong_shard_server: retry succeeded with correct value")
 }
 
 // TestWrongShardServer_GetKey covers the wrong-shard retry loop on the key-selector
-// read path (getKey), not just point Get. Same injection, asserts GetKey still
-// resolves correctly after a 1001 reply. RFC-010 #2 (error case across read surface).
+// read path (getKey), not just point Get. The 1001 rides the inline error of a
+// GetKeyReply — the faithful channel that parseGetKeyReply decodes (readpath.go:341,
+// RFC-118 Gap 1); asserts GetKey still resolves correctly. RFC-010 #2.
 func TestWrongShardServer_GetKey(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	db, wd := newWrongShardTestDB(t, ctx)
+	db, sd := newSimTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -567,7 +370,8 @@ func TestWrongShardServer_GetKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
-	wd.armAll()
+	sd.setIntercept(replaceFirst(inlineErrorReply(1001, injectPenalty)))
+	sd.armAddr(storageAddrFor(t, db, ctx, key))
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
@@ -581,13 +385,14 @@ func TestWrongShardServer_GetKey(t *testing.T) {
 }
 
 // TestWrongShardServer_GetRange covers the wrong-shard retry loop on the range
-// read path (getRange). Same injection, asserts GetRange returns the full range
-// after a 1001 reply. RFC-010 #2 (error case across read surface).
+// read path (getRange). The 1001 rides the inline error of a GetKeyValuesReply —
+// the faithful channel parseGetKeyValuesReply decodes (readpath.go:948, RFC-118
+// Gap 1); asserts GetRange returns the full range. RFC-010 #2.
 func TestWrongShardServer_GetRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	db, wd := newWrongShardTestDB(t, ctx)
+	db, sd := newSimTestDB(t, ctx)
 
 	pfx := t.Name() + "_"
 	want := map[string]string{}
@@ -615,7 +420,8 @@ func TestWrongShardServer_GetRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
-	wd.armAll()
+	sd.setIntercept(replaceFirst(inlineErrorReply(1001, injectPenalty)))
+	sd.armAddr(storageAddrFor(t, db, ctx, begin))
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
@@ -645,7 +451,7 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	db, wd := newWrongShardTestDB(t, ctx)
+	db, sd := newSimTestDB(t, ctx)
 
 	key := []byte(t.Name() + "_key")
 	expected := []byte("pipelined_value")
@@ -670,8 +476,10 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 
-	// Arm: the next frame on any connection becomes 1001 (wrong_shard_server).
-	wd.armAll()
+	// Arm only the storage conn: its first reply becomes an inline-error
+	// GetValueReply(1001) (the faithful channel Resolve→parseGetValueReply decodes).
+	sd.setIntercept(replaceFirst(inlineErrorReply(1001, injectPenalty)))
+	sd.armAddr(storageAddrFor(t, db, ctx, key))
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
@@ -941,5 +749,74 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Fatalf("got %q, want %q (timeout should re-drive through getValue)", got, want)
+	}
+}
+
+// TestPipelinedGet_Resolve_FlushErrorRetries covers PendingGet.resolve's
+// flush-error arm (RFC-118 Gap 2, transaction.go:858-869): when conn.Flush()
+// fails, the request never reached the server, so the arm marks the connection
+// bad (handleConnError) and re-drives through the full getValue path.
+//
+// The flush error is driven through a REAL conn deterministically (a write-fault
+// wrapper would race the writeLoop's unconditional auto-flush, which clears
+// hasDirty so Conn.Flush() short-circuits to nil): a conn dialed to the storage
+// server, then Close()d (joins the loops) and SendFrameDeferred'd — which sets
+// hasDirty=true UNCONDITIONALLY (conn.go:464) before its own ctx-done return — so
+// Resolve()'s Flush() sees hasDirty=true + cancelled ctx + an exited writeLoop and
+// returns errConnClosed (conn.go:485/495), a faithful flush error (a conn torn
+// down between the deferred send and the flush). resolveFull then re-dials a clean
+// conn (the pool self-heals on a closed entry, database.go:375-378) and returns
+// the value.
+//
+// Revert-proof: with the flush-error arm removed, the ignored flush error falls
+// through to the select, whose replyCh never fires and whose timer is set far
+// beyond ctx, so the ctx.Done arm (transaction.go:904) returns ctx.Err() — the
+// test reddens (Resolve surfaces an error instead of the value).
+func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_key")
+	want := []byte("value")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, want)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	tx := db.CreateTransaction()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+
+	addr := storageAddrFor(t, db, ctx, key)
+	conn, err := db.db.getOrDial(ctx, addr)
+	if err != nil {
+		t.Fatalf("dial %s: %v", addr, err)
+	}
+	conn.Close()                                                   // joins the loops; ctx cancelled; IsClosed
+	_ = conn.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // sets hasDirty=true on the closed conn
+
+	p := &PendingGet{
+		key:         key,
+		tx:          tx,
+		addr:        addr,
+		conn:        conn,
+		flushed:     false,                         // take the flush path
+		replyCh:     make(chan transport.Response), // never fires (the flush fails first)
+		replyHandle: &transport.ReplyHandle{},
+		ctx:         ctx,
+		timer:       getTimer(10 * time.Minute), // far beyond ctx: revert-proof falls to ctx.Done, not the timeout arm
+	}
+	got, err := p.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve (flush error -> retry): %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q (flush error must re-drive through getValue)", got, want)
 	}
 }

@@ -202,6 +202,124 @@ func (m *ErrorOrError) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 	return rootStart
 }
 
+// ===================================================================
+// ErrorOr<reply>(tag=2) success envelopes — fault-injection support.
+//
+// The Go client only RECEIVES ErrorOr<T> (the RPC promise wraps a reply in the
+// union); it never marshals one in production. These hand-written builders let
+// fault-injection tests synthesize the exact success-reply frames a storage server
+// sends — same root-union category as VoidReply / ErrorOrError above. marshalErrorOrValue
+// is the shared two-pass envelope (nested reply via the reply's own writeToBuffer,
+// then a tag=2 ErrorOr root pointing at it); the per-type wrappers supply the
+// reply, its template (its vtable closure + the ErrorOr root vtable), and its fileID.
+// ===================================================================
+
+func marshalErrorOrValue(
+	t *wire.MessageTemplate,
+	fileID uint32,
+	precompute func(*wire.PrecomputeSize) int,
+	writeReply func(*wire.WriteToBuffer, int, *wire.MessageTemplate) int,
+) []byte {
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize — nested reply (+ its Error), then ErrorOr root.
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	precompute(ps)
+	{
+		n := ps.GetMessageWriter(int(errorOrVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(errorOrVTable[1])-4, 4)+4)
+	}
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer.
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+
+	replyStart := writeReply(wb, vtableStart, t)
+
+	rootW := wb.GetMessageWriter(int(errorOrVTable[1]), true)
+	rootStart := rootW.FinalLocation
+	{
+		soff := int32(vtableStart - t.VTableOffset(errorOrVTable) - rootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		rootW.WriteScalar(b[:], 0)
+	}
+	rootW.WriteRelativeOffset(replyStart, int(errorOrVTable[errorOrSlotValue+2]))
+	rootW.WriteScalar([]byte{2}, int(errorOrVTable[errorOrSlotTag+2])) // tag=2 (value/success)
+	rootW.WriteToAt(rootStart)
+
+	// Union footer: rootRelOff + fileID (no FakeRoot).
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(rootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], fileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
+	return buf
+}
+
+// errorOrInlineErrorClosure is GetValueReplyVTableClosure plus the ErrorOr root
+// vtable (the nested reply + its Error are built by GetValueReply.writeToBuffer).
+var errorOrInlineErrorClosure = []wire.VTable{
+	{6, 6, 4},           // Error
+	{6, 8, 4},           // GetValueReply Optional<value> helper (from its closure)
+	GetValueReplyVTable, // GetValueReply
+	errorOrVTable,       // ErrorOr root
+}
+
+var errorOrInlineErrorTemplate = wire.NewMessageTemplate(
+	GetValueReplyFileID, errorOrVTable, 8, errorOrInlineErrorClosure,
+)
+
+// MarshalErrorOrInlineError builds the ErrorOr<GetValueReply>(tag=2) frame that a
+// storage server emits for a read error: a SUCCESSFUL ErrorOr whose nested reply
+// carries ONLY the inline LoadBalancedReply.error (Penalty + HasError + Error{code})
+// and no value — byte-shape-identical to sendErrorWithPenalty's `Reply r; r.error=err;
+// r.penalty=penalty; promise.send(r)` (storageserver.actor.cpp, 7.3.75). Because the
+// inline-error slots (Penalty@0, HasError@1, Error@2) are IDENTICAL across
+// GetValueReply / GetKeyReply / GetKeyValuesReply (TestLoadBalancedReplyErrorSlots),
+// this single frame is decoded identically by all three read parsers, so one builder
+// covers all of them.
+func MarshalErrorOrInlineError(code uint16, penalty float64) []byte {
+	reply := &GetValueReply{Penalty: penalty, HasError: true, Error: Error{ErrorCode: code}}
+	return marshalErrorOrValue(errorOrInlineErrorTemplate, GetValueReplyFileID, reply.precomputeSize, reply.writeToBuffer)
+}
+
+var errorOrGetKeyValuesReplyClosure = []wire.VTable{
+	{6, 6, 4},               // Error
+	{6, 8, 4},               // GetKeyValuesReply Optional helper (from its closure)
+	GetKeyValuesReplyVTable, // GetKeyValuesReply
+	errorOrVTable,           // ErrorOr root
+}
+
+var errorOrGetKeyValuesReplyTemplate = wire.NewMessageTemplate(
+	GetKeyValuesReplyFileID, errorOrVTable, 8, errorOrGetKeyValuesReplyClosure,
+)
+
+// MarshalErrorOrValueGetKeyValuesReply wraps a full GetKeyValuesReply in the
+// ErrorOr<...>(tag=2) success envelope a storage server sends. Fault injection uses
+// it to re-emit a reply decoded off the wire with one field mutated (e.g. More
+// flipped to force a getRange continuation) — Data round-trips as an opaque []byte,
+// so the rows are preserved.
+func MarshalErrorOrValueGetKeyValuesReply(reply *GetKeyValuesReply) []byte {
+	return marshalErrorOrValue(errorOrGetKeyValuesReplyTemplate, GetKeyValuesReplyFileID, reply.precomputeSize, reply.writeToBuffer)
+}
+
 // MarshalFDB serializes ErrorOrError using two-pass PrecomputeSize/WriteToBuffer.
 // Union root: footer points directly to ErrorOr object (no FakeRoot).
 func (m *ErrorOrError) MarshalFDB() []byte {
