@@ -8,13 +8,32 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 # NEXT
 
-Post RFC-115/116/117. The pure-Go client (`pkg/fdbgo`) is launch-ready on correctness + wire
-compatibility; everything below is polish/safety/perf/infra — **none gates adoption**. Priority order
-(from the RFC-115/watchvalue session handoff). Each is a fresh `fdb-client-engineer` RFC cycle.
+Post RFC-115/116/117/118. The pure-Go client (`pkg/fdbgo`) is launch-ready on correctness + wire
+compatibility; everything here is polish/parity/infra — **none gates adoption**. Priority order below;
+details live in the phase/section the pointer names. Client items are fresh `fdb-client-engineer` RFC
+cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe ACK gate.
 
-> **All `# NEXT` items are now closed:** D1 (RFC-118), B2 (RFC-109), C3 (RFC-057), the GRV-cache
-> divergence (RFC-104), and B1/CI-off-the-box (untracked, owner decision). The next engineer should
-> pull the lowest-numbered unchecked item from the phases below, not from here.
+1. **[ ] C3 (conformance) — Ride their test designs: port FDB's adversarial workloads.** Cycle /
+   AtomicOps / ConflictRange / Serializability / FuzzApiCorrectness reimplemented as scenario +
+   invariant specs driving the Go client against testcontainers + the just-landed `SimTransport`
+   (C4/RFC-118). Unblocked; extends `pkg/recordlayer/chaos` + `cmd/fdb-binding-stress`. Detail in the
+   "Native fdbgo client" section, item **C3**. **← IN PROGRESS.**
+2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
+   vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
+   encoding). RFC-059→067 closed. Detail: conformance section, "Fresh differential axes".
+3. **[ ] C2-followup — confirm RFC-057's lazy iterator closed the go-vs-cgo 1007-rate** near the 5s
+   MVCC edge (profiling, not a fix). Detail: conformance section, "C2-followup".
+4. **[ ] Query-engine "one query path" unification.** Route `buildSelectShell`/SimpleTable builder +
+   INSERT…SELECT through `visitSelectGroupBy`, delete the legacy builder (CLAUDE.md "no parallel
+   pipelines" endgame). Graefe-gated. Detail: "vs Java" follow-ups (RFC-079b + RFC-084) + §7.6 history.
+5. **[ ] 7.7 follow-up — BLOCKED.** Replace the `isSimpleResidualCompensation` allowlist with Java's
+   exploratory-yield re-optimization. Blocked on Go compensation re-optimization handling
+   IN-explode/correlated/index-only shapes. Detail: §7.7.
+6. **[ ] Parallelize `//conformance` off Ginkgo** [LOW PRIO]. Detail: "Test infra (low priority)".
+
+> **Prior wave closed:** D1 (RFC-118 SimTransport), B2 (RFC-109 escape hatch), the RFC-056 lazy GetKey
+> iterator (RFC-057), the GRV-cache divergence (RFC-104), and B1/CI-off-the-box (untracked, owner
+> decision). The `[x]` bullets below are that wave.
 
 > **CI: the single self-hosted box is intentional — NOT a tracked problem.** We work locally + sequentially;
 > the slowness during the RFC-115→117 merge wave was a one-off (four PRs squeezed through one runner at once).
