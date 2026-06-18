@@ -121,11 +121,19 @@ blind intercept would eventually rewrite a `CommitID`/`GetReadVersionReply` fram
 inline-error body → `parseCommitReply`/`parseGetReadVersionReply` decode garbage → a *falsely-committed
 swap* or corrupt read version → a broken ring for a reason that is **not** a client bug (a flake).
 
-So the fault is scoped by **reply content**, not address: `everyNthInlineReadError` reads the inner
-reply's fileID from `body[4:8]` (FDB flatbuffer header, `writer_direct.go:178`) and faults **only**
-read replies — `GetValueReplyFileID (1378929)` / `GetKeyReplyFileID (11226513)` /
-`GetKeyValuesReplyFileID (1783066)` — passing `CommitIDFileID (14254927)`,
-`GetReadVersionReplyFileID (15709388)`, locate, and anything else through **verbatim**. The
+So the fault is scoped by **reply content**, not address: `everyNthInlineReadError` reads the fileID
+from `body[4:8]` (FDB flatbuffer header, `writer_direct.go:178`) and faults **only** read replies.
+**Important wire detail (found during implementation):** a load-balanced read reply travels as
+`ErrorOr<T>`, and the real server stamps the **composed envelope** fileID `(2<<24)|T_fileID` (C++
+`flow.h:137` `class ErrorOr : ComposedIdentifier<T,2>`; `FileIdentifier.h:79`
+`file_identifier = (B<<24) | FileIdentifierFor<T>`), **not** `T`'s own fileID — verified empirically
+(a real GetValueReply read arrives as `0x2150A71 = (2<<24)|GetValueReplyFileID`). (The harness's
+`MarshalErrorOr*` stamps the inner fileID as a placeholder — `erroror.go:295`, "NOT the per-RPC
+fileID the real server would send"; the client tolerates it because `ReadErrorOrInto` does not
+validate the fileID.) So the discriminator matches the **composed** read envelopes
+`(2<<24)|{GetValueReplyFileID, GetKeyReplyFileID, GetKeyValuesReplyFileID}`, passing commit
+(`CommitID`), GRV (`GetReadVersionReply`), locate, and anything else through **verbatim** (each is a
+distinct composed envelope, disjoint from the read set). The
 `GetValueReply`-shaped inline error (`MarshalErrorOrInlineError`) is correctly parsed by *all three*
 read parsers (C4 pins this across getValue/getKey/getKeyValues — the inline `LoadBalancedReply.error`
 field is at a shared offset), so a single inline-error shape covers all read replies. `armAll()` is

@@ -23,6 +23,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -32,6 +33,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 type cycleWorkload struct {
@@ -371,5 +375,220 @@ func TestCycle_CheckData_FailureModes(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// --- Cycle under injected wire faults (RFC-120) -----------------------------------------------
+
+// everyNthInlineReadError returns a frameIntercept (SimTransport, RFC-118) that rewrites every n-th
+// storage READ reply into a retryable inline error, passing every other reply — commit (CommitID),
+// GRV (GetReadVersionReply), locate, and any unrecognized frame — through verbatim.
+//
+// Content-discrimination is mandatory here, not address-scoping: the single-process testcontainer
+// collocates storage / commit-proxy / GRV on ONE connection, so the fault must be scoped by reply
+// CONTENT (the inner reply fileID at body[4:8]), or it would corrupt a CommitID/GetReadVersionReply
+// reply and break the workload for a non-bug reason (RFC-120 §3.2; the FDB-C-dev NAK on v1). counter
+// advances only on an actual injection — the anti-vacuity proof the fault fired.
+func everyNthInlineReadError(n int, code uint16, counter *atomic.Int64) frameIntercept {
+	if n <= 0 {
+		panic("everyNthInlineReadError: n must be > 0")
+	}
+	var readSeen atomic.Int64 // read replies observed (shared across conns; aggregate ~1/n)
+	// The per-conn idx is unused on purpose: readSeen is the GLOBAL read-reply count across the
+	// collocated conns, so targeting doesn't depend on connection fan-out.
+	return func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		if !isReadReplyBody(body) {
+			return body, false // commit / GRV / locate / unknown → verbatim
+		}
+		if readSeen.Add(1)%int64(n) == 0 {
+			counter.Add(1)
+			return inlineErrorReply(code, 0), false // retryable inline error on this read reply
+		}
+		return body, false
+	}
+}
+
+// composedErrorOr2 is the high bits FDB's ComposedIdentifier<T, 2> ORs into a fileID. A load-balanced
+// storage read reply travels the wire as ErrorOr<T> and carries the COMPOSED envelope fileID
+// (2<<24)|T_fileID — NOT T's own fileID (C++ flow.h:137 `class ErrorOr : ComposedIdentifier<T,2>`;
+// FileIdentifier.h:79 `file_identifier = (B << 24) | FileIdentifierFor<T>`). The harness's
+// MarshalErrorOr* stamps the INNER fileID as a placeholder (erroror.go:295: "NOT the per-RPC fileID
+// the real server would send … ReadErrorOrInto does not validate the fileID"), so the discriminator
+// must match the COMPOSED envelope the real server actually sends — verified empirically: a real
+// GetValueReply read arrives as 0x2150A71 = (2<<24)|GetValueReplyFileID(0x150A71).
+const composedErrorOr2 = uint32(2) << 24
+
+const (
+	getValueReplyEnvelopeFileID     = composedErrorOr2 | types.GetValueReplyFileID
+	getKeyReplyEnvelopeFileID       = composedErrorOr2 | types.GetKeyReplyFileID
+	getKeyValuesReplyEnvelopeFileID = composedErrorOr2 | types.GetKeyValuesReplyFileID
+
+	// Control-plane reply envelopes that share the storage connection (single-process container) and
+	// must pass through untouched — derived from the same ComposedIdentifier<T,2> rule, so they are
+	// correct by construction (not magic) and provably disjoint from the read set above.
+	commitReplyEnvelopeFileID = composedErrorOr2 | types.CommitIDFileID
+	grvReplyEnvelopeFileID    = composedErrorOr2 | types.GetReadVersionReplyFileID
+)
+
+// isReadReplyBody reports whether a reply body is a storage READ reply (GetValue/GetKey/GetKeyValues),
+// by the ErrorOr<T> envelope fileID at body[4:8] (writer_direct.go stamps the fileID at offset 4).
+// Fail-safe: a runt / non-flatbuffer body (<8 bytes) is treated as not-a-read-reply (passed verbatim),
+// never a panic.
+func isReadReplyBody(body []byte) bool {
+	if len(body) < 8 {
+		return false
+	}
+	switch binary.LittleEndian.Uint32(body[4:8]) {
+	case getValueReplyEnvelopeFileID, getKeyReplyEnvelopeFileID, getKeyValuesReplyEnvelopeFileID:
+		return true
+	}
+	return false
+}
+
+// TestEveryNthInlineReadError is the determinism floor (no FDB) for the fault intercept. It pins:
+// (a) every n-th READ reply is rewritten, the others pass verbatim; (b) commit (CommitID) and GRV
+// (GetReadVersionReply) frames pass through UNTOUCHED and do NOT advance the read counter — the
+// exact control-plane-passthrough dimension whose absence was the v1 NAK; (c) a runt (<8B) frame is
+// passed verbatim with no panic; (d) the injection counter advances only on actual faults.
+func TestEveryNthInlineReadError(t *testing.T) {
+	t.Parallel()
+
+	// frameWith builds a minimal body carrying fileID at body[4:8] — the only bytes the discriminator
+	// inspects. Read frames carry the ErrorOr<T> COMPOSED envelope fileID (what the real server sends);
+	// the control-plane frames carry the real commit/GRV composed envelopes (derived identically), so
+	// the passthrough assertion is a faithful regression of the v1 NAK, not a synthetic stand-in. (A
+	// frame-dump against a live container confirmed commit (47809359) and GRV (49263820) replies
+	// arrive as these composed envelopes — both disjoint from the read set, so both pass verbatim.)
+	frameWith := func(id uint32) []byte {
+		b := make([]byte, 8)
+		binary.LittleEndian.PutUint32(b[4:8], id)
+		return b
+	}
+	readA := frameWith(getValueReplyEnvelopeFileID)
+	readB := frameWith(getKeyValuesReplyEnvelopeFileID)
+	readC := frameWith(getKeyReplyEnvelopeFileID)
+	commit := frameWith(commitReplyEnvelopeFileID)
+	grv := frameWith(grvReplyEnvelopeFileID)
+	runt := []byte{1, 2, 3} // < 8 bytes
+
+	var injected atomic.Int64
+	fn := everyNthInlineReadError(4, ErrFutureVersion, &injected)
+
+	// Interleave control frames among the reads. Only reads advance the n-th counter, so the control
+	// frames must NOT shift which read is the 4th. The 4th READ (readB at step idx) must fault.
+	type step struct {
+		body      []byte
+		isRead    bool // a read reply (counts toward n)
+		wantFault bool // this specific frame is the n-th read → rewritten
+	}
+	seq := []step{
+		{readA, true, false},   // read 1 → pass
+		{commit, false, false}, // commit → verbatim, must NOT count
+		{readB, true, false},   // read 2 → pass
+		{grv, false, false},    // grv → verbatim, must NOT count
+		{readC, true, false},   // read 3 → pass
+		{runt, false, false},   // runt → verbatim, no panic, no count
+		{readA, true, true},    // read 4 → FAULT
+		{commit, false, false}, // commit again → still verbatim
+		{readB, true, false},   // read 5 → pass
+	}
+
+	for i, s := range seq {
+		out, drop := fn(0, transport.UID{}, s.body)
+		if drop {
+			t.Fatalf("step %d: unexpected drop", i)
+		}
+		if s.wantFault {
+			// Rewritten to exactly the injected inline-error body. (Note: that body carries the INNER
+			// GetValueReplyFileID placeholder, not a read ENVELOPE fileID — the client tolerates this,
+			// erroror.go:295 — so it is deliberately NOT an isReadReplyBody match.)
+			if !bytes.Equal(out, inlineErrorReply(ErrFutureVersion, 0)) {
+				t.Fatalf("step %d: expected the injected inline-error body, got %x", i, out)
+			}
+		} else {
+			// Pass-through: the exact input bytes, untouched. This is the load-bearing assertion for
+			// the commit/GRV/runt frames (the v1-NAK regression).
+			if !bytes.Equal(out, s.body) {
+				t.Fatalf("step %d: frame was altered but should pass verbatim (isRead=%v)", i, s.isRead)
+			}
+		}
+	}
+
+	if got := injected.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 injected fault over the sequence, got %d", got)
+	}
+}
+
+// TestCycle_SurvivesInjectedReadFaults runs the RFC-119 Cycle workload through SimTransport while a
+// retryable future_version (1009) is injected on every 4th storage READ reply. The client's
+// classify→onError→reset→re-read retry loop must absorb every fault; after disarm + quiescence the
+// ring must still be exactly one Hamiltonian cycle — serializability held through the injected
+// faults. The faithful analog of FDB running Cycle under Sim2 network faults.
+func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+
+	w := &cycleWorkload{nodeCount: 1000, prefix: []byte("cycle_faults_")}
+	if err := w.setup(ctx, db); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := w.check(ctx, db); err != nil {
+		t.Fatalf("ring invalid right after setup: %v", err)
+	}
+
+	// Arm: inject future_version on every 4th read reply. armAll (not armAddr) because
+	// content-discrimination — not address — scopes the fault (RFC-120 §3.2).
+	var injected atomic.Int64
+	sd.setIntercept(everyNthInlineReadError(4, ErrFutureVersion, &injected))
+	sd.armAll()
+
+	const actors = 16
+	workCtx, workCancel := context.WithTimeout(ctx, 20*time.Second)
+	defer workCancel()
+
+	var committed atomic.Int64
+	var wg sync.WaitGroup
+	for a := 0; a < actors; a++ {
+		wg.Add(1)
+		go func(seed int64) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(seed))
+			for workCtx.Err() == nil {
+				err := w.swapOnce(workCtx, db, rng.Intn(w.nodeCount))
+				switch {
+				case err == nil:
+					committed.Add(1)
+				case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+					return // window closed; not a failure
+				default:
+					// A retryable injected 1009 must be absorbed by db.Transact. A non-context error
+					// surfacing means the client failed to recover a retryable fault — a real bug.
+					t.Errorf("swap failed under injected fault: %v", err)
+					return
+				}
+			}
+		}(int64(a) + 1)
+	}
+	wg.Wait()
+
+	sd.setIntercept(nil) // disarm: the final check reads fault-free
+
+	// Anti-vacuity: the fault actually fired AND the workload made progress through it (both
+	// non-timing-dependent counters).
+	if injected.Load() == 0 {
+		t.Fatalf("no faults injected — test is vacuous")
+	}
+	if committed.Load() == 0 {
+		t.Fatalf("no swaps committed under fault — client failed to recover")
+	}
+	t.Logf("injected %d read faults; committed %d swaps under fault", injected.Load(), committed.Load())
+
+	// The ring must still be exactly one Hamiltonian cycle despite the injected faults + retries.
+	for i := 0; i < 3; i++ {
+		if err := w.check(ctx, db); err != nil {
+			t.Fatalf("serializability violated under injected faults (check %d): %v", i, err)
+		}
 	}
 }
