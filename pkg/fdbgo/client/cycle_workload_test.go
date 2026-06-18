@@ -23,9 +23,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -224,11 +226,14 @@ func TestCycle_SerializableUnderConcurrency(t *testing.T) {
 				switch {
 				case err == nil:
 					committed.Add(1)
-				case workCtx.Err() != nil:
+				case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
 					return // workload window closed; not a failure
 				default:
-					// A non-context error with the window still open is a real failure
-					// (badRead / invalid value / non-retryable error the Transact loop surfaced).
+					// A real failure (badRead / invalid value / non-retryable error the Transact
+					// loop surfaced). Keyed on error IDENTITY, not the clock, so a genuine error
+					// is never masked by a simultaneously-firing deadline. (No per-tx timeout is
+					// set here, so a window-close always surfaces as a raw context error, never a
+					// mapTimeout-converted FDBError — see mapTimeout, transaction.go.)
 					t.Errorf("swap failed: %v", err)
 					return
 				}
@@ -278,11 +283,18 @@ func TestCycle_DetectsBrokenRing(t *testing.T) {
 		t.Fatalf("install corruption: %v", err)
 	}
 
-	if err := w.check(ctx, db); err == nil {
+	// Assert the SPECIFIC failure (not just non-nil): redirecting key(0):0→2 orphans node 1, so
+	// the walk returns to 0 after N-1 steps → "cycle got shorter". Pinning the message guards
+	// against a future bug where check returns the WRONG failure (e.g. a dropped key reads as
+	// "node count changed") yet still passes a bare non-nil assertion.
+	err := w.check(ctx, db)
+	if err == nil {
 		t.Fatalf("check FAILED to detect a broken ring — the oracle has no teeth")
-	} else {
-		t.Logf("broken ring correctly detected: %v", err)
 	}
+	if !strings.Contains(err.Error(), "cycle got shorter") {
+		t.Fatalf("expected 'cycle got shorter', got: %v", err)
+	}
+	t.Logf("broken ring correctly detected: %v", err)
 }
 
 // TestCycle_CheckData_FailureModes pins each cycleCheckData failure mode 1:1, deterministically and
@@ -290,7 +302,8 @@ func TestCycle_DetectsBrokenRing(t *testing.T) {
 // stressed. N=4 nodes; rings are described by their successor map.
 func TestCycle_CheckData_FailureModes(t *testing.T) {
 	t.Parallel()
-	w := &cycleWorkload{nodeCount: 4, prefix: []byte("u_")}
+	// In-memory only (checkData never touches FDB), but a descriptive prefix self-documents.
+	w := &cycleWorkload{nodeCount: 4, prefix: []byte("cycle_unit_")}
 
 	// ring builds a dense, index-sorted data slice from a successor list (succ[i] = node i's next).
 	ring := func(succ ...int) []KeyValue {
