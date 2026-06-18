@@ -2007,11 +2007,14 @@ func (tx *Transaction) GetApproximateSize() int64 {
 // iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
 // likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
 func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
-	// FOLLOW-UP (separate divergence, unproven here): C++'s transaction_too_large (2101) check sizes
-	// the SERIALIZED request via expectedSize() (data + MutationRef::OVERHEAD_BYTES, NativeAPI:6829),
-	// NOT the getApproximateSize sizeof-overhead accounting used below. This shares sizeofMutationRef/
-	// sizeofKeyRangeRef with GetApproximateSize (now the correct 44/24), which over-counts the 2101
-	// size vs libfdb_c — Go rejects large txns slightly earlier. Closing that needs its own differential.
+	// The transaction_too_large (2101) check uses the NATIVE commit accounting: each mutation charged
+	// sizeof(MutationRef) and each conflict range sizeof(KeyRangeRef) (the 44/24 under pack(4)). This
+	// deliberately does NOT apply GetApproximateSize's single-key-clear adjustment: in the native
+	// commit a single-key clear is a ClearRange mutation charged sizeof(MutationRef) [44], not the RYW
+	// sizeof(KeyRangeRef) [24]. Verified byte-exact against libfdb_c's 2101 boundary (Set AND
+	// single-key-clear workloads) by bench TestDifferential_TransactionSizeLimit — go and cgo reject at
+	// the identical limit. (The old 48/32 over-counted here too, rejecting large txns slightly earlier
+	// than libfdb_c; the 44/24 fix closed it.)
 	var size int64
 	for _, m := range muts {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
