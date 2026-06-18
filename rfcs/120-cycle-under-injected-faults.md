@@ -1,7 +1,16 @@
 # RFC-120 — Cycle under injected wire faults (SimTransport)
 
-**Status:** Draft
+**Status:** Accepted (v2 — folds in the RFC-stage review)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 2 — RFC-119 §7's first follow-up.
+
+**Reviews (RFC stage):** FDB C++ maintainer — **NAK'd v1** (caught the fatal control-plane-scoping
+flaw: the single-process container collocates storage/commit/GRV on one connection, so the v1 frame-
+index-blind intercept would corrupt `CommitID`/`GetReadVersionReply` replies → flaky red). v2 fixes it
+with **content-discrimination** (§3.2: fault only read-reply fileIDs, pass commit/GRV/locate verbatim)
++ a mandatory commit-passthrough regression. Torvalds — ACK with conditions, all folded in: N=4 pinned
+with proven headroom (the "raise N if it bites" flake-hiding escape hatch is deleted), rigorous
+progress guarantee, ship 1009 alone (defer 1001 — different relocate path), mandatory intercept unit
+test. Test-only, zero wire impact → differential-vs-libfdb_c gates N/A.
 **Spec:** `fdbserver/workloads/Cycle.actor.cpp` @ 7.3.75, run under Sim2 fault injection (the C++
 test's normal mode); SimTransport (RFC-118) is our wire-level analog of Sim2's network faults.
 
@@ -59,11 +68,10 @@ faulted) using the in-package SimTransport harness:
 db, sd := newSimTestDB(t, ctx)          // real container, client dials through the fault proxy
 w := &cycleWorkload{nodeCount: N, prefix: …}
 w.setup(ctx, db); w.check(ctx, db)       // ring valid pre-fault
-storageAddr := storageAddrFor(t, db, ctx, w.key(0))  // arm only storage reads (commits/GRV/locate go to the proxy/coordinator — unarmed)
 
 var injected atomic.Int64
-sd.setIntercept(everyNthInlineError(faultEveryN, code, &injected))  // see §3.1
-sd.armAddr(storageAddr)
+sd.setIntercept(everyNthInlineReadError(4, ErrFutureVersion, &injected))  // see §3.1
+sd.armAll()                              // content-discrimination scopes the fault, NOT the addr (§3.2)
 
 … run A actors swapping for a bounded window (RFC-119's loop, through the faulted db) …
 
@@ -73,25 +81,56 @@ sd.setIntercept(nil)                     // disarm: the final check reads fault-
 
 ### 3.1 The fault model — perturb without wedging (no pulsing, no sleep)
 
-The intercept injects a **retryable** inline error on a deterministic **fraction** of armed storage
-read replies — `everyNthInlineError(n, code, counter)`: for armed non-PING frames, every `n`-th
-(by the per-conn frame `idx` the `proxyLoop` already tracks) is rewritten to
-`inlineError(code, penalty)`; the other `n-1` pass through unchanged. This is strictly better than
-`dropAll()`-with-pulsing:
-- **No wedge / no deadlock:** `(n-1)/n` of reads always succeed, so every actor makes progress; no
-  arm/disarm orchestration, no `time.Sleep` (the no-flakes rule), no risk of an actor livelocking the
-  whole window on a fully-dropped server.
-- **Deterministic firing:** the fault fires by frame index, not the clock — `injected > 0` is a
-  non-timing-dependent proof the fault actually happened (anti-vacuity for the fault itself).
-- **Exercises the real retry path:** `code = future_version (1009)` drives the QueueModel-backoff
-  read-retry (the exact path C4/`TestSimInlineFutureVersion` pins) **under concurrent load**;
-  `process_behind (1037)` and `wrong_shard (1001)` are the same shape (1001 adds a relocate). First
-  increment pins **1009**; 1037/1001 are trivial table rows to add.
+The intercept injects a **retryable** inline error on a deterministic **fraction** of READ replies —
+`everyNthInlineReadError(n, code, counter)`: for armed non-PING frames whose body is a **read reply**
+(§3.2), every `n`-th *read reply* is rewritten to `inlineError(code, penalty)`; all other read replies
+pass through, and **every non-read frame (commit / GRV / locate) passes through verbatim**. This
+perturbs without wedging:
+- **No wedge / no deadlock:** a swap does 3 reads; with `n = 4` the per-read clean probability is
+  `3/4`, so `P(all 3 clean) = (3/4)³ ≈ 42%` on the *first* attempt, and every fault is **fixed-delay**
+  retryable (`future_version` ⇒ `futureVersionDelay`, a constant — `transaction.go:1808`, NOT growing
+  backoff), so each actor lands a commit in O(tens of ms) even in the bad case. **Progress guarantee
+  (rigorous):** the per-attempt clean-read probability is bounded below by a positive constant and
+  every fault is fixed-delay-retryable ⇒ each actor commits infinitely often in expectation within the
+  window — livelock-free, no hand-waving. Over a 20 s window × 16 actors, committed lands in the
+  **thousands** (3+ orders of magnitude above the `> 0` floor), so `committed > 0` is flake-proof *by
+  construction*. **N is pinned at 4 for that proven headroom — it is NOT a knob to tune to green: if
+  committed ever approached 0, that is a client retry bug to root-cause (the prime directive), never a
+  reason to raise N.**
+- **Deterministic firing:** the fault fires by read-reply count, not the clock — `injected > 0` is a
+  non-timing-dependent proof the fault actually happened (anti-vacuity for the fault itself). *Which*
+  logical read faults varies run-to-run (16 actors multiplex frames over the shared conn), but no
+  assertion depends on which — only that some did (`injected > 0`) and the ring survived
+  (`check == nil`). That nondeterminism never reaches an assertion.
+- **Exercises the real retry path:** `code = future_version (1009)` drives the read-retry +
+  classify→`onError`→reset→re-read loop (the path C4/`TestSimInlineFutureVersion` pins the *front* of,
+  but does NOT drive to completion) **under concurrent load**. First increment ships **1009 alone**;
+  `process_behind (1037)` is the same fixed-delay path (a one-line table row, this PR or next).
+  **`wrong_shard (1001)` is DEFERRED to its own increment** — it is a *different* recovery mechanism
+  (relocate + cache-invalidate, where a buggy resume could drop/dup, a distinct failure mode deserving
+  its own ring-survival assertion), not "just another retryable inline."
 
-`armAddr(storageAddr)` scopes the fault to **storage reads only** — commit (commit proxy), GRV, and
-locate (`GetKeyServerLocations`, coordinator) replies flow on **different** addrs and are never armed,
-so the control plane is never corrupted (RFC-118's armAddr-not-armAll discipline). The injected error
-rides the read reply exactly as a real storage server's `sendErrorWithPenalty` would.
+### 3.2 Control-plane scoping is by CONTENT, not address (the RFC-119-review NAK fix)
+
+The single-process testcontainer (`startProxyFDB`) collocates **storage server, commit proxy, and GRV
+proxy on one address:port** (empirically confirmed by the FDB-C-dev review), and the client's
+connection pool is keyed by address (`database.go`), so **all roles multiplex over ONE connection**.
+Therefore `armAddr` does **not** isolate the control plane — reads, commits (`CommitID`), GRV
+(`GetReadVersionReply`), and locate replies all flow through the same armed `simConn`. A frame-index-
+blind intercept would eventually rewrite a `CommitID`/`GetReadVersionReply` frame into a read-shaped
+inline-error body → `parseCommitReply`/`parseGetReadVersionReply` decode garbage → a *falsely-committed
+swap* or corrupt read version → a broken ring for a reason that is **not** a client bug (a flake).
+
+So the fault is scoped by **reply content**, not address: `everyNthInlineReadError` reads the inner
+reply's fileID from `body[4:8]` (FDB flatbuffer header, `writer_direct.go:178`) and faults **only**
+read replies — `GetValueReplyFileID (1378929)` / `GetKeyReplyFileID (11226513)` /
+`GetKeyValuesReplyFileID (1783066)` — passing `CommitIDFileID (14254927)`,
+`GetReadVersionReplyFileID (15709388)`, locate, and anything else through **verbatim**. The
+`GetValueReply`-shaped inline error (`MarshalErrorOrInlineError`) is correctly parsed by *all three*
+read parsers (C4 pins this across getValue/getKey/getKeyValues — the inline `LoadBalancedReply.error`
+field is at a shared offset), so a single inline-error shape covers all read replies. `armAll()` is
+used (not `armAddr`) precisely because content-discrimination — not address — is the scoping
+mechanism; arming everything and faulting only read-reply bodies is the honest model.
 
 ## 4. Executable spec — what it proves
 
@@ -110,11 +149,14 @@ rides the read reply exactly as a real storage server's `sendErrorWithPenalty` w
    the test fails loudly — that's a real finding, not a flake.
 2. **Teeth / control:** RFC-119's `TestCycle_SerializableUnderConcurrency` (no faults) is the control —
    same workload, healthy transport, must also pass. The delta between them is the fault path.
-   `everyNthInlineError`'s injection counter (`injected > 0`) is the proof the fault fired; a unit test
-   pins `everyNthInlineError` itself (every n-th frame rewritten, others verbatim, PINGs untouched) so
-   the intercept logic is deterministically covered without FDB.
-3. **(stretch, same PR if clean) a code table** over `{1009, 1037, 1001}` proving each retryable inline
-   read error is absorbed and the ring survives — one `t.Run` per code.
+3. **`TestEveryNthInlineReadError` — MANDATORY unit test (no FDB), the determinism floor.** Pins the
+   intercept itself: feed it a sequence of crafted frames and assert (a) every `n`-th **read-reply**
+   body is rewritten to the inline error, the other `n-1` pass verbatim; (b) **a `CommitID` frame and a
+   `GetReadVersionReply` frame pass through UNTOUCHED** (the control-plane-passthrough dimension the
+   existing suite never probes, because those tests pre-warm GRV/cache before arming) — this is the
+   regression that would have caught the review NAK; (c) PINGs are never counted; (d) the `injected`
+   counter advances only on actually-faulted read replies. Without this, `injected > 0` could pass for
+   the wrong reason (e.g. an off-by-one faulting a commit frame).
 
 The teeth are item 1's `injected > 0 && check == nil`: a serializability oracle under fault is only
 meaningful if (a) the fault demonstrably fired and (b) the ring still checks out. A pass with
@@ -129,24 +171,36 @@ production code changes; differential-vs-libfdb_c gates N/A.
 
 ## 6. Risks (the no-flakes hard line)
 
-- **Wedge / livelock.** Mitigated by the fraction model (§3.1): `(n-1)/n` reads always succeed, so
-  progress is guaranteed; `workCtx` bounds the window; the final check runs disarmed (fault-free), so
-  it is reliable. No `time.Sleep`, no rate assertion — assertions are pure counters + the ring walk.
-- **QueueModel backoff stacking.** Sustained 1009 adds per-address backoff; with `n ≥ 3` the
-  pass-through majority keeps throughput positive over a ~20 s window (committed > 0 has wide margin).
-  If backoff proves too aggressive at small `n`, raise `n` — it only changes fault density, never the
-  invariant.
-- **Arming the wrong conn.** `armAddr(storageAddr)` must hit the storage server, not the proxy, or the
-  fault would corrupt commits/GRV. `storageAddrFor` (`:182`, warmed by a prior read) returns exactly
-  `Servers[0]` for the key — the RFC-118-blessed way to scope storage-only faults.
-- **Single-process container ⇒ one storage server.** `armAddr` on it arms all storage reads (fine —
-  that's the intended blast radius); commits/GRV/locate still flow on other addrs. No multi-shard
-  assumption.
+- **Control-plane corruption (the review NAK) — fixed by content-discrimination (§3.2).** The single-
+  process container multiplexes storage/commit/GRV on one conn, so the fault MUST be scoped by reply
+  content (fileID), never by address. `everyNthInlineReadError` faults only `GetValue/GetKey/
+  GetKeyValues` reply bodies and passes `CommitID`/`GetReadVersionReply`/locate verbatim. Pinned by the
+  mandatory `TestEveryNthInlineReadError` unit test (commit/GRV passthrough is an explicit case).
+- **Wedge / livelock.** Mitigated by the fraction model (§3.1): the per-attempt clean-read probability
+  is bounded below by a positive constant and every fault is fixed-delay retryable ⇒ commits infinitely
+  often in-window; `workCtx` bounds it; the final check runs disarmed (fault-free). No `time.Sleep`, no
+  rate assertion — assertions are pure counters + the ring walk. **N=4 is pinned for proven headroom,
+  not tuned to green** (raising N to dodge a near-zero committed count is forbidden — that hides a real
+  retry bug).
+- **`future_version` retry is fixed-delay, not stacking.** The read-surfaced 1009 → `onError` path uses
+  a constant `futureVersionDelay` (`transaction.go:1808`), so retries do not compound into a latency
+  blowup that could starve the window. (1037 is the same path; 1001 is deferred — different mechanism.)
+- **Connection pool re-dial mid-window.** `simDialer.dial` arms any conn dialed to an armed addr
+  (`armAll` arms all), and `injected` is shared-atomic across conns, so a re-dial mid-window keeps
+  faulting and counting correctly — no fresh unarmed conn escapes the fault.
 
 ## 7. Follow-ups
 
-- 1037/1001 code-table rows (if not in this PR), and a `dropAll`-pulsed variant (reply *loss*, not
-  just inline error — exercises the read-reply *timeout* re-send path under load) if it can be made
-  wedge-free.
+- **`process_behind (1037)`** — same fixed-delay path as 1009; a one-line table row (this PR if clean,
+  else next).
+- **`wrong_shard (1001)` under load — its own increment.** The relocate + cache-invalidate recovery is
+  a distinct failure mode (a buggy resume could drop/dup), deserving its own ring-survival assertion.
+- **Commit-side faults (`not_committed` / `commit_unknown_result` inline on the `CommitID` reply).**
+  Sim2 faults the commit path too (Cycle's `commitFailedRetries` counter, `Cycle.actor.cpp:203-204`,
+  exists for exactly this); this read-only increment is a strict subset of Sim2's perturbation. The
+  content-aware intercept (§3.2) is the prerequisite — it already discriminates `CommitID`, so the
+  commit-fault variant just inverts the filter. Natural next increment after 1001.
+- **`dropAll`-pulsed reply *loss*** (not just inline error — exercises the read-reply *timeout* re-send
+  path under load) if it can be made wedge-free.
 - The remaining C3 workloads (AtomicOps / ConflictRange / Serializability / FuzzApi gaps), each its own
   increment.
