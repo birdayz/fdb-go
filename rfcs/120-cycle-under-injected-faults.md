@@ -1,6 +1,6 @@
 # RFC-120 — Cycle under injected wire faults (SimTransport)
 
-**Status:** Accepted (v2 — folds in the RFC-stage review)
+**Status:** Implemented (PR #309, merged `304affe0`) — v2 folded in the RFC-stage review.
 **Item:** TODO.md C3 ("Ride their test designs"), increment 2 — RFC-119 §7's first follow-up.
 
 **Reviews (RFC stage):** FDB C++ maintainer — **NAK'd v1** (caught the fatal control-plane-scoping
