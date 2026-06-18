@@ -6,6 +6,37 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+# NEXT
+
+Post RFC-115/116/117. The pure-Go client (`pkg/fdbgo`) is launch-ready on correctness + wire
+compatibility; everything below is polish/safety/perf/infra — **none gates adoption**. Priority order
+(from the RFC-115/watchvalue session handoff). Each is a fresh `fdb-client-engineer` RFC cycle.
+
+- [ ] **B1 — CI reproducibility off the single Hetzner box** (RFC-108, launch-stack item 5). *Highest-leverage infra.*
+  PARTIALLY done: RFC-108 pinned+checksummed every tool; a 100 GB ext4 data volume was added (OpenTofu
+  `hcloud_volume.runner_data`, Docker data-root + Bazel output-base via cloud-init). REMAINING: a
+  containerized/ephemeral runner (the tofu `runner_ephemeral` var exists but needs a token-refresh
+  service) OR a second runner OR an accept-and-document decision. **The box is grandfathered on old
+  Hetzner pricing — do NOT destroy/recreate (`prevent_destroy` enforces this).**
+- [ ] **C3 — RFC-056 lazy `GetKey` iterator** (`pkg/fdbgo/client/ryw_getkey.go`). *Perf, NOT correctness* —
+  behavioral identity HOLDS (both clients return 1007 once a read version ages past the 5 s MVCC window).
+  Go reaches that edge sooner under CPU starvation because `getKeyRYW`'s `buildSegmentsLocked` MATERIALIZES
+  the merged segment view per call vs libfdb_c's lazy iterator. Fix = port the lazy iterator
+  (`rywSegmentIterator`), then profile the go-getKey 1007-rate vs cgo to confirm it closes. See `rfcs/055`,
+  `rfcs/056`.
+- [ ] **D1 — `SimTransport`** (frame-level fault injection) for faithful inline-error / timing tests.
+  PARTIALLY addressed by RFC-115 §6's `inlineErrorConn` (`client/fault_test.go`) + #304's debugID oracle
+  un-skip; the general `SimTransport` harness is still open (the C4 deferred Phase-0 test gaps).
+- [ ] **B2 — libfdb_c escape hatch** (launch-stack item 6): a `Database`/`Transaction` `Backend` interface
+  + a CGo-backed impl, switchable via config. **Explicitly DE-PRIORITIZED — a just-before-launch safety
+  net, NOT an adoption blocker. Do last, if at all.**
+
+> Shipped this session (stacked on `master`, merging bottom-up #303→#304→#305/#306):
+> **RFC-116** (#305) GRV/watch/locate operation-span attribution; **RFC-117** (#306)
+> `Optional<primitive-scalar>` wire codegen. Both FDB-C-dev + Torvalds + /code-review + codex green.
+
+---
+
 ## Client launch-readiness — prioritized stack (2026-06-13)
 
 The pure-Go FDB client (`pkg/fdbgo`) is the launch target. The RFC-010 wire-correctness audit
