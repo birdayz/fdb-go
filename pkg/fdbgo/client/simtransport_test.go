@@ -462,18 +462,25 @@ func TestSimInlineFutureVersion_QueueModelBackoff(t *testing.T) {
 			if !errors.As(readErr, &fe) || fe.Code != int(tc.code) {
 				t.Fatalf("read err = %v, want FDBError %d surfaced from the inline channel", readErr, tc.code)
 			}
-			// The read-path wiring fired: the QueueModel recorded the backoff.
+			// The read-path wiring fired: the QueueModel recorded the backoff. Copy
+			// the fields out UNDER the lock — prod reads them under queueModel.mu
+			// (loadbalance.go), so the test must too (Torvalds lock-discipline).
 			db.db.queueModel.mu.Lock()
 			d := db.db.queueModel.servers[addr]
+			var failedUntil, backoff float64
+			found := d != nil
+			if found {
+				failedUntil, backoff = d.failedUntil, d.futureVersionBackoff
+			}
 			db.db.queueModel.mu.Unlock()
-			if d == nil {
+			if !found {
 				t.Fatalf("no QueueModel entry for storage addr %s", addr)
 			}
-			if d.failedUntil <= before {
-				t.Errorf("failedUntil = %f, want > %f (future_version must advance the backoff)", d.failedUntil, before)
+			if failedUntil <= before {
+				t.Errorf("failedUntil = %f, want > %f (future_version must advance the backoff)", failedUntil, before)
 			}
-			if wantBackoff := futureVersionInitialBackoff * futureVersionBackoffGrowth; d.futureVersionBackoff != wantBackoff {
-				t.Errorf("futureVersionBackoff = %f, want %f (first future_version doubles the initial backoff)", d.futureVersionBackoff, wantBackoff)
+			if wantBackoff := futureVersionInitialBackoff * futureVersionBackoffGrowth; backoff != wantBackoff {
+				t.Errorf("futureVersionBackoff = %f, want %f (first future_version doubles the initial backoff)", backoff, wantBackoff)
 			}
 		})
 	}

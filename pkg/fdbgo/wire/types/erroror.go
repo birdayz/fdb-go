@@ -273,14 +273,11 @@ func marshalErrorOrValue(
 	return buf
 }
 
-// errorOrInlineErrorClosure is GetValueReplyVTableClosure plus the ErrorOr root
-// vtable (the nested reply + its Error are built by GetValueReply.writeToBuffer).
-var errorOrInlineErrorClosure = []wire.VTable{
-	{6, 6, 4},           // Error
-	{6, 8, 4},           // GetValueReply Optional<value> helper (from its closure)
-	GetValueReplyVTable, // GetValueReply
-	errorOrVTable,       // ErrorOr root
-}
+// errorOrInlineErrorClosure is the nested reply's OWN vtable closure plus the
+// ErrorOr root vtable — derived from GetValueReplyVTableClosure (not re-listed) so
+// it tracks any schema-extractor regen of the reply's closure automatically. The
+// nested reply + its Error are built by GetValueReply.writeToBuffer.
+var errorOrInlineErrorClosure = append(append([]wire.VTable{}, GetValueReplyVTableClosure...), errorOrVTable)
 
 var errorOrInlineErrorTemplate = wire.NewMessageTemplate(
 	GetValueReplyFileID, errorOrVTable, 8, errorOrInlineErrorClosure,
@@ -300,12 +297,7 @@ func MarshalErrorOrInlineError(code uint16, penalty float64) []byte {
 	return marshalErrorOrValue(errorOrInlineErrorTemplate, GetValueReplyFileID, reply.precomputeSize, reply.writeToBuffer)
 }
 
-var errorOrGetKeyValuesReplyClosure = []wire.VTable{
-	{6, 6, 4},               // Error
-	{6, 8, 4},               // GetKeyValuesReply Optional helper (from its closure)
-	GetKeyValuesReplyVTable, // GetKeyValuesReply
-	errorOrVTable,           // ErrorOr root
-}
+var errorOrGetKeyValuesReplyClosure = append(append([]wire.VTable{}, GetKeyValuesReplyVTableClosure...), errorOrVTable)
 
 var errorOrGetKeyValuesReplyTemplate = wire.NewMessageTemplate(
 	GetKeyValuesReplyFileID, errorOrVTable, 8, errorOrGetKeyValuesReplyClosure,
