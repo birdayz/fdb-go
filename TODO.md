@@ -13,11 +13,36 @@ compatibility; everything below is polish/safety/perf/infra — **none gates ado
 (from the RFC-115/watchvalue session handoff). Each is a fresh `fdb-client-engineer` RFC cycle.
 
 - [ ] **B1 — CI reproducibility off the single Hetzner box** (RFC-108, launch-stack item 5). *Highest-leverage infra.*
-  PARTIALLY done: RFC-108 pinned+checksummed every tool; a 100 GB ext4 data volume was added (OpenTofu
+  PARTIALLY done: RFC-108 pinned+checksummed every tool; a 100 GB ext4 data volume was *defined* (OpenTofu
   `hcloud_volume.runner_data`, Docker data-root + Bazel output-base via cloud-init). REMAINING: a
   containerized/ephemeral runner (the tofu `runner_ephemeral` var exists but needs a token-refresh
   service) OR a second runner OR an accept-and-document decision. **The box is grandfathered on old
   Hetzner pricing — do NOT destroy/recreate (`prevent_destroy` enforces this).**
+
+  **The §7 CI-volume wiring does NOT actually apply to the running box (codex re-review on #303, deferred
+  here):**
+  1. *cloud-init Docker ordering* (`infra/cloud-init.yaml:29`) — `docker.io` is in `packages`, so cloud-init
+     starts dockerd in the package phase, *before* `runcmd` creates the `/mnt/ci-data` symlink. dockerd reads
+     `daemon.json` (data-root `/mnt/ci-data/docker`) and creates that dir on the **root disk** first; the later
+     `ln -sfn` can't replace a real directory → disk fix defeated on a fresh boot. Fix: install/start Docker
+     only after the volume link (or `rm` the pre-created dir first).
+  2. *`prevent_destroy` + ForceNew* (`infra/main.tf:143-151`) — any `cloud-init.yaml` change makes `user_data`
+     ForceNew; `prevent_destroy` then **errors the apply** (fail-safe: it protects the box, but the volume
+     wiring can never reach the existing runner). Fix: `ignore_changes = [user_data]` + provision the running
+     box manually/out-of-band. **Crux: cloud-init is first-boot-only, so it fundamentally can't retrofit a
+     running box — the real B1 work is an ephemeral/2nd runner (provisioned fresh) or a documented manual path.**
+
+  **CI is currently slow = single-runner serialization, NOT cache thrash** (diagnosed 2026-06-18): exactly ONE
+  self-hosted runner (`gh-runner-fdb`); every `ci.yml` job (`ci`/`race`/`govulncheck`) + `@claude` jobs run on
+  it, one at a time, and `concurrency` is keyed per-branch so sibling PRs queue rather than cancel. Job
+  durations are normal/warm (wire-oracle ~2 min = FDB build cached, not the ~14 min cold-rebuild; the
+  race-vs-non-race `--output_base` thrash from before is still fixed, ci.yml:137-146). A 2nd/ephemeral runner is
+  the fix. **Caching sub-item:** add a Bazel **`--disk_cache`** (content-addressed, survives output_base
+  eviction / server restarts / the default↔race split for config-independent actions like protos/host-tools/FDB
+  build) — but ONLY on `/mnt/ci-data` and **GC-bounded** (`--experimental_disk_cache_gc_max_size=NNg`, Bazel
+  7.4+), else it deepens the root-disk eviction spiral. It's a hit-rate/resilience net for *discards*, not a fix
+  for serialization or the warm path. For "off the single box," a **remote/shared cache** beats a local
+  disk_cache (a fresh runner repopulates across machines) — that's the architecturally-aligned target.
 - [ ] **C3 — RFC-056 lazy `GetKey` iterator** (`pkg/fdbgo/client/ryw_getkey.go`). *Perf, NOT correctness* —
   behavioral identity HOLDS (both clients return 1007 once a read version ages past the 5 s MVCC window).
   Go reaches that edge sooner under CPU starvation because `getKeyRYW`'s `buildSegmentsLocked` MATERIALIZES
