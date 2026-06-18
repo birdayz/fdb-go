@@ -52,6 +52,94 @@ func TestChildSpanContext(t *testing.T) {
 	}
 }
 
+// sampledSpan / unsampledSpan build distinct per-tx spans for the GRV batcher test.
+func sampledSpan(traceByte byte) types.SpanContext {
+	return types.SpanContext{TraceID: [16]byte{traceByte, 0xAA}, SpanID: 0x1111, Flags: traceFlagSampled}
+}
+
+func unsampledSpan(traceByte byte) types.SpanContext {
+	return types.SpanContext{TraceID: [16]byte{traceByte, 0xBB}, SpanID: 0x2222}
+}
+
+// TestBatchGRVSpanContext pins the faithful C++ readVersionBatcher model
+// (NativeAPI.actor.cpp:7334 fresh-root span, :7345 addLink, :7385/:7238 the
+// getConsistentReadVersion child). The load-bearing property — and the exact axis
+// that separates this from the WRONG "thread a representative tx span" port — is
+// that a sampled batch yields a BRAND-NEW root traceID, never any transaction's.
+func TestBatchGRVSpanContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty batch → zero-trace unsampled root", func(t *testing.T) {
+		t.Parallel()
+		// Background-refresher case: batchGRVSpanContext(nil). The fresh root has a
+		// zero traceID and is unsampled (no sampled link to promote it). The child
+		// inherits traceID(zero)+flags(unsampled); only spanID is random (unpinnable).
+		got := batchGRVSpanContext(nil)
+		if got.TraceID != ([16]byte{}) {
+			t.Errorf("empty batch traceID: got %x, want zero", got.TraceID)
+		}
+		if isSampled(got) {
+			t.Error("empty batch must be unsampled")
+		}
+	})
+
+	t.Run("all-unsampled batch → zero-trace unsampled", func(t *testing.T) {
+		t.Parallel()
+		got := batchGRVSpanContext([]types.SpanContext{unsampledSpan(1), unsampledSpan(2), unsampledSpan(3)})
+		if got.TraceID != ([16]byte{}) {
+			t.Errorf("all-unsampled traceID: got %x, want zero (unsampled links never promote the root)", got.TraceID)
+		}
+		if isSampled(got) {
+			t.Error("all-unsampled batch must stay unsampled")
+		}
+	})
+
+	t.Run("one sampled tx → sampled fresh root, NOT the tx traceID", func(t *testing.T) {
+		t.Parallel()
+		tx := sampledSpan(7)
+		got := batchGRVSpanContext([]types.SpanContext{unsampledSpan(1), tx, unsampledSpan(2)})
+		if !isSampled(got) {
+			t.Error("a sampled link must promote the batch span to sampled")
+		}
+		if got.TraceID == ([16]byte{}) {
+			t.Error("a promoted batch span must have a non-zero (fresh) traceID")
+		}
+		// THE discriminator: C++ addLink mints a brand-new randomUniqueID, it does NOT
+		// adopt the link's traceID. Adopting the tx traceID is the divergence we reject.
+		if got.TraceID == tx.TraceID {
+			t.Errorf("batch traceID must be a FRESH root, not the tx's %x", tx.TraceID)
+		}
+	})
+
+	t.Run("sampled-first and sampled-last both promote (order-independent)", func(t *testing.T) {
+		t.Parallel()
+		for _, batch := range [][]types.SpanContext{
+			{sampledSpan(3), unsampledSpan(1), unsampledSpan(2)},
+			{unsampledSpan(1), unsampledSpan(2), sampledSpan(3)},
+		} {
+			got := batchGRVSpanContext(batch)
+			if !isSampled(got) || got.TraceID == ([16]byte{}) {
+				t.Errorf("batch %+v: want sampled non-zero root, got %+v", batch, got)
+			}
+			if got.TraceID == (sampledSpan(3)).TraceID {
+				t.Error("must not adopt the sampled tx's traceID")
+			}
+		}
+	})
+
+	t.Run("multiple sampled txns → single fresh root, none adopted", func(t *testing.T) {
+		t.Parallel()
+		a, b := sampledSpan(4), sampledSpan(5)
+		got := batchGRVSpanContext([]types.SpanContext{a, b})
+		if !isSampled(got) || got.TraceID == ([16]byte{}) {
+			t.Fatalf("want sampled non-zero, got %+v", got)
+		}
+		if got.TraceID == a.TraceID || got.TraceID == b.TraceID {
+			t.Error("a multi-sampled batch must still mint its own root, not adopt either tx")
+		}
+	})
+}
+
 // TestParseSpanParent: the 33-byte SPAN_PARENT (8-byte version header + 16 traceID + 8
 // spanID + 1 flags, little-endian) decodes to the right SpanContext; wrong length errors.
 func TestParseSpanParent(t *testing.T) {

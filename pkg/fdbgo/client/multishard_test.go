@@ -11,6 +11,7 @@ import (
 
 	"github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
@@ -93,7 +94,7 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			begin := []byte(prefix)
 			end := append([]byte(prefix), 0xFF)
-			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId)
+			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.spanContext)
 		})
 		if err == nil {
 			locs := result.([]LocationResult)
@@ -391,7 +392,7 @@ func testMultiShard_SnapshotRead(t *testing.T, ctx context.Context, env *multiSh
 
 	// tx1: snapshot-read the full range across all shards.
 	tx1 := env.db.CreateTransaction()
-	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 
@@ -463,7 +464,7 @@ func testMultiShard_ConflictDetection(t *testing.T, ctx context.Context, env *mu
 
 	// tx1: read the key (adds read conflict range).
 	tx1 := env.db.CreateTransaction()
-	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 	_, err = tx1.Get(ctx, key)
@@ -717,7 +718,7 @@ func testMultiShard_Versionstamp(t *testing.T, ctx context.Context, env *multiSh
 	g := gomega.NewWithT(t)
 
 	tx := env.db.CreateTransaction()
-	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx.SetReadVersion(rv)
 
@@ -747,7 +748,7 @@ func testMultiShard_ReadWriteConflictRanges(t *testing.T, ctx context.Context, e
 
 	// tx1: add explicit read conflict on a range spanning multiple shards.
 	tx1 := env.db.CreateTransaction()
-	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, false, false)
+	rv, _, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	tx1.SetReadVersion(rv)
 
@@ -1121,7 +1122,7 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 		[]byte(env.prefix), append([]byte(env.prefix), 0xFF), NoTenantID)
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.db.locCache.locateRange(tx.db, ctx,
-			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId)
+			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId, tx.spanContext)
 	})
 	if err == nil {
 		shardsAfter = len(result.([]LocationResult))

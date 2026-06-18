@@ -287,6 +287,66 @@ func TestBuildGetKeyValuesRequest_LockAwareSetsOptions(t *testing.T) {
 	}
 }
 
+// buildWatchValueRequest — wire-construction round-trip. `span` is the watchValue
+// child (WatchPoll derives it via childSpanContext); the builder stamps it verbatim.
+func TestBuildWatchValueRequest_RoundTrip(t *testing.T) {
+	t.Parallel()
+	key := []byte("watched/key")
+	value := []byte("v0")
+	const (
+		readVersion int64 = 12345
+		tenantID    int64 = 7
+	)
+	replyToken := transport.UID{First: 0xFEED, Second: 0xFACE}
+	span := types.SpanContext{
+		TraceID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:  0x55,
+		Flags:   traceFlagSampled,
+	}
+
+	body := buildWatchValueRequest(key, value, readVersion, tenantID, span, replyToken)
+
+	var req types.WatchValueRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if string(req.Key) != string(key) {
+		t.Errorf("Key: got %q, want %q", req.Key, key)
+	}
+	if req.Version != readVersion {
+		t.Errorf("Version: got %d, want %d", req.Version, readVersion)
+	}
+	if !req.HasValue || string(req.Value) != string(value) {
+		t.Errorf("Value: HasValue=%v got %q, want %q", req.HasValue, req.Value, value)
+	}
+	if req.TenantInfo.TenantId != tenantID {
+		t.Errorf("TenantId: got %d, want %d", req.TenantInfo.TenantId, tenantID)
+	}
+	// Revert-prove: drop the SpanContext field in buildWatchValueRequest → zero → red.
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
+	}
+	first := binary.LittleEndian.Uint64(req.Reply.Token[0:8])
+	second := binary.LittleEndian.Uint64(req.Reply.Token[8:16])
+	if first != replyToken.First || second != replyToken.Second {
+		t.Errorf("reply token: got {%x,%x}, want {%x,%x}", first, second, replyToken.First, replyToken.Second)
+	}
+}
+
+// TestBuildWatchValueRequest_NoValue: a nil value leaves HasValue false (the
+// watch-on-absent case), matching the original inline construction.
+func TestBuildWatchValueRequest_NoValue(t *testing.T) {
+	t.Parallel()
+	body := buildWatchValueRequest([]byte("k"), nil, 1, 0, types.SpanContext{}, transport.UID{First: 1, Second: 2})
+	var req types.WatchValueRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatalf("UnmarshalFDB: %v", err)
+	}
+	if req.HasValue {
+		t.Error("HasValue must be false when value is nil")
+	}
+}
+
 // TestPendingGet_Resolve_ContextCancelled pins the context-cancel arm of
 // PendingGet.Resolve (RFC-010 #3): a cancelled context returns ctx.Err()
 // directly — it does NOT re-drive through getValue (no point retrying a

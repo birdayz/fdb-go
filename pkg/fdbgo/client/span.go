@@ -80,6 +80,54 @@ func parseSpanParent(b []byte) (types.SpanContext, error) {
 // isSampled reports whether a wire SpanContext has the sampled flag set.
 func isSampled(sc types.SpanContext) bool { return sc.Flags&traceFlagSampled != 0 }
 
+// spanContextValid mirrors C++ SpanContext::isValid (flow Tracing.h:56): a span
+// is valid iff BOTH 64-bit traceID halves are non-zero AND the spanID is non-zero.
+// The GRV batcher's fresh-root span starts INVALID (zero traceID, random spanID)
+// and is assigned a real traceID only when a sampled link promotes it — see
+// batchGRVSpanContext.
+func spanContextValid(sc types.SpanContext) bool {
+	return binary.LittleEndian.Uint64(sc.TraceID[0:8]) != 0 &&
+		binary.LittleEndian.Uint64(sc.TraceID[8:16]) != 0 &&
+		sc.SpanID != 0
+}
+
+// batchGRVSpanContext folds a GRV batch's per-transaction span contexts into the
+// readVersionBatcher's span and returns the getConsistentReadVersion CHILD context
+// to stamp on the GetReadVersionRequest wire. This is a 1:1 port of C++
+// readVersionBatcher (NativeAPI.actor.cpp:7334 fresh-root span, :7345 per-request
+// addLink, :7385 the getConsistentReadVersion call) + getConsistentReadVersion's
+// child span (:7238).
+//
+// The batcher span is a FRESH ROOT (NativeAPI.actor.cpp:7334
+// `Span("NAPI:readVersionBatcher")`), built via the no-parent ctor (Tracing.h:160)
+// from a default-zero parent SpanContext (Tracing.h:50): traceID 0, random spanID,
+// UNSAMPLED — hence spanContextValid==false. Each transaction is connected by a
+// LOCAL link (addLink, Tracing.h:198-211), NOT by parenting and NOT on the wire
+// (GetReadVersionRequest carries a single SpanContext, no links). addLink mutates
+// the batcher span ONLY when the link is sampled and the batch is not yet sampled:
+// it flips the batch to sampled and, since it is still invalid (zero traceID),
+// assigns a fresh random traceID + spanID. So the wire context is:
+//   - all-unsampled batch → {traceID 0, random spanID, unsampled}
+//   - ≥1 sampled tx       → {fresh-random traceID, random spanID, sampled}
+//     — a brand-new root, NOT any transaction's traceID.
+//
+// childSpanContext then derives the getConsistentReadVersion child (Tracing.h:147-148:
+// inherit traceID+flags, fresh spanID).
+func batchGRVSpanContext(txSpans []types.SpanContext) types.SpanContext {
+	batch := types.SpanContext{SpanID: rand.Uint64()}
+	for _, s := range txSpans {
+		if !isSampled(batch) && isSampled(s) {
+			batch.Flags = traceFlagSampled
+			if !spanContextValid(batch) {
+				binary.LittleEndian.PutUint64(batch.TraceID[0:8], rand.Uint64())
+				binary.LittleEndian.PutUint64(batch.TraceID[8:16], rand.Uint64())
+				batch.SpanID = rand.Uint64()
+			}
+		}
+	}
+	return childSpanContext(batch)
+}
+
 // otelSpanContext maps a wire SpanContext (Go) onto an OpenTelemetry SpanContext so the
 // otel span tree shares the SAME 16-byte traceID that goes on the FDB wire — FDB
 // server-side spans (under that traceID) then land in the same trace (RFC-115 §4

@@ -221,8 +221,13 @@ func TestBuildGetReadVersionRequest_RoundTrip(t *testing.T) {
 		txnCount uint32 = 17
 	)
 	replyToken := transport.UID{First: 0xCAFE, Second: 0xBABE}
+	span := types.SpanContext{
+		TraceID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:  0x1234,
+		Flags:   traceFlagSampled,
+	}
 
-	body := buildGetReadVersionRequest(replyToken, flags, txnCount)
+	body := buildGetReadVersionRequest(replyToken, flags, txnCount, span)
 
 	var req types.GetReadVersionRequest
 	if err := req.UnmarshalFDB(body); err != nil {
@@ -230,6 +235,12 @@ func TestBuildGetReadVersionRequest_RoundTrip(t *testing.T) {
 	}
 	if req.Flags != flags {
 		t.Errorf("Flags: got %#x, want %#x", req.Flags, flags)
+	}
+	// The GetReadVersionRequest must carry the span it is given (C++
+	// GetReadVersionRequest req(span.context,…), NativeAPI.actor.cpp:7245).
+	// Revert-prove: drop the SpanContext field in buildGetReadVersionRequest → zero → red.
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
 	}
 	if req.TransactionCount != txnCount {
 		t.Errorf("TransactionCount: got %d, want %d", req.TransactionCount, txnCount)

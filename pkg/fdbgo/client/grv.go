@@ -248,6 +248,10 @@ type grvBatcher struct {
 type grvRequest struct {
 	reply chan grvResult
 	flags uint32 // GRV Flags from the requesting transaction
+	// spanContext is the requesting transaction's span. flush() folds the batch's
+	// span contexts into the readVersionBatcher span (batchGRVSpanContext) to stamp
+	// the GetReadVersionRequest — 1:1 with C++ addLink (NativeAPI.actor.cpp:7345).
+	spanContext types.SpanContext
 }
 
 type grvResult struct {
@@ -261,7 +265,7 @@ type grvResult struct {
 // cache entry) — the per-transaction lock check happens at the consumption
 // site (the C++ extractReadVersion analog), NOT here: one batched reply
 // fans out to transactions with different lock-awareness.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32, useGrvCache, skipGrvCache bool) (int64, bool, error) {
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32, span types.SpanContext, useGrvCache, skipGrvCache bool) (int64, bool, error) {
 	// Fast path: serve from cache ONLY when the transaction opted in
 	// (USE_GRV_CACHE, default off — RFC-104). C++ gate NativeAPI.actor.cpp:7504-7517.
 	// SYSTEM_IMMEDIATE never caches (needs a guaranteed-fresh version).
@@ -298,7 +302,7 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	}
 
 	// Slow path: batch request to proxy.
-	req := grvRequest{reply: make(chan grvResult, 1), flags: flags}
+	req := grvRequest{reply: make(chan grvResult, 1), flags: flags, spanContext: span}
 
 	b.mu.Lock()
 	b.pending = append(b.pending, req)
@@ -356,15 +360,19 @@ func (b *grvBatcher) flush(db *database) {
 	defer batchCancel()
 
 	// Each batcher has a fixed priority. OR all option flags (bits 0-23)
-	// from requests in this batch.
+	// from requests in this batch. Collect the per-tx span contexts so the
+	// GetReadVersionRequest carries the readVersionBatcher span (C++
+	// NativeAPI.actor.cpp:7345 addLink + :7385 getConsistentReadVersion child).
 	var optionBits uint32
-	for _, r := range batch {
+	spans := make([]types.SpanContext, len(batch))
+	for i, r := range batch {
 		optionBits |= r.flags &^ grvPriorityMask
+		spans[i] = r.spanContext
 	}
 	flags := b.priority | optionBits
 
 	requestTime := time.Now()
-	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
+	version, locked, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -546,7 +554,10 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				// (lastRkBatch); the DEFAULT batcher refreshes DEFAULT
 				// (lastRkDefault). SYSTEM_IMMEDIATE never reaches here because
 				// its tryCache always returns false (refreshOnce never fires).
-				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1)
+				// No tx waiters on a background refresh, so the batcher span has no
+				// links: batchGRVSpanContext(nil) = {traceID 0, random spanID,
+				// unsampled} — the no-sampled-link case, matching a C++ updater GRV.
+				version, _, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, b.priority, 1, batchGRVSpanContext(nil))
 				if err == nil {
 					// The refresher ignores the reply's `locked` flag — equivalent
 					// to C++'s background updater, whose non-lock-aware txn THROWS
@@ -602,7 +613,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
 	var backoff time.Duration
 
 	for {
@@ -643,7 +654,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
-			body := buildGetReadVersionRequest(replyToken, flags, txnCount)
+			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span)
 
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
 				replyHandle.Cancel()
@@ -710,11 +721,12 @@ func grvPriorityToPriority(flags uint32) TransactionPriority {
 	}
 }
 
-func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount uint32) []byte {
+func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount uint32, span types.SpanContext) []byte {
 	req := types.GetReadVersionRequest{
 		TransactionCount: txnCount,
 		Flags:            flags,
 		MaxVersion:       InvalidVersion,
+		SpanContext:      span, // C++ GetReadVersionRequest req(span.context, …) (:7245)
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 	}
 	return req.MarshalFDB()

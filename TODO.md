@@ -126,17 +126,19 @@ deeper extractor wire bugs** the registration depended on:
 is deliberately restricted to UID (`[16]byte`, array-sliceable) because primitives need per-type encode/decode at a
 RelativeOffset + their own oracle coverage (the oracle skips them now). Those stay `[]byte` until a dedicated change.
 
-### [ ] fdbgo/client: stamp the GRV request with a trace SpanContext (RFC-115 §4 tracing follow-on)
+### [x] fdbgo/client: stamp the GRV/watch/locate requests with a trace SpanContext — DONE (RFC-116)
 
-RFC-115 §4 stamps the per-op child SpanContext on reads (getValue/getKey/getRange) and the tx
-span on commit, but the GetReadVersion request still carries a ZERO SpanContext, so a GRV-only
-traced transaction (and the first GRV RPC of any traced transaction) is not correlated with the
-generated wire trace id on the server side. C++ stamps the `getConsistentReadVersion` child span
-(`NativeAPI.actor.cpp:7244`). The Go GRV path is BATCHED across transactions (`grv.go`
-`buildGetReadVersionRequest` serves one request for many txns), so per-tx span attribution on the
-shared request is a separate effort — thread a representative (initiating) tx span through the GRV
-batcher. Likewise watch (async long-poll) and getKeyServerLocations (shared location cache). Codex
-flagged the GRV gap on PR #303 (P2); documented as follow-on in RFC-115 §4.
+RFC-115 §4 stamped the per-op child SpanContext on reads + the tx span on commit, but the GRV,
+watch, and getKeyServerLocations requests still carried a ZERO/raw SpanContext. **RFC-116** closes
+all three, faithfully to the C++ (NOT the naive "thread a representative tx span" — that would put a
+tx traceID on the GRV wire, which C++ never does):
+- **GRV** is batched; the GetReadVersionRequest carries the `readVersionBatcher` **fresh-root** span
+  (`NativeAPI.actor.cpp:7334/7345/7385/7238`), zero-traceID unsampled unless a sampled tx joins the
+  batch (then a brand-new random root via `addLink`). Per-tx spans are local links, never on the wire.
+- **locate** stamps the `getKeyLocation` child (`:3017/3037`, derived once in `refresh`, reused
+  across proxy retries — `basicLoadBalance` reuse).
+- **watch** stamps the `watchValue` child (`:3933/3965`, derived once in `WatchPoll`).
+Closed codex's P2 on PR #303. Commits `16847239` (GRV), `a6f08a2a` (locate), `7fdfd24d` (watch).
 
 ### [x] fdbgo/client: read-path RPC reply timeout is retryable, not a terminal leak (C++ divergence) — FIXED (PR #288)
 

@@ -130,8 +130,15 @@ func TestBuildGetKeyServerLocationsRequest_RoundTrip(t *testing.T) {
 	key := []byte("user/42")
 	const tenantID int64 = 5
 	replyToken := transport.UID{First: 0xCAFE, Second: 0xBABE}
+	// refresh derives this child span once and passes it verbatim; the builder must
+	// stamp it (C++ GetKeyServerLocationsRequest(span.context,…), NativeAPI.actor.cpp:3037).
+	span := types.SpanContext{
+		TraceID: [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:  0x99,
+		Flags:   traceFlagSampled,
+	}
 
-	body := buildGetKeyServerLocationsRequest(key, tenantID, replyToken)
+	body := buildGetKeyServerLocationsRequest(key, tenantID, span, replyToken)
 
 	var req types.GetKeyServerLocationsRequest
 	if err := req.UnmarshalFDB(body); err != nil {
@@ -139,6 +146,10 @@ func TestBuildGetKeyServerLocationsRequest_RoundTrip(t *testing.T) {
 	}
 	if string(req.Begin) != string(key) {
 		t.Errorf("Begin: got %q, want %q", req.Begin, key)
+	}
+	// Revert-prove: drop the SpanContext field in buildGetKeyServerLocationsRequest → zero → red.
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
 	}
 	if req.HasEnd {
 		t.Error("HasEnd: got true for single-key request, want false")
@@ -171,8 +182,9 @@ func TestBuildGetKeyServerLocationsRangeRequest_Forward(t *testing.T) {
 		limit    = 50
 		tenantID = 3
 	)
+	span := types.SpanContext{TraceID: [16]byte{0xAB, 0xCD}, SpanID: 0x77, Flags: traceFlagSampled}
 	body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, false /*reverse*/, tenantID,
-		transport.UID{First: 1, Second: 2})
+		span, transport.UID{First: 1, Second: 2})
 
 	var req types.GetKeyServerLocationsRequest
 	if err := req.UnmarshalFDB(body); err != nil {
@@ -180,6 +192,9 @@ func TestBuildGetKeyServerLocationsRangeRequest_Forward(t *testing.T) {
 	}
 	if string(req.Begin) != "a" || string(req.End) != "z" {
 		t.Errorf("range: got [%q,%q), want [a,z)", req.Begin, req.End)
+	}
+	if req.SpanContext != span {
+		t.Errorf("SpanContext: got %+v, want %+v", req.SpanContext, span)
 	}
 	if !req.HasEnd {
 		t.Error("HasEnd must be true for the range variant")
@@ -196,7 +211,7 @@ func TestBuildGetKeyServerLocationsRangeRequest_Reverse(t *testing.T) {
 	t.Parallel()
 	body := buildGetKeyServerLocationsRangeRequest(
 		[]byte("a"), []byte("z"), 10, true /*reverse*/, 0,
-		transport.UID{First: 1, Second: 2})
+		types.SpanContext{}, transport.UID{First: 1, Second: 2})
 
 	var req types.GetKeyServerLocationsRequest
 	if err := req.UnmarshalFDB(body); err != nil {

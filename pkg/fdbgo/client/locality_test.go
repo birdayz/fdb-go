@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestLocateBinarySearch tests O(log N) lookup via the sorted cache.
@@ -41,7 +43,7 @@ func TestLocateBinarySearch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := lc.locate(nil, ctx, tc.key, NoTenantID)
+			result, err := lc.locate(nil, ctx, tc.key, NoTenantID, types.SpanContext{})
 			if err != nil {
 				t.Fatalf("locate(%q): %v", tc.key, err)
 			}
@@ -86,7 +88,7 @@ func TestLocateSingleEntry(t *testing.T) {
 	ctx := context.Background()
 
 	// Hit: key inside range.
-	result, err := lc.locate(nil, ctx, []byte("p"), NoTenantID)
+	result, err := lc.locate(nil, ctx, []byte("p"), NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("locate(p): %v", err)
 	}
@@ -129,17 +131,17 @@ func TestLocateTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Each tenant should get its own server.
-	r1, err := lc.locate(nil, ctx, []byte("m"), NoTenantID)
+	r1, err := lc.locate(nil, ctx, []byte("m"), NoTenantID, types.SpanContext{})
 	if err != nil || r1.Servers[0].Address != "default-tenant" {
 		t.Fatalf("NoTenantID: want default-tenant, got %v (err=%v)", r1.Servers, err)
 	}
 
-	r2, err := lc.locate(nil, ctx, []byte("m"), 42)
+	r2, err := lc.locate(nil, ctx, []byte("m"), 42, types.SpanContext{})
 	if err != nil || r2.Servers[0].Address != "tenant-42" {
 		t.Fatalf("tenant 42: want tenant-42, got %v (err=%v)", r2.Servers, err)
 	}
 
-	r3, err := lc.locate(nil, ctx, []byte("m"), 99)
+	r3, err := lc.locate(nil, ctx, []byte("m"), 99, types.SpanContext{})
 	if err != nil || r3.Servers[0].Address != "tenant-99" {
 		t.Fatalf("tenant 99: want tenant-99, got %v (err=%v)", r3.Servers, err)
 	}
@@ -364,7 +366,7 @@ func TestLocateRangeBinarySearch(t *testing.T) {
 	defer cancel()
 
 	// Range [c, h) should overlap [a,d), [d,g), [g,k).
-	results, err := lc.locateRange(nil, ctx, []byte("c"), []byte("h"), 100, false, NoTenantID)
+	results, err := lc.locateRange(nil, ctx, []byte("c"), []byte("h"), 100, false, NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("locateRange: %v", err)
 	}

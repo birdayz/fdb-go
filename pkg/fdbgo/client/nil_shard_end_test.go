@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestNilShardEndLocateRange proves that locateRange does not infinite-loop
@@ -35,7 +37,7 @@ func TestNilShardEndLocateRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestLocateRangeReverseOrder(t *testing.T) {
 	ctx := context.Background()
 
 	// Forward: should be sorted ascending [a,d), [d,g), [g,k).
-	fwd, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, false, NoTenantID)
+	fwd, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, false, NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("forward locateRange: %v", err)
 	}
@@ -188,7 +190,7 @@ func TestLocateRangeReverseOrder(t *testing.T) {
 	}
 
 	// Reverse: should be [g,k), [d,g), [a,d) — locations[0] nearest end.
-	rev, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, true, NoTenantID)
+	rev, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, true, NoTenantID, types.SpanContext{})
 	if err != nil {
 		t.Fatalf("reverse locateRange: %v", err)
 	}
