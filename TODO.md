@@ -124,6 +124,44 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: missing `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — needs its own `fdb-client-engineer` RFC (commit-path wire/behavior; found by the quality-grind OnError audit, 2026-06-19)
+
+C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
+and read conflict ranges don't already intersect: `if (!causalWriteRisky &&
+!intersects(write_conflict_ranges, read_conflict_ranges)) makeSelfConflicting()`
+(`NativeAPI.actor.cpp:6858-6860`), where `makeSelfConflicting()` (`:5952`) pushes a single
+`\xFF/SC/<deterministicRandom()->randomUniqueID()>` range into BOTH read and write conflict sets.
+(There is a SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` for the
+automatic-idempotency feature — distinct, gate on `tr.idempotencyId`.) Go has neither: a write-only
+commit (read conflicts empty → no intersection) ships WITHOUT the synthetic range, and
+`commitDummyTransaction`'s `intersectConflictRanges` (`commitpath.go:250-265`) falls back to
+`writes[0].Begin` — a real user key — where C++'s dummy uses the synthetic key
+(`NativeAPI.actor.cpp:6744-6750`).
+
+**Two effects:** (a) Go's commit-request conflict-range vector diverges from libfdb_c for the same
+write-only transaction (request-frame semantic difference — not persisted bytes, but affects the
+resolver); (b) Go's commit_unknown_result dummy conflicts on a real user key, so a concurrent writer
+of that key can false-conflict the dummy, where C++'s synthetic UUID key never collides with real
+traffic. PARTIALLY mitigated today: Go's `OnError(1021/1039)` copies writeConflicts→readConflicts on
+the RETRY (`transaction.go:1850`), so the retry is self-conflicting via a different mechanism — but
+the original commit's wire shape and the dummy's key choice still diverge.
+
+**Why a dedicated RFC, not a grind fix:** the commit_unknown_result ↔ makeSelfConflicting ↔
+commitDummyTransaction interaction is subtle (each attempt mints a FRESH random UID, so it is NOT
+simple retry-idempotency), it touches the commit path + wire shape, and it can't be cleanly
+differential-tested at the data plane (conflict ranges go to the resolver, not storage — a
+fault-injection test that triggers commit_unknown_result is needed). Port `makeSelfConflicting` +
+the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin with a Go-side
+commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
+SimTransport commit_unknown_result behavioral test.
+
+**Minor OnError/knob-audit findings (same grind, low priority — note, don't necessarily fix):**
+hedge `secondDelay` uses a fixed `2.0×primary-latency` where C++ uses a runtime-adaptive
+`secondMultiplier (≥1.0) × second-best latency + BASE_SECOND_REQUEST_TIME(0.5ms)`
+(`loadbalance.go:70` vs `LoadBalance.actor.h:560`; p99 hedge timing only); GRV batcher lacks C++'s
+`MAX_BATCH_SIZE=1000` force-flush (`NativeAPI.actor.cpp:7351`; >1000 concurrent GRVs/window wait the
+full window); GRV `batchTime` floors at 100µs where C++ has no floor.
+
 ### [x] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6) — DONE (branch `wire/watchvalue-extractor-registration`, stacked on #303)
 
 `cmd/fdb-schema-extract/main.cpp` has no `extractType<WatchValueRequest>()` /
