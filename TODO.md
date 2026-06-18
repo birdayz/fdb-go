@@ -80,9 +80,12 @@ each on its own stacked branch.
    coverage), and `steps.<id>.outcome != 'skipped'` guards so a skipped preflight can't publish an
    empty report. (Also fixed the `codex` CLI hang via a new `codexreview` tool in the codex-review
    skill — root cause: `codex exec` blocks on open stdin.) (TODO-production P1.6.)
-5. **[ ] CI reproducibility — off the single Hetzner box.** `M/L` · Torvalds + codex. All jobs run on
-   one self-hosted Hetzner runner → unreproducible green + bus-factor. Provide a containerized/
-   ephemeral runner OR document the requirement and pin tool/image versions with checksums. (TODO-prod P1.8.)
+5. **[~] CI reproducibility — off the single Hetzner box. UNTRACKED (owner decision, 2026-06-18).**
+   The single self-hosted box is intentional: we work locally + sequentially; the RFC-115→117
+   merge-wave slowness was a one-off (four PRs through one runner), not cache thrash (warm cache
+   confirmed). Don't re-file a 2nd/ephemeral-runner or CI-reproducibility item. See the `# NEXT`
+   CI note for the full rationale. Revisit only if the box actually starts failing on disk. (Was
+   TODO-prod P1.8.)
 6. **[ ] libfdb_c escape hatch (Backend interface + CGo-backed impl).** `L` · fdb-client-review.
    **De-prioritized: just-before-launch safety net, not a blocker.** Define a `Database`/`Transaction`
    `Backend` interface; add a libfdb_c-backed impl; switch via config. (TODO-production P2.2.)
@@ -901,23 +904,20 @@ wrong-shard retry — comes from a seeded in-process `SimTransport` fake server 
   READ_LOCK_AWARE ok, unlock+poll recovery) — revert-proven red without the check — plus the
   production-parser `locked` assert in the `GetReadVersionReply_locked` reply vector.
 
-- [ ] **GRV cache is ALWAYS-ON in Go; opt-in (USE_GRV_CACHE) in C++ (divergence, filed by
-  RFC-096).** C++ serves cached read versions only when the app sets `USE_GRV_CACHE`
-  (`NativeAPI.actor.cpp:7505` gate; default false, `:6148`; the `DEBUG_USE_GRV_CACHE_CHANCE`
-  knob is -1.0 = never). Go's `grvCache.tryCache` serves every DEFAULT/BATCH transaction and a
-  background refresher keeps it perpetually warm — i.e. Go gives every app C++'s opt-in behavior
-  by default. Observable consequences beyond perf: staleness windows C++ default apps never see
-  (RFC-096 had to carry `locked` through the cache to compensate — revisit that check's shape if
-  this closes). Closing means adding the `USE_GRV_CACHE` transaction/database option and gating
-  `tryCache` + the refresher on it, matching `:7504-7518` exactly. Needs its own RFC (perf
-  implications: today's cache is why Go GRV latency is flat under load); fdb-client-review gates.
-  **DEMONSTRATED wrong-answer (RFC-098 differential, full-suite run): a Go transaction served a
-  cached version OLDER than a libfdb_c-committed seed — the seed keys were invisible (GetKey
-  resolved past them; a limited GetRange saw 0 of 2 rows). libfdb_c's default (real GRV per txn)
-  guarantees external causality; Go's always-on cache silently does not. The differential tests
-  now seed through the Go client to stay deterministic
-  (`pkg/fdbgo/bench/differential_unreadable_test.go`, getkey subtest comment) — those comments
-  are removable when this closes. Upgraded from perf-flavored divergence to correctness bug.**
+- [x] **GRV cache is ALWAYS-ON in Go; opt-in (USE_GRV_CACHE) in C++ — DONE (RFC-104).** Closed:
+  the cache is now opt-in, default off. Cache READS are gated on the transaction's `useGrvCache`
+  (`SetUseGrvCache`/USE_GRV_CACHE 1101; `SetSkipGrvCache`/SKIP_GRV_CACHE 1102, skip wins) at
+  `grv.go:284` and the background refresher only starts on the first opted-in request
+  (`grv.go:293`) — matching C++ `NativeAPI.actor.cpp:7504-7517` (gate `:7505`, default false
+  `:6148`). The opted-in cached path fail-opens on `locked` exactly as C++ does (`:7514-7516`), so
+  RFC-096's `lastLocked` ride-along — which existed ONLY to compensate for the previous always-on
+  cache — was removed (`grv.go:38-45`). The RFC-098 wrong-answer (a default Go txn serving a
+  version older than a libfdb_c-committed seed) no longer reproduces: a DEFAULT Go read now sees
+  cgo-committed data directly. Pinned by `TestFDB_GRVCache_OptInOnly`,
+  `TestFDB_GRVCache_RefresherStartsOnOptInMiss`, `TestFDB_GRVCache_SkipOverridesUse`
+  (`client/grv_cache_optin_test.go`) + `TestDifferential_GRVCacheDefaultSeesCgoSeed`
+  (`bench/differential_grvcache_test.go`). Differential-test causality comments already rewritten
+  to "key-ownership hygiene, not a workaround" (`bench/differential_unreadable_test.go`).
 
 - [ ] **C3. Ride their test designs — port FDB workloads as scenario + invariant specs.** FDB's
   `fdbserver/workloads/*.actor.cpp` (Cycle, AtomicOps, ConflictRange, Serializability,
