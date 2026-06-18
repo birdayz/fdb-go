@@ -57,6 +57,7 @@ enum MsgType : uint8_t {
     TYPE_ENDPOINT = 16,
     TYPE_REPLY_PROMISE = 17,
     TYPE_NETWORK_ADDRESS_V6 = 18,
+    TYPE_READ_OPTIONS = 19,
 };
 
 // --- Buffered binary stdin reader ---
@@ -865,6 +866,48 @@ static bool handleReplyPromise() {
     return true;
 }
 
+// handleReadOptions exercises ReadOptions' Optional<Version> consistencyCheckStartVersion
+// (RFC-117: the field the extractor used to mis-emit as Go []byte). ReadOptions is a nested
+// type, so it rides inside a GetValueRequest's Optional<ReadOptions> as the carrier — the Go
+// side builds the same carrier and the structural compare isolates the Options fields
+// (consistencyCheckStartVersion + the sibling Optional<UID> debugID + lockAware).
+static bool handleReadOptions() {
+    int32_t roType;
+    bool cacheResult, hasDebugID, hasCCSV, lockAware;
+    UID debugID;
+    int64_t ccsv;
+    if (!readI32(roType)) return false;
+    if (!readBool(cacheResult)) return false;
+    if (!readBool(hasDebugID)) return false;
+    if (hasDebugID) {
+        if (!readUID(debugID)) return false;
+    }
+    if (!readBool(hasCCSV)) return false;
+    if (hasCCSV) {
+        if (!readI64(ccsv)) return false;
+    }
+    if (!readBool(lockAware)) return false;
+
+    ReadOptions ro;
+    ro.type = (ReadType)roType;
+    ro.cacheResult = cacheResult;
+    if (hasDebugID)
+        ro.debugID = debugID;
+    if (hasCCSV)
+        ro.consistencyCheckStartVersion = ccsv;
+    ro.lockAware = lockAware;
+
+    GetValueRequest req;
+    std::string key = "ro";
+    req.key = KeyRef((uint8_t*)key.data(), key.size());
+    req.options = ro;
+
+    auto buf = serializeMessage(req);
+    zeroReplyToken(buf, req.reply);
+    writeResponse(buf.data(), buf.size());
+    return true;
+}
+
 // --- Main loop ---
 
 int main() {
@@ -936,6 +979,9 @@ int main() {
             break;
         case TYPE_REPLY_PROMISE:
             ok = handleReplyPromise();
+            break;
+        case TYPE_READ_OPTIONS:
+            ok = handleReadOptions();
             break;
         default:
             ok = false;

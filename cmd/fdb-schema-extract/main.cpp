@@ -12,6 +12,69 @@
 #include "extract.h"
 
 // ============================================================
+// Bare out-of-line scalar codegen (shared)
+// ============================================================
+//
+// A union alternative whose inner is a scalar (Optional<primitive-scalar> OR a Variant
+// scalar alternative) is written BARE out-of-line behind the union's RelativeOffset —
+// C++ SaveAlternative non-indirection arm (flow/include/flow/flat_buffers.h:848), read
+// via LoadAlternative (:867-879). Both the Optional<primitive> arm and the Variant scalar
+// arm emit identical read/write; bareScalarOps centralizes the width→Go-helper dispatch so a
+// width fix lands in one place. (The Optional<UID> case is NOT here — it slices a [16]byte
+// array rather than encoding a value.) Returns {nullptr,...} for a width with no helper yet:
+// only widths a real schema field uses get a Go reloff helper (speculative ones are dead code).
+struct BareScalarOps {
+    const char* readHelper;  // bounds-checked reloff reader (reader.go)
+    const char* writeHelper; // positional writer (serializer.go)
+    const char* uintCast;    // unsigned Go type the helper takes/returns
+};
+static BareScalarOps bareScalarOps(int size) {
+    switch (size) {
+    case 8:
+        return { "ReadRelOffUint64", "WriteUint64", "uint64" };
+    case 4:
+        return { "ReadRelOffUint32", "WriteUint32", "uint32" };
+    default:
+        return { nullptr, nullptr, nullptr };
+    }
+}
+
+// bareScalarReadRHS: Go RHS to read a bare-OOL scalar (behind the union reloff at slot+1)
+// into a field of Go type `goType`. The cast to `goType` is suppressed when it already
+// equals the reloff helper's unsigned return type — so a uint32 variant alt emits
+// `r.ReadRelOffUint32(s+1)` (byte-identical to the pre-consolidation codegen), while an
+// int64 Optional emits `int64(r.ReadRelOffUint64(s+1))`.
+static std::string bareScalarReadRHS(const char* rv, const std::string& slot, const char* goType, int size) {
+    BareScalarOps ops = bareScalarOps(size);
+    char buf[256];
+    if (!ops.readHelper) {
+        // No reloff helper for this width yet — add one (reader.go) when a real field needs it.
+        fprintf(stderr, "FATAL: no bare-scalar read helper for width %d (goType %s)\n", size, goType);
+        abort();
+    }
+    if (strcmp(goType, ops.uintCast) == 0)
+        snprintf(buf, sizeof buf, "%s.%s(%s + 1)", rv, ops.readHelper, slot.c_str());
+    else
+        snprintf(buf, sizeof buf, "%s(%s.%s(%s + 1))", goType, rv, ops.readHelper, slot.c_str());
+    return buf;
+}
+
+// bareScalarWriteStmt: Go statement to write `valExpr` (Go type goType) as a bare-OOL scalar
+// at cbs+size. Always casts to the helper's unsigned type — matching the pre-consolidation
+// variant codegen `wb.WriteUint32(uint32(v), …)`.
+static std::string bareScalarWriteStmt(const std::string& valExpr, int size) {
+    BareScalarOps ops = bareScalarOps(size);
+    char buf[256];
+    if (!ops.writeHelper) {
+        fprintf(stderr, "FATAL: no bare-scalar write helper for width %d\n", size);
+        abort();
+    }
+    snprintf(buf, sizeof buf, "wb.%s(%s(%s), wb.CurrentBufferSize+%d)", ops.writeHelper, ops.uintCast,
+             valExpr.c_str(), size);
+    return buf;
+}
+
+// ============================================================
 // GoEmitterV5 — composable primitives, two-pass direct-write
 // ============================================================
 
@@ -151,7 +214,8 @@ struct GoEmitterV5 {
             case FieldKind::Optional:
                 fprintf(f, "\tHas%s bool   // slot %d, optional tag\n", gn.c_str(), fd.vtableSlot);
                 if (fd.optScalar) {
-                    // Optional<scalar> (Optional<UID>): fixed-size scalar value, not []byte.
+                    // Optional<scalar> (Optional<UID> [16]byte, or Optional<primitive> int64/…):
+                    // a fixed-size scalar value behind the union reloff, not []byte.
                     fprintf(f, "\t%s    %s // slot %d, optional scalar value\n", gn.c_str(), fd.scalar.goType, fd.vtableSlot + 1);
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: value is a nested Go struct, not []byte.
@@ -272,12 +336,17 @@ private:
             case FieldKind::Optional:
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
                         rv, slot.c_str(), rv, slot.c_str());
-                if (fd.optScalar) {
-                    // Optional<scalar> (Optional<UID>): the union RelativeOffset points at a
-                    // BARE fixed-size scalar (no length prefix, unlike ReadBytes). Read raw +
-                    // copy into the fixed array.
+                if (fd.optScalar && fd.optScalarIsArray) {
+                    // Optional<UID>: the union RelativeOffset points at a BARE fixed-size scalar
+                    // (no length prefix, unlike ReadBytes). Read raw + copy into the [16]byte array.
                     fprintf(f, "\t\tcopy(m.%s[:], %s.ReadRelOffRaw(%s + 1, %d))\n",
                             gn.c_str(), rv, slot.c_str(), fd.size);
+                } else if (fd.optScalar) {
+                    // Optional<primitive-scalar> (e.g. Optional<Version> int64): same bare-OOL
+                    // layout, but decode the value via binary.LittleEndian (shared with the
+                    // Variant scalar arm below), not an array slice.
+                    fprintf(f, "\t\tm.%s = %s\n", gn.c_str(),
+                            bareScalarReadRHS(rv, slot, fd.scalar.goType, fd.size).c_str());
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     // Optional<struct>: read as nested reader, unmarshal.
                     fprintf(f, "\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n", rv, slot.c_str());
@@ -296,9 +365,11 @@ private:
                 for (size_t a = 0; a < fd.variantAlts.size(); a++) {
                     auto& alt = fd.variantAlts[a];
                     fprintf(f, "\t\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar && alt.size == 4) {
-                        fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffUint32(%s + 1)\n",
-                                gn.c_str(), a, rv, slot.c_str());
+                    if (alt.kind == FieldKind::Scalar) {
+                        // Bare-OOL scalar alternative — shared with the Optional<primitive> arm.
+                        // (For the uint32 IPv4 alt this stays byte-identical: no cast needed.)
+                        fprintf(f, "\t\t\tm.%sAlt%zu = %s\n", gn.c_str(), a,
+                                bareScalarReadRHS(rv, slot, alt.goType, alt.size).c_str());
                     } else if (alt.kind == FieldKind::VectorLike || alt.kind == FieldKind::DynamicSize) {
                         // C++ union vector alternative (use_indirection==true,
                         // flat_buffers.h:872-877): the RelativeOffset points at a
@@ -344,9 +415,10 @@ private:
                 break;
             case FieldKind::Optional:
                 if (fd.optScalar) {
-                    // Optional<scalar> (Optional<UID>): reserve a BARE fixed-size scalar
+                    // Optional<scalar> (UID or primitive): reserve a BARE fixed-size scalar
                     // payload (no length prefix) — C++ SaveAlternative writes it at cbs+sizeof
-                    // (flat_buffers.h:848), same as the Variant scalar arm.
+                    // (flat_buffers.h:848), same as the Variant scalar arm. Size-driven, so this
+                    // pass is identical for UID (16) and primitives (8/4/…).
                     fprintf(f, "\tif m.Has%s { ps.Write(ps.CurrentBufferSize + %d) }\n", gn.c_str(), fd.size);
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
                     fprintf(f, "\tif m.Has%s { m.%s.precomputeSize(ps) }\n", gn.c_str(), gn.c_str());
@@ -461,13 +533,19 @@ private:
                             (safeParam(gn) + "Start").c_str(), gn.c_str());
                 break;
             case FieldKind::Optional:
-                if (fd.optScalar) {
-                    // Optional<scalar> (Optional<UID>): write the bare fixed-size scalar
-                    // OUT-OF-LINE at cbs+size (C++ SaveAlternative, flat_buffers.h:848); the
-                    // 1-byte tag + 4-byte reloff (written into self below) point at it. No
-                    // length prefix — same as the Variant scalar arm, but always present-gated.
+                if (fd.optScalar && fd.optScalarIsArray) {
+                    // Optional<UID>: write the bare [16]byte OUT-OF-LINE at cbs+size (C++
+                    // SaveAlternative, flat_buffers.h:848); the 1-byte tag + 4-byte reloff
+                    // (written into self below) point at it. No length prefix.
                     fprintf(f, "\tif m.Has%s {\n", gn.c_str());
                     fprintf(f, "\t\twb.Write(m.%s[:], wb.CurrentBufferSize+%d)\n", gn.c_str(), fd.size);
+                    fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
+                    fprintf(f, "\t}\n");
+                } else if (fd.optScalar) {
+                    // Optional<primitive-scalar> (e.g. Optional<Version> int64): same bare-OOL
+                    // write, value-encoded via binary.LittleEndian (shared with the Variant arm).
+                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                    fprintf(f, "\t\t%s\n", bareScalarWriteStmt("m." + gn, fd.size).c_str());
                     fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
                     fprintf(f, "\t}\n");
                 } else if (fd.nestedGoType && fd.nestedGoType[0]) {
@@ -485,12 +563,12 @@ private:
                 for (size_t a = 0; a < fd.variantAlts.size(); a++) {
                     auto& alt = fd.variantAlts[a];
                     if (alt.kind == FieldKind::Scalar) {
-                        // use_indirection==false (:848): write(&v, cbs+sizeof, sizeof);
-                        // reloff = the new cbs. Bare LE scalar, no count prefix.
-                        // (The lone scalar alternative in the schema is uint32/size 4.)
+                        // use_indirection==false (:848): bare LE scalar at cbs+sizeof, no count
+                        // prefix; reloff = the new cbs. Shared bare-OOL emit with Optional<primitive>.
+                        char valExpr[128];
+                        snprintf(valExpr, sizeof valExpr, "m.%sAlt%zu", gn.c_str(), a);
                         fprintf(f, "\tcase %zu:\n", a + 1);
-                        fprintf(f, "\t\twb.WriteUint32(uint32(m.%sAlt%zu), wb.CurrentBufferSize+%d)\n",
-                                gn.c_str(), a, alt.size);
+                        fprintf(f, "\t\t%s\n", bareScalarWriteStmt(valExpr, alt.size).c_str());
                         fprintf(f, "\t\t%s = wb.CurrentBufferSize\n", (safeParam(gn) + "Off").c_str());
                     } else {
                         // use_indirection==true (:845-846): count-prefixed vector.

@@ -288,16 +288,27 @@ template <> inline const char* optionalInnerGoType<Optional<Error>>() { return "
 template <class T> struct optional_inner_t { static constexpr bool is = false; };
 template <class T> struct optional_inner_t<Optional<T>> { using type = T; static constexpr bool is = true; };
 
+// An Optional<scalar-T> serializes its inner as a BARE out-of-line value behind the
+// union's RelativeOffset (C++ SaveAlternative non-indirection arm, flat_buffers.h:848),
+// NOT a length-prefixed byte vector. This covers UID (the lone 16-byte fixed-array
+// struct-scalar) AND every arithmetic/enum primitive (Optional<int64>/<Version>/<bool>/…,
+// e.g. ReadOptions.consistencyCheckStartVersion = Optional<Version>). The predicate is the
+// complement of use_indirection for the scalar case: byte-vector inners (StringRef/KeyRef/
+// Value/Standalone) are NOT arithmetic/enum/UID → they correctly stay []byte; struct inners
+// (Tag/StorageMetadataType/Error/ReadOptions) route via optionalInnerGoType, not here.
 template <class T> bool optionalInnerIsScalar() {
     if constexpr (optional_inner_t<T>::is) {
         using Inner = typename optional_inner_t<T>::type;
-        // ONLY UID — the lone fixed 16-byte struct-scalar (scalar_traits<UID>) — gets the
-        // out-of-line fixed-ARRAY scalar codegen here (read via copy(m.X[:], ...), write via
-        // wb.Write(m.X[:], ...)). Primitive Optional<scalar> (Optional<int64>/<bool>/<enum>,
-        // e.g. ReadOptions' fields) is ALSO mis-emitted as []byte today, but fixing it needs
-        // per-type scalar encode/decode at a RelativeOffset — a separate, broader change with
-        // its own oracle coverage. Those stay []byte (pre-existing) until then (TODO.md).
-        return std::is_same_v<Inner, UID>;
+        return std::is_arithmetic_v<Inner> || std::is_enum_v<Inner> || std::is_same_v<Inner, UID>;
+    }
+    return false;
+}
+// optionalInnerIsArrayScalar: true only for UID — the one fixed-ARRAY scalar, which the
+// codegen reads/writes by slicing the [16]byte ([:]). Primitive scalars (arithmetic/enum)
+// use value encode/decode (binary.LittleEndian) instead, so the codegen branches on this.
+template <class T> bool optionalInnerIsArrayScalar() {
+    if constexpr (optional_inner_t<T>::is) {
+        return std::is_same_v<typename optional_inner_t<T>::type, UID>;
     }
     return false;
 }
@@ -329,7 +340,9 @@ struct FieldDesc {
     std::vector<VariantAlt> variantAlts;
     int vtableSlot;
     uint32_t size;
-    bool optScalar = false; // Optional<scalar-T> (e.g. Optional<UID>): inner is a fixed-size scalar
+    bool optScalar = false;        // Optional<scalar-T>: inner is a bare out-of-line scalar
+    bool optScalarIsArray = false; // ...and that scalar is the fixed [16]byte UID (slice codegen);
+                                   // false ⇒ arithmetic/enum primitive (value encode/decode codegen)
 };
 
 template <class ParentT>
@@ -384,11 +397,13 @@ private:
         case FieldKind::Optional:
             // C++ Optional<T> via union_like_traits: alternatives = pack<T>.
             if (optionalInnerIsScalar<T>()) {
-                // Optional<scalar-T> (Optional<UID> debugID): the alternative is a fixed-size
-                // scalar — capture its ScalarInfo + REAL size (fb_size<Optional<UID>> is the
-                // union's 4-byte RelativeOffset, not the inner 16), so the codegen emits the
-                // [16]byte scalar path (bare scalar behind the union reloff), not []byte.
+                // Optional<scalar-T>: the alternative is a bare out-of-line scalar — capture its
+                // ScalarInfo + REAL inner size (fb_size<Optional<T>> is the union's 4-byte
+                // RelativeOffset, not the inner width), so the codegen emits the scalar path
+                // (bare scalar behind the union reloff), not []byte. optScalarIsArray selects
+                // UID's [16]byte slice codegen vs the primitive value encode/decode codegen.
                 fd.optScalar = true;
+                fd.optScalarIsArray = optionalInnerIsArrayScalar<T>();
                 fd.scalar = optionalInnerScalarInfo<T>();
                 fd.size = (uint32_t)optionalInnerScalarSize<T>();
             } else {

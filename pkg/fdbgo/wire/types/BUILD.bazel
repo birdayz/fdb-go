@@ -64,6 +64,7 @@ go_test(
         "keyrangeref_test.go",
         "locations_marshal_test.go",
         "marshal_fuzz_test.go",
+        "readoptions_test.go",
     ],
     data = ["testdata.json"],
     embed = [":types"],

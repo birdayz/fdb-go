@@ -121,10 +121,11 @@ deeper extractor wire bugs** the registration depended on:
    lock-aware**. Fixed the registration (5 names, serialize order) + the client (`ReadOptions{LockAware: true}`);
    the round-trip unit tests now assert the real bool.
 
-**Follow-up filed:** **`Optional<primitive-scalar>` codegen** — `Optional<int64>`/`<Version>`/`<bool>` (e.g.
-`ReadOptions.consistencyCheckStartVersion`) are ALSO mis-emitted as `[]byte` today; the `Optional<scalar>` fix here
-is deliberately restricted to UID (`[16]byte`, array-sliceable) because primitives need per-type encode/decode at a
-RelativeOffset + their own oracle coverage (the oracle skips them now). Those stay `[]byte` until a dedicated change.
+**Follow-up — DONE (RFC-117, commit `b5bdbc00`):** **`Optional<primitive-scalar>` codegen.**
+`Optional<int64>`/`<Version>`/`<bool>` were mis-emitted as `[]byte`; the extractor now emits a typed bare
+scalar (value encode/decode at the union RelativeOffset, shared with the Variant scalar arm). Regen flipped
+only `ReadOptions.consistencyCheckStartVersion` `[]byte`→`int64`; un-skipped in `cmd/fdb-diff-oracle`
+(`TestDiffReadOptions`, C++ byte-truth). The UID `[16]byte` array path is unchanged.
 
 ### [x] fdbgo/client: stamp the GRV/watch/locate requests with a trace SpanContext — DONE (RFC-116)
 

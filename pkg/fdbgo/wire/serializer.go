@@ -179,6 +179,17 @@ func (wb *WriteToBuffer) WriteUint32(val uint32, offset int) {
 	}
 }
 
+// WriteUint64 writes a uint64 at position measured from end of buffer — the 8-byte
+// sibling of WriteUint32, for a bare out-of-line scalar behind a union RelativeOffset
+// (C++ SaveAlternative non-indirection arm, flat_buffers.h:848).
+func (wb *WriteToBuffer) WriteUint64(val uint64, offset int) {
+	pos := wb.BufferLength - offset
+	binary.LittleEndian.PutUint64(wb.Buf[pos:], val)
+	if offset > wb.CurrentBufferSize {
+		wb.CurrentBufferSize = offset
+	}
+}
+
 // WriteZeros writes zero bytes at position measured from end of buffer.
 func (wb *WriteToBuffer) WriteZeros(offset, length int) {
 	pos := wb.BufferLength - offset

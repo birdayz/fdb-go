@@ -26,7 +26,7 @@ type ReadOptions struct {
 	HasDebugID                      bool     // slot 2, optional tag
 	DebugID                         [16]byte // slot 3, optional scalar value
 	HasConsistencyCheckStartVersion bool     // slot 4, optional tag
-	ConsistencyCheckStartVersion    []byte   // slot 5, optional value
+	ConsistencyCheckStartVersion    int64    // slot 5, optional scalar value
 	LockAware                       bool     // slot 6
 }
 
@@ -42,7 +42,7 @@ func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
-		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.ConsistencyCheckStartVersion = int64(r.ReadRelOffUint64(ReadOptionsSlotConsistencyCheckStartVersion + 1))
 		m.HasConsistencyCheckStartVersion = true
 	}
 	if r.FieldPresent(ReadOptionsSlotLockAware) {
@@ -66,7 +66,7 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
-		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.ConsistencyCheckStartVersion = int64(r.ReadRelOffUint64(ReadOptionsSlotConsistencyCheckStartVersion + 1))
 		m.HasConsistencyCheckStartVersion = true
 	}
 	if r.FieldPresent(ReadOptionsSlotLockAware) {
@@ -83,7 +83,7 @@ func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
 		ps.Write(ps.CurrentBufferSize + 16)
 	}
 	if m.HasConsistencyCheckStartVersion {
-		ps.VisitDynamicSize(len(m.ConsistencyCheckStartVersion))
+		ps.Write(ps.CurrentBufferSize + 8)
 	}
 	{
 		n := ps.GetMessageWriter(int(ReadOptionsVTable[1]))
@@ -103,7 +103,8 @@ func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 		debugIDOff = wb.CurrentBufferSize
 	}
 	if m.HasConsistencyCheckStartVersion {
-		consistencyCheckStartVersionOff, _ = wb.VisitDynamicSize(m.ConsistencyCheckStartVersion)
+		wb.WriteUint64(uint64(m.ConsistencyCheckStartVersion), wb.CurrentBufferSize+8)
+		consistencyCheckStartVersionOff = wb.CurrentBufferSize
 	}
 	selfW := wb.GetMessageWriter(int(ReadOptionsVTable[1]), true)
 	selfStart := selfW.FinalLocation
