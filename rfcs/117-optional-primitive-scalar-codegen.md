@@ -1,6 +1,10 @@
 # RFC-117: `Optional<primitive-scalar>` wire codegen (extractor) (`pkg/fdbgo`)
 
-**Status:** Accepted. RFC review: **FDB C++ maintainer ACK** (serialization byte-identical to
+**Status:** Implemented (commit `b5bdbc00` on `rfc/117-optional-primitive-scalar`, through the full
+`just test` gate). Regen flipped **only** `ReadOptions.ConsistencyCheckStartVersion` `[]byte`→`int64`
+(IPAddress variant byte-identical after the shared-emitter consolidation); proven by pure round-trips
++ `cmd/fdb-diff-oracle` `TestDiffReadOptions` (C++ byte-truth, 5 cases, revert-proven). Implementation
+re-review (FDB-C-dev + Torvalds + codex + @claude) gating before merge. RFC review: **FDB C++ maintainer ACK** (serialization byte-identical to
 `Optional<UID>`/the #303 variant via `SaveAlternative` non-indirection arm `flat_buffers.h:838-849`;
 predicate `is_arithmetic||is_enum||UID` proven safe — it's the exact complement of `use_indirection`
 `:402`, and every dynamic `Optional<…>` in the schema has a byte-vector inner; added the `MutationRef`
