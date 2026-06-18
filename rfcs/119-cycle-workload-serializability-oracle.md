@@ -1,6 +1,6 @@
 # RFC-119 — Cycle workload: a pure-client serializability oracle
 
-**Status:** Accepted
+**Status:** Implemented (PR #308, merged `e219c9a5`).
 **Item:** TODO.md "Native fdbgo client" → **C3. Ride their test designs** (now `# NEXT` item 1).
 First increment of C3: port FDB's `Cycle` workload. Follow-ups (named in §7) port the other four.
 **Spec:** `fdbserver/workloads/Cycle.actor.cpp` @ tag **7.3.75** (`/tmp/fdbsrc`).

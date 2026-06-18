@@ -13,11 +13,13 @@ compatibility; everything here is polish/parity/infra — **none gates adoption*
 details live in the phase/section the pointer names. Client items are fresh `fdb-client-engineer` RFC
 cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe ACK gate.
 
-1. **[ ] C3 (conformance) — Ride their test designs: port FDB's adversarial workloads.** Cycle /
+1. **[~] C3 (conformance) — Ride their test designs: port FDB's adversarial workloads.** Cycle /
    AtomicOps / ConflictRange / Serializability / FuzzApiCorrectness reimplemented as scenario +
-   invariant specs driving the Go client against testcontainers + the just-landed `SimTransport`
-   (C4/RFC-118). Unblocked; extends `pkg/recordlayer/chaos` + `cmd/fdb-binding-stress`. Detail in the
-   "Native fdbgo client" section, item **C3**. **← IN PROGRESS.**
+   invariant specs driving the Go client against testcontainers + `SimTransport` (C4/RFC-118).
+   **Increment 1 DONE:** Cycle workload — pure-client serializability oracle (RFC-119, PR #308).
+   **In progress:** Cycle under injected faults via SimTransport (RFC-120). Remaining: AtomicOps /
+   ConflictRange / Serializability / FuzzApi *gaps* (the rest already have substantial coverage —
+   see RFC-119 §7). Detail in the "Native fdbgo client" section, item **C3**. **← IN PROGRESS.**
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
    encoding). RFC-059→067 closed. Detail: conformance section, "Fresh differential axes".
