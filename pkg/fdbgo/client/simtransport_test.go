@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -212,23 +213,49 @@ func inlineErrorReply(code uint16, penalty float64) []byte {
 	return types.MarshalErrorOrInlineError(code, penalty)
 }
 
-// flipMoreReply decodes a real ErrorOr<GetKeyValuesReply> success frame (the
-// envelope the storage server actually sends — NOT a bare FakeRoot reply), sets
-// More=true, and re-emits the same envelope — faithfully simulating a server that
-// chose to return a partial batch (legitimate behavior), which forces the getRange
-// inner continuation loop without a knob-dependent 80KB scan. Data round-trips as
-// an opaque []byte, so the rows are unchanged; only More flips. Returns the body
-// unchanged if it is not a success ErrorOr<reply> (defensive — should not happen on
-// an armAddr'd storage conn carrying only GetKeyValues replies).
-func flipMoreReply(body []byte) []byte {
+// partialBatchReply decodes a real ErrorOr<GetKeyValuesReply> success frame (the
+// envelope the storage server actually sends — NOT a bare FakeRoot reply), TRUNCATES
+// it to the first `keep` rows, sets More=true, and re-emits the same envelope —
+// faithfully simulating a server that chose to return a partial batch (legitimate
+// behavior), which forces the getRange inner continuation loop without a
+// knob-dependent 80KB scan. Truncating (not just flipping More) is load-bearing: it
+// leaves real rows for the continuation, so the test exercises the no-DROP dimension
+// (a buggy resume that skips the remainder is caught), not only no-dup. Returns the
+// body unchanged if it is not a success ErrorOr<reply>, or if it already has ≤ keep
+// rows (defensive — should not happen on an armAddr'd storage conn with > keep keys).
+func partialBatchReply(body []byte, keep int) []byte {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(body, &r); err != nil {
 		return body
 	}
 	var reply types.GetKeyValuesReply
 	reply.UnmarshalFromReader(&r)
+	kvs := types.ParseKeyValueRefStringVector(reply.Data)
+	if len(kvs) <= keep {
+		return body
+	}
+	reply.Data = packKeyValueRefVector(kvs[:keep])
 	reply.More = true
 	return types.MarshalErrorOrValueGetKeyValuesReply(&reply)
+}
+
+// packKeyValueRefVector re-encodes a KeyValueRef slice in the VecSerStrategy::String
+// layout that types.ParseKeyValueRefStringVector decodes: a uint32 LE count, then per
+// element a uint32 LE key length + key bytes + uint32 LE value length + value bytes.
+// Used to truncate a reply's Data to a partial batch (pinned by TestPartialBatchReply_RoundTrip).
+func packKeyValueRefVector(kvs []types.KeyValueRef) []byte {
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, uint32(len(kvs)))
+	var n [4]byte
+	for _, kv := range kvs {
+		binary.LittleEndian.PutUint32(n[:], uint32(len(kv.Key)))
+		buf = append(buf, n[:]...)
+		buf = append(buf, kv.Key...)
+		binary.LittleEndian.PutUint32(n[:], uint32(len(kv.Value)))
+		buf = append(buf, n[:]...)
+		buf = append(buf, kv.Value...)
+	}
+	return buf
 }
 
 // replaceFirst returns an intercept that replaces ONLY the first armed non-PING
@@ -249,35 +276,51 @@ func dropAll() frameIntercept {
 	return func(int, transport.UID, []byte) ([]byte, bool) { return nil, true }
 }
 
-// TestFlipMoreReply_RoundTrip pins the Gap-3 More-flip rewriter BEFORE the Gap-3
-// integration test relies on it (RFC-118 impl contract (c)): a re-marshal that
-// corrupted Data would surface here as a clear equality failure, not as a
-// confusing dup/drop downstream. Data is opaque to the rewriter (a []byte slot)
-// and must round-trip byte-exact; only More flips.
-func TestFlipMoreReply_RoundTrip(t *testing.T) {
+// TestPartialBatchReply_RoundTrip pins the Gap-3 partialBatchReply rewriter BEFORE
+// the Gap-3 integration test relies on it (RFC-118 impl contract (c)): a re-marshal
+// that corrupted the envelope or the Data re-pack would surface here as a clear
+// equality failure, not as a confusing dup/drop downstream. It must accept a real
+// ErrorOr<reply> SUCCESS frame (a bare FakeRoot reply would mask the envelope-decode
+// bug), keep exactly the first `keep` rows, set More=true, and preserve the other
+// scalar fields.
+func TestPartialBatchReply_RoundTrip(t *testing.T) {
 	t.Parallel()
+	rows := []types.KeyValueRef{
+		{Key: []byte("k0"), Value: []byte("v0")},
+		{Key: []byte("k1"), Value: []byte("v1\x00\xff")},
+		{Key: []byte("k2"), Value: []byte("v2")},
+	}
 	orig := &types.GetKeyValuesReply{
 		Penalty: 1.5,
-		Data:    []byte("packed-kv-arena\x00\x01\x02\xff payload"),
+		Data:    packKeyValueRefVector(rows),
 		Version: 0x123456789a,
 		More:    false,
 		Cached:  true,
 	}
-	// Input is an ErrorOr<reply> SUCCESS frame — the shape a storage server actually
-	// sends and the shape flipMoreReply must accept (a bare FakeRoot reply would
-	// mask the envelope-decode bug).
+	// packKeyValueRefVector must round-trip through the production parser.
+	if got := types.ParseKeyValueRefStringVector(orig.Data); len(got) != 3 {
+		t.Fatalf("packed vector parses to %d rows, want 3", len(got))
+	}
+
+	// Input is an ErrorOr<reply> SUCCESS frame — the shape a storage server sends.
 	in := types.MarshalErrorOrValueGetKeyValuesReply(orig)
 	var r wire.Reader
-	if err := wire.ReadErrorOrInto(flipMoreReply(in), &r); err != nil {
-		t.Fatalf("flipped frame is not a success ErrorOr<reply>: %v", err)
+	if err := wire.ReadErrorOrInto(partialBatchReply(in, 2), &r); err != nil {
+		t.Fatalf("truncated frame is not a success ErrorOr<reply>: %v", err)
 	}
 	var got types.GetKeyValuesReply
 	got.UnmarshalFromReader(&r)
 	if !got.More {
 		t.Error("More was not flipped to true")
 	}
-	if !bytes.Equal(got.Data, orig.Data) {
-		t.Errorf("Data corrupted by re-marshal: got %x, want %x", got.Data, orig.Data)
+	kvs := types.ParseKeyValueRefStringVector(got.Data)
+	if len(kvs) != 2 {
+		t.Fatalf("truncated to %d rows, want 2", len(kvs))
+	}
+	for i := 0; i < 2; i++ {
+		if !bytes.Equal(kvs[i].Key, rows[i].Key) || !bytes.Equal(kvs[i].Value, rows[i].Value) {
+			t.Errorf("row %d: got %q=%q, want %q=%q", i, kvs[i].Key, kvs[i].Value, rows[i].Key, rows[i].Value)
+		}
 	}
 	if got.Version != orig.Version {
 		t.Errorf("Version changed: got %#x, want %#x", got.Version, orig.Version)
@@ -355,7 +398,10 @@ func TestSimRangeWrongShardMidScan(t *testing.T) {
 			sd.setIntercept(func(idx int, _ transport.UID, body []byte) ([]byte, bool) {
 				switch idx {
 				case 0:
-					return flipMoreReply(body), false
+					// Partial batch: keep 2 of n rows + More=true, so the
+					// continuation genuinely carries the remaining n-2 rows (a buggy
+					// resume that drops them is caught, not just a dup).
+					return partialBatchReply(body, 2), false
 				case 1:
 					return inlineErrorReply(1001, injectPenalty), false
 				default:
