@@ -12,6 +12,10 @@ Post RFC-115/116/117. The pure-Go client (`pkg/fdbgo`) is launch-ready on correc
 compatibility; everything below is polish/safety/perf/infra — **none gates adoption**. Priority order
 (from the RFC-115/watchvalue session handoff). Each is a fresh `fdb-client-engineer` RFC cycle.
 
+> **All `# NEXT` items are now closed:** D1 (RFC-118), B2 (RFC-109), C3 (RFC-057), the GRV-cache
+> divergence (RFC-104), and B1/CI-off-the-box (untracked, owner decision). The next engineer should
+> pull the lowest-numbered unchecked item from the phases below, not from here.
+
 > **CI: the single self-hosted box is intentional — NOT a tracked problem.** We work locally + sequentially;
 > the slowness during the RFC-115→117 merge wave was a one-off (four PRs squeezed through one runner at once).
 > Don't re-file a "second / ephemeral runner" or "CI reproducibility off the box" item. (The §7 CI-volume
@@ -28,9 +32,11 @@ compatibility; everything below is polish/safety/perf/infra — **none gates ado
   (`simConn` + a per-frame intercept callback) consolidates the bespoke `wrongShardConn`/`dropReplyConn`;
   faithful inline-error injection via the `ErrorOr<reply>`(tag=value) channel real FDB uses for read
   errors (`types.MarshalErrorOrInlineError`). Closes the four C4 deferred Phase-0 test gaps below.
-- [ ] **B2 — libfdb_c escape hatch** (launch-stack item 6): a `Database`/`Transaction` `Backend` interface
-  + a CGo-backed impl, switchable via config. **Explicitly DE-PRIORITIZED — a just-before-launch safety
-  net, NOT an adoption blocker. Do last, if at all.**
+- [x] **B2 — libfdb_c escape hatch** — DONE (RFC-109, PR #295). `BackendDatabase` interface
+  (`pkg/fdbgo/fdb/backend.go`) + a CGo-backed impl over `cgofdb` (`pkg/fdbgo/libfdbc/backend.go`),
+  selected at BUILD time via the `libfdbc` build tag (`pkg/fdbgo/fdbclient`, netgo/netcgo idiom) —
+  NOT runtime config, because libfdb_c's network thread is process-global + unrecoverable so there is
+  no live switch between backends anyway (FDB-C-dev + Torvalds vetted; hardened across 11 codex rounds).
 
 > Shipped this session (stacked on `master`, merging bottom-up #303→#304→#305/#306):
 > **RFC-116** (#305) GRV/watch/locate operation-span attribution; **RFC-117** (#306)
@@ -88,9 +94,10 @@ each on its own stacked branch.
    confirmed). Don't re-file a 2nd/ephemeral-runner or CI-reproducibility item. See the `# NEXT`
    CI note for the full rationale. Revisit only if the box actually starts failing on disk. (Was
    TODO-prod P1.8.)
-6. **[ ] libfdb_c escape hatch (Backend interface + CGo-backed impl).** `L` · fdb-client-review.
-   **De-prioritized: just-before-launch safety net, not a blocker.** Define a `Database`/`Transaction`
-   `Backend` interface; add a libfdb_c-backed impl; switch via config. (TODO-production P2.2.)
+6. **[x] libfdb_c escape hatch (Backend interface + CGo-backed impl) — DONE (RFC-109, PR #295).**
+   `BackendDatabase` interface + a CGo-backed impl over `cgofdb`, selected at BUILD time via the
+   `libfdbc` build tag (not runtime config: libfdb_c's network thread is process-global + unrecoverable
+   so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
 
