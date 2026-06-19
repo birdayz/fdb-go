@@ -105,20 +105,36 @@ API (`RangeOptions{Limit int, Mode StreamingMode}`, internal `getRange(.., limit
 only a **row** limit; there is no app-facing byte-limit parameter to validate, so the `bytes` arm of
 `isValid()` has no Go surface. Only the row-limit divergence is reachable, and it is what we fix.)*
 
-### 3.2 Divergence B — conflict-range `maxReadKey` check
+### 3.2 Divergence B — conflict-range out-of-range check (read ≠ write — FDB-C-dev catch)
 
-In `AddReadConflictRange` and `AddWriteConflictRange`, **after** the existing `begin > end →
-inverted_range` check (so inverted wins when both apply, matching C++'s construct-then-check order),
-add the `maxReadKey` guard with the `metadataVersionKey`-range exception (define
-`metadataVersionKeyEndBytes = "\xff/metadataVersion\x00"`, cf. `SystemData.cpp:1386`):
+The two methods are **not** symmetric in C++ (the probe missed it because read/write maxKey coincide
+when no system-key options are set). Add each guard **after** the existing `begin > end → inverted_range`
+check (so inverted wins when both apply, matching C++'s construct-then-check order):
 
-```go
-maxKey := tx.maxReadKey()
-if (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
-    !(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
-    return &wire.FDBError{Code: 2004} // key_outside_legal_range
-}
-```
+- **`AddReadConflictRange`** — `getMaxReadKey()`, **with** the `metadataVersionKey`-range exception
+  (`ReadYourWrites.actor.cpp:1954-1957`). Define `metadataVersionKeyEndBytes = "\xff/metadataVersion\x00"`
+  (cf. `SystemData.cpp:1386`):
+
+  ```go
+  maxKey := tx.maxReadKey()
+  if (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
+      !(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
+      return &wire.FDBError{Code: 2004} // key_outside_legal_range
+  }
+  ```
+
+- **`AddWriteConflictRange`** — `getMaxWriteKey()` (`tx.maxWriteKey()`, `transaction.go:1082`), **no**
+  metadataVersion exception (`ReadYourWrites.actor.cpp:2466-2468` throws unconditionally on out-of-range):
+
+  ```go
+  maxKey := tx.maxWriteKey()
+  if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+      return &wire.FDBError{Code: 2004} // key_outside_legal_range
+  }
+  ```
+
+The differential (§4.2) must exercise this read/write asymmetry under a system-key option (where
+`maxReadKey` and `maxWriteKey` diverge), not only the default where they coincide.
 
 ## 4. Executable spec (what the tests prove)
 
