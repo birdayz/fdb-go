@@ -1,8 +1,22 @@
 # RFC-127 — SQL pagination must not treat a non-terminal StartContinuation as end-of-results
 
 **Status:** Accepted
-**Item:** prod-readiness-audit-2026-06-19.md **P0 (release-blocking)** — SQL pagination can silently drop
-results.
+**Item:** prod-readiness-audit-2026-06-19.md **P0** — SQL pagination can silently drop results.
+
+> **Severity correction (post-implementation, from the `/code-review` reachability trace).** The audit
+> rated this release-blocking, but the data-loss path is **latent, not live** in the current code. Every
+> Go leaf cursor reports an out-of-band stop only after `scanned>0` (`key_value_cursor.go:164/174/181`,
+> `record_key_cursor.go:64/69/78`), so its continuation is set → a `BytesContinuation` (which the OLD code
+> resumed correctly); composite cursors carry a serialized `BytesContinuation` (merge/intersection) or
+> error-first with 54F01 (`mergeSort`, RFC-106a). So **no current cursor emits a no-next
+> out-of-band+StartContinuation**, and the only reachable nil-bytes+non-end case is `LIMIT 0`
+> (`ReturnLimitReached`), which the old `nil→exhausted` happened to handle correctly. Even the audit's
+> described trigger (filter + scan limit before the first row) produces a *BytesContinuation* (the leaf
+> scanned rows), not a START. **The fix is still correct and worth landing**: the old logic was wrong *in
+> principle* (it inferred exhaustion from bytes, violating Java's `SOURCE_EXHAUSTED`-only invariant) — a
+> latent landmine the moment any future Go cursor emits the out-of-band+START state Java's
+> Union/Intersection/MapWhile cursors legitimately produce. It is a correctness/invariant hardening + makes
+> the `LIMIT 0` handling explicit, not an emergency data-loss patch.
 
 > **Reviews.** Graefe **ACK** (verified vs Java 4.11.1.0): exhaustion off `IsEnd()`/`SOURCE_EXHAUSTED`,
 > never bytes, is correct (`RecordLayerIterator.java:91`; the `withoutNextValue` invariant makes reason ⇔
@@ -102,9 +116,9 @@ rows and never terminates** (an infinite loop in the fetch loop). Go's internal-
 no client to hand the page to.
 
 So within the existing architecture Go has exactly three options for a **non-end, no-resumable-bytes**
-result: (a) treat as exhausted — the current bug (data loss); (b) resume from BEGIN — infinite loop /
-duplicate rows; (c) surface the limit as a typed error. Only (c) is both data-loss-free and
-loop-free.
+result: (a) treat as exhausted — the old logic (latent data loss — see the severity correction: no current
+cursor reaches it, but it is wrong in principle); (b) resume from BEGIN — infinite loop / duplicate rows;
+(c) surface the limit as a typed error. Only (c) is both data-loss-free and loop-free.
 
 ## 4. Proposed Go change
 
@@ -177,12 +191,14 @@ follow-up if Graefe deems the internal-drain model itself a divergence to close.
 
 ## 6. Executable spec (regression tests)
 
-1. **The bug repro (SQL):** a query whose plan consumes input before its first output row (e.g. a filter
-   over a scan, or a blocking operator) under a scan/byte limit small enough to stop **before the first
-   row**. **Pin the exact branch** (Graefe (b)): with the internal drain unable to resume a no-progress
-   stop, this shape lands the out-of-band branch → the statement **errors with 54F01** (not a silently
-   short/truncated result, and not data-loss). Revert-proven: with the old `contBytes==nil → exhausted`
-   the test sees a short result instead of the 54F01.
+1. **The out-of-band branch (unit, not SQL):** the out-of-band+StartContinuation state is **not reachable
+   via SQL today** (see the severity correction — every leaf guards out-of-band with `scanned>0` →
+   `BytesContinuation`; composites carry bytes or error-first). So the proof is the deterministic unit test
+   `TestPageContinuationState`, which constructs a non-end `StartContinuation` paired with
+   `ScanLimitReached`/`TimeLimitReached` and asserts the 54F01, plus the in-band/exhausted/resumable rows of
+   the decision table. **Revert-proven:** restoring the old `contBytes==nil → exhausted` reds the
+   `start_+_scan_limit` / `start_+_time_limit` cases (confirmed). A SQL-level repro is impossible without a
+   cursor that emits the state (a future Union/MapWhile port would; the test guards that day).
 2. **LIMIT 0:** returns exactly 0 rows, cleanly exhausted (no error). **Assert the continuation type** at
    the page boundary is a non-end nil-bytes continuation with `ReturnLimitReached` (the load-bearing
    precondition Torvalds flagged), so the test fails if the plan ever produced a different shape.
