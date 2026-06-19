@@ -388,3 +388,40 @@ func TestPendingGet_Resolve_ContextCancelled(t *testing.T) {
 		t.Fatalf("Resolve on cancelled context: got %v, want context.Canceled", err)
 	}
 }
+
+// TestClassifyWatchError pins the watch retry decision (the D4 fix): the SS "poll instead" signals
+// (watch_cancelled 1029, process_behind 1037), the SS watch-timeout/future-version (1004/1009), and
+// the wrong-shard relocate are all RETRYABLE — only wrong-shard/all-alts invalidates+bounds. A revert
+// that makes any poll-signal terminal fails here. Mirrors C++ watchValue catch arms
+// (NativeAPI.actor.cpp:3993-4012).
+func TestClassifyWatchError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		err       error
+		wantDelay time.Duration
+		wantRetry bool
+		wantInval bool
+	}{
+		{"wrong_shard_1001", &wire.FDBError{Code: ErrWrongShardServer}, wrongShardRetryDelay, true, true},
+		{"all_alternatives_1006", &wire.FDBError{Code: ErrAllAlternativesFailed}, wrongShardRetryDelay, true, true},
+		{"watch_cancelled_1029", &wire.FDBError{Code: ErrWatchCancelled}, watchPollingTime, true, false},
+		{"process_behind_1037", &wire.FDBError{Code: ErrProcessBehind}, watchPollingTime, true, false},
+		{"timed_out_1004", &wire.FDBError{Code: ErrTimedOut}, futureVersionDelay, true, false},
+		{"future_version_1009", &wire.FDBError{Code: ErrFutureVersion}, futureVersionDelay, true, false},
+		{"not_committed_terminal", &wire.FDBError{Code: ErrNotCommitted}, 0, false, false},
+		{"database_locked_terminal", &wire.FDBError{Code: ErrDatabaseLocked}, 0, false, false},
+		{"non_fdb_terminal", errors.New("boom"), 0, false, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			delay, retry, inval := classifyWatchError(tc.err)
+			if delay != tc.wantDelay || retry != tc.wantRetry || inval != tc.wantInval {
+				t.Fatalf("classifyWatchError = (delay=%v retry=%v inval=%v), want (delay=%v retry=%v inval=%v)",
+					delay, retry, inval, tc.wantDelay, tc.wantRetry, tc.wantInval)
+			}
+		})
+	}
+}
