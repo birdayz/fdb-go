@@ -166,10 +166,12 @@ in-range → 2005; inverted+>maxKey → 2005 wins; estimatedSize inverted → 20
 **`transaction_timed_out` (1031) before maxKey (codex catch #2).** C++ checks `resetPromise.isSet()` —
 which carries the `SetTimeout` error — *before* the maxKey check (`ReadYourWrites.actor.cpp:1872` before
 `:1875`). The metric ops bypass `ensureReadVersion` (where Go's `checkTimeout` normally runs), so a
-synchronous `tx.checkTimeout()` is added before the maxKey guard in both impls. Final early-return order
-matches C++: **inverted (2005) → cancelled (1025) → timed_out (1031) → maxKey (2004)**. Pinned
-deterministically by `TestMetricOps_EarlyReturnPrecedence` (forces the timeout state; timeout beats
-maxKey, inverted beats timeout).
+synchronous `tx.checkTimeout()` is added before the maxKey guard in both impls — but **after** the
+`rywPoisonErr` gate, so the deferred `client_invalid_operation (2000)` out-ranks the timeout, matching
+`ensureReadVersion`'s established RFC-059 order (poison before checkTimeout) (codex catch #3). Final
+early-return order: **inverted (2005) → cancelled (1025) → poison/client_invalid_operation (2000) →
+timed_out (1031) → maxKey (2004)**. Pinned deterministically by `TestMetricOps_EarlyReturnPrecedence`
+(forces the timeout + poison states; each higher-precedence code wins).
 
 ## 4. Executable spec (what the tests prove)
 

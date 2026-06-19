@@ -38,17 +38,18 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err := tx.checkCancelled(); err != nil {
 		return 0, err
 	}
+	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
+	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
+	// path). This entry point does not fetch a read version, so it is gated explicitly rather
+	// than via ensureReadVersion (RFC-059). The poison (2000) out-ranks the timeout below — the
+	// same order as ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
+	if tx.rywPoisonErr != nil {
+		return 0, tx.rywPoisonErr
+	}
 	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
 	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
 	if err := tx.checkTimeout(); err != nil {
 		return 0, err
-	}
-	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
-	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
-	// path). This entry point does not fetch a read version, so it is gated explicitly rather
-	// than via ensureReadVersion (RFC-059).
-	if tx.rywPoisonErr != nil {
-		return 0, tx.rywPoisonErr
 	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
@@ -181,6 +182,13 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
 	}
+	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
+	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
+	// checkValid path) — RFC-059. The poison (2000) out-ranks the timeout below — the same order as
+	// ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
+	if tx.rywPoisonErr != nil {
+		return nil, tx.rywPoisonErr
+	}
 	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
 	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
 	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
@@ -188,12 +196,6 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// 1031 with 2004 (codex catch).
 	if err := tx.checkTimeout(); err != nil {
 		return nil, err
-	}
-	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
-	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
-	// checkValid path) — RFC-059.
-	if tx.rywPoisonErr != nil {
-		return nil, tx.rywPoisonErr
 	}
 	// C++ RYW::getRangeSplitPoints rejects an out-of-range key (ReadYourWrites.actor.cpp:1875-1877):
 	// `begin > getMaxReadKey() || end > getMaxReadKey() → key_outside_legal_range`. Sibling of the

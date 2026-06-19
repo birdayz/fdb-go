@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // Metric-op (getRangeSplitPoints / getEstimatedRangeSizeBytes) early-return precedence — RFC-126.
@@ -40,5 +42,23 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	_, err = timedOut().getEstimatedRangeSizeBytesImpl(context.Background(), []byte("z"), []byte("a"))
 	if got := crCode(t, err); got != ErrInvertedRange {
 		t.Errorf("getEstimatedRangeSizeBytes inverted+timed-out: code=%d, want %d", got, ErrInvertedRange)
+	}
+
+	// Poison (client_invalid_operation 2000, RFC-059) out-ranks the timeout — same order as
+	// ensureReadVersion (rywPoisonErr before checkTimeout). A txn that is BOTH poisoned AND timed out
+	// returns 2000, not 1031 (codex catch).
+	const clientInvalidOperation = 2000
+	poisonedAndTimedOut := func() *Transaction {
+		tx := timedOut()
+		tx.rywPoisonErr = &wire.FDBError{Code: clientInvalidOperation}
+		return tx
+	}
+	_, err = poisonedAndTimedOut().getRangeSplitPointsImpl(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)
+	if got := crCode(t, err); got != clientInvalidOperation {
+		t.Errorf("getRangeSplitPoints poisoned+timed-out: code=%d, want %d (poison beats timeout)", got, clientInvalidOperation)
+	}
+	_, err = poisonedAndTimedOut().getEstimatedRangeSizeBytesImpl(context.Background(), []byte("a"), []byte("b"))
+	if got := crCode(t, err); got != clientInvalidOperation {
+		t.Errorf("getEstimatedRangeSizeBytes poisoned+timed-out: code=%d, want %d (poison beats timeout)", got, clientInvalidOperation)
 	}
 }
