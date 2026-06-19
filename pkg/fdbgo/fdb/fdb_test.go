@@ -2133,8 +2133,16 @@ func TestDatabaseOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetSnapshotRywDisable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionCausalReadRisky()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionLoggingMaxFieldLength(1000)).NotTo(HaveOccurred())
-	g.Expect(opts.SetTransactionReportConflictingKeys()).NotTo(HaveOccurred())
-	g.Expect(opts.SetTransactionAutomaticIdempotency()).NotTo(HaveOccurred())
+	// DB-level defaults for options the per-tx setters reject must ALSO fail loud (consistent
+	// fail-loud taxonomy across both surfaces; a silent DB default re-opens the migration trap).
+	for _, set := range []func() error{
+		opts.SetTransactionReportConflictingKeys,
+		opts.SetTransactionAutomaticIdempotency,
+	} {
+		var uoe *fdb.UnsupportedOptionError
+		g.Expect(errors.As(set(), &uoe)).To(BeTrue(), "DB-default must reject with *fdb.UnsupportedOptionError")
+		g.Expect(uoe.FDBCode()).To(Equal(2007))
+	}
 	g.Expect(opts.SetTransactionBypassUnreadable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionIncludePortInAddress()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionUsedDuringCommitProtectionDisable()).NotTo(HaveOccurred())
@@ -2192,7 +2200,6 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetReadServerSideCacheEnable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetReadServerSideCacheDisable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetUseProvisionalProxies()).NotTo(HaveOccurred())
-	g.Expect(opts.SetBypassStorageQuota()).NotTo(HaveOccurred())
 	g.Expect(opts.SetInitializeNewDatabase()).NotTo(HaveOccurred())
 	g.Expect(opts.SetExpensiveClearCostEstimationEnable()).NotTo(HaveOccurred())
 
@@ -2224,6 +2231,7 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 		{"raw_access", opts.SetRawAccess},
 		{"automatic_idempotency", opts.SetAutomaticIdempotency},
 		{"report_conflicting_keys", opts.SetReportConflictingKeys},
+		{"bypass_storage_quota", opts.SetBypassStorageQuota},
 	} {
 		err := tc.set()
 		g.Expect(err).To(HaveOccurred(), tc.name+" must reject, not silently no-op")
