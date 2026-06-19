@@ -1,6 +1,6 @@
 # RFC-123 — Cycle under a dropped commit reply (commit_unknown_result)
 
-**Status:** Accepted
+**Status:** Implemented (PR #321)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 4 — RFC-120 §7's commit-side-fault
 
 > **Reviews.** FDB-C-dev **ACK** — DROP→1021 is the faithful model (1021 is client-minted from an
