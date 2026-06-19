@@ -519,36 +519,23 @@ func TestEveryNthInlineReadError(t *testing.T) {
 	}
 }
 
-// TestCycle_SurvivesInjectedReadFaults runs the RFC-119 Cycle workload through SimTransport while a
-// retryable future_version (1009) is injected on every 4th storage READ reply. The client's
-// classify→onError→reset→re-read retry loop must absorb every fault; after disarm + quiescence the
-// ring must still be exactly one Hamiltonian cycle — serializability held through the injected
-// faults. The faithful analog of FDB running Cycle under Sim2 network faults.
-func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	db, sd := newSimTestDB(t, ctx)
-
-	w := &cycleWorkload{nodeCount: 1000, prefix: []byte("cycle_faults_")}
-	if err := w.setup(ctx, db); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := w.check(ctx, db); err != nil {
-		t.Fatalf("ring invalid right after setup: %v", err)
-	}
-
-	// Arm: inject future_version on every 4th read reply. armAll (not armAddr) because
-	// content-discrimination — not address — scopes the fault (RFC-120 §3.2).
-	var injected atomic.Int64
-	sd.setIntercept(everyNthInlineReadError(4, ErrFutureVersion, &injected))
+// runCycleInlineReadFaultPhase arms an inline `code` read fault on every 4th storage READ reply, runs
+// `actors` swap actors for `window`, disarms, and asserts (all non-timing-dependent, with FRESH
+// per-phase counters so phase N's anti-vacuity is never satisfied by phase N-1's injections): the
+// fault fired (`injected > 0`), the workload progressed THROUGH it (`committed > 0`), and the ring is
+// still exactly one Hamiltonian cycle (`check == nil`, 3× for determinism). Shared by the fixed-delay
+// retryable read-fault test (1009/1037) and the wrong_shard (1001) test — the injection shape is
+// identical; the client recovery path under test is what differs (1009/1037 bubble to onError for a
+// re-read; 1001 invalidates the location cache + re-locates inside the read path, readpath.go:434-439).
+func runCycleInlineReadFaultPhase(t *testing.T, ctx context.Context, db *Database, sd *simDialer, w *cycleWorkload, code uint16, codeName string, actors int, window time.Duration) {
+	t.Helper()
+	var injected, committed atomic.Int64
+	// armAll (not armAddr) because content-discrimination — not address — scopes the fault (RFC-120 §3.2).
+	sd.setIntercept(everyNthInlineReadError(4, code, &injected))
 	sd.armAll()
 
-	const actors = 16
-	workCtx, workCancel := context.WithTimeout(ctx, 20*time.Second)
+	workCtx, workCancel := context.WithTimeout(ctx, window)
 	defer workCancel()
-
-	var committed atomic.Int64
 	var wg sync.WaitGroup
 	for a := 0; a < actors; a++ {
 		wg.Add(1)
@@ -563,9 +550,11 @@ func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
 				case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
 					return // window closed; not a failure
 				default:
-					// A retryable injected 1009 must be absorbed by db.Transact. A non-context error
-					// surfacing means the client failed to recover a retryable fault — a real bug.
-					t.Errorf("swap failed under injected fault: %v", err)
+					// A retryable injected fault must be absorbed by db.Transact. A non-context error
+					// surfacing means the client failed to recover it — a real bug. Keyed on error
+					// IDENTITY, never the clock: no per-tx timeout is set, so a window close is always a
+					// raw context error, never a mapTimeout-synthesized FDBError (transaction.go).
+					t.Errorf("[%s] swap failed under injected fault: %v", codeName, err)
 					return
 				}
 			}
@@ -575,20 +564,81 @@ func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
 
 	sd.setIntercept(nil) // disarm: the final check reads fault-free
 
-	// Anti-vacuity: the fault actually fired AND the workload made progress through it (both
-	// non-timing-dependent counters).
 	if injected.Load() == 0 {
-		t.Fatalf("no faults injected — test is vacuous")
+		t.Fatalf("[%s] no faults injected — test is vacuous", codeName)
 	}
 	if committed.Load() == 0 {
-		t.Fatalf("no swaps committed under fault — client failed to recover")
+		t.Fatalf("[%s] no swaps committed under fault — client failed to recover", codeName)
 	}
-	t.Logf("injected %d read faults; committed %d swaps under fault", injected.Load(), committed.Load())
+	t.Logf("[%s] injected %d read faults; committed %d swaps under fault", codeName, injected.Load(), committed.Load())
 
 	// The ring must still be exactly one Hamiltonian cycle despite the injected faults + retries.
 	for i := 0; i < 3; i++ {
 		if err := w.check(ctx, db); err != nil {
-			t.Fatalf("serializability violated under injected faults (check %d): %v", i, err)
+			t.Fatalf("[%s] serializability violated under injected faults (check %d): %v", codeName, i, err)
 		}
 	}
+}
+
+// TestCycle_SurvivesInjectedReadFaults runs the RFC-119 Cycle workload through SimTransport while a
+// retryable inline read error is injected on every 4th storage READ reply — future_version (1009)
+// then process_behind (1037), sequentially on one ring. Both bubble out of the read path and are
+// absorbed by db.Transact's onError loop; injecting either is the same one-line change (a different
+// retryable code into the same intercept), so 1037 is RFC-120 §7's "one-line table row". They share
+// the inline LoadBalancedReply.error read channel + the QueueModel futureVersion classification
+// (isFutureVersionOrProcessBehind), differing only in onError backoff (1009 fixed futureVersionDelay;
+// 1037 growing-capped nextBackoff) — which does not threaten progress (both capped at ~1s). Each phase
+// starts from the valid ring the previous phase's disarmed check confirmed. The faithful analog of FDB
+// running Cycle under Sim2 network faults.
+func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+
+	w := &cycleWorkload{nodeCount: 1000, prefix: []byte("cycle_faults_")}
+	if err := w.setup(ctx, db); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := w.check(ctx, db); err != nil {
+		t.Fatalf("ring invalid right after setup: %v", err)
+	}
+
+	for _, phase := range []struct {
+		code uint16
+		name string
+	}{
+		{ErrFutureVersion, "future_version/1009"},
+		{ErrProcessBehind, "process_behind/1037"},
+	} {
+		runCycleInlineReadFaultPhase(t, ctx, db, sd, w, phase.code, phase.name, 16, 20*time.Second)
+	}
+}
+
+// TestCycle_SurvivesInjectedWrongShard runs the Cycle workload through SimTransport while wrong_shard
+// (1001) is injected on every 4th storage READ reply. Unlike 1009/1037 (which bubble to onError for a
+// re-read), 1001 drives a DISTINCT in-read-path recovery: classify→invalidate the location cache→
+// re-locate→re-read (readpath.go:434-439; onErrorRetryable(1001) is FALSE, so 1001 must be absorbed in
+// the read path and never reach onError raw). On budget exhaustion getValueImpl surfaces a RETRYABLE
+// transaction_too_old (1007) — never terminal — so sustained injection cannot fail a swap spuriously
+// (matching libfdb_c, which never propagates wrong_shard/all_alternatives_failed to the app). Cycle
+// reads are single-key Gets, so relocate re-reads the same key at the same read version → the correct
+// value, with no continuation/drop/dup surface (that hazard is range-mid-scan, pinned by C4). The
+// ring-survival assertion is the proof the relocate+invalidate path stays serializable under load
+// (RFC-120 §7: wrong_shard is "its own increment ... its own ring-survival assertion").
+func TestCycle_SurvivesInjectedWrongShard(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+
+	w := &cycleWorkload{nodeCount: 1000, prefix: []byte("cycle_wrongshard_")}
+	if err := w.setup(ctx, db); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := w.check(ctx, db); err != nil {
+		t.Fatalf("ring invalid right after setup: %v", err)
+	}
+
+	runCycleInlineReadFaultPhase(t, ctx, db, sd, w, ErrWrongShardServer, "wrong_shard/1001", 16, 20*time.Second)
 }
