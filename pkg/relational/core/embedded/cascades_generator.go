@@ -1260,6 +1260,37 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 // cursor hierarchy from the plan + continuation. The continuation
 // carries ALL intermediate state (aggregate accumulators, sort buffers)
 // serialized as protobuf. No cursor persists across transactions.
+// pageContinuationState decides, from a drained page's terminal continuation + NoNextReason, whether the
+// paginatingRows internal drain is (a) exhausted, (b) has a resumable byte continuation, or (c) must
+// surface ScanLimitReachedError (→ 54F01). It is the PAGINATING counterpart to errIfDrainTruncated
+// (recordlayer/cursor_util.go): the value-only drains there discard the continuation so they need only
+// the IsOutOfBand() check; paginatingRows additionally consumes the resumable bytes.
+//
+// Exhaustion is decided by IsEnd() (≡ NoNextReason.SourceExhausted) — NEVER by ToBytes()==nil (RFC-127,
+// audit P0). A non-end StartContinuation has ToBytes()==nil, byte-identical to an EndContinuation;
+// treating its nil bytes as exhaustion silently truncated the result set. For a non-end continuation
+// with no resumable bytes, the internal drain re-executes the plan from r.continuation and so cannot
+// resume-from-BEGIN like Java's client-driven iterator (it would re-buffer → infinite loop), so:
+//   - out-of-band (scan/time/byte limit before any resumable progress) → 54F01 (avoids data loss + loop);
+//   - in-band ReturnLimitReached with zero rows ⟹ a row limit of 0 (LIMIT 0): clean exhaustion, no data
+//     lost. (SourceExhausted+nil-bytes is impossible — it is isEnd()==true, the first branch.)
+func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason recordlayer.NoNextReason) (exhausted bool, contBytes []byte, err error) {
+	if cont == nil || cont.IsEnd() {
+		return true, nil, nil // SourceExhausted
+	}
+	b, e := cont.ToBytes()
+	if e != nil {
+		return false, nil, e
+	}
+	if b != nil {
+		return false, b, nil // resumable position → keep draining
+	}
+	if reason.IsOutOfBand() {
+		return false, nil, &recordlayer.ScanLimitReachedError{Reason: reason}
+	}
+	return true, nil, nil // ReturnLimitReached (LIMIT 0) — clean done
+}
+
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
@@ -1339,21 +1370,12 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, err)
 		}
 
-		cont := rs.GetContinuation()
-		if cont == nil || cont.IsEnd() {
-			r.exhausted = true
-			r.continuation = nil
-		} else {
-			contBytes, contErr := cont.ToBytes()
-			if contErr != nil {
-				return nil, contErr
-			}
-			if contBytes == nil {
-				r.exhausted = true
-			} else {
-				r.continuation = contBytes
-			}
+		exhausted, contBytes, classifyErr := pageContinuationState(rs.GetContinuation(), rs.GetNoNextReason())
+		if classifyErr != nil {
+			return nil, classifyErr
 		}
+		r.exhausted = exhausted
+		r.continuation = contBytes
 		return nil, nil
 	})
 
