@@ -26,6 +26,13 @@ func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, beg
 }
 
 func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin, end []byte) (int64, error) {
+	// inverted_range (2005) first — same KeyRangeRef-construction semantics as getRangeSplitPoints:
+	// libfdb_c's C-API range construction throws inverted_range on begin > end before the metric op
+	// runs, so Go (raw begin/end) checks it here. (Unlike getRangeSplitPoints there is NO maxKey check
+	// — C++ getEstimatedRangeSizeBytes/getStorageMetrics, ReadYourWrites.actor.cpp:1853, has none.)
+	if bytes.Compare(begin, end) > 0 {
+		return 0, &wire.FDBError{Code: ErrInvertedRange} // 2005
+	}
 	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
 	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
 	if err := tx.checkCancelled(); err != nil {
@@ -34,9 +41,15 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
 	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
 	// path). This entry point does not fetch a read version, so it is gated explicitly rather
-	// than via ensureReadVersion (RFC-059).
+	// than via ensureReadVersion (RFC-059). The poison (2000) out-ranks the timeout below — the
+	// same order as ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
 	if tx.rywPoisonErr != nil {
 		return 0, tx.rywPoisonErr
+	}
+	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
+	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
+	if err := tx.checkTimeout(); err != nil {
+		return 0, err
 	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
@@ -157,15 +170,40 @@ func (tx *Transaction) GetRangeSplitPoints(parentCtx context.Context, begin, end
 }
 
 func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// inverted_range (2005) is reported FIRST — libfdb_c constructs a KeyRangeRef from the C args
+	// before entering RYW::getRangeSplitPoints, and the KeyRangeRef ctor throws inverted_range on
+	// begin > end, ahead of the used_during_commit / maxKey checks. So an inverted range — even one
+	// also past maxReadKey — is 2005, not 2004 (codex catch). Go's API takes raw begin/end with no
+	// constructing range, so the check lives here, before everything else.
+	if bytes.Compare(begin, end) > 0 {
+		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
+	}
 	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
 	}
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
 	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
-	// checkValid path) — RFC-059.
+	// checkValid path) — RFC-059. The poison (2000) out-ranks the timeout below — the same order as
+	// ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
 	if tx.rywPoisonErr != nil {
 		return nil, tx.rywPoisonErr
+	}
+	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
+	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
+	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
+	// normally runs), so gate it explicitly — else the synchronous maxKey guard below would pre-empt
+	// 1031 with 2004 (codex catch).
+	if err := tx.checkTimeout(); err != nil {
+		return nil, err
+	}
+	// C++ RYW::getRangeSplitPoints rejects an out-of-range key (ReadYourWrites.actor.cpp:1875-1877):
+	// `begin > getMaxReadKey() || end > getMaxReadKey() → key_outside_legal_range`. Sibling of the
+	// getRange/Get path; without this Go silently accepted a split-points request past maxReadKey
+	// where libfdb_c rejects (RFC-126, FDB-C-dev review).
+	maxKey := tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	// C++ uses std::numeric_limits<int>::max() (CLIENT_KNOBS->TOO_MANY) to fetch ALL
 	// shard locations overlapping [begin,end) at once (NativeAPI.actor.cpp:8153-8159).

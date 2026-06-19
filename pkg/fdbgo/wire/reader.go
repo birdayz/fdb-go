@@ -582,6 +582,7 @@ var fdbErrorDescriptions = map[int]string{
 	2004: "key_outside_legal_range",
 	2005: "inverted_range",
 	2006: "invalid_option_value",
+	2012: "range_limits_invalid",
 	2015: "future_not_set",
 	2017: "used_during_commit",
 	2101: "transaction_too_large",

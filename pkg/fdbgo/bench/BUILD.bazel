@@ -20,6 +20,7 @@ go_test(
         "differential_grvcache_test.go",
         "differential_locality_metrics_test.go",
         "differential_metadataversion_test.go",
+        "differential_rangelimit_test.go",
         "differential_read_test.go",
         "differential_ryw_test.go",
         "differential_rywdisable_test.go",
