@@ -82,8 +82,19 @@ uses** (`conflictRangesLocked`/`updateConflictMap`), derived from the post-read 
 This means generating the read-conflict **after** the read (knowing the extent + which segments were
 local), not the eager pre-read `[begin, end)`. (C++ adds the conflict only in the read's success
 branch — `ReadYourWrites.actor.cpp:388`, `if (!snapshot) addConflictRange(...)` after
-`when(result = wait(read(...)))`; a *failed* read adds no conflict. The current Go eager-add even
-conflicts on a failed read — a second, latent divergence the move also closes.)
+`when(result = wait(read(...)))`; a *failed* read adds no conflict.)
+
+**Scope of the after-read move — GetRange only.** The move is *required* for `getRangeDir` (the
+clamp needs the result extent + final `more`, known only post-read) and there it also matches C++'s
+success-only add. Single-key `Get`/`GetPipelined` keep the conflict-add at the **pre-read** position
+(unchanged from master): for one key the write-map classification (`conflictForKeyLocked`) is
+**read-invariant** (the read never mutates the write map), so before vs after yields the identical
+conflict; and a single-key read that *errors* poisons the transaction via `trackReadError`
+(non-retryable → commit fails; retryable → reset clears conflicts), so a spurious conflict from a
+failed read can never survive to a successful commit — behaviorally equivalent to C++'s success-only
+add. Moving it would also force the conflict into `GetPipelined`'s `Resolve`/cache-hit branches
+(defeating the pipeline) for zero observable gain, and would split the two Get paths. So the
+failed-read corner is closed for GetRange and inert (not a divergence) for single-key Get.
 
 ## Verified C++ derivation (the exact clamp)
 

@@ -1017,6 +1017,13 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 // way libfdb_c behaves. When RYW is disabled there is no write map (the read went straight to
 // storage, recording the full read-conflict), so the full single-key conflict is added; this is
 // the exact rywDisabled/else split addGetKeyConflictRange already uses for GetKey. (RFC-121 D2.)
+//
+// Callers add this at the PRE-read position (unlike getRangeDir, which moved the conflict after the
+// read to clamp the extent). That is intentional and equivalent for a single key: the classification
+// is read-invariant (the read never mutates the write map), and a single-key read that errors poisons
+// the transaction (trackReadError → commit fails / reset clears conflicts), so a conflict from a
+// failed read can never survive to a successful commit — matching C++'s success-only add without
+// pushing the conflict into GetPipelined's Resolve/cache-hit branches.
 func (tx *Transaction) addReadConflictForKeyRYW(key []byte) {
 	if tx.rywDisabled {
 		tx.addReadConflictForKey(key)
