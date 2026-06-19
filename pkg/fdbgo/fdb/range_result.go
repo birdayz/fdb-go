@@ -82,17 +82,6 @@ func (rr goRangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client
 	return rr.tx.inner.GetRange(rr.tx.ctx, begin, end, limit)
 }
 
-// doRangeSnapshot always uses snapshot reads (no conflict ranges added).
-// Used by the iterator for batches after the first — C++ records the full
-// conflict range once at getRange() call time, then fetches lazily.
-func (rr goRangeResult) doRangeSnapshot(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
-	snap := rr.tx.inner.Snapshot()
-	if rr.options.Reverse {
-		return snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
-	}
-	return snap.GetRange(rr.tx.ctx, begin, end, limit)
-}
-
 // GetSliceWithError returns all key-value pairs in the range as a slice.
 // Always fetches all results regardless of streaming mode.
 //
@@ -133,13 +122,12 @@ func (rr goRangeResult) Iterator() RangeIterator {
 		return &goRangeIterator{err: convertError(err)}
 	}
 	return &goRangeIterator{
-		rr:         rr,
-		begin:      begin,
-		end:        end,
-		remaining:  effectiveLimit(rr.options.Limit),
-		iteration:  1,
-		firstBatch: true,
-		index:      -1,
+		rr:        rr,
+		begin:     begin,
+		end:       end,
+		remaining: effectiveLimit(rr.options.Limit),
+		iteration: 1,
+		index:     -1,
 	}
 }
 
@@ -187,12 +175,11 @@ type goRangeIterator struct {
 	remaining int
 	iteration int
 
-	kvs        []KeyValue
-	err        error
-	pos        int
-	index      int // position returned by Get(); set by Advance()
-	exhausted  bool
-	firstBatch bool
+	kvs       []KeyValue
+	err       error
+	pos       int
+	index     int // position returned by Get(); set by Advance()
+	exhausted bool
 
 	// traceLog, when non-nil, is called after each batch fetch for debugging.
 	traceLog func(iteration, requested, returned int, more bool, err error)
@@ -222,20 +209,20 @@ func (ri *goRangeIterator) Advance() bool {
 		return false
 	}
 
-	// Fetch the next batch. First uses normal read (adds conflict range).
-	// Subsequent use snapshot (no redundant conflicts) — matches C++.
+	// Fetch the next batch as a serializable read (unless the whole RangeResult is a
+	// snapshot — doRangeWithLimit honors rr.snapshot). EVERY batch adds its own
+	// read-conflict, clamped to the extent it returned (RFC-121); since each batch reads a
+	// distinct contiguous sub-range ([ri.begin, ri.end) advances below), the union of the
+	// per-batch conflicts covers exactly the consumed range — matching the C client, where
+	// each fdb_transaction_get_range call adds a conflict for the batch it returned. Reading
+	// later batches under snapshot (no conflict) — as this did before — is UNSAFE now that
+	// RFC-121 clamps the first batch's conflict to its returned prefix: the rows in later
+	// batches would carry no read-conflict, so a concurrent write to one of them could let
+	// this transaction commit with stale data (lost serializability).
 	batch := batchSize(ri.rr.options.Mode, ri.iteration, ri.remaining)
 	ri.iteration++
 
-	var kvs []client.KeyValue
-	var more bool
-	var err error
-	if ri.firstBatch {
-		ri.firstBatch = false
-		kvs, more, err = ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
-	} else {
-		kvs, more, err = ri.rr.doRangeSnapshot(ri.begin, ri.end, batch)
-	}
+	kvs, more, err := ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
 
 	// Trace: log every batch for debugging premature exhaustion.
 	if ri.traceLog != nil {

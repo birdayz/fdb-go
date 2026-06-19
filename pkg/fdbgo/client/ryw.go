@@ -958,6 +958,25 @@ func (c *rywCache) isClearedLocked(key []byte) bool {
 	return bytes.Compare(key, r.end) < 0
 }
 
+// conflictForKeyLocked reports whether a single-key read of `key` must add a read-conflict, the
+// single-key analog of C++ updateConflictMap(ryw, key, it) (ReadYourWrites.actor.cpp:322-332):
+// conflict iff the key sits in an UNMODIFIED range or a DEPENDENT operation; SKIP for an
+// INDEPENDENT write (plain Set / folded atomic / matched-CAC phantom) or a cleared range. It is the
+// exact result of conflictRangesLocked(key, keyAfter(key)) — operation→isDependentLocked(),
+// cleared→false, gap→true — but reached by ONE map lookup + a cleared binary-search, with NO
+// ensureSortedLocked re-sort. C++ positions one WriteMap iterator (it.skip(key)) here; routing the
+// hot single-key Get path through the range walk re-sorted the whole growing write map on every
+// Get (O(n²·log n) across a write-heavy txn — a 10K-record save hung for 15 min). Caller holds c.mu.
+func (c *rywCache) conflictForKeyLocked(key []byte) bool {
+	if e, ok := c.writes[string(key)]; ok {
+		return e.isDependentLocked() // operation key: conflict iff DEPENDENT_WRITE
+	}
+	if c.isClearedLocked(key) {
+		return false // cleared range: known empty locally, no DB read resolved it
+	}
+	return true // unmodified gap: a DB read resolved it
+}
+
 // conflictRangesLocked walks the write-map over [begin, end) and returns the maximal
 // sub-ranges that must be added to the getKey read-conflict map — a faithful port of C++
 // updateConflictMap (ReadYourWrites.actor.cpp:335-351), which iterates the WriteMap (NOT the

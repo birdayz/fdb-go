@@ -76,6 +76,7 @@ go_test(
         "failure_monitor_test.go",
         "fault_test.go",
         "getkey_conflict_unit_test.go",
+        "getrange_conflict_unit_test.go",
         "grv_cache_optin_test.go",
         "grv_panic_test.go",
         "grv_test.go",

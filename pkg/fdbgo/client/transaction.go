@@ -667,9 +667,11 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	// Special keys (\xff\xff prefix) don't add read conflicts — C++ resolves
-	// them internally without going through the resolver conflict map.
+	// them internally without going through the resolver conflict map. The conflict
+	// is routed through the RYW filter so a read served by a local independent write
+	// adds no read-conflict, matching libfdb_c (RFC-121 D2).
 	if !isSpecialKey(key) {
-		tx.addReadConflictForKey(key)
+		tx.addReadConflictForKeyRYW(key)
 	}
 	if tx.rywDisabled {
 		v, err := tx.getValue(ctx, key)
@@ -697,8 +699,10 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
+	// Routed through the RYW filter (RFC-121 D2) — a read served by a local independent
+	// write adds no read-conflict, matching libfdb_c updateConflictMap.
 	if !isSpecialKey(key) {
-		tx.addReadConflictForKey(key)
+		tx.addReadConflictForKeyRYW(key)
 	}
 
 	// Check RYW cache.
@@ -1005,6 +1009,64 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 	}
 }
 
+// addReadConflictForKeyRYW records the read-conflict for a single-key Get, routed through the
+// RYW write-map filter — mirroring C++ updateConflictMap(ryw, key, it)
+// (ReadYourWrites.actor.cpp:322-332): a conflict is added only when the key sits in an UNMODIFIED
+// range or a DEPENDENT operation, and SKIPPED when a local INDEPENDENT write (a plain Set or a
+// folded atomic) already satisfies the read — so `Set(K); Get(K)` adds no read-conflict on K, the
+// way libfdb_c behaves. When RYW is disabled there is no write map (the read went straight to
+// storage, recording the full read-conflict), so the full single-key conflict is added; this is
+// the exact rywDisabled/else split addGetKeyConflictRange already uses for GetKey. (RFC-121 D2.)
+//
+// Callers add this at the PRE-read position (unlike getRangeDir, which moved the conflict after the
+// read to clamp the extent). That is intentional and equivalent for a single key: the classification
+// is read-invariant (the read never mutates the write map), and a single-key read that errors poisons
+// the transaction (trackReadError → commit fails / reset clears conflicts), so a conflict from a
+// failed read can never survive to a successful commit — matching C++'s success-only add without
+// pushing the conflict into GetPipelined's Resolve/cache-hit branches.
+func (tx *Transaction) addReadConflictForKeyRYW(key []byte) {
+	if tx.rywDisabled {
+		tx.addReadConflictForKey(key)
+		return
+	}
+	// Single-key classification via conflictForKeyLocked (one map lookup, no write-map re-sort) —
+	// NOT conflictRangesLocked, whose ensureSortedLocked re-sorts the whole write map on every call.
+	// Get is the hot path (every record load); routing it through the range walk made a write-heavy
+	// txn (e.g. a 10K-record bulk save, each save doing a split-marker Get) O(n²·log n).
+	tx.ryw.mu.Lock()
+	conflict := tx.ryw.conflictForKeyLocked(key)
+	tx.ryw.mu.Unlock()
+	if conflict {
+		tx.addReadConflictForKey(key)
+	}
+}
+
+// rangeConflictExtent clamps a completed GetRange's read-conflict to the data actually returned,
+// mirroring libfdb_c's post-read addConflictRange (ReadYourWrites.actor.cpp:245-319) and the
+// RYW-disabled native path (NativeAPI.actor.cpp:4558-4587). For a plain [begin,end) — both
+// selectors firstGreaterOrEqual, offset +1 — the two C++ clamp sites reduce to one rule:
+//   - forward, more, non-empty → [begin, keyAfter(lastReturnedKey))
+//   - reverse, more, non-empty → [firstReturnedKey, end)
+//   - !more or empty           → [begin, end)
+//
+// lastReturnedKey/firstReturnedKey are both kvs[len-1].Key: forward results are ascending (so
+// kvs[last] is the highest) and reverse results descending (so kvs[last] is the lowest =
+// C++ result.end()[-1].key; readpath.go:781). A more=true read genuinely did not observe the
+// unread tail (forward) / head (reverse), so narrowing there cannot under-conflict; an empty or
+// fully-drained (!more) read keeps the full [begin,end) so a concurrent insert ANYWHERE in the
+// requested range still trips a conflict (phantom protection). more⇒non-empty for Go's row-limited
+// GetRange (readpath.go:752-757,774), so the !more/empty arm is what fires on an empty read. (RFC-121 D1.)
+func rangeConflictExtent(begin, end []byte, kvs []KeyValue, more, reverse bool) (cBegin, cEnd []byte) {
+	if !more || len(kvs) == 0 {
+		return begin, end
+	}
+	last := kvs[len(kvs)-1].Key
+	if reverse {
+		return last, end
+	}
+	return begin, keyAfterBytes(last)
+}
+
 // maxReadKey returns the maximum readable key for this transaction.
 // Without readSystemKeys/writeSystemKeys: \xff (user keys only).
 // With: \xff\xff (system keys allowed, special keys still rejected).
@@ -1088,19 +1150,43 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
-	// Only add read conflict if range is valid (begin <= end) and not special keys.
-	// C++ client validates inverted ranges and handles \xff\xff keys internally
-	// without adding resolver conflict ranges.
-	if bytes.Compare(begin, end) <= 0 && !isSpecialKey(begin) && !isSpecialKey(end) {
-		tx.addReadConflict(begin, end)
-	}
 
+	var kvs []KeyValue
+	var more bool
+	var err error
 	if tx.rywDisabled {
-		kvs, more, err := tx.getRange(ctx, begin, end, limit, reverse)
+		kvs, more, err = tx.getRange(ctx, begin, end, limit, reverse)
+	} else {
+		kvs, more, err = tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
+	}
+	if err != nil {
+		// C++ adds the read-conflict only in the read's SUCCESS branch
+		// (ReadYourWrites.actor.cpp:388) — a failed read records no conflict.
 		return kvs, more, tx.trackReadError(err)
 	}
-	kvs, more, err := tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
-	return kvs, more, tx.trackReadError(err)
+
+	// Read-conflict computed AFTER the read so it can be CLAMPED to the data actually
+	// returned (RFC-121 D1) and FILTERED through the RYW write-map (RFC-121 D2, RYW path
+	// only — rywDisabled reads went straight to storage, which recorded the full read-
+	// conflict span). Mirrors libfdb_c's post-read addConflictRange. The begin<=end and
+	// non-special-key guards match the C++ client: an inverted range adds no conflict, and
+	// \xff\xff special keys resolve internally without a resolver conflict range.
+	if bytes.Compare(begin, end) <= 0 && !isSpecialKey(begin) && !isSpecialKey(end) {
+		cBegin, cEnd := rangeConflictExtent(begin, end, kvs, more, reverse)
+		if bytes.Compare(cBegin, cEnd) < 0 {
+			if tx.rywDisabled {
+				tx.addReadConflict(cBegin, cEnd)
+			} else {
+				tx.ryw.mu.Lock()
+				ranges := tx.ryw.conflictRangesLocked(cBegin, cEnd)
+				tx.ryw.mu.Unlock()
+				for _, r := range ranges {
+					tx.addReadConflict(r[0], r[1])
+				}
+			}
+		}
+	}
+	return kvs, more, nil
 }
 
 // Set writes a key-value pair.

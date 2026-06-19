@@ -17,14 +17,10 @@ import (
 //
 // On a LIMITED / more=true GetRange, libfdb_c clamps the read-conflict to the data actually
 // returned (`rangeEnd = keyAfter(lastReturnedKey)` — ReadYourWrites.actor.cpp:271-274 /
-// NativeAPI.actor.cpp:4576-4579). The pure-Go client adds the FULL requested [begin,end) eagerly
-// (transaction.go:1094-1096) and never clamps, so a concurrent write in the UNREAD tail aborts a Go
-// transaction that libfdb_c commits — a safe over-conflict, but an observable serializability-
-// outcome divergence.
-//
-// This is a "record the gap" probe (hunt-divergences §6): it PINS the current divergence
-// deterministically and MUST flip to assert agreement (go==cgo) when RFC-121 lands. It does NOT
-// assert desired behavior — `goWrongOverConflicts` being true is the bug RFC-121 fixes.
+// NativeAPI.actor.cpp:4576-4579). The pure-Go client used to add the FULL requested [begin,end)
+// eagerly and never clamp, so a concurrent write in the UNREAD tail aborted a Go transaction that
+// libfdb_c committed. RFC-121 D1 (rangeConflictExtent, transaction.go) ported the clamp, so this
+// now asserts agreement (go==cgo): both COMMIT.
 //
 // Deterministic commit-order race (same version-pinning as the GetKey conflict differential, so a
 // non-causal GRV can't trip a spurious 1020):
@@ -209,15 +205,18 @@ func TestDifferential_GetRangeConflictClamp_RFC121(t *testing.T) {
 		if goOut.retry || cOut.retry {
 			continue
 		}
-		// KNOWN DIVERGENCE (RFC-121 D1) — flip both asserts to `goOut.conflicted == cOut.conflicted`
-		// (agreement) when the Go conflict-clamp lands.
-		if !goOut.conflicted {
-			t.Errorf("RFC-121 D1 probe STALE: Go GetRange no longer over-conflicts (go committed) — " +
-				"the conflict-clamp may be fixed; update this probe to assert go==cgo agreement")
+		// RFC-121 D1 FIXED: Go now clamps the GetRange read-conflict to the returned extent
+		// ([k00, k09\x00)), so the unread-tail write to k15 conflicts neither client — both COMMIT,
+		// matching libfdb_c. Assert agreement (the clamp is wire-faithful, not merely "Go also
+		// commits"). Reverting the clamp makes Go over-conflict → goOut.conflicted=true → red.
+		if goOut.conflicted != cOut.conflicted {
+			t.Errorf("RFC-121 D1: GetRange conflict-clamp diverges — go conflicted=%v, cgo conflicted=%v "+
+				"(both should COMMIT: the unread-tail write k15 is outside [k00, keyAfter(k09)))",
+				goOut.conflicted, cOut.conflicted)
 		}
 		if cOut.conflicted {
 			t.Errorf("unexpected: libfdb_c aborted on the unread-tail write — scenario assumption wrong " +
-				"(it should clamp the conflict to the returned extent and COMMIT)")
+				"(it clamps the conflict to the returned extent and COMMITs)")
 		}
 		return
 	}
@@ -227,10 +226,10 @@ func TestDifferential_GetRangeConflictClamp_RFC121(t *testing.T) {
 //
 // When a Get is served entirely by a local INDEPENDENT write (a prior Set in the same txn),
 // libfdb_c adds NO read-conflict for that key (updateConflictMap skips independent-write segments —
-// ReadYourWrites.actor.cpp:328/342). RFC-058 wired this filter into GetKey; Get/GetRange were left
-// adding the read-conflict unconditionally (transaction.go:671-673/1094-1096). So `Set(K);Get(K)`
-// registers a spurious read-conflict on K in Go: a concurrent write to K aborts Go but commits in
-// libfdb_c. Same deterministic commit-order race + version pinning as D1.
+// ReadYourWrites.actor.cpp:328/342). RFC-058 wired this filter into GetKey; RFC-121 D2
+// (addReadConflictForKeyRYW, transaction.go) wired it into Get/GetPipelined too, so `Set(K);Get(K)`
+// no longer registers a spurious read-conflict on K — a concurrent write to K commits in both
+// clients. Asserts agreement. Same deterministic commit-order race + version pinning as D1.
 //
 //	A.Set(rk); A.Get(rk)   // Go registers a read-conflict on rk; libfdb_c does not (local write)
 //	A.Set(sentinel)        // committable write
@@ -379,13 +378,17 @@ func TestDifferential_ReadOwnWriteConflict_RFC121(t *testing.T) {
 		if goOut.retry || cOut.retry {
 			continue
 		}
-		// KNOWN DIVERGENCE (RFC-121 D2) — flip to assert go==cgo agreement when fixed.
-		if !goOut.conflicted {
-			t.Errorf("RFC-121 D2 probe STALE: Go Get no longer over-conflicts on a read-own-write — " +
-				"the RYW filter may be wired into Get; update this probe to assert go==cgo agreement")
+		// RFC-121 D2 FIXED: a Get served by a local independent Set adds no read-conflict in Go
+		// (the RYW filter is now wired into Get/GetPipelined), so the concurrent write to rk
+		// conflicts neither client — both COMMIT, matching libfdb_c. Reverting the filter makes Go
+		// register the spurious read-conflict → goOut.conflicted=true → red.
+		if goOut.conflicted != cOut.conflicted {
+			t.Errorf("RFC-121 D2: read-own-write conflict diverges — go conflicted=%v, cgo conflicted=%v "+
+				"(both should COMMIT: the read on rk is served by a local Set, so no read-conflict)",
+				goOut.conflicted, cOut.conflicted)
 		}
 		if cOut.conflicted {
-			t.Errorf("unexpected: libfdb_c aborted on a read-own-write — it should skip the read-conflict and COMMIT")
+			t.Errorf("unexpected: libfdb_c aborted on a read-own-write — it skips the read-conflict and COMMITs")
 		}
 		return
 	}
