@@ -51,15 +51,18 @@ func (w *atomicOpsWorkload) logKey(group int, attempt int64) []byte {
 	return []byte(fmt.Sprintf("%slog_%02x_%016x", w.prefix, group, attempt))
 }
 
-// opsRange / logRange cover every ops_/log_ key under the prefix ('_' < any hex digit; the trailing
-// 0xff sorts strictly after every suffix).
-func (w *atomicOpsWorkload) opsRange() (begin, end []byte) {
-	begin = []byte(fmt.Sprintf("%sops_", w.prefix))
+// opsGroupRange / logGroupRange cover every ops_/log_ key for ONE group ('_' < any hex digit; the
+// trailing 0xff sorts strictly after every suffix). The check iterates per group (not a single global
+// scan) so it catches cross-group MISROUTING — an Add applied to the wrong ops_<group> while its log
+// is written under the original group keeps the GLOBAL sums equal but breaks the per-group equality
+// (the C++ AtomicOps check is per-group, _check loops g∈[0,100)).
+func (w *atomicOpsWorkload) opsGroupRange(group int) (begin, end []byte) {
+	begin = []byte(fmt.Sprintf("%sops_%02x_", w.prefix, group))
 	return begin, append(append([]byte{}, begin...), 0xff)
 }
 
-func (w *atomicOpsWorkload) logRange() (begin, end []byte) {
-	begin = []byte(fmt.Sprintf("%slog_", w.prefix))
+func (w *atomicOpsWorkload) logGroupRange(group int) (begin, end []byte) {
+	begin = []byte(fmt.Sprintf("%slog_%02x_", w.prefix, group))
 	return begin, append(append([]byte{}, begin...), 0xff)
 }
 
@@ -112,20 +115,29 @@ func scanSumLE64(ctx context.Context, db *Database, begin, end []byte) (uint64, 
 	return sum, count, err
 }
 
-// check is the AtomicOps oracle: sum(log) == sum(ops) (server-vs-server, exact — the two move together
-// or not at all because each op's set+atomicOp commit as one unit), and sum(ops) >= lbsum (every
-// definitely-committed op is in ops; 1021-maybe-applied ops only add more). Returns (sumLog, sumOps,
-// logKeys) for the caller's anti-vacuity assertions.
+// check is the AtomicOps oracle, evaluated PER GROUP: for each group, sum(log) == sum(ops)
+// (server-vs-server, exact — the two move together or not at all because each op's set+atomicOp commit
+// as one unit; per-group catches cross-group misrouting a global sum would mask). Returns the
+// aggregate (sumLog, sumOps, logKeys) for the caller's bound/anti-vacuity assertions, and a non-nil
+// err naming the first group whose per-group equality fails.
 func (w *atomicOpsWorkload) check(ctx context.Context, db *Database) (sumLog, sumOps uint64, logKeys int, err error) {
-	lb, le := w.logRange()
-	ob, oe := w.opsRange()
-	sumLog, logKeys, err = scanSumLE64(ctx, db, lb, le)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("scan log: %w", err)
-	}
-	sumOps, _, err = scanSumLE64(ctx, db, ob, oe)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("scan ops: %w", err)
+	for g := 0; g < w.groups; g++ {
+		lb, le := w.logGroupRange(g)
+		ob, oe := w.opsGroupRange(g)
+		gLog, gLogKeys, err := scanSumLE64(ctx, db, lb, le)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("scan log group %02x: %w", g, err)
+		}
+		gOps, _, err := scanSumLE64(ctx, db, ob, oe)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("scan ops group %02x: %w", g, err)
+		}
+		if gLog != gOps {
+			return 0, 0, 0, fmt.Errorf("group %02x: sum(log)=%d != sum(ops)=%d (torn/lost/double/misrouted commit)", g, gLog, gOps)
+		}
+		sumLog += gLog
+		sumOps += gOps
+		logKeys += gLogKeys
 	}
 	return sumLog, sumOps, logKeys, nil
 }
@@ -182,19 +194,16 @@ func runAtomicOpsPhase(t *testing.T, ctx context.Context, db *Database, sd *simD
 		t.Fatalf("[%s] no faults injected — test is vacuous", faultName)
 	}
 
+	// Primary oracle (per group, inside check): the atomic op and its companion log entry commit as one
+	// unit, so each group's keyspace aggregates are exactly equal — even across concurrent commits and
+	// 1021 retries. check returns a non-nil err naming the first group that mismatches.
 	sumLog, sumOps, logKeys, err := w.check(ctx, db)
 	if err != nil {
-		t.Fatalf("[%s] check: %v", faultName, err)
+		t.Fatalf("[%s] AtomicOps consistency violated: %v", faultName, err)
 	}
 	t.Logf("[%s] committed=%d injected=%d lbsum=%d sumLog=%d sumOps=%d logKeys=%d",
 		faultName, committed.Load(), injected.Load(), lbsum.Load(), sumLog, sumOps, logKeys)
 
-	// Primary oracle: the atomic op and its companion log entry commit as one unit, so the two
-	// keyspace aggregates are exactly equal — even across concurrent commits and 1021 retries.
-	if sumLog != sumOps {
-		t.Fatalf("[%s] AtomicOps consistency violated: sum(log)=%d != sum(ops)=%d (torn/lost/double commit)",
-			faultName, sumLog, sumOps)
-	}
 	// sum(ops) must be at least the definitely-committed total; a 1021-maybe-applied op only adds more.
 	if sumOps < lbsum.Load() {
 		t.Fatalf("[%s] sum(ops)=%d < lbsum=%d — a definitely-committed atomic op was lost",
