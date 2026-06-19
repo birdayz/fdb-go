@@ -44,6 +44,12 @@ type FDBDatabase struct {
 	// Keep original db/tenant for CreateTransaction which isn't on Transactor interface
 	db     fdb.Database
 	tenant fdb.Tenant
+	// isTenant is true for a tenant-backed database (NewFDBDatabaseFromTenant). The record layer
+	// must NOT set READ_SYSTEM_KEYS on a tenant transaction: libfdb_c throws invalid_option there
+	// (system-key access can't be tenant-scoped, NativeAPI.actor.cpp:7163-7170), and it is also
+	// unnecessary — the only system key the record layer reads (\xff/metadataVersion) is exempt
+	// from the system-key gate and read globally even on a tenant transaction.
+	isTenant bool
 
 	// storeStateCache caches store state across transactions.
 	// Default: PassThroughRecordStoreStateCache (no caching).
@@ -155,6 +161,7 @@ func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
 	return &FDBDatabase{
 		transactor:      tenant,
 		tenant:          tenant,
+		isTenant:        true,
 		storeStateCache: PassThroughStoreStateCache(),
 	}
 }
@@ -171,13 +178,24 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 	return d.storeStateCache
 }
 
+// applyReadSystemKeys grants the per-transaction READ_SYSTEM_KEYS the record layer uses to read
+// \xff/metadataVersion. It is a NO-OP on a tenant-backed database: libfdb_c rejects READ_SYSTEM_KEYS
+// on a tenant transaction (invalid_option, NativeAPI.actor.cpp:7163-7170 — system-key access can't
+// be tenant-scoped), and it is unnecessary there because metadataVersion is exempt from the
+// system-key gate and read globally even under a tenant.
+func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
+	if !d.isTenant {
+		o.SetReadSystemKeys()
+	}
+}
+
 // Run executes a function within a transaction with automatic retry handling.
 // Before committing, flushes any queued versionstamp mutations.
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
 	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		tx.Options().SetReadSystemKeys()
+		d.applyReadSystemKeys(tx.Options())
 		recordCtx := &FDBRecordContext{
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
@@ -242,7 +260,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 		return nil, err
 	}
 	return runReadTransactCtx(d.transactor, ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		rtx.Options().SetReadSystemKeys()
+		d.applyReadSystemKeys(rtx.Options())
 		return fn(rtx)
 	})
 }
@@ -253,7 +271,7 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
 	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		tx.Options().SetReadSystemKeys()
+		d.applyReadSystemKeys(tx.Options())
 		if weak.IsCausalReadRisky {
 			tx.Options().SetCausalReadRisky()
 		}
@@ -297,7 +315,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 		vsFuture = nil
 		hasVersionMutations = false
 
-		tx.Options().SetReadSystemKeys()
+		d.applyReadSystemKeys(tx.Options())
 		recordCtx := &FDBRecordContext{
 			transactionID: nextTransactionID.Add(1),
 			tx:            tx,
