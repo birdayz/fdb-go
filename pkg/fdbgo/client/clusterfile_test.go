@@ -63,7 +63,18 @@ func TestParseClusterString_AcceptanceSet(t *testing.T) {
 		// together); the dedup key must not collapse them (codex r3).
 		"d:i@1.2.3.4:4500,[::ffff:1.2.3.4]:4500",
 	}
-	for _, s := range accept {
+	// C++ ClusterConnectionString(string) runs trim() — strips ALL whitespace and `#…`
+	// comments — BEFORE find_first_of('@')/parseKey (MonitorLeader.actor.cpp:88-97). So a
+	// connection string with embedded whitespace parses to its trimmed form and is ACCEPTED;
+	// the whitespace is simply removed ("de sc"→"desc", "host name:4500"→"hostname:4500").
+	// These were previously (wrongly) in the reject set as "space in description / host" —
+	// a Go-only divergence (Go rejected cluster strings C/Java read fine). With trimConnString,
+	// Go now matches C++: accept and trim.
+	acceptAfterCppTrim := []string{
+		"de sc:id@1.2.3.4:4500", // → "desc:id@1.2.3.4:4500"
+		"d:i@host name:4500",    // → "d:i@hostname:4500"
+	}
+	for _, s := range append(accept, acceptAfterCppTrim...) {
 		if _, err := ParseClusterString(s); err != nil {
 			t.Errorf("ParseClusterString(%q) = error %v, want accept", s, err)
 		}
@@ -71,9 +82,7 @@ func TestParseClusterString_AcceptanceSet(t *testing.T) {
 	rejectMatchesCpp := []string{
 		"d:i@foo:abc",                           // non-numeric port
 		"d:i@:1234",                             // empty host
-		"d:i@host name:4500",                    // space in host
 		"d:i@1.2.3.4.5:4500",                    // 5 octets — C++ sscanf leaves count!=len
-		"de sc:id@1.2.3.4:4500",                 // space in description (parseKey)
 		"desc:i!d@1.2.3.4:4500",                 // punctuation in id (parseKey)
 		"de:sc:id@1.2.3.4:4500",                 // extra colon → id "sc:id" has non-alnum (parseKey)
 		"d:i@1.1.1.1:4500,1.1.1.1:4500",         // duplicate coordinator (C++ rejects)
@@ -313,11 +322,12 @@ func TestFollowForward_Rejects(t *testing.T) {
 	db := newFollowTestDB(t, start, path)
 
 	for _, fwd := range []string{
-		"",                  // empty
-		"garbage",           // unparseable (no @)
-		"x:y@",              // zero coordinators
-		"x:y@bad host:4500", // unparseable coordinator
-		start.String(),      // self-forward
+		"",                     // empty
+		"garbage",              // unparseable (no @)
+		"x:y@",                 // zero coordinators
+		"x:y@1.2.3.4:notaport", // unparseable coordinator (non-numeric port; trim() can't fix it,
+		//                          unlike "bad host:4500" → "badhost:4500" which C++ accepts)
+		start.String(), // self-forward
 	} {
 		if db.followForward(start, fwd) {
 			t.Errorf("followForward(%q) adopted, want reject", fwd)
@@ -355,5 +365,42 @@ func TestFollowForward_HopBound(t *testing.T) {
 	}
 	if db.forwardHops != maxForwardHops {
 		t.Fatalf("forwardHops = %d, want %d", db.forwardHops, maxForwardHops)
+	}
+}
+
+// TestParseClusterString_TrimsWhitespaceAndComments pins the C++ trim() port
+// (MonitorLeader.actor.cpp:34-50): whitespace anywhere and `#…` inline comments are stripped
+// before parsing, so a spaced/commented connection string parses identically to libfdb_c/Java
+// (previously Go rejected these via validClusterKeyPart). Revert-proven: without trimConnString
+// the spaced/commented inputs fail to parse.
+func TestParseClusterString_TrimsWhitespaceAndComments(t *testing.T) {
+	t.Parallel()
+	want, err := ParseClusterString("desc:id@1.2.3.4:4500,5.6.7.8:4500")
+	if err != nil {
+		t.Fatalf("baseline parse: %v", err)
+	}
+	cases := []string{
+		"desc : id @ 1.2.3.4:4500 , 5.6.7.8:4500",         // internal + surrounding whitespace
+		"desc:id@1.2.3.4:4500,5.6.7.8:4500   # a comment", // inline comment
+		"\tdesc:id@1.2.3.4:4500,\n5.6.7.8:4500\n",         // tabs + newlines
+	}
+	for _, in := range cases {
+		in := in
+		t.Run(in, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseClusterString(in)
+			if err != nil {
+				t.Fatalf("ParseClusterString(%q): %v", in, err)
+			}
+			if got.Description != want.Description || got.ID != want.ID || len(got.Coordinators) != len(want.Coordinators) {
+				t.Fatalf("got {desc=%q id=%q coords=%v}, want {desc=%q id=%q coords=%v}",
+					got.Description, got.ID, got.Coordinators, want.Description, want.ID, want.Coordinators)
+			}
+			for i := range want.Coordinators {
+				if got.Coordinators[i] != want.Coordinators[i] {
+					t.Errorf("coord[%d]: got %q want %q", i, got.Coordinators[i], want.Coordinators[i])
+				}
+			}
+		})
 	}
 }

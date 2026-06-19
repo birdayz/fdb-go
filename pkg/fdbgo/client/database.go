@@ -51,9 +51,32 @@ func ParseClusterFile(path string) (*ClusterFile, error) {
 	return nil, fmt.Errorf("empty cluster file: %s", path)
 }
 
+// trimConnString strips all whitespace and `#…`-to-end-of-line comments from a connection
+// string, matching C++ ClusterConnectionString's trim() (MonitorLeader.actor.cpp:34-50), which
+// runs before parsing. This makes "desc : id @ host:port" and inline `# comments` parse
+// identically to libfdb_c/Java instead of being rejected.
+func trimConnString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '#' {
+			// Skip the comment up to and including the next newline (the outer i++ consumes it).
+			i++
+			for i < len(s) && s[i] != '\n' && s[i] != '\r' {
+				i++
+			}
+		} else if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // ParseClusterString parses a cluster connection string.
 func ParseClusterString(s string) (*ClusterFile, error) {
 	// Format: "description:id@host1:port1,host2:port2,host3:port3"
+	s = trimConnString(s) // C++ trim() before parsing (MonitorLeader.actor.cpp:34)
 	atIdx := strings.LastIndex(s, "@")
 	if atIdx < 0 {
 		return nil, fmt.Errorf("invalid cluster string: missing '@': %q", s)
