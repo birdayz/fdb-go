@@ -26,6 +26,13 @@ func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, beg
 }
 
 func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin, end []byte) (int64, error) {
+	// inverted_range (2005) first — same KeyRangeRef-construction semantics as getRangeSplitPoints:
+	// libfdb_c's C-API range construction throws inverted_range on begin > end before the metric op
+	// runs, so Go (raw begin/end) checks it here. (Unlike getRangeSplitPoints there is NO maxKey check
+	// — C++ getEstimatedRangeSizeBytes/getStorageMetrics, ReadYourWrites.actor.cpp:1853, has none.)
+	if bytes.Compare(begin, end) > 0 {
+		return 0, &wire.FDBError{Code: ErrInvertedRange} // 2005
+	}
 	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
 	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
 	if err := tx.checkCancelled(); err != nil {
@@ -157,6 +164,14 @@ func (tx *Transaction) GetRangeSplitPoints(parentCtx context.Context, begin, end
 }
 
 func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	// inverted_range (2005) is reported FIRST — libfdb_c constructs a KeyRangeRef from the C args
+	// before entering RYW::getRangeSplitPoints, and the KeyRangeRef ctor throws inverted_range on
+	// begin > end, ahead of the used_during_commit / maxKey checks. So an inverted range — even one
+	// also past maxReadKey — is 2005, not 2004 (codex catch). Go's API takes raw begin/end with no
+	// constructing range, so the check lives here, before everything else.
+	if bytes.Compare(begin, end) > 0 {
+		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
+	}
 	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err

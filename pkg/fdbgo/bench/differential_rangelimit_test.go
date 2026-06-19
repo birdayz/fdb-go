@@ -149,4 +149,30 @@ func TestDifferential_RangeSplitPointsMaxKey(t *testing.T) {
 	if gc, cc := splitErr("a", "\xff\xff\xff"); gc != cc || gc != 2004 {
 		t.Errorf(">maxKey: go=%d cgo=%d, want both 2004", gc, cc)
 	}
+	// Inverted (begin>end) must report inverted_range (2005) — libfdb_c checks inversion FIRST (the
+	// KeyRangeRef ctor throws before the RYW maxKey check), so an inverted-AND-out-of-range range is
+	// 2005, NOT 2004 (codex catch).
+	if gc, cc := splitErr("z", "a"); gc != cc || gc != 2005 {
+		t.Errorf("inverted in-range: go=%d cgo=%d, want both 2005", gc, cc)
+	}
+	if gc, cc := splitErr("\xff\xff\xff\xff", "a"); gc != cc || gc != 2005 {
+		t.Errorf("inverted+>maxKey: go=%d cgo=%d, want both 2005 (inverted wins)", gc, cc)
+	}
+
+	// GetEstimatedRangeSizeBytes is the same KeyRangeRef-construction class: an inverted range is
+	// inverted_range (2005) on both clients (libfdb_c's C-API range construction throws first).
+	sizeErr := func(begin, end string) (int, int) {
+		gc := goErrCode(func(tx gofdb.Transaction) error {
+			_, e := tx.GetEstimatedRangeSizeBytes(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}).Get()
+			return e
+		})
+		cc := cgoErrCode(func(tx cgofdb.Transaction) error {
+			_, e := tx.GetEstimatedRangeSizeBytes(cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)}).Get()
+			return e
+		})
+		return gc, cc
+	}
+	if gc, cc := sizeErr("z", "a"); gc != cc || gc != 2005 {
+		t.Errorf("estimatedSize inverted: go=%d cgo=%d, want both 2005", gc, cc)
+	}
 }

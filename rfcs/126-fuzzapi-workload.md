@@ -152,8 +152,16 @@ The impl review caught a third sibling of the same read-path class: C++ `RYW::ge
 `key_outside_legal_range`, but Go's `getRangeSplitPointsImpl` (`metrics.go`) had no such check — so a
 split-points request past `maxReadKey` was silently accepted (and worse, *hung* trying to split into the
 system keyspace, where libfdb_c rejects fast). Add the same `tx.maxReadKey()` guard after the poison
-check, before the locate loop. (`getEstimatedRangeSizeBytes` correctly has none — C++ `:1853` doesn't
-validate it.) Pinned by `TestDifferential_RangeSplitPointsMaxKey`.
+check, before the locate loop. Pinned by `TestDifferential_RangeSplitPointsMaxKey`.
+
+**`inverted_range` (2005) first on the metric ops (codex catch).** libfdb_c constructs a `KeyRangeRef`
+from the C args *before* entering the RYW op, and the `KeyRangeRef` ctor throws `inverted_range` on
+`begin > end` ahead of the used_during_commit / maxKey checks. So an inverted split-points range — even
+one *also* past `maxReadKey` — is **2005, not 2004**. Go's API takes raw `begin/end` with no constructing
+range, so an inverted check goes **first** in both `getRangeSplitPointsImpl` *and*
+`getEstimatedRangeSizeBytesImpl` (the latter is the same construction class; it correctly has **no**
+maxKey check — C++ `:1853` validates none — but the inverted check still applies). Both pinned (inverted
+in-range → 2005; inverted+>maxKey → 2005 wins; estimatedSize inverted → 2005).
 
 ## 4. Executable spec (what the tests prove)
 
