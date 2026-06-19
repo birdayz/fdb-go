@@ -354,7 +354,12 @@ func (o goTransactionOptions) SetUseProvisionalProxies() error {
 }
 
 func (o goTransactionOptions) SetBypassStorageQuota() error {
-	return nil
+	// Fails unsafe if ignored: the caller is forcing a write through a full storage quota. The
+	// pure-Go client never sets FLAG_BYPASS_STORAGE_QUOTA (0x4) on the commit request
+	// (commitpath.go), so a silent no-op ships the commit WITHOUT the bypass and it is rejected
+	// with storage_quota_exceeded — the requested write-admission is dropped with no signal.
+	// Report it, matching SetRawAccess/SetReportConflictingKeys; the libfdb_c backend forwards it.
+	return &UnsupportedOptionError{Option: "bypass_storage_quota"}
 }
 
 func (o goTransactionOptions) SetInitializeNewDatabase() error {
@@ -423,10 +428,20 @@ func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
 	}
 	return nil
 }
-func (o DatabaseOptions) SetTransactionCausalReadRisky() error                   { return nil }
-func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error      { return nil }
-func (o DatabaseOptions) SetTransactionReportConflictingKeys() error             { return nil }
-func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error              { return nil }
+func (o DatabaseOptions) SetTransactionCausalReadRisky() error              { return nil }
+func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error { return nil }
+
+// DB-level defaults for the options the per-transaction setters reject (RFC-111 P1.3): keep the
+// fail-loud taxonomy consistent across both surfaces — a DB default that silently swallows
+// report_conflicting_keys / automatic_idempotency would re-open the same migration trap the
+// per-tx SetReportConflictingKeys/SetAutomaticIdempotency now guard against.
+func (o DatabaseOptions) SetTransactionReportConflictingKeys() error {
+	return &UnsupportedOptionError{Option: "report_conflicting_keys"}
+}
+
+func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
+	return &UnsupportedOptionError{Option: "automatic_idempotency"}
+}
 func (o DatabaseOptions) SetTransactionBypassUnreadable() error                  { return nil }
 func (o DatabaseOptions) SetTransactionIncludePortInAddress() error              { return nil }
 func (o DatabaseOptions) SetTransactionUsedDuringCommitProtectionDisable() error { return nil }
