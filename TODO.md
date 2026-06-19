@@ -26,8 +26,14 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    reply, not a synthetic error; `not_committed` deliberately NOT injected — unfaithful on an applied
    commit, already exercised by the workload's real conflicts). Drives `commitDummyTransaction` +
    `onError(1021)` self-conflicting retry; ring survives whether or not the dropped commit applied.
-   **Remaining:** AtomicOps / ConflictRange / Serializability / FuzzApi *gaps* (the rest already have
-   substantial coverage — see RFC-119 §7). Detail: "Native fdbgo client" → C3.
+   **Increment 5 DONE:** AtomicOps workload (RFC-124, PR #322) — atomic-op + unique-per-attempt
+   companion log in one txn; per-group `sum(log)==sum(ops)` oracle holds exactly, healthy AND under the
+   commit-drop fault (proving atomic-op+log commit atomically even under ambiguous commits). A probe
+   confirmed the same atomic op double-applies under 1021 (faithful — no idempotency IDs), which is why
+   the fresh-per-attempt logKey is load-bearing. Serializability gap is already covered by Cycle.
+   **Remaining:** ConflictRange (concurrent read/write race-detection) + FuzzApi (property-based
+   multi-txn) *gaps* (substantial coverage already exists — see RFC-119 §7). Detail: "Native fdbgo
+   client" → C3.
    **← IN PROGRESS.**
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
