@@ -15,6 +15,7 @@ go_test(
         "differential_getkey_conflict_test.go",
         "differential_getkey_ryw_test.go",
         "differential_getrange_conflict_test.go",
+        "differential_getrange_iterator_conflict_test.go",
         "differential_getrange_selector_test.go",
         "differential_grvcache_test.go",
         "differential_locality_metrics_test.go",
