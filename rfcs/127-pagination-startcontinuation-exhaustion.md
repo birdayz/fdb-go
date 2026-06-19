@@ -1,8 +1,25 @@
 # RFC-127 — SQL pagination must not treat a non-terminal StartContinuation as end-of-results
 
-**Status:** Draft
+**Status:** Accepted
 **Item:** prod-readiness-audit-2026-06-19.md **P0 (release-blocking)** — SQL pagination can silently drop
 results.
+
+> **Reviews.** Graefe **ACK** (verified vs Java 4.11.1.0): exhaustion off `IsEnd()`/`SOURCE_EXHAUSTED`,
+> never bytes, is correct (`RecordLayerIterator.java:91`; the `withoutNextValue` invariant makes reason ⇔
+> `isEnd()`); exposing `NoNextReason` as a first-class signal is right (Java carries it precisely because a
+> START's nil bytes are ambiguous; `terminatedEarly()` reads the reason, not bytes). The §3 architecture
+> mismatch is **real** and the out-of-band→54F01 adaptation is **faithful, not a masked cursor bug** — a
+> non-end START with an out-of-band reason is a *legitimate* Java state (emitted by Union/Intersection/
+> MapWhile/MemorySort cursors); Java survives it only because its iterator is client-driven (hands out
+> `BEGIN`), which Go's internal drain has no analog for. Scoped fix NOW; rearchitect-to-client-driven is a
+> tracked follow-up, not a P0. `ReturnLimitReached`→exhausted (LIMIT 0) is faithful (Java treats it
+> in-band, not terminatedEarly). Torvalds **ACK** (scoped): root cause + infinite-loop claim verified;
+> 54F01 is honest (exact precedent: `errIfDrainTruncated`, `cursor_util.go:17-22`). Both required fixes
+> folded below: (1) drive the un-resumable branch off `IsOutOfBand()` (reuse the `errIfDrainTruncated`
+> classifier), no bare `default`; (2) prove the LIMIT-0/`ReturnLimitReached` claim with continuation-type +
+> LIMIT-N(>0) tests. Graefe clarifications folded: the invariant is "**a non-end continuation with nil
+> bytes**" (the KVCursor *leaf* special-cases `lastKey==null ⟹ isEnd`, `KeyValueCursorBase.java:176`;
+> composite cursors produce the non-end START), and §6 test 1 pins which branch each operator shape takes.
 **Spec:** Java fdb-record-layer @ 4.11.1.0 — `RecordLayerIterator.java:84-97`, `RecordCursorResult.java`,
 `RecordCursor.NoNextReason` (`RecordCursor.java:109-194`), `RecordCursorStartContinuation.java`,
 `ContinuationImpl.java:161-187`.
@@ -110,34 +127,40 @@ if cont == nil || cont.IsEnd() {            // SOURCE_EXHAUSTED — the ONLY exh
     if contBytes != nil {
         r.continuation = contBytes           // resumable position → keep draining
     } else {
-        // Non-end StartContinuation: no resumable position. Go's internal drain cannot resume-from-BEGIN
-        // like Java's client-driven iterator (it would re-buffer / loop). Branch by reason:
-        switch rs.GetNoNextReason() {
-        case recordlayer.ReturnLimitReached:
-            // In-band row limit reached with zero rows produced ⟹ the row limit was 0 (LIMIT 0): no rows
-            // were ever wanted. Done — no data is lost (there were 0 rows to lose).
-            r.exhausted = true
-            r.continuation = nil
-        default: // ScanLimitReached / TimeLimitReached (out-of-band): a resource limit was hit before any
-            // resumable progress. Surfacing it (54F01) avoids dropping the rest of the result set AND the
-            // re-execute-from-BEGIN loop. Reuses the RFC-106a ScanLimitReachedError → 54F01 mapping.
-            return &recordlayer.ScanLimitReachedError{Reason: rs.GetNoNextReason()}
+        // A non-end continuation with NO resumable bytes (e.g. StartContinuation). Go's internal drain
+        // cannot resume-from-BEGIN like Java's client-driven iterator (it would re-buffer / loop). This is
+        // exactly the value-only-drain situation `errIfDrainTruncated` (cursor_util.go:17-22) already
+        // handles — classify by `IsOutOfBand()`, do NOT re-list reasons or use a bare default:
+        reason := rs.GetNoNextReason()
+        if reason.IsOutOfBand() {            // SCAN / TIME / BYTE limit before any resumable progress
+            // Surfacing 54F01 avoids dropping the rest of the result set AND the re-execute-from-BEGIN
+            // loop. Same ScanLimitReachedError → 54F01 path the value-only drains use.
+            return &recordlayer.ScanLimitReachedError{Reason: reason}
         }
+        // In-band (ReturnLimitReached) with zero rows ⟹ the row limit was 0 (LIMIT 0): no rows were ever
+        // wanted, so this is a clean done — no data is lost (Java treats RETURN_LIMIT_REACHED as in-band /
+        // not terminatedEarly). SourceExhausted+nil-bytes is impossible here (it has isEnd()==true, caught
+        // by the first branch; the withoutNextValue invariant guarantees it).
+        r.exhausted = true
+        r.continuation = nil
     }
 }
 ```
 
-`ReturnLimitReached`+START is only reachable when a row limit of 0 is set (`LIMIT 0`); the internal drain
-otherwise uses a positive page limit, which yields a real `BytesContinuation` after the first row. The
-out-of-band+START case is the genuine "hit a resource budget before making resumable progress" — already
-the failure mode `FailOnScanLimitReached`/54F01 exists for (`connection.go:144`); here it is unconditional
-because the internal drain *cannot* paginate past a no-progress stop regardless of that opt-in.
+`ReturnLimitReached`+nil-bytes is only reachable when a row limit of 0 is set (`LIMIT 0`); the internal
+drain otherwise uses a positive page limit, which yields a real `BytesContinuation` after the first row —
+§6 tests 2+3 pin this (the load-bearing claim Torvalds flagged). The out-of-band case is the genuine "hit
+a resource budget before making resumable progress"; here the 54F01 is unconditional (not gated on
+`FailOnScanLimitReached`) because the internal drain *cannot* paginate past a no-progress stop regardless.
 
 ### 4.3 Cursor-contract assertion (audit recommendation)
 
-Add a unit assertion that every continuation consumer checks `IsEnd()` before interpreting nil bytes
-(the bug was a consumer that did not). Concretely: a focused test that a `StartContinuation` and an
-`EndContinuation` (both nil bytes) are classified by `IsEnd()`, not bytes.
+Add a unit assertion pinning the invariant **"a non-end continuation may have nil bytes"** — i.e. nil
+bytes is NOT an exhaustion signal; `IsEnd()` is. (Note the asymmetry Graefe flagged: the KVCursor *leaf*
+special-cases `lastKey==null ⟹ isEnd==true` (`KeyValueCursorBase.java:176`), so a leaf scan's nil-bytes
+continuation IS end; the non-end-with-nil-bytes case is produced by *composite* cursors — RowLimited,
+Union, Sort, MapWhile — stopping on a limit before progress.) The test classifies a `StartContinuation`
+(non-end, nil bytes) and an `EndContinuation` (end, nil bytes) by `IsEnd()`, never bytes.
 
 ## 5. Open question for Graefe (architecture)
 
@@ -155,15 +178,21 @@ follow-up if Graefe deems the internal-drain model itself a divergence to close.
 ## 6. Executable spec (regression tests)
 
 1. **The bug repro (SQL):** a query whose plan consumes input before its first output row (e.g. a filter
-   over a scan, or a blocking operator) under a scan/time limit small enough to stop **before the first
-   row** → asserts the statement returns **either the full result on resume OR a 54F01** — never a
-   silently truncated/short result. Revert-proven: with the old `contBytes==nil → exhausted` the test
-   sees a short result.
-2. **LIMIT 0:** returns exactly 0 rows, cleanly exhausted (no error) — confirms the `ReturnLimitReached`
-   branch.
-3. **Normal pagination unaffected:** a multi-page scan (real `BytesContinuation`) drains the full result
+   over a scan, or a blocking operator) under a scan/byte limit small enough to stop **before the first
+   row**. **Pin the exact branch** (Graefe (b)): with the internal drain unable to resume a no-progress
+   stop, this shape lands the out-of-band branch → the statement **errors with 54F01** (not a silently
+   short/truncated result, and not data-loss). Revert-proven: with the old `contBytes==nil → exhausted`
+   the test sees a short result instead of the 54F01.
+2. **LIMIT 0:** returns exactly 0 rows, cleanly exhausted (no error). **Assert the continuation type** at
+   the page boundary is a non-end nil-bytes continuation with `ReturnLimitReached` (the load-bearing
+   precondition Torvalds flagged), so the test fails if the plan ever produced a different shape.
+3. **LIMIT N (N>0), incl. a blocking operator (e.g. ORDER BY / aggregate) page boundary:** asserts the
+   page never lands `ReturnLimitReached`+nil-bytes (the first row yields a real `BytesContinuation`), and
+   the full N-row result is returned — proving the `ReturnLimitReached`→exhausted branch can never eat
+   real rows.
+4. **Normal pagination unaffected:** a multi-page scan (real `BytesContinuation`) drains the full result
    set (regression guard that the change didn't alter the resumable path).
-4. **Cursor-contract unit test** (§4.3): `IsEnd()`-not-bytes classification.
+5. **Cursor-contract unit test** (§4.3): non-end-with-nil-bytes is classified by `IsEnd()`, not bytes.
 
 ## 7. Wire-compat impact
 
