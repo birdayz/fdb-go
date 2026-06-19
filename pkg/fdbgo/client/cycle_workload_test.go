@@ -519,19 +519,18 @@ func TestEveryNthInlineReadError(t *testing.T) {
 	}
 }
 
-// runCycleInlineReadFaultPhase arms an inline `code` read fault on every 4th storage READ reply, runs
-// `actors` swap actors for `window`, disarms, and asserts (all non-timing-dependent, with FRESH
-// per-phase counters so phase N's anti-vacuity is never satisfied by phase N-1's injections): the
-// fault fired (`injected > 0`), the workload progressed THROUGH it (`committed > 0`), and the ring is
-// still exactly one Hamiltonian cycle (`check == nil`, 3× for determinism). Shared by the fixed-delay
-// retryable read-fault test (1009/1037) and the wrong_shard (1001) test — the injection shape is
-// identical; the client recovery path under test is what differs (1009/1037 bubble to onError for a
-// re-read; 1001 invalidates the location cache + re-locates inside the read path, readpath.go:434-439).
-func runCycleInlineReadFaultPhase(t *testing.T, ctx context.Context, db *Database, sd *simDialer, w *cycleWorkload, code uint16, codeName string, actors int, window time.Duration) {
+// runCycleFaultPhase arms the intercept built by makeIntercept, runs `actors` swap actors for
+// `window`, disarms, and asserts (all non-timing-dependent, with FRESH per-phase counters so phase N's
+// anti-vacuity is never satisfied by phase N-1's injections): the fault fired (`injected > 0`), the
+// workload progressed THROUGH it (`committed > 0`), and the ring is still exactly one Hamiltonian cycle
+// (`check == nil`, 3× for determinism). Generic over the fault shape (makeIntercept binds the fresh
+// per-phase `injected` counter) — used for inline read errors (1009/1037/1001) AND dropped commit
+// replies (RFC-123). The recovery path under test is what differs; this harness only drives + asserts.
+func runCycleFaultPhase(t *testing.T, ctx context.Context, db *Database, sd *simDialer, w *cycleWorkload, faultName string, makeIntercept func(*atomic.Int64) frameIntercept, actors int, window time.Duration) {
 	t.Helper()
 	var injected, committed atomic.Int64
 	// armAll (not armAddr) because content-discrimination — not address — scopes the fault (RFC-120 §3.2).
-	sd.setIntercept(everyNthInlineReadError(4, code, &injected))
+	sd.setIntercept(makeIntercept(&injected))
 	sd.armAll()
 
 	workCtx, workCancel := context.WithTimeout(ctx, window)
@@ -554,7 +553,7 @@ func runCycleInlineReadFaultPhase(t *testing.T, ctx context.Context, db *Databas
 					// surfacing means the client failed to recover it — a real bug. Keyed on error
 					// IDENTITY, never the clock: no per-tx timeout is set, so a window close is always a
 					// raw context error, never a mapTimeout-synthesized FDBError (transaction.go).
-					t.Errorf("[%s] swap failed under injected fault: %v", codeName, err)
+					t.Errorf("[%s] swap failed under injected fault: %v", faultName, err)
 					return
 				}
 			}
@@ -565,17 +564,17 @@ func runCycleInlineReadFaultPhase(t *testing.T, ctx context.Context, db *Databas
 	sd.setIntercept(nil) // disarm: the final check reads fault-free
 
 	if injected.Load() == 0 {
-		t.Fatalf("[%s] no faults injected — test is vacuous", codeName)
+		t.Fatalf("[%s] no faults injected — test is vacuous", faultName)
 	}
 	if committed.Load() == 0 {
-		t.Fatalf("[%s] no swaps committed under fault — client failed to recover", codeName)
+		t.Fatalf("[%s] no swaps committed under fault — client failed to recover", faultName)
 	}
-	t.Logf("[%s] injected %d read faults; committed %d swaps under fault", codeName, injected.Load(), committed.Load())
+	t.Logf("[%s] injected %d faults; committed %d swaps under fault", faultName, injected.Load(), committed.Load())
 
 	// The ring must still be exactly one Hamiltonian cycle despite the injected faults + retries.
 	for i := 0; i < 3; i++ {
 		if err := w.check(ctx, db); err != nil {
-			t.Fatalf("[%s] serializability violated under injected faults (check %d): %v", codeName, i, err)
+			t.Fatalf("[%s] serializability violated under injected faults (check %d): %v", faultName, i, err)
 		}
 	}
 }
@@ -611,7 +610,10 @@ func TestCycle_SurvivesInjectedReadFaults(t *testing.T) {
 		{ErrFutureVersion, "future_version/1009"},
 		{ErrProcessBehind, "process_behind/1037"},
 	} {
-		runCycleInlineReadFaultPhase(t, ctx, db, sd, w, phase.code, phase.name, 16, 20*time.Second)
+		code := phase.code
+		runCycleFaultPhase(t, ctx, db, sd, w, phase.name,
+			func(c *atomic.Int64) frameIntercept { return everyNthInlineReadError(4, code, c) },
+			16, 20*time.Second)
 	}
 }
 
@@ -640,5 +642,134 @@ func TestCycle_SurvivesInjectedWrongShard(t *testing.T) {
 		t.Fatalf("ring invalid right after setup: %v", err)
 	}
 
-	runCycleInlineReadFaultPhase(t, ctx, db, sd, w, ErrWrongShardServer, "wrong_shard/1001", 16, 20*time.Second)
+	runCycleFaultPhase(t, ctx, db, sd, w, "wrong_shard/1001",
+		func(c *atomic.Int64) frameIntercept { return everyNthInlineReadError(4, ErrWrongShardServer, c) },
+		16, 20*time.Second)
+}
+
+// --- Cycle under a dropped commit reply (RFC-123) ---------------------------------------------
+
+// isCommitReplyBody reports whether a reply body is a commit reply (ErrorOr<CommitID>), by the composed
+// envelope fileID at body[4:8] — the SAME content-discrimination isReadReplyBody uses, but for the
+// commit envelope. Fail-safe: a runt (<8B) body is treated as not-a-commit-reply (passed verbatim).
+func isCommitReplyBody(body []byte) bool {
+	if len(body) < 8 {
+		return false
+	}
+	return binary.LittleEndian.Uint32(body[4:8]) == commitReplyEnvelopeFileID
+}
+
+// everyNthCommitReplyDrop returns a frameIntercept that DROPS every n-th commit (CommitID) reply,
+// passing every read / GRV / locate / unknown frame verbatim. A dropped commit reply makes the client's
+// waitReplyOrProxiesChanged time out (DefaultRPCTimeout) → commit_unknown_result (1021) — the faithful
+// wire model of a lost commit reply where the commit MAY have applied at the proxy (1021 is
+// client-minted from an ambiguous RPC, never proxy-sent; RFC-123 §2). counter advances only on an
+// actual drop — the only witness the fault fired, since a dropped frame leaves no other artifact.
+//
+// Content-discrimination is mandatory (RFC-120 §3.2): the single-process container collocates commit /
+// GRV / storage on ONE connection, so this MUST drop only commit replies. In particular GRV replies
+// pass verbatim — commitDummyTransaction's own GRV must complete, or the 1021-recovery barrier would
+// wedge on a GRV stall (RFC-123 §4.1; pinned by TestEveryNthCommitReplyDrop's GRV-passthrough case).
+func everyNthCommitReplyDrop(n int, counter *atomic.Int64) frameIntercept {
+	if n <= 0 {
+		panic("everyNthCommitReplyDrop: n must be > 0")
+	}
+	var commitSeen atomic.Int64 // commit replies observed (shared across conns; aggregate ~1/n)
+	return func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		if !isCommitReplyBody(body) {
+			return body, false // read / GRV / locate / unknown → verbatim
+		}
+		if commitSeen.Add(1)%int64(n) == 0 {
+			counter.Add(1)
+			return nil, true // DROP → client commit RPC times out → commit_unknown_result (1021)
+		}
+		return body, false
+	}
+}
+
+// TestCycle_SurvivesDroppedCommitReply runs the Cycle workload through SimTransport while every 8th
+// commit reply is DROPPED — the faithful commit_unknown_result (1021) fault: the commit MAY have applied
+// at the proxy, but the client's commit RPC times out and learns nothing. The client's recovery
+// (commitDummyTransaction synchronization barrier + onError(1021) self-conflicting retry) must absorb
+// every such drop; the retry re-runs the swap fn from scratch (a FRESH valid transposition of the
+// current ring, never a replay), so the ring stays exactly one Hamiltonian cycle whether or not the
+// dropped-reply commit applied (committed merely under-counts the applied-but-unknown ones).
+//
+// Flake-free despite the 5s-per-drop cost: 1021 is onErrorRetryable, the swap-actor loop is workCtx-
+// bounded, and the dummy barrier — which runs under context.WithoutCancel (transaction.go:1616), NOT
+// workCtx — terminates by a clean reply ((n-1)/n per attempt) + the outer ctx. n=8 (fewer drops than
+// the read tests' 1/4, matching the higher per-drop cost) keeps committed orders above the >0 floor.
+// The outer ctx (180s) must exceed window (30s) + the worst-case commit/dummy tail with comfortable
+// margin (RFC-123 §4.1) — do NOT shrink it toward window+ε or the tail wedges into a real ctx deadline.
+func TestCycle_SurvivesDroppedCommitReply(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+
+	w := &cycleWorkload{nodeCount: 1000, prefix: []byte("cycle_commitdrop_")}
+	if err := w.setup(ctx, db); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := w.check(ctx, db); err != nil {
+		t.Fatalf("ring invalid right after setup: %v", err)
+	}
+
+	runCycleFaultPhase(t, ctx, db, sd, w, "commit_unknown_result/dropped-reply",
+		func(c *atomic.Int64) frameIntercept { return everyNthCommitReplyDrop(8, c) },
+		16, 30*time.Second)
+}
+
+// TestEveryNthCommitReplyDrop is the determinism floor (no FDB) for the commit-drop intercept. It pins:
+// (a) every n-th COMMIT reply is dropped, the others pass verbatim; (b) READ and GRV replies pass
+// through UNTOUCHED and do NOT advance the commit counter — the anti-wedge regression (a misfilter that
+// dropped the dummy barrier's GRV, or storage reads, would wedge the workload, RFC-123 §4.1); (c) a runt
+// (<8B) frame is passed verbatim with no panic; (d) the injection counter advances only on actual drops.
+func TestEveryNthCommitReplyDrop(t *testing.T) {
+	t.Parallel()
+	frameWith := func(id uint32) []byte {
+		b := make([]byte, 8)
+		binary.LittleEndian.PutUint32(b[4:8], id)
+		return b
+	}
+	commit := frameWith(commitReplyEnvelopeFileID)
+	read := frameWith(getValueReplyEnvelopeFileID)
+	grv := frameWith(grvReplyEnvelopeFileID)
+	runt := []byte{1, 2, 3} // < 8 bytes
+
+	var injected atomic.Int64
+	fn := everyNthCommitReplyDrop(3, &injected)
+
+	// Interleave reads + GRV among the commits. Only commits advance the n-th counter, so the
+	// read/GRV frames must NOT shift which commit is the 3rd. The 3rd COMMIT (at the marked step) drops.
+	type step struct {
+		body     []byte
+		wantDrop bool
+		verbatim bool // expect the exact input bytes back (not dropped, not rewritten)
+	}
+	seq := []step{
+		{commit, false, true}, // commit 1 → pass
+		{read, false, true},   // read → verbatim, must NOT count
+		{commit, false, true}, // commit 2 → pass
+		{grv, false, true},    // GRV → verbatim, must NOT count (anti-wedge)
+		{runt, false, true},   // runt → verbatim, no panic, no count
+		{commit, true, false}, // commit 3 → DROP
+		{read, false, true},   // read → verbatim
+		{commit, false, true}, // commit 4 → pass
+	}
+	for i, s := range seq {
+		out, drop := fn(0, transport.UID{}, s.body)
+		if drop != s.wantDrop {
+			t.Fatalf("step %d: drop=%v want %v", i, drop, s.wantDrop)
+		}
+		if s.wantDrop {
+			continue // dropped frame's body is irrelevant
+		}
+		if s.verbatim && !bytes.Equal(out, s.body) {
+			t.Fatalf("step %d: frame altered but should pass verbatim", i)
+		}
+	}
+	if got := injected.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 dropped commit over the sequence, got %d", got)
+	}
 }
