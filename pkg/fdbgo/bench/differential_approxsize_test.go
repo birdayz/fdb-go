@@ -80,3 +80,54 @@ func TestDifferential_ApproximateSize(t *testing.T) {
 		}
 	}
 }
+
+// FuzzDifferential_ApproximateSize hardens the GetApproximateSize accounting fix across RANDOM op
+// sequences: it applies the same fuzz-decoded ops (Set / single-key Clear / ClearRange / atomics /
+// CompareAndClear) to a go-txn and a cgo-txn one at a time and asserts GetApproximateSize stays
+// byte-identical after every op. A single divergent op (a missed mutation/conflict charge, a
+// single-key-clear vs range-clear mischarge) is caught with a minimized reproducer. No commit: the
+// estimate is purely client-side, so this is fast (no RPC) and exercises only the accounting.
+func FuzzDifferential_ApproximateSize(f *testing.F) {
+	f.Add([]byte{fzSet, 0, 1, 0xaa, fzClear, 1, fzAdd, 0, 1, 0x01})
+	f.Add([]byte{fzClear, 0, fzClear, 1, fzClear, 2, fzClearRange, 0, 3})
+	f.Add([]byte{fzSet, 0, 2, 0xde, 0xad, fzClearRange, 0, 3, fzSet, 1, 1, 0xff})
+	f.Add([]byte{fzByteMax, 0, 3, 0x6d, 0x6d, 0x6d, fzCompareAndClear, 0, 1, 0x7a})
+	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		batches := decodeFuzzOps(data)
+		if len(batches) == 0 || len(batches[0]) == 0 {
+			return
+		}
+		ops := batches[0]
+		pfx := fmt.Sprintf("apxfuzz_%d_", os.Getpid())
+
+		goTr, err := goClient.CreateTransaction()
+		if err != nil {
+			t.Fatalf("go CreateTransaction: %v", err)
+		}
+		defer goTr.Cancel()
+		cTr, err := cgoClient.CreateTransaction()
+		if err != nil {
+			t.Fatalf("cgo CreateTransaction: %v", err)
+		}
+		defer cTr.Cancel()
+
+		for i := range ops {
+			applyGo(goTr, ops[i:i+1], pfx)
+			applyC(cTr, ops[i:i+1], pfx)
+			goSize, gerr := goTr.GetApproximateSize().Get()
+			if gerr != nil {
+				t.Fatalf("go GetApproximateSize after op %d: %v", i, gerr)
+			}
+			cSize, cerr := cTr.GetApproximateSize().Get()
+			if cerr != nil {
+				t.Fatalf("cgo GetApproximateSize after op %d: %v", i, cerr)
+			}
+			if goSize != cSize {
+				t.Fatalf("GetApproximateSize diverges after op %d (kind=%d keyIdx=%d operandLen=%d): go=%d cgo=%d",
+					i, ops[i].kind, ops[i].keyIdx, len(ops[i].operand), goSize, cSize)
+			}
+		}
+	})
+}
