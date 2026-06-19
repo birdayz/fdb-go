@@ -80,8 +80,13 @@ func TestBuildCommitTransactionRequest_LockAware(t *testing.T) {
 	if req.Flags&0x1 == 0 {
 		t.Errorf("Flags: got %#x, FLAG_IS_LOCK_AWARE not set", req.Flags)
 	}
-	if !req.Transaction.Lock_aware {
-		t.Error("Transaction.Lock_aware: got false, want true")
+	// A lock-aware commit carries ONLY the flag — NOT the CommitTransactionRef.lock_aware field.
+	// libfdb_c sets only FLAG_IS_LOCK_AWARE (NativeAPI.actor.cpp:6878) and the commit proxy
+	// re-derives transaction.lock_aware from it (CommitProxyServer.actor.cpp:221). Sending the field
+	// made Go's commit bytes diverge from libfdb_c (an extra lock_aware=true scalar). Decoding the
+	// omitted field yields false; with the field set it would decode true.
+	if req.Transaction.Lock_aware {
+		t.Error("Transaction.Lock_aware: got true, want false (only the flag conveys lock-awareness; libfdb_c omits the field)")
 	}
 }
 
