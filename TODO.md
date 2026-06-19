@@ -124,6 +124,36 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: watch-path divergences (D1/D2/D3/D5) — found by the quality-grind watch audit (2026-06-19); D4 fixed
+
+The watch audit fixed **D4** (WatchPoll now retries the SS poll-signals — watch_cancelled/process_behind/
+timed_out/future_version — instead of breaking the watch). Four remaining, ranked:
+
+- **D1 [concrete, fixable] — no `too_many_watches` (1032) limit.** C++ `Transaction::watch`
+  (`NativeAPI.actor.cpp:5694`) calls `increaseWatchCounter()` (`:2175`) which throws `too_many_watches`
+  when `outstandingWatches >= DEFAULT_MAX_OUTSTANDING_WATCHES = 1e4` (`ClientKnobs.cpp:120`, settable to
+  `ABSOLUTE_MAX_WATCHES=1e6` via `MAX_WATCHES`); `decreaseWatchCounter()` runs when the watch resolves/
+  errors (`:5679`). Go has NO outstanding-watch counter — watches are unbounded; 1032 is never thrown;
+  `MAX_WATCHES` is a no-op. Fix: a `db.outstandingWatches atomic.Int64` + `maxOutstandingWatches`,
+  increment at `WatchSetup` (return 1032 if at the limit), decrement on EVERY watch exit (fire/error/
+  cancel) — the lifecycle is the tricky part. Test with a low limit via a `MAX_WATCHES` option.
+- **D2 [architectural — RFC] — watch registered at READ version, not commit-gated.** C++ defers the
+  SS-side watch to AFTER commit via `setupWatches()` in `commitAndWatch` (`NativeAPI.actor.cpp:6418`,
+  `:6909`), at `committedVersion>0 ? committedVersion : readVersion`. Go's `WatchPoll` registers at
+  `tx.readVersion` immediately, with ZERO commit coordination (`commitpath.go` has no watch handling).
+  A Go watch is live before its transaction commits. Deep architectural gap.
+- **D3 [architectural — RFC] — no RYW pending-write watch semantics.** C++ `RYWImpl::watch`
+  (`ReadYourWrites.actor.cpp:1284`) keeps a `watchMap` + `triggerWatches`/`onChangeTrigger` so a watch
+  on a key with a differing same-tx pending write fires IMMEDIATELY. Go folds the pending write into the
+  baseline (via `tx.ryw.get`) but has no watchMap/immediate-fire — the watch's baseline becomes the
+  post-write value and it long-polls for the *next* change (wrong fire point).
+- **D5 [small] — cancel returns `context.Canceled`, not `transaction_cancelled` (1025); failed commit
+  doesn't cancel watches; stale comment.** `reset()→cancelWatches()` cancels the watch *context*, so
+  in-flight watches return `ctx.Err()` not an FDBError 1025 (C++ `resetPromise.sendError(1025)`). And
+  (tied to D2) a failed commit never tears down the watch (C++ `cancelWatches(e)`, `:6926`). Also the
+  comment at `transaction.go:1595` ("Watch() calls are NOT cancelled by Reset()") contradicts the actual
+  `reset()→cancelWatches()` path — cleanup.
+
 ### [ ] fdbgo/client: missing `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — needs its own `fdb-client-engineer` RFC (commit-path wire/behavior; found by the quality-grind OnError audit, 2026-06-19)
 
 C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
