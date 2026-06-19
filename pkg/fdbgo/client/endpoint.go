@@ -58,7 +58,7 @@ func networkAddressString(na *types.NetworkAddress) string {
 	return net.JoinHostPort(ipAddressString(&na.Ip), strconv.Itoa(int(na.Port)))
 }
 
-// networkAddressFlagTLS is C++ NetworkAddress::FLAG_TLS (flow/include/flow/network.h).
+// networkAddressFlagTLS is C++ NetworkAddress::FLAG_TLS (flow/include/flow/NetworkAddress.h:38).
 const networkAddressFlagTLS uint16 = 2
 
 // endpointIsTLS reports whether the endpoint's primary address has the TLS flag set. C++
