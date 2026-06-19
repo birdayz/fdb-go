@@ -46,7 +46,7 @@ type FDBDatabase struct {
 	tenant fdb.Tenant
 	// isTenant is true for a tenant-backed database (NewFDBDatabaseFromTenant). The record layer
 	// must NOT set READ_SYSTEM_KEYS on a tenant transaction: libfdb_c throws invalid_option there
-	// (system-key access can't be tenant-scoped, NativeAPI.actor.cpp:7163-7170), and it is also
+	// (system-key access can't be tenant-scoped, NativeAPI.actor.cpp:7159-7171), and it is also
 	// unnecessary — the only system key the record layer reads (\xff/metadataVersion) is exempt
 	// from the system-key gate and read globally even on a tenant transaction.
 	isTenant bool
@@ -180,7 +180,7 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 
 // applyReadSystemKeys grants the per-transaction READ_SYSTEM_KEYS the record layer uses to read
 // \xff/metadataVersion. It is a NO-OP on a tenant-backed database: libfdb_c rejects READ_SYSTEM_KEYS
-// on a tenant transaction (invalid_option, NativeAPI.actor.cpp:7163-7170 — system-key access can't
+// on a tenant transaction (invalid_option, NativeAPI.actor.cpp:7159-7171 — system-key access can't
 // be tenant-scoped), and it is unnecessary there because metadataVersion is exempt from the
 // system-key gate and read globally even under a tenant.
 func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {

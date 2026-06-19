@@ -129,7 +129,7 @@ each on its own stacked branch.
 The tenant audit confirmed the WIRE path is byte-perfect (prefix = bigEndian64(id), prepend-at-commit,
 TenantInfo, key-size all match C++). One behavioral divergence (#6) was FIXED: `SetReadSystemKeys`/
 `SetAccessSystemKeys` on a tenant transaction now return invalid_option (2007), matching C++
-`setOption` (NativeAPI.actor.cpp:7163-7170). **Remaining edge:** the DB-LEVEL default path is not
+`setOption` (NativeAPI.actor.cpp:7159-7171). **Remaining edge:** the DB-LEVEL default path is not
 covered. `CreateTransaction` seeds DB defaults (incl. a READ_SYSTEM_KEYS/ACCESS_SYSTEM_KEYS DB
 default) while `tenantId == NoTenantID`, and `SetTenantId` runs *after* — so a tenant txn created
 under a DB that defaults system-key access silently keeps the flags, where C++ rejects. Fix needs a

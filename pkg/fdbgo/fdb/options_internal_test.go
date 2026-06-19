@@ -68,7 +68,7 @@ func TestSetReadLockAware_Independent(t *testing.T) {
 
 // TestSystemKeyOptions_RejectedOnTenant pins the C++ invalid_option (2007) throw when
 // READ_SYSTEM_KEYS / ACCESS_SYSTEM_KEYS is set on a tenant transaction
-// (NativeAPI.actor.cpp:7163-7170): system-key access implies raw access, which can't be
+// (NativeAPI.actor.cpp:7159-7171): system-key access implies raw access, which can't be
 // tenant-scoped. Go previously set the flags unconditionally — a behavioral divergence. The flags
 // must NOT be mutated when rejected, and a non-tenant transaction must still accept the options.
 func TestSystemKeyOptions_RejectedOnTenant(t *testing.T) {
