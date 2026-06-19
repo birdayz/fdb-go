@@ -124,6 +124,19 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: Get/GetRange over-conflict vs libfdb_c — RFC-121 (HIGH; conflict-range audit 2026-06-19)
+
+Two confirmed serializability-outcome divergences (both SAFE over-conflicts — Go aborts where C/Java
+commits, never the reverse). **D1:** GetRange adds the full requested `[begin,end)` read-conflict, not
+clamped to the data actually returned on a limited/`more` read (C++ clamps to `keyAfter(lastKey)` —
+ReadYourWrites.actor.cpp:271-274 / NativeAPI.actor.cpp:4576-4579). **D2:** Get/GetRange add the read-
+conflict unconditionally, not skipping keys served by a local independent write (RFC-058 wired this
+RYW filter into GetKey only — ReadYourWrites.actor.cpp:328/342). Fix = route Get/GetRange conflict
+generation through the RYW overlay + extent-clamp (RFC-121). **RFC-scope + high-risk**: a botched fix
+that under-conflicts loses serializability (a data bug, worse than the safe status quo), so it needs a
+differential proving red→green AND no new under-conflict, plus the full FDB-C-dev gauntlet. Spec +
+differential design in `rfcs/121-get-getrange-conflict-ryw-clamp.md`.
+
 ### [ ] fdbgo/client: system-key DB-default applied to a tenant txn — tenant audit (2026-06-19); user-path FIXED
 
 The tenant audit confirmed the WIRE path is byte-perfect (prefix = bigEndian64(id), prepend-at-commit,
