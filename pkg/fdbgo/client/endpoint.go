@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -51,8 +52,20 @@ func endpointValid(ep *types.Endpoint) bool {
 }
 
 func networkAddressString(na *types.NetworkAddress) string {
-	ip := ipAddressString(&na.Ip)
-	return fmt.Sprintf("%s:%d", ip, na.Port)
+	// net.JoinHostPort brackets an IPv6 host ([::1]:4500), matching C++ formatIpPort
+	// (flow/network.cpp:242, `ip.isV6() ? "[%s]:%d" : "%s:%d"`). The old "%s:%d" produced
+	// an unparseable "::1:4500" for IPv6 — broken for both dialing and GetAddressesForKey.
+	return net.JoinHostPort(ipAddressString(&na.Ip), strconv.Itoa(int(na.Port)))
+}
+
+// networkAddressFlagTLS is C++ NetworkAddress::FLAG_TLS (flow/include/flow/network.h).
+const networkAddressFlagTLS uint16 = 2
+
+// endpointIsTLS reports whether the endpoint's primary address has the TLS flag set. C++
+// NetworkAddress::toString appends ":tls" for these (flow/network.cpp:215); GetAddressesForKey
+// echoes that suffix to the caller (NativeAPI.actor.cpp:5747 returns address().toString()).
+func endpointIsTLS(ep *types.Endpoint) bool {
+	return ep.Addresses.Address.Flags&networkAddressFlagTLS != 0
 }
 
 func ipAddressString(ip *types.IPAddress) string {

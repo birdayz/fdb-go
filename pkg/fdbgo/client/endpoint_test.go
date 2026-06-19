@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/binary"
+	"net"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -173,5 +174,46 @@ func TestGetAdjustedEndpoint(t *testing.T) {
 				t.Fatalf("Second: got %#x, want %#x", got.Second, tt.wantSecond)
 			}
 		})
+	}
+}
+
+// TestNetworkAddressString_IPv4 pins the common case: no brackets, "ip:port".
+func TestNetworkAddressString_IPv4(t *testing.T) {
+	t.Parallel()
+	na := &types.NetworkAddress{Ip: types.IPAddress{AddrTag: 1, AddrAlt0: 0x01020304}, Port: 4500}
+	if got := networkAddressString(na); got != "1.2.3.4:4500" {
+		t.Errorf("got %q, want %q", got, "1.2.3.4:4500")
+	}
+}
+
+// TestNetworkAddressString_IPv6Bracketed pins the D2 fix: an IPv6 host must be bracketed
+// ([::1]:4500), matching C++ formatIpPort (flow/network.cpp:242). The old "%s:%d" produced
+// the unparseable "::1:4500". Revert-proven: net.SplitHostPort fails on the unbracketed form.
+func TestNetworkAddressString_IPv6Bracketed(t *testing.T) {
+	t.Parallel()
+	v6 := make([]byte, 16)
+	v6[15] = 1 // ::1
+	na := &types.NetworkAddress{Ip: types.IPAddress{AddrTag: 2, AddrAlt1: v6}, Port: 4500}
+	got := networkAddressString(na)
+	if got != "[::1]:4500" {
+		t.Fatalf("got %q, want %q", got, "[::1]:4500")
+	}
+	// The result MUST be parseable as host:port (the functional point of bracketing).
+	if _, _, err := net.SplitHostPort(got); err != nil {
+		t.Errorf("net.SplitHostPort(%q) failed: %v", got, err)
+	}
+}
+
+// TestEndpointIsTLS pins the TLS-flag read that drives GetAddressesForKey's ":tls" suffix.
+func TestEndpointIsTLS(t *testing.T) {
+	t.Parallel()
+	var tlsEp, plainEp types.Endpoint
+	tlsEp.Addresses.Address.Flags = networkAddressFlagTLS // 2
+	plainEp.Addresses.Address.Flags = 0
+	if !endpointIsTLS(&tlsEp) {
+		t.Error("endpointIsTLS(flag=2) = false, want true")
+	}
+	if endpointIsTLS(&plainEp) {
+		t.Error("endpointIsTLS(flag=0) = true, want false")
 	}
 }
