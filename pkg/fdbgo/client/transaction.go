@@ -1594,9 +1594,9 @@ func (tx *Transaction) Cancel() {
 // across Reset, matching C++ ReadYourWritesTransaction::reset() + applyPersistentOptions.
 // Updates creationTime so the timeout budget restarts (matches C++ reset() behavior).
 //
-// Note: in-flight Watch() calls are NOT cancelled by Reset(). Use context cancellation
-// to cancel pending watches. This differs from C++ where reset triggers
-// resetPromise.sendError(transaction_cancelled).
+// In-flight Watch() calls ARE cancelled by Reset() (via reset()→cancelWatches(), below), but they
+// surface as context.Canceled rather than the FDBError transaction_cancelled (1025) C++ raises via
+// resetPromise.sendError — a known divergence (TODO "watch-path divergences" D5).
 func (tx *Transaction) Reset() {
 	tx.retryCount = 0
 	tx.backoff = 0
