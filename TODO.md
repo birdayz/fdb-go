@@ -21,10 +21,13 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    **Increment 3 DONE:** Cycle under `process_behind (1037)` + `wrong_shard (1001)` faults (RFC-122,
    PR #320) — 1037 the fixed/QueueModel read row, 1001 its own relocate+invalidate ring-survival
    assertion (flake-free: budget exhaustion → retryable 1007).
-   **Remaining:** commit-side faults (`not_committed`/`commit_unknown_result` inline on the `CommitID`
-   reply — RFC-120 §7, the content-aware intercept just inverts the filter); then AtomicOps /
-   ConflictRange / Serializability / FuzzApi *gaps* (the rest already have substantial coverage — see
-   RFC-119 §7). Detail: "Native fdbgo client" → C3.
+   **Increment 4 DONE:** Cycle under a dropped commit reply → `commit_unknown_result (1021)` (RFC-123,
+   PR #321) — the faithful commit-path fault (1021 is client-minted from an ambiguous RPC, so a dropped
+   reply, not a synthetic error; `not_committed` deliberately NOT injected — unfaithful on an applied
+   commit, already exercised by the workload's real conflicts). Drives `commitDummyTransaction` +
+   `onError(1021)` self-conflicting retry; ring survives whether or not the dropped commit applied.
+   **Remaining:** AtomicOps / ConflictRange / Serializability / FuzzApi *gaps* (the rest already have
+   substantial coverage — see RFC-119 §7). Detail: "Native fdbgo client" → C3.
    **← IN PROGRESS.**
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
