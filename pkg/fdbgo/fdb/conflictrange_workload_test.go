@@ -89,7 +89,7 @@ func (w *conflictRangeWorkload) val(i int) []byte {
 // setGuards writes all floor + ceiling guards (incl. the sentinel). Called ONCE before the loop: the
 // guards live outside [dataLow, sentinel) (the per-iteration reset's clear range) and are never targeted
 // by tr2 (data band) or tr3 (the post-data dummy), so they persist untouched across all iterations.
-func (w *conflictRangeWorkload) setGuards(tr fdb.Transaction) {
+func (w *conflictRangeWorkload) setGuards(tr fdb.WritableTransaction) {
 	for j := 0; j <= w.maxOffset; j++ {
 		tr.Set(fdb.Key(w.fkey(j)), []byte("floor"))
 	}
@@ -251,26 +251,19 @@ func (w *conflictRangeWorkload) run(t *testing.T, db fdb.Database, seed int64, t
 	t.Helper()
 	rng := rand.New(rand.NewSource(seed))
 
-	// Guards once (persist across iterations).
-	for {
-		tr, err := db.CreateTransaction()
-		if err != nil {
-			t.Fatalf("CreateTransaction (guards): %v", err)
-		}
+	// Guards once (persist across iterations). A plain write with no read-version pinning, so it uses the
+	// production db.Transact retry helper (the canonical path the rest of package fdb_test uses) — only
+	// the tr1/tr2/tr3/tr4 dance needs raw transactions (pinning), which db.Transact cannot express.
+	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		w.setGuards(tr)
-		if cerr := tr.Commit().Get(); cerr != nil {
-			if code, ok := codeOf(cerr); ok && fdb.IsRetryable(code) {
-				retryBackoff(tr, code)
-				continue
-			}
-			t.Fatalf("commit guards: %v", cerr)
-		}
-		break
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("commit guards: %v", err)
 	}
 
 	var withConflicts, withoutConflicts, resultChangedCount, overConflictUnexplained int
 	evaluated := 0
-	randomSets := false
+	randomSets := true    // first evaluated dance is insert-mode, matching C++ (randomSets flips to true at loop top, :101)
 	const restartCap = 50 // per-evaluated-dance restart bound (retryable errors / empty-query retries)
 
 	// Overall attempt bound: a skip (empty query / boundary drift) does not advance `evaluated`, so cap
@@ -282,14 +275,16 @@ func (w *conflictRangeWorkload) run(t *testing.T, db fdb.Database, seed int64, t
 			t.Fatalf("could not complete %d evaluable dances in %d attempts (got %d) — skips dominate, geometry broken",
 				targetEvaluated, maxAttempts, evaluated)
 		}
-		randomSets = !randomSets
 		out := w.attempt(t, db, rng, randomSets, restartCap)
 		if !out.ran {
-			// Skipped (empty query after the retry budget, or result drifted to the guard band). Not an
-			// evaluation; loop again.
+			// Skipped (empty query after the retry budget, or original drifted to the guard band). Not an
+			// evaluation; retry with the SAME mode (toggle only on evaluated dances, below) so the
+			// insert/delete alternation tracks executed dances — matching C++'s per-loop toggle — instead
+			// of being skewed by skip parity.
 			continue
 		}
 		evaluated++
+		randomSets = !randomSets
 		if out.conflicted {
 			withConflicts++
 			if !out.changed && !out.explained {
@@ -353,7 +348,7 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 		firstElementIdx := minKeyIdx(inserted)
 
 		// --- pick a non-empty query (tr1, fresh per empty attempt) ---
-		q := w.randomQuery(rng)
+		var q selectorQuery
 		var original []fdb.KeyValue
 		gotNonEmpty := false
 		for try := 0; try < 64; try++ {
@@ -434,8 +429,12 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 		}
 
 		// --- tr4 (fresh version, post-tr2): re-read; compute resultChanged ---
+		// Retry ONLY the re-read on a transient retryable error (fresh tr4 each try, each at a fresh GRV
+		// ≥ tr2's commit) — NOT a whole-dance restart, which would discard the tr3 conflict verdict
+		// already obtained for this dance.
 		var reread []fdb.KeyValue
-		{
+		gotReread := false
+		for try := 0; try < 64; try++ {
 			tr4, err := db.CreateTransaction()
 			if err != nil {
 				t.Fatalf("CreateTransaction(tr4): %v", err)
@@ -448,14 +447,19 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 				t.Fatalf("tr4 query: %v", qerr)
 			}
 			reread = res
+			gotReread = true
+			break
 		}
-		// If tr2 shifted a selector resolution into the guard band, the re-read drifted to the boundary —
-		// can't evaluate (same two-sided sentinel philosophy as the original-side skip). Conservatively
-		// skip; the deterministic regression (TestConflictRange_TrivialBeginReverseMore) covers the
-		// critical boundary case explicitly.
-		if w.touchesGuardBand(reread) {
-			return danceOutcome{ran: false}
+		if !gotReread {
+			return danceOutcome{ran: false} // re-read never succeeded — skip (rare)
 		}
+		// NOTE: we do NOT skip when `reread` drifts into the guard band. The under-conflict oracle MUST
+		// run regardless: tr2 is the only writer between tr1's `original` and tr4's `reread`, so any
+		// difference (including a resolution that tr2 shifted to now include an inert guard key) is
+		// genuinely tr2-caused and therefore conflict-relevant — if tr3 did not conflict on it, that is a
+		// real missed conflict. (Skipping reread-drift here was an earlier bug: it silently swallowed the
+		// exact serializability violation this test exists to catch. The original-side skip is fine — it
+		// only filters which query is picked, before any conflict is adjudicated.)
 		changed := !kvEqual(original, reread)
 
 		// --- the oracle (RFC-125 §4.3) ---
@@ -539,7 +543,7 @@ func TestConflictRange_TrivialBeginReverseMore(t *testing.T) {
 	w := &conflictRangeWorkload{prefix: "crtrivrev_" + t.Name() + "_", maxKeySpace: 20, maxOffset: 5}
 
 	// Seed a dense, fully-known keyspace: data keys 0..19 all present, plus guards.
-	mustCommit(t, db, func(tr fdb.Transaction) {
+	mustCommit(t, db, func(tr fdb.WritableTransaction) {
 		w.setGuards(tr)
 		for i := 0; i < w.maxKeySpace; i++ {
 			tr.Set(fdb.Key(w.dkey(i)), w.val(i))
@@ -566,7 +570,7 @@ func TestConflictRange_TrivialBeginReverseMore(t *testing.T) {
 	tr3.SetReadVersion(rv)
 
 	// Concurrent writer: delete D19 (the TOP of the reverse window — definitely inside the returned set).
-	mustCommit(t, db, func(tr fdb.Transaction) {
+	mustCommit(t, db, func(tr fdb.WritableTransaction) {
 		tr.Clear(fdb.Key(w.dkey(w.maxKeySpace - 1)))
 	})
 
@@ -584,23 +588,16 @@ func TestConflictRange_TrivialBeginReverseMore(t *testing.T) {
 	}
 }
 
-// mustCommit runs fn in a fresh transaction and commits it, retrying on retryable errors.
-func mustCommit(t *testing.T, db fdb.Database, fn func(fdb.Transaction)) {
+// mustCommit runs fn as a plain write (no read-version pinning) via the production db.Transact retry
+// helper — the canonical path the rest of package fdb_test uses. (The tr1/tr2/tr3/tr4 dance can't use
+// this: it needs raw transactions for read-version pinning.)
+func mustCommit(t *testing.T, db fdb.Database, fn func(fdb.WritableTransaction)) {
 	t.Helper()
-	for {
-		tr, err := db.CreateTransaction()
-		if err != nil {
-			t.Fatalf("CreateTransaction: %v", err)
-		}
+	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		fn(tr)
-		if cerr := tr.Commit().Get(); cerr != nil {
-			if code, ok := codeOf(cerr); ok && fdb.IsRetryable(code) {
-				retryBackoff(tr, code)
-				continue
-			}
-			t.Fatalf("commit: %v", cerr)
-		}
-		return
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
 }
 
