@@ -13,7 +13,7 @@ compatibility; everything here is polish/parity/infra — **none gates adoption*
 details live in the phase/section the pointer names. Client items are fresh `fdb-client-engineer` RFC
 cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe ACK gate.
 
-1. **[~] C3 (conformance) — Ride their test designs: port FDB's adversarial workloads.** Cycle /
+1. **[x] C3 (conformance) — Ride their test designs: port FDB's adversarial workloads. COMPLETE.** Cycle /
    AtomicOps / ConflictRange / Serializability / FuzzApiCorrectness reimplemented as scenario +
    invariant specs driving the Go client against testcontainers + `SimTransport` (C4/RFC-118).
    **Increment 1 DONE:** Cycle workload — pure-client serializability oracle (RFC-119, PR #308).
@@ -39,9 +39,20 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    Proved NO under-conflict across the full offset/onEqual/reverse/limit space (deterministic: evaluated=120
    resultChanged=75); guard-key isolation (`maxOffset+1`, proven bound) keeps every resolution in-prefix.
    FDB-C-dev + Torvalds ACK (RFC + impl + delta), codex + @claude + CI green.
-   **Remaining:** FuzzApi (property-based multi-txn) *gap* only (substantial coverage already exists —
-   see RFC-119 §7). Detail: "Native fdbgo client" → C3.
-   **← IN PROGRESS.**
+   **Increment 7 (FINAL) DONE:** FuzzApiCorrectness (RFC-126, PR #324). The RFC pivoted under review:
+   the proposed error-contract fuzzer was NAK'd as padding (Go's error contract is already pinned at
+   fixed points + differentials), so the `ExceptionContract` was used as an *audit checklist* — which
+   surfaced real, libfdb_c-confirmed wire-contract divergences where Go silently accepted input
+   libfdb_c/Java reject: `getRange` row `limit < -1` → `range_limits_invalid (2012)`;
+   AddRead/WriteConflictRange + getRangeSplitPoints endpoint `> maxKey` → `key_outside_legal_range
+   (2004)` (with the read/write `maxReadKey`-vs-`maxWriteKey` asymmetry); and the metric-op early-return
+   precedence (inverted 2005 → cancelled 1025 → poison 2000 → timed_out 1031 → maxKey 2004). Each
+   revert-proven + pinned by red→green differentials / deterministic unit tests. Also fixed a
+   pre-existing flake in the RFC-121 conflict differentials (conservative-resolver false-positive 1020,
+   proven via libfdb_c hitting it too → retry). FDB-C-dev + Torvalds + /code-review + codex + @claude +
+   CI all green.
+   **C3 COMPLETE:** Cycle (+ read/commit faults), AtomicOps, ConflictRange, FuzzApiCorrectness
+   (error-contract axis), Serializability (via Cycle) all covered. Detail: "Native fdbgo client" → C3.
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
    encoding). RFC-059→067 closed. Detail: conformance section, "Fresh differential axes".

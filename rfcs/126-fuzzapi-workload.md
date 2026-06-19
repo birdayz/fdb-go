@@ -1,6 +1,6 @@
 # RFC-126 — FuzzApiCorrectness audit: close two client-side input-validation divergences
 
-**Status:** Accepted
+**Status:** Implemented (PR #324)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 7 (final) — **FuzzApiCorrectness**
 
 > **Reviews.** Original fuzzer draft: Torvalds **NAK** (padding over an already-pinned surface) → fuzzer
