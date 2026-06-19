@@ -1,6 +1,27 @@
 # RFC-121: Get/GetRange read-conflict — RYW-filter + extent-clamp (vs libfdb_c)
 
-**Status:** Draft
+**Status:** Accepted
+
+> **Reviews (this revision).** FDB-C-dev **ACK** — all five load-bearing claims verified
+> line-by-line against `/tmp/fdbsrc` 7.3.75 (clamp table, `kvs[len-1]` both directions,
+> `more⇒non-empty` no-under-conflict, D2 `!isDependentLocked()≡is_independent()`, conflict-after-
+> read-success-only). Torvalds **ACK** — 3 sites complete (grep-confirmed the other
+> `addReadConflict*` callers are correctly out of scope: explicit user API, the GetKey path, and
+> `commitDummyTransaction`), tests non-vacuous, lock-order/aliasing/phantom-protection clear.
+> **Binding impl conditions:** (1) `addReadConflictForKeyRYW` mirrors `addGetKeyConflictRange`'s
+> `rywDisabled`→full-single-key / else→`conflictRangesLocked(key, keyAfter(key))` split exactly;
+> (2) `FuzzDifferential_ConflictOutcome` must `t.Fatalf` on the `go=COMMIT, cgo=ABORT` direction
+> (under-conflict), never fold it into the `retry` bucket; (3) compute the clamp from the returned
+> `kvs[len-1]` against the *final* `more`, preserving the `begin<=end` + non-special-key guards.
+>
+> **Impl finding (full-suite pre-commit).** The single-key Get conflict must NOT route through the
+> range walk `conflictRangesLocked` — its `ensureSortedLocked` re-sorts the whole write map, which
+> every `Set` invalidates, so the hot Get path turned a write-heavy txn (10K-record bulk save, each
+> doing a split-marker Get) into O(n²·log n) and hung the LargeScan suite 15 min. Fixed with
+> `conflictForKeyLocked` (one map lookup + cleared binary-search, no sort) — the faithful analog of
+> C++'s single-key `updateConflictMap` (`it.skip(key)`, one segment), distinct from the range
+> overload. (So the three sites do NOT collapse to one helper: single-key uses the per-key check,
+> range uses the walk — mirroring C++'s two `updateConflictMap` overloads.)
 
 **Item:** Two confirmed conflict-range divergences from libfdb_c 7.3.75, found by the quality-grind
 conflict-range audit (2026-06-19). Both make a Go transaction **over-conflict** relative to a C/Java
