@@ -2172,7 +2172,6 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetSnapshotRywEnable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetUseGrvCache()).NotTo(HaveOccurred())
 	g.Expect(opts.SetAutoThrottleTag("test-tag")).NotTo(HaveOccurred())
-	g.Expect(opts.SetReportConflictingKeys()).NotTo(HaveOccurred())
 	g.Expect(opts.SetSpecialKeySpaceRelaxed()).NotTo(HaveOccurred())
 	g.Expect(opts.SetSpecialKeySpaceEnableWrites()).NotTo(HaveOccurred())
 	g.Expect(opts.SetBypassUnreadable()).NotTo(HaveOccurred())
@@ -2224,6 +2223,7 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 		{"authorization_token", func() error { return opts.SetAuthorizationToken("token") }},
 		{"raw_access", opts.SetRawAccess},
 		{"automatic_idempotency", opts.SetAutomaticIdempotency},
+		{"report_conflicting_keys", opts.SetReportConflictingKeys},
 	} {
 		err := tc.set()
 		g.Expect(err).To(HaveOccurred(), tc.name+" must reject, not silently no-op")

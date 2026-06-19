@@ -245,7 +245,14 @@ func (o goTransactionOptions) SetTag(tag string) error {
 }
 
 func (o goTransactionOptions) SetReportConflictingKeys() error {
-	return nil
+	// Fails unsafe if ignored: the caller sets this to read back the conflicting key ranges via
+	// the \xff\xff/transaction/conflicting_keys/ special-key module after a not_committed. The
+	// pure-Go client implements neither the commit-request field (CommitTransactionRef
+	// .report_conflicting_keys, which the proxy reads — CommitProxyServer.actor.cpp:2448) nor the
+	// special-key read-back, so silently no-op'ing would leave the caller with empty/erroring
+	// results and no signal. Report it, matching SetRawAccess/SetAuthorizationToken; the libfdb_c
+	// backend forwards it normally.
+	return &UnsupportedOptionError{Option: "report_conflicting_keys"}
 }
 
 func (o goTransactionOptions) SetSpecialKeySpaceRelaxed() error {
