@@ -38,6 +38,11 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err := tx.checkCancelled(); err != nil {
 		return 0, err
 	}
+	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
+	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
+	if err := tx.checkTimeout(); err != nil {
+		return 0, err
+	}
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
 	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
 	// path). This entry point does not fetch a read version, so it is gated explicitly rather
@@ -174,6 +179,14 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	}
 	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
+		return nil, err
+	}
+	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
+	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
+	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
+	// normally runs), so gate it explicitly — else the synchronous maxKey guard below would pre-empt
+	// 1031 with 2004 (codex catch).
+	if err := tx.checkTimeout(); err != nil {
 		return nil, err
 	}
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a

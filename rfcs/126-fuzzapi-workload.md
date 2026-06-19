@@ -163,6 +163,14 @@ range, so an inverted check goes **first** in both `getRangeSplitPointsImpl` *an
 maxKey check — C++ `:1853` validates none — but the inverted check still applies). Both pinned (inverted
 in-range → 2005; inverted+>maxKey → 2005 wins; estimatedSize inverted → 2005).
 
+**`transaction_timed_out` (1031) before maxKey (codex catch #2).** C++ checks `resetPromise.isSet()` —
+which carries the `SetTimeout` error — *before* the maxKey check (`ReadYourWrites.actor.cpp:1872` before
+`:1875`). The metric ops bypass `ensureReadVersion` (where Go's `checkTimeout` normally runs), so a
+synchronous `tx.checkTimeout()` is added before the maxKey guard in both impls. Final early-return order
+matches C++: **inverted (2005) → cancelled (1025) → timed_out (1031) → maxKey (2004)**. Pinned
+deterministically by `TestMetricOps_EarlyReturnPrecedence` (forces the timeout state; timeout beats
+maxKey, inverted beats timeout).
+
 ## 4. Executable spec (what the tests prove)
 
 1. **Differential A** (`bench/`, productionized from the probe): `getRange(limit)` through Go and

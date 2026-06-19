@@ -92,6 +92,7 @@ go_test(
         "locality_test.go",
         "locality_unit2_test.go",
         "locked_database_test.go",
+        "metrics_validation_test.go",
         "multishard_test.go",
         "nil_shard_end_test.go",
         "panicbackstop_test.go",
