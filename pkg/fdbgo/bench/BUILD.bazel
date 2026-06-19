@@ -4,6 +4,7 @@ go_test(
     name = "bench_test",
     srcs = [
         "bench_test.go",
+        "differential_approxsize_test.go",
         "differential_atomic_test.go",
         "differential_cancel_test.go",
         "differential_conflict_range_test.go",
@@ -24,6 +25,7 @@ go_test(
         "differential_tenant_test.go",
         "differential_test.go",
         "differential_tuple_test.go",
+        "differential_txnsizelimit_test.go",
         "differential_unreadable_test.go",
         "differential_versionstamp_test.go",
         "differential_vsorder_test.go",

@@ -425,7 +425,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 			WriteConflictRanges: writeCRs,
 			Mutations:           mutations,
 			ReadSnapshot:        tx.readVersion,
-			Lock_aware:          tx.lockAware,
+			// Lock_aware is intentionally NOT set: libfdb_c sets only the request FLAG
+			// (FLAG_IS_LOCK_AWARE below; NativeAPI.actor.cpp:6878) and the commit proxy re-derives
+			// transaction.lock_aware from the flag server-side (CommitProxyServer.actor.cpp:221).
+			// Setting the CommitTransactionRef.lock_aware field made Go's commit bytes carry an extra
+			// lock_aware=true flatbuffer scalar libfdb_c omits — a wire divergence on every lock-aware
+			// commit (behaviorally benign, but the wire is the hard line).
 		},
 		Flags:       flags,
 		Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},

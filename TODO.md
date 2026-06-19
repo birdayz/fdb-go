@@ -124,6 +124,126 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: watch-path divergences (D1/D2/D3/D5) — found by the quality-grind watch audit (2026-06-19); D4 fixed
+
+The watch audit fixed **D4** (WatchPoll now retries the SS poll-signals — watch_cancelled/process_behind/
+timed_out/future_version — instead of breaking the watch). Four remaining, ranked:
+
+- **D1 [concrete, fixable] — no `too_many_watches` (1032) limit.** C++ `Transaction::watch`
+  (`NativeAPI.actor.cpp:5694`) calls `increaseWatchCounter()` (`:2175`) which throws `too_many_watches`
+  when `outstandingWatches >= DEFAULT_MAX_OUTSTANDING_WATCHES = 1e4` (`ClientKnobs.cpp:120`, settable to
+  `ABSOLUTE_MAX_WATCHES=1e6` via `MAX_WATCHES`); `decreaseWatchCounter()` runs when the watch resolves/
+  errors (`:5679`). Go has NO outstanding-watch counter — watches are unbounded; 1032 is never thrown;
+  `MAX_WATCHES` is a no-op. Fix: a `db.outstandingWatches atomic.Int64` + `maxOutstandingWatches`,
+  increment at `WatchSetup` (return 1032 if at the limit), decrement on EVERY watch exit (fire/error/
+  cancel) — the lifecycle is the tricky part. Test with a low limit via a `MAX_WATCHES` option.
+- **D2 [architectural — RFC] — watch registered at READ version, not commit-gated.** C++ defers the
+  SS-side watch to AFTER commit via `setupWatches()` in `commitAndWatch` (`NativeAPI.actor.cpp:6418`,
+  `:6909`), at `committedVersion>0 ? committedVersion : readVersion`. Go's `WatchPoll` registers at
+  `tx.readVersion` immediately, with ZERO commit coordination (`commitpath.go` has no watch handling).
+  A Go watch is live before its transaction commits. Deep architectural gap.
+- **D3 [architectural — RFC] — no RYW pending-write watch semantics.** C++ `RYWImpl::watch`
+  (`ReadYourWrites.actor.cpp:1284`) keeps a `watchMap` + `triggerWatches`/`onChangeTrigger` so a watch
+  on a key with a differing same-tx pending write fires IMMEDIATELY. Go folds the pending write into the
+  baseline (via `tx.ryw.get`) but has no watchMap/immediate-fire — the watch's baseline becomes the
+  post-write value and it long-polls for the *next* change (wrong fire point).
+- **D5 [small] — cancel returns `context.Canceled`, not `transaction_cancelled` (1025); failed commit
+  doesn't cancel watches; stale comment.** `reset()→cancelWatches()` cancels the watch *context*, so
+  in-flight watches return `ctx.Err()` not an FDBError 1025 (C++ `resetPromise.sendError(1025)`). And
+  (tied to D2) a failed commit never tears down the watch (C++ `cancelWatches(e)`, `:6926`). Also the
+  comment at `transaction.go:1595` ("Watch() calls are NOT cancelled by Reset()") contradicts the actual
+  `reset()→cancelWatches()` path — cleanup.
+
+### [ ] fdbgo/client: missing `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — needs its own `fdb-client-engineer` RFC (commit-path wire/behavior; found by the quality-grind OnError audit, 2026-06-19)
+
+C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
+and read conflict ranges don't already intersect: `if (!causalWriteRisky &&
+!intersects(write_conflict_ranges, read_conflict_ranges)) makeSelfConflicting()`
+(`NativeAPI.actor.cpp:6858-6860`), where `makeSelfConflicting()` (`:5952`) pushes a single
+`\xFF/SC/<deterministicRandom()->randomUniqueID()>` range into BOTH read and write conflict sets.
+(There is a SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` for the
+automatic-idempotency feature — distinct, gate on `tr.idempotencyId`.) Go has neither: a write-only
+commit (read conflicts empty → no intersection) ships WITHOUT the synthetic range, and
+`commitDummyTransaction`'s `intersectConflictRanges` (`commitpath.go:250-265`) falls back to
+`writes[0].Begin` — a real user key — where C++'s dummy uses the synthetic key
+(`NativeAPI.actor.cpp:6744-6750`).
+
+**Two effects:** (a) Go's commit-request conflict-range vector diverges from libfdb_c for the same
+write-only transaction (request-frame semantic difference — not persisted bytes, but affects the
+resolver); (b) Go's commit_unknown_result dummy conflicts on a real user key, so a concurrent writer
+of that key can false-conflict the dummy, where C++'s synthetic UUID key never collides with real
+traffic. PARTIALLY mitigated today: Go's `OnError(1021/1039)` copies writeConflicts→readConflicts on
+the RETRY (`transaction.go:1850`), so the retry is self-conflicting via a different mechanism — but
+the original commit's wire shape and the dummy's key choice still diverge.
+
+**Why a dedicated RFC, not a grind fix:** the commit_unknown_result ↔ makeSelfConflicting ↔
+commitDummyTransaction interaction is subtle (each attempt mints a FRESH random UID, so it is NOT
+simple retry-idempotency), it touches the commit path + wire shape, and it can't be cleanly
+differential-tested at the data plane (conflict ranges go to the resolver, not storage — a
+fault-injection test that triggers commit_unknown_result is needed). Port `makeSelfConflicting` +
+the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin with a Go-side
+commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
+SimTransport commit_unknown_result behavioral test.
+
+### [ ] fdbgo/client: transaction-level options are PRESERVED across `onError` retry; C++ resets them to DB defaults — needs its own RFC (found by the quality-grind options audit, 2026-06-19)
+
+C++ `Transaction::resetImpl` (`NativeAPI.actor.cpp:6166`, called by `tr.reset()` on the RYW onError
+path, `ReadYourWrites.actor.cpp:1417`) does `trState = trState->cloneAndReset(...)`, and
+`cloneAndReset` (`:3515`) builds a FRESH `TransactionState` whose `options` are DB-default-constructed
+— it copies the old options ONLY `if (!cx->apiVersionAtLeast(16))` (ancient APIs). So for every modern
+app, a retry RESETS `priority`→DEFAULT, `causalReadRisky`→0 (grvFlags), `lockAware`→`cx->lockAware`,
+tx-level `sizeLimit`→DB default, `tags`→empty, `snapshotRYWDisableCount`→DB default, then re-applies
+ONLY the persistent options (timeout/retry_limit/max_retry_delay/auth_token, `persistent="true"` in
+`fdb.options`). Go's `reset()` (`transaction.go:2481`, comment ~`:2528`) instead PRESERVES
+priority/causalReadRisky/lockAware/readLockAware/sizeLimit/tags/snapshotRYWDisableCount — the comment
+asserts this "matches C++", which `cloneAndReset` disproves.
+
+Wire-visible on the retry: a transaction-level `SetPriorityBatch`/`SetCausalReadRisky`/`SetLockAware`
+keeps sending its flags on the retry GRV/commit where libfdb_c reverts to the DB default.
+**Why an RFC, not a grind fix:** the faithful fix re-seeds the tx-level options from the DB defaults on
+reset (factor out CreateTransaction's seeding, call it from reset, preserve only the 4 persistent
+options) — a change to the hot retry path with per-option DB-default subtleties (lockAware→cx default,
+not false; causalReadRisky consistency), and the existing code deliberately chose the wrong behavior, so
+it needs FDB-C-dev design review. Pin with a unit test (set a tx-level option → reset → assert reverted
+to DB default; persistent options survive).
+
+**Other options-audit findings (silent no-ops where C++ acts — `fdb/options.go`):** `REPORT_CONFLICTING_KEYS`
+(sets `commit.report_conflicting_keys`; Go field exists at `committransactionref_generated.go` slot 4
+but always false), transaction `TAG`/`AUTO_THROTTLE_TAG` (never populate the GRV/commit/read `Tags`
+slot — tag throttling non-functional; also no `tag_too_long`/`too_many_tags` validation),
+`READ_SERVER_SIDE_CACHE_*` + `READ_PRIORITY_*` (set `ReadOptions.cacheResult`/`.type`; Go no-ops),
+`INITIALIZE_NEW_DATABASE` (forces readVersion=0), `USE_PROVISIONAL_PROXIES` (GRV flag bit 2). Per the
+conformance principle, the silently-ignored ones should at least LOUDLY reject (UnsupportedOptionError)
+rather than no-op — but each is a small feature, scoped separately.
+
+**GRV / read-version audit (same grind) — NO consistency divergence found** (version-vector is OFF by
+default, `ServerKnobs.cpp:39`, so Go's empty `ssLatestCommitVersions`/`maxVersion` is exactly correct;
+read-version reuse, `read_snapshot`, 1007 aging all match). Latency/observability findings only:
+- **Write-only commits omit `CAUSAL_READ_RISKY` on the commit-path GRV.** C++ `tryCommit` does
+  `startTransaction(GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)` (`NativeAPI.actor.cpp:6578`) — a
+  write-only/no-prior-read commit doesn't need full causal consistency for its `read_snapshot`. Go's
+  commit path (`transaction.go:1507`) calls plain `ensureReadVersion` → `grvFlags()`, setting the flag
+  only if the USER did. Effect: an extra TLog epoch-confirmation round-trip per write-only commit
+  (latency/throughput, NOT consistency — the read_snapshot is equally valid). **Infra implication, why
+  not a grind fix:** Go's `grvBatcherIndex` keys batchers only on the PRIORITY mask, NOT the risky flag
+  (unlike C++'s `readVersionBatcher`, keyed by full flags) — so adding the flag would mix risky/non-risky
+  GRVs in one batch. The faithful fix re-keys the GRV batcher on the risky flag + threads it through the
+  commit-path `ensureReadVersion`; deliberate, FDB-C-dev-reviewed.
+- `SetReadVersion` accepts `v<=0` / double-set silently where libfdb_c `setVersion` throws →
+  `CATCH_AND_DIE` aborts the process (`NativeAPI.actor.cpp:5519`, `fdb_c.cpp:932`). Go's graceful
+  defer-to-1007 is arguably BETTER (no panic in library code per CLAUDE.md) — leave as a documented,
+  intentional divergence, don't copy the abort.
+- Dropped GRV-reply observability (no consistency impact): `proxyTagThrottledDuration` (the
+  `getTagThrottledDuration()` accumulator), the `metadataVersion` reply cache (Go does a real read of
+  `\xff/metadataVersion` — correct, one extra round-trip), `midShardSize` (no clear-range cost estimator).
+
+**Minor OnError/knob-audit findings (same grind, low priority — note, don't necessarily fix):**
+hedge `secondDelay` uses a fixed `2.0×primary-latency` where C++ uses a runtime-adaptive
+`secondMultiplier (≥1.0) × second-best latency + BASE_SECOND_REQUEST_TIME(0.5ms)`
+(`loadbalance.go:70` vs `LoadBalance.actor.h:560`; p99 hedge timing only); GRV batcher lacks C++'s
+`MAX_BATCH_SIZE=1000` force-flush (`NativeAPI.actor.cpp:7351`; >1000 concurrent GRVs/window wait the
+full window); GRV `batchTime` floors at 100µs where C++ has no floor.
+
 ### [x] fdbgo/wire: register WatchValueRequest/Reply in the schema extractor (pre-existing gap, surfaced by RFC-115 §6) — DONE (branch `wire/watchvalue-extractor-registration`, stacked on #303)
 
 `cmd/fdb-schema-extract/main.cpp` has no `extractType<WatchValueRequest>()` /

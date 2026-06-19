@@ -33,6 +33,8 @@ const (
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
 	ErrAccessedUnreadable        = 1036 // accessed_unreadable — read of a pending versionstamped key (NOT retryable; RFC-098)
 	ErrProcessBehind             = 1037 // process_behind
+	ErrWatchCancelled            = 1029 // watch_cancelled — SS watch limit exceeded; client polls instead
+	ErrTimedOut                  = 1004 // timed_out — the SS occasionally times out a watch; re-arm
 	ErrDatabaseLocked            = 1038 // database_locked
 	ErrClusterVersionChanged     = 1039 // cluster_version_changed (MAYBE_COMMITTED)
 	ErrProxyMemoryLimitExceeded  = 1042 // proxy_memory_limit_exceeded
@@ -168,12 +170,17 @@ type Transaction struct {
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
 	// use goroutines, so concurrent Get/Set calls on the same transaction race.
-	conflictMu       sync.Mutex
-	mutations        []Mutation
-	readConflicts    []KeyRange
-	writeConflicts   []KeyRange
-	conflictBuf      []byte       // batch-allocated backing store for conflict range keys
-	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
+	conflictMu     sync.Mutex
+	mutations      []Mutation
+	readConflicts  []KeyRange
+	writeConflicts []KeyRange
+	// singleKeyClearCount counts single-key Clear() calls (NOT ClearRange). C++ charges a
+	// single-key clear's mutation part sizeof(KeyRangeRef), not sizeof(MutationRef) (RYW:2431);
+	// a single-key clear is shape-indistinguishable from ClearRange(k, k+\0) in tx.mutations, so
+	// GetApproximateSize uses this count to apply the cheaper charge. Guarded by conflictMu.
+	singleKeyClearCount int
+	conflictBuf         []byte       // batch-allocated backing store for conflict range keys
+	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
 
 	retryCount int
 	backoff    time.Duration
@@ -1145,6 +1152,7 @@ func (tx *Transaction) Clear(key []byte) {
 		Key:   key,
 		Value: end,
 	})
+	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
 	tx.addWriteConflictLocked(key, end)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
@@ -1586,9 +1594,9 @@ func (tx *Transaction) Cancel() {
 // across Reset, matching C++ ReadYourWritesTransaction::reset() + applyPersistentOptions.
 // Updates creationTime so the timeout budget restarts (matches C++ reset() behavior).
 //
-// Note: in-flight Watch() calls are NOT cancelled by Reset(). Use context cancellation
-// to cancel pending watches. This differs from C++ where reset triggers
-// resetPromise.sendError(transaction_cancelled).
+// In-flight Watch() calls ARE cancelled by Reset() (via reset()→cancelWatches(), below), but they
+// surface as context.Canceled rather than the FDBError transaction_cancelled (1025) C++ raises via
+// resetPromise.sendError — a known divergence (TODO "watch-path divergences" D5).
 func (tx *Transaction) Reset() {
 	tx.retryCount = 0
 	tx.backoff = 0
@@ -1942,12 +1950,19 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 	tx.hasRetryLimit = true
 }
 
-// C++ sizeof constants for approximate size calculation.
-// MutationRef: uint8 type + 2×StringRef (16 bytes each) + Optional<uint32> + Optional<uint16> + bool ≈ 48 bytes.
-// KeyRangeRef: 2×StringRef (16 bytes each) = 32 bytes.
+// C++ sizeof constants for approximate size calculation. flow/Arena.h:370 wraps StringRef in
+// `#pragma pack(push, 4)`, so StringRef is 12 bytes (8-byte data pointer + 4-byte length, NO tail
+// padding up to 16) — NOT 16. Therefore, under that 4-byte packing:
+//
+//	sizeof(KeyRangeRef) = 2×StringRef          = 24   (FDBTypes.h:315 — {const KeyRef begin, end})
+//	sizeof(MutationRef) = uint8 type + 2×StringRef(12) + Optional<uint32>(8) + Optional<uint16>(4)
+//	                      + bool, all 4-aligned  = 44   (CommitTransaction.h:67)
+//
+// The earlier 48/32 assumed natural 8-byte StringRef alignment and missed the pack(4); both
+// over-counted. Verified byte-exact against libfdb_c by bench TestDifferential_ApproximateSize.
 const (
-	sizeofMutationRef = 48
-	sizeofKeyRangeRef = 32
+	sizeofMutationRef = 44
+	sizeofKeyRangeRef = 24
 )
 
 // GetApproximateSize returns the approximate size of the transaction's mutations
@@ -1975,6 +1990,12 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	for _, r := range tx.writeConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
+	// C++ charges a single-key clear's MUTATION part sizeof(KeyRangeRef), not sizeof(MutationRef)
+	// (ReadYourWrites.actor.cpp:2431 — it is modeled as a range entry in the write map). The mutation
+	// loop above charged every MutClearRange sizeofMutationRef; a single-key clear is shape-
+	// indistinguishable from a ClearRange(k, k+\x00), so correct the overcharge here from the Clear()-
+	// call count (the write-conflict half already matched: both charge sizeof(KeyRangeRef)).
+	size -= int64(tx.singleKeyClearCount) * (sizeofMutationRef - sizeofKeyRangeRef)
 	return size
 }
 
@@ -1988,6 +2009,14 @@ func (tx *Transaction) GetApproximateSize() int64 {
 // iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
 // likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
 func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
+	// The transaction_too_large (2101) check uses the NATIVE commit accounting: each mutation charged
+	// sizeof(MutationRef) and each conflict range sizeof(KeyRangeRef) (the 44/24 under pack(4)). This
+	// deliberately does NOT apply GetApproximateSize's single-key-clear adjustment: in the native
+	// commit a single-key clear is a ClearRange mutation charged sizeof(MutationRef) [44], not the RYW
+	// sizeof(KeyRangeRef) [24]. Verified byte-exact against libfdb_c's 2101 boundary (Set AND
+	// single-key-clear workloads) by bench TestDifferential_TransactionSizeLimit — go and cgo reject at
+	// the identical limit. (The old 48/32 over-counted here too, rejecting large txns slightly earlier
+	// than libfdb_c; the 44/24 fix closed it.)
 	var size int64
 	for _, m := range muts {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
@@ -2414,6 +2443,7 @@ func (tx *Transaction) postCommitReset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
 	// Return conflict buffer to pool for reuse by next transaction.
 	if tx.conflictBufOwner != nil {
 		tx.conflictBufOwner.b = tx.conflictBuf[:0]
@@ -2471,6 +2501,7 @@ func (tx *Transaction) reset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.singleKeyClearCount = 0          // cleared with mutations (GetApproximateSize accounting)
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()

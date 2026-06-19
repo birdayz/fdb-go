@@ -23,6 +23,7 @@ var (
 
 const (
 	wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
+	watchPollingTime     = 1 * time.Second       // CLIENT_KNOBS->WATCH_POLLING_TIME
 	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
 	// maxReadTimeoutRetries bounds the re-send of a read whose RPC reply
 	// timed out (errReplyTimeout). libfdb_c re-sends indefinitely (bounded by
@@ -42,6 +43,19 @@ const (
 	// timeout); this is the bounded-client analog.
 	maxSelectorResolutionSteps = 1000
 )
+
+// readTypeNormal is C++ ReadType::NORMAL (FDBTypes.h:1732, enum value 3) — the read-priority rank
+// the storage server applies. NOT EAGER (0).
+const readTypeNormal int32 = 3
+
+// lockAwareReadOptions is the ReadOptions a lock-aware read sends. C++ LOCK_AWARE/READ_LOCK_AWARE
+// initialize a DEFAULT ReadOptions (NativeAPI.actor.cpp:7072-7090) whose ctor sets
+// type=NORMAL(3), cacheResult=true (FDBTypes.h:1748), THEN set lockAware=true. Sending only
+// {LockAware:true} (Type=0/EAGER, CacheResult=false) is wire-wrong: it lands the read in the EAGER
+// SS read-priority rank and disables result caching, diverging from libfdb_c on every lock-aware read.
+func lockAwareReadOptions() types.ReadOptions {
+	return types.ReadOptions{Type: readTypeNormal, CacheResult: true, LockAware: true}
+}
 
 // readRPCTimeout is the per-RPC reply timeout for this transaction's reads:
 // the transaction's override when set (test-only), else DefaultRPCTimeout.
@@ -262,7 +276,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			}
 			if lockAware {
 				req.HasOptions = true
-				req.Options = types.ReadOptions{LockAware: true}
+				req.Options = lockAwareReadOptions()
 			}
 			bufp := getKeyBufPool.Get().(*[]byte)
 			reqData := req.MarshalFDBPooled(*bufp)
@@ -621,9 +635,13 @@ func (e *RangeMaterializationLimitError) Error() string {
 }
 
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
-	tx.hadRead.Store(true)         // a read was issued (RFC-059 poison signal)
-	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
-	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
+	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
+	// getRangeShardLimit is locations fetched per locateRange RPC. NOT C++ GET_RANGE_SHARD_LIMIT
+	// (=2, ClientKnobs.cpp:101) — a deliberate Go perf deviation: pre-fetch up to 100 shard locations
+	// per RPC (fewer, larger locate calls) vs C++ getExactRange's batch-of-2. Correctness-neutral: both
+	// loop until the range is exhausted and return identical KVs; only the locate-RPC count differs.
+	const getRangeShardLimit = 100
+	const maxRelocateRetries = 5 // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []KeyValue
 	var materializedBytes int64 // RFC-115 §2: bound total materialized bytes vs WithRangeByteCeiling
@@ -926,7 +944,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{LockAware: true}
+		req.Options = lockAwareReadOptions()
 	}
 	bufp := getKeyValuesBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)
@@ -985,7 +1003,7 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 	}
 	if lockAware {
 		req.HasOptions = true
-		req.Options = types.ReadOptions{LockAware: true}
+		req.Options = lockAwareReadOptions()
 	}
 	bufp := getValueBufPool.Get().(*[]byte)
 	result := req.MarshalFDBPooled(*bufp)
@@ -1105,7 +1123,16 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 	// raw tx span (C++ hands getKeyLocation parameters->spanContext, not the watch child).
 	watchSpan := childSpanContext(span)
 
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+	// A watch is a long-lived poll: it loops until the value changes (sendWatch returns nil), the
+	// watch context is cancelled (Reset/Cancel/timeout), or a non-retryable error surfaces. Mirrors
+	// C++ watchValue's `loop { ... } catch` (NativeAPI.actor.cpp:3993-4012). Only wrong_shard /
+	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
+	// watch keeps polling, as C++ does.
+	wrongShardRetries := 0
+	for {
+		if err := watchCtx.Err(); err != nil {
+			return err
+		}
 		loc, locErr := tx.db.locCache.locate(tx.db, watchCtx, key, tx.tenantId, span)
 		if locErr != nil {
 			return fmt.Errorf("locate key: %w", locErr)
@@ -1118,16 +1145,59 @@ func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVer
 		if watchErr == nil {
 			return nil
 		}
-		if isWrongShardServer(watchErr) || isAllAlternativesFailed(watchErr) {
-			tx.db.locCache.invalidate(key, tx.tenantId)
-			if err := sleepCtx(watchCtx, wrongShardRetryDelay); err != nil {
-				return err
-			}
-			continue
+		delay, retryable, invalidate := classifyWatchError(watchErr)
+		if !retryable {
+			return watchErr
 		}
-		return watchErr
+		if invalidate {
+			// wrong_shard / all_alternatives: transient relocate; bounded (a wrong-shard storm
+			// shouldn't spin forever — the unbounded poll signals below reset this budget).
+			wrongShardRetries++
+			if wrongShardRetries > MaxWrongShardRetries {
+				return &wire.FDBError{Code: ErrAllAlternativesFailed}
+			}
+			tx.db.locCache.invalidate(key, tx.tenantId)
+		} else {
+			wrongShardRetries = 0 // a completed round-trip clears the relocate budget
+		}
+		if err := sleepCtx(watchCtx, delay); err != nil {
+			return err
+		}
 	}
-	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// classifyWatchError decides how WatchPoll handles a watch RPC error, mirroring C++ watchValue's
+// catch arms (NativeAPI.actor.cpp:3993-4012):
+//   - wrong_shard_server / all_alternatives_failed → re-locate after WRONG_SHARD_SERVER_DELAY
+//     (invalidate=true, the only BOUNDED retry).
+//   - watch_cancelled (1029, SS watch limit exceeded) / process_behind (1037) → poll after
+//     WATCH_POLLING_TIME. Unbounded — a watch is a long-lived poll.
+//   - timed_out (1004, the SS occasionally times out a watch) / future_version (1009, the SS hasn't
+//     caught up to the watch's read version) → re-arm after FUTURE_VERSION_RETRY_DELAY. Unbounded.
+//     (C++ retries future_version in the SS-response actor, watchStorageServerResp; Go's flatter
+//     WatchPoll handles it here.)
+//   - anything else → terminal (retryable=false).
+func classifyWatchError(err error) (delay time.Duration, retryable, invalidate bool) {
+	switch {
+	case isWrongShardServer(err) || isAllAlternativesFailed(err):
+		return wrongShardRetryDelay, true, true
+	case isWatchErrorCode(err, ErrWatchCancelled) || isWatchErrorCode(err, ErrProcessBehind):
+		return watchPollingTime, true, false
+	case isWatchErrorCode(err, ErrTimedOut) || isWatchErrorCode(err, ErrFutureVersion):
+		return futureVersionDelay, true, false
+	default:
+		// Terminal: surface immediately. C++ watchValue delays FUTURE_VERSION_RETRY_DELAY before
+		// re-throwing (NativeAPI.actor.cpp:4010) — a PREVENT_FAST_SPIN guard for its actor loop. Go's
+		// WatchPoll returns the error to the caller (the watch is done; no spin), so the delay is
+		// unnecessary and deliberately omitted.
+		return 0, false, false
+	}
+}
+
+// isWatchErrorCode reports whether err is an FDBError with the given code.
+func isWatchErrorCode(err error, code int) bool {
+	var fdbErr *wire.FDBError
+	return errors.As(err, &fdbErr) && fdbErr.Code == code
 }
 
 // buildWatchValueRequest constructs a WatchValueRequest. `span` is the watchValue

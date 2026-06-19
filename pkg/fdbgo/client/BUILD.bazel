@@ -46,6 +46,7 @@ go_test(
     name = "client_test",
     timeout = "eternal",
     srcs = [
+        "approxsize_accounting_test.go",
         "atomic_conflictrange_test.go",
         "atomic_roundtrip_test.go",
         "atomic_test.go",
