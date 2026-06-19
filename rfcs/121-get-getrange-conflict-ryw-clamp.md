@@ -1,6 +1,16 @@
 # RFC-121: Get/GetRange read-conflict — RYW-filter + extent-clamp (vs libfdb_c)
 
-**Status:** Accepted
+**Status:** Implemented (PR #319)
+
+> **Implemented (PR #319).** Three fix sites landed: D1 extent-clamp + D2 RYW-filter in
+> `getRangeDir`/`Get`/`GetPipelined` (`rangeConflictExtent`, `conflictForKeyLocked`), and a
+> follow-up — codex found the streaming `RangeResult.Iterator()` read later batches under snapshot
+> (no conflict), which became an UNDER-conflict once D1 clamped the first batch; fixed so every
+> iterator batch is a serializable read adding its own clamped conflict (the C-client per-batch
+> model). Gauntlet: FDB-C-dev + Torvalds + /code-review + codex + @claude all green on the final
+> HEAD; 6/6 CI green. Differentials revert-proven red→green; `FuzzDifferential_ConflictOutcome`
+> (63k+ execs) + `TestDifferential_GetRangeIteratorConflict_RFC121` guard the under-conflict
+> direction at `t.Fatalf` severity.
 
 > **Reviews (this revision).** FDB-C-dev **ACK** — all five load-bearing claims verified
 > line-by-line against `/tmp/fdbsrc` 7.3.75 (clamp table, `kvs[len-1]` both directions,

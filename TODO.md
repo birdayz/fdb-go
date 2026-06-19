@@ -124,18 +124,22 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] fdbgo/client: Get/GetRange over-conflict vs libfdb_c — RFC-121 (HIGH; conflict-range audit 2026-06-19)
+### [x] fdbgo/client: Get/GetRange over-conflict vs libfdb_c — RFC-121 DONE (PR #319; conflict-range audit 2026-06-19)
 
-Two confirmed serializability-outcome divergences (both SAFE over-conflicts — Go aborts where C/Java
-commits, never the reverse). **D1:** GetRange adds the full requested `[begin,end)` read-conflict, not
-clamped to the data actually returned on a limited/`more` read (C++ clamps to `keyAfter(lastKey)` —
-ReadYourWrites.actor.cpp:271-274 / NativeAPI.actor.cpp:4576-4579). **D2:** Get/GetRange add the read-
-conflict unconditionally, not skipping keys served by a local independent write (RFC-058 wired this
-RYW filter into GetKey only — ReadYourWrites.actor.cpp:328/342). Fix = route Get/GetRange conflict
-generation through the RYW overlay + extent-clamp (RFC-121). **RFC-scope + high-risk**: a botched fix
-that under-conflicts loses serializability (a data bug, worse than the safe status quo), so it needs a
-differential proving red→green AND no new under-conflict, plus the full FDB-C-dev gauntlet. Spec +
-differential design in `rfcs/121-get-getrange-conflict-ryw-clamp.md`.
+Two confirmed serializability-outcome divergences (both SAFE over-conflicts — Go aborted where C/Java
+committed, never the reverse), now FIXED. **D1:** GetRange added the full requested `[begin,end)` read-
+conflict, not clamped to the data actually returned on a limited/`more` read (C++ clamps to
+`keyAfter(lastKey)` — ReadYourWrites.actor.cpp:271-274 / NativeAPI.actor.cpp:4576-4579). **D2:**
+Get/GetRange added the read-conflict unconditionally, not skipping keys served by a local independent
+write (RFC-058 had wired this RYW filter into GetKey only — ReadYourWrites.actor.cpp:328/342). Fix
+routed Get/GetRange conflict generation through the RYW overlay + extent-clamp (`rangeConflictExtent`,
+`conflictForKeyLocked`). **Plus a follow-up codex caught:** the streaming `RangeResult.Iterator()` read
+later batches under snapshot (no conflict), which became an UNDER-conflict once D1 clamped the first
+batch — fixed so every batch is a serializable read adding its own clamped conflict (the C-client
+per-batch model). Pinned by red→green differentials + `FuzzDifferential_ConflictOutcome` (63k+ execs)
++ `TestDifferential_GetRangeIteratorConflict_RFC121`, all guarding the under-conflict direction at
+`t.Fatalf` severity. Full gauntlet green (FDB-C-dev + Torvalds + /code-review + codex + @claude + CI).
+`rfcs/121-get-getrange-conflict-ryw-clamp.md`.
 
 ### [ ] fdbgo/client: system-key DB-default applied to a tenant txn — tenant audit (2026-06-19); user-path FIXED
 
