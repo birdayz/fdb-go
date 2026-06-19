@@ -401,6 +401,15 @@ func (p *packer) encodeElement(e TupleElement) {
 	case UUID:
 		p.encodeUUID(e)
 	case Versionstamp:
+		// encodeElement backs only the vanilla (non-versionstamp) APIs — Pack1WithPrefix,
+		// Pack1ConcatWithPrefix, Packer.EncodeElement — which do NOT track a versionstamp offset.
+		// An incomplete versionstamp here would be silently encoded as the literal 0xFF×10 and
+		// never resolved to the commit version. Panic, exactly as encodeTuple does for a vanilla
+		// Pack (tuple.go encodeTuple), so the misuse fails loud instead of writing a corrupt key.
+		// Callers needing a versionstamp must use PackWithVersionstamp.
+		if e.TransactionVersion == incompleteTransactionVersion {
+			panic("Incomplete Versionstamp included in vanilla tuple pack")
+		}
 		p.encodeVersionstamp(e)
 	default:
 		panic(fmt.Sprintf("unencodable element (%v, type %T)", e, e))

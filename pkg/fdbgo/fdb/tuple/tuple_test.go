@@ -136,3 +136,32 @@ func TestPackerPoolRoundtrip(t *testing.T) {
 	expected = append(expected, Tuple{int64(99)}.Pack()...)
 	g.Expect(got).To(Equal(expected))
 }
+
+// TestPack1_IncompleteVersionstampPanics pins that the single-element APIs (Pack1WithPrefix,
+// Pack1ConcatWithPrefix, Packer.EncodeElement) reject an INCOMPLETE versionstamp exactly as the
+// vanilla Tuple.Pack path does (encodeTuple guard, tuple.go:455) — failing loud instead of silently
+// encoding an unresolved 0xFF×10 versionstamp that would never be filled in at commit. A COMPLETE
+// versionstamp encodes fine and matches Tuple.Pack byte-for-byte.
+func TestPack1_IncompleteVersionstampPanics(t *testing.T) {
+	t.Parallel()
+	g := NewGomegaWithT(t)
+	prefix := []byte{0x01, 0x02}
+	incomplete := IncompleteVersionstamp(7)
+
+	// Incomplete → panic on every single-element entry point (matching Tuple.Pack).
+	g.Expect(func() { Tuple{incomplete}.Pack() }).To(Panic(), "Tuple.Pack baseline")
+	g.Expect(func() { Pack1WithPrefix(prefix, incomplete) }).To(Panic(), "Pack1WithPrefix")
+	g.Expect(func() { Pack1ConcatWithPrefix(prefix, incomplete, Tuple{int64(1)}) }).To(Panic(), "Pack1ConcatWithPrefix")
+	// GetPacker() (not a bare Packer{}, whose nil p would nil-deref) so the panic is the
+	// versionstamp guard, not an uninitialized-packer crash.
+	g.Expect(func() { GetPacker().EncodeElement(incomplete) }).To(Panic(), "Packer.EncodeElement")
+
+	// Complete versionstamp → encodes, byte-identical to Tuple.Pack.
+	var tv [10]byte
+	for i := range tv {
+		tv[i] = byte(i + 1)
+	}
+	complete := Versionstamp{TransactionVersion: tv, UserVersion: 9}
+	expected := append(append([]byte{}, prefix...), Tuple{complete}.Pack()...)
+	g.Expect(Pack1WithPrefix(prefix, complete)).To(Equal(expected), "complete versionstamp must encode")
+}
