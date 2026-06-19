@@ -30,6 +30,7 @@ func TestPageContinuationState(t *testing.T) {
 		//   out-of-band (scan/time/byte) before any resumable progress → 54F01, not data loss.
 		{"start + scan limit", &recordlayer.StartContinuation{}, recordlayer.ScanLimitReached, false, nil, true},
 		{"start + time limit", &recordlayer.StartContinuation{}, recordlayer.TimeLimitReached, false, nil, true},
+		{"start + byte limit", &recordlayer.StartContinuation{}, recordlayer.ByteLimitReached, false, nil, true},
 		//   in-band ReturnLimitReached with zero rows ⟹ LIMIT 0 → clean exhaustion, no data lost.
 		{"start + return limit (LIMIT 0)", &recordlayer.StartContinuation{}, recordlayer.ReturnLimitReached, true, nil, false},
 	}
