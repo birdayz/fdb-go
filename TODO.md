@@ -124,6 +124,20 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: system-key DB-default applied to a tenant txn — tenant audit (2026-06-19); user-path FIXED
+
+The tenant audit confirmed the WIRE path is byte-perfect (prefix = bigEndian64(id), prepend-at-commit,
+TenantInfo, key-size all match C++). One behavioral divergence (#6) was FIXED: `SetReadSystemKeys`/
+`SetAccessSystemKeys` on a tenant transaction now return invalid_option (2007), matching C++
+`setOption` (NativeAPI.actor.cpp:7159-7171). **Remaining edge:** the DB-LEVEL default path is not
+covered. `CreateTransaction` seeds DB defaults (incl. a READ_SYSTEM_KEYS/ACCESS_SYSTEM_KEYS DB
+default) while `tenantId == NoTenantID`, and `SetTenantId` runs *after* — so a tenant txn created
+under a DB that defaults system-key access silently keeps the flags, where C++ rejects. Fix needs a
+check at `SetTenantId` time (reject if system-key flags already set) or at use time; `SetTenantId`
+returns void today, so it's a signature/ordering change — deferred. Rare (a DB-wide system-key
+default + tenants is unusual). Also documented in-code: the D3 `stripTenantPrefix` clamp divergence
+(unreachable — the commit proxy guarantees prefixed boundaries; comment at `locality.go`).
+
 ### [ ] fdbgo/client: special-key-space (`\xff\xff/...`) unimplemented — locality audit D1 (2026-06-19)
 
 Go has NO special-key-space module; every `\xff\xff/...` read hits the `maxReadKey()` gate and
