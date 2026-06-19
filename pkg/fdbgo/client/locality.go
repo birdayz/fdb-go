@@ -386,6 +386,11 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 	}
 	var prefix [8]byte
 	binary.BigEndian.PutUint64(prefix[:], uint64(tenantId))
+	// A non-prefixed boundary is left unchanged here; C++ toPrefixRelativeRange (FDBTypes.cpp:26-34)
+	// instead clamps it to allKeys ("" .. "\xff\xff"). The difference is unreachable on a correct
+	// cluster: the commit proxy already clamps every returned shard range to the tenant via
+	// TenantAPI::clampRangeToTenant (CommitProxyServer.actor.cpp), so both boundaries always carry
+	// the prefix. The else-branch only differs against a malformed proxy reply (tenant audit D3).
 	for i := range entries {
 		if bytes.HasPrefix(entries[i].begin, prefix[:]) {
 			entries[i].begin = entries[i].begin[8:]

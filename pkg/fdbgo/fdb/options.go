@@ -87,6 +87,20 @@ func (e *UnsupportedOptionError) Error() string {
 // the numeric code treat it like libfdb_c rejecting an option.
 func (e *UnsupportedOptionError) FDBCode() int { return 2007 }
 
+// TenantOptionError is returned when a system-key-access option (READ_SYSTEM_KEYS /
+// ACCESS_SYSTEM_KEYS) is set on a tenant transaction. C++ setOption throws invalid_option (2007)
+// here — "System key access implies raw access", which is incompatible with tenant scoping
+// (NativeAPI.actor.cpp:7163-7170). Unlike UnsupportedOptionError, the option IS supported by the
+// pure-Go client; it is just invalid in this context.
+type TenantOptionError struct{ Option string }
+
+func (e *TenantOptionError) Error() string {
+	return "fdbgo: transaction option " + e.Option + " is not valid on a tenant transaction (invalid_option)"
+}
+
+// FDBCode reports invalid_option (2007), matching libfdb_c's throw.
+func (e *TenantOptionError) FDBCode() int { return 2007 }
+
 // goTransactionOptions is the pure-Go implementation of TransactionOptions,
 // delegating to the underlying client transaction.
 type goTransactionOptions struct {
@@ -149,11 +163,20 @@ func (o goTransactionOptions) SetWriteConflictsDisabled() {
 // database.go. (Previously this method auto-set lock-aware, diverging from C;
 // that coupling is removed.)
 func (o goTransactionOptions) SetAccessSystemKeys() error {
+	// C++ setOption throws invalid_option when system-key access is requested on a tenant
+	// transaction (NativeAPI.actor.cpp:7163-7170) — system-key access implies raw access, which
+	// can't be tenant-scoped. Reject eagerly to match, before mutating any flag.
+	if o.tx.inner.TenantId() != client.NoTenantID {
+		return &TenantOptionError{Option: "access_system_keys"}
+	}
 	o.tx.inner.SetAccessSystemKeys()
 	return nil
 }
 
 func (o goTransactionOptions) SetReadSystemKeys() error {
+	if o.tx.inner.TenantId() != client.NoTenantID {
+		return &TenantOptionError{Option: "read_system_keys"}
+	}
 	o.tx.inner.SetReadSystemKeys()
 	return nil
 }
