@@ -63,6 +63,7 @@ go_test(
         "commitpath_test.go",
         "commitpath_unit_test.go",
         "concurrent_stress_test.go",
+        "conflict_range_validation_test.go",
         "connmon_ping_test.go",
         "connmon_test.go",
         "coordinator_forward_test.go",

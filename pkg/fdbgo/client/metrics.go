@@ -167,6 +167,14 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	if tx.rywPoisonErr != nil {
 		return nil, tx.rywPoisonErr
 	}
+	// C++ RYW::getRangeSplitPoints rejects an out-of-range key (ReadYourWrites.actor.cpp:1875-1877):
+	// `begin > getMaxReadKey() || end > getMaxReadKey() → key_outside_legal_range`. Sibling of the
+	// getRange/Get path; without this Go silently accepted a split-points request past maxReadKey
+	// where libfdb_c rejects (RFC-126, FDB-C-dev review).
+	maxKey := tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
 	// C++ uses std::numeric_limits<int>::max() (CLIENT_KNOBS->TOO_MANY) to fetch ALL
 	// shard locations overlapping [begin,end) at once (NativeAPI.actor.cpp:8153-8159).
 	const shardLimit = math.MaxInt32

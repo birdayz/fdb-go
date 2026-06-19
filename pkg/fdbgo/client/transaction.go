@@ -49,6 +49,7 @@ const (
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2 (NOT C++ 1200=recruitment_failed)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
+	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -487,6 +488,9 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
 	}
+	if limit < -1 { // range_limits_invalid — see getRangeDir
+		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
+	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, false)
 		return kvs, more, s.tx.trackReadError(err)
@@ -505,6 +509,9 @@ func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit
 	maxKey := s.tx.maxReadKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
+	}
+	if limit < -1 { // range_limits_invalid — see getRangeDir
+		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, true)
@@ -1090,6 +1097,10 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
+// metadataVersionKeyEndBytes is \xff/metadataVersion\x00 (SystemData.cpp:1386) — the end of the
+// metadataVersionKey range exempted from addReadConflictRange's maxReadKey check (ReadYourWrites.actor.cpp:1955).
+var metadataVersionKeyEndBytes = []byte("\xff/metadataVersion\x00")
+
 // metadataVersionRequiredValue is the ONLY operand libfdb_c accepts for a
 // SetVersionstampedValue to metadataVersionKey (SystemData.cpp:1387 — 14 zero bytes: a
 // 10-byte versionstamp placeholder + the 4-byte LE offset suffix 0). C++ RYW::atomicOp
@@ -1149,6 +1160,14 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	maxKey := tx.maxReadKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return nil, false, &wire.FDBError{Code: 2004}
+	}
+	// C++ RYW::getRange: !limits.isValid() → range_limits_invalid (ReadYourWrites.actor.cpp:1749).
+	// GetRangeLimits::isValid (FDBTypes.h:754) accepts rows >= 0 || rows == ROW_LIMIT_UNLIMITED(-1),
+	// so a row limit < -1 is invalid; -1/0/positive are valid. libfdb_c (api > 13, fdb_c.cpp:983 no
+	// negative→reverse remap) rejects limit <= -2 here while Go used to map all <= 0 to unlimited.
+	// key_outside_legal_range is checked first (C++ order :1740 before :1749).
+	if limit < -1 {
+		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
 
 	var kvs []KeyValue
@@ -2485,6 +2504,14 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1954-1957, apiVersionAtLeast(300)): reject a
+	// range whose begin/end exceeds getMaxReadKey(), EXCEPT the exact metadataVersionKey range. Inverted
+	// is checked first (C++ throws it from KeyRangeRef construction before this check).
+	maxKey := tx.maxReadKey()
+	if (bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0) &&
+		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
+		return &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
 	tx.addReadConflict(begin, end)
 	return nil
 }
@@ -2499,6 +2526,13 @@ func (tx *Transaction) AddReadConflictKey(key []byte) {
 func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
+	}
+	// C++ addWriteConflictRange (ReadYourWrites.actor.cpp:2466-2468, apiVersionAtLeast(300)): reject a
+	// range whose begin/end exceeds getMaxWriteKey() — note getMaxWriteKey (gated on writeSystemKeys),
+	// NOT getMaxReadKey, and NO metadataVersionKey exception (asymmetric with the read path above).
+	maxKey := tx.maxWriteKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	tx.addWriteConflict(begin, end)
 	return nil

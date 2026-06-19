@@ -1,7 +1,16 @@
 # RFC-126 — FuzzApiCorrectness audit: close two client-side input-validation divergences
 
-**Status:** Draft (reframed after review)
+**Status:** Accepted
 **Item:** TODO.md C3 ("Ride their test designs"), increment 7 (final) — **FuzzApiCorrectness**
+
+> **Reviews.** Original fuzzer draft: Torvalds **NAK** (padding over an already-pinned surface) → fuzzer
+> dropped; the `ExceptionContract` is used as an *audit checklist*, which surfaced two real divergences.
+> Reframed RFC: FDB-C-dev **ACK** (Divergence A `< -1` boundary airtight vs `FDBTypes.h:754` +
+> `fdb_c.cpp:983`; Divergence B 2004 + the read/write split faithful vs `ReadYourWrites.actor.cpp:1954`/
+> `:2466`) and Torvalds **ACK** ("ship it" — reframe kills the padding, both divergences empirically real,
+> the §3.2 read/write asymmetry (read `maxReadKey`+MVK-exception / write `maxWriteKey` no-exception) is
+> correctly split, §6 scope + "C3 complete" honest). Both caught the same §3.2 flattening bug (fixed
+> before ACK). Empirically confirmed vs libfdb_c (cgo, api 730): the §2 probe table.
 (RFC-119 §7 named gap: "property-based multi-txn"). The last C3 gap.
 **Spec:** `fdbserver/workloads/FuzzApiCorrectness.actor.cpp` @ 7.3.75 (the per-operation
 `ExceptionContract`), as an **audit checklist** for Go's client-side input validation — not a workload
@@ -135,6 +144,16 @@ check (so inverted wins when both apply, matching C++'s construct-then-check ord
 
 The differential (§4.2) must exercise this read/write asymmetry under a system-key option (where
 `maxReadKey` and `maxWriteKey` diverge), not only the default where they coincide.
+
+### 3.3 Divergence B sibling — `getRangeSplitPoints` out-of-range check (FDB-C-dev impl review)
+
+The impl review caught a third sibling of the same read-path class: C++ `RYW::getRangeSplitPoints`
+(`ReadYourWrites.actor.cpp:1875-1877`) rejects `begin > getMaxReadKey() || end > getMaxReadKey()` with
+`key_outside_legal_range`, but Go's `getRangeSplitPointsImpl` (`metrics.go`) had no such check — so a
+split-points request past `maxReadKey` was silently accepted (and worse, *hung* trying to split into the
+system keyspace, where libfdb_c rejects fast). Add the same `tx.maxReadKey()` guard after the poison
+check, before the locate loop. (`getEstimatedRangeSizeBytes` correctly has none — C++ `:1853` doesn't
+validate it.) Pinned by `TestDifferential_RangeSplitPointsMaxKey`.
 
 ## 4. Executable spec (what the tests prove)
 
