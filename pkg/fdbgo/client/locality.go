@@ -83,6 +83,10 @@ func (lc *locationCache) insertSorted(newEntries []locationEntry) {
 type ServerInfo struct {
 	Address string
 	Token   transport.UID
+	// TLS records whether the SS address carried the TLS flag. Address itself stays a clean
+	// host:port for dialing; GetAddressesForKey appends ":tls" to its output when this is set,
+	// matching C++ NetworkAddress::toString (flow/network.cpp:215).
+	TLS bool
 }
 
 // LocationResult holds the storage servers and shard key range for a locate() result.
@@ -643,6 +647,7 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 				servers = append(servers, ServerInfo{
 					Address: endpointAddress(&ep),
 					Token:   endpointToken(&ep),
+					TLS:     endpointIsTLS(&ep),
 				})
 			}
 		}

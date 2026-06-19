@@ -124,6 +124,25 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: special-key-space (`\xff\xff/...`) unimplemented — locality audit D1 (2026-06-19)
+
+Go has NO special-key-space module; every `\xff\xff/...` read hits the `maxReadKey()` gate and
+returns `key_outside_legal_range` (2004). C++ `ReadYourWritesTransaction::get/getRange` intercept
+`specialKeys.contains(key)` and route to `specialKeySpace` BEFORE the maxReadKey gate
+(`ReadYourWrites.actor.cpp:1634-1637, 1716-1721`); `DatabaseContext` registers ~30 modules
+(`NativeAPI.actor.cpp:1591, 1621-1815`): `\xff\xff/status/json`, `/cluster_file_path`,
+`/connection_string`, `/worker_interfaces/`, `/transaction/conflicting_keys`,
+`/transaction/{read,write}_conflict_range`, management/configuration, etc. All work via
+libfdb_c/Java; all fail with 2004 in Go. It LOUDLY rejects (returns an error, not silent
+corruption), but the entire surface is a feature gap. `REPORT_CONFLICTING_KEYS` already noted
+elsewhere; this is the broader gap. The `\xff` system-key gating itself is faithful (maxReadKey =
+`\xff`/`\xff\xff` matches C++ `getMaxReadKey`). The `SetSpecialKeySpace*`/`SetReportConflictingKeys`
+option setters are silent no-ops (`fdb/options.go`). Low-frequency for a record-layer port, but it
+is real cross-client surface. D2 (address `:tls`/IPv6 formatting) was FIXED; D3 (INCLUDE_PORT_IN_ADDRESS
+no-op — matches api≥630 default, not a real divergence), D4 (`ParseClusterString` whitespace not
+collapsed like C++ `trim()`), D5 (IPv6 coordinator round-trip not re-normalized in `ClusterFile.String`;
+first-vs-last `@` split on malformed input) are low-impact edges.
+
 ### [ ] fdbgo/client: watch-path divergences (D1/D2/D3/D5) — found by the quality-grind watch audit (2026-06-19); D4 fixed
 
 The watch audit fixed **D4** (WatchPoll now retries the SS poll-signals — watch_cancelled/process_behind/

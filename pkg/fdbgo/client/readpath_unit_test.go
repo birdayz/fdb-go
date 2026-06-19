@@ -425,3 +425,22 @@ func TestClassifyWatchError(t *testing.T) {
 		})
 	}
 }
+
+// TestLockAwareReadOptions pins the shared ReadOptions all three lock-aware read paths (getValue,
+// getKey, getKeyValues) send — the single source of truth, so it covers the getKey path that lacks
+// its own build*Request round-trip. C++ LOCK_AWARE inits a default ReadOptions (Type=NORMAL(3),
+// CacheResult=true) then sets lockAware (NativeAPI.actor.cpp:7072; FDBTypes.h:1748). Revert-proven:
+// {LockAware:true} alone (Type=0/EAGER, CacheResult=false) fails here.
+func TestLockAwareReadOptions(t *testing.T) {
+	t.Parallel()
+	ro := lockAwareReadOptions()
+	if ro.Type != readTypeNormal {
+		t.Errorf("Type: got %d, want %d (ReadType::NORMAL)", ro.Type, readTypeNormal)
+	}
+	if !ro.CacheResult {
+		t.Error("CacheResult: got false, want true")
+	}
+	if !ro.LockAware {
+		t.Error("LockAware: got false, want true")
+	}
+}

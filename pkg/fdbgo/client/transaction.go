@@ -2062,6 +2062,11 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 	addrs := make([]string, len(loc.Servers))
 	for i, s := range loc.Servers {
 		addrs[i] = s.Address
+		if s.TLS {
+			// C++ getAddressesForKey returns address().toString(), which appends ":tls"
+			// (NativeAPI.actor.cpp:5747 → flow/network.cpp:215). Address stays clean for dialing.
+			addrs[i] += ":tls"
+		}
 	}
 	return addrs, nil
 }
