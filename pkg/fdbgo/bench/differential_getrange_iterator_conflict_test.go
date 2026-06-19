@@ -68,13 +68,17 @@ func goRangeIteratorConflictScenario(t *testing.T, pfx string) conflictOutcome {
 	).Iterator()
 	n := 0
 	for iter.Advance() {
-		if _, gerr := iter.Get(); gerr != nil {
-			if isFDBRetryable(gerr) {
-				return conflictOutcome{retry: true}
-			}
-			t.Fatalf("go A iterate: %v", gerr)
-		}
+		iter.MustGet() // Advance()==true guarantees a valid element with no error
 		n++
+	}
+	// Advance() returns false on exhaustion OR a batch-fetch error; surface the latter via Get()
+	// so a transient read (e.g. 1007 under heavy parallel-container load) RETRIES instead of
+	// fataling the row-count assert (matching the sibling GetSlice scenarios' transient handling).
+	if _, gerr := iter.Get(); gerr != nil {
+		if isFDBRetryable(gerr) {
+			return conflictOutcome{retry: true}
+		}
+		t.Fatalf("go A iterate: %v", gerr)
 	}
 	if n != 20 {
 		t.Fatalf("go A iterated %d rows, want 20 (scenario assumption — must read k15 in a later batch)", n)
@@ -140,6 +144,10 @@ func cgoRangeIteratorConflictScenario(t *testing.T, pfx string) conflictOutcome 
 	).Iterator()
 	n := 0
 	for iter.Advance() {
+		// Apple binding contract: Advance() returns TRUE on a batch-fetch error (so the next
+		// Get surfaces it), so check Get's error IN the loop. Use Get (not MustGet, which would
+		// panic the FDB error) so a transient read RETRIES; a post-loop Get() would index past
+		// the end on clean exhaustion and panic.
 		if _, gerr := iter.Get(); gerr != nil {
 			if isFDBRetryable(gerr) {
 				return conflictOutcome{retry: true}
