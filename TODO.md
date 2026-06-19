@@ -31,9 +31,16 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    commit-drop fault (proving atomic-op+log commit atomically even under ambiguous commits). A probe
    confirmed the same atomic op double-applies under 1021 (faithful — no idempotency IDs), which is why
    the fresh-per-attempt logKey is load-bearing. Serializability gap is already covered by Cycle.
-   **Remaining:** ConflictRange (concurrent read/write race-detection) + FuzzApi (property-based
-   multi-txn) *gaps* (substantial coverage already exists — see RFC-119 §7). Detail: "Native fdbgo
-   client" → C3.
+   **Increment 6 DONE:** ConflictRange workload (RFC-125, PR #323) — a two-directional read-conflict-range
+   oracle on key-selector getRange, driven through the real `fdb` facade. A concurrent writer (tr2) commits
+   between a pinned reader's (tr3) read version and its commit; the oracle is `resultChanged ⟹ foundConflict`
+   (under-conflict = `t.Fatalf`, the serializability teeth, revert-proven) with over-conflicts SAFE/counted
+   (Go's getKey-then-range selector union is architecturally wider than C++'s combined `addConflictRange`).
+   Proved NO under-conflict across the full offset/onEqual/reverse/limit space (deterministic: evaluated=120
+   resultChanged=75); guard-key isolation (`maxOffset+1`, proven bound) keeps every resolution in-prefix.
+   FDB-C-dev + Torvalds ACK (RFC + impl + delta), codex + @claude + CI green.
+   **Remaining:** FuzzApi (property-based multi-txn) *gap* only (substantial coverage already exists —
+   see RFC-119 §7). Detail: "Native fdbgo client" → C3.
    **← IN PROGRESS.**
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp

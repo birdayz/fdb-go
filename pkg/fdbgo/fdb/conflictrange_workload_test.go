@@ -9,8 +9,10 @@ package fdb_test
 // the resolver's verdict is checked against ground truth (a fresh re-read on tr4).
 //
 // THE LOAD-BEARING FACT (RFC-125 §3): Go does NOT resolve a selector range server-side. The fdb facade
-// (range_result.go resolveSelector) resolves each non-trivial selector with a separate GetKey round-trip,
-// then issues getRange over the resolved [begin,end). So Go's read-conflict coverage for a selector
+// (range_result.go resolveSelector) resolves each non-trivial selector with a separate GetKey round-trip
+// (the two TRIVIAL forms — firstGreaterOrEqual = !orEqual,offset 1; and firstGreaterThan = orEqual,offset 1
+// → k+\x00 — resolve client-side with NO GetKey and so NO getKey conflict; the random onEqual exercises
+// both), then issues getRange over the resolved [begin,end). So Go's read-conflict coverage for a selector
 // getRange is the UNION of getKey(beginSel) ∪ getKey(endSel) ∪ getRange conflicts — vs C++'s single
 // combined addConflictRange(GetRangeReq). The FDB-C-dev review proved the union ⊇ C++'s range across the
 // offset/orEqual/reverse/limit/more cross-product (no under-conflict hole, incl. the trivial-selector
@@ -136,13 +138,15 @@ type selectorQuery struct {
 
 func (w *conflictRangeWorkload) randomQuery(rng *rand.Rand) selectorQuery {
 	return selectorQuery{
-		keyA:     rng.Intn(w.maxKeySpace),               // randomInt(0, maxKeySpace)
+		// All bounds mirror C++ randomInt's EXCLUSIVE upper bound (the comment shows the C++ call → the
+		// actual inclusive Go range it produces).
+		keyA:     rng.Intn(w.maxKeySpace),               // randomInt(0, maxKeySpace) → [0, maxKeySpace-1]
 		keyB:     rng.Intn(w.maxKeySpace),               //
 		onEqualA: rng.Intn(2) != 0,                      // randomInt(0,2) != 0
 		onEqualB: rng.Intn(2) != 0,                      //
-		offsetA:  rng.Intn(2*w.maxOffset) - w.maxOffset, // randomInt(-maxOffset, maxOffset)
+		offsetA:  rng.Intn(2*w.maxOffset) - w.maxOffset, // randomInt(-maxOffset, maxOffset) → [-maxOffset, maxOffset-1]
 		offsetB:  rng.Intn(2*w.maxOffset) - w.maxOffset, //
-		limit:    rng.Intn(w.maxKeySpace-1) + 1,         // randomInt(1, maxKeySpace)
+		limit:    rng.Intn(w.maxKeySpace-1) + 1,         // randomInt(1, maxKeySpace) → [1, maxKeySpace-1]
 		reverse:  rng.Intn(2) != 0,                      // coinflip
 	}
 }

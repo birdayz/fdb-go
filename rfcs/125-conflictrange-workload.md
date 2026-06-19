@@ -1,6 +1,6 @@
 # RFC-125 — ConflictRange workload: a two-directional read-conflict-range oracle on key-selector getRange
 
-**Status:** Accepted
+**Status:** Implemented (PR #323)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 6 — the **ConflictRange** workload
 
 > **Reviews.** FDB-C-dev **ACK** (anchored on /tmp/fdbsrc @ 7.3.75): citations accurate; pushed hard on
