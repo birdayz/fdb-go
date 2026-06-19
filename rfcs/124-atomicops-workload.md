@@ -1,6 +1,6 @@
 # RFC-124 — AtomicOps workload: atomic-op + companion-write transactional-consistency oracle
 
-**Status:** Accepted
+**Status:** Implemented (PR #322)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 5 — the **AtomicOps** workload (RFC-119 §7
 
 > **Reviews.** FDB-C-dev **ACK** — `sum(log)==sum(ops)` is faithful and holds exactly under 1021 (log-set
@@ -74,10 +74,12 @@ spuriously double-count the same op (ops > log) and the exact-equality oracle wo
 
 New `pkg/fdbgo/client/atomicops_workload_test.go`:
 
-- **`atomicOpsWorkload`** — `groups`, key helpers `opsKey(group,node)`, `logKey(actor,opNum)` (unique
-  per attempt), `le64`/`fromLE64`. `runOnce(ctx, db, actor, opNum)`: `db.Transact(fn)` where **fn**
-  freshly picks `group`/`node`/`val` and does `tx.Set(logKey, le64(val))` + `tx.Atomic(MutAddValue,
-  opsKey, le64(val))`. The op is generated INSIDE fn, so each retry is a fresh op (faithful re-random).
+- **`atomicOpsWorkload`** — `groups`, key helpers `opsKey(group,node)`, `logKey(group, attempt)` where
+  `attempt` is a **global monotonic counter bumped inside fn** (so the key is unique per ATTEMPT, not
+  per logical op), `le64`/decode. `runOnce(ctx, db, rng)`: `db.Transact(fn)` where **fn**
+  freshly picks `group`/`node`/`val` AND `attempt := atomicOpsLogSeq.Add(1)`, then does
+  `tx.Set(logKey(group,attempt), le64(val))` + `tx.Atomic(MutAddValue, opsKey, le64(val))`. The op +
+  the unique logKey are generated INSIDE fn, so each retry is a fresh op (faithful re-random).
   Returns the committed `val` (for the client-side `lbsum`).
 - **`check(ctx, db)`** — read each group's `log` and `ops` ranges; assert `sum(log) == sum(ops)` per
   group (the AddValue oracle), and the global `sum(ops) == sum(log)`.
