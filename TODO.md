@@ -186,6 +186,27 @@ slot — tag throttling non-functional; also no `tag_too_long`/`too_many_tags` v
 conformance principle, the silently-ignored ones should at least LOUDLY reject (UnsupportedOptionError)
 rather than no-op — but each is a small feature, scoped separately.
 
+**GRV / read-version audit (same grind) — NO consistency divergence found** (version-vector is OFF by
+default, `ServerKnobs.cpp:39`, so Go's empty `ssLatestCommitVersions`/`maxVersion` is exactly correct;
+read-version reuse, `read_snapshot`, 1007 aging all match). Latency/observability findings only:
+- **Write-only commits omit `CAUSAL_READ_RISKY` on the commit-path GRV.** C++ `tryCommit` does
+  `startTransaction(GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY)` (`NativeAPI.actor.cpp:6578`) — a
+  write-only/no-prior-read commit doesn't need full causal consistency for its `read_snapshot`. Go's
+  commit path (`transaction.go:1507`) calls plain `ensureReadVersion` → `grvFlags()`, setting the flag
+  only if the USER did. Effect: an extra TLog epoch-confirmation round-trip per write-only commit
+  (latency/throughput, NOT consistency — the read_snapshot is equally valid). **Infra implication, why
+  not a grind fix:** Go's `grvBatcherIndex` keys batchers only on the PRIORITY mask, NOT the risky flag
+  (unlike C++'s `readVersionBatcher`, keyed by full flags) — so adding the flag would mix risky/non-risky
+  GRVs in one batch. The faithful fix re-keys the GRV batcher on the risky flag + threads it through the
+  commit-path `ensureReadVersion`; deliberate, FDB-C-dev-reviewed.
+- `SetReadVersion` accepts `v<=0` / double-set silently where libfdb_c `setVersion` throws →
+  `CATCH_AND_DIE` aborts the process (`NativeAPI.actor.cpp:5519`, `fdb_c.cpp:932`). Go's graceful
+  defer-to-1007 is arguably BETTER (no panic in library code per CLAUDE.md) — leave as a documented,
+  intentional divergence, don't copy the abort.
+- Dropped GRV-reply observability (no consistency impact): `proxyTagThrottledDuration` (the
+  `getTagThrottledDuration()` accumulator), the `metadataVersion` reply cache (Go does a real read of
+  `\xff/metadataVersion` — correct, one extra round-trip), `midShardSize` (no clear-range cost estimator).
+
 **Minor OnError/knob-audit findings (same grind, low priority — note, don't necessarily fix):**
 hedge `secondDelay` uses a fixed `2.0×primary-latency` where C++ uses a runtime-adaptive
 `secondMultiplier (≥1.0) × second-best latency + BASE_SECOND_REQUEST_TIME(0.5ms)`
