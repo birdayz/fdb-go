@@ -1,6 +1,6 @@
 # RFC-122 — Cycle under injected process_behind + wrong_shard faults (SimTransport)
 
-**Status:** Accepted
+**Status:** Implemented (PR #320)
 **Item:** TODO.md C3 ("Ride their test designs"), increment 3 — RFC-120 §7's first two follow-ups
 
 > **Reviews.** FDB-C-dev **ACK** — fault-model fidelity confirmed against C++ 7.3.75 (read

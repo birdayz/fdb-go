@@ -18,9 +18,13 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    invariant specs driving the Go client against testcontainers + `SimTransport` (C4/RFC-118).
    **Increment 1 DONE:** Cycle workload — pure-client serializability oracle (RFC-119, PR #308).
    **Increment 2 DONE:** Cycle under injected wire faults via SimTransport (RFC-120, PR #309).
-   **Remaining:** `process_behind (1037)` row + `wrong_shard (1001)` under load (own increment) +
-   commit-side faults (RFC-120 §7); then AtomicOps / ConflictRange / Serializability / FuzzApi *gaps*
-   (the rest already have substantial coverage — see RFC-119 §7). Detail: "Native fdbgo client" → C3.
+   **Increment 3 DONE:** Cycle under `process_behind (1037)` + `wrong_shard (1001)` faults (RFC-122,
+   PR #320) — 1037 the fixed/QueueModel read row, 1001 its own relocate+invalidate ring-survival
+   assertion (flake-free: budget exhaustion → retryable 1007).
+   **Remaining:** commit-side faults (`not_committed`/`commit_unknown_result` inline on the `CommitID`
+   reply — RFC-120 §7, the content-aware intercept just inverts the filter); then AtomicOps /
+   ConflictRange / Serializability / FuzzApi *gaps* (the rest already have substantial coverage — see
+   RFC-119 §7). Detail: "Native fdbgo client" → C3.
    **← IN PROGRESS.**
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
