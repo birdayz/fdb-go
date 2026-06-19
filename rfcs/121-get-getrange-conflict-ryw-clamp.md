@@ -59,7 +59,57 @@ uses** (`conflictRangesLocked`/`updateConflictMap`), derived from the post-read 
   begin (reverse) when `more` or a limit truncated the read — mirroring the C++ clamp.
 
 This means generating the read-conflict **after** the read (knowing the extent + which segments were
-local), not the eager pre-read `[begin, end)`.
+local), not the eager pre-read `[begin, end)`. (C++ adds the conflict only in the read's success
+branch — `ReadYourWrites.actor.cpp:388`, `if (!snapshot) addConflictRange(...)` after
+`when(result = wait(read(...)))`; a *failed* read adds no conflict. The current Go eager-add even
+conflicts on a failed read — a second, latent divergence the move also closes.)
+
+## Verified C++ derivation (the exact clamp)
+
+Both clients normalize a plain `GetRange(begin, end)` to selectors `firstGreaterOrEqual(begin)` /
+`firstGreaterOrEqual(end)` — **both offset `+1`**. Substituting `begin.offset=1`, `end.offset=1`
+into the two C++ clamp sites gives an **identical** rule on the RYW path
+(`ReadYourWrites.actor.cpp:245-319`, `addConflictRange(GetRangeReq<false>/<true>)`) and the
+RYW-disabled native path (`NativeAPI.actor.cpp:4558-4587`, `getRange` → `conflictRange`):
+
+| read | conflict `[rangeBegin, rangeEnd)` |
+|------|-----------------------------------|
+| **forward**, `more`, non-empty | `[begin, keyAfter(lastReturnedKey))` |
+| **forward**, `!more` or empty  | `[begin, end)` |
+| **reverse**, `more`, non-empty | `[firstReturnedKey, end)` |
+| **reverse**, `!more` or empty  | `[begin, end)` |
+
+`lastReturnedKey`/`firstReturnedKey` are **`kvs[len(kvs)-1].Key` in both directions** — the Go
+range cursor returns forward results ascending (so `kvs[last]` is the highest) and reverse results
+descending (so `kvs[last]` is the lowest, matching `result.end()[-1].key`; `readpath.go:781`). The
+`readToBegin`/`readThroughEnd` arms (`:263-266`/`:302-305`, `:4562-4584`) and the cross-offset
+guards (`:4570`, `:4582`) are inert for offset-`+1`-on-both plain ranges, so they're omitted.
+
+**`more` ⇒ non-empty for a row-limited read** (C++ `output.more = (data.size()==limit)`,
+`readpath.go:754`; `limit==0` is unlimited ⇒ `more=false` at exhaustion). So the only way an
+**empty** read carries `more=true` is a byte-ceiling cut before the first row — which Go's
+row-limited `GetRange` cannot produce — and the table's `!more`/empty rows are what actually fire.
+
+**Phantom protection is preserved.** An empty or fully-drained (`!more`) read keeps the full
+`[begin, end)` conflict, so a concurrent insert *anywhere* in the requested range still trips 1020
+— the read "saw" the whole extent. Only a `more=true` (limit-truncated) read narrows the conflict
+to the prefix/suffix actually scanned, because the unread tail/head was genuinely not observed. The
+clamp **never** widens to less than what was read, so it cannot introduce an under-conflict (the
+data-integrity hazard §Risk warns about).
+
+## Go change sites (3)
+
+1. `Transaction.Get` (`transaction.go:671-673`) and `Transaction.GetPipelined`
+   (`transaction.go:700-702`) — the facade `Get` uses `GetPipelined` with an `inner.Get` fallback
+   (`fdb/transaction.go:55,73`), so **both** must route the single-key conflict through the RYW
+   filter (D2). New helper `addReadConflictForKeyRYW(key)`: `rywDisabled` → full single-key conflict
+   (no write map; the read went straight to storage — matches native `getValue`); else
+   `conflictRangesLocked(key, keyAfter(key))` → add the filtered sub-ranges (mirrors GetKey's
+   `addGetKeyConflictRange`, `transaction.go:1001`).
+2. `getRangeDir` (`transaction.go:1082-1104`) — move conflict generation **after** the read;
+   compute `[cBegin, cEnd)` per the table; `rywDisabled` → `addReadConflict(cBegin, cEnd)` (clamp
+   only, no filter — D1); else `conflictRangesLocked(cBegin, cEnd)` → add filtered sub-ranges (clamp
+   **and** filter — D1+D2). Preserve the existing `begin<=end` + non-special-key guards.
 
 ## Risk — why this is a dedicated RFC, not an inline grind fix
 
@@ -72,10 +122,25 @@ validates the segment-filter semantics). Out of scope for a quick fix.
 
 ## Executable spec (the differential, in `pkg/fdbgo/bench`)
 
-1. **D1:** seed `[a..z]`; both clients `GetRange([a,z), limit=N)`; capture the returned extent;
-   concurrent committed insert in the unread tail; assert go-commit-outcome == cgo-commit-outcome
-   (currently Go aborts, cgo commits → RED).
-2. **D2:** both clients `Set(K); Get(K)`; concurrent committed write to K; assert
-   go-outcome == cgo-outcome (currently Go aborts, cgo commits → RED).
-3. A `FuzzDifferential_ConflictOutcome` over random op mixes + a concurrent writer, asserting
-   identical commit/abort — the guard against introducing an under-conflict.
+The D1 and D2 "record-the-gap" probes **already exist** in
+`differential_getrange_conflict_test.go` (`TestDifferential_GetRangeConflictClamp_RFC121`,
+`TestDifferential_ReadOwnWriteConflict_RFC121`) — each pins the current over-conflict (`go aborts,
+cgo commits`) and is annotated to **flip to `goOut.conflicted == cOut.conflicted` (agreement) when
+the fix lands**. The fix turns them red (the stale-probe `t.Errorf` fires), then the flip turns
+them green. That is the red→green proof.
+
+1. **D1:** seed `k00..k19`, pin both txns to the setup commit version; `GetRange([k00,kzz),
+   limit=10)` reads `k00..k09` (`more`); concurrent committed write to `k15` (unread tail); assert
+   go-commit-outcome == cgo-commit-outcome (both COMMIT after the clamp).
+2. **D2:** `Set(K); Get(K)`; concurrent committed write to K; assert go-outcome == cgo-outcome
+   (both COMMIT after the filter).
+3. **New — `FuzzDifferential_ConflictOutcome`:** random op mix (Set/Clear/Get/GetRange fwd+rev with
+   varied limits, including empty-range and full-drain reads) on txn A + a concurrent committed
+   writer at a random key, run identically through both clients; assert **identical commit/abort**.
+   This is the guard against introducing an under-conflict (a go-commits-where-cgo-aborts mismatch
+   is a serializability regression, the worst outcome) and against breaking phantom protection on
+   `!more`/empty reads.
+4. **Go-side unit tests:** assert `tx.readConflicts` after a clamped read equals the table above
+   (forward `more` → `[begin, keyAfter(lastKey))`; `!more`/empty → `[begin,end)`; reverse `more` →
+   `[firstKey, end)`), and that a read served by a local independent `Set` adds no read-conflict —
+   revert-proven.
