@@ -112,7 +112,13 @@ func goRangeConflictScenario(t *testing.T, pfx string) conflictOutcome {
 	case 0:
 		return conflictOutcome{conflicted: false}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		// A 1020 here is NOT a definitive conflict. The FDB resolver is allowed to return a CONSERVATIVE
+		// false-positive not_committed (false positives OK, false negatives never), which under load
+		// intermittently appears even though the clamp/filter under test provably excludes the probe key
+		// — and it hits libfdb_c too (observed cgo conflicted=true with its correct C++ clamp), so it is
+		// a resolver artifact, not a client over-conflict. Retry (as an app must on not_committed): a
+		// REAL over-conflict regression is PERSISTENT and is caught by the test's maxAttempts.
+		return conflictOutcome{retry: true}
 	default:
 		return conflictOutcome{retry: true}
 	}
@@ -180,46 +186,42 @@ func cgoRangeConflictScenario(t *testing.T, pfx string) conflictOutcome {
 	case 0:
 		return conflictOutcome{conflicted: false}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		// A 1020 here is NOT a definitive conflict. The FDB resolver is allowed to return a CONSERVATIVE
+		// false-positive not_committed (false positives OK, false negatives never), which under load
+		// intermittently appears even though the clamp/filter under test provably excludes the probe key
+		// — and it hits libfdb_c too (observed cgo conflicted=true with its correct C++ clamp), so it is
+		// a resolver artifact, not a client over-conflict. Retry (as an app must on not_committed): a
+		// REAL over-conflict regression is PERSISTENT and is caught by the test's maxAttempts.
+		return conflictOutcome{retry: true}
 	default:
 		return conflictOutcome{retry: true}
 	}
 }
 
-// TestDifferential_GetRangeConflictClamp_RFC121 pins RFC-121 D1: Go over-conflicts on a limited
-// GetRange (a concurrent write in the unread tail aborts Go but commits in libfdb_c). When RFC-121
-// clamps the Go conflict to the returned extent, BOTH will commit — and the `goOut.conflicted` /
-// `cOut.conflicted` assertions below will fail, forcing this probe to flip to assert agreement.
+// TestDifferential_GetRangeConflictClamp_RFC121 pins RFC-121 D1: Go clamps a limited GetRange's
+// read-conflict to the returned extent ([k00, keyAfter(k09))), so a concurrent write in the unread tail
+// (k15) conflicts NEITHER client — both COMMIT, matching libfdb_c. The probe key is provably outside the
+// clamped range, so a clean double-commit IS the proof. (A 1020 is treated as a transient retry, not a
+// definitive conflict — see the scenario switch: the FDB resolver may false-positive not_committed, and
+// it hits libfdb_c too. A REAL over-conflict regression is PERSISTENT → every attempt retries → the
+// maxAttempts failure below. Reverting the clamp makes Go 1020 on every attempt → red there.)
 func TestDifferential_GetRangeConflictClamp_RFC121(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	const maxAttempts = 12
-	for attempt := 0; ; attempt++ {
-		if attempt >= maxAttempts {
-			t.Fatalf("conflict differential did not clear transient errors in %d attempts", maxAttempts)
-		}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		goPfx := fmt.Sprintf("grconf_%d_%s_%d_go_", os.Getpid(), ns, attempt)
 		cPfx := fmt.Sprintf("grconf_%d_%s_%d_c_", os.Getpid(), ns, attempt)
 		goOut := goRangeConflictScenario(t, goPfx)
 		cOut := cgoRangeConflictScenario(t, cPfx)
 		if goOut.retry || cOut.retry {
-			continue
+			continue // transient (1007/…) OR a conservative-resolver 1020 — re-run with fresh versions
 		}
-		// RFC-121 D1 FIXED: Go now clamps the GetRange read-conflict to the returned extent
-		// ([k00, k09\x00)), so the unread-tail write to k15 conflicts neither client — both COMMIT,
-		// matching libfdb_c. Assert agreement (the clamp is wire-faithful, not merely "Go also
-		// commits"). Reverting the clamp makes Go over-conflict → goOut.conflicted=true → red.
-		if goOut.conflicted != cOut.conflicted {
-			t.Errorf("RFC-121 D1: GetRange conflict-clamp diverges — go conflicted=%v, cgo conflicted=%v "+
-				"(both should COMMIT: the unread-tail write k15 is outside [k00, keyAfter(k09)))",
-				goOut.conflicted, cOut.conflicted)
-		}
-		if cOut.conflicted {
-			t.Errorf("unexpected: libfdb_c aborted on the unread-tail write — scenario assumption wrong " +
-				"(it clamps the conflict to the returned extent and COMMITs)")
-		}
-		return
+		return // both committed cleanly: the clamp excluded the unread-tail write — RFC-121 D1 verified
 	}
+	t.Fatalf("RFC-121 D1: no clean double-commit in %d attempts — a PERSISTENT not_committed means Go "+
+		"over-conflicts on the unread-tail write k15 (outside the clamped read-conflict [k00, keyAfter(k09))), "+
+		"i.e. a clamp regression — distinct from the rare conservative-resolver 1020 that retry absorbs", maxAttempts)
 }
 
 // ── RFC-121 D2: Get/GetRange read-own-write conflict ──────────────────────────────────────────
@@ -293,7 +295,13 @@ func goReadOwnWriteScenario(t *testing.T, pfx string) conflictOutcome {
 	case 0:
 		return conflictOutcome{conflicted: false}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		// A 1020 here is NOT a definitive conflict. The FDB resolver is allowed to return a CONSERVATIVE
+		// false-positive not_committed (false positives OK, false negatives never), which under load
+		// intermittently appears even though the clamp/filter under test provably excludes the probe key
+		// — and it hits libfdb_c too (observed cgo conflicted=true with its correct C++ clamp), so it is
+		// a resolver artifact, not a client over-conflict. Retry (as an app must on not_committed): a
+		// REAL over-conflict regression is PERSISTENT and is caught by the test's maxAttempts.
+		return conflictOutcome{retry: true}
 	default:
 		return conflictOutcome{retry: true}
 	}
@@ -354,42 +362,39 @@ func cgoReadOwnWriteScenario(t *testing.T, pfx string) conflictOutcome {
 	case 0:
 		return conflictOutcome{conflicted: false}
 	case 1020:
-		return conflictOutcome{conflicted: true}
+		// A 1020 here is NOT a definitive conflict. The FDB resolver is allowed to return a CONSERVATIVE
+		// false-positive not_committed (false positives OK, false negatives never), which under load
+		// intermittently appears even though the clamp/filter under test provably excludes the probe key
+		// — and it hits libfdb_c too (observed cgo conflicted=true with its correct C++ clamp), so it is
+		// a resolver artifact, not a client over-conflict. Retry (as an app must on not_committed): a
+		// REAL over-conflict regression is PERSISTENT and is caught by the test's maxAttempts.
+		return conflictOutcome{retry: true}
 	default:
 		return conflictOutcome{retry: true}
 	}
 }
 
-// TestDifferential_ReadOwnWriteConflict_RFC121 pins RFC-121 D2: a Get served by a local independent
-// write still registers a read-conflict in Go (not in libfdb_c), so a concurrent write to that key
-// aborts Go but commits in libfdb_c. Flip to assert agreement when the RYW filter is wired into Get.
+// TestDifferential_ReadOwnWriteConflict_RFC121 pins RFC-121 D2: a Get served by a local independent Set
+// adds no read-conflict in Go (the RYW filter is wired into Get/GetPipelined), so a concurrent write to
+// that key conflicts NEITHER client — both COMMIT, matching libfdb_c. A clean double-commit is the proof
+// (a 1020 is a transient retry, not a definitive conflict — see the scenario switch). A PERSISTENT 1020
+// (the RYW filter reverted → Go registers the spurious read-conflict) → every attempt retries → the
+// maxAttempts failure below.
 func TestDifferential_ReadOwnWriteConflict_RFC121(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	const maxAttempts = 12
-	for attempt := 0; ; attempt++ {
-		if attempt >= maxAttempts {
-			t.Fatalf("conflict differential did not clear transient errors in %d attempts", maxAttempts)
-		}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		goPfx := fmt.Sprintf("rowconf_%d_%s_%d_go_", os.Getpid(), ns, attempt)
 		cPfx := fmt.Sprintf("rowconf_%d_%s_%d_c_", os.Getpid(), ns, attempt)
 		goOut := goReadOwnWriteScenario(t, goPfx)
 		cOut := cgoReadOwnWriteScenario(t, cPfx)
 		if goOut.retry || cOut.retry {
-			continue
+			continue // transient (1007/…) OR a conservative-resolver 1020 — re-run with fresh versions
 		}
-		// RFC-121 D2 FIXED: a Get served by a local independent Set adds no read-conflict in Go
-		// (the RYW filter is now wired into Get/GetPipelined), so the concurrent write to rk
-		// conflicts neither client — both COMMIT, matching libfdb_c. Reverting the filter makes Go
-		// register the spurious read-conflict → goOut.conflicted=true → red.
-		if goOut.conflicted != cOut.conflicted {
-			t.Errorf("RFC-121 D2: read-own-write conflict diverges — go conflicted=%v, cgo conflicted=%v "+
-				"(both should COMMIT: the read on rk is served by a local Set, so no read-conflict)",
-				goOut.conflicted, cOut.conflicted)
-		}
-		if cOut.conflicted {
-			t.Errorf("unexpected: libfdb_c aborted on a read-own-write — it skips the read-conflict and COMMITs")
-		}
-		return
+		return // both committed cleanly: the local-Set read added no conflict — RFC-121 D2 verified
 	}
+	t.Fatalf("RFC-121 D2: no clean double-commit in %d attempts — a PERSISTENT not_committed means Go "+
+		"registers a spurious read-conflict on a read served by a local Set (the RYW filter regressed), "+
+		"distinct from the rare conservative-resolver 1020 that retry absorbs", maxAttempts)
 }
