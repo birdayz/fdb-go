@@ -84,6 +84,9 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 
 	prefix := s[:atIdx]
 	addrs := s[atIdx+1:]
+	if addrs == "" {
+		return nil, fmt.Errorf("no coordinators in cluster string: %q", s)
+	}
 
 	colonIdx := strings.Index(prefix, ":")
 	if colonIdx < 0 {
@@ -106,7 +109,12 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 	for _, addr := range strings.Split(addrs, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
-			continue
+			// C++ NetworkAddress::parse("") throws connection_string_invalid on an empty
+			// coordinator segment — a leading/trailing/double comma, or a comma left dangling
+			// after trim() removed an inline comment (e.g. "h:4500, # disabled" → "h:4500,").
+			// (MonitorLeader.actor.cpp:92.) Do NOT silently skip it — that accepts strings C++
+			// rejects, breaking cross-tool cluster-file compatibility.
+			return nil, fmt.Errorf("empty coordinator in cluster string: %q", s)
 		}
 		// Faithful to C++ NetworkAddress::parse (flow/network.cpp): strip a
 		// trailing "(fromHostname)" marker, then a trailing ":tls" — but only
@@ -143,10 +151,6 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 		if isTLS {
 			tlsCount++
 		}
-	}
-
-	if len(cf.Coordinators) == 0 {
-		return nil, fmt.Errorf("no coordinators in cluster string: %q", s)
 	}
 
 	// A real cluster is uniformly TLS or uniformly plaintext. A database-level

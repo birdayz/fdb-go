@@ -404,3 +404,24 @@ func TestParseClusterString_TrimsWhitespaceAndComments(t *testing.T) {
 		})
 	}
 }
+
+// TestParseClusterString_RejectsEmptyCoordinators pins that an empty coordinator segment is
+// REJECTED, matching C++ NetworkAddress::parse("") which throws connection_string_invalid
+// (MonitorLeader.actor.cpp:92). The loop must NOT silently skip empties — that accepts strings
+// C++ rejects, breaking cross-tool cluster-file compatibility. Covers the codex-flagged case
+// where trim() removes an inline comment and leaves a dangling comma.
+func TestParseClusterString_RejectsEmptyCoordinators(t *testing.T) {
+	t.Parallel()
+	reject := []string{
+		"d:i@1.2.3.4:4500,",              // trailing comma
+		"d:i@,1.2.3.4:4500",              // leading comma
+		"d:i@1.2.3.4:4500,,5.6.7.8:4500", // double comma
+		"d:i@1.2.3.4:4500, # disabled",   // inline comment → trimmed to "...4500," (codex P2)
+		"d:i@",                           // no coordinators at all
+	}
+	for _, s := range reject {
+		if _, err := ParseClusterString(s); err == nil {
+			t.Errorf("ParseClusterString(%q) = accept, want reject (empty coordinator)", s)
+		}
+	}
+}
