@@ -50,6 +50,7 @@ go_test(
         "atomic_conflictrange_test.go",
         "atomic_roundtrip_test.go",
         "atomic_test.go",
+        "atomicops_workload_test.go",
         "bench_test.go",
         "boundary_test.go",
         "c_binding_port_test.go",

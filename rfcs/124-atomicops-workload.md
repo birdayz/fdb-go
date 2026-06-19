@@ -1,7 +1,23 @@
 # RFC-124 — AtomicOps workload: atomic-op + companion-write transactional-consistency oracle
 
-**Status:** Draft
+**Status:** Accepted
 **Item:** TODO.md C3 ("Ride their test designs"), increment 5 — the **AtomicOps** workload (RFC-119 §7
+
+> **Reviews.** FDB-C-dev **ACK** — `sum(log)==sum(ops)` is faithful and holds exactly under 1021 (log-set
+> + atomicOp in one `t.mutations` commit, `NativeAPI.actor.cpp:5972/6002`; retry is a fresh op via the
+> in-loop `state` decls); the same-op double-apply is confirmed faithful (libfdb_c de-dup is gated on
+> `req.idempotencyId.valid()`, `:6751-6768`, default-invalid → `commitDummyTransaction` is a
+> self-conflict barrier, not de-dup); `MutAddValue`+`Set` share the atomic commit boundary. Torvalds
+> **ACK** — strictly stronger than `TestConcurrentAtomicAdd` (companion-log catches torn/lost commits a
+> bare sum can't); proved no interleaving violates exact equality *given* the unique-per-attempt logKey.
+> **Binding impl conditions:** (1) the op (`group/node/val`) is drawn from the RNG **inside** the
+> `db.Transact` fn — fresh per retry (the 1021-replay hazard); (2) **`logKey` unique per ATTEMPT**
+> (global monotonic counter bumped inside fn), NOT per `(actor,opNum)` — else a 1021-retry reuses the
+> logKey and overwrites the maybe-applied original's entry while its `Add` already landed → spurious
+> `ops>log` flake; (3) `sum(log)==sum(ops)` is the primary oracle; `sum(ops) ≥ lbsum` (lbsum = Σ
+> definitely-committed vals) + `lbsum>0` + `injected>0` are the bound/anti-vacuity (no `ubsum` — Go's
+> `db.Transact` hides the 1021 retries, but the exact server-vs-server equality is the real oracle);
+> (4) `le64`/`fromLE64` self-consistent, sum raw uint64; AddValue-only scope; report injected/committed.
 gap: "distributed idempotency-under-retry stress"). Builds on RFC-119/120/122/123 (the SimTransport
 fault harness + the commit-drop intercept). **Test-only — zero production/wire impact** →
 differential-vs-libfdb_c gates N/A.
