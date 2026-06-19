@@ -1,7 +1,19 @@
 # RFC-125 — ConflictRange workload: a two-directional read-conflict-range oracle on key-selector getRange
 
-**Status:** Draft
+**Status:** Accepted
 **Item:** TODO.md C3 ("Ride their test designs"), increment 6 — the **ConflictRange** workload
+
+> **Reviews.** FDB-C-dev **ACK** (anchored on /tmp/fdbsrc @ 7.3.75): citations accurate; pushed hard on
+> the trivial-selector fast paths incl. trivial-begin-reverse-`more` and found **no under-conflict
+> hole** (Go's getKey-then-range union ⊇ C++'s combined `addConflictRange` range across the
+> offset/orEqual/reverse/limit/`more` cross-product); oracle asymmetry (under=fatal / over=safe)
+> faithful; guard band sound. Conditions folded: exclusive `randomInt` upper bounds (§2); deterministic
+> trivial-begin-reverse-`more` regression (§5.2). Torvalds **ACK** ("ship it") after closing three
+> holes: guard-band off-by-one → `maxOffset+1` guards with a strict index-bound proof (§4.1); vacuity →
+> `resultChanged ⟹ foundConflict` + `resultChangedCount > 0` (§4.3); drift → drive the **real `fdb`
+> facade**, no mirror helper (§4.2). Impl nits: the C++ `\xff`-pair ignore rule is dead under our
+> `C/D`-prefixed keys (the guard-band skip is the real boundary filter); pin the iteration count in the
+> PR so `resultChangedCount > 0` has stated headroom.
 (RFC-119 §7 named gap: "concurrent read/write race-detection scenario"). Builds on the RFC-121
 Get/GetRange read-conflict clamp + RYW filter; this is the cross-engine validation of that work
 across the full key-selector offset/onEqual/reverse/limit space.
