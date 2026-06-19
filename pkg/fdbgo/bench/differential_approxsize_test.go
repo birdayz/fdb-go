@@ -20,12 +20,13 @@ import (
 //   - set / atomicOp:  k + v + sizeof(MutationRef) + (writeConflict ? sizeof(KeyRangeRef) + 2k+1 : 0)   (:2289/:2337)
 //   - clear(range):    range + sizeof(MutationRef) + (writeConflict ? sizeof(KeyRangeRef) + range : 0)  (:2374)
 //   - clear(KEY):      range + sizeof(KeyRangeRef) + (writeConflict ? sizeof(KeyRangeRef) + range : 0)  (:2431)
-//     ^ a single-key clear's MUTATION part is charged sizeof(KeyRangeRef) (32), NOT
-//     sizeof(MutationRef) (48) — it is modeled as a range entry in the write map.
+//     ^ a single-key clear's MUTATION part is charged sizeof(KeyRangeRef) (24), NOT
+//     sizeof(MutationRef) (44) — it is modeled as a range entry in the write map.
 //   - add{Read,Write}ConflictRange: range + sizeof(KeyRangeRef)                                          (:1978/:2492)
 //
-// where sizeof(MutationRef)=48, sizeof(KeyRangeRef)=32, range.expectedSize()=len(begin)+len(end),
-// and a single-key clear's range is [key, key+\x00) so range.expectedSize() = 2*len(key)+1.
+// where sizeof(MutationRef)=44, sizeof(KeyRangeRef)=24 (StringRef is packed to 12 bytes by
+// Arena.h:370 #pragma pack(push,4)), range.expectedSize()=len(begin)+len(end), and a single-key
+// clear's range is [key, key+\x00) so range.expectedSize() = 2*len(key)+1.
 func TestDifferential_ApproximateSize(t *testing.T) {
 	t.Parallel()
 	pfx := []byte(fmt.Sprintf("apxsize_%d_%s_", os.Getpid(), t.Name()))

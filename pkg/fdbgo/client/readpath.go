@@ -1186,6 +1186,10 @@ func classifyWatchError(err error) (delay time.Duration, retryable, invalidate b
 	case isWatchErrorCode(err, ErrTimedOut) || isWatchErrorCode(err, ErrFutureVersion):
 		return futureVersionDelay, true, false
 	default:
+		// Terminal: surface immediately. C++ watchValue delays FUTURE_VERSION_RETRY_DELAY before
+		// re-throwing (NativeAPI.actor.cpp:4010) — a PREVENT_FAST_SPIN guard for its actor loop. Go's
+		// WatchPoll returns the error to the caller (the watch is done; no spin), so the delay is
+		// unnecessary and deliberately omitted.
 		return 0, false, false
 	}
 }
