@@ -155,6 +155,10 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] fdbgo/client: GetAddressesForKey always emits `ip:port`; C++ defaults to ip-only unless `include_port_in_address` is set (surfaced by the RFC-133 option-matrix review, 2026-06-20)
+
+`Transaction.GetAddressesForKey` (`transaction.go:2167-2176`) unconditionally returns `endpointAddress` = `ip:port` (`endpoint.go:36`). libfdb_c defaults the address format to **ip-only**, appending `:port` only when `FDB_TR_OPTION_INCLUDE_PORT_IN_ADDRESS` is set (`NativeAPI.actor.cpp:5747`). So a Go client's `GetAddressesForKey` returns port-suffixed addresses where a C client returns bare IPs by default — an output-format divergence on a rarely-used locality call. `include_port_in_address` is a **tx-only** option (no DB-default form), independent of the RFC-133 DB-default work; pre-existing. Fix is its own small wire-compat change (honor the option, default to ip-only) — flag, not gating.
+
 ### [ ] recordlayer: no read path for format-version-<6 record versions / unsplit records (surfaced by the doc-drift audit, RFC-131, 2026-06-20)
 
 Go reads record versions **only inline** at the `pk + -1` suffix (`store.go:350`; the inline layout
