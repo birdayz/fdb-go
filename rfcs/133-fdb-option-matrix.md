@@ -72,16 +72,21 @@ down or pinned by a test.
    RFC-131/132 `docs_consistency` living-docs set (it carries no version pins to anchor; its anti-rot
    mechanism is "every option has a row," which the completeness guard enforces).
 
-3. **One production-code change** (codex review caught it; per §5 it lands here, not a follow-up).
-   Two *database-level* defaults were mis-classified as safe: `SetSnapshotRywDisable` and
-   `SetTransactionBypassUnreadable` change **read semantics** on every new transaction in `libfdb_c`
-   (snapshot-read-after-own-write; `accessed_unreadable`→read), but Go `return nil`'d them without
-   storing the default — silently dropping the caller's intent. Fix: **honor** them, propagating via
-   `txDefaults` exactly like the other honored DB defaults (`SetTransactionTimeout`/`SetReadSystemKeys`)
-   and applied in `applyTxDefaults`. (The faithful match to `libfdb_c`, not an error — C honors them.)
-   Pinned by `options_dbdefault_test.go`. The rest of the verification holds: the access/auth/quota
-   family already errors; the causal/durability *weakening* knobs stay accept-and-ignore (strictly
-   safer). The unsafe-no-op→error part of the audit was already done.
+3. **Production-code change** (the review gauntlet caught it; per §5 it lands here, not a follow-up).
+   **Three** *database-level* defaults were mis-classified as safe — each changes read semantics on
+   every new transaction in `libfdb_c` and has an **honored per-tx form**, so the DB default must
+   propagate, not be dropped: `SetSnapshotRywDisable`/`Enable` (snapshot-read-after-own-write),
+   `SetTransactionBypassUnreadable` (`accessed_unreadable`→read), and `SetTransactionCausalReadRisky`
+   (GRV read-version relaxation; FDB-C-dev review). Fix: **honor** them via `txDefaults` (the faithful
+   match — C honors them, doesn't error) applied in `applyTxDefaults`, exactly like the existing
+   honored DB defaults (`SetTransactionTimeout`/`SetReadSystemKeys`). snapshot-RYW is a **cumulative
+   counter** (libfdb_c `snapshotRywEnabled++/--`, `NativeAPI.actor.cpp:2156/2160`, seeded per-tx) —
+   `enable+disable` nets to enabled — not a last-wins bool (codex; settled against the C++ source).
+   bypass-unreadable / causal-read-risky are set-once flags. Pinned by `options_dbdefault_test.go`
+   (incl. the counter semantics). An exhaustive 20-option sweep (FDB-C-dev) confirmed no 4th drop.
+   The rest of the verification holds: access/auth/quota already errors; the causal/durability
+   *weakening* knobs whose per-tx form is a fail-safe no-op (`causal_write_risky`) stay
+   accept-and-ignore. The unsafe-no-op→error part of the audit was already done.
 
 ## 3. Executable spec (tests)
 
