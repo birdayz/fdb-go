@@ -84,11 +84,21 @@ Every cardinality-growing buffer, charged at the point of accumulation:
 | `distinct` seen-set | `executor.go:1110` | `boundedSet` |
 | Recursive-CTE `allResults` (cross-level, ≤1000×) + `seen` | `executor.go:2595/2611/2709/2717` | `boundedBuffer`+`boundedSet` |
 | Recursive-DFS `*results` (cross-traversal) + `seen` | `executor.go:2765/2796` | `boundedBuffer`+`boundedSet` |
+| `executeLoadByKeys` full-record slice (`FromList`) | `executor_new_plans.go:230` | `boundedBuffer` (Graefe: bounded by a plan-literal key count, but each element is a whole stored record → bytes can grow) |
+| `TempTable.list` — the recursive-CTE `insertTable`/`scanTable` working set **and** `TempTableInsertPlan` (`evaluation_context.go:133`, `Add` at `:145`; recursive-CTE use at `executor.go:2584-2585`) | charge in `TempTable.Add` (Torvalds: the actual cross-level per-level working set) |
 
 Verified **streaming → no buffer, no charge**: aggregate (one group key + running aggregates,
-`streaming_cursors.go:46`), intersection. The cross-level recursive totals are covered because each
-`Append` charges the *shared* `ExecuteState`, so 1000 levels × big rows trips the budget even though each
-level's row count is individually under `MaterializationLimit`.
+`streaming_cursors.go:46`), intersection (per-key match-list O(children)), IN-join/IN-union (lazy cursor
+slices, not row buffers). **Bounded-by-cardinality, charged anyway for bytes**: `scalar_subquery.go:51`
+(`rows` drain capped at >1 → error, so already byte-bounded — listed for completeness, folded into
+`boundedBuffer`). The cross-level recursive totals are covered because each `Append`/`Add` charges the
+*shared* `ExecuteState`, so 1000 levels × big rows trips the budget even though each level's row count is
+individually under `MaterializationLimit`.
+
+`TempTable` (the recursive-CTE working set + `TempTableInsertPlan`) carries an `*ExecuteState` and charges in
+`Add`; its pre-existing `sync.Mutex` is defensive (the §2.2 zero-goroutine invariant makes it currently
+moot, and charging under that lock is correct regardless — if the executor ever goes concurrent, the pinned
+invariant test fires and `ChargeMemory` moves to `atomic`).
 
 ### 2.5 Byte estimate (Torvalds layering + nil-safety fix)
 
