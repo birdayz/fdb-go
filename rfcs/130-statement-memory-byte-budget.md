@@ -154,7 +154,11 @@ missed both; the `/code-review` finder + codex caught them):
      phase 2. Charging the real built record accounts the true echo bytes; doing all charging
      before the first `SaveRecord` keeps the mutation **all-or-nothing** (a budget breach *or*
      a build/transform error returns with zero writes). Wire-equivalent — same records, same
-     order; the built messages *are* the echo (no extra residency).
+     order; the built messages *are* the echo (no extra residency). The charge is the full
+     stored-row estimate — `proto.Size(record)` **plus** the packed primary-key tuple bytes
+     (`len(PK.Pack())`) the echo's `FDBStoredRecord` holds separately — matching
+     `estimateQueryResultBytes` exactly (UPDATE uses the target's PK; INSERT derives it from
+     the built record via the target type's primary-key expression).
 
    Pinned by `TestFDB_RFC130_DeleteEchoNotDoubleCharged`, `…_UpdateEchoChargedNoPartial`
    (growing case: tiny rows → 600B value trips on the large new records, zero mutated —
