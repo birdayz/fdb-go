@@ -1,6 +1,6 @@
 # RFC-127 — SQL pagination must not treat a non-terminal StartContinuation as end-of-results
 
-**Status:** Accepted
+**Status:** Implemented (PR #325)
 **Item:** prod-readiness-audit-2026-06-19.md **P0** — SQL pagination can silently drop results.
 
 > **Severity correction (post-implementation, from the `/code-review` reachability trace).** The audit
