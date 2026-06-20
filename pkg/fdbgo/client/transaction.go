@@ -2452,6 +2452,24 @@ func (tx *Transaction) SetSnapshotRYWEnable() {
 	tx.snapshotRYWDisableCount--
 }
 
+// SnapshotRYWDisableCount reports the net snapshot-RYW-disable count (> 0 means snapshot reads
+// bypass the RYW cache). Read-only accessor used to verify database-level option propagation.
+func (tx *Transaction) SnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
+
+// SetSnapshotRYWDisableCount SETS the snapshot-RYW disable counter to n (vs the ++/-- of
+// SetSnapshotRYWDisable/Enable). It seeds the per-tx counter to a database default. Setting (not
+// incrementing) is idempotent under the retry replay of applyTxDefaults — matching libfdb_c, whose
+// reset() re-seeds snapshotRywEnabled = db->snapshotRywEnabled each attempt rather than accumulating.
+func (tx *Transaction) SetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDisableCount = n }
+
+// BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
+// to verify database-level option propagation.
+func (tx *Transaction) BypassUnreadable() bool { return tx.ryw.bypassUnreadable }
+
+// CausalReadRisky reports whether the GRV causal-read-risky flag is set. Read-only accessor used to
+// verify database-level option propagation.
+func (tx *Transaction) CausalReadRisky() bool { return tx.causalReadRisky }
+
 // SetTenantId sets the tenant for this transaction. All operations will
 // be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
 func (tx *Transaction) SetTenantId(id int64) {

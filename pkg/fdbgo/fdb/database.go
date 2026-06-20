@@ -62,6 +62,14 @@ type txDefaults struct {
 	maxRetryDelay  int64 // milliseconds, 0 = use default
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
+	// snapshotRywDisableNet is the NET (disables - enables) of the DB-level snapshot-RYW option.
+	// libfdb_c's DatabaseContext keeps a cumulative counter (snapshotRywEnabled++/--,
+	// NativeAPI.actor.cpp:2156/2160) that each new tx is seeded from (ReadYourWrites.actor.cpp:2082),
+	// so SetSnapshotRywEnable();SetSnapshotRywDisable() nets to 0 (still enabled) — a bool can't
+	// model that. applyTxDefaults replays this net onto the tx's own disable counter.
+	snapshotRywDisableNet int
+	bypassUnreadable      bool // DB default bypasses accessed_unreadable on each new tx (set-once flag)
+	causalReadRisky       bool // DB default sets the GRV causal-read-risky flag on each new tx (set-once flag)
 }
 
 // internalDB wraps client.Database with a context for async operations.
@@ -360,6 +368,18 @@ func (db Database) applyTxDefaults(t *transaction) {
 	}
 	if d.readSystemKeys {
 		t.inner.SetReadSystemKeys()
+	}
+	// SET (not ++/--) the per-tx counter to the DB net. applyTxDefaults re-runs on every retry
+	// attempt against the SAME inner tx (client.Transact re-invokes the closure), and reset()
+	// preserves snapshotRYWDisableCount — so an incrementing replay would DRIFT (-1, -2, … per
+	// attempt). Setting is idempotent and re-seeds to the DB default each attempt, matching
+	// libfdb_c's reset() (ReadYourWrites.actor.cpp:2082 seeds snapshotRywEnabled = db default).
+	t.inner.SetSnapshotRYWDisableCount(d.snapshotRywDisableNet)
+	if d.bypassUnreadable {
+		t.inner.SetBypassUnreadable(true)
+	}
+	if d.causalReadRisky {
+		t.inner.SetCausalReadRisky(true)
 	}
 }
 

@@ -74,8 +74,8 @@ type TransactionOptions interface {
 // keyspace. The libfdb_c backend forwards these options normally; pure-Go callers
 // that need them must use that backend. Options that fail SAFE when ignored (the
 // causal/durability knobs — ignoring keeps the STRONGER guarantee) remain
-// accepted-but-ignored and are documented in API_PARITY.md. Resolves to FDB
-// invalid_option (2007).
+// accepted-but-ignored and are documented option-by-option in OPTIONS.md. Resolves
+// to FDB invalid_option (2007).
 type UnsupportedOptionError struct{ Option string }
 
 func (e *UnsupportedOptionError) Error() string {
@@ -391,8 +391,23 @@ func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
 func (o DatabaseOptions) SetMaxWatches(_ int64) error        { return nil }
 func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
 func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
-func (o DatabaseOptions) SetSnapshotRywEnable() error        { return nil }
-func (o DatabaseOptions) SetSnapshotRywDisable() error       { return nil }
+func (o DatabaseOptions) SetSnapshotRywEnable() error {
+	if o.db != nil {
+		o.db.txDefaults.snapshotRywDisableNet--
+	}
+	return nil
+}
+
+// SetSnapshotRywDisable is an honored DB default (codex #331): libfdb_c disables snapshot
+// read-your-writes on every new transaction, changing snapshot reads after a local write — a
+// read-semantics change, not a hint. Propagate it via txDefaults rather than silently dropping it.
+func (o DatabaseOptions) SetSnapshotRywDisable() error {
+	if o.db != nil {
+		o.db.txDefaults.snapshotRywDisableNet++
+	}
+	return nil
+}
+
 func (o DatabaseOptions) SetReadSystemKeys() error {
 	if o.db != nil {
 		o.db.txDefaults.readSystemKeys = true
@@ -428,7 +443,17 @@ func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
 	}
 	return nil
 }
-func (o DatabaseOptions) SetTransactionCausalReadRisky() error              { return nil }
+
+// SetTransactionCausalReadRisky is an honored DB default (FDB C++ dev review, #331): it sets the
+// GRV causal-read-risky flag on every new transaction, relaxing the read version (a read-version /
+// staleness change). The per-tx SetCausalReadRisky IS honored, so the DB default must propagate too
+// rather than be silently dropped (unlike causal_write_risky, whose per-tx form is a fail-safe no-op).
+func (o DatabaseOptions) SetTransactionCausalReadRisky() error {
+	if o.db != nil {
+		o.db.txDefaults.causalReadRisky = true
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error { return nil }
 
 // DB-level defaults for the options the per-transaction setters reject (RFC-111 P1.3): keep the
@@ -442,7 +467,16 @@ func (o DatabaseOptions) SetTransactionReportConflictingKeys() error {
 func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
 	return &UnsupportedOptionError{Option: "automatic_idempotency"}
 }
-func (o DatabaseOptions) SetTransactionBypassUnreadable() error                  { return nil }
+
+// SetTransactionBypassUnreadable is an honored DB default (codex #331): libfdb_c sets
+// bypass_unreadable on every new transaction, turning accessed_unreadable failures into reads —
+// observable behaviour, not a hint. Propagate it via txDefaults.
+func (o DatabaseOptions) SetTransactionBypassUnreadable() error {
+	if o.db != nil {
+		o.db.txDefaults.bypassUnreadable = true
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionIncludePortInAddress() error              { return nil }
 func (o DatabaseOptions) SetTransactionUsedDuringCommitProtectionDisable() error { return nil }
 func (o DatabaseOptions) SetUseConfigDatabase() error                            { return nil }

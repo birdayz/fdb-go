@@ -290,6 +290,10 @@ path is identical to Java, only the execute-then-throw side effect differs.
 
 ## Pure-Go FDB client (`pkg/fdbgo`) — deliberate divergences from `libfdb_c` 7.3.75
 
+**Client option behaviour** (honored / `UnsupportedOptionError` / accepted-and-ignored) is documented
+option-by-option, with the `libfdb_c` C++ reference for each, in
+[`pkg/fdbgo/fdb/OPTIONS.md`](pkg/fdbgo/fdb/OPTIONS.md) (RFC-133).
+
 ### Cluster-file re-watch / coordinator-set rotation (RFC-111)
 
 | Aspect | C++ `libfdb_c` | Go | Why |
