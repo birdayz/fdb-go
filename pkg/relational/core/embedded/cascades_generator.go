@@ -1260,6 +1260,48 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 // cursor hierarchy from the plan + continuation. The continuation
 // carries ALL intermediate state (aggregate accumulators, sort buffers)
 // serialized as protobuf. No cursor persists across transactions.
+// pageContinuationState decides, from a drained page's terminal continuation + NoNextReason, whether the
+// paginatingRows internal drain is (a) exhausted, (b) has a resumable byte continuation, or (c) must
+// surface ScanLimitReachedError (→ 54F01). It is the PAGINATING counterpart to errIfDrainTruncated
+// (recordlayer/cursor_util.go): the value-only drains there discard the continuation so they need only
+// the IsOutOfBand() check; paginatingRows additionally consumes the resumable bytes.
+//
+// Exhaustion is decided by IsEnd() (≡ NoNextReason.SourceExhausted) — NEVER by ToBytes()==nil (RFC-127).
+// A non-end StartContinuation has ToBytes()==nil, byte-identical to an EndContinuation; treating its nil
+// bytes as exhaustion (the old code) would silently truncate the result set. This aligns Go with Java's
+// invariant (RecordLayerIterator.java:91 gates end-of-results on SOURCE_EXHAUSTED, never bytes). For a
+// non-end continuation with no resumable bytes, the internal drain re-executes the plan from
+// r.continuation and so cannot resume-from-BEGIN like Java's client-driven iterator (it would re-buffer →
+// infinite loop), so:
+//   - out-of-band (scan/time/byte limit before any resumable progress) → 54F01 (avoids data loss + loop);
+//   - in-band ReturnLimitReached with zero rows ⟹ a row limit of 0 (LIMIT 0): clean exhaustion, no data
+//     lost. (SourceExhausted+nil-bytes is impossible — it is isEnd()==true, the first branch.)
+//
+// Reachability: the out-of-band branch is presently a DEFENSIVE guard, not a live path. Every Go leaf
+// cursor reports an out-of-band stop only after scanned>0 (key_value_cursor.go:164/174/181,
+// record_key_cursor.go:64/69/78), at which point its continuation is set → a BytesContinuation; and
+// composite cursors either carry a serialized BytesContinuation (merge/intersection) or error-first with
+// 54F01 (mergeSort, RFC-106a). So no current cursor emits a no-next out-of-band+StartContinuation, and the
+// only reachable nil-bytes+non-end case is LIMIT 0. The guard exists because the OLD logic was wrong in
+// principle (exhaustion from bytes, not IsEnd) — a latent landmine the moment any future cursor emits the
+// out-of-band+START state Java's Union/Intersection/MapWhile cursors legitimately produce.
+func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason recordlayer.NoNextReason) (exhausted bool, contBytes []byte, err error) {
+	if cont == nil || cont.IsEnd() {
+		return true, nil, nil // SourceExhausted
+	}
+	b, e := cont.ToBytes()
+	if e != nil {
+		return false, nil, e
+	}
+	if b != nil {
+		return false, b, nil // resumable position → keep draining
+	}
+	if reason.IsOutOfBand() {
+		return false, nil, &recordlayer.ScanLimitReachedError{Reason: reason}
+	}
+	return true, nil, nil // ReturnLimitReached (LIMIT 0) — clean done
+}
+
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
@@ -1339,21 +1381,12 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, err)
 		}
 
-		cont := rs.GetContinuation()
-		if cont == nil || cont.IsEnd() {
-			r.exhausted = true
-			r.continuation = nil
-		} else {
-			contBytes, contErr := cont.ToBytes()
-			if contErr != nil {
-				return nil, contErr
-			}
-			if contBytes == nil {
-				r.exhausted = true
-			} else {
-				r.continuation = contBytes
-			}
+		exhausted, contBytes, classifyErr := pageContinuationState(rs.GetContinuation(), rs.GetNoNextReason())
+		if classifyErr != nil {
+			return nil, classifyErr
 		}
+		r.exhausted = exhausted
+		r.continuation = contBytes
 		return nil, nil
 	})
 

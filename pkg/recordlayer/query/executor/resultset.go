@@ -24,6 +24,7 @@ type RecordLayerResultSet struct {
 
 	current          QueryResult
 	lastContinuation recordlayer.RecordCursorContinuation
+	lastNoNextReason recordlayer.NoNextReason
 	hasRow           bool
 	wasNull          bool
 	err              error
@@ -68,6 +69,7 @@ func (rs *RecordLayerResultSet) Next() bool {
 		return false
 	}
 	rs.lastContinuation = result.GetContinuation()
+	rs.lastNoNextReason = result.GetNoNextReason()
 	if !result.HasNext() {
 		rs.hasRow = false
 		return false
@@ -232,6 +234,15 @@ func (rs *RecordLayerResultSet) ObjectByName(name string) (any, error) {
 // FDB transactions.
 func (rs *RecordLayerResultSet) GetContinuation() recordlayer.RecordCursorContinuation {
 	return rs.lastContinuation
+}
+
+// GetNoNextReason returns the NoNextReason from the last Next() call. This is the
+// AUTHORITATIVE exhaustion signal (SourceExhausted ⇔ end-of-results), and distinguishes a
+// non-terminal out-of-band stop (scan/time/byte limit) from a clean ReturnLimitReached/exhaustion
+// when the continuation has nil bytes — see RFC-127 (Java carries noNextReason as a first-class field
+// for exactly this; its nil-byte START continuation is otherwise ambiguous with end).
+func (rs *RecordLayerResultSet) GetNoNextReason() recordlayer.NoNextReason {
+	return rs.lastNoNextReason
 }
 
 func (rs *RecordLayerResultSet) Continuation() (api.Continuation, error) {

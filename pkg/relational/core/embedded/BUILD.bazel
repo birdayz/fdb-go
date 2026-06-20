@@ -89,6 +89,7 @@ go_test(
     srcs = [
         "ast_util_test.go",
         "bench_test.go",
+        "cascades_generator_pagination_test.go",
         "connection_recover_test.go",
         "dedupe_test.go",
         "embedded_test.go",
