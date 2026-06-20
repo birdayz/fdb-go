@@ -19,6 +19,7 @@ go_test(
         "//:README.md",
         "//:TODO.md",
         "//docs/archive/reports-2026-03-09:snapshots",
+        "//reports",
     ],
     embed = [":docscheck"],
 )
