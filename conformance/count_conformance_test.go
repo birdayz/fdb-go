@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 import (

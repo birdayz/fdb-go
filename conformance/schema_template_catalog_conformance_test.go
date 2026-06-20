@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 // Track A2 — cross-language SchemaTemplateCatalog round-trip. Java JDBC

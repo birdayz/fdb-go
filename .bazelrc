@@ -43,3 +43,4 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 # Docker socket can't handle 9× parallel container creation → timeouts/hangs.
 # 4 concurrent test targets works well on machines with 12+ cores.
 test --local_test_jobs=4
+build --@rules_go//go/config:tags=bazelrunfiles

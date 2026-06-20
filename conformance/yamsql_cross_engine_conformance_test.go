@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 // Track A3 — yamsql semantic equivalence on the cross-engine plandiff
