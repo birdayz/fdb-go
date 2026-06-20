@@ -52,6 +52,13 @@ var (
 	// foundationDBPin extracts the FDB C++ client version from MODULE.bazel
 	// (bazel_dep(name = "foundationdb", version = "7.3.75")).
 	foundationDBPin = regexp.MustCompile(`name\s*=\s*"foundationdb"\s*,\s*version\s*=\s*"(\d+\.\d+\.\d+)"`)
+	// fdbContextCited matches a 3-part version that FOLLOWS an FDB-client keyword on the same line
+	// (within 30 non-digit chars). This anchors on context, not the major number, so it catches FDB
+	// drift across ANY major bump (a stale 7.x left after an 8.x bump still sits beside an FDB
+	// keyword) without a numeric range that would hit Bazel 9.x. Case-sensitive "FDB" dodges the
+	// lowercase "fdb-record-layer-core" (the Java artifact); the \n in the negated class keeps the
+	// next table row's Bazel version out of reach. codex #330.
+	fdbContextCited = regexp.MustCompile(`(?:FoundationDB|foundationdb|libfdb_c|FDB)[^0-9\n]{0,30}?(\d+\.\d+\.\d+)`)
 	// goPin extracts the Go toolchain major.minor from go.mod (go 1.26.4 -> 1.26).
 	goPin = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
 	// goCited matches a "Go x.y" reference, tolerating markdown bold/backticks/table separators
@@ -155,17 +162,17 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
 	want := pin(t, root, foundationDBPin, "MODULE.bazel", "foundationdb")
-	// Build the matcher from the pin's MAJOR (7 today). This tracks a future FDB 8.x bump
-	// instead of going blind, and — unlike a [7-9] range — stays distinct from Bazel 9.x / Go 1.x
-	// / Java 4.x so it never false-matches the Bazel pin (README cites Bazel 9.0.1). codex/@claude
-	// #330. A different <major>.x.y in a living doc is FDB drift.
-	major := want[:strings.IndexByte(want, '.')]
-	fdbCited := regexp.MustCompile(`\b` + regexp.QuoteMeta(major) + `\.\d+\.\d+\b`)
 	for _, doc := range livingDocs {
 		body := versionScanBody(t, root, doc)
-		for _, v := range fdbCited.FindAllString(body, -1) {
+		for _, m := range fdbContextCited.FindAllStringSubmatchIndex(body, -1) {
+			v := body[m[2]:m[3]]
+			// Skip a 4-part version's 3-part prefix (e.g. the Java 4.11.1.0 — its own anchor
+			// handles it): if the char after the capture is '.', this is x.y.z.w, not FDB.
+			if m[3] < len(body) && body[m[3]] == '.' {
+				continue
+			}
 			if v != want {
-				t.Errorf("%s cites FDB version %q, but MODULE.bazel pins foundationdb %q — living docs must track the pin", doc, v, want)
+				t.Errorf("%s cites FDB version %q next to an FDB keyword, but MODULE.bazel pins foundationdb %q — living docs must track the pin", doc, v, want)
 			}
 		}
 	}
