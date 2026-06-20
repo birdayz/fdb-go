@@ -1,0 +1,2 @@
+# keep: staged into pkg/docscheck panic-boundary doc-sync guard (RFC-134).
+exports_files(["panic-audit.md"])

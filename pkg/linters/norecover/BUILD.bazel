@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "norecover",
+    srcs = ["analyzer.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/linters/norecover",
+    visibility = ["//visibility:public"],
+    deps = ["@org_golang_x_tools//go/analysis"],
+)
+
+go_test(
+    name = "norecover_test",
+    srcs = ["analyzer_test.go"],
+    embed = [":norecover"],
+    deps = ["@org_golang_x_tools//go/analysis"],
+)

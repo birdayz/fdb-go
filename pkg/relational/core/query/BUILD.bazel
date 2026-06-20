@@ -34,3 +34,6 @@ go_test(
         "//pkg/relational/core/query/logical",
     ],
 )
+
+# keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
+exports_files(["cascades_translator_test.go"])
