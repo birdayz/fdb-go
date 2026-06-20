@@ -1,6 +1,6 @@
 # TODOs
 
-FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
+FoundationDB Record Layer — Go Port. Java version: **4.12.11.0**. FDB wire protocol: **7.3.75**.
 
 Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types, 9 predicate types. Unified Cascades task stack (REWRITING + PLANNING). Winner-based plan selection with per-ordering properties.
 
@@ -65,6 +65,32 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    exploratory-yield re-optimization. Blocked on Go compensation re-optimization handling
    IN-explode/correlated/index-only shapes. Detail: §7.7.
 6. **[ ] Parallelize `//conformance` off Ginkgo** [LOW PRIO]. Detail: "Test infra (low priority)".
+7. **[~] Java target bump to 4.12.11.0 (from the 4.11 series; RFC-135).** Mechanical bump landed (pins + proto
+   sync + regen + version-target docs; `record_query_plan.proto` removed `PVersionValue`/reserved tag
+   38, `PExistsPredicate`→`PExistentialValuePredicate`, added `PExistsValue.value` +
+   `PRecordQueryExplodePlan.with_ordinality` — all `gen/`-only on the Go side, schema pinned by
+   `docscheck.TestPlanProtoSchemaMatches412`). **Behavioural parity = the R-items below, each its own
+   RFC, landed one at a time. Verify Java 4.12 actually supports each before treating as parity vs
+   allowed Go-extension.**
+   - **[ ] R1** — metadata-evolution field renames (`allow{Field,DeprecatedFieldRenames,Undeprecating}` +
+     `RenameFieldsVisitor`) vs Java `MetaDataEvolutionValidator`. Gate: Torvalds + codex + @claude.
+   - **[ ] R2** — indexer 4.12 changes (clear-metadata-after-readable, typed-record range preset,
+     sliding-window cleanup/admission) vs `IndexingBase/Common/Subspaces`, `OnlineIndexOperationConfig`,
+     `SlidingWindowIndexMaintainer`. Gate: Torvalds + codex + @claude.
+   - **[ ] R3** — parser grammar: `AT ordinality` table source, `functionNameKeyword` in
+     `scalarFunctionName` (`RelationalParser.g4`). Gate: **Graefe** + Torvalds.
+   - **[ ] R4** — EXISTS in the projection list (`PExistsValue.value`). Gate: **Graefe** + Torvalds.
+   - **[ ] R5** — `AT ordinality` array unnest (`PRecordQueryExplodePlan.with_ordinality`). Gate:
+     **Graefe** + Torvalds.
+   - **[ ] R6** — `CARDINALITY()` function + index support. Gate: **Graefe** + Torvalds.
+   - **[ ] R7** — LEFT/RIGHT OUTER JOIN reclassification (verify Go-extension vs Java-now-supported) +
+     boolean-simplification/null/outer-join fixes. Gate: **Graefe** + Torvalds.
+   - **[~] R8** — conformance rebaseline from a live 4.12.11.0 run. **Partial in the bump PR:** the 7
+     RFC-082 annotations 4.12 lifted were reclassified to keep the conformance gate green (4 Java bug-fixes
+     → plain equivalence; `left_outer_join_basic` + `where_case_returns_bool_probe` lifted → plain
+     equivalence; `bare_bool_where_rejected` → JavaSucceedsGoRejects). **Remaining:** full corpus re-sweep,
+     reclassify cross-engine specs/comments encoding lifted 4.11 limits, flip `SQL_CONFORMANCE.md` /
+     `CASCADES_DIVERGENCE.md`, clear the `DIVERGENCES.md` rebaseline banner. Gate: Torvalds + codex + @claude.
 
 > **Prior wave closed:** D1 (RFC-118 SimTransport), B2 (RFC-109 escape hatch), the RFC-056 lazy GetKey
 > iterator (RFC-057), the GRV-cache divergence (RFC-104), and B1/CI-off-the-box (untracked, owner
@@ -821,7 +847,7 @@ partitioned) — fails to plan rather than returning wrong results; revisit if n
 Constraints to mirror from Java's `VectorIndexScanMatchCandidate`: exactly one distance-rank per query;
 the index MUST be partitioned and the query MUST supply partition keys; the SQL distance fn MUST match the
 index `metric`; ORDER BY must be ascending; `ROW_NUMBER()` is INDEX-ONLY (refuse without a matching index).
-`@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026, just before the 4.11.1.0 tag.
+`@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026 (Java's 4.11 series).
 
 - [x] **9.5 Multi-partition vector scan (partial partition prefix).** Done in RFC-046 — `vectorMultiPartitionCursor` ports Java's `flatMapPipelined(prefixSkipScan, scanSinglePartition)`: `findNextPartition` skip-scans the distinct partition prefixes, `searchOnePartition` runs one HNSW search per partition, per-partition top-K concatenated, full cross-partition `FlatMapContinuation` resume. Planner: `ComputeBoundParameterPrefixMap` keeps the equality prefix + always the DistanceRank binding (no nil-query-vector on a partial prefix); `parametersRequiredForBinding={distanceAlias}` (the full-prefix guard dropped, matching Java's `VectorIndexExpansionVisitor`). Partition inequality left unconsumed → residual (documented; endpoint-into-skip-scan is a perf follow-up). Graefe+Torvalds ACK. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`. DIVERGENCES.md "Vector scan multi-partition" closed.
 

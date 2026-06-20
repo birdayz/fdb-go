@@ -4475,10 +4475,11 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id, s FROM T_E6 ORDER BY id",
 		},
 		{
-			// TODO #52: Java drops one of two ANDed predicates when the
-			// non-join predicate is on the PK (`a.id = 2 AND a.id =
-			// b.parent`). Go applies both correctly. Cross-engine
-			// probe (dayshift-66) showed: Go=2, Java=5.
+			// TODO #52: Java 4.11 dropped one of two ANDed predicates when the
+			// non-join predicate is on the PK (`a.id = 2 AND a.id = b.parent`),
+			// returning 5; Go applied both, returning 2. Java 4.12 FIXED this
+			// (RFC-135) — both engines now return 2, so the divergence annotation
+			// is removed and the entry runs as plain cross-engine equivalence.
 			Name: "pk_literal_eq_in_join",
 			SchemaTemplate: "CREATE TABLE T_PKL_A (id BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_PKL_B (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
@@ -4487,13 +4488,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_PKL_B VALUES (10, 1), (11, 1), (12, 2), (13, 2), (14, 3)",
 			},
 			Query: "SELECT count(*) FROM T_PKL_A a, T_PKL_B b WHERE a.id = 2 AND a.id = b.parent",
-			Divergence: &Divergence{
-				Reason:    "Java drops one of `a.id = 2 AND a.id = b.parent` and returns 5; Go applies both predicates correctly and returns 2 (only B rows (12,2) and (13,2) match).",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
-				GoExpectedRows: [][]any{
-					{float64(2)},
-				},
-			},
 		},
 		{
 			// Probe TODO #43: ORDER BY rejection wording for unindexed
@@ -4635,9 +4629,12 @@ func SeedRunCorpus() []RunQuery {
 			Query: "WITH big AS (SELECT id, gid, val FROM T_EX_B WHERE val > 50) SELECT count(*) FROM T_EX_A a WHERE EXISTS (SELECT 1 FROM big WHERE big.gid = a.gid)",
 		},
 		{
-			// TODO #53: 3-way join with shared driver key. Java returns
-			// full 3×3 cross product (9); Go correctly applies both
-			// join predicates (3).
+			// TODO #53: 3-way join with shared driver key. Java 4.11 dropped one
+			// or both join predicates in the 3-way fan-out and returned the full
+			// 3×3 cross product (9); Go applied both, returning 3. Java 4.12 FIXED
+			// this (RFC-135) — both engines now return 3, so the divergence
+			// annotation is removed and the entry runs as plain cross-engine
+			// equivalence.
 			Name: "three_way_join_shared_driver",
 			SchemaTemplate: "CREATE TABLE T_3J_A (id BIGINT, PRIMARY KEY (id)) " +
 				"CREATE TABLE T_3J_B (id BIGINT, x BIGINT, PRIMARY KEY (id)) " +
@@ -4648,13 +4645,6 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_3J_C VALUES (20, 1), (21, 2), (22, 3)",
 			},
 			Query: "SELECT count(*) FROM T_3J_A a, T_3J_B b, T_3J_C c WHERE a.id = b.x AND a.id = c.y",
-			Divergence: &Divergence{
-				Reason:    "Java drops one or both join predicates in 3-way fan-out and returns the full 3×3 cross product (9); Go applies both predicates (each B and C side has one matching row per a.id) and returns 3.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
-				GoExpectedRows: [][]any{
-					{float64(3)},
-				},
-			},
 		},
 		{
 			// Probe TODO #58: multi-subquery FROM list cross-engine
@@ -14559,17 +14549,15 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT COUNT(*) FROM T_AGG_04 HAVING COUNT(*) > 0",
 		},
 		{
+			// Java 4.11 skipped the implicit group on an empty table when HAVING
+			// was present, returning zero rows instead of [0]; Go produced the
+			// implicit-group row per SQL spec. Java 4.12 FIXED this (RFC-135) —
+			// both engines now return [0], so the divergence annotation is removed
+			// and the entry runs as plain cross-engine equivalence.
 			Name:           "agg_empty_count_having_passes",
 			SchemaTemplate: "CREATE TABLE T_AGG_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT COUNT(*) FROM T_AGG_05 HAVING COUNT(*) >= 0",
-			Divergence: &Divergence{
-				Reason:    "Java skips the implicit group on empty table when HAVING is present, returning zero rows instead of [0]. Go correctly produces the implicit group row per SQL spec.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
-				GoExpectedRows: [][]any{
-					{float64(0)},
-				},
-			},
 		},
 		// ===== GREATEST / LEAST shapes =====================================
 		{
@@ -16840,17 +16828,15 @@ func SeedRunCorpus() []RunQuery {
 			Query: "SELECT COUNT(*), SUM(v) FROM T_HAV_14 HAVING COUNT(*) > 1 AND SUM(v) > 50",
 		},
 		{
+			// Java 4.11 skipped the implicit group on an empty table when HAVING
+			// was present, returning zero rows instead of [0]; Go produced the
+			// implicit-group row per SQL spec. Java 4.12 FIXED this (RFC-135) —
+			// both engines now return [0], so the divergence annotation is removed
+			// and the entry runs as plain cross-engine equivalence.
 			Name:           "having_count_star_eq_zero_empty",
 			SchemaTemplate: "CREATE TABLE T_HAV_15 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT COUNT(*) FROM T_HAV_15 HAVING COUNT(*) = 0",
-			Divergence: &Divergence{
-				Reason:    "Java skips the implicit group on empty table when HAVING is present, returning zero rows instead of [0]. Go correctly produces the implicit group row per SQL spec.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
-				GoExpectedRows: [][]any{
-					{float64(0)},
-				},
-			},
 		},
 
 		// ===== Aggregate expression shapes =================================

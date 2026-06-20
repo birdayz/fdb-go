@@ -2548,33 +2548,6 @@ func (m *PValue_VariadicFunctionValue) MarshalToSizedBufferVT(dAtA []byte) (int,
 	}
 	return len(dAtA) - i, nil
 }
-func (m *PValue_VersionValue) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PValue_VersionValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	if m.VersionValue != nil {
-		size, err := m.VersionValue.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x2
-		i--
-		dAtA[i] = 0xb2
-	} else {
-		i = protohelpers.EncodeVarint(dAtA, i, 0)
-		i--
-		dAtA[i] = 0x2
-		i--
-		dAtA[i] = 0xb2
-	}
-	return len(dAtA) - i, nil
-}
 func (m *PValue_FirstOrDefaultValue) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
@@ -3874,6 +3847,16 @@ func (m *PExistsValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Value != nil {
+		size, err := m.Value.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x1a
 	}
 	if m.Alias != nil {
 		i -= len(*m.Alias)
@@ -6344,56 +6327,6 @@ func (m *PVariadicFunctionValue) MarshalToSizedBufferVT(dAtA []byte) (int, error
 	return len(dAtA) - i, nil
 }
 
-func (m *PVersionValue) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *PVersionValue) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PVersionValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.Child != nil {
-		size, err := m.Child.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x12
-	}
-	if m.BaseAlias != nil {
-		i -= len(*m.BaseAlias)
-		copy(dAtA[i:], *m.BaseAlias)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.BaseAlias)))
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
 func (m *PIncarnationValue) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -7857,15 +7790,15 @@ func (m *PQueryPredicate_ConstantPredicate) MarshalToSizedBufferVT(dAtA []byte) 
 	}
 	return len(dAtA) - i, nil
 }
-func (m *PQueryPredicate_ExistsPredicate) MarshalToVT(dAtA []byte) (int, error) {
+func (m *PQueryPredicate_ExistentialValuePredicate) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *PQueryPredicate_ExistsPredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *PQueryPredicate_ExistentialValuePredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.ExistsPredicate != nil {
-		size, err := m.ExistsPredicate.MarshalToSizedBufferVT(dAtA[:i])
+	if m.ExistentialValuePredicate != nil {
+		size, err := m.ExistentialValuePredicate.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -8397,7 +8330,7 @@ func (m *PDatabaseObjectDependenciesPredicate) MarshalToSizedBufferVT(dAtA []byt
 	return len(dAtA) - i, nil
 }
 
-func (m *PExistsPredicate) MarshalVT() (dAtA []byte, err error) {
+func (m *PExistentialValuePredicate) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -8410,12 +8343,12 @@ func (m *PExistsPredicate) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *PExistsPredicate) MarshalToVT(dAtA []byte) (int, error) {
+func (m *PExistentialValuePredicate) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *PExistsPredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *PExistentialValuePredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -8426,13 +8359,6 @@ func (m *PExistsPredicate) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.ExistentialAlias != nil {
-		i -= len(*m.ExistentialAlias)
-		copy(dAtA[i:], *m.ExistentialAlias)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.ExistentialAlias)))
-		i--
-		dAtA[i] = 0x12
 	}
 	if m.Super != nil {
 		size, err := m.Super.MarshalToSizedBufferVT(dAtA[:i])
@@ -10868,6 +10794,16 @@ func (m *PRecordQueryExplodePlan) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.WithOrdinality != nil {
+		i--
+		if *m.WithOrdinality {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x10
 	}
 	if m.CollectionValue != nil {
 		size, err := m.CollectionValue.MarshalToSizedBufferVT(dAtA[:i])
@@ -15717,9 +15653,6 @@ func (m *PValue) ResetVT() {
 		if oneof, ok := m.SpecificValue.(*PValue_VariadicFunctionValue); ok {
 			oneof.VariadicFunctionValue.ReturnToVTPool()
 		}
-		if oneof, ok := m.SpecificValue.(*PValue_VersionValue); ok {
-			oneof.VersionValue.ReturnToVTPool()
-		}
 		if oneof, ok := m.SpecificValue.(*PValue_FirstOrDefaultValue); ok {
 			oneof.FirstOrDefaultValue.ReturnToVTPool()
 		}
@@ -16099,6 +16032,7 @@ var vtprotoPool_PExistsValue = sync.Pool{
 func (m *PExistsValue) ResetVT() {
 	if m != nil {
 		m.Child.ReturnToVTPool()
+		m.Value.ReturnToVTPool()
 		m.Reset()
 	}
 }
@@ -17236,28 +17170,6 @@ func PVariadicFunctionValueFromVTPool() *PVariadicFunctionValue {
 	return vtprotoPool_PVariadicFunctionValue.Get().(*PVariadicFunctionValue)
 }
 
-var vtprotoPool_PVersionValue = sync.Pool{
-	New: func() interface{} {
-		return &PVersionValue{}
-	},
-}
-
-func (m *PVersionValue) ResetVT() {
-	if m != nil {
-		m.Child.ReturnToVTPool()
-		m.Reset()
-	}
-}
-func (m *PVersionValue) ReturnToVTPool() {
-	if m != nil {
-		m.ResetVT()
-		vtprotoPool_PVersionValue.Put(m)
-	}
-}
-func PVersionValueFromVTPool() *PVersionValue {
-	return vtprotoPool_PVersionValue.Get().(*PVersionValue)
-}
-
 var vtprotoPool_PIncarnationValue = sync.Pool{
 	New: func() interface{} {
 		return &PIncarnationValue{}
@@ -17785,8 +17697,8 @@ func (m *PQueryPredicate) ResetVT() {
 		if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_ConstantPredicate); ok {
 			oneof.ConstantPredicate.ReturnToVTPool()
 		}
-		if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_ExistsPredicate); ok {
-			oneof.ExistsPredicate.ReturnToVTPool()
+		if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_ExistentialValuePredicate); ok {
+			oneof.ExistentialValuePredicate.ReturnToVTPool()
 		}
 		if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_NotPredicate); ok {
 			oneof.NotPredicate.ReturnToVTPool()
@@ -18006,26 +17918,26 @@ func PDatabaseObjectDependenciesPredicateFromVTPool() *PDatabaseObjectDependenci
 	return vtprotoPool_PDatabaseObjectDependenciesPredicate.Get().(*PDatabaseObjectDependenciesPredicate)
 }
 
-var vtprotoPool_PExistsPredicate = sync.Pool{
+var vtprotoPool_PExistentialValuePredicate = sync.Pool{
 	New: func() interface{} {
-		return &PExistsPredicate{}
+		return &PExistentialValuePredicate{}
 	},
 }
 
-func (m *PExistsPredicate) ResetVT() {
+func (m *PExistentialValuePredicate) ResetVT() {
 	if m != nil {
 		m.Super.ReturnToVTPool()
 		m.Reset()
 	}
 }
-func (m *PExistsPredicate) ReturnToVTPool() {
+func (m *PExistentialValuePredicate) ReturnToVTPool() {
 	if m != nil {
 		m.ResetVT()
-		vtprotoPool_PExistsPredicate.Put(m)
+		vtprotoPool_PExistentialValuePredicate.Put(m)
 	}
 }
-func PExistsPredicateFromVTPool() *PExistsPredicate {
-	return vtprotoPool_PExistsPredicate.Get().(*PExistsPredicate)
+func PExistentialValuePredicateFromVTPool() *PExistentialValuePredicate {
+	return vtprotoPool_PExistentialValuePredicate.Get().(*PExistentialValuePredicate)
 }
 
 var vtprotoPool_PNotPredicate = sync.Pool{
@@ -21513,20 +21425,6 @@ func (m *PValue_VariadicFunctionValue) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *PValue_VersionValue) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.VersionValue != nil {
-		l = m.VersionValue.SizeVT()
-		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
-	} else {
-		n += 3
-	}
-	return n
-}
 func (m *PValue_FirstOrDefaultValue) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -22099,6 +21997,10 @@ func (m *PExistsValue) SizeVT() (n int) {
 	}
 	if m.Alias != nil {
 		l = len(*m.Alias)
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Value != nil {
+		l = m.Value.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -22958,24 +22860,6 @@ func (m *PVariadicFunctionValue) SizeVT() (n int) {
 	return n
 }
 
-func (m *PVersionValue) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.BaseAlias != nil {
-		l = len(*m.BaseAlias)
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.Child != nil {
-		l = m.Child.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
 func (m *PIncarnationValue) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -23587,14 +23471,14 @@ func (m *PQueryPredicate_ConstantPredicate) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *PQueryPredicate_ExistsPredicate) SizeVT() (n int) {
+func (m *PQueryPredicate_ExistentialValuePredicate) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.ExistsPredicate != nil {
-		l = m.ExistsPredicate.SizeVT()
+	if m.ExistentialValuePredicate != nil {
+		l = m.ExistentialValuePredicate.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
@@ -23816,7 +23700,7 @@ func (m *PDatabaseObjectDependenciesPredicate) SizeVT() (n int) {
 	return n
 }
 
-func (m *PExistsPredicate) SizeVT() (n int) {
+func (m *PExistentialValuePredicate) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -23824,10 +23708,6 @@ func (m *PExistsPredicate) SizeVT() (n int) {
 	_ = l
 	if m.Super != nil {
 		l = m.Super.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.ExistentialAlias != nil {
-		l = len(*m.ExistentialAlias)
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -24935,6 +24815,9 @@ func (m *PRecordQueryExplodePlan) SizeVT() (n int) {
 	if m.CollectionValue != nil {
 		l = m.CollectionValue.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.WithOrdinality != nil {
+		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -31217,47 +31100,6 @@ func (m *PValue) UnmarshalVT(dAtA []byte) error {
 				m.SpecificValue = &PValue_VariadicFunctionValue{VariadicFunctionValue: v}
 			}
 			iNdEx = postIndex
-		case 38:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VersionValue", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if oneof, ok := m.SpecificValue.(*PValue_VersionValue); ok {
-				if err := oneof.VersionValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				v := PVersionValueFromVTPool()
-				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-				m.SpecificValue = &PValue_VersionValue{VersionValue: v}
-			}
-			iNdEx = postIndex
 		case 39:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field FirstOrDefaultValue", wireType)
@@ -33825,6 +33667,42 @@ func (m *PExistsValue) UnmarshalVT(dAtA []byte) error {
 			}
 			s := string(dAtA[iNdEx:postIndex])
 			m.Alias = &s
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Value", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Value == nil {
+				m.Value = PValueFromVTPool()
+			}
+			if err := m.Value.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -39415,126 +39293,6 @@ func (m *PVariadicFunctionValue) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *PVersionValue) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: PVersionValue: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PVersionValue: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field BaseAlias", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			s := string(dAtA[iNdEx:postIndex])
-			m.BaseAlias = &s
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Child", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Child == nil {
-				m.Child = PValueFromVTPool()
-			}
-			if err := m.Child.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
 func (m *PIncarnationValue) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -42606,7 +42364,7 @@ func (m *PQueryPredicate) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 4:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ExistsPredicate", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field ExistentialValuePredicate", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -42633,16 +42391,16 @@ func (m *PQueryPredicate) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_ExistsPredicate); ok {
-				if err := oneof.ExistsPredicate.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if oneof, ok := m.SpecificPredicate.(*PQueryPredicate_ExistentialValuePredicate); ok {
+				if err := oneof.ExistentialValuePredicate.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				v := PExistsPredicateFromVTPool()
+				v := PExistentialValuePredicateFromVTPool()
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.SpecificPredicate = &PQueryPredicate_ExistsPredicate{ExistsPredicate: v}
+				m.SpecificPredicate = &PQueryPredicate_ExistentialValuePredicate{ExistentialValuePredicate: v}
 			}
 			iNdEx = postIndex
 		case 5:
@@ -43724,7 +43482,7 @@ func (m *PDatabaseObjectDependenciesPredicate) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *PExistsPredicate) UnmarshalVT(dAtA []byte) error {
+func (m *PExistentialValuePredicate) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -43747,10 +43505,10 @@ func (m *PExistsPredicate) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: PExistsPredicate: wiretype end group for non-group")
+			return fmt.Errorf("proto: PExistentialValuePredicate: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PExistsPredicate: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: PExistentialValuePredicate: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -43783,44 +43541,11 @@ func (m *PExistsPredicate) UnmarshalVT(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.Super == nil {
-				m.Super = PAbstractQueryPredicateFromVTPool()
+				m.Super = PValuePredicateFromVTPool()
 			}
 			if err := m.Super.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ExistentialAlias", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			s := string(dAtA[iNdEx:postIndex])
-			m.ExistentialAlias = &s
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -48774,6 +48499,27 @@ func (m *PRecordQueryExplodePlan) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field WithOrdinality", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.WithOrdinality = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

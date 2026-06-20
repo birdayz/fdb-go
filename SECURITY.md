@@ -22,7 +22,7 @@ This project is **pre-1.0 and not yet declared production-ready** (see
 `PRODUCTION_READINESS.md` and `TODO-production.md`). Of particular interest:
 
 - **Wire-format / data-integrity** issues — anything where Go and Java
-  (`fdb-record-layer` 4.11.1.0) would read/write incompatible bytes, or where
+  (`fdb-record-layer` 4.12.11.0) would read/write incompatible bytes, or where
   records/indexes/versions/continuations could be corrupted.
 - **Pure-Go FDB client** (`pkg/fdbgo`) — it reimplements the FoundationDB wire
   protocol from scratch; correctness divergences from libfdb_c (RYW, retries,

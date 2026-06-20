@@ -3275,7 +3275,7 @@ func (x *PCastValue_PPhysicalOperator) UnmarshalJSON(b []byte) error {
 
 // Deprecated: Use PCastValue_PPhysicalOperator.Descriptor instead.
 func (PCastValue_PPhysicalOperator) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{71, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{70, 0}
 }
 
 type PComparison_PComparisonType int32
@@ -3397,7 +3397,7 @@ func (x *PComparison_PComparisonType) UnmarshalJSON(b []byte) error {
 
 // Deprecated: Use PComparison_PComparisonType.Descriptor instead.
 func (PComparison_PComparisonType) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{72, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{71, 0}
 }
 
 type PParameterComparison_PBindingKind int32
@@ -3459,7 +3459,7 @@ func (x *PParameterComparison_PBindingKind) UnmarshalJSON(b []byte) error {
 
 // Deprecated: Use PParameterComparison_PBindingKind.Descriptor instead.
 func (PParameterComparison_PBindingKind) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{75, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{74, 0}
 }
 
 type PIndexKeyValueToPartialRecord_PTupleSource int32
@@ -3518,7 +3518,7 @@ func (x *PIndexKeyValueToPartialRecord_PTupleSource) UnmarshalJSON(b []byte) err
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PTupleSource.Descriptor instead.
 func (PIndexKeyValueToPartialRecord_PTupleSource) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 0}
 }
 
 type PScoreForRank_PBindingFunction int32
@@ -3592,7 +3592,7 @@ func (x *PScoreForRank_PBindingFunction) UnmarshalJSON(b []byte) error {
 
 // Deprecated: Use PScoreForRank_PBindingFunction.Descriptor instead.
 func (PScoreForRank_PBindingFunction) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{154, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{153, 0}
 }
 
 type PRecordQueryRecursiveDfsJoinPlan_PDfsTraversalStrategy int32
@@ -3648,7 +3648,7 @@ func (x *PRecordQueryRecursiveDfsJoinPlan_PDfsTraversalStrategy) UnmarshalJSON(b
 
 // Deprecated: Use PRecordQueryRecursiveDfsJoinPlan_PDfsTraversalStrategy.Descriptor instead.
 func (PRecordQueryRecursiveDfsJoinPlan_PDfsTraversalStrategy) EnumDescriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{173, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{172, 0}
 }
 
 // Type system
@@ -4323,7 +4323,6 @@ type PValue struct {
 	//	*PValue_BinaryRelOpValue
 	//	*PValue_UnaryRelOpValue
 	//	*PValue_VariadicFunctionValue
-	//	*PValue_VersionValue
 	//	*PValue_FirstOrDefaultValue
 	//	*PValue_ThrowsValue
 	//	*PValue_IndexEntryObjectValue
@@ -4724,15 +4723,6 @@ func (x *PValue) GetVariadicFunctionValue() *PVariadicFunctionValue {
 	return nil
 }
 
-func (x *PValue) GetVersionValue() *PVersionValue {
-	if x != nil {
-		if x, ok := x.SpecificValue.(*PValue_VersionValue); ok {
-			return x.VersionValue
-		}
-	}
-	return nil
-}
-
 func (x *PValue) GetFirstOrDefaultValue() *PFirstOrDefaultValue {
 	if x != nil {
 		if x, ok := x.SpecificValue.(*PValue_FirstOrDefaultValue); ok {
@@ -5101,10 +5091,6 @@ type PValue_VariadicFunctionValue struct {
 	VariadicFunctionValue *PVariadicFunctionValue `protobuf:"bytes,37,opt,name=variadic_function_value,json=variadicFunctionValue,oneof"`
 }
 
-type PValue_VersionValue struct {
-	VersionValue *PVersionValue `protobuf:"bytes,38,opt,name=version_value,json=versionValue,oneof"`
-}
-
 type PValue_FirstOrDefaultValue struct {
 	FirstOrDefaultValue *PFirstOrDefaultValue `protobuf:"bytes,39,opt,name=first_or_default_value,json=firstOrDefaultValue,oneof"`
 }
@@ -5274,8 +5260,6 @@ func (*PValue_BinaryRelOpValue) isPValue_SpecificValue() {}
 func (*PValue_UnaryRelOpValue) isPValue_SpecificValue() {}
 
 func (*PValue_VariadicFunctionValue) isPValue_SpecificValue() {}
-
-func (*PValue_VersionValue) isPValue_SpecificValue() {}
 
 func (*PValue_FirstOrDefaultValue) isPValue_SpecificValue() {}
 
@@ -5960,7 +5944,8 @@ func (*PEmptyValue) Descriptor() ([]byte, []int) {
 type PExistsValue struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Child         *PQuantifiedObjectValue `protobuf:"bytes,1,opt,name=child" json:"child,omitempty"` // deprecated
-	Alias         *string                 `protobuf:"bytes,2,opt,name=alias" json:"alias,omitempty"`
+	Alias         *string                 `protobuf:"bytes,2,opt,name=alias" json:"alias,omitempty"` //deprecated
+	Value         *PValue                 `protobuf:"bytes,3,opt,name=value" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6007,6 +5992,13 @@ func (x *PExistsValue) GetAlias() string {
 		return *x.Alias
 	}
 	return ""
+}
+
+func (x *PExistsValue) GetValue() *PValue {
+	if x != nil {
+		return x.Value
+	}
+	return nil
 }
 
 type PEvaluatesToValue struct {
@@ -8161,58 +8153,6 @@ func (x *PVariadicFunctionValue) GetChildren() []*PValue {
 	return nil
 }
 
-type PVersionValue struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BaseAlias     *string                `protobuf:"bytes,1,opt,name=base_alias,json=baseAlias" json:"base_alias,omitempty"` // to-be-deprecated
-	Child         *PValue                `protobuf:"bytes,2,opt,name=child" json:"child,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PVersionValue) Reset() {
-	*x = PVersionValue{}
-	mi := &file_record_query_plan_proto_msgTypes[63]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PVersionValue) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PVersionValue) ProtoMessage() {}
-
-func (x *PVersionValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[63]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PVersionValue.ProtoReflect.Descriptor instead.
-func (*PVersionValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{63}
-}
-
-func (x *PVersionValue) GetBaseAlias() string {
-	if x != nil && x.BaseAlias != nil {
-		return *x.BaseAlias
-	}
-	return ""
-}
-
-func (x *PVersionValue) GetChild() *PValue {
-	if x != nil {
-		return x.Child
-	}
-	return nil
-}
-
 type PIncarnationValue struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -8221,7 +8161,7 @@ type PIncarnationValue struct {
 
 func (x *PIncarnationValue) Reset() {
 	*x = PIncarnationValue{}
-	mi := &file_record_query_plan_proto_msgTypes[64]
+	mi := &file_record_query_plan_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8233,7 +8173,7 @@ func (x *PIncarnationValue) String() string {
 func (*PIncarnationValue) ProtoMessage() {}
 
 func (x *PIncarnationValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[64]
+	mi := &file_record_query_plan_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8246,7 +8186,7 @@ func (x *PIncarnationValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIncarnationValue.ProtoReflect.Descriptor instead.
 func (*PIncarnationValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{64}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{63}
 }
 
 type PCardinalityValue struct {
@@ -8258,7 +8198,7 @@ type PCardinalityValue struct {
 
 func (x *PCardinalityValue) Reset() {
 	*x = PCardinalityValue{}
-	mi := &file_record_query_plan_proto_msgTypes[65]
+	mi := &file_record_query_plan_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8270,7 +8210,7 @@ func (x *PCardinalityValue) String() string {
 func (*PCardinalityValue) ProtoMessage() {}
 
 func (x *PCardinalityValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[65]
+	mi := &file_record_query_plan_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8283,7 +8223,7 @@ func (x *PCardinalityValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PCardinalityValue.ProtoReflect.Descriptor instead.
 func (*PCardinalityValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{65}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *PCardinalityValue) GetChildValue() *PValue {
@@ -8303,7 +8243,7 @@ type PWindowedValue struct {
 
 func (x *PWindowedValue) Reset() {
 	*x = PWindowedValue{}
-	mi := &file_record_query_plan_proto_msgTypes[66]
+	mi := &file_record_query_plan_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8315,7 +8255,7 @@ func (x *PWindowedValue) String() string {
 func (*PWindowedValue) ProtoMessage() {}
 
 func (x *PWindowedValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[66]
+	mi := &file_record_query_plan_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8328,7 +8268,7 @@ func (x *PWindowedValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PWindowedValue.ProtoReflect.Descriptor instead.
 func (*PWindowedValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{66}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *PWindowedValue) GetPartitioningValues() []*PValue {
@@ -8357,7 +8297,7 @@ type PCollateValue struct {
 
 func (x *PCollateValue) Reset() {
 	*x = PCollateValue{}
-	mi := &file_record_query_plan_proto_msgTypes[67]
+	mi := &file_record_query_plan_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8369,7 +8309,7 @@ func (x *PCollateValue) String() string {
 func (*PCollateValue) ProtoMessage() {}
 
 func (x *PCollateValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[67]
+	mi := &file_record_query_plan_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8382,7 +8322,7 @@ func (x *PCollateValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PCollateValue.ProtoReflect.Descriptor instead.
 func (*PCollateValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{67}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *PCollateValue) GetCollatorRegistry() string {
@@ -8424,7 +8364,7 @@ type PRangeValue struct {
 
 func (x *PRangeValue) Reset() {
 	*x = PRangeValue{}
-	mi := &file_record_query_plan_proto_msgTypes[68]
+	mi := &file_record_query_plan_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8436,7 +8376,7 @@ func (x *PRangeValue) String() string {
 func (*PRangeValue) ProtoMessage() {}
 
 func (x *PRangeValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[68]
+	mi := &file_record_query_plan_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8449,7 +8389,7 @@ func (x *PRangeValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRangeValue.ProtoReflect.Descriptor instead.
 func (*PRangeValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{68}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *PRangeValue) GetEndExclusiveChild() *PValue {
@@ -8482,7 +8422,7 @@ type PArrayDistinctValue struct {
 
 func (x *PArrayDistinctValue) Reset() {
 	*x = PArrayDistinctValue{}
-	mi := &file_record_query_plan_proto_msgTypes[69]
+	mi := &file_record_query_plan_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8494,7 +8434,7 @@ func (x *PArrayDistinctValue) String() string {
 func (*PArrayDistinctValue) ProtoMessage() {}
 
 func (x *PArrayDistinctValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[69]
+	mi := &file_record_query_plan_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8507,7 +8447,7 @@ func (x *PArrayDistinctValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PArrayDistinctValue.ProtoReflect.Descriptor instead.
 func (*PArrayDistinctValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{69}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *PArrayDistinctValue) GetChildValue() *PValue {
@@ -8527,7 +8467,7 @@ type PParameterObjectValue struct {
 
 func (x *PParameterObjectValue) Reset() {
 	*x = PParameterObjectValue{}
-	mi := &file_record_query_plan_proto_msgTypes[70]
+	mi := &file_record_query_plan_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8539,7 +8479,7 @@ func (x *PParameterObjectValue) String() string {
 func (*PParameterObjectValue) ProtoMessage() {}
 
 func (x *PParameterObjectValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[70]
+	mi := &file_record_query_plan_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8552,7 +8492,7 @@ func (x *PParameterObjectValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PParameterObjectValue.ProtoReflect.Descriptor instead.
 func (*PParameterObjectValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{70}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *PParameterObjectValue) GetParameterName() string {
@@ -8580,7 +8520,7 @@ type PCastValue struct {
 
 func (x *PCastValue) Reset() {
 	*x = PCastValue{}
-	mi := &file_record_query_plan_proto_msgTypes[71]
+	mi := &file_record_query_plan_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8592,7 +8532,7 @@ func (x *PCastValue) String() string {
 func (*PCastValue) ProtoMessage() {}
 
 func (x *PCastValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[71]
+	mi := &file_record_query_plan_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8605,7 +8545,7 @@ func (x *PCastValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PCastValue.ProtoReflect.Descriptor instead.
 func (*PCastValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{71}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *PCastValue) GetChild() *PValue {
@@ -8655,7 +8595,7 @@ type PComparison struct {
 
 func (x *PComparison) Reset() {
 	*x = PComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[72]
+	mi := &file_record_query_plan_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8667,7 +8607,7 @@ func (x *PComparison) String() string {
 func (*PComparison) ProtoMessage() {}
 
 func (x *PComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[72]
+	mi := &file_record_query_plan_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8680,7 +8620,7 @@ func (x *PComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PComparison.ProtoReflect.Descriptor instead.
 func (*PComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{72}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *PComparison) GetSpecificComparison() isPComparison_SpecificComparison {
@@ -8899,7 +8839,7 @@ type PSimpleComparison struct {
 
 func (x *PSimpleComparison) Reset() {
 	*x = PSimpleComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[73]
+	mi := &file_record_query_plan_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8911,7 +8851,7 @@ func (x *PSimpleComparison) String() string {
 func (*PSimpleComparison) ProtoMessage() {}
 
 func (x *PSimpleComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[73]
+	mi := &file_record_query_plan_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8924,7 +8864,7 @@ func (x *PSimpleComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PSimpleComparison.ProtoReflect.Descriptor instead.
 func (*PSimpleComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{73}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *PSimpleComparison) GetType() PComparison_PComparisonType {
@@ -8952,7 +8892,7 @@ type PConversionSimpleComparison struct {
 
 func (x *PConversionSimpleComparison) Reset() {
 	*x = PConversionSimpleComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[74]
+	mi := &file_record_query_plan_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8964,7 +8904,7 @@ func (x *PConversionSimpleComparison) String() string {
 func (*PConversionSimpleComparison) ProtoMessage() {}
 
 func (x *PConversionSimpleComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[74]
+	mi := &file_record_query_plan_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8977,7 +8917,7 @@ func (x *PConversionSimpleComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PConversionSimpleComparison.ProtoReflect.Descriptor instead.
 func (*PConversionSimpleComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{74}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *PConversionSimpleComparison) GetType() PComparison_PComparisonType {
@@ -9012,7 +8952,7 @@ type PParameterComparison struct {
 
 func (x *PParameterComparison) Reset() {
 	*x = PParameterComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[75]
+	mi := &file_record_query_plan_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9024,7 +8964,7 @@ func (x *PParameterComparison) String() string {
 func (*PParameterComparison) ProtoMessage() {}
 
 func (x *PParameterComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[75]
+	mi := &file_record_query_plan_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9037,7 +8977,7 @@ func (x *PParameterComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PParameterComparison.ProtoReflect.Descriptor instead.
 func (*PParameterComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{75}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *PParameterComparison) GetType() PComparison_PComparisonType {
@@ -9073,7 +9013,7 @@ type PConversionParameterComparison struct {
 
 func (x *PConversionParameterComparison) Reset() {
 	*x = PConversionParameterComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[76]
+	mi := &file_record_query_plan_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9085,7 +9025,7 @@ func (x *PConversionParameterComparison) String() string {
 func (*PConversionParameterComparison) ProtoMessage() {}
 
 func (x *PConversionParameterComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[76]
+	mi := &file_record_query_plan_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9098,7 +9038,7 @@ func (x *PConversionParameterComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PConversionParameterComparison.ProtoReflect.Descriptor instead.
 func (*PConversionParameterComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{76}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *PConversionParameterComparison) GetType() PComparison_PComparisonType {
@@ -9139,7 +9079,7 @@ type PValueComparison struct {
 
 func (x *PValueComparison) Reset() {
 	*x = PValueComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[77]
+	mi := &file_record_query_plan_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9151,7 +9091,7 @@ func (x *PValueComparison) String() string {
 func (*PValueComparison) ProtoMessage() {}
 
 func (x *PValueComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[77]
+	mi := &file_record_query_plan_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9164,7 +9104,7 @@ func (x *PValueComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PValueComparison.ProtoReflect.Descriptor instead.
 func (*PValueComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{77}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *PValueComparison) GetType() PComparison_PComparisonType {
@@ -9191,7 +9131,7 @@ type PListComparison struct {
 
 func (x *PListComparison) Reset() {
 	*x = PListComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[78]
+	mi := &file_record_query_plan_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9203,7 +9143,7 @@ func (x *PListComparison) String() string {
 func (*PListComparison) ProtoMessage() {}
 
 func (x *PListComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[78]
+	mi := &file_record_query_plan_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9216,7 +9156,7 @@ func (x *PListComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PListComparison.ProtoReflect.Descriptor instead.
 func (*PListComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{78}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *PListComparison) GetType() PComparison_PComparisonType {
@@ -9242,7 +9182,7 @@ type PNullComparison struct {
 
 func (x *PNullComparison) Reset() {
 	*x = PNullComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[79]
+	mi := &file_record_query_plan_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9254,7 +9194,7 @@ func (x *PNullComparison) String() string {
 func (*PNullComparison) ProtoMessage() {}
 
 func (x *PNullComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[79]
+	mi := &file_record_query_plan_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9267,7 +9207,7 @@ func (x *PNullComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PNullComparison.ProtoReflect.Descriptor instead.
 func (*PNullComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{79}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *PNullComparison) GetType() PComparison_PComparisonType {
@@ -9285,7 +9225,7 @@ type POpaqueEqualityComparison struct {
 
 func (x *POpaqueEqualityComparison) Reset() {
 	*x = POpaqueEqualityComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[80]
+	mi := &file_record_query_plan_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9297,7 +9237,7 @@ func (x *POpaqueEqualityComparison) String() string {
 func (*POpaqueEqualityComparison) ProtoMessage() {}
 
 func (x *POpaqueEqualityComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[80]
+	mi := &file_record_query_plan_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9310,7 +9250,7 @@ func (x *POpaqueEqualityComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use POpaqueEqualityComparison.ProtoReflect.Descriptor instead.
 func (*POpaqueEqualityComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{80}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{79}
 }
 
 type PMultiColumnComparison struct {
@@ -9322,7 +9262,7 @@ type PMultiColumnComparison struct {
 
 func (x *PMultiColumnComparison) Reset() {
 	*x = PMultiColumnComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[81]
+	mi := &file_record_query_plan_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9334,7 +9274,7 @@ func (x *PMultiColumnComparison) String() string {
 func (*PMultiColumnComparison) ProtoMessage() {}
 
 func (x *PMultiColumnComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[81]
+	mi := &file_record_query_plan_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9347,7 +9287,7 @@ func (x *PMultiColumnComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PMultiColumnComparison.ProtoReflect.Descriptor instead.
 func (*PMultiColumnComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{81}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *PMultiColumnComparison) GetInner() *PComparison {
@@ -9368,7 +9308,7 @@ type PInvertedFunctionComparison struct {
 
 func (x *PInvertedFunctionComparison) Reset() {
 	*x = PInvertedFunctionComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[82]
+	mi := &file_record_query_plan_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9380,7 +9320,7 @@ func (x *PInvertedFunctionComparison) String() string {
 func (*PInvertedFunctionComparison) ProtoMessage() {}
 
 func (x *PInvertedFunctionComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[82]
+	mi := &file_record_query_plan_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9393,7 +9333,7 @@ func (x *PInvertedFunctionComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInvertedFunctionComparison.ProtoReflect.Descriptor instead.
 func (*PInvertedFunctionComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{82}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *PInvertedFunctionComparison) GetFunction() *Function {
@@ -9426,7 +9366,7 @@ type PRecordTypeComparison struct {
 
 func (x *PRecordTypeComparison) Reset() {
 	*x = PRecordTypeComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[83]
+	mi := &file_record_query_plan_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9438,7 +9378,7 @@ func (x *PRecordTypeComparison) String() string {
 func (*PRecordTypeComparison) ProtoMessage() {}
 
 func (x *PRecordTypeComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[83]
+	mi := &file_record_query_plan_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9451,7 +9391,7 @@ func (x *PRecordTypeComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordTypeComparison.ProtoReflect.Descriptor instead.
 func (*PRecordTypeComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{83}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *PRecordTypeComparison) GetRecordTypeName() string {
@@ -9473,7 +9413,7 @@ type PDistanceRankValueComparison struct {
 
 func (x *PDistanceRankValueComparison) Reset() {
 	*x = PDistanceRankValueComparison{}
-	mi := &file_record_query_plan_proto_msgTypes[84]
+	mi := &file_record_query_plan_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9485,7 +9425,7 @@ func (x *PDistanceRankValueComparison) String() string {
 func (*PDistanceRankValueComparison) ProtoMessage() {}
 
 func (x *PDistanceRankValueComparison) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[84]
+	mi := &file_record_query_plan_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9498,7 +9438,7 @@ func (x *PDistanceRankValueComparison) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PDistanceRankValueComparison.ProtoReflect.Descriptor instead.
 func (*PDistanceRankValueComparison) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{84}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *PDistanceRankValueComparison) GetSuper() *PValueComparison {
@@ -9537,7 +9477,7 @@ type PQueryPredicate struct {
 	//	*PQueryPredicate_AdditionalQueryPredicates
 	//	*PQueryPredicate_AndPredicate
 	//	*PQueryPredicate_ConstantPredicate
-	//	*PQueryPredicate_ExistsPredicate
+	//	*PQueryPredicate_ExistentialValuePredicate
 	//	*PQueryPredicate_NotPredicate
 	//	*PQueryPredicate_OrPredicate
 	//	*PQueryPredicate_PredicateWithValueAndRanges
@@ -9552,7 +9492,7 @@ type PQueryPredicate struct {
 
 func (x *PQueryPredicate) Reset() {
 	*x = PQueryPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[85]
+	mi := &file_record_query_plan_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9564,7 +9504,7 @@ func (x *PQueryPredicate) String() string {
 func (*PQueryPredicate) ProtoMessage() {}
 
 func (x *PQueryPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[85]
+	mi := &file_record_query_plan_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9577,7 +9517,7 @@ func (x *PQueryPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PQueryPredicate.ProtoReflect.Descriptor instead.
 func (*PQueryPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{85}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *PQueryPredicate) GetSpecificPredicate() isPQueryPredicate_SpecificPredicate {
@@ -9614,10 +9554,10 @@ func (x *PQueryPredicate) GetConstantPredicate() *PConstantPredicate {
 	return nil
 }
 
-func (x *PQueryPredicate) GetExistsPredicate() *PExistsPredicate {
+func (x *PQueryPredicate) GetExistentialValuePredicate() *PExistentialValuePredicate {
 	if x != nil {
-		if x, ok := x.SpecificPredicate.(*PQueryPredicate_ExistsPredicate); ok {
-			return x.ExistsPredicate
+		if x, ok := x.SpecificPredicate.(*PQueryPredicate_ExistentialValuePredicate); ok {
+			return x.ExistentialValuePredicate
 		}
 	}
 	return nil
@@ -9693,8 +9633,8 @@ type PQueryPredicate_ConstantPredicate struct {
 	ConstantPredicate *PConstantPredicate `protobuf:"bytes,3,opt,name=constant_predicate,json=constantPredicate,oneof"`
 }
 
-type PQueryPredicate_ExistsPredicate struct {
-	ExistsPredicate *PExistsPredicate `protobuf:"bytes,4,opt,name=exists_predicate,json=existsPredicate,oneof"`
+type PQueryPredicate_ExistentialValuePredicate struct {
+	ExistentialValuePredicate *PExistentialValuePredicate `protobuf:"bytes,4,opt,name=existential_value_predicate,json=existentialValuePredicate,oneof"`
 }
 
 type PQueryPredicate_NotPredicate struct {
@@ -9727,7 +9667,7 @@ func (*PQueryPredicate_AndPredicate) isPQueryPredicate_SpecificPredicate() {}
 
 func (*PQueryPredicate_ConstantPredicate) isPQueryPredicate_SpecificPredicate() {}
 
-func (*PQueryPredicate_ExistsPredicate) isPQueryPredicate_SpecificPredicate() {}
+func (*PQueryPredicate_ExistentialValuePredicate) isPQueryPredicate_SpecificPredicate() {}
 
 func (*PQueryPredicate_NotPredicate) isPQueryPredicate_SpecificPredicate() {}
 
@@ -9750,7 +9690,7 @@ type PAbstractQueryPredicate struct {
 
 func (x *PAbstractQueryPredicate) Reset() {
 	*x = PAbstractQueryPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[86]
+	mi := &file_record_query_plan_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9762,7 +9702,7 @@ func (x *PAbstractQueryPredicate) String() string {
 func (*PAbstractQueryPredicate) ProtoMessage() {}
 
 func (x *PAbstractQueryPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[86]
+	mi := &file_record_query_plan_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9775,7 +9715,7 @@ func (x *PAbstractQueryPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PAbstractQueryPredicate.ProtoReflect.Descriptor instead.
 func (*PAbstractQueryPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{86}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *PAbstractQueryPredicate) GetIsAtomic() bool {
@@ -9795,7 +9735,7 @@ type PAndOrPredicate struct {
 
 func (x *PAndOrPredicate) Reset() {
 	*x = PAndOrPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[87]
+	mi := &file_record_query_plan_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9807,7 +9747,7 @@ func (x *PAndOrPredicate) String() string {
 func (*PAndOrPredicate) ProtoMessage() {}
 
 func (x *PAndOrPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[87]
+	mi := &file_record_query_plan_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9820,7 +9760,7 @@ func (x *PAndOrPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PAndOrPredicate.ProtoReflect.Descriptor instead.
 func (*PAndOrPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{87}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *PAndOrPredicate) GetSuper() *PAbstractQueryPredicate {
@@ -9846,7 +9786,7 @@ type PAndPredicate struct {
 
 func (x *PAndPredicate) Reset() {
 	*x = PAndPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[88]
+	mi := &file_record_query_plan_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9858,7 +9798,7 @@ func (x *PAndPredicate) String() string {
 func (*PAndPredicate) ProtoMessage() {}
 
 func (x *PAndPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[88]
+	mi := &file_record_query_plan_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9871,7 +9811,7 @@ func (x *PAndPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PAndPredicate.ProtoReflect.Descriptor instead.
 func (*PAndPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{88}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *PAndPredicate) GetSuper() *PAndOrPredicate {
@@ -9890,7 +9830,7 @@ type PCompatibleTypeEvolutionPredicate struct {
 
 func (x *PCompatibleTypeEvolutionPredicate) Reset() {
 	*x = PCompatibleTypeEvolutionPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[89]
+	mi := &file_record_query_plan_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9902,7 +9842,7 @@ func (x *PCompatibleTypeEvolutionPredicate) String() string {
 func (*PCompatibleTypeEvolutionPredicate) ProtoMessage() {}
 
 func (x *PCompatibleTypeEvolutionPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[89]
+	mi := &file_record_query_plan_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9915,7 +9855,7 @@ func (x *PCompatibleTypeEvolutionPredicate) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use PCompatibleTypeEvolutionPredicate.ProtoReflect.Descriptor instead.
 func (*PCompatibleTypeEvolutionPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{89}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *PCompatibleTypeEvolutionPredicate) GetRecordTypeNameFieldAccessPairs() []*PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair {
@@ -9935,7 +9875,7 @@ type PConstantPredicate struct {
 
 func (x *PConstantPredicate) Reset() {
 	*x = PConstantPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[90]
+	mi := &file_record_query_plan_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9947,7 +9887,7 @@ func (x *PConstantPredicate) String() string {
 func (*PConstantPredicate) ProtoMessage() {}
 
 func (x *PConstantPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[90]
+	mi := &file_record_query_plan_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9960,7 +9900,7 @@ func (x *PConstantPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PConstantPredicate.ProtoReflect.Descriptor instead.
 func (*PConstantPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{90}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *PConstantPredicate) GetSuper() *PAbstractQueryPredicate {
@@ -9986,7 +9926,7 @@ type PDatabaseObjectDependenciesPredicate struct {
 
 func (x *PDatabaseObjectDependenciesPredicate) Reset() {
 	*x = PDatabaseObjectDependenciesPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[91]
+	mi := &file_record_query_plan_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9998,7 +9938,7 @@ func (x *PDatabaseObjectDependenciesPredicate) String() string {
 func (*PDatabaseObjectDependenciesPredicate) ProtoMessage() {}
 
 func (x *PDatabaseObjectDependenciesPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[91]
+	mi := &file_record_query_plan_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10011,7 +9951,7 @@ func (x *PDatabaseObjectDependenciesPredicate) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use PDatabaseObjectDependenciesPredicate.ProtoReflect.Descriptor instead.
 func (*PDatabaseObjectDependenciesPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{91}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *PDatabaseObjectDependenciesPredicate) GetUsedIndexes() []*PDatabaseObjectDependenciesPredicate_PUsedIndex {
@@ -10021,29 +9961,28 @@ func (x *PDatabaseObjectDependenciesPredicate) GetUsedIndexes() []*PDatabaseObje
 	return nil
 }
 
-type PExistsPredicate struct {
-	state            protoimpl.MessageState   `protogen:"open.v1"`
-	Super            *PAbstractQueryPredicate `protobuf:"bytes,1,opt,name=super" json:"super,omitempty"`
-	ExistentialAlias *string                  `protobuf:"bytes,2,opt,name=existential_alias,json=existentialAlias" json:"existential_alias,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+type PExistentialValuePredicate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Super         *PValuePredicate       `protobuf:"bytes,1,opt,name=super" json:"super,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *PExistsPredicate) Reset() {
-	*x = PExistsPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[92]
+func (x *PExistentialValuePredicate) Reset() {
+	*x = PExistentialValuePredicate{}
+	mi := &file_record_query_plan_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *PExistsPredicate) String() string {
+func (x *PExistentialValuePredicate) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*PExistsPredicate) ProtoMessage() {}
+func (*PExistentialValuePredicate) ProtoMessage() {}
 
-func (x *PExistsPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[92]
+func (x *PExistentialValuePredicate) ProtoReflect() protoreflect.Message {
+	mi := &file_record_query_plan_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10054,23 +9993,16 @@ func (x *PExistsPredicate) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use PExistsPredicate.ProtoReflect.Descriptor instead.
-func (*PExistsPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{92}
+// Deprecated: Use PExistentialValuePredicate.ProtoReflect.Descriptor instead.
+func (*PExistentialValuePredicate) Descriptor() ([]byte, []int) {
+	return file_record_query_plan_proto_rawDescGZIP(), []int{91}
 }
 
-func (x *PExistsPredicate) GetSuper() *PAbstractQueryPredicate {
+func (x *PExistentialValuePredicate) GetSuper() *PValuePredicate {
 	if x != nil {
 		return x.Super
 	}
 	return nil
-}
-
-func (x *PExistsPredicate) GetExistentialAlias() string {
-	if x != nil && x.ExistentialAlias != nil {
-		return *x.ExistentialAlias
-	}
-	return ""
 }
 
 type PNotPredicate struct {
@@ -10083,7 +10015,7 @@ type PNotPredicate struct {
 
 func (x *PNotPredicate) Reset() {
 	*x = PNotPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[93]
+	mi := &file_record_query_plan_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10095,7 +10027,7 @@ func (x *PNotPredicate) String() string {
 func (*PNotPredicate) ProtoMessage() {}
 
 func (x *PNotPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[93]
+	mi := &file_record_query_plan_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10108,7 +10040,7 @@ func (x *PNotPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PNotPredicate.ProtoReflect.Descriptor instead.
 func (*PNotPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{93}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *PNotPredicate) GetSuper() *PAbstractQueryPredicate {
@@ -10134,7 +10066,7 @@ type POrPredicate struct {
 
 func (x *POrPredicate) Reset() {
 	*x = POrPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[94]
+	mi := &file_record_query_plan_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10146,7 +10078,7 @@ func (x *POrPredicate) String() string {
 func (*POrPredicate) ProtoMessage() {}
 
 func (x *POrPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[94]
+	mi := &file_record_query_plan_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10159,7 +10091,7 @@ func (x *POrPredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use POrPredicate.ProtoReflect.Descriptor instead.
 func (*POrPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{94}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *POrPredicate) GetSuper() *PAndOrPredicate {
@@ -10180,7 +10112,7 @@ type PPredicateWithValueAndRanges struct {
 
 func (x *PPredicateWithValueAndRanges) Reset() {
 	*x = PPredicateWithValueAndRanges{}
-	mi := &file_record_query_plan_proto_msgTypes[95]
+	mi := &file_record_query_plan_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10192,7 +10124,7 @@ func (x *PPredicateWithValueAndRanges) String() string {
 func (*PPredicateWithValueAndRanges) ProtoMessage() {}
 
 func (x *PPredicateWithValueAndRanges) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[95]
+	mi := &file_record_query_plan_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10205,7 +10137,7 @@ func (x *PPredicateWithValueAndRanges) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PPredicateWithValueAndRanges.ProtoReflect.Descriptor instead.
 func (*PPredicateWithValueAndRanges) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{95}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *PPredicateWithValueAndRanges) GetSuper() *PAbstractQueryPredicate {
@@ -10239,7 +10171,7 @@ type PRangeConstraints struct {
 
 func (x *PRangeConstraints) Reset() {
 	*x = PRangeConstraints{}
-	mi := &file_record_query_plan_proto_msgTypes[96]
+	mi := &file_record_query_plan_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10251,7 +10183,7 @@ func (x *PRangeConstraints) String() string {
 func (*PRangeConstraints) ProtoMessage() {}
 
 func (x *PRangeConstraints) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[96]
+	mi := &file_record_query_plan_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10264,7 +10196,7 @@ func (x *PRangeConstraints) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRangeConstraints.ProtoReflect.Descriptor instead.
 func (*PRangeConstraints) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{96}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *PRangeConstraints) GetEvaluableRange() *PCompilableRange {
@@ -10290,7 +10222,7 @@ type PCompilableRange struct {
 
 func (x *PCompilableRange) Reset() {
 	*x = PCompilableRange{}
-	mi := &file_record_query_plan_proto_msgTypes[97]
+	mi := &file_record_query_plan_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10302,7 +10234,7 @@ func (x *PCompilableRange) String() string {
 func (*PCompilableRange) ProtoMessage() {}
 
 func (x *PCompilableRange) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[97]
+	mi := &file_record_query_plan_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10315,7 +10247,7 @@ func (x *PCompilableRange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PCompilableRange.ProtoReflect.Descriptor instead.
 func (*PCompilableRange) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{97}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *PCompilableRange) GetCompilableComparisons() []*PComparison {
@@ -10336,7 +10268,7 @@ type PValuePredicate struct {
 
 func (x *PValuePredicate) Reset() {
 	*x = PValuePredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[98]
+	mi := &file_record_query_plan_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10348,7 +10280,7 @@ func (x *PValuePredicate) String() string {
 func (*PValuePredicate) ProtoMessage() {}
 
 func (x *PValuePredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[98]
+	mi := &file_record_query_plan_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10361,7 +10293,7 @@ func (x *PValuePredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PValuePredicate.ProtoReflect.Descriptor instead.
 func (*PValuePredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{98}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *PValuePredicate) GetSuper() *PAbstractQueryPredicate {
@@ -10398,7 +10330,7 @@ type PPhysicalQuantifier struct {
 
 func (x *PPhysicalQuantifier) Reset() {
 	*x = PPhysicalQuantifier{}
-	mi := &file_record_query_plan_proto_msgTypes[99]
+	mi := &file_record_query_plan_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10410,7 +10342,7 @@ func (x *PPhysicalQuantifier) String() string {
 func (*PPhysicalQuantifier) ProtoMessage() {}
 
 func (x *PPhysicalQuantifier) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[99]
+	mi := &file_record_query_plan_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10423,7 +10355,7 @@ func (x *PPhysicalQuantifier) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PPhysicalQuantifier.ProtoReflect.Descriptor instead.
 func (*PPhysicalQuantifier) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{99}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *PPhysicalQuantifier) GetAlias() string {
@@ -10451,7 +10383,7 @@ type PPlanReference struct {
 
 func (x *PPlanReference) Reset() {
 	*x = PPlanReference{}
-	mi := &file_record_query_plan_proto_msgTypes[100]
+	mi := &file_record_query_plan_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10463,7 +10395,7 @@ func (x *PPlanReference) String() string {
 func (*PPlanReference) ProtoMessage() {}
 
 func (x *PPlanReference) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[100]
+	mi := &file_record_query_plan_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10476,7 +10408,7 @@ func (x *PPlanReference) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PPlanReference.ProtoReflect.Descriptor instead.
 func (*PPlanReference) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{100}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *PPlanReference) GetReferenceId() int32 {
@@ -10545,7 +10477,7 @@ type PRecordQueryPlan struct {
 
 func (x *PRecordQueryPlan) Reset() {
 	*x = PRecordQueryPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[101]
+	mi := &file_record_query_plan_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10557,7 +10489,7 @@ func (x *PRecordQueryPlan) String() string {
 func (*PRecordQueryPlan) ProtoMessage() {}
 
 func (x *PRecordQueryPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[101]
+	mi := &file_record_query_plan_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10570,7 +10502,7 @@ func (x *PRecordQueryPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{101}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *PRecordQueryPlan) GetSpecificPlan() isPRecordQueryPlan_SpecificPlan {
@@ -11200,7 +11132,7 @@ type PRecordQueryAbstractDataModificationPlan struct {
 
 func (x *PRecordQueryAbstractDataModificationPlan) Reset() {
 	*x = PRecordQueryAbstractDataModificationPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[102]
+	mi := &file_record_query_plan_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11212,7 +11144,7 @@ func (x *PRecordQueryAbstractDataModificationPlan) String() string {
 func (*PRecordQueryAbstractDataModificationPlan) ProtoMessage() {}
 
 func (x *PRecordQueryAbstractDataModificationPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[102]
+	mi := &file_record_query_plan_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11225,7 +11157,7 @@ func (x *PRecordQueryAbstractDataModificationPlan) ProtoReflect() protoreflect.M
 
 // Deprecated: Use PRecordQueryAbstractDataModificationPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryAbstractDataModificationPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{102}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *PRecordQueryAbstractDataModificationPlan) GetInner() *PPhysicalQuantifier {
@@ -11292,7 +11224,7 @@ type PRecordQueryAggregateIndexPlan struct {
 
 func (x *PRecordQueryAggregateIndexPlan) Reset() {
 	*x = PRecordQueryAggregateIndexPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[103]
+	mi := &file_record_query_plan_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11304,7 +11236,7 @@ func (x *PRecordQueryAggregateIndexPlan) String() string {
 func (*PRecordQueryAggregateIndexPlan) ProtoMessage() {}
 
 func (x *PRecordQueryAggregateIndexPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[103]
+	mi := &file_record_query_plan_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11317,7 +11249,7 @@ func (x *PRecordQueryAggregateIndexPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryAggregateIndexPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryAggregateIndexPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{103}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *PRecordQueryAggregateIndexPlan) GetIndexPlan() *PRecordQueryIndexPlan {
@@ -11374,7 +11306,7 @@ type PRecordQueryCoveringIndexPlan struct {
 
 func (x *PRecordQueryCoveringIndexPlan) Reset() {
 	*x = PRecordQueryCoveringIndexPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[104]
+	mi := &file_record_query_plan_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11386,7 +11318,7 @@ func (x *PRecordQueryCoveringIndexPlan) String() string {
 func (*PRecordQueryCoveringIndexPlan) ProtoMessage() {}
 
 func (x *PRecordQueryCoveringIndexPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[104]
+	mi := &file_record_query_plan_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11399,7 +11331,7 @@ func (x *PRecordQueryCoveringIndexPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryCoveringIndexPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryCoveringIndexPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{104}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *PRecordQueryCoveringIndexPlan) GetIndexPlan() *PRecordQueryPlan {
@@ -11433,7 +11365,7 @@ type PIndexKeyValueToPartialRecord struct {
 
 func (x *PIndexKeyValueToPartialRecord) Reset() {
 	*x = PIndexKeyValueToPartialRecord{}
-	mi := &file_record_query_plan_proto_msgTypes[105]
+	mi := &file_record_query_plan_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11445,7 +11377,7 @@ func (x *PIndexKeyValueToPartialRecord) String() string {
 func (*PIndexKeyValueToPartialRecord) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[105]
+	mi := &file_record_query_plan_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11458,7 +11390,7 @@ func (x *PIndexKeyValueToPartialRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIndexKeyValueToPartialRecord.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *PIndexKeyValueToPartialRecord) GetCopiers() []*PIndexKeyValueToPartialRecord_PCopier {
@@ -11486,7 +11418,7 @@ type PRecordQueryDamPlan struct {
 
 func (x *PRecordQueryDamPlan) Reset() {
 	*x = PRecordQueryDamPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[106]
+	mi := &file_record_query_plan_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11498,7 +11430,7 @@ func (x *PRecordQueryDamPlan) String() string {
 func (*PRecordQueryDamPlan) ProtoMessage() {}
 
 func (x *PRecordQueryDamPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[106]
+	mi := &file_record_query_plan_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11511,7 +11443,7 @@ func (x *PRecordQueryDamPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryDamPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryDamPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{106}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *PRecordQueryDamPlan) GetInner() *PPhysicalQuantifier {
@@ -11538,7 +11470,7 @@ type PRecordQueryDeletePlan struct {
 
 func (x *PRecordQueryDeletePlan) Reset() {
 	*x = PRecordQueryDeletePlan{}
-	mi := &file_record_query_plan_proto_msgTypes[107]
+	mi := &file_record_query_plan_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11550,7 +11482,7 @@ func (x *PRecordQueryDeletePlan) String() string {
 func (*PRecordQueryDeletePlan) ProtoMessage() {}
 
 func (x *PRecordQueryDeletePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[107]
+	mi := &file_record_query_plan_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11563,7 +11495,7 @@ func (x *PRecordQueryDeletePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryDeletePlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryDeletePlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{107}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *PRecordQueryDeletePlan) GetInner() *PPhysicalQuantifier {
@@ -11577,13 +11509,14 @@ func (x *PRecordQueryDeletePlan) GetInner() *PPhysicalQuantifier {
 type PRecordQueryExplodePlan struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	CollectionValue *PValue                `protobuf:"bytes,1,opt,name=collection_value,json=collectionValue" json:"collection_value,omitempty"`
+	WithOrdinality  *bool                  `protobuf:"varint,2,opt,name=with_ordinality,json=withOrdinality" json:"with_ordinality,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PRecordQueryExplodePlan) Reset() {
 	*x = PRecordQueryExplodePlan{}
-	mi := &file_record_query_plan_proto_msgTypes[108]
+	mi := &file_record_query_plan_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11595,7 +11528,7 @@ func (x *PRecordQueryExplodePlan) String() string {
 func (*PRecordQueryExplodePlan) ProtoMessage() {}
 
 func (x *PRecordQueryExplodePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[108]
+	mi := &file_record_query_plan_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11608,7 +11541,7 @@ func (x *PRecordQueryExplodePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryExplodePlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryExplodePlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{108}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *PRecordQueryExplodePlan) GetCollectionValue() *PValue {
@@ -11616,6 +11549,13 @@ func (x *PRecordQueryExplodePlan) GetCollectionValue() *PValue {
 		return x.CollectionValue
 	}
 	return nil
+}
+
+func (x *PRecordQueryExplodePlan) GetWithOrdinality() bool {
+	if x != nil && x.WithOrdinality != nil {
+		return *x.WithOrdinality
+	}
+	return false
 }
 
 // PRecordQueryFetchFromPartialRecordPlan
@@ -11630,7 +11570,7 @@ type PRecordQueryFetchFromPartialRecordPlan struct {
 
 func (x *PRecordQueryFetchFromPartialRecordPlan) Reset() {
 	*x = PRecordQueryFetchFromPartialRecordPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[109]
+	mi := &file_record_query_plan_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11642,7 +11582,7 @@ func (x *PRecordQueryFetchFromPartialRecordPlan) String() string {
 func (*PRecordQueryFetchFromPartialRecordPlan) ProtoMessage() {}
 
 func (x *PRecordQueryFetchFromPartialRecordPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[109]
+	mi := &file_record_query_plan_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11655,7 +11595,7 @@ func (x *PRecordQueryFetchFromPartialRecordPlan) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use PRecordQueryFetchFromPartialRecordPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryFetchFromPartialRecordPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{109}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *PRecordQueryFetchFromPartialRecordPlan) GetInner() *PPhysicalQuantifier {
@@ -11689,7 +11629,7 @@ type PRecordQueryFilterPlanBase struct {
 
 func (x *PRecordQueryFilterPlanBase) Reset() {
 	*x = PRecordQueryFilterPlanBase{}
-	mi := &file_record_query_plan_proto_msgTypes[110]
+	mi := &file_record_query_plan_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11701,7 +11641,7 @@ func (x *PRecordQueryFilterPlanBase) String() string {
 func (*PRecordQueryFilterPlanBase) ProtoMessage() {}
 
 func (x *PRecordQueryFilterPlanBase) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[110]
+	mi := &file_record_query_plan_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11714,7 +11654,7 @@ func (x *PRecordQueryFilterPlanBase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryFilterPlanBase.ProtoReflect.Descriptor instead.
 func (*PRecordQueryFilterPlanBase) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{110}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *PRecordQueryFilterPlanBase) GetInner() *PPhysicalQuantifier {
@@ -11735,7 +11675,7 @@ type PRecordQueryFirstOrDefaultPlan struct {
 
 func (x *PRecordQueryFirstOrDefaultPlan) Reset() {
 	*x = PRecordQueryFirstOrDefaultPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[111]
+	mi := &file_record_query_plan_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11747,7 +11687,7 @@ func (x *PRecordQueryFirstOrDefaultPlan) String() string {
 func (*PRecordQueryFirstOrDefaultPlan) ProtoMessage() {}
 
 func (x *PRecordQueryFirstOrDefaultPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[111]
+	mi := &file_record_query_plan_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11760,7 +11700,7 @@ func (x *PRecordQueryFirstOrDefaultPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryFirstOrDefaultPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryFirstOrDefaultPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{111}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *PRecordQueryFirstOrDefaultPlan) GetInner() *PPhysicalQuantifier {
@@ -11788,7 +11728,7 @@ type PRecordQueryDefaultOnEmptyPlan struct {
 
 func (x *PRecordQueryDefaultOnEmptyPlan) Reset() {
 	*x = PRecordQueryDefaultOnEmptyPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[112]
+	mi := &file_record_query_plan_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11800,7 +11740,7 @@ func (x *PRecordQueryDefaultOnEmptyPlan) String() string {
 func (*PRecordQueryDefaultOnEmptyPlan) ProtoMessage() {}
 
 func (x *PRecordQueryDefaultOnEmptyPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[112]
+	mi := &file_record_query_plan_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11813,7 +11753,7 @@ func (x *PRecordQueryDefaultOnEmptyPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryDefaultOnEmptyPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryDefaultOnEmptyPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{112}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *PRecordQueryDefaultOnEmptyPlan) GetInner() *PPhysicalQuantifier {
@@ -11843,7 +11783,7 @@ type PRecordQueryFlatMapPlan struct {
 
 func (x *PRecordQueryFlatMapPlan) Reset() {
 	*x = PRecordQueryFlatMapPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[113]
+	mi := &file_record_query_plan_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11855,7 +11795,7 @@ func (x *PRecordQueryFlatMapPlan) String() string {
 func (*PRecordQueryFlatMapPlan) ProtoMessage() {}
 
 func (x *PRecordQueryFlatMapPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[113]
+	mi := &file_record_query_plan_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11868,7 +11808,7 @@ func (x *PRecordQueryFlatMapPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryFlatMapPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryFlatMapPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{113}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *PRecordQueryFlatMapPlan) GetOuterQuantifier() *PPhysicalQuantifier {
@@ -11917,7 +11857,7 @@ type PRecordQueryIndexPlan struct {
 
 func (x *PRecordQueryIndexPlan) Reset() {
 	*x = PRecordQueryIndexPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[114]
+	mi := &file_record_query_plan_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11929,7 +11869,7 @@ func (x *PRecordQueryIndexPlan) String() string {
 func (*PRecordQueryIndexPlan) ProtoMessage() {}
 
 func (x *PRecordQueryIndexPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[114]
+	mi := &file_record_query_plan_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11942,7 +11882,7 @@ func (x *PRecordQueryIndexPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryIndexPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryIndexPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{114}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *PRecordQueryIndexPlan) GetIndexName() string {
@@ -12018,7 +11958,7 @@ type PTempTableScanPlan struct {
 
 func (x *PTempTableScanPlan) Reset() {
 	*x = PTempTableScanPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[115]
+	mi := &file_record_query_plan_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12030,7 +11970,7 @@ func (x *PTempTableScanPlan) String() string {
 func (*PTempTableScanPlan) ProtoMessage() {}
 
 func (x *PTempTableScanPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[115]
+	mi := &file_record_query_plan_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12043,7 +11983,7 @@ func (x *PTempTableScanPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PTempTableScanPlan.ProtoReflect.Descriptor instead.
 func (*PTempTableScanPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{115}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *PTempTableScanPlan) GetTempTableReferenceValue() *PValue {
@@ -12070,7 +12010,7 @@ type PIndexScanParameters struct {
 
 func (x *PIndexScanParameters) Reset() {
 	*x = PIndexScanParameters{}
-	mi := &file_record_query_plan_proto_msgTypes[116]
+	mi := &file_record_query_plan_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12082,7 +12022,7 @@ func (x *PIndexScanParameters) String() string {
 func (*PIndexScanParameters) ProtoMessage() {}
 
 func (x *PIndexScanParameters) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[116]
+	mi := &file_record_query_plan_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12095,7 +12035,7 @@ func (x *PIndexScanParameters) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIndexScanParameters.ProtoReflect.Descriptor instead.
 func (*PIndexScanParameters) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{116}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *PIndexScanParameters) GetSpecificIndexScanParameters() isPIndexScanParameters_SpecificIndexScanParameters {
@@ -12198,7 +12138,7 @@ type PIndexScanType struct {
 
 func (x *PIndexScanType) Reset() {
 	*x = PIndexScanType{}
-	mi := &file_record_query_plan_proto_msgTypes[117]
+	mi := &file_record_query_plan_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12210,7 +12150,7 @@ func (x *PIndexScanType) String() string {
 func (*PIndexScanType) ProtoMessage() {}
 
 func (x *PIndexScanType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[117]
+	mi := &file_record_query_plan_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12223,7 +12163,7 @@ func (x *PIndexScanType) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIndexScanType.ProtoReflect.Descriptor instead.
 func (*PIndexScanType) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{117}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *PIndexScanType) GetName() string {
@@ -12243,7 +12183,7 @@ type PScanComparisons struct {
 
 func (x *PScanComparisons) Reset() {
 	*x = PScanComparisons{}
-	mi := &file_record_query_plan_proto_msgTypes[118]
+	mi := &file_record_query_plan_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12255,7 +12195,7 @@ func (x *PScanComparisons) String() string {
 func (*PScanComparisons) ProtoMessage() {}
 
 func (x *PScanComparisons) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[118]
+	mi := &file_record_query_plan_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12268,7 +12208,7 @@ func (x *PScanComparisons) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PScanComparisons.ProtoReflect.Descriptor instead.
 func (*PScanComparisons) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{118}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *PScanComparisons) GetEqualityComparisons() []*PComparison {
@@ -12295,7 +12235,7 @@ type PIndexScanComparisons struct {
 
 func (x *PIndexScanComparisons) Reset() {
 	*x = PIndexScanComparisons{}
-	mi := &file_record_query_plan_proto_msgTypes[119]
+	mi := &file_record_query_plan_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12307,7 +12247,7 @@ func (x *PIndexScanComparisons) String() string {
 func (*PIndexScanComparisons) ProtoMessage() {}
 
 func (x *PIndexScanComparisons) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[119]
+	mi := &file_record_query_plan_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12320,7 +12260,7 @@ func (x *PIndexScanComparisons) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIndexScanComparisons.ProtoReflect.Descriptor instead.
 func (*PIndexScanComparisons) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{119}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *PIndexScanComparisons) GetScanType() *PIndexScanType {
@@ -12348,7 +12288,7 @@ type PMultidimensionalIndexScanComparisons struct {
 
 func (x *PMultidimensionalIndexScanComparisons) Reset() {
 	*x = PMultidimensionalIndexScanComparisons{}
-	mi := &file_record_query_plan_proto_msgTypes[120]
+	mi := &file_record_query_plan_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12360,7 +12300,7 @@ func (x *PMultidimensionalIndexScanComparisons) String() string {
 func (*PMultidimensionalIndexScanComparisons) ProtoMessage() {}
 
 func (x *PMultidimensionalIndexScanComparisons) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[120]
+	mi := &file_record_query_plan_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12373,7 +12313,7 @@ func (x *PMultidimensionalIndexScanComparisons) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use PMultidimensionalIndexScanComparisons.ProtoReflect.Descriptor instead.
 func (*PMultidimensionalIndexScanComparisons) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{120}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *PMultidimensionalIndexScanComparisons) GetPrefixScanComparisons() *PScanComparisons {
@@ -12409,7 +12349,7 @@ type PTimeWindowForFunction struct {
 
 func (x *PTimeWindowForFunction) Reset() {
 	*x = PTimeWindowForFunction{}
-	mi := &file_record_query_plan_proto_msgTypes[121]
+	mi := &file_record_query_plan_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12421,7 +12361,7 @@ func (x *PTimeWindowForFunction) String() string {
 func (*PTimeWindowForFunction) ProtoMessage() {}
 
 func (x *PTimeWindowForFunction) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[121]
+	mi := &file_record_query_plan_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12434,7 +12374,7 @@ func (x *PTimeWindowForFunction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PTimeWindowForFunction.ProtoReflect.Descriptor instead.
 func (*PTimeWindowForFunction) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{121}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *PTimeWindowForFunction) GetLeaderboardType() int32 {
@@ -12475,7 +12415,7 @@ type PTimeWindowScanComparisons struct {
 
 func (x *PTimeWindowScanComparisons) Reset() {
 	*x = PTimeWindowScanComparisons{}
-	mi := &file_record_query_plan_proto_msgTypes[122]
+	mi := &file_record_query_plan_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12487,7 +12427,7 @@ func (x *PTimeWindowScanComparisons) String() string {
 func (*PTimeWindowScanComparisons) ProtoMessage() {}
 
 func (x *PTimeWindowScanComparisons) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[122]
+	mi := &file_record_query_plan_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12500,7 +12440,7 @@ func (x *PTimeWindowScanComparisons) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PTimeWindowScanComparisons.ProtoReflect.Descriptor instead.
 func (*PTimeWindowScanComparisons) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{122}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *PTimeWindowScanComparisons) GetSuper() *PIndexScanComparisons {
@@ -12528,7 +12468,7 @@ type PVectorIndexScanComparisons struct {
 
 func (x *PVectorIndexScanComparisons) Reset() {
 	*x = PVectorIndexScanComparisons{}
-	mi := &file_record_query_plan_proto_msgTypes[123]
+	mi := &file_record_query_plan_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12540,7 +12480,7 @@ func (x *PVectorIndexScanComparisons) String() string {
 func (*PVectorIndexScanComparisons) ProtoMessage() {}
 
 func (x *PVectorIndexScanComparisons) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[123]
+	mi := &file_record_query_plan_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12553,7 +12493,7 @@ func (x *PVectorIndexScanComparisons) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PVectorIndexScanComparisons.ProtoReflect.Descriptor instead.
 func (*PVectorIndexScanComparisons) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{123}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *PVectorIndexScanComparisons) GetPrefixScanComparisons() *PScanComparisons {
@@ -12586,7 +12526,7 @@ type PVectorIndexScanOptions struct {
 
 func (x *PVectorIndexScanOptions) Reset() {
 	*x = PVectorIndexScanOptions{}
-	mi := &file_record_query_plan_proto_msgTypes[124]
+	mi := &file_record_query_plan_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12598,7 +12538,7 @@ func (x *PVectorIndexScanOptions) String() string {
 func (*PVectorIndexScanOptions) ProtoMessage() {}
 
 func (x *PVectorIndexScanOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[124]
+	mi := &file_record_query_plan_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12611,7 +12551,7 @@ func (x *PVectorIndexScanOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PVectorIndexScanOptions.ProtoReflect.Descriptor instead.
 func (*PVectorIndexScanOptions) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{124}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *PVectorIndexScanOptions) GetOptionEntries() []*PVectorIndexScanOptions_POptionEntry {
@@ -12630,7 +12570,7 @@ type PQueryPlanConstraint struct {
 
 func (x *PQueryPlanConstraint) Reset() {
 	*x = PQueryPlanConstraint{}
-	mi := &file_record_query_plan_proto_msgTypes[125]
+	mi := &file_record_query_plan_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12642,7 +12582,7 @@ func (x *PQueryPlanConstraint) String() string {
 func (*PQueryPlanConstraint) ProtoMessage() {}
 
 func (x *PQueryPlanConstraint) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[125]
+	mi := &file_record_query_plan_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12655,7 +12595,7 @@ func (x *PQueryPlanConstraint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PQueryPlanConstraint.ProtoReflect.Descriptor instead.
 func (*PQueryPlanConstraint) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{125}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *PQueryPlanConstraint) GetPredicate() *PQueryPredicate {
@@ -12675,7 +12615,7 @@ type PRecordQueryInComparandJoinPlan struct {
 
 func (x *PRecordQueryInComparandJoinPlan) Reset() {
 	*x = PRecordQueryInComparandJoinPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[126]
+	mi := &file_record_query_plan_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12687,7 +12627,7 @@ func (x *PRecordQueryInComparandJoinPlan) String() string {
 func (*PRecordQueryInComparandJoinPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInComparandJoinPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[126]
+	mi := &file_record_query_plan_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12700,7 +12640,7 @@ func (x *PRecordQueryInComparandJoinPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInComparandJoinPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInComparandJoinPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{126}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *PRecordQueryInComparandJoinPlan) GetSuper() *PRecordQueryInJoinPlan {
@@ -12722,7 +12662,7 @@ type PRecordQueryInJoinPlan struct {
 
 func (x *PRecordQueryInJoinPlan) Reset() {
 	*x = PRecordQueryInJoinPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[127]
+	mi := &file_record_query_plan_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12734,7 +12674,7 @@ func (x *PRecordQueryInJoinPlan) String() string {
 func (*PRecordQueryInJoinPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInJoinPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[127]
+	mi := &file_record_query_plan_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12747,7 +12687,7 @@ func (x *PRecordQueryInJoinPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInJoinPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInJoinPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{127}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *PRecordQueryInJoinPlan) GetPhysicalQuantifier() *PPhysicalQuantifier {
@@ -12788,7 +12728,7 @@ type PInSource struct {
 
 func (x *PInSource) Reset() {
 	*x = PInSource{}
-	mi := &file_record_query_plan_proto_msgTypes[128]
+	mi := &file_record_query_plan_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12800,7 +12740,7 @@ func (x *PInSource) String() string {
 func (*PInSource) ProtoMessage() {}
 
 func (x *PInSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[128]
+	mi := &file_record_query_plan_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12813,7 +12753,7 @@ func (x *PInSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInSource.ProtoReflect.Descriptor instead.
 func (*PInSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{128}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *PInSource) GetSpecificInSource() isPInSource_SpecificInSource {
@@ -12927,7 +12867,7 @@ type PInComparandSource struct {
 
 func (x *PInComparandSource) Reset() {
 	*x = PInComparandSource{}
-	mi := &file_record_query_plan_proto_msgTypes[129]
+	mi := &file_record_query_plan_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12939,7 +12879,7 @@ func (x *PInComparandSource) String() string {
 func (*PInComparandSource) ProtoMessage() {}
 
 func (x *PInComparandSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[129]
+	mi := &file_record_query_plan_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12952,7 +12892,7 @@ func (x *PInComparandSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInComparandSource.ProtoReflect.Descriptor instead.
 func (*PInComparandSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{129}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *PInComparandSource) GetSuper() *PInSource_Super {
@@ -12979,7 +12919,7 @@ type PSortedInComparandSource struct {
 
 func (x *PSortedInComparandSource) Reset() {
 	*x = PSortedInComparandSource{}
-	mi := &file_record_query_plan_proto_msgTypes[130]
+	mi := &file_record_query_plan_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12991,7 +12931,7 @@ func (x *PSortedInComparandSource) String() string {
 func (*PSortedInComparandSource) ProtoMessage() {}
 
 func (x *PSortedInComparandSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[130]
+	mi := &file_record_query_plan_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13004,7 +12944,7 @@ func (x *PSortedInComparandSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PSortedInComparandSource.ProtoReflect.Descriptor instead.
 func (*PSortedInComparandSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{130}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *PSortedInComparandSource) GetSuper() *PInComparandSource {
@@ -13031,7 +12971,7 @@ type PInParameterSource struct {
 
 func (x *PInParameterSource) Reset() {
 	*x = PInParameterSource{}
-	mi := &file_record_query_plan_proto_msgTypes[131]
+	mi := &file_record_query_plan_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13043,7 +12983,7 @@ func (x *PInParameterSource) String() string {
 func (*PInParameterSource) ProtoMessage() {}
 
 func (x *PInParameterSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[131]
+	mi := &file_record_query_plan_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13056,7 +12996,7 @@ func (x *PInParameterSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInParameterSource.ProtoReflect.Descriptor instead.
 func (*PInParameterSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{131}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *PInParameterSource) GetSuper() *PInSource_Super {
@@ -13083,7 +13023,7 @@ type PSortedInParameterSource struct {
 
 func (x *PSortedInParameterSource) Reset() {
 	*x = PSortedInParameterSource{}
-	mi := &file_record_query_plan_proto_msgTypes[132]
+	mi := &file_record_query_plan_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13095,7 +13035,7 @@ func (x *PSortedInParameterSource) String() string {
 func (*PSortedInParameterSource) ProtoMessage() {}
 
 func (x *PSortedInParameterSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[132]
+	mi := &file_record_query_plan_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13108,7 +13048,7 @@ func (x *PSortedInParameterSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PSortedInParameterSource.ProtoReflect.Descriptor instead.
 func (*PSortedInParameterSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{132}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *PSortedInParameterSource) GetSuper() *PInParameterSource {
@@ -13135,7 +13075,7 @@ type PInValuesSource struct {
 
 func (x *PInValuesSource) Reset() {
 	*x = PInValuesSource{}
-	mi := &file_record_query_plan_proto_msgTypes[133]
+	mi := &file_record_query_plan_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13147,7 +13087,7 @@ func (x *PInValuesSource) String() string {
 func (*PInValuesSource) ProtoMessage() {}
 
 func (x *PInValuesSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[133]
+	mi := &file_record_query_plan_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13160,7 +13100,7 @@ func (x *PInValuesSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInValuesSource.ProtoReflect.Descriptor instead.
 func (*PInValuesSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{133}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *PInValuesSource) GetSuper() *PInSource_Super {
@@ -13187,7 +13127,7 @@ type PSortedInValuesSource struct {
 
 func (x *PSortedInValuesSource) Reset() {
 	*x = PSortedInValuesSource{}
-	mi := &file_record_query_plan_proto_msgTypes[134]
+	mi := &file_record_query_plan_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13199,7 +13139,7 @@ func (x *PSortedInValuesSource) String() string {
 func (*PSortedInValuesSource) ProtoMessage() {}
 
 func (x *PSortedInValuesSource) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[134]
+	mi := &file_record_query_plan_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13212,7 +13152,7 @@ func (x *PSortedInValuesSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PSortedInValuesSource.ProtoReflect.Descriptor instead.
 func (*PSortedInValuesSource) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{134}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *PSortedInValuesSource) GetSuper() *PInValuesSource {
@@ -13239,7 +13179,7 @@ type PRecordQueryInParameterJoinPlan struct {
 
 func (x *PRecordQueryInParameterJoinPlan) Reset() {
 	*x = PRecordQueryInParameterJoinPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[135]
+	mi := &file_record_query_plan_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13251,7 +13191,7 @@ func (x *PRecordQueryInParameterJoinPlan) String() string {
 func (*PRecordQueryInParameterJoinPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInParameterJoinPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[135]
+	mi := &file_record_query_plan_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13264,7 +13204,7 @@ func (x *PRecordQueryInParameterJoinPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInParameterJoinPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInParameterJoinPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{135}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *PRecordQueryInParameterJoinPlan) GetSuper() *PRecordQueryInJoinPlan {
@@ -13284,7 +13224,7 @@ type PRecordQueryInsertPlan struct {
 
 func (x *PRecordQueryInsertPlan) Reset() {
 	*x = PRecordQueryInsertPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[136]
+	mi := &file_record_query_plan_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13296,7 +13236,7 @@ func (x *PRecordQueryInsertPlan) String() string {
 func (*PRecordQueryInsertPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInsertPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[136]
+	mi := &file_record_query_plan_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13309,7 +13249,7 @@ func (x *PRecordQueryInsertPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInsertPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInsertPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{136}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *PRecordQueryInsertPlan) GetSuper() *PRecordQueryAbstractDataModificationPlan {
@@ -13331,7 +13271,7 @@ type PTempTableInsertPlan struct {
 
 func (x *PTempTableInsertPlan) Reset() {
 	*x = PTempTableInsertPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[137]
+	mi := &file_record_query_plan_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13343,7 +13283,7 @@ func (x *PTempTableInsertPlan) String() string {
 func (*PTempTableInsertPlan) ProtoMessage() {}
 
 func (x *PTempTableInsertPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[137]
+	mi := &file_record_query_plan_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13356,7 +13296,7 @@ func (x *PTempTableInsertPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PTempTableInsertPlan.ProtoReflect.Descriptor instead.
 func (*PTempTableInsertPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{137}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *PTempTableInsertPlan) GetInner() *PPhysicalQuantifier {
@@ -13392,7 +13332,7 @@ type PRecordQueryIntersectionPlan struct {
 
 func (x *PRecordQueryIntersectionPlan) Reset() {
 	*x = PRecordQueryIntersectionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[138]
+	mi := &file_record_query_plan_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13404,7 +13344,7 @@ func (x *PRecordQueryIntersectionPlan) String() string {
 func (*PRecordQueryIntersectionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryIntersectionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[138]
+	mi := &file_record_query_plan_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13417,7 +13357,7 @@ func (x *PRecordQueryIntersectionPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryIntersectionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryIntersectionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{138}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *PRecordQueryIntersectionPlan) GetQuantifiers() []*PPhysicalQuantifier {
@@ -13454,7 +13394,7 @@ type PComparisonKeyFunction struct {
 
 func (x *PComparisonKeyFunction) Reset() {
 	*x = PComparisonKeyFunction{}
-	mi := &file_record_query_plan_proto_msgTypes[139]
+	mi := &file_record_query_plan_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13466,7 +13406,7 @@ func (x *PComparisonKeyFunction) String() string {
 func (*PComparisonKeyFunction) ProtoMessage() {}
 
 func (x *PComparisonKeyFunction) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[139]
+	mi := &file_record_query_plan_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13479,7 +13419,7 @@ func (x *PComparisonKeyFunction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PComparisonKeyFunction.ProtoReflect.Descriptor instead.
 func (*PComparisonKeyFunction) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{139}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *PComparisonKeyFunction) GetSpecificComparisonKeyFunction() isPComparisonKeyFunction_SpecificComparisonKeyFunction {
@@ -13534,7 +13474,7 @@ type PRecordQueryIntersectionOnKeyExpressionPlan struct {
 
 func (x *PRecordQueryIntersectionOnKeyExpressionPlan) Reset() {
 	*x = PRecordQueryIntersectionOnKeyExpressionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[140]
+	mi := &file_record_query_plan_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13546,7 +13486,7 @@ func (x *PRecordQueryIntersectionOnKeyExpressionPlan) String() string {
 func (*PRecordQueryIntersectionOnKeyExpressionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryIntersectionOnKeyExpressionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[140]
+	mi := &file_record_query_plan_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13559,7 +13499,7 @@ func (x *PRecordQueryIntersectionOnKeyExpressionPlan) ProtoReflect() protoreflec
 
 // Deprecated: Use PRecordQueryIntersectionOnKeyExpressionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryIntersectionOnKeyExpressionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{140}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *PRecordQueryIntersectionOnKeyExpressionPlan) GetSuper() *PRecordQueryIntersectionPlan {
@@ -13579,7 +13519,7 @@ type PRecordQueryIntersectionOnValuesPlan struct {
 
 func (x *PRecordQueryIntersectionOnValuesPlan) Reset() {
 	*x = PRecordQueryIntersectionOnValuesPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[141]
+	mi := &file_record_query_plan_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13591,7 +13531,7 @@ func (x *PRecordQueryIntersectionOnValuesPlan) String() string {
 func (*PRecordQueryIntersectionOnValuesPlan) ProtoMessage() {}
 
 func (x *PRecordQueryIntersectionOnValuesPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[141]
+	mi := &file_record_query_plan_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13604,7 +13544,7 @@ func (x *PRecordQueryIntersectionOnValuesPlan) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use PRecordQueryIntersectionOnValuesPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryIntersectionOnValuesPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{141}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *PRecordQueryIntersectionOnValuesPlan) GetSuper() *PRecordQueryIntersectionPlan {
@@ -13625,7 +13565,7 @@ type PRecordQueryMultiIntersectionOnValuesPlan struct {
 
 func (x *PRecordQueryMultiIntersectionOnValuesPlan) Reset() {
 	*x = PRecordQueryMultiIntersectionOnValuesPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[142]
+	mi := &file_record_query_plan_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13637,7 +13577,7 @@ func (x *PRecordQueryMultiIntersectionOnValuesPlan) String() string {
 func (*PRecordQueryMultiIntersectionOnValuesPlan) ProtoMessage() {}
 
 func (x *PRecordQueryMultiIntersectionOnValuesPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[142]
+	mi := &file_record_query_plan_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13650,7 +13590,7 @@ func (x *PRecordQueryMultiIntersectionOnValuesPlan) ProtoReflect() protoreflect.
 
 // Deprecated: Use PRecordQueryMultiIntersectionOnValuesPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryMultiIntersectionOnValuesPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{142}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *PRecordQueryMultiIntersectionOnValuesPlan) GetSuper() *PRecordQueryIntersectionPlan {
@@ -13682,7 +13622,7 @@ type PRecordQueryInUnionPlan struct {
 
 func (x *PRecordQueryInUnionPlan) Reset() {
 	*x = PRecordQueryInUnionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[143]
+	mi := &file_record_query_plan_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13694,7 +13634,7 @@ func (x *PRecordQueryInUnionPlan) String() string {
 func (*PRecordQueryInUnionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInUnionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[143]
+	mi := &file_record_query_plan_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13707,7 +13647,7 @@ func (x *PRecordQueryInUnionPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInUnionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInUnionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{143}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *PRecordQueryInUnionPlan) GetInner() *PPhysicalQuantifier {
@@ -13762,7 +13702,7 @@ type PRecordQueryInUnionOnKeyExpressionPlan struct {
 
 func (x *PRecordQueryInUnionOnKeyExpressionPlan) Reset() {
 	*x = PRecordQueryInUnionOnKeyExpressionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[144]
+	mi := &file_record_query_plan_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13774,7 +13714,7 @@ func (x *PRecordQueryInUnionOnKeyExpressionPlan) String() string {
 func (*PRecordQueryInUnionOnKeyExpressionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInUnionOnKeyExpressionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[144]
+	mi := &file_record_query_plan_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13787,7 +13727,7 @@ func (x *PRecordQueryInUnionOnKeyExpressionPlan) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use PRecordQueryInUnionOnKeyExpressionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInUnionOnKeyExpressionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{144}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *PRecordQueryInUnionOnKeyExpressionPlan) GetSuper() *PRecordQueryInUnionPlan {
@@ -13807,7 +13747,7 @@ type PRecordQueryInUnionOnValuesPlan struct {
 
 func (x *PRecordQueryInUnionOnValuesPlan) Reset() {
 	*x = PRecordQueryInUnionOnValuesPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[145]
+	mi := &file_record_query_plan_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13819,7 +13759,7 @@ func (x *PRecordQueryInUnionOnValuesPlan) String() string {
 func (*PRecordQueryInUnionOnValuesPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInUnionOnValuesPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[145]
+	mi := &file_record_query_plan_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13832,7 +13772,7 @@ func (x *PRecordQueryInUnionOnValuesPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInUnionOnValuesPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInUnionOnValuesPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{145}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *PRecordQueryInUnionOnValuesPlan) GetSuper() *PRecordQueryInUnionPlan {
@@ -13852,7 +13792,7 @@ type PRecordQueryInValuesJoinPlan struct {
 
 func (x *PRecordQueryInValuesJoinPlan) Reset() {
 	*x = PRecordQueryInValuesJoinPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[146]
+	mi := &file_record_query_plan_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13864,7 +13804,7 @@ func (x *PRecordQueryInValuesJoinPlan) String() string {
 func (*PRecordQueryInValuesJoinPlan) ProtoMessage() {}
 
 func (x *PRecordQueryInValuesJoinPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[146]
+	mi := &file_record_query_plan_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13877,7 +13817,7 @@ func (x *PRecordQueryInValuesJoinPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryInValuesJoinPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryInValuesJoinPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{146}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *PRecordQueryInValuesJoinPlan) GetSuper() *PRecordQueryInJoinPlan {
@@ -13898,7 +13838,7 @@ type PRecordQueryMapPlan struct {
 
 func (x *PRecordQueryMapPlan) Reset() {
 	*x = PRecordQueryMapPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[147]
+	mi := &file_record_query_plan_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13910,7 +13850,7 @@ func (x *PRecordQueryMapPlan) String() string {
 func (*PRecordQueryMapPlan) ProtoMessage() {}
 
 func (x *PRecordQueryMapPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[147]
+	mi := &file_record_query_plan_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13923,7 +13863,7 @@ func (x *PRecordQueryMapPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryMapPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryMapPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{147}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *PRecordQueryMapPlan) GetInner() *PPhysicalQuantifier {
@@ -13951,7 +13891,7 @@ type PRecordQueryPredicatesFilterPlan struct {
 
 func (x *PRecordQueryPredicatesFilterPlan) Reset() {
 	*x = PRecordQueryPredicatesFilterPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[148]
+	mi := &file_record_query_plan_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13963,7 +13903,7 @@ func (x *PRecordQueryPredicatesFilterPlan) String() string {
 func (*PRecordQueryPredicatesFilterPlan) ProtoMessage() {}
 
 func (x *PRecordQueryPredicatesFilterPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[148]
+	mi := &file_record_query_plan_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13976,7 +13916,7 @@ func (x *PRecordQueryPredicatesFilterPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryPredicatesFilterPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryPredicatesFilterPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{148}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *PRecordQueryPredicatesFilterPlan) GetSuper() *PRecordQueryFilterPlanBase {
@@ -14003,7 +13943,7 @@ type PRecordQueryRangePlan struct {
 
 func (x *PRecordQueryRangePlan) Reset() {
 	*x = PRecordQueryRangePlan{}
-	mi := &file_record_query_plan_proto_msgTypes[149]
+	mi := &file_record_query_plan_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14015,7 +13955,7 @@ func (x *PRecordQueryRangePlan) String() string {
 func (*PRecordQueryRangePlan) ProtoMessage() {}
 
 func (x *PRecordQueryRangePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[149]
+	mi := &file_record_query_plan_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14028,7 +13968,7 @@ func (x *PRecordQueryRangePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryRangePlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryRangePlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{149}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *PRecordQueryRangePlan) GetExclusiveLimitValue() *PValue {
@@ -14049,7 +13989,7 @@ type PRecordQuerySortPlan struct {
 
 func (x *PRecordQuerySortPlan) Reset() {
 	*x = PRecordQuerySortPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[150]
+	mi := &file_record_query_plan_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14061,7 +14001,7 @@ func (x *PRecordQuerySortPlan) String() string {
 func (*PRecordQuerySortPlan) ProtoMessage() {}
 
 func (x *PRecordQuerySortPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[150]
+	mi := &file_record_query_plan_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14074,7 +14014,7 @@ func (x *PRecordQuerySortPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQuerySortPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQuerySortPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{150}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *PRecordQuerySortPlan) GetInner() *PPhysicalQuantifier {
@@ -14101,7 +14041,7 @@ type PRecordQuerySortKey struct {
 
 func (x *PRecordQuerySortKey) Reset() {
 	*x = PRecordQuerySortKey{}
-	mi := &file_record_query_plan_proto_msgTypes[151]
+	mi := &file_record_query_plan_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14113,7 +14053,7 @@ func (x *PRecordQuerySortKey) String() string {
 func (*PRecordQuerySortKey) ProtoMessage() {}
 
 func (x *PRecordQuerySortKey) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[151]
+	mi := &file_record_query_plan_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14126,7 +14066,7 @@ func (x *PRecordQuerySortKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQuerySortKey.ProtoReflect.Descriptor instead.
 func (*PRecordQuerySortKey) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{151}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *PRecordQuerySortKey) GetKey() *KeyExpression {
@@ -14159,7 +14099,7 @@ type PRecordQueryScanPlan struct {
 
 func (x *PRecordQueryScanPlan) Reset() {
 	*x = PRecordQueryScanPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[152]
+	mi := &file_record_query_plan_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14171,7 +14111,7 @@ func (x *PRecordQueryScanPlan) String() string {
 func (*PRecordQueryScanPlan) ProtoMessage() {}
 
 func (x *PRecordQueryScanPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[152]
+	mi := &file_record_query_plan_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14184,7 +14124,7 @@ func (x *PRecordQueryScanPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryScanPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryScanPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{152}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *PRecordQueryScanPlan) GetHasRecordTypes() bool {
@@ -14247,7 +14187,7 @@ type PRecordQueryScoreForRankPlan struct {
 
 func (x *PRecordQueryScoreForRankPlan) Reset() {
 	*x = PRecordQueryScoreForRankPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[153]
+	mi := &file_record_query_plan_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14259,7 +14199,7 @@ func (x *PRecordQueryScoreForRankPlan) String() string {
 func (*PRecordQueryScoreForRankPlan) ProtoMessage() {}
 
 func (x *PRecordQueryScoreForRankPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[153]
+	mi := &file_record_query_plan_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14272,7 +14212,7 @@ func (x *PRecordQueryScoreForRankPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryScoreForRankPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryScoreForRankPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{153}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *PRecordQueryScoreForRankPlan) GetInner() *PPhysicalQuantifier {
@@ -14301,7 +14241,7 @@ type PScoreForRank struct {
 
 func (x *PScoreForRank) Reset() {
 	*x = PScoreForRank{}
-	mi := &file_record_query_plan_proto_msgTypes[154]
+	mi := &file_record_query_plan_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14313,7 +14253,7 @@ func (x *PScoreForRank) String() string {
 func (*PScoreForRank) ProtoMessage() {}
 
 func (x *PScoreForRank) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[154]
+	mi := &file_record_query_plan_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14326,7 +14266,7 @@ func (x *PScoreForRank) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PScoreForRank.ProtoReflect.Descriptor instead.
 func (*PScoreForRank) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{154}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *PScoreForRank) GetBindingName() string {
@@ -14368,7 +14308,7 @@ type PIndexAggregateFunction struct {
 
 func (x *PIndexAggregateFunction) Reset() {
 	*x = PIndexAggregateFunction{}
-	mi := &file_record_query_plan_proto_msgTypes[155]
+	mi := &file_record_query_plan_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14380,7 +14320,7 @@ func (x *PIndexAggregateFunction) String() string {
 func (*PIndexAggregateFunction) ProtoMessage() {}
 
 func (x *PIndexAggregateFunction) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[155]
+	mi := &file_record_query_plan_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14393,7 +14333,7 @@ func (x *PIndexAggregateFunction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PIndexAggregateFunction.ProtoReflect.Descriptor instead.
 func (*PIndexAggregateFunction) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{155}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *PIndexAggregateFunction) GetName() string {
@@ -14433,7 +14373,7 @@ type PRecordQueryStreamingAggregationPlan struct {
 
 func (x *PRecordQueryStreamingAggregationPlan) Reset() {
 	*x = PRecordQueryStreamingAggregationPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[156]
+	mi := &file_record_query_plan_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14445,7 +14385,7 @@ func (x *PRecordQueryStreamingAggregationPlan) String() string {
 func (*PRecordQueryStreamingAggregationPlan) ProtoMessage() {}
 
 func (x *PRecordQueryStreamingAggregationPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[156]
+	mi := &file_record_query_plan_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14458,7 +14398,7 @@ func (x *PRecordQueryStreamingAggregationPlan) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use PRecordQueryStreamingAggregationPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryStreamingAggregationPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{156}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *PRecordQueryStreamingAggregationPlan) GetInner() *PPhysicalQuantifier {
@@ -14524,7 +14464,7 @@ type PRecordQueryStreamingAggregationPlan2 struct {
 
 func (x *PRecordQueryStreamingAggregationPlan2) Reset() {
 	*x = PRecordQueryStreamingAggregationPlan2{}
-	mi := &file_record_query_plan_proto_msgTypes[157]
+	mi := &file_record_query_plan_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14536,7 +14476,7 @@ func (x *PRecordQueryStreamingAggregationPlan2) String() string {
 func (*PRecordQueryStreamingAggregationPlan2) ProtoMessage() {}
 
 func (x *PRecordQueryStreamingAggregationPlan2) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[157]
+	mi := &file_record_query_plan_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14549,7 +14489,7 @@ func (x *PRecordQueryStreamingAggregationPlan2) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use PRecordQueryStreamingAggregationPlan2.ProtoReflect.Descriptor instead.
 func (*PRecordQueryStreamingAggregationPlan2) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{157}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *PRecordQueryStreamingAggregationPlan2) GetInner() *PPhysicalQuantifier {
@@ -14606,7 +14546,7 @@ type PRecordQueryTypeFilterPlan struct {
 
 func (x *PRecordQueryTypeFilterPlan) Reset() {
 	*x = PRecordQueryTypeFilterPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[158]
+	mi := &file_record_query_plan_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14618,7 +14558,7 @@ func (x *PRecordQueryTypeFilterPlan) String() string {
 func (*PRecordQueryTypeFilterPlan) ProtoMessage() {}
 
 func (x *PRecordQueryTypeFilterPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[158]
+	mi := &file_record_query_plan_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14631,7 +14571,7 @@ func (x *PRecordQueryTypeFilterPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryTypeFilterPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryTypeFilterPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{158}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *PRecordQueryTypeFilterPlan) GetInner() *PPhysicalQuantifier {
@@ -14665,7 +14605,7 @@ type PRecordQueryUnionOnKeyExpressionPlan struct {
 
 func (x *PRecordQueryUnionOnKeyExpressionPlan) Reset() {
 	*x = PRecordQueryUnionOnKeyExpressionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[159]
+	mi := &file_record_query_plan_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14677,7 +14617,7 @@ func (x *PRecordQueryUnionOnKeyExpressionPlan) String() string {
 func (*PRecordQueryUnionOnKeyExpressionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnionOnKeyExpressionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[159]
+	mi := &file_record_query_plan_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14690,7 +14630,7 @@ func (x *PRecordQueryUnionOnKeyExpressionPlan) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use PRecordQueryUnionOnKeyExpressionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnionOnKeyExpressionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{159}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *PRecordQueryUnionOnKeyExpressionPlan) GetSuper() *PRecordQueryUnionPlan {
@@ -14710,7 +14650,7 @@ type PRecordQueryUnionOnValuesPlan struct {
 
 func (x *PRecordQueryUnionOnValuesPlan) Reset() {
 	*x = PRecordQueryUnionOnValuesPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[160]
+	mi := &file_record_query_plan_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14722,7 +14662,7 @@ func (x *PRecordQueryUnionOnValuesPlan) String() string {
 func (*PRecordQueryUnionOnValuesPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnionOnValuesPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[160]
+	mi := &file_record_query_plan_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14735,7 +14675,7 @@ func (x *PRecordQueryUnionOnValuesPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryUnionOnValuesPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnionOnValuesPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{160}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *PRecordQueryUnionOnValuesPlan) GetSuper() *PRecordQueryUnionPlan {
@@ -14757,7 +14697,7 @@ type PRecordQueryUnionPlan struct {
 
 func (x *PRecordQueryUnionPlan) Reset() {
 	*x = PRecordQueryUnionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[161]
+	mi := &file_record_query_plan_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14769,7 +14709,7 @@ func (x *PRecordQueryUnionPlan) String() string {
 func (*PRecordQueryUnionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[161]
+	mi := &file_record_query_plan_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14782,7 +14722,7 @@ func (x *PRecordQueryUnionPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryUnionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{161}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *PRecordQueryUnionPlan) GetSuper() *PRecordQueryUnionPlanBase {
@@ -14817,7 +14757,7 @@ type PRecordQueryUnorderedDistinctPlan struct {
 
 func (x *PRecordQueryUnorderedDistinctPlan) Reset() {
 	*x = PRecordQueryUnorderedDistinctPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[162]
+	mi := &file_record_query_plan_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14829,7 +14769,7 @@ func (x *PRecordQueryUnorderedDistinctPlan) String() string {
 func (*PRecordQueryUnorderedDistinctPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnorderedDistinctPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[162]
+	mi := &file_record_query_plan_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14842,7 +14782,7 @@ func (x *PRecordQueryUnorderedDistinctPlan) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use PRecordQueryUnorderedDistinctPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnorderedDistinctPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{162}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *PRecordQueryUnorderedDistinctPlan) GetInner() *PPhysicalQuantifier {
@@ -14869,7 +14809,7 @@ type PRecordQueryUnorderedPrimaryKeyDistinctPlan struct {
 
 func (x *PRecordQueryUnorderedPrimaryKeyDistinctPlan) Reset() {
 	*x = PRecordQueryUnorderedPrimaryKeyDistinctPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[163]
+	mi := &file_record_query_plan_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14881,7 +14821,7 @@ func (x *PRecordQueryUnorderedPrimaryKeyDistinctPlan) String() string {
 func (*PRecordQueryUnorderedPrimaryKeyDistinctPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnorderedPrimaryKeyDistinctPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[163]
+	mi := &file_record_query_plan_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14894,7 +14834,7 @@ func (x *PRecordQueryUnorderedPrimaryKeyDistinctPlan) ProtoReflect() protoreflec
 
 // Deprecated: Use PRecordQueryUnorderedPrimaryKeyDistinctPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnorderedPrimaryKeyDistinctPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{163}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *PRecordQueryUnorderedPrimaryKeyDistinctPlan) GetInner() *PPhysicalQuantifier {
@@ -14914,7 +14854,7 @@ type PRecordQueryUnorderedUnionPlan struct {
 
 func (x *PRecordQueryUnorderedUnionPlan) Reset() {
 	*x = PRecordQueryUnorderedUnionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[164]
+	mi := &file_record_query_plan_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14926,7 +14866,7 @@ func (x *PRecordQueryUnorderedUnionPlan) String() string {
 func (*PRecordQueryUnorderedUnionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryUnorderedUnionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[164]
+	mi := &file_record_query_plan_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14939,7 +14879,7 @@ func (x *PRecordQueryUnorderedUnionPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryUnorderedUnionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnorderedUnionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{164}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *PRecordQueryUnorderedUnionPlan) GetSuper() *PRecordQueryUnionPlanBase {
@@ -14960,7 +14900,7 @@ type PRecordQueryUnionPlanBase struct {
 
 func (x *PRecordQueryUnionPlanBase) Reset() {
 	*x = PRecordQueryUnionPlanBase{}
-	mi := &file_record_query_plan_proto_msgTypes[165]
+	mi := &file_record_query_plan_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14972,7 +14912,7 @@ func (x *PRecordQueryUnionPlanBase) String() string {
 func (*PRecordQueryUnionPlanBase) ProtoMessage() {}
 
 func (x *PRecordQueryUnionPlanBase) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[165]
+	mi := &file_record_query_plan_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14985,7 +14925,7 @@ func (x *PRecordQueryUnionPlanBase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryUnionPlanBase.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUnionPlanBase) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{165}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *PRecordQueryUnionPlanBase) GetQuantifiers() []*PPhysicalQuantifier {
@@ -15012,7 +14952,7 @@ type PRecordQueryUpdatePlan struct {
 
 func (x *PRecordQueryUpdatePlan) Reset() {
 	*x = PRecordQueryUpdatePlan{}
-	mi := &file_record_query_plan_proto_msgTypes[166]
+	mi := &file_record_query_plan_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15024,7 +14964,7 @@ func (x *PRecordQueryUpdatePlan) String() string {
 func (*PRecordQueryUpdatePlan) ProtoMessage() {}
 
 func (x *PRecordQueryUpdatePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[166]
+	mi := &file_record_query_plan_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15037,7 +14977,7 @@ func (x *PRecordQueryUpdatePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryUpdatePlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryUpdatePlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{166}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *PRecordQueryUpdatePlan) GetSuper() *PRecordQueryAbstractDataModificationPlan {
@@ -15057,7 +14997,7 @@ type PEnumLightValue struct {
 
 func (x *PEnumLightValue) Reset() {
 	*x = PEnumLightValue{}
-	mi := &file_record_query_plan_proto_msgTypes[167]
+	mi := &file_record_query_plan_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15069,7 +15009,7 @@ func (x *PEnumLightValue) String() string {
 func (*PEnumLightValue) ProtoMessage() {}
 
 func (x *PEnumLightValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[167]
+	mi := &file_record_query_plan_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15082,7 +15022,7 @@ func (x *PEnumLightValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PEnumLightValue.ProtoReflect.Descriptor instead.
 func (*PEnumLightValue) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{167}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *PEnumLightValue) GetName() string {
@@ -15109,7 +15049,7 @@ type PUUID struct {
 
 func (x *PUUID) Reset() {
 	*x = PUUID{}
-	mi := &file_record_query_plan_proto_msgTypes[168]
+	mi := &file_record_query_plan_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15121,7 +15061,7 @@ func (x *PUUID) String() string {
 func (*PUUID) ProtoMessage() {}
 
 func (x *PUUID) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[168]
+	mi := &file_record_query_plan_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15134,7 +15074,7 @@ func (x *PUUID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PUUID.ProtoReflect.Descriptor instead.
 func (*PUUID) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{168}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *PUUID) GetMostSigBits() uint64 {
@@ -15160,7 +15100,7 @@ type PFDBRecordVersion struct {
 
 func (x *PFDBRecordVersion) Reset() {
 	*x = PFDBRecordVersion{}
-	mi := &file_record_query_plan_proto_msgTypes[169]
+	mi := &file_record_query_plan_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15172,7 +15112,7 @@ func (x *PFDBRecordVersion) String() string {
 func (*PFDBRecordVersion) ProtoMessage() {}
 
 func (x *PFDBRecordVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[169]
+	mi := &file_record_query_plan_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15185,7 +15125,7 @@ func (x *PFDBRecordVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PFDBRecordVersion.ProtoReflect.Descriptor instead.
 func (*PFDBRecordVersion) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{169}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *PFDBRecordVersion) GetRawBytes() []byte {
@@ -15212,7 +15152,7 @@ type PComparableObject struct {
 
 func (x *PComparableObject) Reset() {
 	*x = PComparableObject{}
-	mi := &file_record_query_plan_proto_msgTypes[170]
+	mi := &file_record_query_plan_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15224,7 +15164,7 @@ func (x *PComparableObject) String() string {
 func (*PComparableObject) ProtoMessage() {}
 
 func (x *PComparableObject) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[170]
+	mi := &file_record_query_plan_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15237,7 +15177,7 @@ func (x *PComparableObject) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PComparableObject.ProtoReflect.Descriptor instead.
 func (*PComparableObject) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{170}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *PComparableObject) GetSpecificObject() isPComparableObject_SpecificObject {
@@ -15346,7 +15286,7 @@ type PRecordQueryRecursiveLevelUnionPlan struct {
 
 func (x *PRecordQueryRecursiveLevelUnionPlan) Reset() {
 	*x = PRecordQueryRecursiveLevelUnionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[171]
+	mi := &file_record_query_plan_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15358,7 +15298,7 @@ func (x *PRecordQueryRecursiveLevelUnionPlan) String() string {
 func (*PRecordQueryRecursiveLevelUnionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryRecursiveLevelUnionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[171]
+	mi := &file_record_query_plan_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15371,7 +15311,7 @@ func (x *PRecordQueryRecursiveLevelUnionPlan) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use PRecordQueryRecursiveLevelUnionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryRecursiveLevelUnionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{171}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *PRecordQueryRecursiveLevelUnionPlan) GetInitialStateQuantifier() *PPhysicalQuantifier {
@@ -15412,7 +15352,7 @@ type PRecordQueryTableFunctionPlan struct {
 
 func (x *PRecordQueryTableFunctionPlan) Reset() {
 	*x = PRecordQueryTableFunctionPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[172]
+	mi := &file_record_query_plan_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15424,7 +15364,7 @@ func (x *PRecordQueryTableFunctionPlan) String() string {
 func (*PRecordQueryTableFunctionPlan) ProtoMessage() {}
 
 func (x *PRecordQueryTableFunctionPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[172]
+	mi := &file_record_query_plan_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15437,7 +15377,7 @@ func (x *PRecordQueryTableFunctionPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryTableFunctionPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryTableFunctionPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{172}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *PRecordQueryTableFunctionPlan) GetValue() *PValue {
@@ -15460,7 +15400,7 @@ type PRecordQueryRecursiveDfsJoinPlan struct {
 
 func (x *PRecordQueryRecursiveDfsJoinPlan) Reset() {
 	*x = PRecordQueryRecursiveDfsJoinPlan{}
-	mi := &file_record_query_plan_proto_msgTypes[173]
+	mi := &file_record_query_plan_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15472,7 +15412,7 @@ func (x *PRecordQueryRecursiveDfsJoinPlan) String() string {
 func (*PRecordQueryRecursiveDfsJoinPlan) ProtoMessage() {}
 
 func (x *PRecordQueryRecursiveDfsJoinPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[173]
+	mi := &file_record_query_plan_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15485,7 +15425,7 @@ func (x *PRecordQueryRecursiveDfsJoinPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PRecordQueryRecursiveDfsJoinPlan.ProtoReflect.Descriptor instead.
 func (*PRecordQueryRecursiveDfsJoinPlan) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{173}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *PRecordQueryRecursiveDfsJoinPlan) GetRootQuantifier() *PPhysicalQuantifier {
@@ -15526,7 +15466,7 @@ type PType_PPrimitiveType struct {
 
 func (x *PType_PPrimitiveType) Reset() {
 	*x = PType_PPrimitiveType{}
-	mi := &file_record_query_plan_proto_msgTypes[174]
+	mi := &file_record_query_plan_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15538,7 +15478,7 @@ func (x *PType_PPrimitiveType) String() string {
 func (*PType_PPrimitiveType) ProtoMessage() {}
 
 func (x *PType_PPrimitiveType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[174]
+	mi := &file_record_query_plan_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15576,7 +15516,7 @@ type PType_PNullType struct {
 
 func (x *PType_PNullType) Reset() {
 	*x = PType_PNullType{}
-	mi := &file_record_query_plan_proto_msgTypes[175]
+	mi := &file_record_query_plan_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15588,7 +15528,7 @@ func (x *PType_PNullType) String() string {
 func (*PType_PNullType) ProtoMessage() {}
 
 func (x *PType_PNullType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[175]
+	mi := &file_record_query_plan_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15613,7 +15553,7 @@ type PType_PUuidType struct {
 
 func (x *PType_PUuidType) Reset() {
 	*x = PType_PUuidType{}
-	mi := &file_record_query_plan_proto_msgTypes[176]
+	mi := &file_record_query_plan_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15625,7 +15565,7 @@ func (x *PType_PUuidType) String() string {
 func (*PType_PUuidType) ProtoMessage() {}
 
 func (x *PType_PUuidType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[176]
+	mi := &file_record_query_plan_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15656,7 +15596,7 @@ type PType_PNoneType struct {
 
 func (x *PType_PNoneType) Reset() {
 	*x = PType_PNoneType{}
-	mi := &file_record_query_plan_proto_msgTypes[177]
+	mi := &file_record_query_plan_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15668,7 +15608,7 @@ func (x *PType_PNoneType) String() string {
 func (*PType_PNoneType) ProtoMessage() {}
 
 func (x *PType_PNoneType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[177]
+	mi := &file_record_query_plan_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15692,7 +15632,7 @@ type PType_PAnyType struct {
 
 func (x *PType_PAnyType) Reset() {
 	*x = PType_PAnyType{}
-	mi := &file_record_query_plan_proto_msgTypes[178]
+	mi := &file_record_query_plan_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15704,7 +15644,7 @@ func (x *PType_PAnyType) String() string {
 func (*PType_PAnyType) ProtoMessage() {}
 
 func (x *PType_PAnyType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[178]
+	mi := &file_record_query_plan_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15731,7 +15671,7 @@ type PType_PVectorType struct {
 
 func (x *PType_PVectorType) Reset() {
 	*x = PType_PVectorType{}
-	mi := &file_record_query_plan_proto_msgTypes[179]
+	mi := &file_record_query_plan_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15743,7 +15683,7 @@ func (x *PType_PVectorType) String() string {
 func (*PType_PVectorType) ProtoMessage() {}
 
 func (x *PType_PVectorType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[179]
+	mi := &file_record_query_plan_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15789,7 +15729,7 @@ type PType_PAnyRecordType struct {
 
 func (x *PType_PAnyRecordType) Reset() {
 	*x = PType_PAnyRecordType{}
-	mi := &file_record_query_plan_proto_msgTypes[180]
+	mi := &file_record_query_plan_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15801,7 +15741,7 @@ func (x *PType_PAnyRecordType) String() string {
 func (*PType_PAnyRecordType) ProtoMessage() {}
 
 func (x *PType_PAnyRecordType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[180]
+	mi := &file_record_query_plan_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15836,7 +15776,7 @@ type PType_PEnumType struct {
 
 func (x *PType_PEnumType) Reset() {
 	*x = PType_PEnumType{}
-	mi := &file_record_query_plan_proto_msgTypes[181]
+	mi := &file_record_query_plan_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15848,7 +15788,7 @@ func (x *PType_PEnumType) String() string {
 func (*PType_PEnumType) ProtoMessage() {}
 
 func (x *PType_PEnumType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[181]
+	mi := &file_record_query_plan_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15905,7 +15845,7 @@ type PType_PRecordType struct {
 
 func (x *PType_PRecordType) Reset() {
 	*x = PType_PRecordType{}
-	mi := &file_record_query_plan_proto_msgTypes[182]
+	mi := &file_record_query_plan_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15917,7 +15857,7 @@ func (x *PType_PRecordType) String() string {
 func (*PType_PRecordType) ProtoMessage() {}
 
 func (x *PType_PRecordType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[182]
+	mi := &file_record_query_plan_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15977,7 +15917,7 @@ type PType_PRelationType struct {
 
 func (x *PType_PRelationType) Reset() {
 	*x = PType_PRelationType{}
-	mi := &file_record_query_plan_proto_msgTypes[183]
+	mi := &file_record_query_plan_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15989,7 +15929,7 @@ func (x *PType_PRelationType) String() string {
 func (*PType_PRelationType) ProtoMessage() {}
 
 func (x *PType_PRelationType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[183]
+	mi := &file_record_query_plan_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16022,7 +15962,7 @@ type PType_PArrayType struct {
 
 func (x *PType_PArrayType) Reset() {
 	*x = PType_PArrayType{}
-	mi := &file_record_query_plan_proto_msgTypes[184]
+	mi := &file_record_query_plan_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16034,7 +15974,7 @@ func (x *PType_PArrayType) String() string {
 func (*PType_PArrayType) ProtoMessage() {}
 
 func (x *PType_PArrayType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[184]
+	mi := &file_record_query_plan_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16072,7 +16012,7 @@ type PType_PFunctionType struct {
 
 func (x *PType_PFunctionType) Reset() {
 	*x = PType_PFunctionType{}
-	mi := &file_record_query_plan_proto_msgTypes[185]
+	mi := &file_record_query_plan_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16084,7 +16024,7 @@ func (x *PType_PFunctionType) String() string {
 func (*PType_PFunctionType) ProtoMessage() {}
 
 func (x *PType_PFunctionType) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[185]
+	mi := &file_record_query_plan_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16111,7 +16051,7 @@ type PType_PEnumType_PEnumValue struct {
 
 func (x *PType_PEnumType_PEnumValue) Reset() {
 	*x = PType_PEnumType_PEnumValue{}
-	mi := &file_record_query_plan_proto_msgTypes[186]
+	mi := &file_record_query_plan_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16123,7 +16063,7 @@ func (x *PType_PEnumType_PEnumValue) String() string {
 func (*PType_PEnumType_PEnumValue) ProtoMessage() {}
 
 func (x *PType_PEnumType_PEnumValue) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[186]
+	mi := &file_record_query_plan_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16172,7 +16112,7 @@ type PType_PRecordType_PField struct {
 
 func (x *PType_PRecordType_PField) Reset() {
 	*x = PType_PRecordType_PField{}
-	mi := &file_record_query_plan_proto_msgTypes[187]
+	mi := &file_record_query_plan_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16184,7 +16124,7 @@ func (x *PType_PRecordType_PField) String() string {
 func (*PType_PRecordType_PField) ProtoMessage() {}
 
 func (x *PType_PRecordType_PField) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[187]
+	mi := &file_record_query_plan_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16238,7 +16178,7 @@ type PCoercionTrieNode_IntChildPair struct {
 
 func (x *PCoercionTrieNode_IntChildPair) Reset() {
 	*x = PCoercionTrieNode_IntChildPair{}
-	mi := &file_record_query_plan_proto_msgTypes[188]
+	mi := &file_record_query_plan_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16250,7 +16190,7 @@ func (x *PCoercionTrieNode_IntChildPair) String() string {
 func (*PCoercionTrieNode_IntChildPair) ProtoMessage() {}
 
 func (x *PCoercionTrieNode_IntChildPair) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[188]
+	mi := &file_record_query_plan_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16290,7 +16230,7 @@ type PTransformationTrieNode_IntChildPair struct {
 
 func (x *PTransformationTrieNode_IntChildPair) Reset() {
 	*x = PTransformationTrieNode_IntChildPair{}
-	mi := &file_record_query_plan_proto_msgTypes[189]
+	mi := &file_record_query_plan_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16302,7 +16242,7 @@ func (x *PTransformationTrieNode_IntChildPair) String() string {
 func (*PTransformationTrieNode_IntChildPair) ProtoMessage() {}
 
 func (x *PTransformationTrieNode_IntChildPair) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[189]
+	mi := &file_record_query_plan_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16342,7 +16282,7 @@ type PFieldAccessTrieNode_PResolvedAccessorChildPair struct {
 
 func (x *PFieldAccessTrieNode_PResolvedAccessorChildPair) Reset() {
 	*x = PFieldAccessTrieNode_PResolvedAccessorChildPair{}
-	mi := &file_record_query_plan_proto_msgTypes[190]
+	mi := &file_record_query_plan_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16354,7 +16294,7 @@ func (x *PFieldAccessTrieNode_PResolvedAccessorChildPair) String() string {
 func (*PFieldAccessTrieNode_PResolvedAccessorChildPair) ProtoMessage() {}
 
 func (x *PFieldAccessTrieNode_PResolvedAccessorChildPair) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[190]
+	mi := &file_record_query_plan_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16396,7 +16336,7 @@ type PFieldPath_PResolvedAccessor struct {
 
 func (x *PFieldPath_PResolvedAccessor) Reset() {
 	*x = PFieldPath_PResolvedAccessor{}
-	mi := &file_record_query_plan_proto_msgTypes[191]
+	mi := &file_record_query_plan_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16408,7 +16348,7 @@ func (x *PFieldPath_PResolvedAccessor) String() string {
 func (*PFieldPath_PResolvedAccessor) ProtoMessage() {}
 
 func (x *PFieldPath_PResolvedAccessor) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[191]
+	mi := &file_record_query_plan_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16461,7 +16401,7 @@ type PNumericAggregationValue_PBitmapConstructAgg struct {
 
 func (x *PNumericAggregationValue_PBitmapConstructAgg) Reset() {
 	*x = PNumericAggregationValue_PBitmapConstructAgg{}
-	mi := &file_record_query_plan_proto_msgTypes[192]
+	mi := &file_record_query_plan_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16473,7 +16413,7 @@ func (x *PNumericAggregationValue_PBitmapConstructAgg) String() string {
 func (*PNumericAggregationValue_PBitmapConstructAgg) ProtoMessage() {}
 
 func (x *PNumericAggregationValue_PBitmapConstructAgg) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[192]
+	mi := &file_record_query_plan_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16505,7 +16445,7 @@ type PNumericAggregationValue_PSum struct {
 
 func (x *PNumericAggregationValue_PSum) Reset() {
 	*x = PNumericAggregationValue_PSum{}
-	mi := &file_record_query_plan_proto_msgTypes[193]
+	mi := &file_record_query_plan_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16517,7 +16457,7 @@ func (x *PNumericAggregationValue_PSum) String() string {
 func (*PNumericAggregationValue_PSum) ProtoMessage() {}
 
 func (x *PNumericAggregationValue_PSum) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[193]
+	mi := &file_record_query_plan_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16549,7 +16489,7 @@ type PNumericAggregationValue_PAvg struct {
 
 func (x *PNumericAggregationValue_PAvg) Reset() {
 	*x = PNumericAggregationValue_PAvg{}
-	mi := &file_record_query_plan_proto_msgTypes[194]
+	mi := &file_record_query_plan_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16561,7 +16501,7 @@ func (x *PNumericAggregationValue_PAvg) String() string {
 func (*PNumericAggregationValue_PAvg) ProtoMessage() {}
 
 func (x *PNumericAggregationValue_PAvg) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[194]
+	mi := &file_record_query_plan_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16593,7 +16533,7 @@ type PNumericAggregationValue_PMin struct {
 
 func (x *PNumericAggregationValue_PMin) Reset() {
 	*x = PNumericAggregationValue_PMin{}
-	mi := &file_record_query_plan_proto_msgTypes[195]
+	mi := &file_record_query_plan_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16605,7 +16545,7 @@ func (x *PNumericAggregationValue_PMin) String() string {
 func (*PNumericAggregationValue_PMin) ProtoMessage() {}
 
 func (x *PNumericAggregationValue_PMin) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[195]
+	mi := &file_record_query_plan_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16637,7 +16577,7 @@ type PNumericAggregationValue_PMax struct {
 
 func (x *PNumericAggregationValue_PMax) Reset() {
 	*x = PNumericAggregationValue_PMax{}
-	mi := &file_record_query_plan_proto_msgTypes[196]
+	mi := &file_record_query_plan_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16649,7 +16589,7 @@ func (x *PNumericAggregationValue_PMax) String() string {
 func (*PNumericAggregationValue_PMax) ProtoMessage() {}
 
 func (x *PNumericAggregationValue_PMax) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[196]
+	mi := &file_record_query_plan_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16682,7 +16622,7 @@ type PRecordConstructorValue_PColumn struct {
 
 func (x *PRecordConstructorValue_PColumn) Reset() {
 	*x = PRecordConstructorValue_PColumn{}
-	mi := &file_record_query_plan_proto_msgTypes[197]
+	mi := &file_record_query_plan_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16694,7 +16634,7 @@ func (x *PRecordConstructorValue_PColumn) String() string {
 func (*PRecordConstructorValue_PColumn) ProtoMessage() {}
 
 func (x *PRecordConstructorValue_PColumn) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[197]
+	mi := &file_record_query_plan_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16734,7 +16674,7 @@ type PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair struct {
 
 func (x *PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) Reset() {
 	*x = PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair{}
-	mi := &file_record_query_plan_proto_msgTypes[198]
+	mi := &file_record_query_plan_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16746,7 +16686,7 @@ func (x *PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) Strin
 func (*PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) ProtoMessage() {}
 
 func (x *PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[198]
+	mi := &file_record_query_plan_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16759,7 +16699,7 @@ func (x *PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) Proto
 
 // Deprecated: Use PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair.ProtoReflect.Descriptor instead.
 func (*PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{89, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{88, 0}
 }
 
 func (x *PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair) GetRecordTypeName() string {
@@ -16786,7 +16726,7 @@ type PDatabaseObjectDependenciesPredicate_PUsedIndex struct {
 
 func (x *PDatabaseObjectDependenciesPredicate_PUsedIndex) Reset() {
 	*x = PDatabaseObjectDependenciesPredicate_PUsedIndex{}
-	mi := &file_record_query_plan_proto_msgTypes[199]
+	mi := &file_record_query_plan_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16798,7 +16738,7 @@ func (x *PDatabaseObjectDependenciesPredicate_PUsedIndex) String() string {
 func (*PDatabaseObjectDependenciesPredicate_PUsedIndex) ProtoMessage() {}
 
 func (x *PDatabaseObjectDependenciesPredicate_PUsedIndex) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[199]
+	mi := &file_record_query_plan_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16811,7 +16751,7 @@ func (x *PDatabaseObjectDependenciesPredicate_PUsedIndex) ProtoReflect() protore
 
 // Deprecated: Use PDatabaseObjectDependenciesPredicate_PUsedIndex.ProtoReflect.Descriptor instead.
 func (*PDatabaseObjectDependenciesPredicate_PUsedIndex) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{91, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{90, 0}
 }
 
 func (x *PDatabaseObjectDependenciesPredicate_PUsedIndex) GetName() string {
@@ -16844,7 +16784,7 @@ type PIndexKeyValueToPartialRecord_PCopier struct {
 
 func (x *PIndexKeyValueToPartialRecord_PCopier) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PCopier{}
-	mi := &file_record_query_plan_proto_msgTypes[200]
+	mi := &file_record_query_plan_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16856,7 +16796,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopier) String() string {
 func (*PIndexKeyValueToPartialRecord_PCopier) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PCopier) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[200]
+	mi := &file_record_query_plan_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16869,7 +16809,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopier) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PCopier.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PCopier) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 0}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PCopier) GetSpecificCopier() isPIndexKeyValueToPartialRecord_PCopier_SpecificCopier {
@@ -16960,7 +16900,7 @@ type PIndexKeyValueToPartialRecord_PFieldCopier struct {
 
 func (x *PIndexKeyValueToPartialRecord_PFieldCopier) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PFieldCopier{}
-	mi := &file_record_query_plan_proto_msgTypes[201]
+	mi := &file_record_query_plan_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16972,7 +16912,7 @@ func (x *PIndexKeyValueToPartialRecord_PFieldCopier) String() string {
 func (*PIndexKeyValueToPartialRecord_PFieldCopier) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PFieldCopier) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[201]
+	mi := &file_record_query_plan_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16985,7 +16925,7 @@ func (x *PIndexKeyValueToPartialRecord_PFieldCopier) ProtoReflect() protoreflect
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PFieldCopier.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PFieldCopier) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 1}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 1}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PFieldCopier) GetField() string {
@@ -17038,7 +16978,7 @@ type PIndexKeyValueToPartialRecord_PCopyIfPredicate struct {
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PCopyIfPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[202]
+	mi := &file_record_query_plan_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17050,7 +16990,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate) String() string {
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[202]
+	mi := &file_record_query_plan_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17063,7 +17003,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate) ProtoReflect() protoref
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PCopyIfPredicate.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 2}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 2}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate) GetSpecificCopyIfPredicate() isPIndexKeyValueToPartialRecord_PCopyIfPredicate_SpecificCopyIfPredicate {
@@ -17135,7 +17075,7 @@ type PIndexKeyValueToPartialRecord_PMessageCopier struct {
 
 func (x *PIndexKeyValueToPartialRecord_PMessageCopier) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PMessageCopier{}
-	mi := &file_record_query_plan_proto_msgTypes[203]
+	mi := &file_record_query_plan_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17147,7 +17087,7 @@ func (x *PIndexKeyValueToPartialRecord_PMessageCopier) String() string {
 func (*PIndexKeyValueToPartialRecord_PMessageCopier) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PMessageCopier) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[203]
+	mi := &file_record_query_plan_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17160,7 +17100,7 @@ func (x *PIndexKeyValueToPartialRecord_PMessageCopier) ProtoReflect() protorefle
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PMessageCopier.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PMessageCopier) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 3}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 3}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PMessageCopier) GetField() string {
@@ -17189,7 +17129,7 @@ type PIndexKeyValueToPartialRecord_PFieldWithValueCopier struct {
 
 func (x *PIndexKeyValueToPartialRecord_PFieldWithValueCopier) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PFieldWithValueCopier{}
-	mi := &file_record_query_plan_proto_msgTypes[204]
+	mi := &file_record_query_plan_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17201,7 +17141,7 @@ func (x *PIndexKeyValueToPartialRecord_PFieldWithValueCopier) String() string {
 func (*PIndexKeyValueToPartialRecord_PFieldWithValueCopier) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PFieldWithValueCopier) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[204]
+	mi := &file_record_query_plan_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17214,7 +17154,7 @@ func (x *PIndexKeyValueToPartialRecord_PFieldWithValueCopier) ProtoReflect() pro
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PFieldWithValueCopier.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PFieldWithValueCopier) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 4}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 4}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PFieldWithValueCopier) GetIndexEntryAlias() string {
@@ -17253,7 +17193,7 @@ type PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate struct {
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[205]
+	mi := &file_record_query_plan_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17265,7 +17205,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) String()
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[205]
+	mi := &file_record_query_plan_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17278,7 +17218,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) ProtoRef
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 2, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 2, 0}
 }
 
 type PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate struct {
@@ -17290,7 +17230,7 @@ type PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicat
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate) Reset() {
 	*x = PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate{}
-	mi := &file_record_query_plan_proto_msgTypes[206]
+	mi := &file_record_query_plan_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17302,7 +17242,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPred
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate) ProtoMessage() {}
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[206]
+	mi := &file_record_query_plan_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17315,7 +17255,7 @@ func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPred
 
 // Deprecated: Use PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate.ProtoReflect.Descriptor instead.
 func (*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{105, 2, 1}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{104, 2, 1}
 }
 
 func (x *PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate) GetOrdinalPath() []int32 {
@@ -17335,7 +17275,7 @@ type PVectorIndexScanOptions_POptionEntry struct {
 
 func (x *PVectorIndexScanOptions_POptionEntry) Reset() {
 	*x = PVectorIndexScanOptions_POptionEntry{}
-	mi := &file_record_query_plan_proto_msgTypes[207]
+	mi := &file_record_query_plan_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17347,7 +17287,7 @@ func (x *PVectorIndexScanOptions_POptionEntry) String() string {
 func (*PVectorIndexScanOptions_POptionEntry) ProtoMessage() {}
 
 func (x *PVectorIndexScanOptions_POptionEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[207]
+	mi := &file_record_query_plan_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17360,7 +17300,7 @@ func (x *PVectorIndexScanOptions_POptionEntry) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use PVectorIndexScanOptions_POptionEntry.ProtoReflect.Descriptor instead.
 func (*PVectorIndexScanOptions_POptionEntry) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{124, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{123, 0}
 }
 
 func (x *PVectorIndexScanOptions_POptionEntry) GetKey() string {
@@ -17386,7 +17326,7 @@ type PInSource_Super struct {
 
 func (x *PInSource_Super) Reset() {
 	*x = PInSource_Super{}
-	mi := &file_record_query_plan_proto_msgTypes[208]
+	mi := &file_record_query_plan_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17398,7 +17338,7 @@ func (x *PInSource_Super) String() string {
 func (*PInSource_Super) ProtoMessage() {}
 
 func (x *PInSource_Super) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[208]
+	mi := &file_record_query_plan_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17411,7 +17351,7 @@ func (x *PInSource_Super) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PInSource_Super.ProtoReflect.Descriptor instead.
 func (*PInSource_Super) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{128, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{127, 0}
 }
 
 func (x *PInSource_Super) GetBindingName() string {
@@ -17430,7 +17370,7 @@ type PComparisonKeyFunction_POnKeyExpression struct {
 
 func (x *PComparisonKeyFunction_POnKeyExpression) Reset() {
 	*x = PComparisonKeyFunction_POnKeyExpression{}
-	mi := &file_record_query_plan_proto_msgTypes[209]
+	mi := &file_record_query_plan_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17442,7 +17382,7 @@ func (x *PComparisonKeyFunction_POnKeyExpression) String() string {
 func (*PComparisonKeyFunction_POnKeyExpression) ProtoMessage() {}
 
 func (x *PComparisonKeyFunction_POnKeyExpression) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[209]
+	mi := &file_record_query_plan_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17455,7 +17395,7 @@ func (x *PComparisonKeyFunction_POnKeyExpression) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use PComparisonKeyFunction_POnKeyExpression.ProtoReflect.Descriptor instead.
 func (*PComparisonKeyFunction_POnKeyExpression) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{139, 0}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{138, 0}
 }
 
 func (x *PComparisonKeyFunction_POnKeyExpression) GetComparisonKeyExpression() *KeyExpression {
@@ -17475,7 +17415,7 @@ type PComparisonKeyFunction_POnValues struct {
 
 func (x *PComparisonKeyFunction_POnValues) Reset() {
 	*x = PComparisonKeyFunction_POnValues{}
-	mi := &file_record_query_plan_proto_msgTypes[210]
+	mi := &file_record_query_plan_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17487,7 +17427,7 @@ func (x *PComparisonKeyFunction_POnValues) String() string {
 func (*PComparisonKeyFunction_POnValues) ProtoMessage() {}
 
 func (x *PComparisonKeyFunction_POnValues) ProtoReflect() protoreflect.Message {
-	mi := &file_record_query_plan_proto_msgTypes[210]
+	mi := &file_record_query_plan_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17500,7 +17440,7 @@ func (x *PComparisonKeyFunction_POnValues) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PComparisonKeyFunction_POnValues.ProtoReflect.Descriptor instead.
 func (*PComparisonKeyFunction_POnValues) Descriptor() ([]byte, []int) {
-	return file_record_query_plan_proto_rawDescGZIP(), []int{139, 1}
+	return file_record_query_plan_proto_rawDescGZIP(), []int{138, 1}
 }
 
 func (x *PComparisonKeyFunction_POnValues) GetBaseAlias() string {
@@ -17679,7 +17619,7 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\x04type\x18\x03 \x01(\v2/.com.apple.foundationdb.record.planprotos.PTypeR\x04type\x1a\x91\x02\n" +
 	"\x1aPResolvedAccessorChildPair\x12s\n" +
 	"\x11resolved_accessor\x18\x01 \x01(\v2F.com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessorR\x10resolvedAccessor\x12~\n" +
-	"\x1cchild_field_access_trie_node\x18\x02 \x01(\v2>.com.apple.foundationdb.record.planprotos.PFieldAccessTrieNodeR\x18childFieldAccessTrieNode\"\xd56\n" +
+	"\x1cchild_field_access_trie_node\x18\x02 \x01(\v2>.com.apple.foundationdb.record.planprotos.PFieldAccessTrieNodeR\x18childFieldAccessTrieNode\"\xfb5\n" +
 	"\x06PValue\x12C\n" +
 	"\x11additional_values\x18\x01 \x01(\v2\x14.google.protobuf.AnyH\x00R\x10additionalValues\x12\x8a\x01\n" +
 	"\x1dlight_array_constructor_value\x18\x02 \x01(\v2E.com.apple.foundationdb.record.planprotos.PLightArrayConstructorValueH\x00R\x1alightArrayConstructorValue\x12Y\n" +
@@ -17725,8 +17665,7 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\x11record_type_value\x18\" \x01(\v2:.com.apple.foundationdb.record.planprotos.PRecordTypeValueH\x00R\x0frecordTypeValue\x12l\n" +
 	"\x13binary_rel_op_value\x18# \x01(\v2;.com.apple.foundationdb.record.planprotos.PBinaryRelOpValueH\x00R\x10binaryRelOpValue\x12i\n" +
 	"\x12unary_rel_op_value\x18$ \x01(\v2:.com.apple.foundationdb.record.planprotos.PUnaryRelOpValueH\x00R\x0funaryRelOpValue\x12z\n" +
-	"\x17variadic_function_value\x18% \x01(\v2@.com.apple.foundationdb.record.planprotos.PVariadicFunctionValueH\x00R\x15variadicFunctionValue\x12^\n" +
-	"\rversion_value\x18& \x01(\v27.com.apple.foundationdb.record.planprotos.PVersionValueH\x00R\fversionValue\x12u\n" +
+	"\x17variadic_function_value\x18% \x01(\v2@.com.apple.foundationdb.record.planprotos.PVariadicFunctionValueH\x00R\x15variadicFunctionValue\x12u\n" +
 	"\x16first_or_default_value\x18' \x01(\v2>.com.apple.foundationdb.record.planprotos.PFirstOrDefaultValueH\x00R\x13firstOrDefaultValue\x12[\n" +
 	"\fthrows_value\x18( \x01(\v26.com.apple.foundationdb.record.planprotos.PThrowsValueH\x00R\vthrowsValue\x12{\n" +
 	"\x18index_entry_object_value\x18) \x01(\v2@.com.apple.foundationdb.record.planprotos.PIndexEntryObjectValueH\x00R\x15indexEntryObjectValue\x12u\n" +
@@ -17753,7 +17692,7 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"%dot_product_distance_row_number_value\x18= \x01(\v2K.com.apple.foundationdb.record.planprotos.PDotProductDistanceRowNumberValueH\x00R dotProductDistanceRowNumberValue\x12j\n" +
 	"\x11incarnation_value\x18> \x01(\v2;.com.apple.foundationdb.record.planprotos.PIncarnationValueH\x00R\x10incarnationValue\x12j\n" +
 	"\x11cardinality_value\x18? \x01(\v2;.com.apple.foundationdb.record.planprotos.PCardinalityValueH\x00R\x10cardinalityValue*\t\b\x88'\x10\x80\x80\x80\x80\x02B\x10\n" +
-	"\x0especific_value\"\xd6\x01\n" +
+	"\x0especific_valueJ\x04\b&\x10'\"\xd6\x01\n" +
 	"\x19PUserDefinedMacroFunction\x12#\n" +
 	"\rfunction_name\x18\x01 \x01(\tR\ffunctionName\x12N\n" +
 	"\targuments\x18\x02 \x03(\v20.com.apple.foundationdb.record.planprotos.PValueR\targuments\x12D\n" +
@@ -18009,10 +17948,11 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\bchildren\x18\x01 \x03(\v20.com.apple.foundationdb.record.planprotos.PValueR\bchildren\x12P\n" +
 	"\vresult_type\x18\x02 \x01(\v2/.com.apple.foundationdb.record.planprotos.PTypeR\n" +
 	"resultType\"\r\n" +
-	"\vPEmptyValue\"|\n" +
+	"\vPEmptyValue\"\xc4\x01\n" +
 	"\fPExistsValue\x12V\n" +
 	"\x05child\x18\x01 \x01(\v2@.com.apple.foundationdb.record.planprotos.PQuantifiedObjectValueR\x05child\x12\x14\n" +
-	"\x05alias\x18\x02 \x01(\tR\x05alias\"\xb2\x01\n" +
+	"\x05alias\x18\x02 \x01(\tR\x05alias\x12F\n" +
+	"\x05value\x18\x03 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\x05value\"\xb2\x01\n" +
 	"\x11PEvaluatesToValue\x12F\n" +
 	"\x05child\x18\x01 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\x05child\x12U\n" +
 	"\n" +
@@ -18962,11 +18902,7 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\x0eCOALESCE_FLOAT\x10\x11\x12\x13\n" +
 	"\x0fCOALESCE_DOUBLE\x10\x12\x12\x13\n" +
 	"\x0fCOALESCE_RECORD\x10\x13\x12\x12\n" +
-	"\x0eCOALESCE_ARRAY\x10\x14\"v\n" +
-	"\rPVersionValue\x12\x1d\n" +
-	"\n" +
-	"base_alias\x18\x01 \x01(\tR\tbaseAlias\x12F\n" +
-	"\x05child\x18\x02 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\x05child\"\x13\n" +
+	"\x0eCOALESCE_ARRAY\x10\x14\"\x13\n" +
 	"\x11PIncarnationValue\"f\n" +
 	"\x11PCardinalityValue\x12Q\n" +
 	"\vchild_value\x18\x01 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\n" +
@@ -19132,12 +19068,12 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"limitValue\x18\x02 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\n" +
 	"limitValue\x12\x1a\n" +
 	"\befSearch\x18\x03 \x01(\x05R\befSearch\x12.\n" +
-	"\x12isReturningVectors\x18\x04 \x01(\bR\x12isReturningVectors\"\xbd\t\n" +
+	"\x12isReturningVectors\x18\x04 \x01(\bR\x12isReturningVectors\"\xdd\t\n" +
 	"\x0fPQueryPredicate\x12V\n" +
 	"\x1badditional_query_predicates\x18\x01 \x01(\v2\x14.google.protobuf.AnyH\x00R\x19additionalQueryPredicates\x12^\n" +
 	"\rand_predicate\x18\x02 \x01(\v27.com.apple.foundationdb.record.planprotos.PAndPredicateH\x00R\fandPredicate\x12m\n" +
-	"\x12constant_predicate\x18\x03 \x01(\v2<.com.apple.foundationdb.record.planprotos.PConstantPredicateH\x00R\x11constantPredicate\x12g\n" +
-	"\x10exists_predicate\x18\x04 \x01(\v2:.com.apple.foundationdb.record.planprotos.PExistsPredicateH\x00R\x0fexistsPredicate\x12^\n" +
+	"\x12constant_predicate\x18\x03 \x01(\v2<.com.apple.foundationdb.record.planprotos.PConstantPredicateH\x00R\x11constantPredicate\x12\x86\x01\n" +
+	"\x1bexistential_value_predicate\x18\x04 \x01(\v2D.com.apple.foundationdb.record.planprotos.PExistentialValuePredicateH\x00R\x19existentialValuePredicate\x12^\n" +
 	"\rnot_predicate\x18\x05 \x01(\v27.com.apple.foundationdb.record.planprotos.PNotPredicateH\x00R\fnotPredicate\x12[\n" +
 	"\for_predicate\x18\x06 \x01(\v26.com.apple.foundationdb.record.planprotos.POrPredicateH\x00R\vorPredicate\x12\x8e\x01\n" +
 	"\x1fpredicate_with_value_and_ranges\x18\a \x01(\v2F.com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRangesH\x00R\x1bpredicateWithValueAndRanges\x12d\n" +
@@ -19166,10 +19102,9 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\n" +
 	"PUsedIndex\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x122\n" +
-	"\x15last_modified_version\x18\x03 \x01(\x05R\x13lastModifiedVersion\"\x98\x01\n" +
-	"\x10PExistsPredicate\x12W\n" +
-	"\x05super\x18\x01 \x01(\v2A.com.apple.foundationdb.record.planprotos.PAbstractQueryPredicateR\x05super\x12+\n" +
-	"\x11existential_alias\x18\x02 \x01(\tR\x10existentialAlias\"\xb9\x01\n" +
+	"\x15last_modified_version\x18\x03 \x01(\x05R\x13lastModifiedVersion\"m\n" +
+	"\x1aPExistentialValuePredicate\x12O\n" +
+	"\x05super\x18\x01 \x01(\v29.com.apple.foundationdb.record.planprotos.PValuePredicateR\x05super\"\xb9\x01\n" +
 	"\rPNotPredicate\x12W\n" +
 	"\x05super\x18\x01 \x01(\v2A.com.apple.foundationdb.record.planprotos.PAbstractQueryPredicateR\x05super\x12O\n" +
 	"\x05child\x18\x02 \x01(\v29.com.apple.foundationdb.record.planprotos.PQueryPredicateR\x05child\"_\n" +
@@ -19307,9 +19242,10 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\x05inner\x18\x01 \x01(\v2=.com.apple.foundationdb.record.planprotos.PPhysicalQuantifierR\x05inner\x12O\n" +
 	"\x03key\x18\x02 \x01(\v2=.com.apple.foundationdb.record.planprotos.PRecordQuerySortKeyR\x03key\"m\n" +
 	"\x16PRecordQueryDeletePlan\x12S\n" +
-	"\x05inner\x18\x01 \x01(\v2=.com.apple.foundationdb.record.planprotos.PPhysicalQuantifierR\x05inner\"v\n" +
+	"\x05inner\x18\x01 \x01(\v2=.com.apple.foundationdb.record.planprotos.PPhysicalQuantifierR\x05inner\"\x9f\x01\n" +
 	"\x17PRecordQueryExplodePlan\x12[\n" +
-	"\x10collection_value\x18\x01 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\x0fcollectionValue\"\xbd\x02\n" +
+	"\x10collection_value\x18\x01 \x01(\v20.com.apple.foundationdb.record.planprotos.PValueR\x0fcollectionValue\x12'\n" +
+	"\x0fwith_ordinality\x18\x02 \x01(\bR\x0ewithOrdinality\"\xbd\x02\n" +
 	"&PRecordQueryFetchFromPartialRecordPlan\x12S\n" +
 	"\x05inner\x18\x01 \x01(\v2=.com.apple.foundationdb.record.planprotos.PPhysicalQuantifierR\x05inner\x12P\n" +
 	"\vresult_type\x18\x02 \x01(\v2/.com.apple.foundationdb.record.planprotos.PTypeR\n" +
@@ -19616,7 +19552,7 @@ func file_record_query_plan_proto_rawDescGZIP() []byte {
 }
 
 var file_record_query_plan_proto_enumTypes = make([]protoimpl.EnumInfo, 21)
-var file_record_query_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 211)
+var file_record_query_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 210)
 var file_record_query_plan_proto_goTypes = []any{
 	(PEvaluation)(0),        // 0: com.apple.foundationdb.record.planprotos.PEvaluation
 	(PDirection)(0),         // 1: com.apple.foundationdb.record.planprotos.PDirection
@@ -19702,186 +19638,185 @@ var file_record_query_plan_proto_goTypes = []any{
 	(*PUnaryRelOpValue)(nil),                                // 81: com.apple.foundationdb.record.planprotos.PUnaryRelOpValue
 	(*PUdfValue)(nil),                                       // 82: com.apple.foundationdb.record.planprotos.PUdfValue
 	(*PVariadicFunctionValue)(nil),                          // 83: com.apple.foundationdb.record.planprotos.PVariadicFunctionValue
-	(*PVersionValue)(nil),                                   // 84: com.apple.foundationdb.record.planprotos.PVersionValue
-	(*PIncarnationValue)(nil),                               // 85: com.apple.foundationdb.record.planprotos.PIncarnationValue
-	(*PCardinalityValue)(nil),                               // 86: com.apple.foundationdb.record.planprotos.PCardinalityValue
-	(*PWindowedValue)(nil),                                  // 87: com.apple.foundationdb.record.planprotos.PWindowedValue
-	(*PCollateValue)(nil),                                   // 88: com.apple.foundationdb.record.planprotos.PCollateValue
-	(*PRangeValue)(nil),                                     // 89: com.apple.foundationdb.record.planprotos.PRangeValue
-	(*PArrayDistinctValue)(nil),                             // 90: com.apple.foundationdb.record.planprotos.PArrayDistinctValue
-	(*PParameterObjectValue)(nil),                           // 91: com.apple.foundationdb.record.planprotos.PParameterObjectValue
-	(*PCastValue)(nil),                                      // 92: com.apple.foundationdb.record.planprotos.PCastValue
-	(*PComparison)(nil),                                     // 93: com.apple.foundationdb.record.planprotos.PComparison
-	(*PSimpleComparison)(nil),                               // 94: com.apple.foundationdb.record.planprotos.PSimpleComparison
-	(*PConversionSimpleComparison)(nil),                     // 95: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison
-	(*PParameterComparison)(nil),                            // 96: com.apple.foundationdb.record.planprotos.PParameterComparison
-	(*PConversionParameterComparison)(nil),                  // 97: com.apple.foundationdb.record.planprotos.PConversionParameterComparison
-	(*PValueComparison)(nil),                                // 98: com.apple.foundationdb.record.planprotos.PValueComparison
-	(*PListComparison)(nil),                                 // 99: com.apple.foundationdb.record.planprotos.PListComparison
-	(*PNullComparison)(nil),                                 // 100: com.apple.foundationdb.record.planprotos.PNullComparison
-	(*POpaqueEqualityComparison)(nil),                       // 101: com.apple.foundationdb.record.planprotos.POpaqueEqualityComparison
-	(*PMultiColumnComparison)(nil),                          // 102: com.apple.foundationdb.record.planprotos.PMultiColumnComparison
-	(*PInvertedFunctionComparison)(nil),                     // 103: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison
-	(*PRecordTypeComparison)(nil),                           // 104: com.apple.foundationdb.record.planprotos.PRecordTypeComparison
-	(*PDistanceRankValueComparison)(nil),                    // 105: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
-	(*PQueryPredicate)(nil),                                 // 106: com.apple.foundationdb.record.planprotos.PQueryPredicate
-	(*PAbstractQueryPredicate)(nil),                         // 107: com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	(*PAndOrPredicate)(nil),                                 // 108: com.apple.foundationdb.record.planprotos.PAndOrPredicate
-	(*PAndPredicate)(nil),                                   // 109: com.apple.foundationdb.record.planprotos.PAndPredicate
-	(*PCompatibleTypeEvolutionPredicate)(nil),               // 110: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate
-	(*PConstantPredicate)(nil),                              // 111: com.apple.foundationdb.record.planprotos.PConstantPredicate
-	(*PDatabaseObjectDependenciesPredicate)(nil),            // 112: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate
-	(*PExistsPredicate)(nil),                                // 113: com.apple.foundationdb.record.planprotos.PExistsPredicate
-	(*PNotPredicate)(nil),                                   // 114: com.apple.foundationdb.record.planprotos.PNotPredicate
-	(*POrPredicate)(nil),                                    // 115: com.apple.foundationdb.record.planprotos.POrPredicate
-	(*PPredicateWithValueAndRanges)(nil),                    // 116: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges
-	(*PRangeConstraints)(nil),                               // 117: com.apple.foundationdb.record.planprotos.PRangeConstraints
-	(*PCompilableRange)(nil),                                // 118: com.apple.foundationdb.record.planprotos.PCompilableRange
-	(*PValuePredicate)(nil),                                 // 119: com.apple.foundationdb.record.planprotos.PValuePredicate
-	(*PPhysicalQuantifier)(nil),                             // 120: com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	(*PPlanReference)(nil),                                  // 121: com.apple.foundationdb.record.planprotos.PPlanReference
-	(*PRecordQueryPlan)(nil),                                // 122: com.apple.foundationdb.record.planprotos.PRecordQueryPlan
-	(*PRecordQueryAbstractDataModificationPlan)(nil),        // 123: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
-	(*PRecordQueryAggregateIndexPlan)(nil),                  // 124: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan
-	(*PRecordQueryCoveringIndexPlan)(nil),                   // 125: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan
-	(*PIndexKeyValueToPartialRecord)(nil),                   // 126: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
-	(*PRecordQueryDamPlan)(nil),                             // 127: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan
-	(*PRecordQueryDeletePlan)(nil),                          // 128: com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan
-	(*PRecordQueryExplodePlan)(nil),                         // 129: com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan
-	(*PRecordQueryFetchFromPartialRecordPlan)(nil),          // 130: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan
-	(*PRecordQueryFilterPlanBase)(nil),                      // 131: com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase
-	(*PRecordQueryFirstOrDefaultPlan)(nil),                  // 132: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan
-	(*PRecordQueryDefaultOnEmptyPlan)(nil),                  // 133: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan
-	(*PRecordQueryFlatMapPlan)(nil),                         // 134: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan
-	(*PRecordQueryIndexPlan)(nil),                           // 135: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
-	(*PTempTableScanPlan)(nil),                              // 136: com.apple.foundationdb.record.planprotos.PTempTableScanPlan
-	(*PIndexScanParameters)(nil),                            // 137: com.apple.foundationdb.record.planprotos.PIndexScanParameters
-	(*PIndexScanType)(nil),                                  // 138: com.apple.foundationdb.record.planprotos.PIndexScanType
-	(*PScanComparisons)(nil),                                // 139: com.apple.foundationdb.record.planprotos.PScanComparisons
-	(*PIndexScanComparisons)(nil),                           // 140: com.apple.foundationdb.record.planprotos.PIndexScanComparisons
-	(*PMultidimensionalIndexScanComparisons)(nil),           // 141: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons
-	(*PTimeWindowForFunction)(nil),                          // 142: com.apple.foundationdb.record.planprotos.PTimeWindowForFunction
-	(*PTimeWindowScanComparisons)(nil),                      // 143: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons
-	(*PVectorIndexScanComparisons)(nil),                     // 144: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons
-	(*PVectorIndexScanOptions)(nil),                         // 145: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions
-	(*PQueryPlanConstraint)(nil),                            // 146: com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
-	(*PRecordQueryInComparandJoinPlan)(nil),                 // 147: com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan
-	(*PRecordQueryInJoinPlan)(nil),                          // 148: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
-	(*PInSource)(nil),                                       // 149: com.apple.foundationdb.record.planprotos.PInSource
-	(*PInComparandSource)(nil),                              // 150: com.apple.foundationdb.record.planprotos.PInComparandSource
-	(*PSortedInComparandSource)(nil),                        // 151: com.apple.foundationdb.record.planprotos.PSortedInComparandSource
-	(*PInParameterSource)(nil),                              // 152: com.apple.foundationdb.record.planprotos.PInParameterSource
-	(*PSortedInParameterSource)(nil),                        // 153: com.apple.foundationdb.record.planprotos.PSortedInParameterSource
-	(*PInValuesSource)(nil),                                 // 154: com.apple.foundationdb.record.planprotos.PInValuesSource
-	(*PSortedInValuesSource)(nil),                           // 155: com.apple.foundationdb.record.planprotos.PSortedInValuesSource
-	(*PRecordQueryInParameterJoinPlan)(nil),                 // 156: com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan
-	(*PRecordQueryInsertPlan)(nil),                          // 157: com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan
-	(*PTempTableInsertPlan)(nil),                            // 158: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan
-	(*PRecordQueryIntersectionPlan)(nil),                    // 159: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
-	(*PComparisonKeyFunction)(nil),                          // 160: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
-	(*PRecordQueryIntersectionOnKeyExpressionPlan)(nil),     // 161: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan
-	(*PRecordQueryIntersectionOnValuesPlan)(nil),            // 162: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan
-	(*PRecordQueryMultiIntersectionOnValuesPlan)(nil),       // 163: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan
-	(*PRecordQueryInUnionPlan)(nil),                         // 164: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
-	(*PRecordQueryInUnionOnKeyExpressionPlan)(nil),          // 165: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan
-	(*PRecordQueryInUnionOnValuesPlan)(nil),                 // 166: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan
-	(*PRecordQueryInValuesJoinPlan)(nil),                    // 167: com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan
-	(*PRecordQueryMapPlan)(nil),                             // 168: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan
-	(*PRecordQueryPredicatesFilterPlan)(nil),                // 169: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan
-	(*PRecordQueryRangePlan)(nil),                           // 170: com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan
-	(*PRecordQuerySortPlan)(nil),                            // 171: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan
-	(*PRecordQuerySortKey)(nil),                             // 172: com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
-	(*PRecordQueryScanPlan)(nil),                            // 173: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan
-	(*PRecordQueryScoreForRankPlan)(nil),                    // 174: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan
-	(*PScoreForRank)(nil),                                   // 175: com.apple.foundationdb.record.planprotos.PScoreForRank
-	(*PIndexAggregateFunction)(nil),                         // 176: com.apple.foundationdb.record.planprotos.PIndexAggregateFunction
-	(*PRecordQueryStreamingAggregationPlan)(nil),            // 177: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan
-	(*PRecordQueryStreamingAggregationPlan2)(nil),           // 178: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2
-	(*PRecordQueryTypeFilterPlan)(nil),                      // 179: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan
-	(*PRecordQueryUnionOnKeyExpressionPlan)(nil),            // 180: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan
-	(*PRecordQueryUnionOnValuesPlan)(nil),                   // 181: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan
-	(*PRecordQueryUnionPlan)(nil),                           // 182: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
-	(*PRecordQueryUnorderedDistinctPlan)(nil),               // 183: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan
-	(*PRecordQueryUnorderedPrimaryKeyDistinctPlan)(nil),     // 184: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan
-	(*PRecordQueryUnorderedUnionPlan)(nil),                  // 185: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan
-	(*PRecordQueryUnionPlanBase)(nil),                       // 186: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
-	(*PRecordQueryUpdatePlan)(nil),                          // 187: com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan
-	(*PEnumLightValue)(nil),                                 // 188: com.apple.foundationdb.record.planprotos.PEnumLightValue
-	(*PUUID)(nil),                                           // 189: com.apple.foundationdb.record.planprotos.PUUID
-	(*PFDBRecordVersion)(nil),                               // 190: com.apple.foundationdb.record.planprotos.PFDBRecordVersion
-	(*PComparableObject)(nil),                               // 191: com.apple.foundationdb.record.planprotos.PComparableObject
-	(*PRecordQueryRecursiveLevelUnionPlan)(nil),             // 192: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan
-	(*PRecordQueryTableFunctionPlan)(nil),                   // 193: com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan
-	(*PRecordQueryRecursiveDfsJoinPlan)(nil),                // 194: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan
-	(*PType_PPrimitiveType)(nil),                            // 195: com.apple.foundationdb.record.planprotos.PType.PPrimitiveType
-	(*PType_PNullType)(nil),                                 // 196: com.apple.foundationdb.record.planprotos.PType.PNullType
-	(*PType_PUuidType)(nil),                                 // 197: com.apple.foundationdb.record.planprotos.PType.PUuidType
-	(*PType_PNoneType)(nil),                                 // 198: com.apple.foundationdb.record.planprotos.PType.PNoneType
-	(*PType_PAnyType)(nil),                                  // 199: com.apple.foundationdb.record.planprotos.PType.PAnyType
-	(*PType_PVectorType)(nil),                               // 200: com.apple.foundationdb.record.planprotos.PType.PVectorType
-	(*PType_PAnyRecordType)(nil),                            // 201: com.apple.foundationdb.record.planprotos.PType.PAnyRecordType
-	(*PType_PEnumType)(nil),                                 // 202: com.apple.foundationdb.record.planprotos.PType.PEnumType
-	(*PType_PRecordType)(nil),                               // 203: com.apple.foundationdb.record.planprotos.PType.PRecordType
-	(*PType_PRelationType)(nil),                             // 204: com.apple.foundationdb.record.planprotos.PType.PRelationType
-	(*PType_PArrayType)(nil),                                // 205: com.apple.foundationdb.record.planprotos.PType.PArrayType
-	(*PType_PFunctionType)(nil),                             // 206: com.apple.foundationdb.record.planprotos.PType.PFunctionType
-	(*PType_PEnumType_PEnumValue)(nil),                      // 207: com.apple.foundationdb.record.planprotos.PType.PEnumType.PEnumValue
-	(*PType_PRecordType_PField)(nil),                        // 208: com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
-	(*PCoercionTrieNode_IntChildPair)(nil),                  // 209: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair
-	(*PTransformationTrieNode_IntChildPair)(nil),            // 210: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair
-	(*PFieldAccessTrieNode_PResolvedAccessorChildPair)(nil), // 211: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair
-	(*PFieldPath_PResolvedAccessor)(nil),                    // 212: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
-	(*PNumericAggregationValue_PBitmapConstructAgg)(nil),    // 213: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg
-	(*PNumericAggregationValue_PSum)(nil),                   // 214: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum
-	(*PNumericAggregationValue_PAvg)(nil),                   // 215: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg
-	(*PNumericAggregationValue_PMin)(nil),                   // 216: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin
-	(*PNumericAggregationValue_PMax)(nil),                   // 217: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax
-	(*PRecordConstructorValue_PColumn)(nil),                 // 218: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn
-	(*PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair)(nil),             // 219: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair
-	(*PDatabaseObjectDependenciesPredicate_PUsedIndex)(nil),                              // 220: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.PUsedIndex
-	(*PIndexKeyValueToPartialRecord_PCopier)(nil),                                        // 221: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier
-	(*PIndexKeyValueToPartialRecord_PFieldCopier)(nil),                                   // 222: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier
-	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate)(nil),                               // 223: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate
-	(*PIndexKeyValueToPartialRecord_PMessageCopier)(nil),                                 // 224: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier
-	(*PIndexKeyValueToPartialRecord_PFieldWithValueCopier)(nil),                          // 225: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier
-	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate)(nil),                // 226: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PTruePredicate
-	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate)(nil), // 227: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PConditionalUponPathPredicate
-	(*PVectorIndexScanOptions_POptionEntry)(nil),                                         // 228: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry
-	(*PInSource_Super)(nil),                                                              // 229: com.apple.foundationdb.record.planprotos.PInSource.Super
-	(*PComparisonKeyFunction_POnKeyExpression)(nil),                                      // 230: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression
-	(*PComparisonKeyFunction_POnValues)(nil),                                             // 231: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues
-	(*anypb.Any)(nil),                                                                    // 232: google.protobuf.Any
-	(*KeyExpression)(nil),                                                                // 233: com.apple.foundationdb.record.expressions.KeyExpression
-	(*Function)(nil),                                                                     // 234: com.apple.foundationdb.record.expressions.Function
-	(*Value)(nil),                                                                        // 235: com.apple.foundationdb.record.expressions.Value
+	(*PIncarnationValue)(nil),                               // 84: com.apple.foundationdb.record.planprotos.PIncarnationValue
+	(*PCardinalityValue)(nil),                               // 85: com.apple.foundationdb.record.planprotos.PCardinalityValue
+	(*PWindowedValue)(nil),                                  // 86: com.apple.foundationdb.record.planprotos.PWindowedValue
+	(*PCollateValue)(nil),                                   // 87: com.apple.foundationdb.record.planprotos.PCollateValue
+	(*PRangeValue)(nil),                                     // 88: com.apple.foundationdb.record.planprotos.PRangeValue
+	(*PArrayDistinctValue)(nil),                             // 89: com.apple.foundationdb.record.planprotos.PArrayDistinctValue
+	(*PParameterObjectValue)(nil),                           // 90: com.apple.foundationdb.record.planprotos.PParameterObjectValue
+	(*PCastValue)(nil),                                      // 91: com.apple.foundationdb.record.planprotos.PCastValue
+	(*PComparison)(nil),                                     // 92: com.apple.foundationdb.record.planprotos.PComparison
+	(*PSimpleComparison)(nil),                               // 93: com.apple.foundationdb.record.planprotos.PSimpleComparison
+	(*PConversionSimpleComparison)(nil),                     // 94: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison
+	(*PParameterComparison)(nil),                            // 95: com.apple.foundationdb.record.planprotos.PParameterComparison
+	(*PConversionParameterComparison)(nil),                  // 96: com.apple.foundationdb.record.planprotos.PConversionParameterComparison
+	(*PValueComparison)(nil),                                // 97: com.apple.foundationdb.record.planprotos.PValueComparison
+	(*PListComparison)(nil),                                 // 98: com.apple.foundationdb.record.planprotos.PListComparison
+	(*PNullComparison)(nil),                                 // 99: com.apple.foundationdb.record.planprotos.PNullComparison
+	(*POpaqueEqualityComparison)(nil),                       // 100: com.apple.foundationdb.record.planprotos.POpaqueEqualityComparison
+	(*PMultiColumnComparison)(nil),                          // 101: com.apple.foundationdb.record.planprotos.PMultiColumnComparison
+	(*PInvertedFunctionComparison)(nil),                     // 102: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison
+	(*PRecordTypeComparison)(nil),                           // 103: com.apple.foundationdb.record.planprotos.PRecordTypeComparison
+	(*PDistanceRankValueComparison)(nil),                    // 104: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
+	(*PQueryPredicate)(nil),                                 // 105: com.apple.foundationdb.record.planprotos.PQueryPredicate
+	(*PAbstractQueryPredicate)(nil),                         // 106: com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	(*PAndOrPredicate)(nil),                                 // 107: com.apple.foundationdb.record.planprotos.PAndOrPredicate
+	(*PAndPredicate)(nil),                                   // 108: com.apple.foundationdb.record.planprotos.PAndPredicate
+	(*PCompatibleTypeEvolutionPredicate)(nil),               // 109: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate
+	(*PConstantPredicate)(nil),                              // 110: com.apple.foundationdb.record.planprotos.PConstantPredicate
+	(*PDatabaseObjectDependenciesPredicate)(nil),            // 111: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate
+	(*PExistentialValuePredicate)(nil),                      // 112: com.apple.foundationdb.record.planprotos.PExistentialValuePredicate
+	(*PNotPredicate)(nil),                                   // 113: com.apple.foundationdb.record.planprotos.PNotPredicate
+	(*POrPredicate)(nil),                                    // 114: com.apple.foundationdb.record.planprotos.POrPredicate
+	(*PPredicateWithValueAndRanges)(nil),                    // 115: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges
+	(*PRangeConstraints)(nil),                               // 116: com.apple.foundationdb.record.planprotos.PRangeConstraints
+	(*PCompilableRange)(nil),                                // 117: com.apple.foundationdb.record.planprotos.PCompilableRange
+	(*PValuePredicate)(nil),                                 // 118: com.apple.foundationdb.record.planprotos.PValuePredicate
+	(*PPhysicalQuantifier)(nil),                             // 119: com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	(*PPlanReference)(nil),                                  // 120: com.apple.foundationdb.record.planprotos.PPlanReference
+	(*PRecordQueryPlan)(nil),                                // 121: com.apple.foundationdb.record.planprotos.PRecordQueryPlan
+	(*PRecordQueryAbstractDataModificationPlan)(nil),        // 122: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
+	(*PRecordQueryAggregateIndexPlan)(nil),                  // 123: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan
+	(*PRecordQueryCoveringIndexPlan)(nil),                   // 124: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan
+	(*PIndexKeyValueToPartialRecord)(nil),                   // 125: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
+	(*PRecordQueryDamPlan)(nil),                             // 126: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan
+	(*PRecordQueryDeletePlan)(nil),                          // 127: com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan
+	(*PRecordQueryExplodePlan)(nil),                         // 128: com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan
+	(*PRecordQueryFetchFromPartialRecordPlan)(nil),          // 129: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan
+	(*PRecordQueryFilterPlanBase)(nil),                      // 130: com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase
+	(*PRecordQueryFirstOrDefaultPlan)(nil),                  // 131: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan
+	(*PRecordQueryDefaultOnEmptyPlan)(nil),                  // 132: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan
+	(*PRecordQueryFlatMapPlan)(nil),                         // 133: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan
+	(*PRecordQueryIndexPlan)(nil),                           // 134: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
+	(*PTempTableScanPlan)(nil),                              // 135: com.apple.foundationdb.record.planprotos.PTempTableScanPlan
+	(*PIndexScanParameters)(nil),                            // 136: com.apple.foundationdb.record.planprotos.PIndexScanParameters
+	(*PIndexScanType)(nil),                                  // 137: com.apple.foundationdb.record.planprotos.PIndexScanType
+	(*PScanComparisons)(nil),                                // 138: com.apple.foundationdb.record.planprotos.PScanComparisons
+	(*PIndexScanComparisons)(nil),                           // 139: com.apple.foundationdb.record.planprotos.PIndexScanComparisons
+	(*PMultidimensionalIndexScanComparisons)(nil),           // 140: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons
+	(*PTimeWindowForFunction)(nil),                          // 141: com.apple.foundationdb.record.planprotos.PTimeWindowForFunction
+	(*PTimeWindowScanComparisons)(nil),                      // 142: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons
+	(*PVectorIndexScanComparisons)(nil),                     // 143: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons
+	(*PVectorIndexScanOptions)(nil),                         // 144: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions
+	(*PQueryPlanConstraint)(nil),                            // 145: com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
+	(*PRecordQueryInComparandJoinPlan)(nil),                 // 146: com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan
+	(*PRecordQueryInJoinPlan)(nil),                          // 147: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
+	(*PInSource)(nil),                                       // 148: com.apple.foundationdb.record.planprotos.PInSource
+	(*PInComparandSource)(nil),                              // 149: com.apple.foundationdb.record.planprotos.PInComparandSource
+	(*PSortedInComparandSource)(nil),                        // 150: com.apple.foundationdb.record.planprotos.PSortedInComparandSource
+	(*PInParameterSource)(nil),                              // 151: com.apple.foundationdb.record.planprotos.PInParameterSource
+	(*PSortedInParameterSource)(nil),                        // 152: com.apple.foundationdb.record.planprotos.PSortedInParameterSource
+	(*PInValuesSource)(nil),                                 // 153: com.apple.foundationdb.record.planprotos.PInValuesSource
+	(*PSortedInValuesSource)(nil),                           // 154: com.apple.foundationdb.record.planprotos.PSortedInValuesSource
+	(*PRecordQueryInParameterJoinPlan)(nil),                 // 155: com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan
+	(*PRecordQueryInsertPlan)(nil),                          // 156: com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan
+	(*PTempTableInsertPlan)(nil),                            // 157: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan
+	(*PRecordQueryIntersectionPlan)(nil),                    // 158: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
+	(*PComparisonKeyFunction)(nil),                          // 159: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
+	(*PRecordQueryIntersectionOnKeyExpressionPlan)(nil),     // 160: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan
+	(*PRecordQueryIntersectionOnValuesPlan)(nil),            // 161: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan
+	(*PRecordQueryMultiIntersectionOnValuesPlan)(nil),       // 162: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan
+	(*PRecordQueryInUnionPlan)(nil),                         // 163: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
+	(*PRecordQueryInUnionOnKeyExpressionPlan)(nil),          // 164: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan
+	(*PRecordQueryInUnionOnValuesPlan)(nil),                 // 165: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan
+	(*PRecordQueryInValuesJoinPlan)(nil),                    // 166: com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan
+	(*PRecordQueryMapPlan)(nil),                             // 167: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan
+	(*PRecordQueryPredicatesFilterPlan)(nil),                // 168: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan
+	(*PRecordQueryRangePlan)(nil),                           // 169: com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan
+	(*PRecordQuerySortPlan)(nil),                            // 170: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan
+	(*PRecordQuerySortKey)(nil),                             // 171: com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
+	(*PRecordQueryScanPlan)(nil),                            // 172: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan
+	(*PRecordQueryScoreForRankPlan)(nil),                    // 173: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan
+	(*PScoreForRank)(nil),                                   // 174: com.apple.foundationdb.record.planprotos.PScoreForRank
+	(*PIndexAggregateFunction)(nil),                         // 175: com.apple.foundationdb.record.planprotos.PIndexAggregateFunction
+	(*PRecordQueryStreamingAggregationPlan)(nil),            // 176: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan
+	(*PRecordQueryStreamingAggregationPlan2)(nil),           // 177: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2
+	(*PRecordQueryTypeFilterPlan)(nil),                      // 178: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan
+	(*PRecordQueryUnionOnKeyExpressionPlan)(nil),            // 179: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan
+	(*PRecordQueryUnionOnValuesPlan)(nil),                   // 180: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan
+	(*PRecordQueryUnionPlan)(nil),                           // 181: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
+	(*PRecordQueryUnorderedDistinctPlan)(nil),               // 182: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan
+	(*PRecordQueryUnorderedPrimaryKeyDistinctPlan)(nil),     // 183: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan
+	(*PRecordQueryUnorderedUnionPlan)(nil),                  // 184: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan
+	(*PRecordQueryUnionPlanBase)(nil),                       // 185: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
+	(*PRecordQueryUpdatePlan)(nil),                          // 186: com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan
+	(*PEnumLightValue)(nil),                                 // 187: com.apple.foundationdb.record.planprotos.PEnumLightValue
+	(*PUUID)(nil),                                           // 188: com.apple.foundationdb.record.planprotos.PUUID
+	(*PFDBRecordVersion)(nil),                               // 189: com.apple.foundationdb.record.planprotos.PFDBRecordVersion
+	(*PComparableObject)(nil),                               // 190: com.apple.foundationdb.record.planprotos.PComparableObject
+	(*PRecordQueryRecursiveLevelUnionPlan)(nil),             // 191: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan
+	(*PRecordQueryTableFunctionPlan)(nil),                   // 192: com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan
+	(*PRecordQueryRecursiveDfsJoinPlan)(nil),                // 193: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan
+	(*PType_PPrimitiveType)(nil),                            // 194: com.apple.foundationdb.record.planprotos.PType.PPrimitiveType
+	(*PType_PNullType)(nil),                                 // 195: com.apple.foundationdb.record.planprotos.PType.PNullType
+	(*PType_PUuidType)(nil),                                 // 196: com.apple.foundationdb.record.planprotos.PType.PUuidType
+	(*PType_PNoneType)(nil),                                 // 197: com.apple.foundationdb.record.planprotos.PType.PNoneType
+	(*PType_PAnyType)(nil),                                  // 198: com.apple.foundationdb.record.planprotos.PType.PAnyType
+	(*PType_PVectorType)(nil),                               // 199: com.apple.foundationdb.record.planprotos.PType.PVectorType
+	(*PType_PAnyRecordType)(nil),                            // 200: com.apple.foundationdb.record.planprotos.PType.PAnyRecordType
+	(*PType_PEnumType)(nil),                                 // 201: com.apple.foundationdb.record.planprotos.PType.PEnumType
+	(*PType_PRecordType)(nil),                               // 202: com.apple.foundationdb.record.planprotos.PType.PRecordType
+	(*PType_PRelationType)(nil),                             // 203: com.apple.foundationdb.record.planprotos.PType.PRelationType
+	(*PType_PArrayType)(nil),                                // 204: com.apple.foundationdb.record.planprotos.PType.PArrayType
+	(*PType_PFunctionType)(nil),                             // 205: com.apple.foundationdb.record.planprotos.PType.PFunctionType
+	(*PType_PEnumType_PEnumValue)(nil),                      // 206: com.apple.foundationdb.record.planprotos.PType.PEnumType.PEnumValue
+	(*PType_PRecordType_PField)(nil),                        // 207: com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
+	(*PCoercionTrieNode_IntChildPair)(nil),                  // 208: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair
+	(*PTransformationTrieNode_IntChildPair)(nil),            // 209: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair
+	(*PFieldAccessTrieNode_PResolvedAccessorChildPair)(nil), // 210: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair
+	(*PFieldPath_PResolvedAccessor)(nil),                    // 211: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
+	(*PNumericAggregationValue_PBitmapConstructAgg)(nil),    // 212: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg
+	(*PNumericAggregationValue_PSum)(nil),                   // 213: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum
+	(*PNumericAggregationValue_PAvg)(nil),                   // 214: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg
+	(*PNumericAggregationValue_PMin)(nil),                   // 215: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin
+	(*PNumericAggregationValue_PMax)(nil),                   // 216: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax
+	(*PRecordConstructorValue_PColumn)(nil),                 // 217: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn
+	(*PCompatibleTypeEvolutionPredicate_PRecordTypeNameFieldAccessPair)(nil),             // 218: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair
+	(*PDatabaseObjectDependenciesPredicate_PUsedIndex)(nil),                              // 219: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.PUsedIndex
+	(*PIndexKeyValueToPartialRecord_PCopier)(nil),                                        // 220: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier
+	(*PIndexKeyValueToPartialRecord_PFieldCopier)(nil),                                   // 221: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier
+	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate)(nil),                               // 222: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate
+	(*PIndexKeyValueToPartialRecord_PMessageCopier)(nil),                                 // 223: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier
+	(*PIndexKeyValueToPartialRecord_PFieldWithValueCopier)(nil),                          // 224: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier
+	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PTruePredicate)(nil),                // 225: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PTruePredicate
+	(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_PConditionalUponPathPredicate)(nil), // 226: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PConditionalUponPathPredicate
+	(*PVectorIndexScanOptions_POptionEntry)(nil),                                         // 227: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry
+	(*PInSource_Super)(nil),                                                              // 228: com.apple.foundationdb.record.planprotos.PInSource.Super
+	(*PComparisonKeyFunction_POnKeyExpression)(nil),                                      // 229: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression
+	(*PComparisonKeyFunction_POnValues)(nil),                                             // 230: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues
+	(*anypb.Any)(nil),                                                                    // 231: google.protobuf.Any
+	(*KeyExpression)(nil),                                                                // 232: com.apple.foundationdb.record.expressions.KeyExpression
+	(*Function)(nil),                                                                     // 233: com.apple.foundationdb.record.expressions.Function
+	(*Value)(nil),                                                                        // 234: com.apple.foundationdb.record.expressions.Value
 }
 var file_record_query_plan_proto_depIdxs = []int32{
-	195, // 0: com.apple.foundationdb.record.planprotos.PType.primitive_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PPrimitiveType
-	196, // 1: com.apple.foundationdb.record.planprotos.PType.null_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PNullType
-	198, // 2: com.apple.foundationdb.record.planprotos.PType.none_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PNoneType
-	199, // 3: com.apple.foundationdb.record.planprotos.PType.any_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PAnyType
-	202, // 4: com.apple.foundationdb.record.planprotos.PType.enum_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PEnumType
-	203, // 5: com.apple.foundationdb.record.planprotos.PType.record_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType
-	204, // 6: com.apple.foundationdb.record.planprotos.PType.relation_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRelationType
-	205, // 7: com.apple.foundationdb.record.planprotos.PType.array_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PArrayType
-	201, // 8: com.apple.foundationdb.record.planprotos.PType.any_record_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PAnyRecordType
-	197, // 9: com.apple.foundationdb.record.planprotos.PType.uuid_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PUuidType
-	200, // 10: com.apple.foundationdb.record.planprotos.PType.vector_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PVectorType
-	206, // 11: com.apple.foundationdb.record.planprotos.PType.function_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PFunctionType
-	209, // 12: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair
+	194, // 0: com.apple.foundationdb.record.planprotos.PType.primitive_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PPrimitiveType
+	195, // 1: com.apple.foundationdb.record.planprotos.PType.null_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PNullType
+	197, // 2: com.apple.foundationdb.record.planprotos.PType.none_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PNoneType
+	198, // 3: com.apple.foundationdb.record.planprotos.PType.any_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PAnyType
+	201, // 4: com.apple.foundationdb.record.planprotos.PType.enum_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PEnumType
+	202, // 5: com.apple.foundationdb.record.planprotos.PType.record_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType
+	203, // 6: com.apple.foundationdb.record.planprotos.PType.relation_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRelationType
+	204, // 7: com.apple.foundationdb.record.planprotos.PType.array_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PArrayType
+	200, // 8: com.apple.foundationdb.record.planprotos.PType.any_record_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PAnyRecordType
+	196, // 9: com.apple.foundationdb.record.planprotos.PType.uuid_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PUuidType
+	199, // 10: com.apple.foundationdb.record.planprotos.PType.vector_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PVectorType
+	205, // 11: com.apple.foundationdb.record.planprotos.PType.function_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PFunctionType
+	208, // 12: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair
 	23,  // 13: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.value:type_name -> com.apple.foundationdb.record.planprotos.PCoercionBiFunction
-	232, // 14: com.apple.foundationdb.record.planprotos.PCoercionBiFunction.additional_coercion_bi_functions:type_name -> google.protobuf.Any
+	231, // 14: com.apple.foundationdb.record.planprotos.PCoercionBiFunction.additional_coercion_bi_functions:type_name -> google.protobuf.Any
 	24,  // 15: com.apple.foundationdb.record.planprotos.PCoercionBiFunction.primitive_coercion_bi_function:type_name -> com.apple.foundationdb.record.planprotos.PPrimitiveCoercionBiFunction
 	25,  // 16: com.apple.foundationdb.record.planprotos.PCoercionBiFunction.array_coercion_bi_function:type_name -> com.apple.foundationdb.record.planprotos.PArrayCoercionBiFunction
 	5,   // 17: com.apple.foundationdb.record.planprotos.PPrimitiveCoercionBiFunction.operator:type_name -> com.apple.foundationdb.record.planprotos.PPrimitiveCoercionBiFunction.PPhysicalOperator
 	21,  // 18: com.apple.foundationdb.record.planprotos.PArrayCoercionBiFunction.from_array_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	21,  // 19: com.apple.foundationdb.record.planprotos.PArrayCoercionBiFunction.to_array_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	22,  // 20: com.apple.foundationdb.record.planprotos.PArrayCoercionBiFunction.elements_trie:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode
-	210, // 21: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair
+	209, // 21: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair
 	28,  // 22: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	211, // 23: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair
+	210, // 23: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.child_pair:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair
 	21,  // 24: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	232, // 25: com.apple.foundationdb.record.planprotos.PValue.additional_values:type_name -> google.protobuf.Any
+	231, // 25: com.apple.foundationdb.record.planprotos.PValue.additional_values:type_name -> google.protobuf.Any
 	31,  // 26: com.apple.foundationdb.record.planprotos.PValue.light_array_constructor_value:type_name -> com.apple.foundationdb.record.planprotos.PLightArrayConstructorValue
 	32,  // 27: com.apple.foundationdb.record.planprotos.PValue.and_or_value:type_name -> com.apple.foundationdb.record.planprotos.PAndOrValue
 	33,  // 28: com.apple.foundationdb.record.planprotos.PValue.arithmetic_value:type_name -> com.apple.foundationdb.record.planprotos.PArithmeticValue
@@ -19901,10 +19836,10 @@ var file_record_query_plan_proto_depIdxs = []int32{
 	56,  // 42: com.apple.foundationdb.record.planprotos.PValue.literal_value:type_name -> com.apple.foundationdb.record.planprotos.PLiteralValue
 	57,  // 43: com.apple.foundationdb.record.planprotos.PValue.not_value:type_name -> com.apple.foundationdb.record.planprotos.PNotValue
 	58,  // 44: com.apple.foundationdb.record.planprotos.PValue.null_value:type_name -> com.apple.foundationdb.record.planprotos.PNullValue
-	214, // 45: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_sum:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum
-	215, // 46: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_avg:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg
-	216, // 47: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_min:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin
-	217, // 48: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_max:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax
+	213, // 45: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_sum:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum
+	214, // 46: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_avg:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg
+	215, // 47: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_min:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin
+	216, // 48: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_max:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax
 	60,  // 49: com.apple.foundationdb.record.planprotos.PValue.object_value:type_name -> com.apple.foundationdb.record.planprotos.PObjectValue
 	61,  // 50: com.apple.foundationdb.record.planprotos.PValue.of_type_value:type_name -> com.apple.foundationdb.record.planprotos.POfTypeValue
 	62,  // 51: com.apple.foundationdb.record.planprotos.PValue.pattern_for_like_value:type_name -> com.apple.foundationdb.record.planprotos.PPatternForLikeValue
@@ -19918,60 +19853,60 @@ var file_record_query_plan_proto_depIdxs = []int32{
 	78,  // 59: com.apple.foundationdb.record.planprotos.PValue.binary_rel_op_value:type_name -> com.apple.foundationdb.record.planprotos.PBinaryRelOpValue
 	81,  // 60: com.apple.foundationdb.record.planprotos.PValue.unary_rel_op_value:type_name -> com.apple.foundationdb.record.planprotos.PUnaryRelOpValue
 	83,  // 61: com.apple.foundationdb.record.planprotos.PValue.variadic_function_value:type_name -> com.apple.foundationdb.record.planprotos.PVariadicFunctionValue
-	84,  // 62: com.apple.foundationdb.record.planprotos.PValue.version_value:type_name -> com.apple.foundationdb.record.planprotos.PVersionValue
-	46,  // 63: com.apple.foundationdb.record.planprotos.PValue.first_or_default_value:type_name -> com.apple.foundationdb.record.planprotos.PFirstOrDefaultValue
-	79,  // 64: com.apple.foundationdb.record.planprotos.PValue.throws_value:type_name -> com.apple.foundationdb.record.planprotos.PThrowsValue
-	50,  // 65: com.apple.foundationdb.record.planprotos.PValue.index_entry_object_value:type_name -> com.apple.foundationdb.record.planprotos.PIndexEntryObjectValue
-	80,  // 66: com.apple.foundationdb.record.planprotos.PValue.to_ordered_bytes_value:type_name -> com.apple.foundationdb.record.planprotos.PToOrderedBytesValue
-	48,  // 67: com.apple.foundationdb.record.planprotos.PValue.from_ordered_bytes_value:type_name -> com.apple.foundationdb.record.planprotos.PFromOrderedBytesValue
-	88,  // 68: com.apple.foundationdb.record.planprotos.PValue.collate_value:type_name -> com.apple.foundationdb.record.planprotos.PCollateValue
-	213, // 69: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_bitmap_construct_agg:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg
-	66,  // 70: com.apple.foundationdb.record.planprotos.PValue.quantified_record_value:type_name -> com.apple.foundationdb.record.planprotos.PQuantifiedRecordValue
-	89,  // 71: com.apple.foundationdb.record.planprotos.PValue.range_value:type_name -> com.apple.foundationdb.record.planprotos.PRangeValue
-	47,  // 72: com.apple.foundationdb.record.planprotos.PValue.first_or_default_streaming_value:type_name -> com.apple.foundationdb.record.planprotos.PFirstOrDefaultStreamingValue
-	42,  // 73: com.apple.foundationdb.record.planprotos.PValue.evaluates_to_value:type_name -> com.apple.foundationdb.record.planprotos.PEvaluatesToValue
-	90,  // 74: com.apple.foundationdb.record.planprotos.PValue.array_distinct_value:type_name -> com.apple.foundationdb.record.planprotos.PArrayDistinctValue
-	43,  // 75: com.apple.foundationdb.record.planprotos.PValue.subscript_value:type_name -> com.apple.foundationdb.record.planprotos.PSubscriptValue
-	91,  // 76: com.apple.foundationdb.record.planprotos.PValue.parameter_object_value:type_name -> com.apple.foundationdb.record.planprotos.PParameterObjectValue
-	92,  // 77: com.apple.foundationdb.record.planprotos.PValue.cast_value:type_name -> com.apple.foundationdb.record.planprotos.PCastValue
-	76,  // 78: com.apple.foundationdb.record.planprotos.PValue.row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PRowNumberValue
-	69,  // 79: com.apple.foundationdb.record.planprotos.PValue.euclidean_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PEuclideanDistanceRowNumberValue
-	71,  // 80: com.apple.foundationdb.record.planprotos.PValue.cosine_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PCosineDistanceRowNumberValue
-	75,  // 81: com.apple.foundationdb.record.planprotos.PValue.row_number_high_order_value:type_name -> com.apple.foundationdb.record.planprotos.PRowNumberHighOrderValue
-	34,  // 82: com.apple.foundationdb.record.planprotos.PValue.distance_value:type_name -> com.apple.foundationdb.record.planprotos.PDistanceValue
-	70,  // 83: com.apple.foundationdb.record.planprotos.PValue.euclidean_square_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PEuclideanSquareDistanceRowNumberValue
-	72,  // 84: com.apple.foundationdb.record.planprotos.PValue.dot_product_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PDotProductDistanceRowNumberValue
-	85,  // 85: com.apple.foundationdb.record.planprotos.PValue.incarnation_value:type_name -> com.apple.foundationdb.record.planprotos.PIncarnationValue
-	86,  // 86: com.apple.foundationdb.record.planprotos.PValue.cardinality_value:type_name -> com.apple.foundationdb.record.planprotos.PCardinalityValue
-	28,  // 87: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction.arguments:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 88: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction.body:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 89: com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	21,  // 90: com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue.element_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	30,  // 91: com.apple.foundationdb.record.planprotos.PLightArrayConstructorValue.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue
-	28,  // 92: com.apple.foundationdb.record.planprotos.PAndOrValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 93: com.apple.foundationdb.record.planprotos.PAndOrValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	6,   // 94: com.apple.foundationdb.record.planprotos.PAndOrValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PAndOrValue.POperator
-	7,   // 95: com.apple.foundationdb.record.planprotos.PArithmeticValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PArithmeticValue.PPhysicalOperator
-	28,  // 96: com.apple.foundationdb.record.planprotos.PArithmeticValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 97: com.apple.foundationdb.record.planprotos.PArithmeticValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	8,   // 98: com.apple.foundationdb.record.planprotos.PDistanceValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PDistanceValue.PDistanceOperator
-	28,  // 99: com.apple.foundationdb.record.planprotos.PDistanceValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 100: com.apple.foundationdb.record.planprotos.PDistanceValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 101: com.apple.foundationdb.record.planprotos.PConditionSelectorValue.implications:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	21,  // 102: com.apple.foundationdb.record.planprotos.PConstantObjectValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	28,  // 103: com.apple.foundationdb.record.planprotos.PConstantValue.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	9,   // 104: com.apple.foundationdb.record.planprotos.PCountValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PCountValue.PPhysicalOperator
-	28,  // 105: com.apple.foundationdb.record.planprotos.PCountValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 106: com.apple.foundationdb.record.planprotos.PDerivedValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	21,  // 107: com.apple.foundationdb.record.planprotos.PDerivedValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	65,  // 108: com.apple.foundationdb.record.planprotos.PExistsValue.child:type_name -> com.apple.foundationdb.record.planprotos.PQuantifiedObjectValue
+	46,  // 62: com.apple.foundationdb.record.planprotos.PValue.first_or_default_value:type_name -> com.apple.foundationdb.record.planprotos.PFirstOrDefaultValue
+	79,  // 63: com.apple.foundationdb.record.planprotos.PValue.throws_value:type_name -> com.apple.foundationdb.record.planprotos.PThrowsValue
+	50,  // 64: com.apple.foundationdb.record.planprotos.PValue.index_entry_object_value:type_name -> com.apple.foundationdb.record.planprotos.PIndexEntryObjectValue
+	80,  // 65: com.apple.foundationdb.record.planprotos.PValue.to_ordered_bytes_value:type_name -> com.apple.foundationdb.record.planprotos.PToOrderedBytesValue
+	48,  // 66: com.apple.foundationdb.record.planprotos.PValue.from_ordered_bytes_value:type_name -> com.apple.foundationdb.record.planprotos.PFromOrderedBytesValue
+	87,  // 67: com.apple.foundationdb.record.planprotos.PValue.collate_value:type_name -> com.apple.foundationdb.record.planprotos.PCollateValue
+	212, // 68: com.apple.foundationdb.record.planprotos.PValue.numeric_aggregation_value_bitmap_construct_agg:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg
+	66,  // 69: com.apple.foundationdb.record.planprotos.PValue.quantified_record_value:type_name -> com.apple.foundationdb.record.planprotos.PQuantifiedRecordValue
+	88,  // 70: com.apple.foundationdb.record.planprotos.PValue.range_value:type_name -> com.apple.foundationdb.record.planprotos.PRangeValue
+	47,  // 71: com.apple.foundationdb.record.planprotos.PValue.first_or_default_streaming_value:type_name -> com.apple.foundationdb.record.planprotos.PFirstOrDefaultStreamingValue
+	42,  // 72: com.apple.foundationdb.record.planprotos.PValue.evaluates_to_value:type_name -> com.apple.foundationdb.record.planprotos.PEvaluatesToValue
+	89,  // 73: com.apple.foundationdb.record.planprotos.PValue.array_distinct_value:type_name -> com.apple.foundationdb.record.planprotos.PArrayDistinctValue
+	43,  // 74: com.apple.foundationdb.record.planprotos.PValue.subscript_value:type_name -> com.apple.foundationdb.record.planprotos.PSubscriptValue
+	90,  // 75: com.apple.foundationdb.record.planprotos.PValue.parameter_object_value:type_name -> com.apple.foundationdb.record.planprotos.PParameterObjectValue
+	91,  // 76: com.apple.foundationdb.record.planprotos.PValue.cast_value:type_name -> com.apple.foundationdb.record.planprotos.PCastValue
+	76,  // 77: com.apple.foundationdb.record.planprotos.PValue.row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PRowNumberValue
+	69,  // 78: com.apple.foundationdb.record.planprotos.PValue.euclidean_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PEuclideanDistanceRowNumberValue
+	71,  // 79: com.apple.foundationdb.record.planprotos.PValue.cosine_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PCosineDistanceRowNumberValue
+	75,  // 80: com.apple.foundationdb.record.planprotos.PValue.row_number_high_order_value:type_name -> com.apple.foundationdb.record.planprotos.PRowNumberHighOrderValue
+	34,  // 81: com.apple.foundationdb.record.planprotos.PValue.distance_value:type_name -> com.apple.foundationdb.record.planprotos.PDistanceValue
+	70,  // 82: com.apple.foundationdb.record.planprotos.PValue.euclidean_square_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PEuclideanSquareDistanceRowNumberValue
+	72,  // 83: com.apple.foundationdb.record.planprotos.PValue.dot_product_distance_row_number_value:type_name -> com.apple.foundationdb.record.planprotos.PDotProductDistanceRowNumberValue
+	84,  // 84: com.apple.foundationdb.record.planprotos.PValue.incarnation_value:type_name -> com.apple.foundationdb.record.planprotos.PIncarnationValue
+	85,  // 85: com.apple.foundationdb.record.planprotos.PValue.cardinality_value:type_name -> com.apple.foundationdb.record.planprotos.PCardinalityValue
+	28,  // 86: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction.arguments:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 87: com.apple.foundationdb.record.planprotos.PUserDefinedMacroFunction.body:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 88: com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	21,  // 89: com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue.element_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	30,  // 90: com.apple.foundationdb.record.planprotos.PLightArrayConstructorValue.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractArrayConstructorValue
+	28,  // 91: com.apple.foundationdb.record.planprotos.PAndOrValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 92: com.apple.foundationdb.record.planprotos.PAndOrValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	6,   // 93: com.apple.foundationdb.record.planprotos.PAndOrValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PAndOrValue.POperator
+	7,   // 94: com.apple.foundationdb.record.planprotos.PArithmeticValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PArithmeticValue.PPhysicalOperator
+	28,  // 95: com.apple.foundationdb.record.planprotos.PArithmeticValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 96: com.apple.foundationdb.record.planprotos.PArithmeticValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	8,   // 97: com.apple.foundationdb.record.planprotos.PDistanceValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PDistanceValue.PDistanceOperator
+	28,  // 98: com.apple.foundationdb.record.planprotos.PDistanceValue.left_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 99: com.apple.foundationdb.record.planprotos.PDistanceValue.right_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 100: com.apple.foundationdb.record.planprotos.PConditionSelectorValue.implications:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	21,  // 101: com.apple.foundationdb.record.planprotos.PConstantObjectValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	28,  // 102: com.apple.foundationdb.record.planprotos.PConstantValue.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	9,   // 103: com.apple.foundationdb.record.planprotos.PCountValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PCountValue.PPhysicalOperator
+	28,  // 104: com.apple.foundationdb.record.planprotos.PCountValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 105: com.apple.foundationdb.record.planprotos.PDerivedValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	21,  // 106: com.apple.foundationdb.record.planprotos.PDerivedValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	65,  // 107: com.apple.foundationdb.record.planprotos.PExistsValue.child:type_name -> com.apple.foundationdb.record.planprotos.PQuantifiedObjectValue
+	28,  // 108: com.apple.foundationdb.record.planprotos.PExistsValue.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 109: com.apple.foundationdb.record.planprotos.PEvaluatesToValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	0,   // 110: com.apple.foundationdb.record.planprotos.PEvaluatesToValue.evaluation:type_name -> com.apple.foundationdb.record.planprotos.PEvaluation
 	28,  // 111: com.apple.foundationdb.record.planprotos.PSubscriptValue.index:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 112: com.apple.foundationdb.record.planprotos.PSubscriptValue.source:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 113: com.apple.foundationdb.record.planprotos.PFieldValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	45,  // 114: com.apple.foundationdb.record.planprotos.PFieldValue.field_path:type_name -> com.apple.foundationdb.record.planprotos.PFieldPath
-	212, // 115: com.apple.foundationdb.record.planprotos.PFieldPath.field_accessors:type_name -> com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
+	211, // 115: com.apple.foundationdb.record.planprotos.PFieldPath.field_accessors:type_name -> com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
 	28,  // 116: com.apple.foundationdb.record.planprotos.PFirstOrDefaultValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 117: com.apple.foundationdb.record.planprotos.PFirstOrDefaultValue.on_empty_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 118: com.apple.foundationdb.record.planprotos.PFirstOrDefaultStreamingValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
@@ -19991,7 +19926,7 @@ var file_record_query_plan_proto_depIdxs = []int32{
 	28,  // 132: com.apple.foundationdb.record.planprotos.PLikeOperatorValue.src_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	28,  // 133: com.apple.foundationdb.record.planprotos.PLikeOperatorValue.pattern_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	21,  // 134: com.apple.foundationdb.record.planprotos.PLiteralValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	191, // 135: com.apple.foundationdb.record.planprotos.PLiteralValue.value:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
+	190, // 135: com.apple.foundationdb.record.planprotos.PLiteralValue.value:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
 	28,  // 136: com.apple.foundationdb.record.planprotos.PNotValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	21,  // 137: com.apple.foundationdb.record.planprotos.PNullValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	11,  // 138: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PPhysicalOperator
@@ -20010,15 +19945,15 @@ var file_record_query_plan_proto_depIdxs = []int32{
 	21,  // 151: com.apple.foundationdb.record.planprotos.PQuantifiedObjectValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	21,  // 152: com.apple.foundationdb.record.planprotos.PQuantifiedRecordValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	21,  // 153: com.apple.foundationdb.record.planprotos.PQueriedValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	87,  // 154: com.apple.foundationdb.record.planprotos.PRankValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
-	87,  // 155: com.apple.foundationdb.record.planprotos.PEuclideanDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
-	87,  // 156: com.apple.foundationdb.record.planprotos.PEuclideanSquareDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
-	87,  // 157: com.apple.foundationdb.record.planprotos.PCosineDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
-	87,  // 158: com.apple.foundationdb.record.planprotos.PDotProductDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 154: com.apple.foundationdb.record.planprotos.PRankValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 155: com.apple.foundationdb.record.planprotos.PEuclideanDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 156: com.apple.foundationdb.record.planprotos.PEuclideanSquareDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 157: com.apple.foundationdb.record.planprotos.PCosineDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 158: com.apple.foundationdb.record.planprotos.PDotProductDistanceRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
 	21,  // 159: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	218, // 160: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.columns:type_name -> com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn
+	217, // 160: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.columns:type_name -> com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn
 	28,  // 161: com.apple.foundationdb.record.planprotos.PRecordTypeValue.in:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	87,  // 162: com.apple.foundationdb.record.planprotos.PRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
+	86,  // 162: com.apple.foundationdb.record.planprotos.PRowNumberValue.super:type_name -> com.apple.foundationdb.record.planprotos.PWindowedValue
 	16,  // 163: com.apple.foundationdb.record.planprotos.PRelOpValue.comparison_type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
 	28,  // 164: com.apple.foundationdb.record.planprotos.PRelOpValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
 	77,  // 165: com.apple.foundationdb.record.planprotos.PBinaryRelOpValue.super:type_name -> com.apple.foundationdb.record.planprotos.PRelOpValue
@@ -20032,305 +19967,304 @@ var file_record_query_plan_proto_depIdxs = []int32{
 	21,  // 173: com.apple.foundationdb.record.planprotos.PUdfValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
 	14,  // 174: com.apple.foundationdb.record.planprotos.PVariadicFunctionValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PVariadicFunctionValue.PPhysicalOperator
 	28,  // 175: com.apple.foundationdb.record.planprotos.PVariadicFunctionValue.children:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 176: com.apple.foundationdb.record.planprotos.PVersionValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 177: com.apple.foundationdb.record.planprotos.PCardinalityValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 178: com.apple.foundationdb.record.planprotos.PWindowedValue.partitioning_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 179: com.apple.foundationdb.record.planprotos.PWindowedValue.argument_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 180: com.apple.foundationdb.record.planprotos.PCollateValue.string_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 181: com.apple.foundationdb.record.planprotos.PCollateValue.locale_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 182: com.apple.foundationdb.record.planprotos.PCollateValue.strength_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 183: com.apple.foundationdb.record.planprotos.PRangeValue.end_exclusive_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 184: com.apple.foundationdb.record.planprotos.PRangeValue.begin_inclusive_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 185: com.apple.foundationdb.record.planprotos.PRangeValue.step_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 186: com.apple.foundationdb.record.planprotos.PArrayDistinctValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	21,  // 187: com.apple.foundationdb.record.planprotos.PParameterObjectValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	28,  // 188: com.apple.foundationdb.record.planprotos.PCastValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	21,  // 189: com.apple.foundationdb.record.planprotos.PCastValue.cast_to_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	15,  // 190: com.apple.foundationdb.record.planprotos.PCastValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PCastValue.PPhysicalOperator
-	232, // 191: com.apple.foundationdb.record.planprotos.PComparison.additional_comparisons:type_name -> google.protobuf.Any
-	94,  // 192: com.apple.foundationdb.record.planprotos.PComparison.simple_comparison:type_name -> com.apple.foundationdb.record.planprotos.PSimpleComparison
-	96,  // 193: com.apple.foundationdb.record.planprotos.PComparison.parameter_comparison:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison
-	98,  // 194: com.apple.foundationdb.record.planprotos.PComparison.value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PValueComparison
-	99,  // 195: com.apple.foundationdb.record.planprotos.PComparison.list_comparison:type_name -> com.apple.foundationdb.record.planprotos.PListComparison
-	100, // 196: com.apple.foundationdb.record.planprotos.PComparison.null_comparison:type_name -> com.apple.foundationdb.record.planprotos.PNullComparison
-	101, // 197: com.apple.foundationdb.record.planprotos.PComparison.opaque_equality_comparison:type_name -> com.apple.foundationdb.record.planprotos.POpaqueEqualityComparison
-	102, // 198: com.apple.foundationdb.record.planprotos.PComparison.multi_column_comparison:type_name -> com.apple.foundationdb.record.planprotos.PMultiColumnComparison
-	103, // 199: com.apple.foundationdb.record.planprotos.PComparison.inverted_function_comparison:type_name -> com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison
-	104, // 200: com.apple.foundationdb.record.planprotos.PComparison.record_type_comparison:type_name -> com.apple.foundationdb.record.planprotos.PRecordTypeComparison
-	95,  // 201: com.apple.foundationdb.record.planprotos.PComparison.conversion_simple_comparison:type_name -> com.apple.foundationdb.record.planprotos.PConversionSimpleComparison
-	97,  // 202: com.apple.foundationdb.record.planprotos.PComparison.conversion_parameter_comparison:type_name -> com.apple.foundationdb.record.planprotos.PConversionParameterComparison
-	105, // 203: com.apple.foundationdb.record.planprotos.PComparison.distance_rank_value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
-	16,  // 204: com.apple.foundationdb.record.planprotos.PSimpleComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	191, // 205: com.apple.foundationdb.record.planprotos.PSimpleComparison.object:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
-	16,  // 206: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	191, // 207: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.object:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
-	233, // 208: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.conversion:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	16,  // 209: com.apple.foundationdb.record.planprotos.PParameterComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	17,  // 210: com.apple.foundationdb.record.planprotos.PParameterComparison.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
-	16,  // 211: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	17,  // 212: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
-	233, // 213: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.conversion:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	16,  // 214: com.apple.foundationdb.record.planprotos.PValueComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	28,  // 215: com.apple.foundationdb.record.planprotos.PValueComparison.comparandValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	16,  // 216: com.apple.foundationdb.record.planprotos.PListComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	191, // 217: com.apple.foundationdb.record.planprotos.PListComparison.comparand:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
-	16,  // 218: com.apple.foundationdb.record.planprotos.PNullComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	93,  // 219: com.apple.foundationdb.record.planprotos.PMultiColumnComparison.inner:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	234, // 220: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.function:type_name -> com.apple.foundationdb.record.expressions.Function
-	93,  // 221: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.original_comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	16,  // 222: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
-	98,  // 223: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison.super:type_name -> com.apple.foundationdb.record.planprotos.PValueComparison
-	28,  // 224: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison.limitValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	232, // 225: com.apple.foundationdb.record.planprotos.PQueryPredicate.additional_query_predicates:type_name -> google.protobuf.Any
-	109, // 226: com.apple.foundationdb.record.planprotos.PQueryPredicate.and_predicate:type_name -> com.apple.foundationdb.record.planprotos.PAndPredicate
-	111, // 227: com.apple.foundationdb.record.planprotos.PQueryPredicate.constant_predicate:type_name -> com.apple.foundationdb.record.planprotos.PConstantPredicate
-	113, // 228: com.apple.foundationdb.record.planprotos.PQueryPredicate.exists_predicate:type_name -> com.apple.foundationdb.record.planprotos.PExistsPredicate
-	114, // 229: com.apple.foundationdb.record.planprotos.PQueryPredicate.not_predicate:type_name -> com.apple.foundationdb.record.planprotos.PNotPredicate
-	115, // 230: com.apple.foundationdb.record.planprotos.PQueryPredicate.or_predicate:type_name -> com.apple.foundationdb.record.planprotos.POrPredicate
-	116, // 231: com.apple.foundationdb.record.planprotos.PQueryPredicate.predicate_with_value_and_ranges:type_name -> com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges
-	119, // 232: com.apple.foundationdb.record.planprotos.PQueryPredicate.value_predicate:type_name -> com.apple.foundationdb.record.planprotos.PValuePredicate
-	110, // 233: com.apple.foundationdb.record.planprotos.PQueryPredicate.compatible_type_evolution_predicate:type_name -> com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate
-	112, // 234: com.apple.foundationdb.record.planprotos.PQueryPredicate.database_object_dependencies_predicate:type_name -> com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate
-	107, // 235: com.apple.foundationdb.record.planprotos.PAndOrPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	106, // 236: com.apple.foundationdb.record.planprotos.PAndOrPredicate.children:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
-	108, // 237: com.apple.foundationdb.record.planprotos.PAndPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAndOrPredicate
-	219, // 238: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.record_type_name_field_access_pairs:type_name -> com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair
-	107, // 239: com.apple.foundationdb.record.planprotos.PConstantPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	220, // 240: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.used_indexes:type_name -> com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.PUsedIndex
-	107, // 241: com.apple.foundationdb.record.planprotos.PExistsPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	107, // 242: com.apple.foundationdb.record.planprotos.PNotPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	106, // 243: com.apple.foundationdb.record.planprotos.PNotPredicate.child:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
-	108, // 244: com.apple.foundationdb.record.planprotos.POrPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAndOrPredicate
-	107, // 245: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	28,  // 246: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	117, // 247: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.ranges:type_name -> com.apple.foundationdb.record.planprotos.PRangeConstraints
-	118, // 248: com.apple.foundationdb.record.planprotos.PRangeConstraints.evaluable_range:type_name -> com.apple.foundationdb.record.planprotos.PCompilableRange
-	93,  // 249: com.apple.foundationdb.record.planprotos.PRangeConstraints.deferred_ranges:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	93,  // 250: com.apple.foundationdb.record.planprotos.PCompilableRange.compilable_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	107, // 251: com.apple.foundationdb.record.planprotos.PValuePredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
-	28,  // 252: com.apple.foundationdb.record.planprotos.PValuePredicate.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	93,  // 253: com.apple.foundationdb.record.planprotos.PValuePredicate.comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	121, // 254: com.apple.foundationdb.record.planprotos.PPhysicalQuantifier.plan_references:type_name -> com.apple.foundationdb.record.planprotos.PPlanReference
-	122, // 255: com.apple.foundationdb.record.planprotos.PPlanReference.record_query_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPlan
-	232, // 256: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.additional_plans:type_name -> google.protobuf.Any
-	124, // 257: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.aggregate_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan
-	125, // 258: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.covering_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan
-	127, // 259: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.dam_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan
-	128, // 260: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.delete_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan
-	129, // 261: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.explode_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan
-	130, // 262: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.fetch_from_partial_record_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan
-	132, // 263: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.first_or_default_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan
-	134, // 264: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.flat_map_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan
-	147, // 265: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_comparand_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan
-	135, // 266: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.record_query_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
-	156, // 267: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_parameter_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan
-	157, // 268: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.insert_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan
-	161, // 269: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.intersection_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan
-	162, // 270: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.intersection_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan
-	165, // 271: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_union_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan
-	166, // 272: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_union_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan
-	167, // 273: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_values_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan
-	168, // 274: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.map_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan
-	169, // 275: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.predicates_filter_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan
-	170, // 276: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.range_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan
-	173, // 277: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.scan_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan
-	174, // 278: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.score_for_rank_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan
-	171, // 279: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.sort_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan
-	177, // 280: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.streaming_aggregation_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan
-	179, // 281: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.type_filter_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan
-	180, // 282: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.union_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan
-	181, // 283: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.union_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan
-	183, // 284: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_distinct_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan
-	184, // 285: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_primary_key_distinct_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan
-	185, // 286: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_union_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan
-	187, // 287: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.update_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan
-	133, // 288: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.default_on_empty_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan
-	136, // 289: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.temp_table_scan_plan:type_name -> com.apple.foundationdb.record.planprotos.PTempTableScanPlan
-	158, // 290: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.temp_table_insert_plan:type_name -> com.apple.foundationdb.record.planprotos.PTempTableInsertPlan
-	192, // 291: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.recursive_level_union_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan
-	193, // 292: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.table_function_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan
-	178, // 293: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.streaming_aggregation_plan2:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2
-	163, // 294: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.multi_intersection_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan
-	194, // 295: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.recursive_dfs_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan
-	120, // 296: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	203, // 297: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.target_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType
-	26,  // 298: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.transformations_trie:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode
-	22,  // 299: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.coercion_trie:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode
-	28,  // 300: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.computation_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	135, // 301: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
-	126, // 302: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.to_record:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
-	28,  // 303: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	146, // 304: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.constraint:type_name -> com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
-	28,  // 305: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.group_by_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	122, // 306: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan.index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPlan
-	126, // 307: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan.to_record:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
-	221, // 308: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.copiers:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier
-	120, // 309: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	172, // 310: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan.key:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
-	120, // 311: com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 312: com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan.collection_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 313: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	21,  // 314: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	3,   // 315: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.fetch_index_records:type_name -> com.apple.foundationdb.record.planprotos.PFetchIndexRecords
-	120, // 316: com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	120, // 317: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 318: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan.on_empty_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 319: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 320: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan.on_empty_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 321: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.outer_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	120, // 322: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.inner_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 323: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	233, // 324: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.common_primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	137, // 325: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.scan_parameters:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanParameters
-	2,   // 326: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.index_fetch_method:type_name -> com.apple.foundationdb.record.planprotos.PIndexFetchMethod
-	3,   // 327: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.fetch_index_records:type_name -> com.apple.foundationdb.record.planprotos.PFetchIndexRecords
-	21,  // 328: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	146, // 329: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.constraint:type_name -> com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
-	28,  // 330: com.apple.foundationdb.record.planprotos.PTempTableScanPlan.temp_table_reference_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	232, // 331: com.apple.foundationdb.record.planprotos.PIndexScanParameters.additional_index_scan_parameters:type_name -> google.protobuf.Any
-	140, // 332: com.apple.foundationdb.record.planprotos.PIndexScanParameters.index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanComparisons
-	141, // 333: com.apple.foundationdb.record.planprotos.PIndexScanParameters.multidimensional_index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons
-	143, // 334: com.apple.foundationdb.record.planprotos.PIndexScanParameters.time_window_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons
-	144, // 335: com.apple.foundationdb.record.planprotos.PIndexScanParameters.vector_index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons
-	93,  // 336: com.apple.foundationdb.record.planprotos.PScanComparisons.equality_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	93,  // 337: com.apple.foundationdb.record.planprotos.PScanComparisons.inequality_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	138, // 338: com.apple.foundationdb.record.planprotos.PIndexScanComparisons.scan_type:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanType
-	139, // 339: com.apple.foundationdb.record.planprotos.PIndexScanComparisons.scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	139, // 340: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.prefix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	139, // 341: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.dimensions_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	139, // 342: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.suffix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	140, // 343: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons.super:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanComparisons
-	142, // 344: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons.time_window:type_name -> com.apple.foundationdb.record.planprotos.PTimeWindowForFunction
-	139, // 345: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.prefix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	105, // 346: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.distance_rank_value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
-	145, // 347: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.vector_index_scan_options:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions
-	228, // 348: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.optionEntries:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry
-	106, // 349: com.apple.foundationdb.record.planprotos.PQueryPlanConstraint.predicate:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
-	148, // 350: com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
-	120, // 351: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.physical_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	149, // 352: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.in_source:type_name -> com.apple.foundationdb.record.planprotos.PInSource
-	17,  // 353: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
-	150, // 354: com.apple.foundationdb.record.planprotos.PInSource.in_comparand_source:type_name -> com.apple.foundationdb.record.planprotos.PInComparandSource
-	151, // 355: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_comparand_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInComparandSource
-	152, // 356: com.apple.foundationdb.record.planprotos.PInSource.in_parameter_source:type_name -> com.apple.foundationdb.record.planprotos.PInParameterSource
-	153, // 357: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_parameter_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInParameterSource
-	154, // 358: com.apple.foundationdb.record.planprotos.PInSource.in_values_source:type_name -> com.apple.foundationdb.record.planprotos.PInValuesSource
-	155, // 359: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_values_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInValuesSource
-	229, // 360: com.apple.foundationdb.record.planprotos.PInComparandSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
-	93,  // 361: com.apple.foundationdb.record.planprotos.PInComparandSource.comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	150, // 362: com.apple.foundationdb.record.planprotos.PSortedInComparandSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInComparandSource
-	229, // 363: com.apple.foundationdb.record.planprotos.PInParameterSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
-	152, // 364: com.apple.foundationdb.record.planprotos.PSortedInParameterSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInParameterSource
-	229, // 365: com.apple.foundationdb.record.planprotos.PInValuesSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
-	191, // 366: com.apple.foundationdb.record.planprotos.PInValuesSource.values:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
-	154, // 367: com.apple.foundationdb.record.planprotos.PSortedInValuesSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInValuesSource
-	148, // 368: com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
-	123, // 369: com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
-	120, // 370: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 371: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan.temp_table_reference_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 372: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan.quantifiers:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	160, // 373: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
-	230, // 374: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.on_key_expression:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression
-	231, // 375: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.on_values:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues
-	159, // 376: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
-	159, // 377: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
-	159, // 378: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
-	28,  // 379: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 380: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	149, // 381: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.in_sources:type_name -> com.apple.foundationdb.record.planprotos.PInSource
-	160, // 382: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
-	17,  // 383: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
-	164, // 384: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
-	164, // 385: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
-	148, // 386: com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
-	120, // 387: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 388: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	131, // 389: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase
-	106, // 390: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan.predicates:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
-	28,  // 391: com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan.exclusive_limit_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 392: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	172, // 393: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan.key:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
-	233, // 394: com.apple.foundationdb.record.planprotos.PRecordQuerySortKey.key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	21,  // 395: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.flowed_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	233, // 396: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.common_primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	139, // 397: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
-	120, // 398: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	175, // 399: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan.ranks:type_name -> com.apple.foundationdb.record.planprotos.PScoreForRank
-	19,  // 400: com.apple.foundationdb.record.planprotos.PScoreForRank.binding_function:type_name -> com.apple.foundationdb.record.planprotos.PScoreForRank.PBindingFunction
-	176, // 401: com.apple.foundationdb.record.planprotos.PScoreForRank.function:type_name -> com.apple.foundationdb.record.planprotos.PIndexAggregateFunction
-	93,  // 402: com.apple.foundationdb.record.planprotos.PScoreForRank.comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
-	233, // 403: com.apple.foundationdb.record.planprotos.PIndexAggregateFunction.operand:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	120, // 404: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 405: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.aggregate_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 406: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.grouping_key_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 407: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.complete_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 408: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 409: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.aggregate_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 410: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.grouping_key_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	28,  // 411: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.complete_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 412: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	21,  // 413: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	182, // 414: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
-	182, // 415: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
-	186, // 416: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
-	160, // 417: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
-	120, // 418: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	233, // 419: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan.comparison_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	120, // 420: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	186, // 421: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
-	120, // 422: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase.quantifiers:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	123, // 423: com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
-	235, // 424: com.apple.foundationdb.record.planprotos.PComparableObject.primitive_object:type_name -> com.apple.foundationdb.record.expressions.Value
-	188, // 425: com.apple.foundationdb.record.planprotos.PComparableObject.enum_object:type_name -> com.apple.foundationdb.record.planprotos.PEnumLightValue
-	189, // 426: com.apple.foundationdb.record.planprotos.PComparableObject.uuid:type_name -> com.apple.foundationdb.record.planprotos.PUUID
-	190, // 427: com.apple.foundationdb.record.planprotos.PComparableObject.fdb_record_version:type_name -> com.apple.foundationdb.record.planprotos.PFDBRecordVersion
-	21,  // 428: com.apple.foundationdb.record.planprotos.PComparableObject.type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	120, // 429: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan.initialStateQuantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	120, // 430: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan.recursiveStateQuantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	28,  // 431: com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	120, // 432: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.root_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	120, // 433: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.child_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
-	20,  // 434: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.dfs_traversal_strategy:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.PDfsTraversalStrategy
-	4,   // 435: com.apple.foundationdb.record.planprotos.PType.PPrimitiveType.type_code:type_name -> com.apple.foundationdb.record.planprotos.PType.PTypeCode
-	207, // 436: com.apple.foundationdb.record.planprotos.PType.PEnumType.enum_values:type_name -> com.apple.foundationdb.record.planprotos.PType.PEnumType.PEnumValue
-	208, // 437: com.apple.foundationdb.record.planprotos.PType.PRecordType.fields:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
-	21,  // 438: com.apple.foundationdb.record.planprotos.PType.PRelationType.inner_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	21,  // 439: com.apple.foundationdb.record.planprotos.PType.PArrayType.element_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	21,  // 440: com.apple.foundationdb.record.planprotos.PType.PRecordType.PField.field_type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	22,  // 441: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair.child_coercion_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode
-	26,  // 442: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair.child_transformation_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode
-	212, // 443: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair.resolved_accessor:type_name -> com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
-	27,  // 444: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair.child_field_access_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode
-	21,  // 445: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor.type:type_name -> com.apple.foundationdb.record.planprotos.PType
-	208, // 446: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor.field:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
-	59,  // 447: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
-	59,  // 448: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
-	59,  // 449: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
-	59,  // 450: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
-	59,  // 451: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
-	208, // 452: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn.field:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
-	28,  // 453: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	27,  // 454: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair.field_access_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode
-	232, // 455: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.additional_copiers:type_name -> google.protobuf.Any
-	222, // 456: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.field_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier
-	224, // 457: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.message_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier
-	225, // 458: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.field_with_value_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier
-	18,  // 459: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier.source:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PTupleSource
-	223, // 460: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier.copy_if_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate
-	232, // 461: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.additional_copy_if_predicate:type_name -> google.protobuf.Any
-	226, // 462: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.true_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PTruePredicate
-	227, // 463: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.conditional_upon_path_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PConditionalUponPathPredicate
-	126, // 464: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier.nested:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
-	106, // 465: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier.copy_if_predicate:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
-	28,  // 466: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier.extractFromIndexEntryValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	235, // 467: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry.value:type_name -> com.apple.foundationdb.record.expressions.Value
-	233, // 468: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression.comparison_key_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
-	28,  // 469: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues.comparison_key_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
-	470, // [470:470] is the sub-list for method output_type
-	470, // [470:470] is the sub-list for method input_type
-	470, // [470:470] is the sub-list for extension type_name
-	470, // [470:470] is the sub-list for extension extendee
-	0,   // [0:470] is the sub-list for field type_name
+	28,  // 176: com.apple.foundationdb.record.planprotos.PCardinalityValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 177: com.apple.foundationdb.record.planprotos.PWindowedValue.partitioning_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 178: com.apple.foundationdb.record.planprotos.PWindowedValue.argument_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 179: com.apple.foundationdb.record.planprotos.PCollateValue.string_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 180: com.apple.foundationdb.record.planprotos.PCollateValue.locale_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 181: com.apple.foundationdb.record.planprotos.PCollateValue.strength_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 182: com.apple.foundationdb.record.planprotos.PRangeValue.end_exclusive_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 183: com.apple.foundationdb.record.planprotos.PRangeValue.begin_inclusive_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 184: com.apple.foundationdb.record.planprotos.PRangeValue.step_child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 185: com.apple.foundationdb.record.planprotos.PArrayDistinctValue.child_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	21,  // 186: com.apple.foundationdb.record.planprotos.PParameterObjectValue.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	28,  // 187: com.apple.foundationdb.record.planprotos.PCastValue.child:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	21,  // 188: com.apple.foundationdb.record.planprotos.PCastValue.cast_to_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	15,  // 189: com.apple.foundationdb.record.planprotos.PCastValue.operator:type_name -> com.apple.foundationdb.record.planprotos.PCastValue.PPhysicalOperator
+	231, // 190: com.apple.foundationdb.record.planprotos.PComparison.additional_comparisons:type_name -> google.protobuf.Any
+	93,  // 191: com.apple.foundationdb.record.planprotos.PComparison.simple_comparison:type_name -> com.apple.foundationdb.record.planprotos.PSimpleComparison
+	95,  // 192: com.apple.foundationdb.record.planprotos.PComparison.parameter_comparison:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison
+	97,  // 193: com.apple.foundationdb.record.planprotos.PComparison.value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PValueComparison
+	98,  // 194: com.apple.foundationdb.record.planprotos.PComparison.list_comparison:type_name -> com.apple.foundationdb.record.planprotos.PListComparison
+	99,  // 195: com.apple.foundationdb.record.planprotos.PComparison.null_comparison:type_name -> com.apple.foundationdb.record.planprotos.PNullComparison
+	100, // 196: com.apple.foundationdb.record.planprotos.PComparison.opaque_equality_comparison:type_name -> com.apple.foundationdb.record.planprotos.POpaqueEqualityComparison
+	101, // 197: com.apple.foundationdb.record.planprotos.PComparison.multi_column_comparison:type_name -> com.apple.foundationdb.record.planprotos.PMultiColumnComparison
+	102, // 198: com.apple.foundationdb.record.planprotos.PComparison.inverted_function_comparison:type_name -> com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison
+	103, // 199: com.apple.foundationdb.record.planprotos.PComparison.record_type_comparison:type_name -> com.apple.foundationdb.record.planprotos.PRecordTypeComparison
+	94,  // 200: com.apple.foundationdb.record.planprotos.PComparison.conversion_simple_comparison:type_name -> com.apple.foundationdb.record.planprotos.PConversionSimpleComparison
+	96,  // 201: com.apple.foundationdb.record.planprotos.PComparison.conversion_parameter_comparison:type_name -> com.apple.foundationdb.record.planprotos.PConversionParameterComparison
+	104, // 202: com.apple.foundationdb.record.planprotos.PComparison.distance_rank_value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
+	16,  // 203: com.apple.foundationdb.record.planprotos.PSimpleComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	190, // 204: com.apple.foundationdb.record.planprotos.PSimpleComparison.object:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
+	16,  // 205: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	190, // 206: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.object:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
+	232, // 207: com.apple.foundationdb.record.planprotos.PConversionSimpleComparison.conversion:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	16,  // 208: com.apple.foundationdb.record.planprotos.PParameterComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	17,  // 209: com.apple.foundationdb.record.planprotos.PParameterComparison.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
+	16,  // 210: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	17,  // 211: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
+	232, // 212: com.apple.foundationdb.record.planprotos.PConversionParameterComparison.conversion:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	16,  // 213: com.apple.foundationdb.record.planprotos.PValueComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	28,  // 214: com.apple.foundationdb.record.planprotos.PValueComparison.comparandValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	16,  // 215: com.apple.foundationdb.record.planprotos.PListComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	190, // 216: com.apple.foundationdb.record.planprotos.PListComparison.comparand:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
+	16,  // 217: com.apple.foundationdb.record.planprotos.PNullComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	92,  // 218: com.apple.foundationdb.record.planprotos.PMultiColumnComparison.inner:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	233, // 219: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.function:type_name -> com.apple.foundationdb.record.expressions.Function
+	92,  // 220: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.original_comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	16,  // 221: com.apple.foundationdb.record.planprotos.PInvertedFunctionComparison.type:type_name -> com.apple.foundationdb.record.planprotos.PComparison.PComparisonType
+	97,  // 222: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison.super:type_name -> com.apple.foundationdb.record.planprotos.PValueComparison
+	28,  // 223: com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison.limitValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	231, // 224: com.apple.foundationdb.record.planprotos.PQueryPredicate.additional_query_predicates:type_name -> google.protobuf.Any
+	108, // 225: com.apple.foundationdb.record.planprotos.PQueryPredicate.and_predicate:type_name -> com.apple.foundationdb.record.planprotos.PAndPredicate
+	110, // 226: com.apple.foundationdb.record.planprotos.PQueryPredicate.constant_predicate:type_name -> com.apple.foundationdb.record.planprotos.PConstantPredicate
+	112, // 227: com.apple.foundationdb.record.planprotos.PQueryPredicate.existential_value_predicate:type_name -> com.apple.foundationdb.record.planprotos.PExistentialValuePredicate
+	113, // 228: com.apple.foundationdb.record.planprotos.PQueryPredicate.not_predicate:type_name -> com.apple.foundationdb.record.planprotos.PNotPredicate
+	114, // 229: com.apple.foundationdb.record.planprotos.PQueryPredicate.or_predicate:type_name -> com.apple.foundationdb.record.planprotos.POrPredicate
+	115, // 230: com.apple.foundationdb.record.planprotos.PQueryPredicate.predicate_with_value_and_ranges:type_name -> com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges
+	118, // 231: com.apple.foundationdb.record.planprotos.PQueryPredicate.value_predicate:type_name -> com.apple.foundationdb.record.planprotos.PValuePredicate
+	109, // 232: com.apple.foundationdb.record.planprotos.PQueryPredicate.compatible_type_evolution_predicate:type_name -> com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate
+	111, // 233: com.apple.foundationdb.record.planprotos.PQueryPredicate.database_object_dependencies_predicate:type_name -> com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate
+	106, // 234: com.apple.foundationdb.record.planprotos.PAndOrPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	105, // 235: com.apple.foundationdb.record.planprotos.PAndOrPredicate.children:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
+	107, // 236: com.apple.foundationdb.record.planprotos.PAndPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAndOrPredicate
+	218, // 237: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.record_type_name_field_access_pairs:type_name -> com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair
+	106, // 238: com.apple.foundationdb.record.planprotos.PConstantPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	219, // 239: com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.used_indexes:type_name -> com.apple.foundationdb.record.planprotos.PDatabaseObjectDependenciesPredicate.PUsedIndex
+	118, // 240: com.apple.foundationdb.record.planprotos.PExistentialValuePredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PValuePredicate
+	106, // 241: com.apple.foundationdb.record.planprotos.PNotPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	105, // 242: com.apple.foundationdb.record.planprotos.PNotPredicate.child:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
+	107, // 243: com.apple.foundationdb.record.planprotos.POrPredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAndOrPredicate
+	106, // 244: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	28,  // 245: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	116, // 246: com.apple.foundationdb.record.planprotos.PPredicateWithValueAndRanges.ranges:type_name -> com.apple.foundationdb.record.planprotos.PRangeConstraints
+	117, // 247: com.apple.foundationdb.record.planprotos.PRangeConstraints.evaluable_range:type_name -> com.apple.foundationdb.record.planprotos.PCompilableRange
+	92,  // 248: com.apple.foundationdb.record.planprotos.PRangeConstraints.deferred_ranges:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	92,  // 249: com.apple.foundationdb.record.planprotos.PCompilableRange.compilable_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	106, // 250: com.apple.foundationdb.record.planprotos.PValuePredicate.super:type_name -> com.apple.foundationdb.record.planprotos.PAbstractQueryPredicate
+	28,  // 251: com.apple.foundationdb.record.planprotos.PValuePredicate.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	92,  // 252: com.apple.foundationdb.record.planprotos.PValuePredicate.comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	120, // 253: com.apple.foundationdb.record.planprotos.PPhysicalQuantifier.plan_references:type_name -> com.apple.foundationdb.record.planprotos.PPlanReference
+	121, // 254: com.apple.foundationdb.record.planprotos.PPlanReference.record_query_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPlan
+	231, // 255: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.additional_plans:type_name -> google.protobuf.Any
+	123, // 256: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.aggregate_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan
+	124, // 257: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.covering_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan
+	126, // 258: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.dam_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan
+	127, // 259: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.delete_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan
+	128, // 260: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.explode_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan
+	129, // 261: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.fetch_from_partial_record_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan
+	131, // 262: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.first_or_default_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan
+	133, // 263: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.flat_map_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan
+	146, // 264: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_comparand_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan
+	134, // 265: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.record_query_index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
+	155, // 266: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_parameter_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan
+	156, // 267: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.insert_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan
+	160, // 268: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.intersection_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan
+	161, // 269: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.intersection_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan
+	164, // 270: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_union_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan
+	165, // 271: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_union_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan
+	166, // 272: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.in_values_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan
+	167, // 273: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.map_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan
+	168, // 274: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.predicates_filter_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan
+	169, // 275: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.range_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan
+	172, // 276: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.scan_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan
+	173, // 277: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.score_for_rank_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan
+	170, // 278: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.sort_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan
+	176, // 279: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.streaming_aggregation_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan
+	178, // 280: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.type_filter_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan
+	179, // 281: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.union_on_key_expression_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan
+	180, // 282: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.union_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan
+	182, // 283: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_distinct_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan
+	183, // 284: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_primary_key_distinct_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan
+	184, // 285: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.unordered_union_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan
+	186, // 286: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.update_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan
+	132, // 287: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.default_on_empty_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan
+	135, // 288: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.temp_table_scan_plan:type_name -> com.apple.foundationdb.record.planprotos.PTempTableScanPlan
+	157, // 289: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.temp_table_insert_plan:type_name -> com.apple.foundationdb.record.planprotos.PTempTableInsertPlan
+	191, // 290: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.recursive_level_union_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan
+	192, // 291: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.table_function_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan
+	177, // 292: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.streaming_aggregation_plan2:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2
+	162, // 293: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.multi_intersection_on_values_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan
+	193, // 294: com.apple.foundationdb.record.planprotos.PRecordQueryPlan.recursive_dfs_join_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan
+	119, // 295: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	202, // 296: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.target_type:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType
+	26,  // 297: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.transformations_trie:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode
+	22,  // 298: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.coercion_trie:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode
+	28,  // 299: com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan.computation_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	134, // 300: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan
+	125, // 301: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.to_record:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
+	28,  // 302: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	145, // 303: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.constraint:type_name -> com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
+	28,  // 304: com.apple.foundationdb.record.planprotos.PRecordQueryAggregateIndexPlan.group_by_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	121, // 305: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan.index_plan:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryPlan
+	125, // 306: com.apple.foundationdb.record.planprotos.PRecordQueryCoveringIndexPlan.to_record:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
+	220, // 307: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.copiers:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier
+	119, // 308: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	171, // 309: com.apple.foundationdb.record.planprotos.PRecordQueryDamPlan.key:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
+	119, // 310: com.apple.foundationdb.record.planprotos.PRecordQueryDeletePlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 311: com.apple.foundationdb.record.planprotos.PRecordQueryExplodePlan.collection_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 312: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	21,  // 313: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	3,   // 314: com.apple.foundationdb.record.planprotos.PRecordQueryFetchFromPartialRecordPlan.fetch_index_records:type_name -> com.apple.foundationdb.record.planprotos.PFetchIndexRecords
+	119, // 315: com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	119, // 316: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 317: com.apple.foundationdb.record.planprotos.PRecordQueryFirstOrDefaultPlan.on_empty_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 318: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 319: com.apple.foundationdb.record.planprotos.PRecordQueryDefaultOnEmptyPlan.on_empty_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 320: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.outer_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	119, // 321: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.inner_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 322: com.apple.foundationdb.record.planprotos.PRecordQueryFlatMapPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	232, // 323: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.common_primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	136, // 324: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.scan_parameters:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanParameters
+	2,   // 325: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.index_fetch_method:type_name -> com.apple.foundationdb.record.planprotos.PIndexFetchMethod
+	3,   // 326: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.fetch_index_records:type_name -> com.apple.foundationdb.record.planprotos.PFetchIndexRecords
+	21,  // 327: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	145, // 328: com.apple.foundationdb.record.planprotos.PRecordQueryIndexPlan.constraint:type_name -> com.apple.foundationdb.record.planprotos.PQueryPlanConstraint
+	28,  // 329: com.apple.foundationdb.record.planprotos.PTempTableScanPlan.temp_table_reference_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	231, // 330: com.apple.foundationdb.record.planprotos.PIndexScanParameters.additional_index_scan_parameters:type_name -> google.protobuf.Any
+	139, // 331: com.apple.foundationdb.record.planprotos.PIndexScanParameters.index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanComparisons
+	140, // 332: com.apple.foundationdb.record.planprotos.PIndexScanParameters.multidimensional_index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons
+	142, // 333: com.apple.foundationdb.record.planprotos.PIndexScanParameters.time_window_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons
+	143, // 334: com.apple.foundationdb.record.planprotos.PIndexScanParameters.vector_index_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons
+	92,  // 335: com.apple.foundationdb.record.planprotos.PScanComparisons.equality_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	92,  // 336: com.apple.foundationdb.record.planprotos.PScanComparisons.inequality_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	137, // 337: com.apple.foundationdb.record.planprotos.PIndexScanComparisons.scan_type:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanType
+	138, // 338: com.apple.foundationdb.record.planprotos.PIndexScanComparisons.scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	138, // 339: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.prefix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	138, // 340: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.dimensions_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	138, // 341: com.apple.foundationdb.record.planprotos.PMultidimensionalIndexScanComparisons.suffix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	139, // 342: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons.super:type_name -> com.apple.foundationdb.record.planprotos.PIndexScanComparisons
+	141, // 343: com.apple.foundationdb.record.planprotos.PTimeWindowScanComparisons.time_window:type_name -> com.apple.foundationdb.record.planprotos.PTimeWindowForFunction
+	138, // 344: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.prefix_scan_comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	104, // 345: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.distance_rank_value_comparison:type_name -> com.apple.foundationdb.record.planprotos.PDistanceRankValueComparison
+	144, // 346: com.apple.foundationdb.record.planprotos.PVectorIndexScanComparisons.vector_index_scan_options:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions
+	227, // 347: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.optionEntries:type_name -> com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry
+	105, // 348: com.apple.foundationdb.record.planprotos.PQueryPlanConstraint.predicate:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
+	147, // 349: com.apple.foundationdb.record.planprotos.PRecordQueryInComparandJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
+	119, // 350: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.physical_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	148, // 351: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.in_source:type_name -> com.apple.foundationdb.record.planprotos.PInSource
+	17,  // 352: com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
+	149, // 353: com.apple.foundationdb.record.planprotos.PInSource.in_comparand_source:type_name -> com.apple.foundationdb.record.planprotos.PInComparandSource
+	150, // 354: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_comparand_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInComparandSource
+	151, // 355: com.apple.foundationdb.record.planprotos.PInSource.in_parameter_source:type_name -> com.apple.foundationdb.record.planprotos.PInParameterSource
+	152, // 356: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_parameter_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInParameterSource
+	153, // 357: com.apple.foundationdb.record.planprotos.PInSource.in_values_source:type_name -> com.apple.foundationdb.record.planprotos.PInValuesSource
+	154, // 358: com.apple.foundationdb.record.planprotos.PInSource.sorted_in_values_source:type_name -> com.apple.foundationdb.record.planprotos.PSortedInValuesSource
+	228, // 359: com.apple.foundationdb.record.planprotos.PInComparandSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
+	92,  // 360: com.apple.foundationdb.record.planprotos.PInComparandSource.comparison:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	149, // 361: com.apple.foundationdb.record.planprotos.PSortedInComparandSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInComparandSource
+	228, // 362: com.apple.foundationdb.record.planprotos.PInParameterSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
+	151, // 363: com.apple.foundationdb.record.planprotos.PSortedInParameterSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInParameterSource
+	228, // 364: com.apple.foundationdb.record.planprotos.PInValuesSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInSource.Super
+	190, // 365: com.apple.foundationdb.record.planprotos.PInValuesSource.values:type_name -> com.apple.foundationdb.record.planprotos.PComparableObject
+	153, // 366: com.apple.foundationdb.record.planprotos.PSortedInValuesSource.super:type_name -> com.apple.foundationdb.record.planprotos.PInValuesSource
+	147, // 367: com.apple.foundationdb.record.planprotos.PRecordQueryInParameterJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
+	122, // 368: com.apple.foundationdb.record.planprotos.PRecordQueryInsertPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
+	119, // 369: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 370: com.apple.foundationdb.record.planprotos.PTempTableInsertPlan.temp_table_reference_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 371: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan.quantifiers:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	159, // 372: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
+	229, // 373: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.on_key_expression:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression
+	230, // 374: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.on_values:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues
+	158, // 375: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
+	158, // 376: com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
+	158, // 377: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryIntersectionPlan
+	28,  // 378: com.apple.foundationdb.record.planprotos.PRecordQueryMultiIntersectionOnValuesPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 379: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	148, // 380: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.in_sources:type_name -> com.apple.foundationdb.record.planprotos.PInSource
+	159, // 381: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
+	17,  // 382: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan.internal:type_name -> com.apple.foundationdb.record.planprotos.PParameterComparison.PBindingKind
+	163, // 383: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
+	163, // 384: com.apple.foundationdb.record.planprotos.PRecordQueryInUnionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInUnionPlan
+	147, // 385: com.apple.foundationdb.record.planprotos.PRecordQueryInValuesJoinPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryInJoinPlan
+	119, // 386: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 387: com.apple.foundationdb.record.planprotos.PRecordQueryMapPlan.result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	130, // 388: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryFilterPlanBase
+	105, // 389: com.apple.foundationdb.record.planprotos.PRecordQueryPredicatesFilterPlan.predicates:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
+	28,  // 390: com.apple.foundationdb.record.planprotos.PRecordQueryRangePlan.exclusive_limit_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 391: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	171, // 392: com.apple.foundationdb.record.planprotos.PRecordQuerySortPlan.key:type_name -> com.apple.foundationdb.record.planprotos.PRecordQuerySortKey
+	232, // 393: com.apple.foundationdb.record.planprotos.PRecordQuerySortKey.key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	21,  // 394: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.flowed_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	232, // 395: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.common_primary_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	138, // 396: com.apple.foundationdb.record.planprotos.PRecordQueryScanPlan.comparisons:type_name -> com.apple.foundationdb.record.planprotos.PScanComparisons
+	119, // 397: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	174, // 398: com.apple.foundationdb.record.planprotos.PRecordQueryScoreForRankPlan.ranks:type_name -> com.apple.foundationdb.record.planprotos.PScoreForRank
+	19,  // 399: com.apple.foundationdb.record.planprotos.PScoreForRank.binding_function:type_name -> com.apple.foundationdb.record.planprotos.PScoreForRank.PBindingFunction
+	175, // 400: com.apple.foundationdb.record.planprotos.PScoreForRank.function:type_name -> com.apple.foundationdb.record.planprotos.PIndexAggregateFunction
+	92,  // 401: com.apple.foundationdb.record.planprotos.PScoreForRank.comparisons:type_name -> com.apple.foundationdb.record.planprotos.PComparison
+	232, // 402: com.apple.foundationdb.record.planprotos.PIndexAggregateFunction.operand:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	119, // 403: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 404: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.aggregate_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 405: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.grouping_key_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 406: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan.complete_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 407: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 408: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.aggregate_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 409: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.grouping_key_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	28,  // 410: com.apple.foundationdb.record.planprotos.PRecordQueryStreamingAggregationPlan2.complete_result_value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 411: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	21,  // 412: com.apple.foundationdb.record.planprotos.PRecordQueryTypeFilterPlan.result_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	181, // 413: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnKeyExpressionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
+	181, // 414: com.apple.foundationdb.record.planprotos.PRecordQueryUnionOnValuesPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan
+	185, // 415: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
+	159, // 416: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlan.comparison_key_function:type_name -> com.apple.foundationdb.record.planprotos.PComparisonKeyFunction
+	119, // 417: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	232, // 418: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedDistinctPlan.comparison_key:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	119, // 419: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedPrimaryKeyDistinctPlan.inner:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	185, // 420: com.apple.foundationdb.record.planprotos.PRecordQueryUnorderedUnionPlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase
+	119, // 421: com.apple.foundationdb.record.planprotos.PRecordQueryUnionPlanBase.quantifiers:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	122, // 422: com.apple.foundationdb.record.planprotos.PRecordQueryUpdatePlan.super:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryAbstractDataModificationPlan
+	234, // 423: com.apple.foundationdb.record.planprotos.PComparableObject.primitive_object:type_name -> com.apple.foundationdb.record.expressions.Value
+	187, // 424: com.apple.foundationdb.record.planprotos.PComparableObject.enum_object:type_name -> com.apple.foundationdb.record.planprotos.PEnumLightValue
+	188, // 425: com.apple.foundationdb.record.planprotos.PComparableObject.uuid:type_name -> com.apple.foundationdb.record.planprotos.PUUID
+	189, // 426: com.apple.foundationdb.record.planprotos.PComparableObject.fdb_record_version:type_name -> com.apple.foundationdb.record.planprotos.PFDBRecordVersion
+	21,  // 427: com.apple.foundationdb.record.planprotos.PComparableObject.type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	119, // 428: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan.initialStateQuantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	119, // 429: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveLevelUnionPlan.recursiveStateQuantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	28,  // 430: com.apple.foundationdb.record.planprotos.PRecordQueryTableFunctionPlan.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	119, // 431: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.root_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	119, // 432: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.child_quantifier:type_name -> com.apple.foundationdb.record.planprotos.PPhysicalQuantifier
+	20,  // 433: com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.dfs_traversal_strategy:type_name -> com.apple.foundationdb.record.planprotos.PRecordQueryRecursiveDfsJoinPlan.PDfsTraversalStrategy
+	4,   // 434: com.apple.foundationdb.record.planprotos.PType.PPrimitiveType.type_code:type_name -> com.apple.foundationdb.record.planprotos.PType.PTypeCode
+	206, // 435: com.apple.foundationdb.record.planprotos.PType.PEnumType.enum_values:type_name -> com.apple.foundationdb.record.planprotos.PType.PEnumType.PEnumValue
+	207, // 436: com.apple.foundationdb.record.planprotos.PType.PRecordType.fields:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
+	21,  // 437: com.apple.foundationdb.record.planprotos.PType.PRelationType.inner_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	21,  // 438: com.apple.foundationdb.record.planprotos.PType.PArrayType.element_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	21,  // 439: com.apple.foundationdb.record.planprotos.PType.PRecordType.PField.field_type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	22,  // 440: com.apple.foundationdb.record.planprotos.PCoercionTrieNode.IntChildPair.child_coercion_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PCoercionTrieNode
+	26,  // 441: com.apple.foundationdb.record.planprotos.PTransformationTrieNode.IntChildPair.child_transformation_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PTransformationTrieNode
+	211, // 442: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair.resolved_accessor:type_name -> com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor
+	27,  // 443: com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode.PResolvedAccessorChildPair.child_field_access_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode
+	21,  // 444: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor.type:type_name -> com.apple.foundationdb.record.planprotos.PType
+	207, // 445: com.apple.foundationdb.record.planprotos.PFieldPath.PResolvedAccessor.field:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
+	59,  // 446: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PBitmapConstructAgg.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
+	59,  // 447: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PSum.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
+	59,  // 448: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PAvg.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
+	59,  // 449: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMin.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
+	59,  // 450: com.apple.foundationdb.record.planprotos.PNumericAggregationValue.PMax.super:type_name -> com.apple.foundationdb.record.planprotos.PNumericAggregationValue
+	207, // 451: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn.field:type_name -> com.apple.foundationdb.record.planprotos.PType.PRecordType.PField
+	28,  // 452: com.apple.foundationdb.record.planprotos.PRecordConstructorValue.PColumn.value:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	27,  // 453: com.apple.foundationdb.record.planprotos.PCompatibleTypeEvolutionPredicate.PRecordTypeNameFieldAccessPair.field_access_trie_node:type_name -> com.apple.foundationdb.record.planprotos.PFieldAccessTrieNode
+	231, // 454: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.additional_copiers:type_name -> google.protobuf.Any
+	221, // 455: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.field_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier
+	223, // 456: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.message_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier
+	224, // 457: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopier.field_with_value_copier:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier
+	18,  // 458: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier.source:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PTupleSource
+	222, // 459: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldCopier.copy_if_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate
+	231, // 460: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.additional_copy_if_predicate:type_name -> google.protobuf.Any
+	225, // 461: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.true_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PTruePredicate
+	226, // 462: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.conditional_upon_path_predicate:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PCopyIfPredicate.PConditionalUponPathPredicate
+	125, // 463: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PMessageCopier.nested:type_name -> com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord
+	105, // 464: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier.copy_if_predicate:type_name -> com.apple.foundationdb.record.planprotos.PQueryPredicate
+	28,  // 465: com.apple.foundationdb.record.planprotos.PIndexKeyValueToPartialRecord.PFieldWithValueCopier.extractFromIndexEntryValue:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	234, // 466: com.apple.foundationdb.record.planprotos.PVectorIndexScanOptions.POptionEntry.value:type_name -> com.apple.foundationdb.record.expressions.Value
+	232, // 467: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnKeyExpression.comparison_key_expression:type_name -> com.apple.foundationdb.record.expressions.KeyExpression
+	28,  // 468: com.apple.foundationdb.record.planprotos.PComparisonKeyFunction.POnValues.comparison_key_values:type_name -> com.apple.foundationdb.record.planprotos.PValue
+	469, // [469:469] is the sub-list for method output_type
+	469, // [469:469] is the sub-list for method input_type
+	469, // [469:469] is the sub-list for extension type_name
+	469, // [469:469] is the sub-list for extension extendee
+	0,   // [0:469] is the sub-list for field type_name
 }
 
 func init() { file_record_query_plan_proto_init() }
@@ -20396,7 +20330,6 @@ func file_record_query_plan_proto_init() {
 		(*PValue_BinaryRelOpValue)(nil),
 		(*PValue_UnaryRelOpValue)(nil),
 		(*PValue_VariadicFunctionValue)(nil),
-		(*PValue_VersionValue)(nil),
 		(*PValue_FirstOrDefaultValue)(nil),
 		(*PValue_ThrowsValue)(nil),
 		(*PValue_IndexEntryObjectValue)(nil),
@@ -20422,7 +20355,7 @@ func file_record_query_plan_proto_init() {
 		(*PValue_IncarnationValue)(nil),
 		(*PValue_CardinalityValue)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[72].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[71].OneofWrappers = []any{
 		(*PComparison_AdditionalComparisons)(nil),
 		(*PComparison_SimpleComparison)(nil),
 		(*PComparison_ParameterComparison)(nil),
@@ -20437,11 +20370,11 @@ func file_record_query_plan_proto_init() {
 		(*PComparison_ConversionParameterComparison)(nil),
 		(*PComparison_DistanceRankValueComparison)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[85].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[84].OneofWrappers = []any{
 		(*PQueryPredicate_AdditionalQueryPredicates)(nil),
 		(*PQueryPredicate_AndPredicate)(nil),
 		(*PQueryPredicate_ConstantPredicate)(nil),
-		(*PQueryPredicate_ExistsPredicate)(nil),
+		(*PQueryPredicate_ExistentialValuePredicate)(nil),
 		(*PQueryPredicate_NotPredicate)(nil),
 		(*PQueryPredicate_OrPredicate)(nil),
 		(*PQueryPredicate_PredicateWithValueAndRanges)(nil),
@@ -20449,7 +20382,7 @@ func file_record_query_plan_proto_init() {
 		(*PQueryPredicate_CompatibleTypeEvolutionPredicate)(nil),
 		(*PQueryPredicate_DatabaseObjectDependenciesPredicate)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[101].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[100].OneofWrappers = []any{
 		(*PRecordQueryPlan_AdditionalPlans)(nil),
 		(*PRecordQueryPlan_AggregateIndexPlan)(nil),
 		(*PRecordQueryPlan_CoveringIndexPlan)(nil),
@@ -20491,14 +20424,14 @@ func file_record_query_plan_proto_init() {
 		(*PRecordQueryPlan_MultiIntersectionOnValuesPlan)(nil),
 		(*PRecordQueryPlan_RecursiveDfsJoinPlan)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[116].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[115].OneofWrappers = []any{
 		(*PIndexScanParameters_AdditionalIndexScanParameters)(nil),
 		(*PIndexScanParameters_IndexScanComparisons)(nil),
 		(*PIndexScanParameters_MultidimensionalIndexScanComparisons)(nil),
 		(*PIndexScanParameters_TimeWindowScanComparisons)(nil),
 		(*PIndexScanParameters_VectorIndexScanComparisons)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[128].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[127].OneofWrappers = []any{
 		(*PInSource_InComparandSource)(nil),
 		(*PInSource_SortedInComparandSource)(nil),
 		(*PInSource_InParameterSource)(nil),
@@ -20506,24 +20439,24 @@ func file_record_query_plan_proto_init() {
 		(*PInSource_InValuesSource)(nil),
 		(*PInSource_SortedInValuesSource)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[139].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[138].OneofWrappers = []any{
 		(*PComparisonKeyFunction_OnKeyExpression)(nil),
 		(*PComparisonKeyFunction_OnValues)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[170].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[169].OneofWrappers = []any{
 		(*PComparableObject_PrimitiveObject)(nil),
 		(*PComparableObject_EnumObject)(nil),
 		(*PComparableObject_Uuid)(nil),
 		(*PComparableObject_FdbRecordVersion)(nil),
 		(*PComparableObject_BytesAsByteString)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[200].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[199].OneofWrappers = []any{
 		(*PIndexKeyValueToPartialRecord_PCopier_AdditionalCopiers)(nil),
 		(*PIndexKeyValueToPartialRecord_PCopier_FieldCopier)(nil),
 		(*PIndexKeyValueToPartialRecord_PCopier_MessageCopier)(nil),
 		(*PIndexKeyValueToPartialRecord_PCopier_FieldWithValueCopier)(nil),
 	}
-	file_record_query_plan_proto_msgTypes[202].OneofWrappers = []any{
+	file_record_query_plan_proto_msgTypes[201].OneofWrappers = []any{
 		(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_AdditionalCopyIfPredicate)(nil),
 		(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_TruePredicate)(nil),
 		(*PIndexKeyValueToPartialRecord_PCopyIfPredicate_ConditionalUponPathPredicate)(nil),
@@ -20534,7 +20467,7 @@ func file_record_query_plan_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_record_query_plan_proto_rawDesc), len(file_record_query_plan_proto_rawDesc)),
 			NumEnums:      21,
-			NumMessages:   211,
+			NumMessages:   210,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -1,10 +1,19 @@
-# Divergences from Java fdb-record-layer-core 4.11.1.0
+# Divergences from Java fdb-record-layer-core 4.12.11.0
 
 Comprehensive list of Go vs Java differences. All Cascades planner subsystems
 fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
 34/34 physical plan types, 48/48 value types, 18/18 properties, 12/12 match
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
+
+> **4.12.11.0 behavioural rebaseline in progress (RFC-135 §4 R8).** The version label above tracks
+> the `MODULE.bazel` pin (now 4.12.11.0). The *behavioural* divergence and Go-only-extension entries
+> below were last validated against the prior Java **4.11** target; 4.12 lifts several limitations (LEFT/RIGHT
+> OUTER JOIN, EXISTS in the projection list, `AT ordinality` array unnest, `CARDINALITY()`), so a
+> handful of entries that today call a feature a "Go extension Java rejects" may reclassify to
+> "Java-now-supported." Each is re-validated against a live 4.12.11.0 conformance run before being
+> treated as authoritative — tracked as RFC-135 §4 items R3–R8. Wire/format divergences are
+> unaffected (the storage format is unchanged at `FormatVersion` 14).
 
 ## Intentional Architectural Decisions (no functional difference)
 
@@ -226,7 +235,7 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
-## Go-Only Extensions (features Java 4.11.1.0 rejects)
+## Go-Only Extensions (features Java 4.12.11.0 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
