@@ -1,6 +1,6 @@
 # RFC-134 — Panic-boundary discipline as a release gate
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** prod-readiness-audit-2026-06-19.md **P2** — "Panic Boundary Discipline Needs To Stay A
 Release Gate."
 **Reviewers:** Torvalds (code/test quality) + codex + @claude. This is a *meta-test* (a discipline
