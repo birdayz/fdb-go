@@ -74,8 +74,8 @@ type TransactionOptions interface {
 // keyspace. The libfdb_c backend forwards these options normally; pure-Go callers
 // that need them must use that backend. Options that fail SAFE when ignored (the
 // causal/durability knobs — ignoring keeps the STRONGER guarantee) remain
-// accepted-but-ignored and are documented in API_PARITY.md. Resolves to FDB
-// invalid_option (2007).
+// accepted-but-ignored and are documented option-by-option in OPTIONS.md. Resolves
+// to FDB invalid_option (2007).
 type UnsupportedOptionError struct{ Option string }
 
 func (e *UnsupportedOptionError) Error() string {
