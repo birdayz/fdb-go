@@ -102,8 +102,8 @@ C++ references are into the FoundationDB 7.3.75 source: `T::setOption` =
 | `SetReadSystemKeys` | **honored** (tx default) | DB default → READ_SYSTEM_KEYS | n/a | |
 | `SetTransactionReportConflictingKeys` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | mirrors the tx option |
 | `SetTransactionAutomaticIdempotency` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | |
-| `SetTransactionCausalReadRisky` | accept & ignore | DB default → CAUSAL_READ_RISKY | strictly-safer | every tx keeps full causal consistency the caller opted to relax |
-| `SetSnapshotRywEnable` / `SetSnapshotRywDisable` | **honored** (tx default) | DB:2156 default applied per-tx | n/a | the *disable* default changes snapshot-read-after-write semantics, so it's propagated via `txDefaults`, not dropped (codex #331) |
+| `SetTransactionCausalReadRisky` | **honored** (tx default) | DB default → CAUSAL_READ_RISKY per-tx | n/a | sets the GRV causal-read-risky flag on each new tx (read-version/staleness change); the per-tx form is honored, so the DB default propagates via `txDefaults` (FDB C++ dev review #331) — unlike `causal_write_risky`, whose per-tx form is a fail-safe no-op |
+| `SetSnapshotRywEnable` / `SetSnapshotRywDisable` | **honored** (tx default) | DB:2156 cumulative counter, seeded per-tx (RYW:2082) | n/a | changes snapshot-read-after-write semantics; propagated via `txDefaults` as a CUMULATIVE counter — enable+disable nets to enabled, matching libfdb_c, not last-wins (codex #331) |
 | `SetTransactionBypassUnreadable` | **honored** (tx default) | DB default applied per-tx | n/a | turns `accessed_unreadable` into reads on each new tx — observable, so propagated via `txDefaults` (codex #331) |
 | `SetTransactionIncludePortInAddress` | accept & ignore | DB default | safe | |
 | `SetTransactionUsedDuringCommitProtectionDisable` | accept & ignore | DB default | safe | |

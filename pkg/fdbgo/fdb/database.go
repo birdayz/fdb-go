@@ -56,14 +56,20 @@ func GetAPIVersion() (int, error) {
 // Applied to every new transaction created by Transact/ReadTransact.
 // Matches C++ FDB_DB_OPTION_TRANSACTION_* options.
 type txDefaults struct {
-	timeout             int64 // milliseconds, 0 = disabled
-	retryLimit          int64 // -1 = unlimited, 0 = no retries
-	hasRetryLimit       bool  // distinguishes "not set" from "set to 0"
-	maxRetryDelay       int64 // milliseconds, 0 = use default
-	sizeLimit           int64 // bytes, 0 = disabled
-	readSystemKeys      bool  // allow reading \xff system keys
-	snapshotRywDisabled bool  // DB default disables snapshot RYW on each new tx (read semantics)
-	bypassUnreadable    bool  // DB default bypasses accessed_unreadable on each new tx
+	timeout        int64 // milliseconds, 0 = disabled
+	retryLimit     int64 // -1 = unlimited, 0 = no retries
+	hasRetryLimit  bool  // distinguishes "not set" from "set to 0"
+	maxRetryDelay  int64 // milliseconds, 0 = use default
+	sizeLimit      int64 // bytes, 0 = disabled
+	readSystemKeys bool  // allow reading \xff system keys
+	// snapshotRywDisableNet is the NET (disables - enables) of the DB-level snapshot-RYW option.
+	// libfdb_c's DatabaseContext keeps a cumulative counter (snapshotRywEnabled++/--,
+	// NativeAPI.actor.cpp:2156/2160) that each new tx is seeded from (ReadYourWrites.actor.cpp:2082),
+	// so SetSnapshotRywEnable();SetSnapshotRywDisable() nets to 0 (still enabled) — a bool can't
+	// model that. applyTxDefaults replays this net onto the tx's own disable counter.
+	snapshotRywDisableNet int
+	bypassUnreadable      bool // DB default bypasses accessed_unreadable on each new tx (set-once flag)
+	causalReadRisky       bool // DB default sets the GRV causal-read-risky flag on each new tx (set-once flag)
 }
 
 // internalDB wraps client.Database with a context for async operations.
@@ -363,11 +369,17 @@ func (db Database) applyTxDefaults(t *transaction) {
 	if d.readSystemKeys {
 		t.inner.SetReadSystemKeys()
 	}
-	if d.snapshotRywDisabled {
+	for i := 0; i < d.snapshotRywDisableNet; i++ {
 		t.inner.SetSnapshotRYWDisable()
+	}
+	for i := 0; i > d.snapshotRywDisableNet; i-- {
+		t.inner.SetSnapshotRYWEnable()
 	}
 	if d.bypassUnreadable {
 		t.inner.SetBypassUnreadable(true)
+	}
+	if d.causalReadRisky {
+		t.inner.SetCausalReadRisky(true)
 	}
 }
 

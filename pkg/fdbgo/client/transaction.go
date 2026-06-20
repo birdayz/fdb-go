@@ -2460,6 +2460,10 @@ func (tx *Transaction) SnapshotRYWDisableCount() int { return tx.snapshotRYWDisa
 // to verify database-level option propagation.
 func (tx *Transaction) BypassUnreadable() bool { return tx.ryw.bypassUnreadable }
 
+// CausalReadRisky reports whether the GRV causal-read-risky flag is set. Read-only accessor used to
+// verify database-level option propagation.
+func (tx *Transaction) CausalReadRisky() bool { return tx.causalReadRisky }
+
 // SetTenantId sets the tenant for this transaction. All operations will
 // be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
 func (tx *Transaction) SetTenantId(id int64) {

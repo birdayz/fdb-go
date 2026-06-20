@@ -393,7 +393,7 @@ func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
 func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
 func (o DatabaseOptions) SetSnapshotRywEnable() error {
 	if o.db != nil {
-		o.db.txDefaults.snapshotRywDisabled = false
+		o.db.txDefaults.snapshotRywDisableNet--
 	}
 	return nil
 }
@@ -403,7 +403,7 @@ func (o DatabaseOptions) SetSnapshotRywEnable() error {
 // read-semantics change, not a hint. Propagate it via txDefaults rather than silently dropping it.
 func (o DatabaseOptions) SetSnapshotRywDisable() error {
 	if o.db != nil {
-		o.db.txDefaults.snapshotRywDisabled = true
+		o.db.txDefaults.snapshotRywDisableNet++
 	}
 	return nil
 }
@@ -443,7 +443,17 @@ func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
 	}
 	return nil
 }
-func (o DatabaseOptions) SetTransactionCausalReadRisky() error              { return nil }
+
+// SetTransactionCausalReadRisky is an honored DB default (FDB C++ dev review, #331): it sets the
+// GRV causal-read-risky flag on every new transaction, relaxing the read version (a read-version /
+// staleness change). The per-tx SetCausalReadRisky IS honored, so the DB default must propagate too
+// rather than be silently dropped (unlike causal_write_risky, whose per-tx form is a fail-safe no-op).
+func (o DatabaseOptions) SetTransactionCausalReadRisky() error {
+	if o.db != nil {
+		o.db.txDefaults.causalReadRisky = true
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error { return nil }
 
 // DB-level defaults for the options the per-transaction setters reject (RFC-111 P1.3): keep the
