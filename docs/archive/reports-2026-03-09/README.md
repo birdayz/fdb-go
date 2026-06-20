@@ -21,4 +21,5 @@ The reports in this directory were generated on **2026-03-09**, against an **ear
   suites — the executable source of truth for wire/behaviour compatibility.
 
 These files are kept only for historical provenance (they document the code paths examined at the
-time). `git log --follow` on any file traces it back to its original `reports/` location.
+time). They were authored across several commits on **2026-03-09** (e.g. `055b65bd`, `ee48ec77`);
+run `git log --follow <file>` for a given file's exact origin and its move from `reports/` to here.
