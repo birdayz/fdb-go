@@ -1033,6 +1033,12 @@ func decodeLimitContinuation(continuation []byte, fullOffset, fullLimit int) (in
 	innerLen := readUint32BE(continuation[pos:])
 	pos += 4
 	if innerLen == limitContNilInner {
+		// Defence-in-depth: a nil-inner envelope must have no trailing bytes
+		// (the encoder writes none). Reject a malformed continuation rather than
+		// silently ignoring junk — symmetric with the length check below.
+		if pos != len(continuation) {
+			return nil, 0, 0, fmt.Errorf("limit continuation: %d trailing bytes after nil inner", len(continuation)-pos)
+		}
 		return nil, int(ro), int(rl), nil
 	}
 	if int64(pos)+int64(innerLen) != int64(len(continuation)) {

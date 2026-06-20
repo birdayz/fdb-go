@@ -1,6 +1,6 @@
 # RFC-128 — SQL LIMIT/OFFSET: remove the post-execution hoist, make LIMIT a uniform plan operator (fixes nested derived-table / CTE / union LIMIT → wrong results)
 
-**Status:** Accepted (Graefe + Torvalds ACK)
+**Status:** Implemented (PR #326)
 **Item:** prod-readiness-audit-2026-06-19.md — surfaced while verifying the **P1 "LIMIT/OFFSET plan
 continuation"** finding. The audit's literal P1 (executor re-skip on resume) is **shielded/latent** (see
 §6); this RFC fixes the *genuinely reachable, deterministic wrong-results* bug found in the same area.

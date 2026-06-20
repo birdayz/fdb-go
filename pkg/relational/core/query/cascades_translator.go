@@ -916,10 +916,12 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	outerAlias := sourceAlias(p.Input)
 	outerQ := t.namedQuantifier(outerAlias, outerRef)
 
-	// Peel LogicalLimit from the inner plan — translateOp skips it,
-	// but for correlated scalar subqueries the limit must be in the
-	// Cascades plan so the inner side returns at most N rows per
-	// outer row.
+	// Peel LogicalLimit off the inner plan and re-attach it explicitly here, so
+	// the limit caps each per-outer-row evaluation of the correlated scalar
+	// subquery. (translateOp now translates a LogicalLimit to a
+	// LogicalLimitExpression at the inner's own position — RFC-128; for the
+	// correlated case we instead bind it to the quantifier the join drives, so
+	// we peel it before translating the inner.)
 	innerPlan := csq.InnerPlan
 	var innerLimit *logical.LogicalLimit
 	if lim, ok := innerPlan.(*logical.LogicalLimit); ok {

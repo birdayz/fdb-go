@@ -96,6 +96,15 @@ func TestLimitContinuation_RejectsGarbage(t *testing.T) {
 	if _, _, _, err := decodeLimitContinuation(mism, 0, 0); err == nil {
 		t.Error("expected error for inner-length mismatch")
 	}
+
+	// Nil-inner blob with trailing junk: the encoder writes nothing after the
+	// nil-inner marker, so any trailing byte is malformed and must be rejected
+	// (symmetric with the present-inner length check above; @claude #326).
+	nilTrail, _ := encodeLimitContinuation(nil, 0, 1)
+	nilTrail = append(nilTrail, 0xFF)
+	if _, _, _, err := decodeLimitContinuation(nilTrail, 0, 0); err == nil {
+		t.Error("expected error for nil-inner continuation with trailing bytes")
+	}
 }
 
 // pageBreakCursor wraps a resumable inner cursor and forces an out-of-band stop

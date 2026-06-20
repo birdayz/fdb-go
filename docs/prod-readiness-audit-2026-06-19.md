@@ -118,7 +118,13 @@ This should block general SQL production readiness. It may not block record-stor
 > Java divergence, not a prod blocker.** HOWEVER, verifying it surfaced a *genuinely reachable,
 > deterministic wrong-results bug* in the same area — a **nested derived-table `LIMIT/OFFSET` is silently
 > dropped and mis-hoisted** (`SELECT id FROM (… LIMIT 5 OFFSET 2) AS s WHERE id>4` returns wrong rows).
-> That is the real defect; it is fixed under **RFC-128**, which also keeps the re-skip path shielded.
+> That is the real defect; it is fixed under **RFC-128 (PR #326, 2026-06-20, MERGED)** — the
+> post-execution LIMIT hoist is removed and every LIMIT becomes a uniform `RecordQueryLimitPlan` operator
+> with a `LimitContinuation` envelope, so the re-skip is fixed (not merely shielded). Implementing it also
+> exposed + fixed four latent bugs the hoist had masked (DISTINCT node-ordering, `RecordQueryLimitPlan`
+> column-derivation `GetInner`, parenthesized-union-branch LIMIT dropped at parse, and the qualified-star
+> `a.*` rebuild path dropping the LIMIT). Graefe + Torvalds + /code-review + codex + @claude all ACK.
+> **This closes the P1 LIMIT/OFFSET area.**
 
 Impact: paginated execution of physical LIMIT/OFFSET plans can skip rows again, duplicate rows, or over-return rows across resumes.
 
