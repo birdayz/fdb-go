@@ -28,6 +28,14 @@ func (p *RecordQueryLimitPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
+// GetInner exposes the single child so generic single-inner walkers
+// (deriveColumnsFromPlan, findScanPlan, findIndexPlan, …) can descend
+// through the limit — it is a row-count cap, transparent to column
+// derivation and ordering. Without this the LIMIT plan, when it sits at
+// the root (RFC-128 made the top-level LIMIT a real operator), is opaque
+// to column derivation and the result columns resolve wrong.
+func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return p.inner }
+
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
 func (p *RecordQueryLimitPlan) GetOffset() int64 { return p.offset }
 

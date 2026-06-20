@@ -110,7 +110,12 @@ func TestPlanLogging_MissThenHit(t *testing.T) {
 	}
 }
 
-func TestPlanLogging_SkipOnLimit(t *testing.T) {
+// TestPlanLogging_LimitIsCacheable pins RFC-128 §3.4: with the post-execution
+// LIMIT hoist removed, the LIMIT is carried by the RecordQueryLimitPlan operator
+// inside the cached physical plan, so a LIMIT query IS now cacheable (previously
+// it was deliberately skipped because the limit lived outside the cached plan).
+// First plan → MISS + Put; re-plan → HIT.
+func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 	t.Parallel()
 	cap := &captureLogger{}
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
@@ -121,12 +126,24 @@ func TestPlanLogging_SkipOnLimit(t *testing.T) {
 	if len(cap.events) != 1 {
 		t.Fatalf("want 1 event, got %d", len(cap.events))
 	}
-	if cap.events[0].Cache != PlanCacheSkip {
-		t.Errorf("cache = %v, want skip", cap.events[0].Cache)
+	if cap.events[0].Cache != PlanCacheMiss {
+		t.Errorf("cache = %v, want miss (LIMIT now cacheable)", cap.events[0].Cache)
 	}
-	// LIMIT query must not be cached.
-	if n := g.cache.Len(); n != 0 {
-		t.Errorf("cache len = %d, want 0 (LIMIT not cached)", n)
+	// LIMIT query is now cached: the physical plan carries the limit operator.
+	if n := g.cache.Len(); n != 1 {
+		t.Errorf("cache len = %d, want 1 (LIMIT now cacheable)", n)
+	}
+
+	// Re-plan the identical text → cache HIT.
+	q2 := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1 LIMIT 5")
+	if _, err := g.planSelectCascades(context.Background(), q2, md, true); err != nil {
+		t.Fatalf("re-plan: %v", err)
+	}
+	if len(cap.events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(cap.events))
+	}
+	if cap.events[1].Cache != PlanCacheHit {
+		t.Errorf("re-plan cache = %v, want hit", cap.events[1].Cache)
 	}
 }
 

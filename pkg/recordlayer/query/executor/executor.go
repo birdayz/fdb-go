@@ -805,22 +805,259 @@ func executeLimit(
 	limit := int(p.GetLimit())
 	offset := int(p.GetOffset())
 
-	// Go-only extension: propagate effective limit to inner plan so
-	// scans stop early. The inner needs at most (offset + limit) rows.
+	// RFC-128 §3.3: envelope the LIMIT continuation so the skip/limit state
+	// survives the per-page transaction rollover that paginatingRows does.
+	// The shared skipCursor/limitRowsCursor (cursor_combinators.go, driven by
+	// applySkipLimit from 23 sites) forward the inner continuation with no
+	// skip/limit bookkeeping — exactly like Java's SkipCursor/RowLimitedCursor
+	// — so resuming them re-skips `offset` and resets `limit`. We therefore
+	// keep those byte-identical and confine the envelope to THIS operator: a
+	// LIMIT-specific continuation that records {inner continuation, remaining
+	// offset, remaining limit}. On resume we decode it, drive the child from
+	// the inner continuation, and continue skipping/limiting from where the
+	// previous page stopped — never re-skipping, never resetting the cap.
+	innerCont, remOffset, remLimit, decErr := decodeLimitContinuation(continuation, offset, limit)
+	if decErr != nil {
+		return nil, fmt.Errorf("invalid limit continuation: %w", decErr)
+	}
+
+	// Go-only extension: propagate the effective row limit to the inner plan
+	// so downstream scans stop early. On resume the inner needs at most
+	// (remOffset + remLimit) rows — the REMAINING window, not the full one.
 	innerProps := props
-	effectiveLimit := offset + limit
+	effectiveLimit := remOffset + remLimit
 	if effectiveLimit > 0 {
 		if innerProps.ReturnedRowLimit == 0 || effectiveLimit < innerProps.ReturnedRowLimit {
 			innerProps.ReturnedRowLimit = effectiveLimit
 		}
 	}
 
-	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, continuation, innerProps)
+	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, innerCont, innerProps)
 	if err != nil {
 		return nil, err
 	}
 
-	return recordlayer.SkipThenLimit(innerCursor, offset, limit), nil
+	return newLimitEnvelopeCursor(innerCursor, remOffset, remLimit), nil
+}
+
+// limitEnvelopeCursor performs RFC-128's LIMIT/OFFSET (skip `remOffset`, then
+// emit at most `remLimit`) over its inner cursor, AND wraps each result's
+// continuation in a LimitContinuation so a cross-page resume continues from the
+// exact skip/limit position instead of re-skipping/re-limiting. It deliberately
+// re-implements skip-then-limit inline (rather than reusing the shared
+// SkipCursor/RowLimitedCursor) so it can observe each skip and emit and record
+// the remaining counts — the shared combinators are kept byte-identical to Java
+// because they are driven generically from 23 operator sites via applySkipLimit.
+type limitEnvelopeCursor struct {
+	inner     recordlayer.RecordCursor[QueryResult]
+	remOffset int
+	remLimit  int
+	// unbounded means "no row cap, OFFSET only" — the LIMIT was negative
+	// (LogicalLimit.Limit < 0). SQL `OFFSET n` without a LIMIT is not valid in
+	// this grammar, so this is currently unreachable from SQL; the guard keeps
+	// a negative limit from collapsing the result to empty if a future caller
+	// ever produces one.
+	unbounded bool
+	// terminal caches a sticky no-next result (matching RowLimitedCursor's
+	// cached-terminal behavior): once set, every further OnNext returns it.
+	terminal *recordlayer.RecordCursorResult[QueryResult]
+	closed   bool
+}
+
+func newLimitEnvelopeCursor(inner recordlayer.RecordCursor[QueryResult], remOffset, remLimit int) *limitEnvelopeCursor {
+	if remOffset < 0 {
+		remOffset = 0
+	}
+	return &limitEnvelopeCursor{
+		inner:     inner,
+		remOffset: remOffset,
+		remLimit:  remLimit,
+		unbounded: remLimit < 0,
+	}
+}
+
+func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.terminal != nil {
+		return *c.terminal, nil
+	}
+
+	// Limit fully consumed (also covers LIMIT 0 and a resume with remLimit==0):
+	// the operator is EXHAUSTED — it will never emit another row — so it stops
+	// with SourceExhausted+EndContinuation. This is the correct terminal in the
+	// paginatingRows architecture: an end continuation ends the page drain (a
+	// resumable continuation here would loop forever, since each fresh page
+	// would rebuild an already-empty window). Java's RowLimitedCursor returns
+	// the in-band RETURN_LIMIT_REACHED and lets the client driver stop; in our
+	// page-drain driver the equivalent "nothing more, ever" signal is end.
+	if !c.unbounded && c.remLimit <= 0 {
+		return c.exhaust(), nil
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if !result.HasNext() {
+			reason := result.GetNoNextReason()
+			if reason == recordlayer.SourceExhausted {
+				// Inner drained: the LIMIT is genuinely exhausted, no resume.
+				return c.exhaust(), nil
+			}
+			// Inner stopped out-of-band (page/scan boundary): envelope the
+			// inner continuation with the CURRENT remaining offset/limit so the
+			// next page resumes mid-window. Not sticky — the next request opens
+			// a fresh cursor from this continuation.
+			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
+			if encErr != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
+			}
+			return recordlayer.NewResultNoNext[QueryResult](
+				reason, recordlayer.NewBytesContinuation(contBytes)), nil
+		}
+
+		if c.remOffset > 0 {
+			c.remOffset--
+			continue // OFFSET: skip this row.
+		}
+
+		// Emit this row. After the emit one fewer row remains in the window;
+		// the envelope records the inner continuation positioned PAST this row
+		// plus remOffset==0 and the decremented remLimit, so a resume neither
+		// re-skips nor re-emits it. (Unbounded: remLimit stays negative, the
+		// cap never fires — OFFSET-only stream.)
+		if !c.unbounded {
+			c.remLimit--
+		}
+		contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), 0, c.remLimit)
+		if encErr != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, encErr
+		}
+		return recordlayer.NewResultWithValue(result.GetValue(), recordlayer.NewBytesContinuation(contBytes)), nil
+	}
+}
+
+// exhaust builds and caches the sticky terminal SourceExhausted result. Once the
+// LIMIT window is fully emitted (or empty), the operator is done for good — the
+// page-drain driver stops on the EndContinuation.
+func (c *limitEnvelopeCursor) exhaust() recordlayer.RecordCursorResult[QueryResult] {
+	res := recordlayer.NewResultNoNext[QueryResult](
+		recordlayer.SourceExhausted, &recordlayer.EndContinuation{})
+	c.terminal = &res
+	return res
+}
+
+func (c *limitEnvelopeCursor) Close() error {
+	c.closed = true
+	return c.inner.Close()
+}
+
+func (c *limitEnvelopeCursor) IsClosed() bool { return c.closed }
+
+// LimitContinuation is the RFC-128 §3.3 envelope for a RecordQueryLimitPlan's
+// continuation: the inner cursor's continuation plus the skip/limit window left
+// to apply. It is Go-only and INTERNAL to executeLimit — it never becomes a SQL
+// resume token or a wire/Java-interop continuation (no .proto, no
+// magic-6773487359078157740 surface). The encoding is a hand-rolled
+// length-prefixed blob, sufficient because it round-trips only within this
+// process across paginatingRows' per-page transaction rollover.
+//
+// Layout (all integers big-endian):
+//
+//	[1]   version byte (limitContVersion)
+//	[8]   remaining offset (int64)
+//	[8]   remaining limit  (int64)
+//	[4]   inner continuation length (uint32; 0xFFFFFFFF == "nil/no inner")
+//	[...] inner continuation bytes
+const limitContVersion byte = 1
+
+// limitContNilInner marks an absent inner continuation (start-from-begin),
+// distinct from a present-but-empty inner continuation (length 0).
+const limitContNilInner uint32 = 0xFFFFFFFF
+
+func encodeLimitContinuation(innerCont recordlayer.RecordCursorContinuation, remOffset, remLimit int) ([]byte, error) {
+	var innerBytes []byte
+	haveInner := false
+	if innerCont != nil && !innerCont.IsEnd() {
+		b, err := innerCont.ToBytes()
+		if err != nil {
+			return nil, err
+		}
+		// ToBytes returns nil for Start/End-like positions; treat a nil byte
+		// slice as "no inner continuation" so resume starts the child fresh.
+		if b != nil {
+			innerBytes = b
+			haveInner = true
+		}
+	}
+
+	buf := make([]byte, 0, 1+8+8+4+len(innerBytes))
+	buf = append(buf, limitContVersion)
+	buf = appendInt64BE(buf, int64(remOffset))
+	buf = appendInt64BE(buf, int64(remLimit))
+	if haveInner {
+		buf = appendUint32BE(buf, uint32(len(innerBytes)))
+		buf = append(buf, innerBytes...)
+	} else {
+		buf = appendUint32BE(buf, limitContNilInner)
+	}
+	return buf, nil
+}
+
+// decodeLimitContinuation parses a LimitContinuation. An empty continuation
+// (first page) yields (nil inner, fullOffset, fullLimit).
+func decodeLimitContinuation(continuation []byte, fullOffset, fullLimit int) (innerCont []byte, remOffset, remLimit int, err error) {
+	if len(continuation) == 0 {
+		return nil, fullOffset, fullLimit, nil
+	}
+	if len(continuation) < 1+8+8+4 {
+		return nil, 0, 0, fmt.Errorf("limit continuation too short: %d bytes", len(continuation))
+	}
+	if continuation[0] != limitContVersion {
+		return nil, 0, 0, fmt.Errorf("unknown limit continuation version %d", continuation[0])
+	}
+	pos := 1
+	ro := int64(readUint64BE(continuation[pos:]))
+	pos += 8
+	rl := int64(readUint64BE(continuation[pos:]))
+	pos += 8
+	innerLen := readUint32BE(continuation[pos:])
+	pos += 4
+	if innerLen == limitContNilInner {
+		return nil, int(ro), int(rl), nil
+	}
+	if int64(pos)+int64(innerLen) != int64(len(continuation)) {
+		return nil, 0, 0, fmt.Errorf("limit continuation inner length mismatch: want %d, have %d", innerLen, len(continuation)-pos)
+	}
+	inner := make([]byte, innerLen)
+	copy(inner, continuation[pos:])
+	return inner, int(ro), int(rl), nil
+}
+
+func appendInt64BE(b []byte, v int64) []byte {
+	return appendUint64BE(b, uint64(v))
+}
+
+func appendUint64BE(b []byte, v uint64) []byte {
+	return append(b,
+		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
+		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func appendUint32BE(b []byte, v uint32) []byte {
+	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func readUint64BE(b []byte) uint64 {
+	return uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
+		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
+}
+
+func readUint32BE(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
 // executeFetchFromPartialRecord executes a FetchFromPartialRecordPlan.

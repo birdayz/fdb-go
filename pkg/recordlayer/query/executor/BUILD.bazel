@@ -41,6 +41,7 @@ go_test(
         "executor_integration_test.go",
         "executor_test.go",
         "intersection_compkey_test.go",
+        "limit_envelope_test.go",
         "limit_extension_test.go",
         "plan_column_names_test.go",
         "resultset_test.go",
