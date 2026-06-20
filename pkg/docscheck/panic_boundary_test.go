@@ -74,42 +74,59 @@ func TestPanicBoundary_FuzzNetsWired(t *testing.T) {
 // srcsAttrRe finds the `srcs =` attribute. The \b prevents matching `embedsrcs`/`data`/`x_srcs`.
 var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=`)
 
-// nextAttrRe matches the start of the NEXT named attribute (`name =` at line start), which bounds the
-// srcs attribute's value. List/concat entries (`"x.go",`) start with a quote, not `ident =`, so they
-// don't match.
-var nextAttrRe = regexp.MustCompile(`(?m)^\s*[A-Za-z_]\w*\s*=`)
-
 // goTestWiresSrc reports whether any go_test(...) target in a BUILD.bazel lists srcFile in its `srcs`
 // attribute — i.e. the file is actually compiled + replayed under bazelisk test. It scans only inside
-// the balanced parens of each go_test( call (so a top-level exports_files([...]) occurrence — as these
-// fuzz files have, to feed this test's data dep — does NOT count), and within that, only the `srcs`
-// attribute's VALUE, from `srcs =` up to the next attribute. That value may be any Starlark expression
-// — a literal `[...]`, a concat `common + [...]`, or a `select(...) + [...]` (codex #332) — and the
-// same filename appearing in `data`/`embedsrcs`/a comment does NOT count (comments are stripped first).
+// the string-aware balanced parens of each go_test( call (so a top-level exports_files([...]) — as
+// these fuzz files have, to feed this test's data dep — does NOT count), and within that, only the
+// `srcs` attribute's VALUE: from `srcs =` to the comma that ends the expression at the top level,
+// balancing []/(){} and skipping strings. That value may be any Starlark expression — a literal
+// `[...]`, a concat `common + [...]`, or `select(...) + [...]` — so the check is correct whatever the
+// formatting (same-line or wrapped), while the same filename in `data`/`embedsrcs`/a comment does NOT
+// count (comments are stripped first). Edge cases pinned by TestGoTestWiresSrc (codex #332).
 func goTestWiresSrc(build, srcFile string) bool {
-	build = stripStarlarkComments(build) // a commented-out `# "x_test.go"` is NOT a real srcs entry (codex #332)
+	build = stripStarlarkComments(build) // a commented-out `# "x_test.go"` is NOT a real srcs entry
 	needle := `"` + srcFile + `"`
 	for i := 0; ; {
 		j := strings.Index(build[i:], "go_test(")
 		if j < 0 {
 			return false
 		}
-		callStart := i + j + len("go_test(")
-		call, callEnd := balanced(build, callStart, '(', ')')
+		call, callEnd := scanGroup(build, i+j+len("go_test("), '(', ')')
 		i = callEnd
-
-		loc := srcsAttrRe.FindStringIndex(call)
-		if loc == nil {
-			continue
-		}
-		val := call[loc[1]:] // everything after `srcs =`
-		if nb := nextAttrRe.FindStringIndex(val); nb != nil {
-			val = val[:nb[0]] // ...up to the next attribute
-		}
-		if strings.Contains(val, needle) {
+		if v, ok := srcsValue(call); ok && strings.Contains(v, needle) {
 			return true
 		}
 	}
+}
+
+// srcsValue returns the `srcs` attribute's value within a go_test call body — from just after
+// `srcs =` to the comma that ends the expression at the top level (depth 0), balancing []/(){} and
+// skipping string literals. Neither a comma inside the list nor a later same-line attribute
+// (`data =`, `embedsrcs =`) is included. ok is false when there is no srcs attribute.
+func srcsValue(call string) (string, bool) {
+	loc := srcsAttrRe.FindStringIndex(call)
+	if loc == nil {
+		return "", false
+	}
+	s := call[loc[1]:]
+	depth, inStr := 0, false
+	for k := 0; k < len(s); k++ {
+		switch c := s[k]; {
+		case inStr:
+			if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+		case c == '[', c == '(', c == '{':
+			depth++
+		case c == ']', c == ')', c == '}':
+			depth--
+		case c == ',' && depth == 0:
+			return s[:k], true
+		}
+	}
+	return s, true
 }
 
 // stripStarlarkComments removes `#`-to-end-of-line comments, but only when the `#` is outside a
@@ -140,21 +157,29 @@ func stripStarlarkComments(s string) string {
 	return b.String()
 }
 
-// balanced returns the substring of s starting at open (the index just past an already-consumed
-// opening delimiter) up to its matching close delimiter, and the index just past that close. open
-// is treated as nesting depth 1.
-func balanced(s string, open int, openCh, closeCh byte) (string, int) {
-	depth, k := 1, open
-	for k < len(s) && depth > 0 {
-		switch s[k] {
-		case openCh:
+// scanGroup returns s[open:close) (exclusive of the closing delimiter) for the group whose opening
+// delimiter was already consumed just before open (depth starts at 1), skipping string literals so a
+// delimiter inside a string does not throw off the balance, plus the index just past the close.
+func scanGroup(s string, open int, openCh, closeCh byte) (string, int) {
+	depth, inStr := 1, false
+	for k := open; k < len(s); k++ {
+		switch c := s[k]; {
+		case inStr:
+			if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+		case c == openCh:
 			depth++
-		case closeCh:
+		case c == closeCh:
 			depth--
+			if depth == 0 {
+				return s[open:k], k + 1
+			}
 		}
-		k++
 	}
-	return s[open : k-1], k
+	return s[open:], len(s)
 }
 
 // TestGoTestWiresSrc pins the BUILD wiring parser against the edge cases codex #332 raised — only a
@@ -171,6 +196,9 @@ func TestGoTestWiresSrc(t *testing.T) {
 		{"concat srcs", "go_test(\n  name=\"t\",\n  srcs = common + [\n    \"fuzz_test.go\",\n  ],\n  embed=[\":x\"],\n)", true},
 		{"select srcs", "go_test(\n  srcs = select({\"//c\": [\"x.go\"]}) + [\"fuzz_test.go\"],\n  embed=[\":x\"],\n)", true},
 		{"only in data", "go_test(\n  srcs = [\"a_test.go\"],\n  data = [\"fuzz_test.go\"],\n)", false},
+		{"same-line data", `go_test(name="t", srcs=["a_test.go"], data=["fuzz_test.go"])`, false},
+		{"trailing comma list", "go_test(\n  srcs = [\n    \"fuzz_test.go\",\n  ],\n  data = [\"x\"],\n)", true},
+		{"paren in string name", `go_test(name="foo()", srcs=["fuzz_test.go"])`, true},
 		{"only in embedsrcs", "go_test(\n  srcs = [\"a_test.go\"],\n  embedsrcs = [\"fuzz_test.go\"],\n)", false},
 		{"commented out in srcs", "go_test(\n  srcs = [\n    \"a_test.go\",\n    # \"fuzz_test.go\",\n  ],\n)", false},
 		{"only exports_files (outside go_test)", `exports_files(["fuzz_test.go"])` + "\n" + `go_test(srcs=["a_test.go"])`, false},
