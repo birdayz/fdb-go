@@ -53,44 +53,60 @@ None silently swallow: each maps to a returned error / failed future / logged-an
 
 ## 3. Change
 
-**No production-code change** (unless §5 finds a live panic). Two deliverables:
+**No production-code change** (unless §5 finds a live panic). Three deliverables.
+
+**Why a nogo analyzer, not a docscheck walk.** The primary gate is `bazelisk test //...` + nogo
+(`just test`, pre-commit). Bazel globs do **not** cross package boundaries, so a docscheck test cannot
+`filepath.Walk` the whole tree under Bazel — it would need every `.go` file as a `data` dep (one per
+package), which is impractical. nogo, by contrast, runs **per package on every build** and already
+hosts two project-specific analyzers (`//pkg/linters/{gofumpt,noemptyiface}`). A `recover()` ratchet
+belongs there: it sees every package (including a brand-new file), runs in the strongest gate, and
+needs no data-dep plumbing. This also answers Torvalds's "wired into CI?" — nogo *is* the build.
 
 1. **Refresh `docs/panic-audit.md`** to current reality: the 155/22 counts; the §2 boundary table as
-   the authoritative recover-site allowlist (each with its role); and replace the obsolete "remove all
+   the authoritative recover-site allowlist (each with its role); replace the obsolete "remove all
    `recover()`" goal with the actual policy — *the backstop layer IS the boundary discipline; new
-   boundaries must be deliberate and listed here.* Keep the user-reachable-panic worklist (the eval
-   `Value.Evaluate`/`QueryPredicate.Eval` error-channel conversion) as **explicitly deferred** (it is
-   the big signature-change refactor, tracked, not part of this gate).
+   boundaries must be deliberate and listed in the `norecover` allowlist.* Keep the user-reachable-
+   panic worklist (the eval `Value.Evaluate`/`QueryPredicate.Eval` error-channel conversion) as
+   **explicitly deferred** (the big signature-change refactor — tracked, not part of this gate).
 
-2. **`pkg/docscheck/panic_boundary_test.go`** — the release gate (two pure-unit guards, no FDB):
-   - **Recover allowlist** — enumerate every non-test `recover()` site under `pkg/` and `cmd/` (regex
-     over the source, the docscheck walk-up pattern) and assert the result matches the allowlist keyed
-     by **file → expected count** (NOT `file:line` — line numbers shift on every edit and would make
-     the gate flap). A `recover()` in a new file, or an extra one in an allowlisted file, fails until
-     the author adds/justifies it in panic-audit.md; a removed one that leaves a stale doc entry also
-     fails (drift both ways). The table's `file:line` in §2 stays human documentation; the executable
-     key is `file → count`. This is the ratchet.
-   - **Boundary fuzz registry** — a small in-test list of the four required boundaries → their fuzz
-     target name + file; assert each fuzz function still exists (regex over its file). If a boundary
-     loses its no-panic fuzz (renamed/deleted), → **red**. Names a boundary, not all 122 fuzzers
-     (Torvalds: pin the load-bearing four, not padding).
+2. **`pkg/linters/norecover`** — a nogo analyzer (the recover ratchet). It walks each package's AST
+   for a call to the builtin `recover`, counts them **per file**, and compares to a baked-in
+   `map[string]int` allowlist (repo-relative-suffix → permitted count — the §2 boundary layer). A
+   `recover()` in a non-allowlisted file, or one *more* than the allowance in an allowlisted file,
+   is a **nogo build error**. Per-file count (not file-level exclude) keeps it as tight as the
+   originally-ACK'd file→count design. *Accepted hole* (Torvalds): an add-one/remove-one within the
+   same allowlisted file nets zero and slips through — but that means editing an already-scrutinised
+   boundary file, the narrowest possible gap. Registered in `//:nogo` deps + `nogo_config.json`.
 
-   Both are name/site-presence guards (the RFC-133 completeness-guard shape), not behavioural — they
-   keep the *map and the net* honest, cheaply, on every build.
+3. **`pkg/docscheck/panic_boundary_test.go`** — the boundary-fuzz registry (the other half). A small
+   in-test list of the four audit-named boundaries → `{fuzz fn, file}`. For each it asserts (a) the
+   fuzz function exists in its file AND (b) **that file is in a `go_test` target's `srcs` in the same
+   dir's `BUILD.bazel`** — i.e. it actually compiles + replays its seed corpus under `bazelisk test`,
+   not merely "a function with that name exists" (Torvalds: name-presence is theater; wiring is the
+   point). The four fuzz files + their BUILD.bazel are specific, so they are `data`-dep'd (the
+   RFC-131 pattern) — no whole-tree problem. Losing/renaming a boundary fuzz, or unwiring it from its
+   test target, → **red**.
 
 ## 4. Executable spec (tests)
 
-- Add an unclassified `recover()` to a non-test file → gate red (revert-proven).
-- Rename/delete a required boundary fuzz target → gate red (revert-proven).
-- A stale allowlist entry whose `recover()` was removed → the test also flags drift the other way
-  (an allowlisted site that no longer exists), so the doc can't keep dead entries.
+- `norecover` analyzer unit test (`analysistest`, the `noemptyiface` pattern): a fixture with a
+  `recover()` in a non-allowlisted path → diagnostic; an allowlisted path → none.
+- Revert-prove the live gate: add a `recover()` to a non-allowlisted production file → `just build`
+  goes red (nogo); remove → green.
+- Boundary-fuzz registry: rename a required fuzz fn, or remove its file from the `go_test` `srcs` →
+  `panic_boundary_test.go` red (revert-proven).
 
-## 5. Pre-flight verification (part of impl, not just claim)
+## 5. Pre-flight verification (quantified — part of impl, not a claim)
 
-Before declaring the boundaries safe, **run the four boundary fuzz targets** (parser, planner, wire,
-tuple) for a bounded `-fuzztime` and confirm **zero panics / new crashers**. If any boundary panics on
-malformed input, that is a real bug — fix it (convert the panic to an error at that boundary, with its
-area's reviewer) and pin the crasher in the seed corpus, **in this PR** (DFS, not deferred).
+Before declaring the boundaries safe, **actively fuzz the four boundary targets** — parser
+(`FuzzParse`), planner (`FuzzTranslateToCascades`), wire (the `reader_fuzz` target), tuple
+(`tuple_malformed`) — at **`-fuzztime=60s` each** (seed corpus replayed + new inputs explored), via
+the Bazel fuzz invocation. Confirm **zero panics / zero new crashers**. Any crasher is a real bug:
+fix it (convert that boundary's panic to a returned error, with its area's reviewer — Graefe for
+parser/planner, FDB-C-dev for wire/tuple) and commit the crasher into the seed corpus, **in this PR**
+(DFS, not deferred). The exact commands + their clean output go in the PR description so the
+verification is auditable, not asserted.
 
 ## 6. Wire/behaviour impact
 
