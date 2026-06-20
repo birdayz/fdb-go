@@ -1,6 +1,6 @@
 # RFC-132 — Tagged-release policy, support window & changelog
 
-**Status:** Accepted (Torvalds ACK — close the C++/Go-version guard gap)
+**Status:** Implemented (PR #330 — Torvalds + codex + @claude ACK; CI green)
 **Item:** prod-readiness-audit-2026-06-19.md **P2** — "No Tagged Release Or Clear Support Window."
 **Reviewers:** Torvalds (doc/process honesty) + codex + @claude. *Not* a query-engine or wire code
 change → no Graefe gate, no FDB-client gate.

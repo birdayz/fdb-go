@@ -258,6 +258,15 @@ Recommended fix:
 
 ### P2: No Tagged Release Or Clear Support Window
 
+> **ADDRESSED — RFC-132 / PR #330 (2026-06-20, MERGED).** The release *machinery* now exists:
+> `CHANGELOG.md` (Keep-a-Changelog + a `### Compatibility` block per entry: wire format / SQL / FDB
+> options / required versions) and `RELEASE.md` (pre-1.0 versioning + support window; the honest
+> two-axis promise — the Go API may break across minors, but the FDB wire format stays compatible
+> with Java `fdb-record-layer-core` 4.11.1.0 across every tag). `SECURITY.md` points at `RELEASE.md`.
+> The `docs_consistency` guard was extended to anchor all three version pins (Java/FDB/Go). **Cutting
+> the first `v0.x` git tag is deliberately left to the maintainer** (a one-way stability assertion) —
+> this RFC makes it a one-command step, it does not take it. Reviewers: Torvalds + codex + @claude.
+
 Impact: production users have no semver artifact, changelog, or supported-version policy beyond "pin latest master."
 
 Evidence:
