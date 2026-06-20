@@ -160,4 +160,4 @@ nogo(
         "@co_honnef_go_tools//staticcheck/sa9009",
     ],
 )
-# gazelle:build_tags bazelrunfiles
+# gazelle:build_tags bazelrunfiles,stress
