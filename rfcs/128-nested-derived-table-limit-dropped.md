@@ -1,6 +1,6 @@
 # RFC-128 — SQL LIMIT/OFFSET: remove the post-execution hoist, make LIMIT a uniform plan operator (fixes nested derived-table / CTE / union LIMIT → wrong results)
 
-**Status:** Draft
+**Status:** Accepted (Graefe + Torvalds ACK)
 **Item:** prod-readiness-audit-2026-06-19.md — surfaced while verifying the **P1 "LIMIT/OFFSET plan
 continuation"** finding. The audit's literal P1 (executor re-skip on resume) is **shielded/latent** (see
 §6); this RFC fixes the *genuinely reachable, deterministic wrong-results* bug found in the same area.
@@ -104,7 +104,7 @@ limit)` with the **full** offset/limit (`:823`) → re-skips on resume.
 `RecordQueryLimitPlan`/`executeLimit`'s **own** continuation **only** — NOT on `skipCursor`/`limitRowsCursor`
 (`cursor_combinators.go:56,93`). Those are 1:1 ports of Java's `SkipCursor`/`RowLimitedCursor` (forward the
 inner continuation, no envelope) and are driven generically by `applySkipLimit` (`executor.go:2555`) from
-~15 operator sites via `props.Skip`/`props.ReturnedRowLimit`; enveloping them would mutate every operator's
+23 operator sites via `props.Skip`/`props.ReturnedRowLimit`; enveloping them would mutate every operator's
 continuation format and needlessly diverge the combinators from Java. Keep them byte-identical.
 
 So `executeLimit` wraps its `SkipThenLimit` cursor in a small LIMIT-specific continuation adapter:
