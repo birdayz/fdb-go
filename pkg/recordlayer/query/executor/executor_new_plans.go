@@ -227,7 +227,10 @@ func executeLoadByKeys(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	results := make([]QueryResult, 0, len(keys))
+	// RFC-130: bounded by a plan-literal key count, but each element is a whole
+	// stored record, so the resident bytes can grow. Charge each loaded record
+	// against the statement memory budget via boundedBuffer.
+	results := newBoundedBuffer[QueryResult](props.State, 0, "LoadByKeys", estimateQueryResultBytes)
 	for _, pk := range keys {
 		rec, err := store.LoadRecord(pk)
 		if err != nil {
@@ -236,10 +239,13 @@ func executeLoadByKeys(
 		if rec == nil {
 			continue
 		}
-		results = append(results, FromStoredRecord(rec))
+		qr := FromStoredRecord(rec)
+		if err := results.Append(qr); err != nil {
+			return nil, err
+		}
 	}
 	return applySkipLimit(
-		recordlayer.FromList(results),
+		recordlayer.FromList(results.Items()),
 		props.Skip, props.ReturnedRowLimit,
 	), nil
 }

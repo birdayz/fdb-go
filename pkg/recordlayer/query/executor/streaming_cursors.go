@@ -398,18 +398,21 @@ type memorySortCursor struct {
 	loaded  bool
 	emitIdx int
 	closed  bool
-	maxBuf  int // 0 = use DefaultMaxSortBufferRows
+	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
+	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
 }
 
 func newMemorySortCursor(
 	inner recordlayer.RecordCursor[QueryResult],
 	keys []string,
 	dirs []bool,
+	st *recordlayer.ExecuteState,
 ) *memorySortCursor {
 	return &memorySortCursor{
 		inner: inner,
 		keys:  keys,
 		dirs:  dirs,
+		st:    st,
 	}
 }
 
@@ -441,7 +444,8 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				return c.emitNext()
 			}
 			contBytes, encErr := encodeSortContinuation(
-				result.GetContinuation(), c.buf)
+				result.GetContinuation(), c.buf,
+			)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
@@ -449,7 +453,16 @@ func (c *memorySortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				reason, recordlayer.NewBytesContinuation(contBytes),
 			), nil
 		}
-		c.buf = append(c.buf, result.GetValue())
+		v := result.GetValue()
+		// RFC-130: the in-memory sort buffer is a cardinality-growing buffer —
+		// charge each row's bytes against the statement memory budget before
+		// keeping it.
+		if c.st.HasMemLimit() {
+			if err := c.st.ChargeMemory(estimateQueryResultBytes(v)); err != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, err
+			}
+		}
+		c.buf = append(c.buf, v)
 		if len(c.buf) >= limit {
 			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
 				Rows:  len(c.buf),
@@ -489,7 +502,8 @@ type customSortCursor struct {
 	loaded  bool
 	emitIdx int
 	closed  bool
-	maxBuf  int // 0 = use DefaultMaxSortBufferRows
+	maxBuf  int                       // 0 = use DefaultMaxSortBufferRows
+	st      *recordlayer.ExecuteState // RFC-130 statement memory budget
 }
 
 // DefaultMaxSortBufferRows is the maximum number of rows the in-memory
@@ -501,10 +515,12 @@ const DefaultMaxSortBufferRows = 5_000_000
 func newCustomSortCursor(
 	inner recordlayer.RecordCursor[QueryResult],
 	sortFn func([]QueryResult) error,
+	st *recordlayer.ExecuteState,
 ) *customSortCursor {
 	return &customSortCursor{
 		inner:  inner,
 		sortFn: sortFn,
+		st:     st,
 	}
 }
 
@@ -537,7 +553,8 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				return c.emitNext()
 			}
 			contBytes, encErr := encodeSortContinuation(
-				result.GetContinuation(), c.buf)
+				result.GetContinuation(), c.buf,
+			)
 			if encErr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
@@ -545,7 +562,15 @@ func (c *customSortCursor) OnNext(ctx context.Context) (recordlayer.RecordCursor
 				reason, recordlayer.NewBytesContinuation(contBytes),
 			), nil
 		}
-		c.buf = append(c.buf, result.GetValue())
+		v := result.GetValue()
+		// RFC-130: charge each row's bytes against the statement memory budget
+		// before keeping it in the sort buffer.
+		if c.st.HasMemLimit() {
+			if err := c.st.ChargeMemory(estimateQueryResultBytes(v)); err != nil {
+				return recordlayer.RecordCursorResult[QueryResult]{}, err
+			}
+		}
+		c.buf = append(c.buf, v)
 		if len(c.buf) >= limit {
 			return recordlayer.RecordCursorResult[QueryResult]{}, &SortBufferExceededError{
 				Rows:  len(c.buf),
@@ -615,6 +640,13 @@ type nljCursor struct {
 	// guarantee that (see the comment there).
 	matchedInner []bool
 	drainIdx     int
+
+	// st is the statement memory budget (RFC-130). buildErr captures a budget
+	// breach during hash-index construction (newNLJCursor cannot return an
+	// error) and is surfaced on the first OnNext, so the join fails fast rather
+	// than silently dropping the index.
+	st       *recordlayer.ExecuteState
+	buildErr error
 }
 
 func newNLJCursor(
@@ -624,6 +656,7 @@ func newNLJCursor(
 	outerAlias, innerAlias string,
 	preds []predicates.QueryPredicate,
 	evalCtx *EvaluationContext,
+	st *recordlayer.ExecuteState,
 ) *nljCursor {
 	c := &nljCursor{
 		outerInner: outer,
@@ -633,6 +666,7 @@ func newNLJCursor(
 		innerAlias: innerAlias,
 		preds:      preds,
 		evalCtx:    evalCtx,
+		st:         st,
 	}
 	if joinType == plans.JoinFullOuter {
 		c.matchedInner = make([]bool, len(innerRows))
@@ -660,12 +694,30 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias string) {
 			return
 		}
 		val := lookupJoinKey(m, innerCol, innerAlias)
+		// RFC-130: the hash index is additional resident memory beyond the
+		// already-charged innerRows — one int per inner row plus, for a new
+		// key, the key's own bytes. Charge it; a budget breach is captured in
+		// buildErr and surfaced on the first OnNext (this constructor cannot
+		// return an error).
+		var charge int64 = nljHashEntryBytes
+		if _, existing := idx[val]; !existing {
+			charge += scalarValueBytes(val)
+		}
+		if err := c.st.ChargeMemory(charge); err != nil {
+			c.buildErr = err
+			c.hashIndex = nil
+			return
+		}
 		idx[val] = append(idx[val], i)
 	}
 	c.hashIndex = idx
 	c.hashJoinCol = innerCol
 	c.outerJoinCol = outerCol
 }
+
+// nljHashEntryBytes is the per-inner-row cost charged for the NLJ hash index:
+// the int slot in the bucket slice plus amortized map/slice-header overhead.
+const nljHashEntryBytes int64 = 24
 
 // extractEquijoinColumns extracts the outer and inner column names
 // from a single-column equijoin predicate. Returns ("","") if the
@@ -774,6 +826,13 @@ func lookupJoinKey(m map[string]any, col, alias string) any {
 func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
 	if c.closed {
 		return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf("cursor is closed")
+	}
+	// RFC-130: a memory-budget breach during hash-index construction is
+	// surfaced here on the first pull (newNLJCursor cannot return an error).
+	if c.buildErr != nil {
+		err := c.buildErr
+		c.buildErr = nil
+		return recordlayer.RecordCursorResult[QueryResult]{}, err
 	}
 
 	for {

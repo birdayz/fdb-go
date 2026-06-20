@@ -200,7 +200,7 @@ func TestGetOrCreateTempTable_CreatesNew(t *testing.T) {
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt1")
 
-	tt := ec.GetOrCreateTempTable(id)
+	tt := ec.GetOrCreateTempTable(id, nil)
 	if tt == nil {
 		t.Fatal("GetOrCreateTempTable returned nil")
 	}
@@ -214,8 +214,8 @@ func TestGetOrCreateTempTable_ReturnsSameOnSecondCall(t *testing.T) {
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt2")
 
-	tt1 := ec.GetOrCreateTempTable(id)
-	tt2 := ec.GetOrCreateTempTable(id)
+	tt1 := ec.GetOrCreateTempTable(id, nil)
+	tt2 := ec.GetOrCreateTempTable(id, nil)
 	if tt1 != tt2 {
 		t.Fatal("second GetOrCreateTempTable call returned a different *TempTable")
 	}
@@ -226,7 +226,7 @@ func TestGetOrCreateTempTable_Functional(t *testing.T) {
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt3")
 
-	tt := ec.GetOrCreateTempTable(id)
+	tt := ec.GetOrCreateTempTable(id, nil)
 	qr := QueryResult{Datum: map[string]any{"id": int64(1)}}
 	tt.Add(qr)
 

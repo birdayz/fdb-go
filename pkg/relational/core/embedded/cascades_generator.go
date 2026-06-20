@@ -830,6 +830,17 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
 		respectActiveTx:  p.IsUpdate(),
+		// RFC-130: mint the statement-wide ExecuteState ONCE here (never nil),
+		// with the memory byte budget from OptMaxStatementMemoryBytes (0/unset
+		// → unlimited). It is held on paginatingRows so it survives across the
+		// per-page cursor hierarchies (each fetchPage rebuilds the cursors but
+		// shares this one counter) and is assigned into every page's
+		// ExecuteProperties in executeProps(). The "no budget" case is
+		// memLimit<=0, not a nil state, so a missed accumulation site charges
+		// an unlimited counter rather than silently no-oping.
+		execState: recordlayer.NewExecuteState(
+			optInt64(c.Options(), api.OptMaxStatementMemoryBytes, 0),
+		),
 	}
 
 	// Eagerly fetch the first page so execution errors (type mismatches,
@@ -907,6 +918,13 @@ type paginatingRows struct {
 	// would exceed maxResultBytes the next emit errors (54F01).
 	maxResultBytes int64
 	resultBytes    int64
+
+	// execState is the statement-wide RFC-130 ExecuteState (the memory byte
+	// budget counter). Minted ONCE in Execute and shared across all pages —
+	// each fetchPage rebuilds the cursor hierarchy but assigns this same
+	// pointer into the page's ExecuteProperties.State, so the in-memory
+	// buffering budget accumulates across the whole statement. Never nil.
+	execState *recordlayer.ExecuteState
 
 	buf          [][]driver.Value
 	bufPos       int
@@ -1210,6 +1228,13 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// setFailOnScanLimitReached(true)). Default off.
 	props.FailOnScanLimitReached = r.conn.failOnScanLimitReached
 
+	// RFC-130: thread the statement-wide ExecuteState into this page's props so
+	// the in-memory buffering operators charge the shared memory byte budget.
+	// The SAME pointer is assigned every page, so the budget survives the
+	// per-page cursor rebuild — exactly as Java's ExecuteState survives
+	// clearSkipAndLimit by being held by reference.
+	props.State = r.execState
+
 	return props
 }
 
@@ -1405,6 +1430,14 @@ func translateExecError(err error) error {
 	var sortLimit *executor.SortBufferExceededError
 	if errors.As(err, &sortLimit) {
 		return api.NewError(api.ErrCodeExecutionLimitReached, sortLimit.Error())
+	}
+	// Statement-wide memory byte budget (RFC-130): the accounted in-memory
+	// buffers (CollectAllBounded, sort/distinct/NLJ-hash/temp-table/DML-echo)
+	// charge a shared per-statement counter; a breach is a per-statement
+	// resource limit in the same family — surface it as 54F01.
+	var memLimit *recordlayer.MemoryLimitExceededError
+	if errors.As(err, &memLimit) {
+		return api.NewError(api.ErrCodeExecutionLimitReached, memLimit.Error())
 	}
 	// Leaf-cursor scan limit hit with FailOnScanLimitReached set
 	// (RFC-106a parity): Java throws ScanLimitReachedException (54F01).

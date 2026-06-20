@@ -37,9 +37,21 @@ type OptionName string
 // Option names, matching Java's Options.Name enum 1:1. New names must
 // be added here AND in Java simultaneously.
 const (
-	OptContinuation                       OptionName = "CONTINUATION"
-	OptIndexHint                          OptionName = "INDEX_HINT"
-	OptMaxRows                            OptionName = "MAX_ROWS"
+	OptContinuation OptionName = "CONTINUATION"
+	OptIndexHint    OptionName = "INDEX_HINT"
+	OptMaxRows      OptionName = "MAX_ROWS"
+	// OptMaxStatementMemoryBytes is the statement-wide memory byte budget
+	// (RFC-130). It bounds the in-memory buffering operators (NLJ inner, UNION
+	// buffered, sort buffers, distinct/dedup seen-sets, recursive-CTE working
+	// sets, temp tables, DML echoes) by BYTES, where MaterializationLimit only
+	// bounds them by ROW COUNT — so 100k large rows can no longer OOM. Default
+	// 0 = unlimited (today's behaviour); a positive value caps the statement's
+	// accounted buffering and a breach errors with 54F01. This is a Go-only
+	// extension Java lacks, so it is deliberately NOT in defaultOptionValues
+	// (the wire/plan-cache-sensitive default map): an absent option reads back
+	// as 0 via the optInt64 fallback, keeping the default path identical to
+	// pre-RFC-130 and the default option set byte-identical to Java's.
+	OptMaxStatementMemoryBytes            OptionName = "MAX_STATEMENT_MEMORY_BYTES"
 	OptRequiredMetadataTableVersion       OptionName = "REQUIRED_METADATA_TABLE_VERSION"
 	OptTransactionTimeout                 OptionName = "TRANSACTION_TIMEOUT"
 	OptReplaceOnDuplicatePK               OptionName = "REPLACE_ON_DUPLICATE_PK"
