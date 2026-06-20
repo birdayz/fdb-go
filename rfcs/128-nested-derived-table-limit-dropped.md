@@ -92,20 +92,42 @@ CLAUDE.md "one query path" directive. (Graefe Q2 endorsed the uniform-operator d
 *shows* the top-level `Limit(...)` node (today it is invisible because skipped) — a correctness
 improvement; affected EXPLAIN goldens are updated.
 
-### 3.3 Envelope the LIMIT continuation — MANDATORY (Graefe + Torvalds confirmed)
+### 3.3 Envelope the LIMIT continuation — at the `RecordQueryLimitPlan` layer ONLY (both reviewers)
 
 With the LIMIT now a streamed operator, its skip/limit state must survive the **per-page transaction
 rollover** `paginatingRows` does (`fetchPage` opens a fresh txn per page, `cascades_generator.go:1312`).
 Both reviewers confirmed the re-skip is reachable: `executeSort` resumes its inner from a decoded
 continuation (`executor.go:1021`) → reaches `executeLimit` (`:818`) which rebuilds `SkipThenLimit(offset,
-limit)` with the **full** offset/limit (`:823`) → re-skips on resume. Fix:
-- Add a `LimitContinuation` proto `{ inner_continuation, remaining_offset, remaining_limit }`. `executeLimit`
-  decodes it: resume the child from `inner_continuation` and reconstruct `SkipThenLimit` with the
-  **remaining** offset/limit. The `skipCursor`/`limitRowsCursor` (`cursor_combinators.go:56,93`) must emit
-  this envelope as their continuation (they currently forward the inner's). On empty continuation, full
-  `offset`/`limit` as today.
-- This is the faithful fix for the audit's literal P1 re-skip — it must ship with §3.1/§3.2, since making
-  LIMIT a streamed operator is exactly what makes the re-skip reachable.
+limit)` with the **full** offset/limit (`:823`) → re-skips on resume.
+
+**Layer (the blast-radius correction both reviewers flagged):** the envelope goes on
+`RecordQueryLimitPlan`/`executeLimit`'s **own** continuation **only** — NOT on `skipCursor`/`limitRowsCursor`
+(`cursor_combinators.go:56,93`). Those are 1:1 ports of Java's `SkipCursor`/`RowLimitedCursor` (forward the
+inner continuation, no envelope) and are driven generically by `applySkipLimit` (`executor.go:2555`) from
+~15 operator sites via `props.Skip`/`props.ReturnedRowLimit`; enveloping them would mutate every operator's
+continuation format and needlessly diverge the combinators from Java. Keep them byte-identical.
+
+So `executeLimit` wraps its `SkipThenLimit` cursor in a small LIMIT-specific continuation adapter:
+- Proto `LimitContinuation { inner_continuation, remaining_offset, remaining_limit }` — Go-only, internal to
+  `r.continuation` (`:937`), never a SQL/wire token (no `record_cursor.proto`, no Java-interop). Wire-compat
+  is untouched (the magic-`6773487359078157740` surface is KeyValueCursor-level).
+- On resume: decode it, pass `inner_continuation` to the child, reconstruct `SkipThenLimit` with the
+  **remaining** offset/limit (so a resume past the skip does not re-skip and a partial limit is not reset).
+  Empty continuation → full `offset`/`limit` as today.
+- This is the faithful fix for the audit's literal P1 re-skip — ships with §3.1/§3.2, since making LIMIT a
+  streamed operator is exactly what makes the re-skip reachable.
+
+### 3.4 Plan-cache + scan-bound notes (Torvalds)
+
+- **Cache:** `extractLimitOffset`'s only caller is `cascades_generator.go:373`; the cache-skip at `:378`
+  keys on `sqlLimit < 0` to refuse caching LIMIT queries. Once the hoist is gone, LIMIT queries become
+  cacheable — and this is **correct**, because the cached *physical* plan now carries the
+  `RecordQueryLimitPlan` (post-§3.2). Remove the skip; a §4 test pins that a re-run LIMIT query reuses the
+  cached plan and still returns the right rows.
+- **Scan-bound:** `pageRowBudget` loses its `sqlLimit/sqlOffset` arms but keeps the `maxRows`/byte arms;
+  scan-bounding for a plain `LIMIT k` is then carried solely by the operator's `ReturnedRowLimit =
+  offset+limit` (`executor.go:811`). §4 adds a non-regression test that a plain `LIMIT k` over a large table
+  still bounds the scan (does not full-scan).
 
 ## 4. Executable spec (regression tests)
 
@@ -130,7 +152,19 @@ All revert-proven (the §1 repro already fails pre-fix):
    fixed, not merely shielded.
 9. **EXPLAIN:** the top-level LIMIT now shows a `Limit(` node (previously invisible because skipped);
    affected EXPLAIN goldens updated.
-10. **Determinism:** the planner-affecting tests run ≥10× (query-engine skill) — a uniform LIMIT operator
+10. **Ordering gate (Graefe):** promoting the top-level LIMIT exercises `ImplementLimitRule`'s ordering
+    interaction (`rule_implement_limit.go:36-39`) at the root for the first time. EXPLAIN-assert that
+    `SELECT … ORDER BY x LIMIT n` plans as `Limit(Sort(…))` — the limit ABOVE the sort (applied after
+    ordering), NOT `Sort(Limit(…))` — and that the limit still pushes into the scan via `ReturnedRowLimit`.
+11. **Plan-cache reuse (Torvalds):** run a `LIMIT k` query twice → second run hits the cached physical plan
+    (now legal post-hoist-removal) and returns the same correct rows.
+12. **Scan-bound non-regression (Torvalds):** a plain `LIMIT k` over a large table bounds the scan (asserts
+    via scanned-rows/explain, not a full scan) — the operator's `ReturnedRowLimit` replaces the retired
+    `pageRowBudget` LIMIT arm.
+13. **Shared-combinator resume (Torvalds):** an operator that uses `applySkipLimit`'s `props.Skip`/
+    `ReturnedRowLimit` (e.g. a scan with a returned-row limit) still resumes correctly across a page — proves
+    the envelope was confined to `RecordQueryLimitPlan` and did not disturb the shared cursors.
+14. **Determinism:** the planner-affecting tests run ≥10× (query-engine skill) — a uniform LIMIT operator
     must not introduce plan nondeterminism.
 
 ## 5. Wire-compat impact
