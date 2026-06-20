@@ -2193,9 +2193,21 @@ func executeInsert(
 	// Resolved lazily on the first computed-row datum.
 	var targetDesc protoreflect.MessageDescriptor
 
-	// RFC-130: the INSERT results echo holds a fresh FromStoredRecord per
-	// inserted row — genuinely additional resident memory beyond the
-	// already-charged innerRows source. Charge it via boundedBuffer.
+	// RFC-130 / codex #328: charge the result echo's anticipated residency UP FRONT.
+	// Each inserted row yields a fresh FromStoredRecord echo — genuinely new memory
+	// beyond the already-charged innerRows source. It cannot be charged exactly
+	// pre-write (the stored record doesn't exist until SaveRecord), and charging it
+	// mid-loop would fire AFTER a write is staged — and runInTx does not roll back on
+	// a statement error, so a 54F01 could persist a PARTIAL INSERT. So charge the
+	// echo's ESTIMATE (≈ the source rows, same cardinality) before any mutation: the
+	// budget is enforced AND a breach aborts with zero writes staged.
+	if props.State.HasMemLimit() {
+		for _, src := range innerRows {
+			if err := props.State.ChargeMemory(estimateQueryResultBytes(src)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var results []QueryResult
 	for _, qr := range innerRows {
 		// INSERT always coerces the inner result to the target type (Java's
@@ -2327,9 +2339,21 @@ func executeUpdate(
 		return nil, err
 	}
 
-	// RFC-130: the UPDATE results echo holds a fresh FromStoredRecord per
-	// updated row — additional resident memory beyond the already-charged
-	// target set. Charge it via boundedBuffer.
+	// RFC-130 / codex #328: charge the result echo's anticipated residency UP FRONT.
+	// Each updated row yields a fresh FromStoredRecord echo — genuinely new memory
+	// beyond the already-charged target set. It cannot be charged exactly pre-write
+	// (the new stored record doesn't exist until SaveRecord), and charging it mid-loop
+	// would fire AFTER a write is staged — and runInTx does not roll back on a
+	// statement error, so a 54F01 could persist a PARTIAL UPDATE. So charge the echo's
+	// ESTIMATE (≈ the target rows, same cardinality) before any mutation: the budget
+	// is enforced AND a breach aborts with zero writes staged.
+	if props.State.HasMemLimit() {
+		for _, src := range targets {
+			if err := props.State.ChargeMemory(estimateQueryResultBytes(src)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var results []QueryResult
 	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {

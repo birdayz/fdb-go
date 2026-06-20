@@ -276,14 +276,14 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_DMLEchoNotCharged (codex #328): a DML's result echo is bounded by
-// its pre-materialized + charged target set, NOT charged a second time. Charging it
-// would (a) for DELETE re-count the same already-charged target rows, and (b) fire
-// AFTER writes are staged — a partial-mutation hazard in an explicit transaction
-// (runInTx does not roll back on a statement error). With a budget that fits the
-// target set (~10KB) but would trip under the old echo double-charge (~20KB), the
-// DELETE must COMPLETE and remove every row — no spurious 54F01, no partial mutation.
-func TestFDB_RFC130_DMLEchoNotCharged(t *testing.T) {
+// TestFDB_RFC130_DeleteEchoNotDoubleCharged (codex #328): the DELETE result echo IS
+// the already-charged target row (same shared QueryResult), so it must NOT be charged
+// a second time — doing so double-counts and trips the budget at ~half its true value.
+// With a budget that fits the target set (~10KB) but would trip under a double-charge
+// (~20KB), the DELETE must COMPLETE and remove every row — no spurious 54F01, no
+// partial mutation. (INSERT/UPDATE echoes are genuinely new memory and ARE charged —
+// up front, see TestFDB_RFC130_UpdateEchoChargedNoPartial.)
+func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc130_dml", "rfc130dml",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
@@ -305,6 +305,39 @@ func TestFDB_RFC130_DMLEchoNotCharged(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("DELETE left %d rows — partial mutation", remaining)
+	}
+}
+
+// TestFDB_RFC130_UpdateEchoChargedNoPartial (codex #328): the UPDATE result echo (a
+// fresh stored record per updated row) IS genuinely new memory, so it must be charged —
+// but charging it mid-loop (after a write is staged) could persist a PARTIAL UPDATE,
+// since runInTx does not roll back on a statement error. So the echo's anticipated bytes
+// are charged UP FRONT, before any SaveRecord. A budget that fits the target set (~10KB)
+// but NOT target+echo (~20KB) must trip 54F01 with ZERO rows mutated — proving the cap
+// is enforced (codex P2) AND no partial mutation (codex P1).
+func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc130_upd", "rfc130upd",
+		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const rows = 20
+	wide := strings.Repeat("r", 600) // ~10KB target set; +~10KB echo charged up front = ~20KB
+	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedItemsOnConn(t, ctx, seedConn, rows, wide)
+
+	const budget = 15_000 // fits the ~10KB target set; target+echo (~20KB) trips before any write
+	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	_, err := capConn.ExecContext(ctx, "UPDATE Item SET payload = 'UPDATED'")
+	wantExecLimit(t, err) // 54F01 — the up-front echo charge trips before mutating
+
+	// No partial mutation: not one row carries the new value.
+	changed, qerr := drainIDs(ctx, capConn, "SELECT id FROM Item WHERE payload = 'UPDATED'")
+	if qerr != nil {
+		t.Fatalf("verify query after UPDATE: %v", qerr)
+	}
+	if changed != 0 {
+		t.Fatalf("UPDATE tripped the budget but mutated %d rows — PARTIAL mutation", changed)
 	}
 }
 
