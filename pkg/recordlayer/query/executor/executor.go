@@ -922,7 +922,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
 			}
 			return recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes)), nil
+				reason, recordlayer.NewBytesContinuation(contBytes),
+			), nil
 		}
 
 		if c.remOffset > 0 {
@@ -951,7 +952,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 // page-drain driver stops on the EndContinuation.
 func (c *limitEnvelopeCursor) exhaust() recordlayer.RecordCursorResult[QueryResult] {
 	res := recordlayer.NewResultNoNext[QueryResult](
-		recordlayer.SourceExhausted, &recordlayer.EndContinuation{})
+		recordlayer.SourceExhausted, &recordlayer.EndContinuation{},
+	)
 	c.terminal = &res
 	return res
 }
@@ -1107,16 +1109,19 @@ func executeDistinct(
 		return nil, err
 	}
 
-	seen := make(map[string]struct{})
+	// RFC-130: the distinct seen-set is a cardinality-growing buffer (one
+	// key string per distinct row, held for the whole scan). Charge each NEW
+	// key's bytes against the statement memory budget via boundedSet.
+	seen := newBoundedSet[string](props.State)
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
 			key := distinctKey(qr)
-			if _, exists := seen[key]; exists {
-				return false, nil
+			added, err := seen.Add(key, int64(len(key)))
+			if err != nil {
+				return false, err
 			}
-			seen[key] = struct{}{}
-			return true, nil
+			return added, nil
 		},
 	}
 	return applySkipLimit(filtered, props.Skip, props.ReturnedRowLimit), nil
@@ -1283,7 +1288,7 @@ func executeSort(
 		directions[i] = k.Reverse
 	}
 
-	cursor := newMemorySortCursor(innerCursor, keyNames, directions)
+	cursor := newMemorySortCursor(innerCursor, keyNames, directions, props.State)
 	if len(priorBuf) > 0 {
 		cursor.buf = priorBuf
 	}
@@ -1376,7 +1381,7 @@ func executeUnionBuffered(
 		if err != nil {
 			return nil, err
 		}
-		items, err := CollectAllBounded(ctx, cursor, props.GetMaterializationLimit(), "buffered union branch")
+		items, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
 		cursor.Close()
 		if err != nil {
 			return nil, err
@@ -1402,6 +1407,11 @@ func executeUnionBuffered(
 				items[i] = remapUnionColumnsByPosition(items[i], srcKeys, targetKeys)
 			}
 		}
+		// RFC-130: the cross-branch `all` slice holds exactly the rows already
+		// charged per branch by CollectAllBounded above (the per-branch `items`
+		// slices are GC'd; `all` is the surviving copy). Charging again here
+		// would double-count the same resident rows, so this append is plain —
+		// the budget is already advanced by the per-branch CollectAllBounded.
 		all = append(all, items...)
 	}
 	return applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit), nil
@@ -1734,7 +1744,7 @@ func executeNestedLoopJoin(
 	if err != nil {
 		return nil, err
 	}
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "nested loop join inner side")
+	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "nested loop join inner side")
 	innerCursor.Close()
 	if err != nil {
 		return nil, err
@@ -1771,7 +1781,7 @@ func executeNestedLoopJoin(
 	cursor := newNLJCursor(
 		outerCursor, innerRows,
 		p.GetJoinType(), p.GetOuterAlias(), p.GetInnerAlias(),
-		p.GetPredicates(), evalCtx,
+		p.GetPredicates(), evalCtx, props.State,
 	)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2109,7 +2119,7 @@ func executeDelete(
 	// explicit transaction that a later commit would persist (codex RFC-106a). DML runs
 	// in one transaction, so the target set is bounded by the tx; the materialization
 	// cap is the memory backstop.
-	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "DELETE target set")
+	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "DELETE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -2124,6 +2134,14 @@ func executeDelete(
 		return nil, err
 	}
 
+	// RFC-130 / codex #328: the DML results echo is NOT separately byte-charged.
+	// The mutation's memory is bounded by its pre-materialized + charged target
+	// set (CollectAllBounded above). Charging the echo here would (a) for DELETE
+	// re-count the same already-charged target rows, and (b) fire AFTER
+	// store.DeleteRecord/SaveRecord has staged a write — and runInTx does NOT roll
+	// back on a statement error, so a 54F01 mid-loop could persist a PARTIAL
+	// mutation. The no-partial-mutation guarantee (all accounting before the
+	// mutation loop) outranks a ~2x precision gain on the echo.
 	var results []QueryResult
 	for _, qr := range targets {
 		if qr.PrimaryKey == nil {
@@ -2161,7 +2179,7 @@ func executeInsert(
 	// use. (Note: a single INSERT that paginates across transactions can
 	// still re-read across page boundaries — that extreme case is a known
 	// limitation, RFC-035.)
-	innerRows, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "INSERT source")
+	innerRows, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "INSERT source")
 	if err != nil {
 		return nil, err
 	}
@@ -2175,7 +2193,14 @@ func executeInsert(
 	// Resolved lazily on the first computed-row datum.
 	var targetDesc protoreflect.MessageDescriptor
 
-	results := make([]QueryResult, 0, len(innerRows))
+	// Phase 1: build every record to insert and charge its ACTUAL size against the
+	// budget — BEFORE any write. Charging the built record (not the source row) accounts
+	// INSERT … VALUES with a large literal / a growing projection for its true bytes
+	// (codex #328 re-review P2); all charging precedes phase 2's saves, so a budget
+	// breach — or any build error — returns with zero SaveRecord calls (no partial
+	// INSERT). The built messages ARE the echo content, so no extra residency.
+	// proto.Size is gated on HasMemLimit (zero-overhead when off).
+	built := make([]proto.Message, 0, len(innerRows))
 	for _, qr := range innerRows {
 		// INSERT always coerces the inner result to the target type (Java's
 		// InsertExpression computation value), so build from the row datum
@@ -2204,9 +2229,36 @@ func executeInsert(
 			msg = qr.Record.Record
 		}
 
-		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
-		if err != nil {
-			return nil, fmt.Errorf("executor: inserting record: %w", err)
+		if props.State.HasMemLimit() {
+			// Match the stored-row estimator: proto wire size PLUS the packed PK tuple
+			// the echo's FDBStoredRecord holds separately (codex #328 P2). The PK is not
+			// assigned until SaveRecord, so derive it from the built record via the target
+			// type's primary-key expression (best-effort: a derivation error charges the
+			// record size alone — still a conservative ceiling for the dominant payload).
+			pkBytes := int64(0)
+			if rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType()); rt != nil && rt.PrimaryKey != nil {
+				if kt, kerr := rt.PrimaryKey.Evaluate(nil, msg); kerr == nil && len(kt) > 0 {
+					pk := make(tuple.Tuple, len(kt[0]))
+					for i, e := range kt[0] {
+						pk[i] = e
+					}
+					pkBytes = int64(len(pk.Pack()))
+				}
+			}
+			if cerr := props.State.ChargeMemory(int64(proto.Size(msg)) + pkBytes); cerr != nil {
+				return nil, cerr
+			}
+		}
+		built = append(built, msg)
+	}
+
+	// Phase 2: save the already-charged records (no further charging — the budget is
+	// settled before the first write).
+	results := make([]QueryResult, 0, len(built))
+	for _, msg := range built {
+		stored, serr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+		if serr != nil {
+			return nil, fmt.Errorf("executor: inserting record: %w", serr)
 		}
 		results = append(results, FromStoredRecord(stored))
 	}
@@ -2294,7 +2346,7 @@ func executeUpdate(
 	// Pre-materialize the full target set BEFORE applying any update — a resource-limit
 	// cut-off must abort with ZERO records changed, never a partially-applied UPDATE
 	// staged in an explicit transaction (codex RFC-106a; see executeDelete).
-	targets, err := CollectAllBounded(ctx, innerCursor, props.GetMaterializationLimit(), "UPDATE target set")
+	targets, err := CollectAllBounded(ctx, innerCursor, props.State, props.GetMaterializationLimit(), "UPDATE target set")
 	if err != nil {
 		return nil, err
 	}
@@ -2305,7 +2357,14 @@ func executeUpdate(
 		return nil, err
 	}
 
-	var results []QueryResult
+	// Phase 1: build every updated record and charge its ACTUAL post-transform size
+	// against the budget — BEFORE any write is staged. Charging the built record (not
+	// the source row) accounts a growing UPDATE (small row → large value) for its true
+	// bytes (codex #328 re-review P2); doing all of it before phase 2's saves means a
+	// budget breach — or any build/transform error — returns with zero SaveRecord calls
+	// (no partial mutation). The built messages ARE the echo content, so no extra
+	// residency. proto.Size is gated on HasMemLimit (zero-overhead when off).
+	built := make([]proto.Message, 0, len(targets))
 	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
@@ -2344,6 +2403,22 @@ func executeUpdate(
 			}
 		}
 
+		if props.State.HasMemLimit() {
+			// Match the stored-row estimator (estimateQueryResultBytes): proto wire size
+			// PLUS the packed PK tuple, which the echo's FDBStoredRecord holds separately
+			// (codex #328 P2). An UPDATE does not change the PK, so the target's PK is the
+			// echo's PK.
+			if err := props.State.ChargeMemory(int64(proto.Size(msg)) + int64(len(qr.Record.PrimaryKey.Pack()))); err != nil {
+				return nil, err
+			}
+		}
+		built = append(built, msg)
+	}
+
+	// Phase 2: save the already-charged records (no further charging — the budget is
+	// settled before the first write).
+	results := make([]QueryResult, 0, len(built))
+	for _, msg := range built {
 		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 		if err != nil {
 			return nil, fmt.Errorf("executor: updating record: %w", err)
@@ -2464,7 +2539,7 @@ func executeTempTableScan(
 	evalCtx *EvaluationContext,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias())
+	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias(), props.State)
 	items := tt.GetList()
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -2482,11 +2557,15 @@ func executeTempTableInsert(
 		return nil, err
 	}
 
-	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias())
+	tt := evalCtx.GetOrCreateTempTable(p.GetTempTableAlias(), props.State)
 
-	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
-		tt.Add(qr)
-		return qr
+	// RFC-130: charge the temp-table working set; tt.Add returns the budget
+	// error, propagated via MapErrCursor (MapCursor cannot return an error).
+	mapped := recordlayer.MapErrCursor(innerCursor, func(qr QueryResult) (QueryResult, error) {
+		if err := tt.Add(qr); err != nil {
+			return QueryResult{}, err
+		}
+		return qr, nil
 	})
 	return mapped, nil
 }
@@ -2581,8 +2660,8 @@ func executeRecursiveLevelUnion(
 	scanAlias := p.GetTempTableScanAlias()
 	insertAlias := p.GetTempTableInsertAlias()
 
-	scanTable := NewTempTable()
-	insertTable := NewTempTable()
+	scanTable := NewTempTableWithState(props.State)
+	insertTable := NewTempTableWithState(props.State)
 
 	levelCtx := evalCtx.WithBinding(scanAlias, scanTable)
 	levelCtx = levelCtx.WithBinding(insertAlias, insertTable)
@@ -2593,7 +2672,7 @@ func executeRecursiveLevelUnion(
 	}
 
 	var allResults []QueryResult
-	items, err := CollectAllBounded(ctx, initialCursor, props.GetMaterializationLimit(), "recursive CTE initial state")
+	items, err := collectAllRowCapped(ctx, initialCursor, props.GetMaterializationLimit(), "recursive CTE initial state")
 	initialCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
@@ -2605,10 +2684,13 @@ func executeRecursiveLevelUnion(
 	// key only considers CTE-relevant columns (ignoring extra join
 	// columns the recursive branch may carry in its datum).
 	distinct := p.IsDistinct()
-	var seen map[string]struct{}
+	// RFC-130: the UNION-DISTINCT seen-set is a cross-level cardinality-growing
+	// buffer (one key per distinct row, held across all levels) — charge each
+	// NEW key via boundedSet.
+	var seen *boundedSet[string]
 	var canonicalCols []string
 	if distinct {
-		seen = make(map[string]struct{}, len(items))
+		seen = newBoundedSet[string](props.State)
 		if len(items) > 0 {
 			if m, ok := items[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
@@ -2621,10 +2703,13 @@ func executeRecursiveLevelUnion(
 		var deduped []QueryResult
 		for _, it := range items {
 			k := queryResultKeyForCols(it, canonicalCols)
-			if _, dup := seen[k]; dup {
+			added, err := seen.Add(k, int64(len(k)))
+			if err != nil {
+				return nil, err
+			}
+			if !added {
 				continue
 			}
-			seen[k] = struct{}{}
 			deduped = append(deduped, it)
 		}
 		items = deduped
@@ -2650,7 +2735,7 @@ func executeRecursiveLevelUnion(
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive: %w", err)
 		}
-		items, err := CollectAllBounded(ctx, recursiveCursor, props.GetMaterializationLimit(), "recursive CTE recursive level")
+		items, err := collectAllRowCapped(ctx, recursiveCursor, props.GetMaterializationLimit(), "recursive CTE recursive level")
 		recursiveCursor.Close()
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
@@ -2659,20 +2744,22 @@ func executeRecursiveLevelUnion(
 			var newItems []QueryResult
 			for _, it := range items {
 				k := queryResultKeyForCols(it, canonicalCols)
-				if _, dup := seen[k]; dup {
+				added, err := seen.Add(k, int64(len(k)))
+				if err != nil {
+					return nil, err
+				}
+				if !added {
 					continue
 				}
-				seen[k] = struct{}{}
 				newItems = append(newItems, it)
 			}
 			items = newItems
 			// Also replace insertTable contents with only the new
 			// (non-duplicate) rows so the next level's scan sees only
-			// genuinely new rows.
-			insertTable.Clear()
-			for _, it := range items {
-				insertTable.Add(it)
-			}
+			// genuinely new rows. These rows were already charged when the
+			// recursive plan's TempTableInsertPlan added them this level, so
+			// ReplaceList swaps without re-charging (RFC-130).
+			insertTable.ReplaceList(items)
 		}
 		allResults = append(allResults, items...)
 	}
@@ -2699,7 +2786,7 @@ func executeRecursiveDfsJoin(
 		return nil, fmt.Errorf("executor: recursive dfs join root: %w", err)
 	}
 
-	rootRows, err := CollectAllBounded(ctx, rootCursor, props.GetMaterializationLimit(), "recursive DFS join root")
+	rootRows, err := CollectAllBounded(ctx, rootCursor, props.State, props.GetMaterializationLimit(), "recursive DFS join root")
 	rootCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive dfs join root collect: %w", err)
@@ -2707,14 +2794,17 @@ func executeRecursiveDfsJoin(
 
 	preorder := p.GetTraversalStrategy() == plans.DfsPreorder
 	var results []QueryResult
-	var seen map[string]struct{}
+	// RFC-130: the DFS dedup seen-set is a cross-traversal cardinality-growing
+	// buffer (one key per distinct visited row) — charge each NEW key via
+	// boundedSet.
+	var seen *boundedSet[string]
 	// For UNION DISTINCT, extract the canonical column names from the
 	// root datum. The dedup key must use only these columns so that
 	// root rows (with 1 column) and recursive rows (which may carry
 	// extra join columns in the datum) produce matching keys.
 	var canonicalCols []string
 	if p.IsDistinct() {
-		seen = make(map[string]struct{}, len(rootRows))
+		seen = newBoundedSet[string](props.State)
 		if len(rootRows) > 0 {
 			if m, ok := rootRows[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
@@ -2731,10 +2821,13 @@ func executeRecursiveDfsJoin(
 	for _, root := range rootRows {
 		if seen != nil {
 			k := queryResultKeyForCols(root, canonicalCols)
-			if _, dup := seen[k]; dup {
+			added, err := seen.Add(k, int64(len(k)))
+			if err != nil {
+				return nil, err
+			}
+			if !added {
 				continue
 			}
-			seen[k] = struct{}{}
 		}
 		if err := dfsVisit(ctx, root, p, store, evalCtx, preorder, props, &results, 0, maxRecursionDepth, seen, canonicalCols); err != nil {
 			return nil, err
@@ -2754,7 +2847,7 @@ func dfsVisit(
 	props recordlayer.ExecuteProperties,
 	results *[]QueryResult,
 	depth, maxDepth int,
-	seen map[string]struct{},
+	seen *boundedSet[string],
 	canonicalCols []string,
 ) error {
 	if depth >= maxDepth {
@@ -2765,15 +2858,21 @@ func dfsVisit(
 		*results = append(*results, node)
 	}
 
+	// singleRow is a transient per-visit binding holder for the prior-
+	// correlation row — NOT a cardinality-growing buffer (one row, GC'd after
+	// the child plan runs), and node is already charged where it was
+	// collected. Use a non-charging temp table so it is not double-counted.
 	singleRow := NewTempTable()
-	singleRow.Add(node)
+	if err := singleRow.Add(node); err != nil {
+		return err
+	}
 	childCtx := evalCtx.WithBinding(p.GetPriorCorrelation(), singleRow)
 	childCursor, err := ExecutePlan(ctx, p.GetChild(), store, childCtx, nil, props.ClearSkipAndLimit())
 	if err != nil {
 		return fmt.Errorf("recursive DFS child plan: %w", err)
 	}
 
-	children, err := CollectAllBounded(ctx, childCursor, props.GetMaterializationLimit(), "recursive DFS children")
+	children, err := CollectAllBounded(ctx, childCursor, props.State, props.GetMaterializationLimit(), "recursive DFS children")
 	childCursor.Close()
 	if err != nil {
 		return fmt.Errorf("recursive DFS collect children: %w", err)
@@ -2782,10 +2881,13 @@ func dfsVisit(
 	for _, child := range children {
 		if seen != nil {
 			k := queryResultKeyForCols(child, canonicalCols)
-			if _, dup := seen[k]; dup {
+			added, err := seen.Add(k, int64(len(k)))
+			if err != nil {
+				return err
+			}
+			if !added {
 				continue
 			}
-			seen[k] = struct{}{}
 		}
 		if err := dfsVisit(ctx, child, p, store, evalCtx, preorder, props, results, depth+1, maxDepth, seen, canonicalCols); err != nil {
 			return err
@@ -2903,10 +3005,16 @@ func CollectAll(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult
 	return results, nil
 }
 
-// CollectAllBounded drains a cursor into a slice, returning a
-// MaterializationLimitExceededError if the number of rows exceeds limit.
-func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
-	var results []QueryResult
+// CollectAllBounded drains a cursor into a slice through an accounted
+// boundedBuffer (RFC-130): every row is charged against the statement-wide
+// memory byte budget (st) AND counted against the row-count materialization
+// limit, so a missed accumulation site is impossible — the buffer cannot exist
+// without the accountant. st is the always-present statement ExecuteState
+// (props.State); a nil/zero-limit st makes the byte charge a no-op while the
+// row-count cap still applies. Returns MaterializationLimitExceededError on the
+// row cap and MemoryLimitExceededError (→ 54F01) on the byte budget.
+func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, limit int, opName string) ([]QueryResult, error) {
+	buf := newBoundedBuffer[QueryResult](st, limit, opName, estimateQueryResultBytes)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -2921,12 +3029,24 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 			}
 			break
 		}
-		results = append(results, result.GetValue())
-		if len(results) >= limit {
-			return nil, &MaterializationLimitExceededError{Limit: limit, Context: opName}
+		v := result.GetValue()
+		if err := buf.Append(v); err != nil {
+			return nil, err
 		}
 	}
-	return results, nil
+	return buf.Items(), nil
+}
+
+// collectAllRowCapped drains a cursor into a slice enforcing the MaterializationLimit
+// ROW cap but charging NO bytes against the statement memory budget — for cursors
+// whose rows are already byte-charged upstream. The recursive-CTE initial/recursive
+// level cursors have a TempTableInsertPlan at the top, which charges each row in
+// tt.Add (monotonic, statement-wide, surviving the per-level Clear); re-charging the
+// same shared records here would double-count and trip the budget at ~half its true
+// value (RFC-130, code-review #328). Passing a nil ExecuteState makes the boundedBuffer
+// skip both the estimate and the charge while keeping the row cap.
+func collectAllRowCapped(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
+	return CollectAllBounded(ctx, cursor, nil, limit, opName)
 }
 
 // errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
@@ -3269,7 +3389,7 @@ func executeInMemorySort(
 		return sortErr
 	}
 
-	cursor := newCustomSortCursor(innerCursor, sortFn)
+	cursor := newCustomSortCursor(innerCursor, sortFn, props.State)
 	if len(priorBuf) > 0 {
 		cursor.buf = priorBuf
 	}

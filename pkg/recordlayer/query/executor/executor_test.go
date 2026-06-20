@@ -2755,10 +2755,10 @@ func TestEvaluationContext_GetOrCreateTempTable(t *testing.T) {
 	t.Parallel()
 	ec := EmptyEvaluationContext()
 	id := values.NamedCorrelationIdentifier("tt1")
-	tt1 := ec.GetOrCreateTempTable(id)
+	tt1 := ec.GetOrCreateTempTable(id, nil)
 	tt1.Add(QueryResult{Datum: int64(1)})
 
-	tt2 := ec.GetOrCreateTempTable(id)
+	tt2 := ec.GetOrCreateTempTable(id, nil)
 	if len(tt2.GetList()) != 1 {
 		t.Fatal("second GetOrCreateTempTable should return same instance")
 	}
@@ -2770,10 +2770,10 @@ func TestEvaluationContext_GetOrCreateTempTable_DistinctIDs(t *testing.T) {
 	id1 := values.NamedCorrelationIdentifier("tt1")
 	id2 := values.NamedCorrelationIdentifier("tt2")
 
-	tt1 := ec.GetOrCreateTempTable(id1)
+	tt1 := ec.GetOrCreateTempTable(id1, nil)
 	tt1.Add(QueryResult{Datum: int64(1)})
 
-	tt2 := ec.GetOrCreateTempTable(id2)
+	tt2 := ec.GetOrCreateTempTable(id2, nil)
 	if len(tt2.GetList()) != 0 {
 		t.Fatal("different IDs should create distinct temp tables")
 	}
@@ -4302,7 +4302,7 @@ func TestNLJCursor_CloseIdempotent(t *testing.T) {
 	})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
 
 	if c.IsClosed() {
 		t.Fatal("cursor should not be closed before Close()")
@@ -4330,7 +4330,7 @@ func TestNLJCursor_OnNextAfterClose(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -4355,7 +4355,7 @@ func TestNLJCursor_EmptyInner_InnerJoin(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	c := newNLJCursor(outer, nil, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, nil, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4373,7 +4373,7 @@ func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
 	}
 	outer := recordlayer.FromList(outerRows)
 
-	c := newNLJCursor(outer, nil, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, nil, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4391,7 +4391,7 @@ func TestNLJCursor_EmptyInner_NotExists(t *testing.T) {
 	}
 	outer := recordlayer.FromList(outerRows)
 
-	c := newNLJCursor(outer, nil, plans.JoinNotExists, "O", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, nil, plans.JoinNotExists, "O", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4408,7 +4408,7 @@ func TestNLJCursor_EmptyInner_Exists(t *testing.T) {
 		qr("id", int64(2)),
 	})
 
-	c := newNLJCursor(outer, nil, plans.JoinExists, "O", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, nil, plans.JoinExists, "O", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4427,7 +4427,7 @@ func TestNLJCursor_EmptyOuter_InnerJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4442,7 +4442,7 @@ func TestNLJCursor_EmptyOuter_LeftJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1))}
 
-	c := newNLJCursor(outer, inner, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4457,7 +4457,7 @@ func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := newNLJCursor(outer, inner, plans.JoinCross, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinCross, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4472,7 +4472,7 @@ func TestNLJCursor_EmptyOuter_Exists(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1))}
 
-	c := newNLJCursor(outer, inner, plans.JoinExists, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinExists, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4487,7 +4487,7 @@ func TestNLJCursor_EmptyOuter_NotExists(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1))}
 
-	c := newNLJCursor(outer, inner, plans.JoinNotExists, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinNotExists, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4512,7 +4512,7 @@ func TestNLJCursor_InnerJoin_CrossProduct(t *testing.T) {
 		qr("b", int64(20)),
 	}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4536,7 +4536,7 @@ func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
 
 	// Predicate that always rejects: INNER join should produce 0 rows.
 	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)}
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", preds, EmptyEvaluationContext())
+	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", preds, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4662,7 +4662,7 @@ func TestMemorySortCursor_SortsCorrectly(t *testing.T) {
 		qr("NAME", "bob", "AGE", int64(25)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}) // ASC
+	c := newMemorySortCursor(inner, []string{"AGE"}, []bool{false}, nil) // ASC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4687,7 +4687,7 @@ func TestMemorySortCursor_SortsDescending(t *testing.T) {
 		qr("X", int64(2)),
 	})
 
-	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}) // DESC
+	c := newMemorySortCursor(inner, []string{"X"}, []bool{true}, nil) // DESC
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4707,7 +4707,7 @@ func TestMemorySortCursor_EmptyInput(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{})
-	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4720,7 +4720,7 @@ func TestMemorySortCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("x", int64(1))})
-	c := newMemorySortCursor(inner, []string{"x"}, nil)
+	c := newMemorySortCursor(inner, []string{"x"}, nil, nil)
 	c.Close()
 
 	result, err := c.OnNext(context.Background())
@@ -4854,7 +4854,7 @@ func TestCustomSortCursor_ReverseSort(t *testing.T) {
 		sortByKeys(buf, []string{"N"}, []bool{true})
 		return nil
 	}
-	c := newCustomSortCursor(inner, sortFn)
+	c := newCustomSortCursor(inner, sortFn, nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4873,7 +4873,7 @@ func TestCustomSortCursor_OnNextAfterClose(t *testing.T) {
 	t.Parallel()
 
 	inner := recordlayer.FromList([]QueryResult{qr("n", int64(1))})
-	c := newCustomSortCursor(inner, func([]QueryResult) error { return nil })
+	c := newCustomSortCursor(inner, func([]QueryResult) error { return nil }, nil)
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -4895,7 +4895,7 @@ func TestCustomSortCursor_BufferLimitExceeded(t *testing.T) {
 	c := newCustomSortCursor(inner, func(buf []QueryResult) error {
 		sortByKeys(buf, []string{"n"}, nil)
 		return nil
-	})
+	}, nil)
 	c.maxBuf = 5 // limit to 5 rows
 	defer c.Close()
 
@@ -4924,7 +4924,7 @@ func TestMemorySortCursor_BufferLimitExceeded(t *testing.T) {
 	}
 	inner := recordlayer.FromList(rows)
 
-	c := newMemorySortCursor(inner, []string{"n"}, nil)
+	c := newMemorySortCursor(inner, []string{"n"}, nil, nil)
 	c.maxBuf = 5
 	defer c.Close()
 
@@ -4954,7 +4954,7 @@ func TestCollectAllBounded_UnderLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -4971,7 +4971,7 @@ func TestCollectAllBounded_ExactlyAtLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError at exactly limit rows")
 	}
@@ -4995,7 +4995,7 @@ func TestCollectAllBounded_OverLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, 10, "nested loop join inner side")
+	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "nested loop join inner side")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError")
 	}
@@ -5021,7 +5021,7 @@ func TestCollectAllBounded_EmptyCursor(t *testing.T) {
 	t.Parallel()
 	cursor := recordlayer.FromList([]QueryResult{})
 
-	results, err := CollectAllBounded(context.Background(), cursor, 5, "test")
+	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 5, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5035,7 +5035,7 @@ func TestCollectAllBounded_LimitOne(t *testing.T) {
 	rows := []QueryResult{qr("n", int64(1)), qr("n", int64(2))}
 	cursor := recordlayer.FromList(rows)
 
-	_, err := CollectAllBounded(context.Background(), cursor, 1, "test")
+	_, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 1, "test")
 	if err == nil {
 		t.Fatal("expected MaterializationLimitExceededError with limit=1 and 2 rows")
 	}
@@ -5056,7 +5056,7 @@ func TestCollectAllBounded_OneBelowLimit(t *testing.T) {
 	}
 	cursor := recordlayer.FromList(rows)
 
-	results, err := CollectAllBounded(context.Background(), cursor, 10, "test")
+	results, err := CollectAllBounded(context.Background(), cursor, recordlayer.NewExecuteState(0), 10, "test")
 	if err != nil {
 		t.Fatalf("unexpected error with 9 rows and limit 10: %v", err)
 	}

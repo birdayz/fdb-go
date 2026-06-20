@@ -22,6 +22,7 @@ go_library(
         "dimensions_key_expression.go",
         "endpoint_type.go",
         "errors.go",
+        "execute_state.go",
         "existence_check.go",
         "fallback_cursor.go",
         "fht_kac_rotator.go",

@@ -163,6 +163,20 @@ type ExecuteProperties struct {
 	// inner, UNION buffered, recursive CTE levels). Zero means use
 	// DefaultMaterializationLimit.
 	MaterializationLimit int
+
+	// State is the statement-scoped mutable counter object (RFC-130),
+	// mirroring Java's ExecuteState held by reference inside the otherwise
+	// value-copied ExecuteProperties. It is a POINTER, so every value-copy of
+	// ExecuteProperties (the WithX helpers, ClearSkipAndLimit, per-operator
+	// innerProps) shares ONE counter and none of them reset it — the
+	// statement-wide memory byte budget survives all inner-plan resets
+	// structurally, which is the whole point. It is always minted once per
+	// statement (never nil) where the statement's ExecuteProperties is first
+	// built; the "no budget" case is memLimit<=0, NOT a nil State, so a missed
+	// accumulation site charges an unlimited counter rather than silently
+	// no-oping. None of the WithX helpers below clear it: they copy the value
+	// struct, which copies the pointer.
+	State *ExecuteState
 }
 
 const DefaultMaterializationLimit = 100_000
