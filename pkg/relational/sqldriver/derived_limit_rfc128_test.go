@@ -422,3 +422,25 @@ func TestFDB_SharedCombinatorResume_RFC128(t *testing.T) {
 	}
 	wantInts(t, got, []int64{1, 2, 3, 4}, "shared-combinator MAX_ROWS resume")
 }
+
+// Regression (codex): OFFSET + a parent returned-row cap (MAX_ROWS). The child budget
+// must be remOffset + min(remLimit, parentCap), NOT min(remOffset+remLimit, parentCap):
+// under MAX_ROWS=1 a `LIMIT 1 OFFSET 1` capped the aggregate child at 1 row, so it stopped
+// after the single skipped row with ReturnLimitReached, the enveloped continuation was fed
+// back, and the aggregate errored "invalid aggregate continuation" instead of returning 0
+// rows. Revert-proven: with min(remOffset+remLimit, parentCap) this query errors.
+func TestFDB_LimitOffsetUnderMaxRows_RFC128(t *testing.T) {
+	t.Parallel()
+	db, ctx := rfc128DB(t, "offmaxrows")
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptMaxRows, 1).Build())
+	})
+	// COUNT(*) over t is one row (=10); LIMIT 1 OFFSET 1 skips it → 0 rows, no error.
+	got, err := getIntsConn(t, ctx, conn, "SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1")
+	if err != nil {
+		t.Fatalf("COUNT(*) LIMIT 1 OFFSET 1 under MAX_ROWS=1: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v, want 0 rows (the single COUNT row is skipped by OFFSET 1)", got)
+	}
+}

@@ -822,14 +822,20 @@ func executeLimit(
 	}
 
 	// Go-only extension: propagate the effective row limit to the inner plan
-	// so downstream scans stop early. On resume the inner needs at most
-	// (remOffset + remLimit) rows — the REMAINING window, not the full one.
+	// so downstream scans stop early. The child must produce remOffset rows to
+	// skip PLUS however many this LIMIT may emit. Under an existing parent
+	// returned-row cap (e.g. MAX_ROWS) the LIMIT emits at most that many
+	// post-offset, so the child budget is remOffset + min(remLimit, parentCap)
+	// — NOT min(remOffset+remLimit, parentCap), which would stop the child
+	// before it skips the offset (codex: `SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1`
+	// under MAX_ROWS=1 erroring on resume instead of returning 0 rows).
 	innerProps := props
-	effectiveLimit := remOffset + remLimit
-	if effectiveLimit > 0 {
-		if innerProps.ReturnedRowLimit == 0 || effectiveLimit < innerProps.ReturnedRowLimit {
-			innerProps.ReturnedRowLimit = effectiveLimit
-		}
+	emit := remLimit // <0 == unbounded (OFFSET-only)
+	if pc := props.ReturnedRowLimit; pc > 0 && (emit < 0 || pc < emit) {
+		emit = pc
+	}
+	if emit >= 0 {
+		innerProps.ReturnedRowLimit = remOffset + emit
 	}
 
 	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, innerCont, innerProps)
