@@ -1,0 +1,15 @@
+# RFC-131: the audit snapshots that used to live here are archived under
+# docs/archive/reports-2026-03-09/. This directory is intentionally kept empty of reports.
+#
+# This filegroup stages any *.md that reappears here into the doc-consistency guard's
+# runfiles (//pkg/docscheck:docscheck_test, via its `data`), so the "no stale report in
+# reports/" assertion actually fires under `bazel test` (the merge-gate path) — not only
+# under `go test`. allow_empty keeps it valid while the directory holds no reports.
+filegroup(
+    name = "reports",
+    srcs = glob(
+        ["*.md"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)

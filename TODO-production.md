@@ -522,6 +522,14 @@ section to the accurate surface + a dated pointer to the authoritative source (y
 window functions, synthetic record types). **Remaining:** a generated/maintained
 `FEATURE_MATRIX.md` (deferred — the dated README pointer is the interim source of truth).
 
+**Update (RFC-131, PR — 2026-06-20):** the earlier SQL-section rewrite missed a separate README
+contradiction — the client-maturity row (README:19) still claimed "no drop-in escape hatch to the C
+client yet" while the build commands document the `-tags libfdbc` escape hatch. RFC-131 fixed that,
+de-staled the hard-coded "accurate as of <date>" SQL-summary date, archived the six stale 2026-03-09
+`reports/*.md` to `docs/archive/`, and added a `docs_consistency_test.go` guard (Java target anchored
+to MODULE.bazel; README contradiction check). The doc-drift portion of this item is now closed; a
+generated `FEATURE_MATRIX.md` remains the only deferred piece.
+
 ### [ ] P1.8 — CI reproducibility / supply chain · M
 CI runs on a **self-hosted personal Hetzner box** (`runs-on: [self-hosted, linux, x64,
 hetzner]`) — for any external adopter the green signal is unreproducible and depends on one

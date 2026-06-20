@@ -1,0 +1,7 @@
+# Archived audit snapshots (RFC-131). Exposed as data for the doc-consistency guard
+# (//pkg/docscheck:docscheck_test), which asserts these were moved here out of reports/.
+filegroup(
+    name = "snapshots",
+    srcs = glob(["*.md"]),
+    visibility = ["//visibility:public"],
+)

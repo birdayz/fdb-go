@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "docscheck",
+    srcs = ["doc.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/docscheck",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "docscheck_test",
+    srcs = ["docs_consistency_test.go"],
+    # keep: living docs + archived snapshots staged into runfiles so the guard can read
+    # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
+    data = [
+        "//:DIVERGENCES.md",
+        "//:MODULE.bazel",
+        "//:PRODUCTION_READINESS.md",
+        "//:README.md",
+        "//:TODO.md",
+        "//docs/archive/reports-2026-03-09:snapshots",
+        "//reports",
+    ],
+    embed = [":docscheck"],
+)
