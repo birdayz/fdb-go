@@ -66,6 +66,24 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	}
 }
 
+// TestDatabaseDefault_SnapshotRYW_RetryIdempotent pins codex #331: applyTxDefaults re-runs on EVERY
+// retry attempt against the same inner tx (client.Transact re-invokes the closure) and reset()
+// preserves snapshotRYWDisableCount, so the counter must be SET (idempotent), not incremented — or
+// it drifts (-1,-2,… per attempt) and changes snapshot-read semantics on retries.
+func TestDatabaseDefault_SnapshotRYW_RetryIdempotent(t *testing.T) {
+	t.Parallel()
+	idb := &internalDB{}
+	_ = (DatabaseOptions{db: idb}).SetSnapshotRywDisable() // net 1
+	tr, inner := newBareOptionsTx()
+	db := Database{d: idb}
+	db.applyTxDefaults(tr.t) // attempt 1
+	db.applyTxDefaults(tr.t) // attempt 2 (retry)
+	db.applyTxDefaults(tr.t) // attempt 3 (retry)
+	if got := inner.SnapshotRYWDisableCount(); got != 1 {
+		t.Errorf("snapshot-RYW DB default must not drift across retries (SET, not ++): want 1, got %d", got)
+	}
+}
+
 // FDB C++ dev review #331 (third silent drop): causal_read_risky's per-tx form IS honored (sets the
 // GRV flag), so the DB default must propagate too — unlike causal_write_risky, whose per-tx form is
 // a fail-safe no-op.

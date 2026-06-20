@@ -2456,6 +2456,12 @@ func (tx *Transaction) SetSnapshotRYWEnable() {
 // bypass the RYW cache). Read-only accessor used to verify database-level option propagation.
 func (tx *Transaction) SnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
 
+// SetSnapshotRYWDisableCount SETS the snapshot-RYW disable counter to n (vs the ++/-- of
+// SetSnapshotRYWDisable/Enable). It seeds the per-tx counter to a database default. Setting (not
+// incrementing) is idempotent under the retry replay of applyTxDefaults — matching libfdb_c, whose
+// reset() re-seeds snapshotRywEnabled = db->snapshotRywEnabled each attempt rather than accumulating.
+func (tx *Transaction) SetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDisableCount = n }
+
 // BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
 // to verify database-level option propagation.
 func (tx *Transaction) BypassUnreadable() bool { return tx.ryw.bypassUnreadable }

@@ -369,12 +369,12 @@ func (db Database) applyTxDefaults(t *transaction) {
 	if d.readSystemKeys {
 		t.inner.SetReadSystemKeys()
 	}
-	for i := 0; i < d.snapshotRywDisableNet; i++ {
-		t.inner.SetSnapshotRYWDisable()
-	}
-	for i := 0; i > d.snapshotRywDisableNet; i-- {
-		t.inner.SetSnapshotRYWEnable()
-	}
+	// SET (not ++/--) the per-tx counter to the DB net. applyTxDefaults re-runs on every retry
+	// attempt against the SAME inner tx (client.Transact re-invokes the closure), and reset()
+	// preserves snapshotRYWDisableCount — so an incrementing replay would DRIFT (-1, -2, … per
+	// attempt). Setting is idempotent and re-seeds to the DB default each attempt, matching
+	// libfdb_c's reset() (ReadYourWrites.actor.cpp:2082 seeds snapshotRywEnabled = db default).
+	t.inner.SetSnapshotRYWDisableCount(d.snapshotRywDisableNet)
 	if d.bypassUnreadable {
 		t.inner.SetBypassUnreadable(true)
 	}
