@@ -438,6 +438,62 @@ var _ = Describe("Legacy format compatibility", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("clears omit_unsplit_record_suffix when an EMPTY legacy store gains indexes", func() {
+			ss := specSubspace()
+			// Indexed, versioned, non-splitting metadata at version 2 (the index bumps it).
+			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			b.SetSplitLongRecords(false)
+			b.SetStoreRecordVersions(true)
+			b.SetVersion(1)
+			b.AddIndex("Order", NewIndex("ordPrice", Field("price")))
+			md, mErr := b.Build()
+			Expect(mErr).NotTo(HaveOccurred())
+			Expect(md.Version()).To(Equal(2))
+
+			recSub := ss.Sub(RecordKey)
+			verSub := ss.Sub(RecordVersionKey)
+			pk := tuple.Tuple{int64(1)}
+
+			// Lay down an EMPTY legacy store (header only) at format 4 with an older
+			// metadata version, so opening with the indexed metadata enters the
+			// index-build path where Java performs the empty-store un-omit.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				fv, mdv, uv := int32(4), int32(1), int32(0)
+				hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
+				hb, _ := hdr.MarshalVT()
+				rtx.Transaction().Set(fdb.Key(ss.Pack(tuple.Tuple{StoreInfoKey})), hb)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open (no skip) -> format upgrade + index build on the empty store -> un-omit.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, oErr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				Expect(oErr).NotTo(HaveOccurred())
+				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
+				// Empty store adopts the modern layout instead of keeping omit forever.
+				Expect(store.omitUnsplitRecordSuffix()).To(BeFalse())
+				Expect(store.useOldVersionFormat()).To(BeFalse())
+				_, sErr := store.SaveRecord(order(1, 100))
+				return nil, sErr
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The record saved after the un-omit uses the modern suffixed + inline layout.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				Expect(rawGet(rtx, recSub.Pack(appendToTuple(pk, unsplitRecord)))).NotTo(BeNil())
+				Expect(rawGet(rtx, recSub.Pack(appendToTuple(pk, recordVersionSuffix)))).NotTo(BeNil())
+				Expect(rawGet(rtx, recSub.Pack(pk))).To(BeNil()) // not the bare key
+				Expect(rawGet(rtx, verSub.Pack(pk))).To(BeNil()) // not subspace 8
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("regression: codex review findings", func() {

@@ -240,6 +240,23 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Find indexes added since the old version.
 	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
 	if len(indexesToBuild) > 0 {
+		// Empty-store unsplit-format upgrade: when a store that still omits the unsplit
+		// record suffix gains indexes at format >= SAVE_UNSPLIT_WITH_SUFFIX and is empty,
+		// drop the omit flag so future records adopt the modern suffixed layout. This is
+		// safe only on an empty store (no records to rewrite). Matches Java's
+		// checkRebuildIndexes (FDBRecordStore.java:4728-4754 → clearOmitUnsplitRecordSuffix).
+		// recordsSubspaceEmpty does a non-snapshot read so a concurrent insert invalidates
+		// this decision (Java's addRecordsReadConflict()).
+		if store.omitUnsplitRecordSuffix() && storeHeader.GetFormatVersion() >= formatVersionSaveUnsplitWithSuffix {
+			empty, emptyErr := store.recordsSubspaceEmpty()
+			if emptyErr != nil {
+				return fmt.Errorf("check store emptiness for unsplit-format upgrade: %w", emptyErr)
+			}
+			if empty {
+				storeHeader.OmitUnsplitRecordSuffix = nil
+			}
+		}
+
 		// Get record count for the policy decision (lazy in Java, eager here).
 		recordCount, err := store.getRecordCountForRebuildPolicy()
 		if err != nil {
@@ -428,6 +445,23 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 // for the IndexRebuildPolicy decision. Uses GetRecordCount if available,
 // falls back to 0 (which triggers inline rebuild — safe default for stores
 // without counting enabled).
+// recordsSubspaceEmpty reports whether the records subspace contains no keys.
+// Uses a non-snapshot limited range read so the read-conflict over the scanned
+// range makes a decision based on emptiness safe against a concurrent insert
+// (the transaction will conflict and retry). Matches the safety of Java's
+// addRecordsReadConflict() following its snapshot record count.
+func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
+	recSub := store.subspace.Sub(RecordKey)
+	begin, end := recSub.FDBRangeKeys()
+	kvs, err := store.context.Transaction().
+		GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{Limit: 1}).
+		GetSliceWithError()
+	if err != nil {
+		return false, err
+	}
+	return len(kvs) == 0, nil
+}
+
 func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 	if store.metaData.GetRecordCountKey() != nil {
 		count, err := store.GetRecordCount()
