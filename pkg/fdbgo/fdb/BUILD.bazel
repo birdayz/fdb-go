@@ -42,6 +42,7 @@ go_test(
         "fdb_test.go",
         "key_test.go",
         "options_internal_test.go",
+        "options_matrix_test.go",
         "panic_test.go",
         "range_iterator_test.go",
         "range_result_internal_test.go",
@@ -54,6 +55,10 @@ go_test(
         "transact_ctx_fdb_test.go",
     ],
     embed = [":fdb"],
+    embedsrcs = [
+        "OPTIONS.md",
+        "options.go",
+    ],
     deps = [
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb/directory",
