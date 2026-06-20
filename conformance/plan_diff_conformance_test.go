@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 // End-to-end integration test for the plan-equivalence harness

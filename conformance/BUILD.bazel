@@ -1,6 +1,6 @@
 load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
-load("@rules_go//go:def.bzl", "go_test")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 load("@rules_java//java:defs.bzl", "java_binary", "java_library")
 
 proto_library(
@@ -148,4 +148,11 @@ go_test(
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@rules_go//go/runfiles",
     ],
+)
+
+go_library(
+    name = "conformance",
+    srcs = ["doc.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/conformance",
+    visibility = ["//visibility:public"],
 )

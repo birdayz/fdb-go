@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_test")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_test(
     name = "bindingtester_test",
@@ -9,10 +9,18 @@ go_test(
         "@foundationdb//:bindingtester",
         "@foundationdb//:python_fdb",
     ],
+    embed = [":bindingtester"],
     tags = ["manual"],  # Don't run in just test — needs Docker image build, slow
     deps = [
         "//pkg/testcontainers/foundationdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//wait",
     ],
+)
+
+go_library(
+    name = "bindingtester",
+    srcs = ["doc.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-stacktester/bindingtester",
+    visibility = ["//visibility:public"],
 )

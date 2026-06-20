@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 // Regression test for RFC-090: the Java conformance server retries RETRYABLE-

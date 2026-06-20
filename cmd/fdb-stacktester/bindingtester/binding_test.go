@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 // Package bindingtester runs the official FDB binding tester against our
 // pure Go stacktester. Fully Bazel-native via testcontainers + data deps.
 //

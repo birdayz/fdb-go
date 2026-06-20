@@ -1,3 +1,5 @@
+//go:build bazelrunfiles
+
 package conformance_test
 
 // End-to-end integration tests for the runSql harness (Track A1 of TODO.md
