@@ -13,11 +13,14 @@ go_test(
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
     data = [
+        "//:CHANGELOG.md",
         "//:DIVERGENCES.md",
         "//:MODULE.bazel",
         "//:PRODUCTION_READINESS.md",
         "//:README.md",
+        "//:RELEASE.md",
         "//:TODO.md",
+        "//:go.mod",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",
     ],

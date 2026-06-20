@@ -34,8 +34,10 @@ This project is **pre-1.0 and not yet declared production-ready** (see
 
 ## Supported versions
 
-Until a tagged `v1`, only the latest `master` is supported. Pin a commit and run
-the conformance + differential + stress suites against it before relying on it.
+See **`RELEASE.md`** for the full versioning & support-window policy. In short: there are no
+tagged releases yet, so until the first tag is cut **only the latest `master` is supported** — pin
+a commit and run the conformance + differential + stress suites against it before relying on it.
+Security fixes land on the latest supported ref.
 
 ## Dependencies
 

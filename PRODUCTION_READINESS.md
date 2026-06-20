@@ -6,9 +6,9 @@
 > (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
 > `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under
 > `docs/archive/` and are **not** current status — do not cite them. A `docs_consistency_test.go`
-> guard fails CI if a living doc cites an `fdb-record-layer-core` version other than the
-> `MODULE.bazel` pin (the version that actually drifted), reintroduces the README escape-hatch
-> contradiction, or leaves a stale report under `reports/`.
+> guard fails CI if a living doc cites a Java record-layer / FDB C++ / Go version other than the
+> `MODULE.bazel` / `go.mod` pins, reintroduces the README escape-hatch contradiction, or leaves a
+> stale report under `reports/`.
 
 This document collects the work needed to make `fdb-record-layer-go` credible as
 a production-grade project that users can rely on, and as a near-term public HN
