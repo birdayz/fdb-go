@@ -1,6 +1,6 @@
 # RFC-131 — Reconcile documentation & source-of-truth drift
 
-**Status:** Accepted (Torvalds ACK)
+**Status:** Implemented (PR #329 — Torvalds + codex + @claude ACK; CI green)
 **Item:** prod-readiness-audit-2026-06-19.md **P2** — "Documentation And Source-Of-Truth Drift."
 **Reviewers:** Torvalds (doc consistency / honesty) + codex + @claude. *Not* a query-engine or wire
 change (docs only) → no Graefe gate, no FDB-client gate.

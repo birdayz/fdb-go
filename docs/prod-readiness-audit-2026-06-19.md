@@ -231,6 +231,15 @@ Recommended fix:
 
 ### P2: Documentation And Source-Of-Truth Drift
 
+> **RESOLVED — RFC-131 / PR #329 (2026-06-20, MERGED).** The README escape-hatch self-contradiction
+> is fixed; the six stale 2026-03-09 `reports/*.md` are archived under `docs/archive/` with a
+> superseded-snapshot header; the one *live* finding they buried (no read path for format-version-<6
+> record versions) was lifted into `TODO.md` Known gaps before archiving; `PRODUCTION_READINESS.md` is
+> the single authoritative current page. A `docs_consistency_test.go` guard (runs in `go test` AND
+> Bazel) fails CI if a living doc cites a record-layer version other than the `MODULE.bazel` pin,
+> reintroduces the README contradiction, or leaves a stale report under `reports/`. Reviewers: Torvalds
+> (2 NAK conditions met) + codex + @claude.
+
 Impact: production users cannot reliably tell which statements are current without reading source and CI.
 
 Examples:
