@@ -370,11 +370,10 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 	// Load old record's version BEFORE deleteSplit clears the FDB keys and
 	// BEFORE we clean up the local version cache. We need the old version to
-	// remove the old VERSION index entry, and (in the legacy layout) to decide
-	// between clearing a committed version vs dropping a pending mutation.
+	// remove the old VERSION index entry.
 	// Matches Java's loadExistingRecord which returns the full record including version.
 	var oldRecordVersion *FDBRecordVersion
-	if store.metaData.IsStoreRecordVersions() && (store.hasVersionIndex() || store.useOldVersionFormat()) {
+	if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
 		ver, verErr := store.LoadRecordVersion(primaryKey, false)
 		if verErr != nil {
 			return false, fmt.Errorf("load old record version for index update: %w", verErr)
@@ -390,15 +389,18 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		versionKey := store.versionKey(primaryKey)
 		if store.useOldVersionFormat() {
 			// Legacy layout: the version lives in the separate subspace and was NOT
-			// touched by deleteSplit. If it was an incomplete version saved earlier in
-			// THIS transaction, only a pending mutation exists (nothing committed to
-			// clear); otherwise clear the committed value.
-			if oldRecordVersion != nil && !oldRecordVersion.IsComplete() {
-				store.context.RemoveVersionMutation(versionKey)
-				store.context.RemoveLocalVersion(versionKey)
-			} else {
-				store.context.Transaction().Clear(versionKey)
-			}
+			// touched by deleteSplit. Clear the committed value AND drop any pending
+			// same-transaction mutation / local cache entry. We must do both: if the
+			// record was updated earlier in THIS transaction its committed (pre-tx)
+			// version is still present in FDB while a pending incomplete SET sits in the
+			// mutation queue — clearing only one of them would orphan the other. (This
+			// is slightly more defensive than Java's deleteTypedRecord, whose
+			// incomplete-version branch drops the mutation but leaves the prior committed
+			// value behind; clearing is harmless for a pure insert and avoids a stale
+			// version surviving for a deleted record.)
+			store.context.Transaction().Clear(versionKey)
+			store.context.RemoveVersionMutation(versionKey)
+			store.context.RemoveLocalVersion(versionKey)
 		} else {
 			// Modern layout: deleteSplit cleared the inline FDB key; just dequeue any
 			// pending incomplete version mutation + local version cache entry.
@@ -1288,18 +1290,21 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	prefixLength := len(recordsSubspace.FDBKey())
 
 	return &keyValueCursor{
-		store:                   store,
-		low:                     low,
-		high:                    high,
-		lowEndpoint:             lowEndpoint,
-		highEndpoint:            highEndpoint,
-		continuation:            continuation,
-		scanProperties:          scanProperties,
-		prefixLength:            prefixLength,
-		startTime:               time.Now(),
-		recordsSubspace:         recordsSubspace,
-		storeRecordVersions:     store.metaData.IsStoreRecordVersions(),
-		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix(),
+		store:               store,
+		low:                 low,
+		high:                high,
+		lowEndpoint:         lowEndpoint,
+		highEndpoint:        highEndpoint,
+		continuation:        continuation,
+		scanProperties:      scanProperties,
+		prefixLength:        prefixLength,
+		startTime:           time.Now(),
+		recordsSubspace:     recordsSubspace,
+		storeRecordVersions: store.metaData.IsStoreRecordVersions(),
+		// Bare-key layout applies ONLY when the store does not split long records;
+		// a split-capable store always suffixes its keys even at format < 5. Matches
+		// Java's scan logic, which gates the bare-key path on !isSplitLongRecords().
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
 		useOldVersionFormat:     store.useOldVersionFormat(),
 	}
 }

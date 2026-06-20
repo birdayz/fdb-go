@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -433,6 +434,144 @@ var _ = Describe("Legacy format compatibility", func() {
 				Expect(lErr).NotTo(HaveOccurred())
 				Expect(rec.Record.(*gen.Order).GetPrice()).To(Equal(int32(700)))
 				Expect(rec.Version).NotTo(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("regression: codex review findings", func() {
+		// Codex P2: a format-<5 store with split_long_records enabled still stores
+		// records with suffixes (and may split them), but omitUnsplitRecordSuffix()
+		// returns true for format < 5. The scan cursors must NOT take the bare-key
+		// path for such stores — that gate is `omit && !splitLongRecords`.
+		It("does not use the bare-key scan path for a split format-4 store", func() {
+			ss := specSubspace()
+			md := legacyMetaData(true, true) // split + versions
+			recSub := ss.Sub(RecordKey)
+			verSub := ss.Sub(RecordVersionKey)
+
+			small := order(1, 100)
+			bigData := bytes.Repeat([]byte("x"), splitRecordSize+5000) // forces a real split
+			big := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), VectorData: bigData}
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				fv, mdv, uv := int32(4), int32(md.Version()), int32(0)
+				hdr := &gen.DataStoreInfo{FormatVersion: &fv, MetaDataversion: &mdv, UserVersion: &uv}
+				hb, _ := hdr.MarshalVT()
+				tx.Set(fdb.Key(ss.Pack(tuple.Tuple{StoreInfoKey})), hb)
+				rt := md.GetRecordType("Order")
+
+				// small record at pk+0 (unsplit-but-suffixed, because the store splits)
+				sd, sErr := serializeUnion(small, rt)
+				Expect(sErr).NotTo(HaveOccurred())
+				tx.Set(fdb.Key(recSub.Pack(appendToTuple(tuple.Tuple{int64(1)}, unsplitRecord))), sd)
+				v1, _ := NewCompleteVersion(completeGlobalFor(0), 0)
+				tx.Set(fdb.Key(verSub.Pack(tuple.Tuple{int64(1)})), v1.ToBytes())
+
+				// big record split across pk+1, pk+2, ...
+				bd, bErr := serializeUnion(big, rt)
+				Expect(bErr).NotTo(HaveOccurred())
+				Expect(len(bd)).To(BeNumerically(">", splitRecordSize))
+				idx := startSplitRecord
+				for off := 0; off < len(bd); off += splitRecordSize {
+					end := off + splitRecordSize
+					if end > len(bd) {
+						end = len(bd)
+					}
+					tx.Set(fdb.Key(recSub.Pack(appendToTuple(tuple.Tuple{int64(2)}, idx))), bd[off:end])
+					idx++
+				}
+				v2, _ := NewCompleteVersion(completeGlobalFor(1), 1)
+				tx.Set(fdb.Key(verSub.Pack(tuple.Tuple{int64(2)})), v2.ToBytes())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store := openLegacy(rtx, ss, md)
+				// The dangerous condition: omit() is true (format < 5) but the store splits,
+				// so the scan must still use the suffixed path.
+				Expect(store.omitUnsplitRecordSuffix()).To(BeTrue())
+				Expect(store.useOldVersionFormat()).To(BeTrue())
+
+				type rec struct {
+					price   int32
+					vecLen  int
+					hasVer  bool
+					pkIsOne bool // PK is a single element (not (id, suffix))
+				}
+				got := map[int64]rec{}
+				cur := store.ScanRecords(nil, ForwardScan())
+				for r, sErr := range Seq2(cur, ctx) {
+					Expect(sErr).NotTo(HaveOccurred())
+					o := r.Record.(*gen.Order)
+					got[o.GetOrderId()] = rec{
+						price:   o.GetPrice(),
+						vecLen:  len(o.GetVectorData()),
+						hasVer:  r.Version != nil && r.Version.IsComplete(),
+						pkIsOne: len(r.PrimaryKey) == 1,
+					}
+				}
+				Expect(got).To(HaveLen(2))
+				Expect(got[1]).To(Equal(rec{price: 100, vecLen: 0, hasVer: true, pkIsOne: true}))
+				Expect(got[2]).To(Equal(rec{price: 200, vecLen: len(bigData), hasVer: true, pkIsOne: true}))
+
+				// PK-only scan: one entry per record, single-element PKs.
+				var pks []int64
+				kc := store.ScanRecordKeys(nil, ForwardScan())
+				for k, sErr := range Seq2(kc, ctx) {
+					Expect(sErr).NotTo(HaveOccurred())
+					Expect(k).To(HaveLen(1))
+					pks = append(pks, k[0].(int64))
+				}
+				Expect(pks).To(ConsistOf(int64(1), int64(2)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		// Codex P2: updating then deleting a legacy record in the SAME transaction must
+		// not orphan the previously-committed version in the RecordVersionKey(8) subspace.
+		It("clears the committed legacy version on a same-transaction update+delete", func() {
+			ss := specSubspace()
+			md := legacyMetaData(false, true)
+			verSub := ss.Sub(RecordVersionKey)
+			pk := tuple.Tuple{int64(5)}
+
+			// Committed record + version (raw lay-down so a real value sits in subspace 8).
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				layDownLegacy(rtx, ss, md, 4, true, []*gen.Order{order(5, 500)})
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				Expect(rawGet(rtx, verSub.Pack(pk))).To(HaveLen(VersionBytes))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update then delete the same record in one transaction.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store := openLegacy(rtx, ss, md)
+				if _, sErr := store.SaveRecord(order(5, 555)); sErr != nil {
+					return nil, sErr
+				}
+				deleted, dErr := store.DeleteRecord(pk)
+				Expect(dErr).NotTo(HaveOccurred())
+				Expect(deleted).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// No orphaned version may survive for the deleted record.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				Expect(rawGet(rtx, verSub.Pack(pk))).To(BeNil())
+				store := openLegacy(rtx, ss, md)
+				ver, vErr := store.LoadRecordVersion(pk, false)
+				Expect(vErr).NotTo(HaveOccurred())
+				Expect(ver).To(BeNil())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

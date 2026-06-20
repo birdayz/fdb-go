@@ -523,10 +523,13 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	scanProperties ScanProperties,
 ) RecordCursor[tuple.Tuple] {
 	return &recordKeyCursor{
-		store:                   store,
-		continuation:            continuation,
-		scanProperties:          scanProperties,
-		startTime:               time.Now(),
-		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix(),
+		store:          store,
+		continuation:   continuation,
+		scanProperties: scanProperties,
+		startTime:      time.Now(),
+		// Bare-key layout applies ONLY when the store does not split long records
+		// (a split-capable store always suffixes its keys). Matches Java's
+		// scanRecordKeys, which gates the bare-key branch on !isSplitLongRecords().
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
 	}
 }
