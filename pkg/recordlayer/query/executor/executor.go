@@ -2193,14 +2193,6 @@ func executeInsert(
 	// Resolved lazily on the first computed-row datum.
 	var targetDesc protoreflect.MessageDescriptor
 
-	// RFC-130 / codex #328: charge the result echo's anticipated residency UP FRONT.
-	// Each inserted row yields a fresh FromStoredRecord echo — genuinely new memory
-	// beyond the already-charged innerRows source. It cannot be charged exactly
-	// pre-write (the stored record doesn't exist until SaveRecord), and charging it
-	// mid-loop would fire AFTER a write is staged — and runInTx does not roll back on
-	// a statement error, so a 54F01 could persist a PARTIAL INSERT. So charge the
-	// echo's ESTIMATE (≈ the source rows, same cardinality) before any mutation: the
-	// budget is enforced AND a breach aborts with zero writes staged.
 	// Phase 1: build every record to insert and charge its ACTUAL size against the
 	// budget — BEFORE any write. Charging the built record (not the source row) accounts
 	// INSERT … VALUES with a large literal / a growing projection for its true bytes
@@ -2350,14 +2342,6 @@ func executeUpdate(
 		return nil, err
 	}
 
-	// RFC-130 / codex #328: charge the result echo's anticipated residency UP FRONT.
-	// Each updated row yields a fresh FromStoredRecord echo — genuinely new memory
-	// beyond the already-charged target set. It cannot be charged exactly pre-write
-	// (the new stored record doesn't exist until SaveRecord), and charging it mid-loop
-	// would fire AFTER a write is staged — and runInTx does not roll back on a
-	// statement error, so a 54F01 could persist a PARTIAL UPDATE. So charge the echo's
-	// ESTIMATE (≈ the target rows, same cardinality) before any mutation: the budget
-	// is enforced AND a breach aborts with zero writes staged.
 	// Phase 1: build every updated record and charge its ACTUAL post-transform size
 	// against the budget — BEFORE any write is staged. Charging the built record (not
 	// the source row) accounts a growing UPDATE (small row → large value) for its true
