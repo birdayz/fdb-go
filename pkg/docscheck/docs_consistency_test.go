@@ -52,9 +52,6 @@ var (
 	// foundationDBPin extracts the FDB C++ client version from MODULE.bazel
 	// (bazel_dep(name = "foundationdb", version = "7.3.75")).
 	foundationDBPin = regexp.MustCompile(`name\s*=\s*"foundationdb"\s*,\s*version\s*=\s*"(\d+\.\d+\.\d+)"`)
-	// fdbThreePart matches an FDB-style 7.x.y version. The only 7.x.y version in the docs is
-	// the FDB C++ client, so any 7.x.y that isn't the pin is FDB drift.
-	fdbThreePart = regexp.MustCompile(`\b7\.\d+\.\d+\b`)
 	// goPin extracts the Go toolchain major.minor from go.mod (go 1.26.4 -> 1.26).
 	goPin = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
 	// goCited matches a "Go x.y" reference, tolerating markdown bold/backticks/table separators
@@ -144,9 +141,15 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
 	want := pin(t, root, foundationDBPin, "MODULE.bazel", "foundationdb")
+	// Build the matcher from the pin's MAJOR (7 today). This tracks a future FDB 8.x bump
+	// instead of going blind, and — unlike a [7-9] range — stays distinct from Bazel 9.x / Go 1.x
+	// / Java 4.x so it never false-matches the Bazel pin (README cites Bazel 9.0.1). codex/@claude
+	// #330. A different <major>.x.y in a living doc is FDB drift.
+	major := want[:strings.IndexByte(want, '.')]
+	fdbCited := regexp.MustCompile(`\b` + regexp.QuoteMeta(major) + `\.\d+\.\d+\b`)
 	for _, doc := range livingDocs {
 		body := versionScanBody(t, root, doc)
-		for _, v := range fdbThreePart.FindAllString(body, -1) {
+		for _, v := range fdbCited.FindAllString(body, -1) {
 			if v != want {
 				t.Errorf("%s cites FDB version %q, but MODULE.bazel pins foundationdb %q — living docs must track the pin", doc, v, want)
 			}
