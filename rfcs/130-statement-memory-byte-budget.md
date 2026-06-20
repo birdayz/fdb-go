@@ -1,102 +1,131 @@
 # RFC-130 — Statement-wide memory byte budget (RFC-106b)
 
-**Status:** Draft
+**Status:** Draft (v2 — re-homed in an `ExecuteState` analog after Graefe + Torvalds NAK)
 **Item:** prod-readiness-audit-2026-06-19.md **P1** — "No Full Statement-Wide Memory Byte Budget Yet"
-(the `RFC-106b` follow-up explicitly deferred from RFC-106a).
+(the `RFC-106b` follow-up deferred from RFC-106a).
 **Reviewers:** Graefe (executor/Cascades alignment) + Torvalds (code quality) + codex + @claude.
 Query-engine change → Graefe ACK required before merge.
+
+> **This is a Go-side extension, not a parity port.** Java byte-bounds bytes *read from FDB*
+> (`ByteScanLimiter`, `FDBRecordStore.java:1049`) but byte-bounds *buffering* **nowhere** — `asList()` is
+> unbounded (`RecordCursor.java:285`), in-memory sort is row-bounded (`MemorySortAdapter.java:90`), the
+> PK-distinct seen-set is unbounded (`RecordQueryUnorderedPrimaryKeyDistinctPlan.java:100`). So this budget
+> is a new Go capability; wire compat is untouched (read-side; opt-in; `0` = today's behaviour).
 
 ---
 
 ## 1. Problem (verified)
 
-Cardinality-growing buffers in the executor are bounded by **row count**, not **bytes**:
-- `MaterializationLimit` (default **100,000 rows**, `scan_properties.go:165/168`) bounds `CollectAllBounded`
-  (`executor.go:2908`, ~10 callers: buffered union branch, NLJ inner side, DELETE/INSERT/UPDATE target
-  sets, recursive-CTE initial/recursive levels, recursive-DFS root/children).
-- The in-memory **sort** buffer is bounded by its own row limit (`streaming_cursors.go:496`).
-- The **distinct** seen-set grows per distinct key (`executor.go:1115`).
+Cardinality-growing buffers in `pkg/recordlayer/query/executor/` are bounded by **row count**, not **bytes**.
+`MaterializationLimit` (default **100,000 rows**, `pkg/recordlayer/scan_properties.go:165/168`) bounds the
+shared `CollectAllBounded` (`pkg/recordlayer/query/executor/executor.go:2908`) — but (a) it's rows not bytes,
+so 100k *large* rows still OOMs, and (b) several buffers accumulate **across** `CollectAllBounded` calls or
+don't use it at all (see §3). RFC-106a's `maxResultBytes` caps *egress* bytes only
+(`pkg/relational/core/embedded/cascades_generator.go:1063-1072`), not internal buffers.
 
-A query that buffers 100,000 **large** rows (wide records, big blobs) still creates unbounded memory
-pressure — a multi-tenant OOM / noisy-neighbour risk. RFC-106a added a *returned-result* byte cap
-(`maxResultBytes`, egress only, `cascades_generator.go:1063-1072`) but **not** an *internal-buffer* byte
-budget. The aggregate cursor is **streaming** (one group key + running aggregates, `streaming_cursors.go:46`),
-so it does not accumulate unboundedly and needs no accounting.
+## 2. Design — the budget lives in a Go `ExecuteState`, charged through accounted buffers
 
-## 2. Proposed change — a statement-wide byte accountant
+### 2.1 `ExecuteState` (the Java-faithful home — Graefe NAK fix)
 
-### 2.1 The budget (shared, accumulating across operators)
-
-A pointer field on `ExecuteProperties` so the count accumulates **statement-wide** (not per-operator):
+Java keeps the mutable, statement-scoped counters in `ExecuteState` (`ExecuteState.java:44-47`), held **by
+reference** inside the *immutable* `ExecuteProperties` (`:69-70`); `clearSkipAndLimit` (`:240-245`) preserves
+it for free because it only zeroes skip/rowLimit. Go's `ExecuteProperties` is a value struct with **no**
+such state object. Introduce the analog (in `pkg/recordlayer`):
 
 ```go
-type MemoryBudget struct { used, limit int64 }              // limit<=0 == unlimited
-func (b *MemoryBudget) Charge(n int64) error {              // nil receiver == no budget == no-op
-    if b == nil || b.limit <= 0 { return nil }
-    b.used += n
-    if b.used > b.limit { return &MemoryLimitExceededError{Used: b.used, Limit: b.limit} }
+type ExecuteState struct { memUsed, memLimit int64 }       // memLimit<=0 == unlimited
+func (s *ExecuteState) ChargeMemory(n int64) error {        // nil receiver == no budget == no-op
+    if s == nil || s.memLimit <= 0 { return nil }
+    s.memUsed += n
+    if s.memUsed > s.memLimit { return &MemoryLimitExceededError{Used: s.memUsed, Limit: s.memLimit} }
     return nil
 }
 ```
 
-`ExecuteProperties.MemoryBudget *MemoryBudget` — the pointer is copied by value through `WithX` helpers
-and the per-operator `innerProps`, so every buffering operator in one statement shares one counter (it is
-**not** cleared on the inner-plan boundary; it is a statement-wide ceiling, unlike the per-page
-`ReturnedRowLimit`). Constructed once per statement in `paginatingRows`/`ExecutePlan` setup from the option.
+`ExecuteProperties.State *ExecuteState` — a pointer, so every value-copy of `ExecuteProperties` (the `WithX`
+helpers, `ClearSkipAndLimit`, per-operator `innerProps`) **shares one counter**, and none of them reset it:
+statement-wide survival is **structural**, exactly as Java's `ExecuteState`. The state is minted once per
+statement (in the `ExecutePlan`/`paginatingRows` setup) from the option; a fresh statement gets a fresh
+state. (This `ExecuteState` is also the correct future home for the scan/byte/time *counters* Go presently
+tracks per-cursor — out of scope here, noted for the divergence ledger.)
 
-### 2.2 Option + error
+### 2.2 Concurrency invariant (Torvalds NAK fix)
 
-- Option `OptMaxStatementMemoryBytes` (`api/options.go`), default `0` = unlimited (matching `MaxRows`/byte-cap
-  defaults — opt-in, zero behaviour change by default).
-- `MemoryLimitExceededError` → SQLSTATE **`54F01`** (`ErrCodeExecutionLimitReached`), the existing
-  resource-limit family (scan/byte/time all map there). Message names the budget + the op for diagnosis.
+The executor is **single-threaded per statement** — grep confirms **zero** `go ` / goroutine launches in
+`pkg/recordlayer/query/executor/`. `ChargeMemory` therefore needs no mutex/atomic. This invariant is
+**load-bearing** and pinned: a `package_invariant_test.go` greps the executor package for goroutine launches
+and fails if one appears (so a future parallel-union forces a revisit to atomic counters, instead of a
+silent data race).
 
-### 2.3 Charge sites (every cardinality-growing buffer)
+### 2.3 Emergent accounting via accounted buffers (Torvalds/Graefe "no-bypass" fix)
 
-- `CollectAllBounded`: after `append`, `Charge(estimateQueryResultBytes(value))`; on error, return it
-  (replaces nothing — additive to the existing row-count check).
-- Sort cursor buffer (`streaming_cursors.go`): charge each materialized row as it is buffered.
-- Distinct seen-set (`executor.go:1097-1120`): charge each newly-inserted key.
+A grep-lint is theatre. Instead, two generic accounted containers in the executor package, and **every**
+cardinality-growing buffer uses one — accounting is then a property of the type, not a reviewer's vigilance
+(CLAUDE.md principle #10):
 
-### 2.4 Byte estimate
+```go
+type boundedBuffer[T] struct { items []T; st *ExecuteState }   // Append charges sizeof(item) before keeping it
+type boundedSet[K]    struct { m map[K]struct{}; st *ExecuteState } // Add charges on a NEW key only
+```
 
-`estimateQueryResultBytes(QueryResult) int64` — approximate payload: `Record.Record.Size()` (proto wire
-size) when present, else a `Datum`-based estimate (reuse the `estimateRowBytes` value-size logic,
-`cascades_generator.go:1059`), plus the `PrimaryKey` tuple length. Intentionally approximate (a ceiling
-signal, not exact heap), consistent with RFC-106a's `estimateRowBytes`.
+`boundedBuffer.Append` and `boundedSet.Add` call `st.ChargeMemory(estimate)` and propagate the error. They
+also subsume the existing `MaterializationLimit` row check, so a buffer can't exist without both bounds.
 
-### 2.5 No-bypass guard
+### 2.4 Complete buffer survey (the §3 the reviewers required)
 
-The audit asks that new buffered operators can't silently skip accounting. Two layers:
-1. Route all unbounded accumulation through the three accounted helpers (CollectAllBounded + the sort/distinct
-   buffers); there is no other raw `append`-in-a-loop accumulation of `QueryResult` in the executor (verified).
-2. A test (`memory_budget_bypass_test.go`) that greps the executor package for `append(.*results` /
-   slice-accumulation patterns outside the accounted helpers and fails on a new one — a cheap structural
-   lint pinned in CI.
+Every cardinality-growing buffer, charged at the point of accumulation:
+
+| Site | file:line | container |
+|------|-----------|-----------|
+| `CollectAllBounded` (union branch, NLJ inner, DML target sets, recursive-CTE per level, DFS) | `executor.go:2908` | `boundedBuffer` |
+| Buffered-UNION cross-branch `all` slice | `executor.go:1405` | `boundedBuffer` |
+| NLJ hash-index map | `streaming_cursors.go:656` | `boundedSet`/`boundedBuffer` |
+| In-memory sort buffers (×2) | `streaming_cursors.go:452, :548` | `boundedBuffer` |
+| `distinct` seen-set | `executor.go:1110` | `boundedSet` |
+| Recursive-CTE `allResults` (cross-level, ≤1000×) + `seen` | `executor.go:2595/2611/2709/2717` | `boundedBuffer`+`boundedSet` |
+| Recursive-DFS `*results` (cross-traversal) + `seen` | `executor.go:2765/2796` | `boundedBuffer`+`boundedSet` |
+
+Verified **streaming → no buffer, no charge**: aggregate (one group key + running aggregates,
+`streaming_cursors.go:46`), intersection. The cross-level recursive totals are covered because each
+`Append` charges the *shared* `ExecuteState`, so 1000 levels × big rows trips the budget even though each
+level's row count is individually under `MaterializationLimit`.
+
+### 2.5 Byte estimate (Torvalds layering + nil-safety fix)
+
+`estimateRowBytes` lives in package `embedded` and the executor **cannot** import the relational layer
+(`query_result.go:18`), so `estimateQueryResultBytes(QueryResult) int64` is written **fresh** in the executor
+package. It must handle every `QueryResult` shape without panic:
+- stored row: `Record != nil` → `Record.Record.Size()` (proto wire size) + `len(PrimaryKey-encoded)`;
+- computed row: `Record == nil`, `Datum` is a map/value → sum approximate value sizes; `Datum == nil` → a
+  small constant. Approximate by design (a ceiling signal, not exact heap).
+
+### 2.6 Option + error
+
+`OptMaxStatementMemoryBytes` (`pkg/relational/api/options.go`), default `0` = unlimited.
+`MemoryLimitExceededError` → SQLSTATE **`54F01`** (`ErrCodeExecutionLimitReached`) — same resource-limit
+family as scan/byte/time (no memory-specific SQLSTATE in Java either; Graefe ACK'd reuse).
 
 ## 3. Executable spec (tests)
 
-1. **Byte budget trips before the row-count limit:** a query buffering N wide rows whose total bytes exceed
-   `OptMaxStatementMemoryBytes` (but N < `MaterializationLimit`) → `54F01`. Revert-proven (no charge → returns
-   the rows).
-2. **Statement-wide accumulation:** a query with **two** buffering operators (e.g. a buffered-union of two
-   NLJ-inner materializations) charges both against one budget → trips when the *sum* exceeds it, not
-   per-operator.
-3. **Default unlimited:** no option set → large buffers succeed exactly as today (regression guard).
-4. **Estimate sanity:** `estimateQueryResultBytes` is within a sane factor of the real payload for a stored
-   record and a computed row.
-5. **No-bypass lint** (§2.5).
+1. **Byte budget trips before the row-count limit:** N wide rows whose bytes exceed the budget but N <
+   `MaterializationLimit` → `54F01`. Revert-proven (no charge → rows returned).
+2. **Statement-wide accumulation across operators:** a query whose plan buffers in **two** distinct sites
+   (e.g. buffered-union of two NLJ-inner materializations) trips when the **sum** exceeds the budget, not
+   per-site — proves the shared `ExecuteState`.
+3. **Cross-level recursive accumulation:** a recursive CTE where no single level exceeds the budget but the
+   accumulated `allResults` does → `54F01` (the bug the row-count limit misses).
+4. **Default unlimited:** option unset → large buffers succeed exactly as today (regression guard).
+5. **Estimate sanity:** `estimateQueryResultBytes` within a sane factor for a stored record and a computed
+   row; no nil-panic on `Record==nil`/`Datum==nil`.
+6. **Single-threaded invariant** (§2.2): the goroutine-grep test.
 
 ## 4. Wire/behaviour impact
 
-**None by default** (opt-in option; `0` = current behaviour). No persisted bytes, no plan-shape change. When
-the option is set, a previously-OOM-risking query instead fails fast with `54F01` — strictly safer.
+**None by default** (opt-in; `0` = current behaviour). No persisted bytes, no plan shape. When set, a
+previously-OOM-risking query fails fast with `54F01` — strictly safer.
 
-## 5. Open question for Graefe
+## 5. Scope
 
-Is the pointer-on-`ExecuteProperties` the right place for a statement-wide accountant (vs threading a context
-value or an executor-level field)? Java's `RecordQueryPlan` execution carries `ExecuteProperties` +
-`FDBRecordStoreBase` per scan; the byte budget is a statement-scoped concern that must survive the
-inner-plan `clearSkipAndLimit`-style resets — a pointer that propagates by default (and is never cleared)
-models that. Confirm this is the faithful place, and that charging at the three buffer sites (not per-row at
-every cursor) is the right granularity (matches where Java would bound a `RecordCursor.asList()`).
+One coherent PR: `ExecuteState` + the two accounted containers + the estimate + threading the option +
+charging the seven sites + tests. Migrating Go's per-cursor scan/byte counting into `ExecuteState` (to fully
+match Java) is a **separate** divergence-ledger item, not this RFC.
