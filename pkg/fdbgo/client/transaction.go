@@ -2452,6 +2452,14 @@ func (tx *Transaction) SetSnapshotRYWEnable() {
 	tx.snapshotRYWDisableCount--
 }
 
+// SnapshotRYWDisableCount reports the net snapshot-RYW-disable count (> 0 means snapshot reads
+// bypass the RYW cache). Read-only accessor used to verify database-level option propagation.
+func (tx *Transaction) SnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
+
+// BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
+// to verify database-level option propagation.
+func (tx *Transaction) BypassUnreadable() bool { return tx.ryw.bypassUnreadable }
+
 // SetTenantId sets the tenant for this transaction. All operations will
 // be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
 func (tx *Transaction) SetTenantId(id int64) {

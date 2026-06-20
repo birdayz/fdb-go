@@ -72,9 +72,16 @@ down or pinned by a test.
    RFC-131/132 `docs_consistency` living-docs set (it carries no version pins to anchor; its anti-rot
    mechanism is "every option has a row," which the completeness guard enforces).
 
-3. **No production-code change.** The verification is the deliverable's spine: the unsafe options
-   already error; the no-ops are provably safe. Any option a future reviewer believes is mis-classified
-   gets fixed *with* its matrix row + test, not silently.
+3. **One production-code change** (codex review caught it; per §5 it lands here, not a follow-up).
+   Two *database-level* defaults were mis-classified as safe: `SetSnapshotRywDisable` and
+   `SetTransactionBypassUnreadable` change **read semantics** on every new transaction in `libfdb_c`
+   (snapshot-read-after-own-write; `accessed_unreadable`→read), but Go `return nil`'d them without
+   storing the default — silently dropping the caller's intent. Fix: **honor** them, propagating via
+   `txDefaults` exactly like the other honored DB defaults (`SetTransactionTimeout`/`SetReadSystemKeys`)
+   and applied in `applyTxDefaults`. (The faithful match to `libfdb_c`, not an error — C honors them.)
+   Pinned by `options_dbdefault_test.go`. The rest of the verification holds: the access/auth/quota
+   family already errors; the causal/durability *weakening* knobs stay accept-and-ignore (strictly
+   safer). The unsafe-no-op→error part of the audit was already done.
 
 ## 3. Executable spec (tests)
 

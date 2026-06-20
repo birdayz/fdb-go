@@ -391,8 +391,23 @@ func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
 func (o DatabaseOptions) SetMaxWatches(_ int64) error        { return nil }
 func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
 func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
-func (o DatabaseOptions) SetSnapshotRywEnable() error        { return nil }
-func (o DatabaseOptions) SetSnapshotRywDisable() error       { return nil }
+func (o DatabaseOptions) SetSnapshotRywEnable() error {
+	if o.db != nil {
+		o.db.txDefaults.snapshotRywDisabled = false
+	}
+	return nil
+}
+
+// SetSnapshotRywDisable is an honored DB default (codex #331): libfdb_c disables snapshot
+// read-your-writes on every new transaction, changing snapshot reads after a local write — a
+// read-semantics change, not a hint. Propagate it via txDefaults rather than silently dropping it.
+func (o DatabaseOptions) SetSnapshotRywDisable() error {
+	if o.db != nil {
+		o.db.txDefaults.snapshotRywDisabled = true
+	}
+	return nil
+}
+
 func (o DatabaseOptions) SetReadSystemKeys() error {
 	if o.db != nil {
 		o.db.txDefaults.readSystemKeys = true
@@ -442,7 +457,16 @@ func (o DatabaseOptions) SetTransactionReportConflictingKeys() error {
 func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
 	return &UnsupportedOptionError{Option: "automatic_idempotency"}
 }
-func (o DatabaseOptions) SetTransactionBypassUnreadable() error                  { return nil }
+
+// SetTransactionBypassUnreadable is an honored DB default (codex #331): libfdb_c sets
+// bypass_unreadable on every new transaction, turning accessed_unreadable failures into reads —
+// observable behaviour, not a hint. Propagate it via txDefaults.
+func (o DatabaseOptions) SetTransactionBypassUnreadable() error {
+	if o.db != nil {
+		o.db.txDefaults.bypassUnreadable = true
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionIncludePortInAddress() error              { return nil }
 func (o DatabaseOptions) SetTransactionUsedDuringCommitProtectionDisable() error { return nil }
 func (o DatabaseOptions) SetUseConfigDatabase() error                            { return nil }

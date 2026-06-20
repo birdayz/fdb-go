@@ -41,6 +41,7 @@ go_test(
         "error_test.go",
         "fdb_test.go",
         "key_test.go",
+        "options_dbdefault_test.go",
         "options_internal_test.go",
         "options_matrix_test.go",
         "panic_test.go",

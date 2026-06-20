@@ -42,8 +42,8 @@ C++ references are into the FoundationDB 7.3.75 source: `T::setOption` =
 
 | Option (method) | Pure-Go | libfdb_c (C++) | Unsafe if ignored? | Notes |
 |---|---|---|---|---|
-| `SetTimeout` | **honored** | RYW:2569 sets `timeoutsEnabled`/`operationTimeout` | n/a | wires the tx deadline |
-| `SetRetryLimit` | **honored** | RYW:2574 `maxRetries` | n/a | |
+| `SetTimeout` | **honored** | RYW:2570 sets `timeoutsEnabled`/`operationTimeout` | n/a | wires the tx deadline |
+| `SetRetryLimit` | **honored** | RYW:2575 `maxRetries` | n/a | |
 | `SetMaxRetryDelay` | **honored** | T:7062 `maxBackoff` | n/a | |
 | `SetSizeLimit` | **honored** | T:7067 `sizeLimit` | n/a | |
 | `SetPriorityBatch` | **honored** | T:6969 `PRIORITY_BATCH` | n/a | GRV priority |
@@ -103,8 +103,8 @@ C++ references are into the FoundationDB 7.3.75 source: `T::setOption` =
 | `SetTransactionReportConflictingKeys` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | mirrors the tx option |
 | `SetTransactionAutomaticIdempotency` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | |
 | `SetTransactionCausalReadRisky` | accept & ignore | DB default → CAUSAL_READ_RISKY | strictly-safer | every tx keeps full causal consistency the caller opted to relax |
-| `SetSnapshotRywEnable` / `SetSnapshotRywDisable` | accept & ignore | DB:2156 default counter | safe | Go's per-tx default already matches C's (enabled); net result identical |
-| `SetTransactionBypassUnreadable` | accept & ignore | DB default | safe | per the tx-level row |
+| `SetSnapshotRywEnable` / `SetSnapshotRywDisable` | **honored** (tx default) | DB:2156 default applied per-tx | n/a | the *disable* default changes snapshot-read-after-write semantics, so it's propagated via `txDefaults`, not dropped (codex #331) |
+| `SetTransactionBypassUnreadable` | **honored** (tx default) | DB default applied per-tx | n/a | turns `accessed_unreadable` into reads on each new tx — observable, so propagated via `txDefaults` (codex #331) |
 | `SetTransactionIncludePortInAddress` | accept & ignore | DB default | safe | |
 | `SetTransactionUsedDuringCommitProtectionDisable` | accept & ignore | DB default | safe | |
 | `SetTransactionLoggingMaxFieldLength` | accept & ignore | DB default | safe (telemetry) | |
