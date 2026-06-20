@@ -50,6 +50,16 @@ Fix: point-read the exact store info key (`tx.Get(expectedInfoKey)`), generating
 a minimal conflict range `[key, key\x00)`. Java uses `getRange` but doesn't
 suffer this issue because Java's async client pipelines reads differently.
 
+## Build tag
+
+These files carry `//go:build stress`. A plain `go test ./...` does **not** set
+the tag, so it skips this package entirely — keeping the default Go test run fast
+and clean instead of spinning up million-row FDB workloads. Bazel sets the tag
+globally via `.bazelrc` (`--@rules_go//go/config:tags=...,stress`), but the
+`stress_test` target is also `manual`, so `bazel test //...` never picks it up;
+only an explicit invocation (the commands below, or the nightly stress workflow)
+runs it. To run directly with the Go toolchain, pass `-tags stress`.
+
 ## Running
 
 ```sh

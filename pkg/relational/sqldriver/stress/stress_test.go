@@ -1,3 +1,11 @@
+//go:build stress
+
+// Heavy million / ten-million-row stress benchmarks. They run only when the
+// `stress` build tag is set: Bazel's //pkg/relational/sqldriver/stress target
+// sets it via .bazelrc, and the nightly stress workflow invokes that (manual)
+// target. A plain `go test ./...` does NOT set the tag, so these are excluded —
+// keeping the default Go test run fast and clean. See README.md in this dir.
+
 package stress_test
 
 import (

@@ -43,4 +43,10 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 # Docker socket can't handle 9× parallel container creation → timeouts/hangs.
 # 4 concurrent test targets works well on machines with 12+ cores.
 test --local_test_jobs=4
-build --@rules_go//go/config:tags=bazelrunfiles
+# `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
+#   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.
+# `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.
+#   The target is `manual` (runs only when invoked, e.g. by nightly), so setting the tag
+#   globally is inert for `bazel test //...`; it just lets that one target compile when
+#   invoked. Plain `go test ./...` doesn't set the tag, so it skips the stress package.
+build --@rules_go//go/config:tags=bazelrunfiles,stress

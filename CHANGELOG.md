@@ -38,8 +38,11 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   early-truncation bug); exhaustion is decided off `IsEnd()`, not byte-emptiness (RFC-127).
 - Pure-Go FDB client: `Get`/`GetRange` read-conflict ranges are clamped to the data actually returned
   and filtered through the RYW overlay, matching `libfdb_c` (no under-conflict; RFC-121).
-- `go test ./...` is clean from a fresh checkout (the Bazel-runfiles-only suites are build-tagged so a
-  plain `go test` no longer panics; RFC-129).
+- `go test ./...` is clean from a fresh checkout: the Bazel-runfiles-only suites are build-tagged so a
+  plain `go test` no longer panics (RFC-129), and the heavy million-row stress benchmarks under
+  `pkg/relational/sqldriver/stress` now carry a `stress` build tag, so a plain `go test ./...` skips
+  them instead of spinning up million/ten-million-row FDB workloads (they still run via Bazel's
+  `manual` stress target and the nightly stress workflow).
 - Pure-Go FDB client: three **database-level transaction defaults** that change read semantics are now
   honored instead of silently dropped — `SetSnapshotRywDisable`/`Enable` (a cumulative counter,
   matching `libfdb_c`), `SetTransactionBypassUnreadable`, and `SetTransactionCausalReadRisky`. They
