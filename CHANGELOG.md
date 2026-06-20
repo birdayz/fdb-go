@@ -24,6 +24,10 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 - A public **FDB client option matrix** (`pkg/fdbgo/fdb/OPTIONS.md`) classifying every `Set*` option
   as honored / `UnsupportedOptionError` / safe no-op, each with its `libfdb_c` 7.3.75 reference, plus
   a completeness guard that fails CI if an option is added without a matrix row (RFC-133).
+- A **panic-boundary release gate** (RFC-134): a `norecover` nogo analyzer fails the build if a
+  `recover()` is added outside the documented panic→error boundary allowlist (`docs/panic-audit.md`
+  §2), plus docscheck guards that keep the four input-boundary fuzz nets wired and the doc in lockstep
+  with the allowlist. Makes the "untrusted input → error, never crash" discipline self-enforcing.
 
 ### Changed
 - SQL `LIMIT`/`OFFSET` now flows through a single uniform `RecordQueryLimitPlan` + continuation

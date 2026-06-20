@@ -323,6 +323,18 @@ Recommended fix:
 
 ### P2: Panic Boundary Discipline Needs To Stay A Release Gate
 
+> **RESOLVED — RFC-134 / PR #332 (2026-06-20, MERGED).** The discipline is now self-enforcing on
+> every build, not a one-time audit. Three mechanisms: (1) a `norecover` **nogo analyzer**
+> (`pkg/linters/norecover`) — counts builtin `recover()` per file (AST, not grep) and fails the build
+> on a recover outside the documented allowlist or over a file's count; (2) a **fuzz-net guard** — the
+> four audit-named boundaries (parser/planner/wire/tuple) must each keep a SEEDED no-panic fuzz wired
+> into a `go_test`; (3) a **doc-sync guard** — `docs/panic-audit.md` §2 must match the analyzer
+> allowlist, so the doc can't rot (it had drifted to 158/11 while the tree was 155/22). The boundary
+> *coverage* was already strong (122 fuzz targets); the gap was a stale map + no ratchet. Verified:
+> the allowlist is AST-derived (grep over-counted by 7), and a pre-flight fuzz of all four boundaries
+> at 60s each found zero crashers. The eval-path convert-panics-to-errors refactor stays deferred
+> (tracked in `docs/panic-audit.md` §3); the boundary recover + fuzz net keep it safe meanwhile.
+
 Impact: process crashes are denial-of-service risks for library users and SQL frontends.
 
 Evidence:

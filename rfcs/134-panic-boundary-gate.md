@@ -1,6 +1,6 @@
 # RFC-134 — Panic-boundary discipline as a release gate
 
-**Status:** Implemented
+**Status:** Implemented (PR #332 — Torvalds + codex + @claude ACK; CI green)
 **Item:** prod-readiness-audit-2026-06-19.md **P2** — "Panic Boundary Discipline Needs To Stay A
 Release Gate."
 **Reviewers:** Torvalds (code/test quality) + codex + @claude. This is a *meta-test* (a discipline
@@ -88,14 +88,21 @@ needs no data-dep plumbing. This also answers Torvalds's "wired into CI?" — no
    RFC-131 pattern) — no whole-tree problem. Losing/renaming a boundary fuzz, or unwiring it from its
    test target, → **red**.
 
-## 4. Executable spec (tests)
+## 4. Executable spec (tests) — as implemented
 
-- `norecover` analyzer unit test (`analysistest`, the `noemptyiface` pattern): a fixture with a
-  `recover()` in a non-allowlisted path → diagnostic; an allowlisted path → none.
-- Revert-prove the live gate: add a `recover()` to a non-allowlisted production file → `just build`
-  goes red (nogo); remove → green.
-- Boundary-fuzz registry: rename a required fuzz fn, or remove its file from the `go_test` `srcs` →
-  `panic_boundary_test.go` red (revert-proven).
+- `norecover` analyzer unit test: type-checks source strings **in-process** and runs the analyzer
+  directly (NOT `analysistest`, which shells to `go` and does not work in the Bazel sandbox — there is
+  no precedent for it here). Covers non-allowlisted → diagnostic, allowlisted → none, per-file count,
+  `_test.go` exempt, shadowed-`recover` ignored.
+- Revert-prove the **live** gate (the real proof): a `recover()` in a non-allowlisted production file
+  → `just build` red (nogo); an extra recover over an allowlisted file's count → red; removing →
+  green. The allowlist counts are AST-derived (built each package with an empty allowlist and read the
+  diagnostics — grep over-counted by 7 via recover in comments/strings + cgo-gated files).
+- `panic_boundary_test.go` carries TWO guards, both revert-proven: the **boundary-fuzz net** (each of
+  the four boundaries keeps a seeded fuzz that is wired into a `go_test` `srcs` — `goTestWiresSrc` is a
+  string-aware, depth-tracked Starlark-value parser, pinned by a 12-case unit test), and the
+  **doc-sync guard** (`docs/panic-audit.md` §2 must match the exported `norecover.Allowlist` exactly,
+  in both directions — so the doc can't rot again, the precise failure the audit flagged).
 
 ## 5. Pre-flight verification (quantified — part of impl, not a claim)
 
