@@ -87,10 +87,11 @@ func pin(t *testing.T, root string, re *regexp.Regexp, src, what string) string 
 	return m[1]
 }
 
+var changelogHeading = regexp.MustCompile(`(?m)^## \[[^\]]*\]`)
+
 // unreleasedSection returns the CHANGELOG text from "## [Unreleased]" up to the next "## ["
-// release heading (or EOF). Only this section must cite the CURRENT pins / carry the
-// Compatibility block; a tagged release entry freezes its own versions and must NOT be
-// force-rewritten when MODULE.bazel/go.mod later bump (codex #330).
+// release heading (or EOF) — the Unreleased entry's body. Used to require the Compatibility
+// block INSIDE Unreleased (not satisfied by a tagged entry's heading). codex #330.
 func unreleasedSection(changelog string) string {
 	const marker = "## [Unreleased]"
 	i := strings.Index(changelog, marker)
@@ -104,14 +105,27 @@ func unreleasedSection(changelog string) string {
 	return rest
 }
 
+// currentChangelog returns the changelog PREAMBLE + the Unreleased section — everything up to
+// the first TAGGED release heading. The preamble (which carries a current Java-target claim) and
+// Unreleased must track the live pins; only tagged entries freeze their own versions and are
+// excluded, so a later pin bump doesn't force a history rewrite (codex #330).
+func currentChangelog(changelog string) string {
+	for _, loc := range changelogHeading.FindAllStringIndex(changelog, -1) {
+		if changelog[loc[0]:loc[1]] != "## [Unreleased]" {
+			return changelog[:loc[0]] // first tagged entry → cut before it
+		}
+	}
+	return changelog // no tagged release yet
+}
+
 // versionScanBody is the portion of a living doc the version anchors check. For CHANGELOG.md
-// that's only the Unreleased section (historical entries snapshot their own versions); every
+// that's the preamble + Unreleased (tagged release entries snapshot their own versions); every
 // other living doc is scanned whole.
 func versionScanBody(t *testing.T, root, doc string) string {
 	t.Helper()
 	body := readDoc(t, root, doc)
 	if doc == "CHANGELOG.md" {
-		return unreleasedSection(body)
+		return currentChangelog(body)
 	}
 	return body
 }
