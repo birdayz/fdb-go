@@ -1,6 +1,6 @@
 # RFC-129 — `go test ./...` clean: build-tag the Bazel-runfiles-only tests
 
-**Status:** Accepted
+**Status:** Implemented (PR #327)
 **Item:** prod-readiness-audit-2026-06-19.md **P1** — "Plain `go test ./...` Is Not A Clean Contributor Or
 Adoption Path."
 **Reviewers:** Torvalds (code/build quality) + codex/@claude. *Not* a query-engine or wire change, so no

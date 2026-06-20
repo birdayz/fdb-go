@@ -160,6 +160,12 @@ This should block SQL GA and any workload that depends on paginated LIMIT/OFFSET
 
 ### P1: Plain `go test ./...` Is Not A Clean Contributor Or Adoption Path
 
+> **RESOLVED — RFC-129 / PR #327 (2026-06-20).** The two Bazel-runfiles-only packages (`conformance/` Java
+> server, `cmd/fdb-stacktester/bindingtester/` Docker context) are now `//go:build bazelrunfiles`-gated, with
+> the tag defined for all Bazel builds (`.bazelrc`) so they keep running under Bazel — and a `doc.go` stub
+> per test-only package for a clean `[no test files]`. Build tags, **not** `t.Skip` (NO-SKIPS-compliant).
+> `go test ./...` no longer panics; `bazelisk build //...` green; both Bazel targets keep all 65 test files.
+
 Impact: reproducibility and adoption risk. Users and contributors running the standard Go test command get failures/panics unrelated to product correctness.
 
 Evidence:
