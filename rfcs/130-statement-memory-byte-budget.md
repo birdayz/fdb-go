@@ -44,10 +44,13 @@ func (s *ExecuteState) ChargeMemory(n int64) error {        // nil receiver == n
 
 `ExecuteProperties.State *ExecuteState` — a pointer, so every value-copy of `ExecuteProperties` (the `WithX`
 helpers, `ClearSkipAndLimit`, per-operator `innerProps`) **shares one counter**, and none of them reset it:
-statement-wide survival is **structural**, exactly as Java's `ExecuteState`. The state is minted once per
-statement (in the `ExecutePlan`/`paginatingRows` setup) from the option; a fresh statement gets a fresh
-state. (This `ExecuteState` is also the correct future home for the scan/byte/time *counters* Go presently
-tracks per-cursor — out of scope here, noted for the divergence ledger.)
+statement-wide survival is **structural**, exactly as Java's `ExecuteState`. The state is **always minted**
+once per statement (in the `ExecutePlan`/`paginatingRows` setup) — **never nil** — with `memLimit<=0`
+(unlimited) when the option is unset, and a fresh statement gets a fresh state. **The "no budget" case is
+`memLimit<=0`, NOT a nil state** (Torvalds: a nil-`st` no-op would make a missed accumulation site an
+*invisible* bypass; an always-present state makes a missed site a *charge*, not a silent skip). (This
+`ExecuteState` is also the correct future home for the scan/byte/time *counters* Go presently tracks
+per-cursor — out of scope here, noted for the divergence ledger.)
 
 ### 2.2 Concurrency invariant (Torvalds NAK fix)
 
@@ -71,6 +74,12 @@ type boundedSet[K]    struct { m map[K]struct{}; st *ExecuteState } // Add charg
 `boundedBuffer.Append` and `boundedSet.Add` call `st.ChargeMemory(estimate)` and propagate the error. They
 also subsume the existing `MaterializationLimit` row check, so a buffer can't exist without both bounds.
 
+**No silent bypass (Torvalds):** the constructors (`newBoundedBuffer`/`newBoundedSet`, and `TempTable`'s)
+take `*ExecuteState` **non-optionally** — combined with §2.1's always-present state, a buffer literally
+cannot be constructed without the accountant, so a missed wiring is a compile/test failure, not a nil-no-op.
+A `charge_coverage_test.go` drives one row through each of the eight buffer paths and asserts the shared
+`ExecuteState.memUsed` advanced — pinning that every path actually charges.
+
 ### 2.4 Complete buffer survey (the §3 the reviewers required)
 
 Every cardinality-growing buffer, charged at the point of accumulation:
@@ -86,6 +95,7 @@ Every cardinality-growing buffer, charged at the point of accumulation:
 | Recursive-DFS `*results` (cross-traversal) + `seen` | `executor.go:2765/2796` | `boundedBuffer`+`boundedSet` |
 | `executeLoadByKeys` full-record slice (`FromList`) | `executor_new_plans.go:230` | `boundedBuffer` (Graefe: bounded by a plan-literal key count, but each element is a whole stored record → bytes can grow) |
 | `TempTable.list` — the recursive-CTE `insertTable`/`scanTable` working set **and** `TempTableInsertPlan` (`evaluation_context.go:133`, `Add` at `:145`; recursive-CTE use at `executor.go:2584-2585`) | charge in `TempTable.Add` (Torvalds: the actual cross-level per-level working set) |
+| DML `results` echo slice — one (often full `FromStoredRecord`) `QueryResult` per *mutated* row | DELETE `executor.go:2137`, INSERT `:2178/:2211`, UPDATE `:2351` | `boundedBuffer` (Torvalds: the output echo of an already-charged input — ~doubles DML resident bytes, uncharged) |
 
 Verified **streaming → no buffer, no charge**: aggregate (one group key + running aggregates,
 `streaming_cursors.go:46`), intersection (per-key match-list O(children)), IN-join/IN-union (lazy cursor
