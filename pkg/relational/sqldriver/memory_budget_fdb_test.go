@@ -341,6 +341,41 @@ func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	}
 }
 
+// TestFDB_RFC130_InsertEchoChargedNoPartial (codex #328): the INSERT … SELECT echo is
+// charged UP FRONT over the materialized source (distinct path from UPDATE's targets). A
+// budget that fits the source (~10KB) but not source+echo (~20KB) trips before any write —
+// zero rows land in the destination (no partial INSERT).
+func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc130_ins", "rfc130ins",
+		"CREATE TABLE Src (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE Dst (id BIGINT, payload STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const rows = 20
+	wide := strings.Repeat("r", 600)
+	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	for i := 0; i < rows; i++ {
+		if _, err := seedConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO Src (id, payload) VALUES (%d, '%s')", i, wide)); err != nil {
+			t.Fatalf("seed Src %d: %v", i, err)
+		}
+	}
+
+	const budget = 15_000 // fits the ~10KB source; source+echo (~20KB) trips before any write
+	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	_, err := capConn.ExecContext(ctx, "INSERT INTO Dst SELECT id, payload FROM Src")
+	wantExecLimit(t, err)
+
+	// No partial mutation: nothing landed in Dst.
+	landed, qerr := drainIDs(ctx, capConn, "SELECT id FROM Dst")
+	if qerr != nil {
+		t.Fatalf("verify query after INSERT: %v", qerr)
+	}
+	if landed != 0 {
+		t.Fatalf("INSERT tripped the budget but inserted %d rows — PARTIAL mutation", landed)
+	}
+}
+
 // planHasSort reports whether an EXPLAIN string shows an in-memory sort
 // operator (the planner names it "Sort" / "ISORT" depending on shape).
 func planHasSort(plan string) bool {
