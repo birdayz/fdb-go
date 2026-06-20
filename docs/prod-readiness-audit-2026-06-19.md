@@ -193,6 +193,21 @@ This does not block runtime adoption if Bazel is the blessed test path, but it s
 
 ### P1: No Full Statement-Wide Memory Byte Budget Yet
 
+> **RESOLVED — RFC-130 / PR #328 (2026-06-20, MERGED).** A statement-wide memory **byte** budget now
+> bounds every cardinality-growing buffer. A Go `ExecuteState` (mutable counter held by pointer in the
+> value-struct `ExecuteProperties`, shared statement-wide, surviving inner-plan resets structurally — the
+> Java `ExecuteState` analog) is charged at all ~10 buffer sites via accounted `boundedBuffer`/`boundedSet`
+> containers whose constructors take `*ExecuteState` non-optionally (no silent bypass). Opt-in via
+> `OptMaxStatementMemoryBytes` (0 = unlimited, wire-neutral); breach → SQLSTATE `54F01`. Zero-overhead when
+> off: the per-row `estimateQueryResultBytes` (proto `Size()`) is gated on `HasMemLimit()` — **1M stress vs
+> master: no regression**. The impl gauntlet (Graefe + Torvalds + codex + @claude) caught and fixed four
+> subtleties beyond the survey: recursive-CTE double-charge, a DML-echo post-mutation partial-write hazard,
+> a growing-DML echo under-count (build-all-then-save, charging the actual built record's `proto.Size +
+> packed PK`), and missing INSERT coverage. The original gap below (row-count-only `MaterializationLimit`)
+> is now backed by a true byte budget.
+>
+> **This closes the P1 statement-wide memory byte budget area.**
+
 Impact: resource exhaustion risk for large rows or cardinality-growing operators in multi-tenant deployments.
 
 Evidence of existing protections:
@@ -341,7 +356,7 @@ The SQL path has real controls for time, row, scan, materialization row count, o
 | Security | Good for pre-1.0 | Vulnerability scan clean for shipped packages. Security policy exists. Release support policy still immature. |
 | Data compatibility | Strong intent, good coverage | Java/FDB compatibility is central and tested. Stale reports need cleanup so users can trust the current claim. |
 | Failure recovery | Promising | Client retry/timeout/topology work is present. Remaining adversarial workloads in TODO.md should be completed for confidence. |
-| Resource isolation | Partial | Row/time/scan/result-byte controls exist. Full memory byte budget is still missing. |
+| Resource isolation | Ready | Row/time/scan/result-byte controls plus a statement-wide memory **byte** budget (`OptMaxStatementMemoryBytes`, RFC-130/PR #328) charged at every cardinality-growing buffer. |
 | Release management | Not ready | No tags observed, no semver/changelog/support window. |
 | Docs | Mixed | README is useful and honest, but source-of-truth drift is a real adoption risk. |
 

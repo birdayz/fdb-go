@@ -1,6 +1,6 @@
 # RFC-130 — Statement-wide memory byte budget (RFC-106b)
 
-**Status:** Accepted (Graefe + Torvalds ACK)
+**Status:** Implemented (PR #328 — Graefe + Torvalds + codex + @claude ACK; 1M stress no-regression)
 **Item:** prod-readiness-audit-2026-06-19.md **P1** — "No Full Statement-Wide Memory Byte Budget Yet"
 (the `RFC-106b` follow-up deferred from RFC-106a).
 **Reviewers:** Graefe (executor/Cascades alignment) + Torvalds (code quality) + codex + @claude.
