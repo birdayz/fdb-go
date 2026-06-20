@@ -61,6 +61,7 @@ nogo(
         # project-specific analyzers
         "//pkg/linters/gofumpt",
         "//pkg/linters/noemptyiface",
+        "//pkg/linters/norecover",
         # staticcheck SA analyzers
         "@co_honnef_go_tools//staticcheck/sa1000",
         "@co_honnef_go_tools//staticcheck/sa1001",

@@ -23,3 +23,9 @@ go_test(
     ],
     embed = [":wire"],
 )
+
+# keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
+exports_files([
+    "reader_fuzz_test.go",
+    "BUILD.bazel",
+])

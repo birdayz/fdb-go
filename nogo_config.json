@@ -19,6 +19,12 @@
       "\\.pb\\.go$": "generated protobuf code"
     }
   },
+  "norecover": {
+    "exclude_files": {
+      "gen/": "generated protobuf code",
+      "\\.pb\\.go$": "generated protobuf code"
+    }
+  },
   "shadow": {
     "only_files": {
       "DISABLED": "err shadowing is idiomatic Go"

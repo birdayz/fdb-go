@@ -18,3 +18,9 @@ go_test(
     embed = [":tuple"],
     deps = ["@com_github_onsi_gomega//:gomega"],
 )
+
+# keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
+exports_files([
+    "tuple_malformed_test.go",
+    "BUILD.bazel",
+])

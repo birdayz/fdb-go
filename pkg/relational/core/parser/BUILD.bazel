@@ -27,3 +27,9 @@ go_test(
     embed = [":parser"],
     deps = ["//pkg/relational/api"],
 )
+
+# keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
+exports_files([
+    "fuzz_test.go",
+    "BUILD.bazel",
+])

@@ -9,7 +9,10 @@ go_library(
 
 go_test(
     name = "docscheck_test",
-    srcs = ["docs_consistency_test.go"],
+    srcs = [
+        "docs_consistency_test.go",
+        "panic_boundary_test.go",
+    ],
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
     data = [
@@ -23,6 +26,18 @@ go_test(
         "//:go.mod",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",
+        # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles
+        # (the fuzz _test.go files AND their BUILD.bazel — the guard checks go_test wiring).
+        "//docs:panic-audit.md",
+        "//pkg/fdbgo/fdb/tuple:BUILD.bazel",
+        "//pkg/fdbgo/fdb/tuple:tuple_malformed_test.go",
+        "//pkg/fdbgo/wire:BUILD.bazel",
+        "//pkg/fdbgo/wire:reader_fuzz_test.go",
+        "//pkg/relational/core/parser:BUILD.bazel",
+        "//pkg/relational/core/parser:fuzz_test.go",
+        "//pkg/relational/core/query:BUILD.bazel",
+        "//pkg/relational/core/query:cascades_translator_test.go",
     ],
     embed = [":docscheck"],
+    deps = ["//pkg/linters/norecover"],
 )
