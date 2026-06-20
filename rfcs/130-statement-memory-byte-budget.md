@@ -95,7 +95,7 @@ Every cardinality-growing buffer, charged at the point of accumulation:
 | Recursive-DFS `*results` (cross-traversal) + `seen` | `executor.go:2765/2796` | `boundedBuffer`+`boundedSet` |
 | `executeLoadByKeys` full-record slice (`FromList`) | `executor_new_plans.go:230` | `boundedBuffer` (Graefe: bounded by a plan-literal key count, but each element is a whole stored record → bytes can grow) |
 | `TempTable.list` — the recursive-CTE `insertTable`/`scanTable` working set **and** `TempTableInsertPlan` (`evaluation_context.go:133`, `Add` at `:145`; recursive-CTE use at `executor.go:2584-2585`) | charge in `TempTable.Add` (Torvalds: the actual cross-level per-level working set) |
-| DML `results` echo slice — one (often full `FromStoredRecord`) `QueryResult` per *mutated* row | DELETE/INSERT/UPDATE in `executor.go` | charged **up front** (INSERT/UPDATE) / **not** (DELETE) — see §2.7; the echo cannot be charged mid-loop without a partial-mutation hazard |
+| DML `results` echo slice — one (often full `FromStoredRecord`) `QueryResult` per *mutated* row | DELETE/INSERT/UPDATE in `executor.go` | INSERT/UPDATE: **build-all-then-save**, charging actual `proto.Size` before any write; DELETE: **not** charged (echo = already-charged target) — see §2.7 |
 
 Verified **streaming → no buffer, no charge**: aggregate (one group key + running aggregates,
 `streaming_cursors.go:46`), intersection (per-key match-list O(children)), IN-join/IN-union (lazy cursor
@@ -139,15 +139,26 @@ missed both; the `/code-review` finder + codex caught them):
    cap, **no** byte charge); the DFS join drains keep charging (plain plans, no
    `TempTableInsert`). Pinned by `TestFDB_RFC130_RecursiveCTE_NoDoubleCharge`.
 
-2. **DML echo charged *up front*, never mid-loop** (codex). The DELETE/INSERT/UPDATE result
-   echo (one record per mutated row) was charged *after* `SaveRecord` staged a write — and
-   `runInTx` does **not** roll back on a statement error, so a mid-loop `54F01` could persist
-   a **partial mutation**. Fix: (a) **DELETE** — the echo *is* the already-charged target
-   row, so it is **not** re-charged (re-charging double-counts); (b) **INSERT/UPDATE** — the
-   echo is genuinely new memory, so charge its **estimate up front** (over the already-
-   materialized source/target, before any write). A breach then trips with **zero** writes
-   staged: the cap is enforced *and* no partial mutation is possible. Pinned by
-   `TestFDB_RFC130_DeleteEchoNotDoubleCharged` + `TestFDB_RFC130_UpdateEchoChargedNoPartial`.
+2. **DML echo charged by actual built-record size, before any write** (codex, 3 rounds). The
+   DELETE/INSERT/UPDATE result echo (one record per mutated row) was first charged *after*
+   `SaveRecord` staged a write — and `runInTx` does **not** roll back on a statement error, so
+   a mid-loop `54F01` could persist a **partial mutation**. The fixes converged on:
+   - **DELETE** — the echo *is* the already-charged target row, so it is **not** re-charged
+     (re-charging double-counts the same shared `QueryResult`).
+   - **INSERT/UPDATE** — the echo is genuinely new memory. Charging an *estimate over the
+     source/target* up front (an intermediate fix) under-counts a **growing** DML (INSERT …
+     VALUES with a large literal whose datum is a wrapped value → `scalarValueBytes` flat 8;
+     UPDATE SET to a large value — the new bytes aren't in the old target), letting it bypass
+     the cap. Final design: **build-all-then-save** — `executeInsert`/`executeUpdate` build
+     **every** record in phase 1, charging its **actual `proto.Size`**, then save all in
+     phase 2. Charging the real built record accounts the true echo bytes; doing all charging
+     before the first `SaveRecord` keeps the mutation **all-or-nothing** (a budget breach *or*
+     a build/transform error returns with zero writes). Wire-equivalent — same records, same
+     order; the built messages *are* the echo (no extra residency).
+
+   Pinned by `TestFDB_RFC130_DeleteEchoNotDoubleCharged`, `…_UpdateEchoChargedNoPartial`
+   (growing case: tiny rows → 600B value trips on the large new records, zero mutated —
+   revert-proven against charging the original record), `…_InsertEchoChargedNoPartial`.
 
 ## 3. Executable spec (tests)
 
