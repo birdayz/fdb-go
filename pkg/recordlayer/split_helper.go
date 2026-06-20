@@ -29,6 +29,7 @@ func saveWithSplit(
 	primaryKey tuple.Tuple,
 	serialized []byte,
 	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
 	oldsizeInfo *sizeInfo,
 	sizeInfo *sizeInfo,
 ) error {
@@ -38,13 +39,13 @@ func saveWithSplit(
 
 	dataLen := len(serialized)
 
-	// Clear previous record data
-	clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
-
 	if dataLen > splitRecordSize {
 		if !splitLongRecords {
 			return fmt.Errorf("record size %d exceeds limit %d and splitLongRecords is not enabled", dataLen, splitRecordSize)
 		}
+
+		// Clear previous record data
+		clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
 
 		// Split the record into chunks
 		splitIndex := startSplitRecord
@@ -68,16 +69,37 @@ func saveWithSplit(
 			offset = end
 		}
 		sizeInfo.IsSplit = true
-	} else {
-		// Unsplit: single KV pair at suffix 0
-		key := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
-		tx.SetBytes(key, serialized)
+		return nil
+	}
 
+	if !splitLongRecords && omitUnsplitRecordSuffix {
+		// Legacy unsplit layout: the value lives at the bare key with no suffix.
+		// Java does NOT clear the previous record here — it overwrites in place
+		// (clearPreviousSplitRecord is skipped when previousSizeInfo is non-null and
+		// not versioned-inline, which is always the case for a bare-key store, since
+		// versions live in the separate subspace). The Set below overwrites the only
+		// key this record can occupy. Matches SplitHelper.saveWithSplit's
+		// `recordKey = key` branch.
+		key := recordSubspace.Pack(primaryKey)
+		tx.SetBytes(key, serialized)
 		sizeInfo.KeyCount = 1
 		sizeInfo.KeySize = len(key)
 		sizeInfo.ValueSize = dataLen
 		sizeInfo.IsSplit = false
+		return nil
 	}
+
+	// Clear previous record data
+	clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
+
+	// Unsplit: single KV pair at suffix 0
+	key := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
+	tx.SetBytes(key, serialized)
+
+	sizeInfo.KeyCount = 1
+	sizeInfo.KeySize = len(key)
+	sizeInfo.ValueSize = dataLen
+	sizeInfo.IsSplit = false
 
 	return nil
 }
@@ -123,8 +145,27 @@ func loadWithSplit(
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
 	sizeInfo *sizeInfo,
 ) ([]byte, error) {
+	if !splitLongRecords && omitUnsplitRecordSuffix {
+		// Legacy unsplit layout: the value is at the bare key with no suffix.
+		// Matches Java's SplitHelper.loadUnsplitLegacy().
+		bareKey := recordSubspace.Pack(primaryKey)
+		value, err := tx.Get(fdb.Key(bareKey)).Get()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get legacy unsplit record: %w", err)
+		}
+		if value == nil {
+			return nil, nil
+		}
+		sizeInfo.KeyCount = 1
+		sizeInfo.KeySize = len(bareKey)
+		sizeInfo.ValueSize = len(value)
+		sizeInfo.IsSplit = false
+		return value, nil
+	}
+
 	// Try unsplit first (most common case).
 	// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
 	// from appendToTuple(primaryKey, unsplitRecord).
@@ -245,6 +286,7 @@ func deleteSplit(
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
 	oldsizeInfo *sizeInfo,
 ) bool {
 	if len(primaryKey) == 0 {
@@ -253,6 +295,13 @@ func deleteSplit(
 
 	if oldsizeInfo == nil {
 		return false
+	}
+
+	if !splitLongRecords && omitUnsplitRecordSuffix {
+		// Legacy unsplit layout: clear the bare key. Matches Java's deleteSplit
+		// `context.ensureActive().clear(subspace.pack(key))`.
+		tx.Clear(recordSubspace.Pack(primaryKey))
+		return true
 	}
 
 	if oldsizeInfo.IsSplit || splitLongRecords {
@@ -279,7 +328,18 @@ func recordExistsWithSplit(
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
 ) (bool, error) {
+	if !splitLongRecords && omitUnsplitRecordSuffix {
+		// Legacy unsplit layout: existence is the bare key. Matches Java's
+		// SplitHelper.keyExists -> loadUnsplitLegacy(...).thenApply(Objects::nonNull).
+		value, err := tx.Get(fdb.Key(recordSubspace.Pack(primaryKey))).Get()
+		if err != nil {
+			return false, fmt.Errorf("failed to check legacy record existence: %w", err)
+		}
+		return value != nil, nil
+	}
+
 	// Check unsplit key
 	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)

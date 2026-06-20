@@ -159,19 +159,22 @@ each on its own stacked branch.
 
 `Transaction.GetAddressesForKey` (`transaction.go:2167-2176`) unconditionally returns `endpointAddress` = `ip:port` (`endpoint.go:36`). libfdb_c defaults the address format to **ip-only**, appending `:port` only when `FDB_TR_OPTION_INCLUDE_PORT_IN_ADDRESS` is set (`NativeAPI.actor.cpp:5747`). So a Go client's `GetAddressesForKey` returns port-suffixed addresses where a C client returns bare IPs by default — an output-format divergence on a rarely-used locality call. `include_port_in_address` is a **tx-only** option (no DB-default form), independent of the RFC-133 DB-default work; pre-existing. Fix is its own small wire-compat change (honor the option, default to ip-only) — flag, not gating.
 
-### [ ] recordlayer: no read path for format-version-<6 record versions / unsplit records (surfaced by the doc-drift audit, RFC-131, 2026-06-20)
+### [x] recordlayer: legacy format-version-<6 record versions / unsplit records — DONE (2026-06-20)
 
-Go reads record versions **only inline** at the `pk + -1` suffix (`store.go:350`; the inline layout
-used at Java `FormatVersion >= SAVE_VERSION_WITH_RECORD (6)`), and `formatVersionCurrent` is the newest
-format. There is **no read path for the legacy `RecordVersionKey = 8` version subspace and no
-`omitUnsplitRecordSuffix` concept** (subspace-8 is only ever *cleared*, `store_delete_where.go`, never
-loaded). So a Go client opening a Java store created at **format version < 6 silently cannot see
-record-version data** (and the unsplit-record-suffix layout is likewise unhandled). This is a real
-wire-compat read gap on the project's hard line — Go writes/reads the current format fine and shares
-data with current Java/C apps, but cannot fully read *legacy-format* stores. Lifted here from the
-archived 2026-03-09 `wire_compat_audit.md` / `behavior_compat_audit.md` so it isn't lost to the
-archive. **Fix is its own wire-compat RFC** (port the subspace-8 read + `omitUnsplitRecordSuffix`
-handling against the Java/C++ spec; fdb-client-engineer gate) — RFC-131 only tracks it.
+Go now mirrors Java's `FDBRecordStore.useOldVersionFormat()` end-to-end. Record versions are
+read/written in the legacy `RecordVersionKey = 8` subspace for stores below `SAVE_VERSION_WITH_RECORD`
+(format 6), and unsplit records are read/written at the bare primary key (no `0` suffix) when
+`omit_unsplit_record_suffix` is set — across load, scan, `scanRecordKeys`, `recordExists`, save,
+update, delete, and `deleteRecordsWhere` (`store.omitUnsplitRecordSuffix()` / `store.useOldVersionFormat()`
+derive the layout from the store header exactly as Java's `checkVersion()`). On open, Go performs
+Java's transactional format upgrade (`maybeUpgradeFormatVersion` ⇒ `checkRebuild` /
+`addConvertRecordVersions`): bumps `FormatVersion`, sets `omit_unsplit_record_suffix` for a
+non-splitting store created before format 5, and moves versions from subspace 8 to the inline
+`pk + -1` location when upgrading a splitting store past format 6. Previously Go accepted an old-format
+header but only understood the modern inline layout, so it would **silently** miss a legacy store's
+versions and unsplit records — a data-correctness bug on the wire-compat hard line. Pinned by
+`pkg/recordlayer/legacy_format_test.go` (lays down each legacy layout in FDB and asserts byte-level
+read/write/scan/delete/migration parity). Was surfaced by the RFC-131 doc-drift audit.
 
 ### [x] fdbgo/client: Get/GetRange over-conflict vs libfdb_c — RFC-121 DONE (PR #319; conflict-range audit 2026-06-19)
 

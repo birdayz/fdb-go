@@ -42,7 +42,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 	// Load existing metadata to archive as history.
 	// Capture sizeInfo to clear stale split chunks when overwriting.
 	var existingSize sizeInfo
-	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, &existingSize)
+	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, false, &existingSize)
 	if err != nil {
 		return fmt.Errorf("load existing metadata: %w", err)
 	}
@@ -51,7 +51,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 		if err := proto.Unmarshal(existing, &oldProto); err == nil {
 			oldVersion := int64(oldProto.GetVersion())
 			historyKey := tuple.Tuple{"H", oldVersion}
-			if err := saveWithSplit(tx, s.subspace, historyKey, existing, true, nil, &sizeInfo{}); err != nil {
+			if err := saveWithSplit(tx, s.subspace, historyKey, existing, true, false, nil, &sizeInfo{}); err != nil {
 				return fmt.Errorf("archive metadata v%d: %w", oldVersion, err)
 			}
 		}
@@ -59,7 +59,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 
 	// Save current with split support (matching Java).
 	// Pass existingSize so clearPreviousRecord removes stale split chunks.
-	if err := saveWithSplit(tx, s.subspace, currentKey, serialized, true, &existingSize, &sizeInfo{}); err != nil {
+	if err := saveWithSplit(tx, s.subspace, currentKey, serialized, true, false, &existingSize, &sizeInfo{}); err != nil {
 		return fmt.Errorf("save metadata: %w", err)
 	}
 	return nil
@@ -70,7 +70,7 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 // Uses SplitHelper for wire compatibility with Java's FDBMetaDataStore.
 // Matches Java's FDBMetaDataStore.loadRecordMetaData().
 func (s *FDBMetaDataStore) LoadRecordMetaDataProto(tx fdb.WritableTransaction) (*gen.MetaData, error) {
-	data, err := loadWithSplit(tx, s.subspace, currentKey, true, &sizeInfo{})
+	data, err := loadWithSplit(tx, s.subspace, currentKey, true, false, &sizeInfo{})
 	if err != nil {
 		return nil, fmt.Errorf("load metadata: %w", err)
 	}
@@ -95,7 +95,7 @@ func (s *FDBMetaDataStore) Subspace() subspace.Subspace {
 // Uses SplitHelper for wire compatibility with Java's FDBMetaDataStore.
 func (s *FDBMetaDataStore) LoadRecordMetaDataProtoAtVersion(tx fdb.WritableTransaction, version int32) (*gen.MetaData, error) {
 	historyKey := tuple.Tuple{"H", int64(version)}
-	data, err := loadWithSplit(tx, s.subspace, historyKey, true, &sizeInfo{})
+	data, err := loadWithSplit(tx, s.subspace, historyKey, true, false, &sizeInfo{})
 	if err != nil {
 		return nil, fmt.Errorf("load metadata v%d: %w", version, err)
 	}

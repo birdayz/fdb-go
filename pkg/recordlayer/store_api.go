@@ -269,6 +269,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&oldsizeInfo,
 	)
 	if err != nil {
@@ -358,6 +359,7 @@ func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, e
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&sizeInfo,
 	)
 	if err != nil {
@@ -521,9 +523,10 @@ func (store *FDBRecordStore) ScanRecordKeys(
 	scanProperties ScanProperties,
 ) RecordCursor[tuple.Tuple] {
 	return &recordKeyCursor{
-		store:          store,
-		continuation:   continuation,
-		scanProperties: scanProperties,
-		startTime:      time.Now(),
+		store:                   store,
+		continuation:            continuation,
+		scanProperties:          scanProperties,
+		startTime:               time.Now(),
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix(),
 	}
 }

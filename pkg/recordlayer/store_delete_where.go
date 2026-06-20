@@ -111,8 +111,11 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		return err
 	}
 
-	// Clear record versions (if storing versions).
-	if store.metaData.IsStoreRecordVersions() {
+	// Clear legacy record versions in the separate RecordVersionKey(8) subspace.
+	// Only the legacy layout stores versions there; in the modern layout versions
+	// are inline (pk+-1) within the RecordKey subspace cleared above. Matches Java's
+	// deleteRecordsWhereAsync: `useOldVersionFormat() && isStoreRecordVersions()`.
+	if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
 		if err := clearPrefixRange(tx, store.subspace.Sub(RecordVersionKey), prefix); err != nil {
 			return err
 		}
@@ -125,8 +128,10 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	if err := store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordKey), prefix); err != nil {
 		return err
 	}
-	if err := store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordVersionKey), prefix); err != nil {
-		return err
+	if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
+		if err := store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordVersionKey), prefix); err != nil {
+			return err
+		}
 	}
 
 	// Clear record counts.

@@ -34,6 +34,21 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   envelope, including for nested derived tables (RFC-128).
 
 ### Fixed
+- **Legacy Java store layouts are now fully readable, writable, and auto-upgraded** — closes the
+  `FormatVersion` < 6 / `omit_unsplit_record_suffix` wire-compatibility gap that was previously a
+  *silent* data-correctness bug (Go accepted an old-format store header but only understood the modern
+  inline layout, so it would silently fail to see a legacy store's record versions and unsplit
+  records). Go now mirrors Java's `FDBRecordStore.useOldVersionFormat()` end-to-end:
+  record versions are read/written in the separate `RecordVersionKey(8)` subspace for stores below
+  `SAVE_VERSION_WITH_RECORD` (format 6), and unsplit records are read/written at the bare primary key
+  (no `0` suffix) when `omit_unsplit_record_suffix` is set — across load, scan, `scanRecordKeys`,
+  `recordExists`, save, update, delete, and `deleteRecordsWhere`. On open, Go also performs Java's
+  transactional format upgrade (`checkRebuild`/`addConvertRecordVersions`): it bumps the stored
+  `FormatVersion`, sets `omit_unsplit_record_suffix` for a non-splitting store created before format 5,
+  and moves versions from subspace 8 to their inline `pk + -1` location when upgrading a splitting
+  store past format 6. Pinned by FDB integration tests that lay down each legacy layout and assert
+  byte-level read/write/scan/delete and migration parity with Java. (Closes the `TODO.md` "no read
+  path for format-version-<6 record versions / unsplit records" gap surfaced by the RFC-131 audit.)
 - SQL pagination no longer treats a non-terminal `StartContinuation` as end-of-results (a latent
   early-truncation bug); exhaustion is decided off `IsEnd()`, not byte-emptiness (RFC-127).
 - Pure-Go FDB client: `Get`/`GetRange` read-conflict ranges are clamped to the data actually returned
@@ -50,9 +65,12 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   (RFC-133).
 
 ### Compatibility
-- **Wire format:** unchanged. Records, indexes, versions, continuations, split records remain
-  byte-identical to Java `fdb-record-layer-core` 4.11.1.0. *Known gap:* no read path yet for
-  format-version-<6 record versions on legacy Java stores (tracked in `TODO.md`).
+- **Wire format:** unchanged for modern stores — records, indexes, versions, continuations, and split
+  records remain byte-identical to Java `fdb-record-layer-core` 4.11.1.0. **Newly closed gap:** Go now
+  reads *and* writes legacy Java store layouts (`FormatVersion` < 6 record versions in the
+  `RecordVersionKey(8)` subspace, and `omit_unsplit_record_suffix` bare-key unsplit records) and
+  performs Java's on-open format upgrade — previously a silent read gap (see Fixed). A Go client can
+  now safely share a cluster with legacy Java stores in either direction.
 - **SQL behaviour:** net additions only (memory-budget option; the LIMIT-envelope and pagination
   fixes correct latent bugs, they don't change correct-query results).
 - **FDB client option semantics:** now documented option-by-option in `pkg/fdbgo/fdb/OPTIONS.md`

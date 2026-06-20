@@ -88,6 +88,93 @@ func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInf
 	return nil
 }
 
+// maybeUpgradeFormatVersion upgrades the persisted format version in the store header
+// to the current version, performing the same on-disk layout migrations Java performs
+// in checkRebuild() before reading any data. Returns true if the header was modified.
+//
+// The order matters and mirrors Java exactly: the format version is bumped FIRST so that
+// useOldVersionFormat()/omitUnsplitRecordSuffix() reflect the new version, then:
+//   - upgrading past SAVE_UNSPLIT_WITH_SUFFIX(5) on a non-splitting store sets
+//     omit_unsplit_record_suffix=true (records were saved without a suffix and we
+//     cannot rewrite them all), keeping them at the bare key forever;
+//   - upgrading past SAVE_VERSION_WITH_RECORD(6) with versioning enabled, when the store
+//     is NOT staying in the old version layout, moves every version from the legacy
+//     RecordVersionKey(8) subspace to its inline location.
+//
+// storeHeader is the same pointer as store.storeHeader, so mutating it immediately
+// updates what useOldVersionFormat() derives.
+func (store *FDBRecordStore) maybeUpgradeFormatVersion(storeHeader *gen.DataStoreInfo) (bool, error) {
+	oldFormat := storeHeader.GetFormatVersion()
+	if oldFormat == int32(formatVersionCurrent) {
+		return false, nil
+	}
+
+	newFormat := int32(formatVersionCurrent)
+	storeHeader.FormatVersion = &newFormat
+
+	if oldFormat >= formatVersionMinimum &&
+		oldFormat < formatVersionSaveUnsplitWithSuffix &&
+		!store.metaData.IsSplitLongRecords() {
+		// Records were saved without the unsplit suffix; keep omitting it.
+		storeHeader.OmitUnsplitRecordSuffix = proto.Bool(true)
+	}
+
+	if oldFormat >= formatVersionMinimum &&
+		oldFormat < formatVersionSaveVersionWithRecord &&
+		store.metaData.IsStoreRecordVersions() &&
+		!store.useOldVersionFormat() {
+		if err := store.convertRecordVersionsToInline(); err != nil {
+			return false, fmt.Errorf("convert record versions to inline format: %w", err)
+		}
+	}
+
+	return true, nil
+}
+
+// convertRecordVersionsToInline moves every record version from the legacy
+// RecordVersionKey(8) subspace to its inline location (recordsSubspace.pack(pk, -1))
+// and clears the legacy subspace. Matches Java's FDBRecordStore.addConvertRecordVersions().
+//
+// Like Java, this runs in the current transaction and is therefore subject to FDB's
+// 5s / 10MB limits; converting a very large legacy store in one transaction can exceed
+// them (an inherent limitation of the format-6 upgrade, shared with Java).
+//
+// Precondition: store.useOldVersionFormat() is already false (the caller bumped the
+// format version), so store.versionKey(pk) returns the inline key.
+func (store *FDBRecordStore) convertRecordVersionsToInline() error {
+	legacy := store.subspace.Sub(RecordVersionKey)
+	begin, end := legacy.FDBRangeKeys()
+	tx := store.context.Transaction()
+
+	kvs, err := tx.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{
+		Mode: fdb.StreamingModeWantAll,
+	}).GetSliceWithError()
+	if err != nil {
+		return fmt.Errorf("read legacy version subspace: %w", err)
+	}
+
+	for _, kv := range kvs {
+		pk, err := fastSubspaceUnpack(kv.Key, len(legacy.Bytes()))
+		if err != nil {
+			return fmt.Errorf("unpack legacy version key: %w", err)
+		}
+		// Legacy value is the raw 12-byte FDBRecordVersion (always complete/committed),
+		// matching Java's FDBRecordVersion.fromBytes(value, false).
+		version, err := completeVersionFromBytesUnchecked(kv.Value)
+		if err != nil {
+			return fmt.Errorf("decode legacy version: %w", err)
+		}
+		packed, err := packVersion(version)
+		if err != nil {
+			return fmt.Errorf("pack inline version: %w", err)
+		}
+		tx.Set(store.versionKey(pk), packed)
+	}
+
+	tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
+	return nil
+}
+
 // checkPossiblyRebuild compares the stored metadata version with the current
 // metadata version. If the current metadata has a higher version, indexes added
 // since the old version are rebuilt or marked according to the IndexRebuildPolicy.
@@ -106,13 +193,23 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 	}
 
+	// Upgrade the persisted format version (and migrate the on-disk layout if needed)
+	// BEFORE reading/rebuilding anything, matching Java's checkRebuild() which sets the
+	// format version and converts record versions at the very start. This runs whether
+	// or not the metadata version changed.
+	formatUpgraded, err := store.maybeUpgradeFormatVersion(storeHeader)
+	if err != nil {
+		return err
+	}
+
 	// Check record counts BEFORE the version gate — this compares the stored
 	// RecordCountKey proto against the current one, independent of version.
 	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
-	needHeaderWrite, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
+	countHeaderWrite, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
 	if err != nil {
 		return fmt.Errorf("rebuild record counts: %w", err)
 	}
+	needHeaderWrite := formatUpgraded || countHeaderWrite
 
 	if newMetaDataVersion == oldMetaDataVersion {
 		// Even when versions match, the record count check may have modified
