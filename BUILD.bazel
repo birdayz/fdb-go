@@ -7,10 +7,13 @@ exports_files(["buf.yaml"])
 # (//pkg/docscheck:docscheck_test). MODULE.bazel is the version source of truth.
 exports_files([
     "MODULE.bazel",
+    "go.mod",
     "README.md",
     "PRODUCTION_READINESS.md",
     "TODO.md",
     "DIVERGENCES.md",
+    "CHANGELOG.md",
+    "RELEASE.md",
 ])
 
 # gazelle:prefix github.com/birdayz/fdb-record-layer-go
