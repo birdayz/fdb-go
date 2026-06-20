@@ -2230,7 +2230,22 @@ func executeInsert(
 		}
 
 		if props.State.HasMemLimit() {
-			if cerr := props.State.ChargeMemory(int64(proto.Size(msg))); cerr != nil {
+			// Match the stored-row estimator: proto wire size PLUS the packed PK tuple
+			// the echo's FDBStoredRecord holds separately (codex #328 P2). The PK is not
+			// assigned until SaveRecord, so derive it from the built record via the target
+			// type's primary-key expression (best-effort: a derivation error charges the
+			// record size alone — still a conservative ceiling for the dominant payload).
+			pkBytes := int64(0)
+			if rt := store.GetMetaData().GetRecordType(p.GetTargetRecordType()); rt != nil && rt.PrimaryKey != nil {
+				if kt, kerr := rt.PrimaryKey.Evaluate(nil, msg); kerr == nil && len(kt) > 0 {
+					pk := make(tuple.Tuple, len(kt[0]))
+					for i, e := range kt[0] {
+						pk[i] = e
+					}
+					pkBytes = int64(len(pk.Pack()))
+				}
+			}
+			if cerr := props.State.ChargeMemory(int64(proto.Size(msg)) + pkBytes); cerr != nil {
 				return nil, cerr
 			}
 		}
@@ -2389,7 +2404,11 @@ func executeUpdate(
 		}
 
 		if props.State.HasMemLimit() {
-			if err := props.State.ChargeMemory(int64(proto.Size(msg))); err != nil {
+			// Match the stored-row estimator (estimateQueryResultBytes): proto wire size
+			// PLUS the packed PK tuple, which the echo's FDBStoredRecord holds separately
+			// (codex #328 P2). An UPDATE does not change the PK, so the target's PK is the
+			// echo's PK.
+			if err := props.State.ChargeMemory(int64(proto.Size(msg)) + int64(len(qr.Record.PrimaryKey.Pack()))); err != nil {
 				return nil, err
 			}
 		}

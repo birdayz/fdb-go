@@ -377,6 +377,51 @@ func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 	}
 }
 
+// TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes (codex #328 P2): the DML echo charge must
+// include the packed PK tuple the echo's FDBStoredRecord holds separately — matching the
+// stored-row estimator — not just proto.Size. With a WIDE primary key, the packed key is a
+// large part of each echo's resident bytes; a wide-PK INSERT … SELECT trips a budget that
+// proto.Size alone would not reach. Revert-proof: drop the +pkBytes term in executeInsert →
+// the ~20KB total falls under the 25KB budget and the INSERT completes.
+func TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc130_pk", "rfc130pk",
+		"CREATE TABLE Src (k STRING, PRIMARY KEY (k)) "+
+			"CREATE TABLE Dst (k STRING, PRIMARY KEY (k))")
+	ctx := context.Background()
+
+	const rows = 20
+	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	for i := 0; i < rows; i++ {
+		k := fmt.Sprintf("%03d%s", i, strings.Repeat("k", 497)) // 500-char distinct PK
+		if _, err := seedConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO Src (k) VALUES ('%s')", k)); err != nil {
+			t.Fatalf("seed Src %d: %v", i, err)
+		}
+	}
+
+	// Source (computed rows, ~500B, NO pk term) ≈ 10KB; echo (built records: proto.Size ~510 +
+	// packed PK ~503) ≈ 20KB → ~30KB with the PK term, trips the 25KB budget. Without the PK
+	// term the echo is ~10KB and the ~20KB total stays under (revert-proof).
+	const budget = 25_000
+	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	_, err := capConn.ExecContext(ctx, "INSERT INTO Dst SELECT k FROM Src")
+	wantExecLimit(t, err)
+
+	// No partial mutation: nothing landed in Dst.
+	r, qerr := capConn.QueryContext(ctx, "SELECT k FROM Dst")
+	if qerr != nil {
+		t.Fatalf("verify query after INSERT: %v", qerr)
+	}
+	landed := 0
+	for r.Next() {
+		landed++
+	}
+	_ = r.Close()
+	if landed != 0 {
+		t.Fatalf("wide-PK INSERT tripped the budget but inserted %d rows — PARTIAL mutation", landed)
+	}
+}
+
 // planHasSort reports whether an EXPLAIN string shows an in-memory sort
 // operator (the planner names it "Sort" / "ISORT" depending on shape).
 func planHasSort(plan string) bool {
