@@ -91,11 +91,11 @@ Every cardinality-growing buffer, charged at the point of accumulation:
 | NLJ hash-index map | `streaming_cursors.go:656` | `boundedSet`/`boundedBuffer` |
 | In-memory sort buffers (×2) | `streaming_cursors.go:452, :548` | `boundedBuffer` |
 | `distinct` seen-set | `executor.go:1110` | `boundedSet` |
-| Recursive-CTE `allResults` (cross-level, ≤1000×) + `seen` | `executor.go:2595/2611/2709/2717` | `boundedBuffer`+`boundedSet` |
+| Recursive-CTE per-level working set + `seen` | `TempTable.Add` + `boundedSet` | charged **once** at `TempTable.Add` (the recursive sub-plan's `TempTableInsertPlan` top); the level-union drains use a **non-charging** row-capped collect (`collectAllRowCapped`) to avoid double-counting the same shared records — see §2.7 |
 | Recursive-DFS `*results` (cross-traversal) + `seen` | `executor.go:2765/2796` | `boundedBuffer`+`boundedSet` |
 | `executeLoadByKeys` full-record slice (`FromList`) | `executor_new_plans.go:230` | `boundedBuffer` (Graefe: bounded by a plan-literal key count, but each element is a whole stored record → bytes can grow) |
 | `TempTable.list` — the recursive-CTE `insertTable`/`scanTable` working set **and** `TempTableInsertPlan` (`evaluation_context.go:133`, `Add` at `:145`; recursive-CTE use at `executor.go:2584-2585`) | charge in `TempTable.Add` (Torvalds: the actual cross-level per-level working set) |
-| DML `results` echo slice — one (often full `FromStoredRecord`) `QueryResult` per *mutated* row | DELETE `executor.go:2137`, INSERT `:2178/:2211`, UPDATE `:2351` | `boundedBuffer` (Torvalds: the output echo of an already-charged input — ~doubles DML resident bytes, uncharged) |
+| DML `results` echo slice — one (often full `FromStoredRecord`) `QueryResult` per *mutated* row | DELETE/INSERT/UPDATE in `executor.go` | charged **up front** (INSERT/UPDATE) / **not** (DELETE) — see §2.7; the echo cannot be charged mid-loop without a partial-mutation hazard |
 
 Verified **streaming → no buffer, no charge**: aggregate (one group key + running aggregates,
 `streaming_cursors.go:46`), intersection (per-key match-list O(children)), IN-join/IN-union (lazy cursor
@@ -124,6 +124,30 @@ package. It must handle every `QueryResult` shape without panic:
 `OptMaxStatementMemoryBytes` (`pkg/relational/api/options.go`), default `0` = unlimited.
 `MemoryLimitExceededError` → SQLSTATE **`54F01`** (`ErrCodeExecutionLimitReached`) — same resource-limit
 family as scan/byte/time (no memory-specific SQLSTATE in Java either; Graefe ACK'd reuse).
+
+### 2.7 Implementation refinements (impl-review findings, PR #328)
+
+Two charge-once/safety subtleties the impl gauntlet surfaced (the two primary reviewers
+missed both; the `/code-review` finder + codex caught them):
+
+1. **No double-charge in recursive CTE** (`/code-review`). The recursive sub-plan's top is a
+   `TempTableInsertPlan`, which charges each row in `TempTable.Add`; the level-union then
+   drained that *same* cursor through `CollectAllBounded`, charging the shared record again →
+   the budget tripped at ~half its true value. `TempTable.Add` is the **sole owner**
+   (`memUsed` is monotonic and survives the per-level `Clear`, so the cumulative charge =
+   true peak residency). The initial/recursive level drains use `collectAllRowCapped` (row
+   cap, **no** byte charge); the DFS join drains keep charging (plain plans, no
+   `TempTableInsert`). Pinned by `TestFDB_RFC130_RecursiveCTE_NoDoubleCharge`.
+
+2. **DML echo charged *up front*, never mid-loop** (codex). The DELETE/INSERT/UPDATE result
+   echo (one record per mutated row) was charged *after* `SaveRecord` staged a write — and
+   `runInTx` does **not** roll back on a statement error, so a mid-loop `54F01` could persist
+   a **partial mutation**. Fix: (a) **DELETE** — the echo *is* the already-charged target
+   row, so it is **not** re-charged (re-charging double-counts); (b) **INSERT/UPDATE** — the
+   echo is genuinely new memory, so charge its **estimate up front** (over the already-
+   materialized source/target, before any write). A breach then trips with **zero** writes
+   staged: the cap is enforced *and* no partial mutation is possible. Pinned by
+   `TestFDB_RFC130_DeleteEchoNotDoubleCharged` + `TestFDB_RFC130_UpdateEchoChargedNoPartial`.
 
 ## 3. Executable spec (tests)
 
