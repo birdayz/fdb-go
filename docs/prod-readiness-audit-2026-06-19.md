@@ -110,6 +110,16 @@ This should block general SQL production readiness. It may not block record-stor
 
 ### P1: Physical LIMIT/OFFSET Plan Continuation Does Not Preserve Skip/Remaining State
 
+> **ANALYZED — RFC-128 (2026-06-20).** The literal finding (executor re-skip on resume) is a **real but
+> SQL-unreachable** latent bug, mirroring the P0: Java's `SkipCursor`/`RowLimitedCursor` also do not
+> envelope skip/limit (Go matches Java), Java never combines a non-zero skip with a resume continuation,
+> the top-level SQL LIMIT is handled correctly by `paginatingRows`, and the only SQL-reachable nested
+> `RecordQueryLimitPlan` (FlatMap inner) is re-run fresh per outer row — never resumed mid-window. **Not a
+> Java divergence, not a prod blocker.** HOWEVER, verifying it surfaced a *genuinely reachable,
+> deterministic wrong-results bug* in the same area — a **nested derived-table `LIMIT/OFFSET` is silently
+> dropped and mis-hoisted** (`SELECT id FROM (… LIMIT 5 OFFSET 2) AS s WHERE id>4` returns wrong rows).
+> That is the real defect; it is fixed under **RFC-128**, which also keeps the re-skip path shielded.
+
 Impact: paginated execution of physical LIMIT/OFFSET plans can skip rows again, duplicate rows, or over-return rows across resumes.
 
 Evidence:
