@@ -16,6 +16,31 @@ func makeServers(addrs ...string) []ServerInfo {
 	return servers
 }
 
+// settleSmoothers drives every tracked server's outstanding smoother to steady
+// state (estimate == total), making the power-of-two selection metric reflect
+// the load the test set up — deterministically.
+//
+// chooseServer/chooseTopTwo rank servers by smoothOutstanding.smoothTotal(), a
+// C++-faithful Smoother whose estimate integrates toward total only as wall-clock
+// time elapses. nowSeconds() is float64(time.Now().UnixNano())/1e9, and UnixNano
+// (~1.75e18) exceeds float64's ~16 significant digits, so its sub-microsecond bits
+// are lost: two calls a few hundred ns apart frequently read the *same* instant.
+// In these microsecond-fast unit tests the smoother then never integrates the
+// load just applied — every metric reads ~0, the comparison ties, and power-of-two
+// random can pick a server the test expects to be ranked out (a real, reproducible
+// flake under -count). Advancing each smoother by a large synthetic interval forces
+// full integration; the subsequent real-now reads have elapsed < 0, so update()
+// early-returns and the settled estimate stays put. Production is unaffected — real
+// requests are milliseconds apart, far above the clock's resolution.
+func (q *QueueModel) settleSmoothers() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	future := nowSeconds() + 100
+	for _, d := range q.servers {
+		d.smoothOutstanding.smoothTotal(future)
+	}
+}
+
 func TestQueueModelSingleServer(t *testing.T) {
 	t.Parallel()
 	qm := newQueueModel()
@@ -38,6 +63,10 @@ func TestQueueModelPicksLeastLoaded(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_ = qm.startRequest("s3:4500")
 	}
+
+	// Make the smoothed metric reflect the load above regardless of how the wall
+	// clock rounds during this fast test (see settleSmoothers).
+	qm.settleSmoothers()
 
 	// With power-of-two random: the worst server (s1 with metric=5)
 	// should never be picked when both other candidates are better.
@@ -374,6 +403,10 @@ func TestChooseTopTwo(t *testing.T) {
 	// Add load to "slow" to make it clearly worst.
 	delta := q.startRequest("slow")
 	_ = delta
+
+	// Make the smoothed metric reflect the load above regardless of how the wall
+	// clock rounds during this fast test (see settleSmoothers).
+	q.settleSmoothers()
 
 	best, second = q.chooseTopTwo(servers)
 	// "slow" should never be primary; "fast" and "medium" are both valid under power-of-two random.
