@@ -64,8 +64,10 @@ func TestChargeCoverage_AllBufferPaths(t *testing.T) {
 		}
 	})
 
-	// 2. boundedBuffer.Append directly (executeLoadByKeys). (DML result echoes are
-	// deliberately NOT charged — they ride the pre-charged target set; codex #328.)
+	// 2. boundedBuffer.Append directly (executeLoadByKeys). (DELETE echo is not separately
+	// charged — it IS the already-charged target row. INSERT/UPDATE echoes ARE charged in
+	// Phase 1 via proto.Size + len(PK.Pack()) in executeInsert/executeUpdate — exercised by
+	// the FDB integration tests, not here; codex #328.)
 	advanced(t, "boundedBuffer", func(t *testing.T) {
 		buf := newBoundedBuffer[QueryResult](st, 0, "coverage", estimateQueryResultBytes)
 		for _, r := range wideRows(3, w, "P") {
