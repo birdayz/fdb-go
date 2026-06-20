@@ -81,6 +81,7 @@ var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=\s*\[`)
 // `srcs = [...]` list (so the same name appearing in `data`, `embedsrcs`, or a comment inside the call
 // does NOT count either — codex #332).
 func goTestWiresSrc(build, srcFile string) bool {
+	build = stripStarlarkComments(build) // a commented-out `# "x_test.go"` is NOT a real srcs entry (codex #332)
 	needle := `"` + srcFile + `"`
 	for i := 0; ; {
 		j := strings.Index(build[i:], "go_test(")
@@ -100,6 +101,34 @@ func goTestWiresSrc(build, srcFile string) bool {
 			return true
 		}
 	}
+}
+
+// stripStarlarkComments removes `#`-to-end-of-line comments, but only when the `#` is outside a
+// double-quoted string, so a commented-out srcs entry (or a commented-out go_test() block) cannot
+// masquerade as live wiring. Filenames in BUILD srcs do not contain `#`, but the quote-awareness keeps
+// it correct regardless.
+func stripStarlarkComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"':
+			inStr = !inStr
+			b.WriteByte(c)
+		case c == '#' && !inStr:
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+			if i < len(s) {
+				b.WriteByte('\n')
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // balanced returns the substring of s starting at open (the index just past an already-consumed
