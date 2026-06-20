@@ -5,13 +5,16 @@ package embedded
 //
 // Architecture: Java's QueryVisitor.visitSimpleTable builds the plan in
 // this order: FROM -> WHERE -> GROUP BY + SELECT + HAVING -> ORDER BY ->
-// LIMIT -> DISTINCT. Each step takes the current operator and wraps it.
+// (final projection) -> DISTINCT. Each step takes the current operator and
+// wraps it. SQL LIMIT/OFFSET is a Go-only extension Java's fdb-relational
+// lacks; it is wrapped LAST (outermost), after DISTINCT, so it applies after
+// dedup per SQL semantics (RFC-128).
 //
 // PlanVisitor mirrors this incremental wrapping: visitFrom builds the
 // scan/join subtree, visitWhere wraps it with a filter, visitSelectGroupBy
 // wraps it with aggregate/projection, visitOrderBy wraps it with sort,
-// visitLimit wraps it with limit, and visitFinalProjection wraps it with
-// the non-aggregate projection and DISTINCT.
+// visitFinalProjection wraps it with the non-aggregate projection and
+// DISTINCT, and finally visitLimit wraps the whole thing with the limit.
 //
 // The complex aggregate classification (SELECT element parsing, GROUP BY
 // interaction, HAVING harvesting) delegates to classifySelectElements
@@ -376,17 +379,22 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		op = logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
 	}
 
-	// Step 5: LIMIT/OFFSET → wrap with limit directly from ANTLR.
-	// Go extension: LIMIT/OFFSET parsed and applied post-execution.
-	op = v.visitLimit(op, simpleTable)
-
-	// Step 6: Projection (non-aggregate) + DISTINCT → directly from
+	// Step 5: Projection (non-aggregate) + DISTINCT → directly from
 	// ANTLR. Only builds a projection for non-aggregate queries;
 	// aggregate queries have their projection handled in visitSelectGroupBy.
 	op = v.visitFinalProjection(op, simpleTable, hasAggregate, stripPrefix)
 	if simpleTable.DISTINCT() != nil {
 		op = logical.NewDistinct(op)
 	}
+
+	// Step 6: LIMIT/OFFSET → wrap with limit directly from ANTLR. The LIMIT
+	// is the OUTERMOST operator so it applies LAST — after the final
+	// projection AND DISTINCT — matching SQL semantics (FROM→WHERE→GROUP BY→
+	// HAVING→SELECT/DISTINCT→ORDER BY→LIMIT). RFC-128: with the LIMIT now a
+	// real RecordQueryLimitPlan operator at its built position (no
+	// post-execution hoist), stacking it below DISTINCT would dedup AFTER the
+	// cap and return the wrong rows. It must wrap everything.
+	op = v.visitLimit(op, simpleTable)
 
 	if v.md == nil {
 		return op, nil
@@ -416,6 +424,14 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		needRebuild = true
 	}
 	if needRebuild {
+		// The rebuild REPLACES op, discarding the LIMIT wrapper visitLimit
+		// applied above — and sq (from selectQueryFromClassification) carries
+		// limit:-1. Carry the clause's LIMIT/OFFSET into sq so buildSelectShell
+		// re-applies it (RFC-128: with the post-execution hoist removed, the
+		// in-tree operator is the only carrier; without this `SELECT a.* … LIMIT
+		// 5` returned all rows). Only the rebuild path needs it — the non-rebuild
+		// path keeps the visitLimit wrapper.
+		sq.limit, sq.offset = parseLimitClause(simpleTable)
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
 			return op, nil
@@ -1162,19 +1178,18 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	return logical.NewSort(op, keys)
 }
 
-// visitLimit checks the ANTLR parse tree for a LIMIT clause. Go
-// extension: LIMIT/OFFSET are supported (most-requested feature).
-// Builds a LogicalLimit node; the Cascades translator skips it and
-// paginatingRows applies the limit post-execution.
-func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+// parseLimitClause reads a LIMIT/OFFSET clause from a SimpleTableContext and
+// returns (limit, offset). limit == -1 means "no LIMIT clause present" (a pure
+// OFFSET still returns limit -1 with offset > 0). Shared by visitLimit (the
+// live ANTLR-direct path) and extractFromSimpleTable (the selectQuery path used
+// for union branches / derived tables) so a LIMIT in either position is parsed
+// identically and never silently dropped (RFC-128).
+func parseLimitClause(simpleTable *antlrgen.SimpleTableContext) (limit, offset int64) {
+	limit = -1
 	limitClauseCtx := simpleTable.LimitClause()
 	if limitClauseCtx == nil {
-		return op
+		return limit, offset
 	}
-
-	var limit int64 = -1
-	var offset int64
-
 	if offsetCtx := limitClauseCtx.GetOffset(); offsetCtx != nil {
 		if val, err := strconv.ParseInt(offsetCtx.GetText(), 10, 64); err == nil {
 			offset = val
@@ -1198,7 +1213,15 @@ func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrg
 			limit = val
 		}
 	}
+	return limit, offset
+}
 
+// visitLimit checks the ANTLR parse tree for a LIMIT clause. Go
+// extension: LIMIT/OFFSET are supported (most-requested feature).
+// Builds a LogicalLimit node; the Cascades translator turns it into a
+// RecordQueryLimitPlan operator applied at its pipeline position (RFC-128).
+func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext) logical.LogicalOperator {
+	limit, offset := parseLimitClause(simpleTable)
 	if limit >= 0 || offset > 0 {
 		return logical.NewLimit(op, limit, offset)
 	}

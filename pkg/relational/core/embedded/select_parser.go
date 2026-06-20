@@ -863,8 +863,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext) (*selectCl
 	}
 
 	// Go extension: LIMIT / OFFSET accepted (most-requested feature).
-	// Java's fdb-relational 4.11.1.0 rejects them. Go applies them
-	// post-execution via paginatingRows.sqlLimit/sqlOffset.
+	// Java's fdb-relational 4.11.1.0 rejects them. Go applies them via a
+	// uniform RecordQueryLimitPlan operator at the LIMIT's pipeline position
+	// (RFC-128) — not post-execution.
 
 	// Parse GROUP BY clause. Bare column references go through the
 	// columnNameFromExpr fast path (used by the proto-scan field-descriptor
@@ -1359,7 +1360,14 @@ func extractFromSimpleTable(simpleTable *antlrgen.SimpleTableContext) (*selectQu
 		return nil, err
 	}
 
-	return selectQueryFromClassification(cls, fs), nil
+	sq := selectQueryFromClassification(cls, fs)
+	// Capture LIMIT/OFFSET. The selectQuery path (union branches, derived
+	// tables) builds via buildLogicalPlanForSelect, which reads sq.limit/
+	// sq.offset — unlike the live VisitSimpleTable path which reads the
+	// clause directly. Without this a per-branch UNION LIMIT is silently
+	// dropped (RFC-128 §4.7).
+	sq.limit, sq.offset = parseLimitClause(simpleTable)
+	return sq, nil
 }
 
 // exprReferencesColumn reports whether the expression tree contains any

@@ -261,7 +261,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
-				sqlLimit:         -1,
 			}, nil
 		}
 	}
@@ -370,16 +369,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		})
 	}
 
-	sqlLimit, sqlOffset := extractLimitOffset(logicalOp)
-
 	ls.setPlan(physPlan)
-	// Don't cache LIMIT/OFFSET queries — the limit is applied post-execution
-	// and is not stored in the cached plan.
-	if g.cache != nil && sqlLimit < 0 && sqlOffset == 0 {
+	// LIMIT/OFFSET queries are cacheable: the limit is now carried by the
+	// RecordQueryLimitPlan operator inside the cached physical plan (RFC-128),
+	// not applied post-execution, so the cached plan is complete.
+	if g.cache != nil {
 		ls.setCache(PlanCacheMiss)
 		g.cache.Put(sqlText, physPlan, scalarSubs)
 	} else {
-		// Planned but deliberately not cached (LIMIT/OFFSET) or no cache.
 		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
@@ -388,8 +385,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		physicalPlan:     physPlan,
 		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
-		sqlLimit:         sqlLimit,
-		sqlOffset:        sqlOffset,
 	}, nil
 }
 
@@ -539,20 +534,6 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 			return explainStatement(statementKind(stmt), stmt)
 		},
 	}, nil
-}
-
-func extractLimitOffset(op logical.LogicalOperator) (int64, int64) {
-	for op != nil {
-		if lim, ok := op.(*logical.LogicalLimit); ok {
-			return lim.Limit, lim.Offset
-		}
-		children := op.Children()
-		if len(children) == 0 {
-			break
-		}
-		op = children[0]
-	}
-	return -1, 0
 }
 
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
@@ -765,8 +746,6 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []scalarSubqueryBinding
-	sqlLimit         int64 // Go extension: <0 means no limit
-	sqlOffset        int64
 }
 
 // IsUpdate reports whether this is a DML plan (INSERT/UPDATE/DELETE),
@@ -847,8 +826,6 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		plan:             p.physicalPlan,
 		md:               p.md,
 		scalarSubqueries: p.scalarSubqueries,
-		sqlLimit:         p.sqlLimit,
-		sqlOffset:        p.sqlOffset,
 		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
 		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
@@ -912,17 +889,16 @@ type paginatingRows struct {
 	scalarSubqueries []scalarSubqueryBinding
 	cols             []executor.ColumnDef
 
-	// Go extension: SQL LIMIT/OFFSET applied post-execution.
-	sqlLimit  int64 // <0 means no limit
-	sqlOffset int64
-	emitted   int64
-	skipped   int64
+	// emitted counts rows actually returned to the caller across all pages.
+	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
+	// here anymore — it is carried by the RecordQueryLimitPlan operator
+	// inside the plan (RFC-128), applied at its correct pipeline position.
+	emitted int64
 
 	// maxRows is the statement-wide returned-row cap from
 	// api.OptMaxRows (RFC-106a §3) — JDBC setMaxRows semantics: a TOTAL
 	// cap across all pages, NOT a per-page size. math.MaxInt32 (the option
-	// default) means effectively unlimited. Independent of sqlLimit (the
-	// SQL LIMIT clause); whichever caps first stops iteration.
+	// default) means effectively unlimited.
 	maxRows int64
 
 	// maxResultBytes is the statement-wide returned-row byte cap from the
@@ -1038,44 +1014,36 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	if r.closed {
 		return io.EOF
 	}
-	// SQL LIMIT exhausted — stop early.
-	if r.sqlLimit >= 0 && r.emitted >= r.sqlLimit {
-		return io.EOF
-	}
 	// MAX_ROWS statement-wide cap (RFC-106a §3): a TOTAL returned-row
-	// budget across ALL pages, independent of the SQL LIMIT. math.MaxInt32
-	// (the option default) is effectively unlimited. Like LIMIT, this is a
-	// clean stop (io.EOF), not an error — JDBC setMaxRows semantics.
+	// budget across ALL pages. math.MaxInt32 (the option default) is
+	// effectively unlimited. A clean stop (io.EOF), not an error — JDBC
+	// setMaxRows semantics. SQL LIMIT is no longer applied here; it is the
+	// RecordQueryLimitPlan operator's job inside the plan (RFC-128).
 	if r.maxRows > 0 && r.emitted >= r.maxRows {
 		return io.EOF
 	}
 
-	for {
-		row, err := r.nextRow()
-		if err != nil {
-			return err
-		}
-		// OFFSET: skip rows.
-		if r.skipped < r.sqlOffset {
-			r.skipped++
-			continue
-		}
-		// Result-size byte cap (RFC-106a §5): accumulate the cheap
-		// tuple-encoded size of each row that is actually returned to the
-		// caller (post-OFFSET). Erroring BEFORE the copy means the row that
-		// would breach the cap is not handed back — a hard egress ceiling.
-		if r.maxResultBytes > 0 {
-			r.resultBytes += estimateRowBytes(row)
-			if r.resultBytes > r.maxResultBytes {
-				return api.NewErrorf(api.ErrCodeExecutionLimitReached,
-					"result size limit exceeded: %d bytes returned exceeds cap %d",
-					r.resultBytes, r.maxResultBytes)
-			}
-		}
-		copy(dest, row)
-		r.emitted++
-		return nil
+	row, err := r.nextRow()
+	if err != nil {
+		return err
 	}
+	// Result-size byte cap (RFC-106a §5): accumulate the cheap tuple-encoded
+	// size of each row that is actually returned to the caller. Erroring
+	// BEFORE the copy means the row that would breach the cap is not handed
+	// back — a hard egress ceiling. (OFFSET is no longer applied here; the
+	// RecordQueryLimitPlan operator drops skipped rows before they reach
+	// nextRow, RFC-128 — so every row nextRow yields is a real result row.)
+	if r.maxResultBytes > 0 {
+		r.resultBytes += estimateRowBytes(row)
+		if r.resultBytes > r.maxResultBytes {
+			return api.NewErrorf(api.ErrCodeExecutionLimitReached,
+				"result size limit exceeded: %d bytes returned exceeds cap %d",
+				r.resultBytes, r.maxResultBytes)
+		}
+	}
+	copy(dest, row)
+	r.emitted++
+	return nil
 }
 
 // estimateRowBytes returns a cheap encoded-length estimate of a result
@@ -1177,22 +1145,21 @@ func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
 // ScannedBytesLimit are left 0 (the recordlayer "unlimited" value). This
 // keeps the no-option path identical to the pre-RFC behavior.
 // pageRowBudget returns the maximum number of rows the MAIN plan's current page
-// must produce given the active returned-row caps (SQL LIMIT + JDBC MAX_ROWS)
-// and the unconsumed OFFSET, or 0 when no cap is active (unbounded page).
-// Bounding the page cursor's ReturnedRowLimit to this stops fetchPage from
-// materializing the entire underlying result into r.buf when a returned-row cap
-// is set without a per-page scan limit (codex RFC-106a §3). The budget is EXACT
-// — unconsumed offset + remaining emit is precisely the rows this statement can
-// still consume — so it never under-produces (no row loss). DML plans report an
-// affected-row count, not a result set, so the cap must NOT bound their scan.
+// must produce given the active JDBC MAX_ROWS returned-row cap, or 0 when no cap
+// is active (unbounded page). Bounding the page cursor's ReturnedRowLimit to
+// this stops fetchPage from materializing the entire underlying result into
+// r.buf when a returned-row cap is set without a per-page scan limit (codex
+// RFC-106a §3). The budget is EXACT — remaining emit is precisely the rows this
+// statement can still consume — so it never under-produces (no row loss). SQL
+// LIMIT/OFFSET no longer participates here (RFC-128): scan-bounding for a plain
+// LIMIT is carried by the RecordQueryLimitPlan operator's ReturnedRowLimit =
+// offset+limit (executor.go executeLimit). DML plans report an affected-row
+// count, not a result set, so the cap must NOT bound their scan.
 func (r *paginatingRows) pageRowBudget() int {
 	if r.respectActiveTx { // DML (INSERT/UPDATE/DELETE): never bound the scan
 		return 0
 	}
 	rowCap := int64(math.MaxInt64)
-	if r.sqlLimit >= 0 && r.sqlLimit < rowCap {
-		rowCap = r.sqlLimit
-	}
 	if r.maxRows > 0 && r.maxRows < math.MaxInt32 && r.maxRows < rowCap {
 		rowCap = r.maxRows
 	}
@@ -1203,15 +1170,10 @@ func (r *paginatingRows) pageRowBudget() int {
 	if remainingEmit <= 0 {
 		return 0 // cap already reached; Next() EOFs before this is used
 	}
-	remainingOffset := r.sqlOffset - r.skipped
-	if remainingOffset < 0 {
-		remainingOffset = 0
-	}
-	budget := remainingOffset + remainingEmit
-	if budget <= 0 || budget > math.MaxInt32 {
+	if remainingEmit > math.MaxInt32 {
 		return 0
 	}
-	return int(budget)
+	return int(remainingEmit)
 }
 
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {

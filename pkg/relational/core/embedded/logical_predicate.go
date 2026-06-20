@@ -38,7 +38,6 @@ package embedded
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -3066,6 +3065,17 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 	}
 	switch b := body.(type) {
 	case *antlrgen.QueryTermDefaultContext:
+		// A parenthesized query operand — `(SELECT … LIMIT n)` as a UNION
+		// branch — surfaces as a ParenthesisQueryContext. Recurse into the
+		// inner query body so the branch's own clauses (notably LIMIT) are
+		// built and not silently dropped (RFC-128 §4.7). Without this a
+		// parenthesized branch fell through to nil here.
+		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
+			if inner := paren.Query(); inner != nil {
+				return buildLogicalPlanForQueryBodyWithCatalog(inner.QueryExpressionBody(), md)
+			}
+			return nil, nil
+		}
 		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
 		if !ok {
 			return nil, nil
@@ -3105,6 +3115,15 @@ func buildLogicalPlanForQueryBodyWithCTECatalog(
 	}
 	switch b := body.(type) {
 	case *antlrgen.QueryTermDefaultContext:
+		// Parenthesized UNION branch — recurse into the inner query body so
+		// the branch's LIMIT/clauses survive (RFC-128 §4.7); see the
+		// non-CTE variant above.
+		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
+			if inner := paren.Query(); inner != nil {
+				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, cteScopes)
+			}
+			return nil, nil
+		}
 		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
 		if !ok {
 			return nil, nil
@@ -3263,32 +3282,20 @@ func buildUnionRightBranchStrippingOrderBy(
 		sq.orderBy = nil
 	}
 
-	// Parse LIMIT/OFFSET directly from the ANTLR context — sq.limit is
-	// always -1 because extractFromSimpleTable doesn't populate it.
-	if limitClauseCtx := simpleTable.LimitClause(); limitClauseCtx != nil {
-		if offsetCtx := limitClauseCtx.GetOffset(); offsetCtx != nil {
-			if val, err := strconv.ParseInt(offsetCtx.GetText(), 10, 64); err == nil {
-				lifted.offset = val
-			}
-		}
-		if limitCtx := limitClauseCtx.GetLimit(); limitCtx != nil {
-			if val, err := strconv.ParseInt(limitCtx.GetText(), 10, 64); err == nil {
-				lifted.limit = val
-			}
-		}
-		atoms := limitClauseCtx.AllLimitClauseAtom()
-		if lifted.limit < 0 && lifted.offset == 0 && len(atoms) == 2 {
-			if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
-				lifted.offset = val
-			}
-			if val, err := strconv.ParseInt(atoms[1].GetText(), 10, 64); err == nil {
-				lifted.limit = val
-			}
-		} else if lifted.limit < 0 && lifted.offset == 0 && len(atoms) == 1 {
-			if val, err := strconv.ParseInt(atoms[0].GetText(), 10, 64); err == nil {
-				lifted.limit = val
-			}
-		}
+	// Save and strip LIMIT/OFFSET. This is the rightmost simpleTable of an
+	// UNPARENTHESIZED union (e.g. `… UNION ALL SELECT … ORDER BY id LIMIT n`),
+	// whose trailing ORDER BY/LIMIT applies to the COMBINED result, NOT the
+	// right branch alone (SQL standard). extractFromSimpleTable now populates
+	// sq.limit/sq.offset, so we lift those and RESET them on the branch to
+	// avoid double-applying the clause to the right branch (RFC-128). A
+	// parenthesized right branch never reaches here — it is a
+	// ParenthesisQueryContext, handled by the !ok path above, which keeps the
+	// branch's own LIMIT inside.
+	if sq.limit >= 0 || sq.offset > 0 {
+		lifted.limit = sq.limit
+		lifted.offset = sq.offset
+		sq.limit = -1
+		sq.offset = 0
 	}
 
 	if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {

@@ -103,6 +103,14 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 			if sq, err := extractFromSimpleTable(simpleTable); err == nil {
 				liftedOrder = sq.orderBy
 				sq.orderBy = nil
+				// A trailing LIMIT on the rightmost branch applies to the
+				// whole union, not the right branch alone — drop it here so
+				// extractFromSimpleTable's newly-populated sq.limit isn't
+				// mis-applied to the right branch (RFC-128). This md==nil
+				// path is Explain-only and does not page, so the lift is a
+				// no-op; matching the prior behavior (sq.limit was always -1).
+				sq.limit = -1
+				sq.offset = 0
 				right = buildLogicalPlanForSelect(sq)
 			}
 		}
@@ -526,13 +534,6 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		op = logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
 	}
 
-	// LIMIT: sq.limit < 0 means "no limit". Offset alone (LIMIT -1
-	// OFFSET N) renders via LogicalLimit's negative-limit Offset(N)
-	// branch.
-	if sq.limit >= 0 || sq.offset > 0 {
-		op = logical.NewLimit(op, sq.limit, sq.offset)
-	}
-
 	// Projection: skip when the projection is SELECT * (projCols is
 	// nil per the selectQuery doc).
 	if len(sq.projCols) > 0 {
@@ -556,6 +557,14 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 
 	if sq.distinct {
 		op = logical.NewDistinct(op)
+	}
+
+	// LIMIT is the OUTERMOST operator — applied LAST, after projection and
+	// DISTINCT, per SQL semantics (RFC-128). sq.limit < 0 means "no limit";
+	// offset alone (LIMIT -1 OFFSET N) renders via LogicalLimit's
+	// negative-limit Offset(N) branch.
+	if sq.limit >= 0 || sq.offset > 0 {
+		op = logical.NewLimit(op, sq.limit, sq.offset)
 	}
 
 	return op

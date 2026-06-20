@@ -273,9 +273,10 @@ func TestTranslateFilterOverScan(t *testing.T) {
 
 func TestTranslateLimit(t *testing.T) {
 	t.Parallel()
-	// LogicalLimit is skipped by the translator — LIMIT/OFFSET is
-	// applied post-execution by paginatingRows. The Cascades pipeline
-	// sees only the inner (scan) expression.
+	// RFC-128: every LogicalLimit is translated to a LogicalLimitExpression
+	// (→ RecordQueryLimitPlan), applied at its pipeline position — NOT skipped
+	// and post-execution-hoisted. The top member is the limit expression; its
+	// inner ranges over the scan.
 	scan := logical.NewScan("orders", "")
 	limit := logical.NewLimit(scan, 10, 5)
 	ref := TranslateToCascades(limit)
@@ -283,8 +284,19 @@ func TestTranslateLimit(t *testing.T) {
 		t.Fatal("expected non-nil reference")
 	}
 	members := ref.Members()
-	if _, ok := members[0].(*expressions.FullUnorderedScanExpression); !ok {
-		t.Fatalf("expected FullUnorderedScanExpression (limit skipped), got %T", members[0])
+	limExpr, ok := members[0].(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected LogicalLimitExpression, got %T", members[0])
+	}
+	if limExpr.GetLimit() != 10 || limExpr.GetOffset() != 5 {
+		t.Fatalf("limit/offset = %d/%d, want 10/5", limExpr.GetLimit(), limExpr.GetOffset())
+	}
+	innerRef := limExpr.GetInner().GetRangesOver()
+	if innerRef == nil {
+		t.Fatal("limit inner ranges over nil")
+	}
+	if _, ok := innerRef.Members()[0].(*expressions.FullUnorderedScanExpression); !ok {
+		t.Fatalf("limit inner = %T, want FullUnorderedScanExpression", innerRef.Members()[0])
 	}
 }
 

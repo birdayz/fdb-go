@@ -609,12 +609,20 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
-		// Top-level LIMIT/OFFSET is applied post-execution by paginatingRows.
-		// Skip the LogicalLimit wrapper here — inner-plan limits (e.g.
-		// inside correlated scalar subqueries) are handled by
-		// translateProjectWithCorrelatedScalar which peels the
-		// LogicalLimit and emits a LogicalLimitExpression.
-		return t.translateOp(o.Input)
+		// Every LIMIT — top-level and nested alike — is translated to a
+		// LogicalLimitExpression (→ RecordQueryLimitPlan) so it is applied
+		// at its correct pipeline position by the operator. There is no
+		// post-execution hoist anymore (see RFC-128): a nested LIMIT under
+		// a Filter/Sort/Join inside a derived table must NOT be lifted to
+		// the top-level pagination, which produced wrong rows. This mirrors
+		// the correlated-scalar path (translateProjectWithCorrelatedScalar),
+		// which already peels the inner LIMIT and re-emits it here.
+		innerRef := t.translateRef(o.Input)
+		if innerRef == nil {
+			return nil
+		}
+		limitQ := t.namedQuantifier(sourceAlias(o.Input), innerRef)
+		return expressions.NewLogicalLimitExpression(o.Limit, o.Offset, limitQ)
 	case *logical.LogicalUnion:
 		return t.translateUnion(o)
 	case *logical.LogicalSort:

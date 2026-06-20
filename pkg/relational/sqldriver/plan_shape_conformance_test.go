@@ -13301,9 +13301,14 @@ func TestFDB_DerivedTableWithLimit(t *testing.T) {
 		t.Fatalf("INSERT: %v", err)
 	}
 
-	t.Run("limit_in_derived_ignored", func(t *testing.T) {
+	t.Run("limit_in_derived_applied", func(t *testing.T) {
+		// RFC-128: the LIMIT inside a derived table is now applied at its
+		// pipeline position (no longer dropped/hoisted), so COUNT over a
+		// LIMIT-3 derived table is exactly 3 — not 5 (the old wrong behavior).
 		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM dtl_t LIMIT 3) AS d")
-		t.Logf("LIMIT in derived: COUNT=%v (LIMIT in subquery may be ignored)", rows[0][0])
+		if toInt64(rows[0][0]) != 3 {
+			t.Errorf("LIMIT in derived table must cap the inner to 3 rows: COUNT=%v, want 3", rows[0][0])
+		}
 	})
 
 	t.Run("outer_limit_works", func(t *testing.T) {
