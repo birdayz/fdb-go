@@ -65,6 +65,7 @@ go_library(
         "record_function.go",
         "record_key_cursor.go",
         "record_version.go",
+        "rename_fields_visitor.go",
         "rtree.go",
         "rtree_hilbert.go",
         "rtree_storage.go",

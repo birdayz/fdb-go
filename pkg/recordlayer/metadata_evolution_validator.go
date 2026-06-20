@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // MetaDataEvolutionValidator validates that schema changes between an old and new
@@ -23,6 +24,28 @@ type MetaDataEvolutionValidator struct {
 	allowMissingFormerIndexNames      bool
 	disallowTypeRenames               bool
 	allowNoSinceVersion               bool
+
+	// Field-rename options, added in Java 4.12 (#4034 / #4119). All default false,
+	// so an unconfigured validator rejects every field-name change (legacy behaviour).
+	allowFieldRenames           bool
+	allowDeprecatedFieldRenames bool
+	allowUndeprecatingFields    bool
+}
+
+// allowsAnyFieldRenames reports whether any field-rename option is enabled, gating the
+// RenameFieldsVisitor rewrite of primary-key/index key expressions. Matches Java's
+// MetaDataEvolutionValidator.allowsAnyFieldRenames().
+func (v *MetaDataEvolutionValidator) allowsAnyFieldRenames() bool {
+	return v.allowFieldRenames || v.allowDeprecatedFieldRenames
+}
+
+// fieldDeprecated reports whether a field carries the `deprecated` proto option.
+func fieldDeprecated(fd protoreflect.FieldDescriptor) bool {
+	opts, ok := fd.Options().(*descriptorpb.FieldOptions)
+	if !ok || opts == nil {
+		return false
+	}
+	return opts.GetDeprecated()
 }
 
 // MetaDataEvolutionValidatorBuilder builds a MetaDataEvolutionValidator with custom options.
@@ -73,6 +96,28 @@ func (b *MetaDataEvolutionValidatorBuilder) SetAllowMissingFormerIndexNames(v bo
 
 func (b *MetaDataEvolutionValidatorBuilder) SetAllowNoSinceVersion(v bool) *MetaDataEvolutionValidatorBuilder {
 	b.v.allowNoSinceVersion = v
+	return b
+}
+
+// SetAllowFieldRenames permits any field to be renamed (same field number, new name)
+// across a metadata evolution. Matches Java's setAllowFieldRenames.
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowFieldRenames(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowFieldRenames = v
+	return b
+}
+
+// SetAllowDeprecatedFieldRenames permits renaming a field when the old or new field is
+// deprecated (a narrower allowance than SetAllowFieldRenames). Matches Java's
+// setAllowDeprecatedFieldRenames.
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowDeprecatedFieldRenames(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowDeprecatedFieldRenames = v
+	return b
+}
+
+// SetAllowUndeprecatingFields permits a field that was deprecated to become
+// non-deprecated. Matches Java's setAllowUndeprecatingFields.
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowUndeprecatingFields(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowUndeprecatingFields = v
 	return b
 }
 
@@ -352,15 +397,64 @@ func (v *MetaDataEvolutionValidator) comparePrimaryKeys(name string, oldRT, newR
 		}
 	}
 
-	// Compare by proto serialization for deep equality
-	oldProto := oldPK.ToKeyExpression()
-	newProto := newPK.ToKeyExpression()
-	if !proto.Equal(oldProto, newProto) {
+	// The primary key must be unchanged, modulo allowed field renames. When renames are
+	// allowed, rewrite the old key expression onto the new descriptor and compare that.
+	// Matches Java's MetaDataEvolutionValidator.validateRecordTypes lines 397-416.
+	expectedPK := oldPK
+	if v.allowsAnyFieldRenames() && oldRT.Descriptor != nil && newRT.Descriptor != nil {
+		renamed, err := renameFields(oldPK, oldRT.Descriptor, newRT.Descriptor)
+		if err != nil {
+			return err
+		}
+		expectedPK = renamed
+	}
+
+	expectedProto := expectedPK.ToKeyExpression()
+	if !proto.Equal(expectedProto, newPK.ToKeyExpression()) {
+		// Distinguish "the key genuinely changed" from "a rename was required but the new
+		// key doesn't match the rewritten one" — matching Java's two-message split.
+		if proto.Equal(expectedProto, oldPK.ToKeyExpression()) {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type %q primary key changed", name),
+			}
+		}
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("record type %q primary key changed", name),
+			Message: fmt.Sprintf("record type %q primary key does not match required (after field rename)", name),
 		}
 	}
 	return nil
+}
+
+// expectedRenamedIndexExpression rewrites an index's root expression onto each old
+// record type it covers, mapping to the new descriptor via typeRenames. All rewrites
+// must agree (a multi-type index whose field renames disagree across types is invalid).
+// Returns the agreed expression, or nil if the index covers no record types (so the
+// caller falls back to the original). Matches Java's MetaDataEvolutionValidator.validateIndex
+// lines 689-707.
+func (v *MetaDataEvolutionValidator) expectedRenamedIndexExpression(old, new *RecordMetaData, oldIdx *Index, typeRenames map[string]string) (KeyExpression, error) {
+	var expected KeyExpression
+	for _, oldRT := range old.RecordTypesForIndex(oldIdx) {
+		newName, ok := typeRenames[oldRT.Name]
+		if !ok {
+			newName = oldRT.Name
+		}
+		newRT := new.GetRecordType(newName)
+		if oldRT.Descriptor == nil || newRT == nil || newRT.Descriptor == nil {
+			continue
+		}
+		renamed, err := renameFields(oldIdx.RootExpression, oldRT.Descriptor, newRT.Descriptor)
+		if err != nil {
+			return nil, err
+		}
+		if expected == nil {
+			expected = renamed
+		} else if !proto.Equal(expected.ToKeyExpression(), renamed.ToKeyExpression()) {
+			return nil, &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q field renames result in inconsistent definition across record types", oldIdx.Name),
+			}
+		}
+	}
+	return expected, nil
 }
 
 func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData, typeRenames map[string]string) error {
@@ -417,12 +511,29 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData, t
 			}
 		}
 
-		// Compare root expressions
-		oldExpr := oldIdx.RootExpression.ToKeyExpression()
-		newExpr := newIdx.RootExpression.ToKeyExpression()
-		if !proto.Equal(oldExpr, newExpr) {
+		// Compare root expressions, modulo allowed field renames. When renames are
+		// allowed, rewrite the old expression onto each covered record type's new
+		// descriptor; all rewrites must agree. Matches Java's
+		// MetaDataEvolutionValidator.validateIndex lines 689-720.
+		expectedExpr := oldIdx.RootExpression
+		if v.allowsAnyFieldRenames() {
+			renamed, err := v.expectedRenamedIndexExpression(old, new, oldIdx, typeRenames)
+			if err != nil {
+				return err
+			}
+			if renamed != nil {
+				expectedExpr = renamed
+			}
+		}
+		expectedProto := expectedExpr.ToKeyExpression()
+		if !proto.Equal(expectedProto, newIdx.RootExpression.ToKeyExpression()) {
+			if proto.Equal(expectedProto, oldIdx.RootExpression.ToKeyExpression()) {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("index %q key expression changed", name),
+				}
+			}
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q key expression changed", name),
+				Message: fmt.Sprintf("index %q key expression does not match required (after field rename)", name),
 			}
 		}
 
@@ -988,11 +1099,27 @@ func (v *MetaDataEvolutionValidator) validateField(
 	msgName protoreflect.FullName,
 	seen map[string]bool,
 ) error {
-	// Name check
+	oldDeprecated := fieldDeprecated(oldField)
+	newDeprecated := fieldDeprecated(newField)
+
+	// Name check. A rename (same number, new name) is allowed only if we allow all
+	// field renames, or we allow deprecated-field renames and either side is deprecated
+	// (so a name change is fine both when deprecating and un-deprecating). Matches Java's
+	// MetaDataEvolutionValidator.validateField lines 282-294.
 	if string(oldField.Name()) != string(newField.Name()) {
+		if !(v.allowFieldRenames || (v.allowDeprecatedFieldRenames && (oldDeprecated || newDeprecated))) {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("field %q renamed to %q in message %q",
+					oldField.Name(), newField.Name(), msgName),
+			}
+		}
+	}
+
+	// A field that was deprecated must stay deprecated unless explicitly allowed.
+	// Matches Java's MetaDataEvolutionValidator.validateField line 296.
+	if !v.allowUndeprecatingFields && oldDeprecated && !newDeprecated {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field %q renamed to %q in message %q",
-				oldField.Name(), newField.Name(), msgName),
+			Message: fmt.Sprintf("field %q is no longer deprecated in message %q", oldField.Name(), msgName),
 		}
 	}
 
