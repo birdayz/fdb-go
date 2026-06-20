@@ -57,9 +57,12 @@ var (
 	fdbThreePart = regexp.MustCompile(`\b7\.\d+\.\d+\b`)
 	// goPin extracts the Go toolchain major.minor from go.mod (go 1.26.4 -> 1.26).
 	goPin = regexp.MustCompile(`(?m)^go\s+(\d+\.\d+)`)
-	// goCited matches a "Go x.y" reference in prose, tolerating markdown bold/backticks between
-	// "Go" and the version (Go **1.26.x** / Go `1.26.4` / Go 1.26 all -> 1.26).
-	goCited = regexp.MustCompile("(?i)\\bGo\\s+[*`]{0,2}(\\d+\\.\\d+)")
+	// goCited matches a "Go x.y" reference, tolerating markdown bold/backticks/table separators
+	// and line wraps between "Go" and the version: "Go 1.26", "Go **1.26.x**", a wrapped
+	// "Go\n  **1.26.x**", and a table row "| **Go** | **1.26.4** |" all capture 1.26. The char
+	// class is restricted to `*`/backtick/`|`/whitespace, so prose like "Go to 1.2.3" (letters in
+	// between) does NOT match — no false positive.
+	goCited = regexp.MustCompile("(?i)\\bGo\\b[*`|\\s]{0,12}?(\\d+\\.\\d+)")
 )
 
 // javaTarget is the single source of truth: the fdb-record-layer-core pin in MODULE.bazel.
@@ -87,6 +90,35 @@ func pin(t *testing.T, root string, re *regexp.Regexp, src, what string) string 
 	return m[1]
 }
 
+// unreleasedSection returns the CHANGELOG text from "## [Unreleased]" up to the next "## ["
+// release heading (or EOF). Only this section must cite the CURRENT pins / carry the
+// Compatibility block; a tagged release entry freezes its own versions and must NOT be
+// force-rewritten when MODULE.bazel/go.mod later bump (codex #330).
+func unreleasedSection(changelog string) string {
+	const marker = "## [Unreleased]"
+	i := strings.Index(changelog, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := changelog[i+len(marker):]
+	if j := strings.Index(rest, "\n## ["); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}
+
+// versionScanBody is the portion of a living doc the version anchors check. For CHANGELOG.md
+// that's only the Unreleased section (historical entries snapshot their own versions); every
+// other living doc is scanned whole.
+func versionScanBody(t *testing.T, root, doc string) string {
+	t.Helper()
+	body := readDoc(t, root, doc)
+	if doc == "CHANGELOG.md" {
+		return unreleasedSection(body)
+	}
+	return body
+}
+
 // TestLivingDocsCiteCurrentJavaTarget: any 4-part (record-layer-style) version string in a
 // living doc must equal the MODULE.bazel pin. Anchored to the pin (not a stale-string
 // blocklist), so it catches 4.2.6.0, 4.3.x, or any future drift — and a MODULE.bazel bump
@@ -96,7 +128,7 @@ func TestLivingDocsCiteCurrentJavaTarget(t *testing.T) {
 	root := repoRoot(t)
 	want := javaTarget(t, root)
 	for _, doc := range livingDocs {
-		body := readDoc(t, root, doc)
+		body := versionScanBody(t, root, doc)
 		for _, v := range fourPartVersion.FindAllString(body, -1) {
 			if v != want {
 				t.Errorf("%s cites 4-part version %q, but MODULE.bazel pins fdb-record-layer-core %q — living docs must track the pin (archived snapshots belong under docs/archive/)", doc, v, want)
@@ -113,7 +145,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 	root := repoRoot(t)
 	want := pin(t, root, foundationDBPin, "MODULE.bazel", "foundationdb")
 	for _, doc := range livingDocs {
-		body := readDoc(t, root, doc)
+		body := versionScanBody(t, root, doc)
 		for _, v := range fdbThreePart.FindAllString(body, -1) {
 			if v != want {
 				t.Errorf("%s cites FDB version %q, but MODULE.bazel pins foundationdb %q — living docs must track the pin", doc, v, want)
@@ -130,7 +162,7 @@ func TestLivingDocsCiteCurrentGoVersion(t *testing.T) {
 	root := repoRoot(t)
 	want := pin(t, root, goPin, "go.mod", "go toolchain")
 	for _, doc := range livingDocs {
-		body := readDoc(t, root, doc)
+		body := versionScanBody(t, root, doc)
 		for _, m := range goCited.FindAllStringSubmatch(body, -1) {
 			if m[1] != want {
 				t.Errorf("%s cites Go %q, but go.mod pins Go %q.x — living docs must track the toolchain pin", doc, m[1], want)
@@ -148,8 +180,10 @@ func TestReleaseDocsExistAndCompat(t *testing.T) {
 	if !strings.Contains(changelog, "## [Unreleased]") {
 		t.Errorf("CHANGELOG.md is missing an `## [Unreleased]` section")
 	}
-	if !strings.Contains(changelog, "### Compatibility") {
-		t.Errorf("CHANGELOG.md `Unreleased` is missing the `### Compatibility` block (wire/SQL/option/version notes)")
+	// The Compatibility block must live INSIDE the Unreleased section — not satisfied by an old
+	// release entry's heading (codex #330). A freshly-opened Unreleased without it must go red.
+	if !strings.Contains(unreleasedSection(changelog), "### Compatibility") {
+		t.Errorf("CHANGELOG.md `## [Unreleased]` is missing its `### Compatibility` block (wire/SQL/option/version notes)")
 	}
 	if rel := readDoc(t, root, "RELEASE.md"); len(strings.TrimSpace(rel)) == 0 {
 		t.Errorf("RELEASE.md is empty")
