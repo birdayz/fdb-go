@@ -237,6 +237,77 @@ func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 	}
 }
 
+// TestFDB_RFC130_RecursiveCTE_NoDoubleCharge (code-review #328): a recursive-CTE
+// row must be charged ONCE — at TempTable.Add when it enters the per-level working
+// set — NOT again when the level cursor is drained. The recursive sub-plan's top is
+// a TempTableInsertPlan (charges in tt.Add); draining it through the level collect
+// would charge the SAME shared record a second time, so the budget tripped at ~half
+// its true value. This recursion's true resident bytes are ~13KB (20 wide rows
+// charged once); at a 20KB budget it MUST complete. It would spuriously 54F01 under
+// the old double-charge (~26KB > 20KB) — the revert-proof.
+func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc130_nodbl", "rfc130nodbl",
+		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const rows = 20
+	wide := strings.Repeat("r", 600) // measured: ~10KB true (charged once), ~20KB if doubled
+	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedItemsOnConn(t, ctx, seedConn, rows, wide)
+
+	const rcte = "WITH RECURSIVE walk(id, payload) AS (" +
+		"  SELECT id, payload FROM Item WHERE id = 0" +
+		"  UNION ALL" +
+		"  SELECT Item.id, Item.payload FROM Item, walk WHERE Item.id = walk.id + 1" +
+		") SELECT id FROM walk"
+	if plan := planExplainVia(t, ctx, db, rcte); !planHasRecursive(plan) {
+		t.Fatalf("query must plan as a recursive CTE, got: %s", plan)
+	}
+
+	const budget = 15_000 // clear of both the true ~10KB and the doubled ~20KB
+	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	got, err := drainIDs(ctx, capConn, rcte)
+	if err != nil {
+		t.Fatalf("recursive CTE under a 15KB budget must complete (true residency ~10KB, charged once); a 54F01-class error here is the double-charge regression (~20KB > 15KB): %v", err)
+	}
+	if got != rows {
+		t.Fatalf("got %d rows, want %d", got, rows)
+	}
+}
+
+// TestFDB_RFC130_DMLEchoNotCharged (codex #328): a DML's result echo is bounded by
+// its pre-materialized + charged target set, NOT charged a second time. Charging it
+// would (a) for DELETE re-count the same already-charged target rows, and (b) fire
+// AFTER writes are staged — a partial-mutation hazard in an explicit transaction
+// (runInTx does not roll back on a statement error). With a budget that fits the
+// target set (~10KB) but would trip under the old echo double-charge (~20KB), the
+// DELETE must COMPLETE and remove every row — no spurious 54F01, no partial mutation.
+func TestFDB_RFC130_DMLEchoNotCharged(t *testing.T) {
+	t.Parallel()
+	db := setupErrorTestDB(t, "/testdb_rfc130_dml", "rfc130dml",
+		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
+	ctx := context.Background()
+
+	const rows = 20
+	wide := strings.Repeat("r", 600) // ~10KB target set charged once; ~20KB if the echo is also charged
+	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedItemsOnConn(t, ctx, seedConn, rows, wide)
+
+	const budget = 15_000 // fits the ~10KB target set; the old echo double-charge (~20KB) would trip
+	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	if _, err := capConn.ExecContext(ctx, "DELETE FROM Item"); err != nil {
+		t.Fatalf("DELETE under a 15KB budget must complete (target set ~10KB, charged once); a 54F01 here is the echo double-charge / post-mutation regression: %v", err)
+	}
+	remaining, err := drainIDs(ctx, capConn, "SELECT id FROM Item")
+	if err != nil {
+		t.Fatalf("count after DELETE: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("DELETE left %d rows — partial mutation", remaining)
+	}
+}
+
 // planHasSort reports whether an EXPLAIN string shows an in-memory sort
 // operator (the planner names it "Sort" / "ISORT" depending on shape).
 func planHasSort(plan string) bool {

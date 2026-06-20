@@ -2134,10 +2134,15 @@ func executeDelete(
 		return nil, err
 	}
 
-	// RFC-130: the DML results echo (one QueryResult per mutated row) is a
-	// second resident buffer beyond the already-charged target set — charge it
-	// via boundedBuffer.
-	results := newBoundedBuffer[QueryResult](props.State, 0, "DELETE results", estimateQueryResultBytes)
+	// RFC-130 / codex #328: the DML results echo is NOT separately byte-charged.
+	// The mutation's memory is bounded by its pre-materialized + charged target
+	// set (CollectAllBounded above). Charging the echo here would (a) for DELETE
+	// re-count the same already-charged target rows, and (b) fire AFTER
+	// store.DeleteRecord/SaveRecord has staged a write — and runInTx does NOT roll
+	// back on a statement error, so a 54F01 mid-loop could persist a PARTIAL
+	// mutation. The no-partial-mutation guarantee (all accounting before the
+	// mutation loop) outranks a ~2x precision gain on the echo.
+	var results []QueryResult
 	for _, qr := range targets {
 		if qr.PrimaryKey == nil {
 			continue
@@ -2147,12 +2152,10 @@ func executeDelete(
 			return nil, fmt.Errorf("executor: deleting record pk=%v: %w", qr.PrimaryKey, err)
 		}
 		if deleted {
-			if err := results.Append(qr); err != nil {
-				return nil, err
-			}
+			results = append(results, qr)
 		}
 	}
-	return recordlayer.FromList(results.Items()), nil
+	return recordlayer.FromList(results), nil
 }
 
 func executeInsert(
@@ -2193,7 +2196,7 @@ func executeInsert(
 	// RFC-130: the INSERT results echo holds a fresh FromStoredRecord per
 	// inserted row — genuinely additional resident memory beyond the
 	// already-charged innerRows source. Charge it via boundedBuffer.
-	results := newBoundedBuffer[QueryResult](props.State, 0, "INSERT results", estimateQueryResultBytes)
+	var results []QueryResult
 	for _, qr := range innerRows {
 		// INSERT always coerces the inner result to the target type (Java's
 		// InsertExpression computation value), so build from the row datum
@@ -2227,11 +2230,9 @@ func executeInsert(
 			return nil, fmt.Errorf("executor: inserting record: %w", err)
 		}
 		echo := FromStoredRecord(stored)
-		if err := results.Append(echo); err != nil {
-			return nil, err
-		}
+		results = append(results, echo)
 	}
-	return recordlayer.FromList(results.Items()), nil
+	return recordlayer.FromList(results), nil
 }
 
 // buildInsertRecord materializes a proto message of the target record
@@ -2329,7 +2330,7 @@ func executeUpdate(
 	// RFC-130: the UPDATE results echo holds a fresh FromStoredRecord per
 	// updated row — additional resident memory beyond the already-charged
 	// target set. Charge it via boundedBuffer.
-	results := newBoundedBuffer[QueryResult](props.State, 0, "UPDATE results", estimateQueryResultBytes)
+	var results []QueryResult
 	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
@@ -2373,11 +2374,9 @@ func executeUpdate(
 			return nil, fmt.Errorf("executor: updating record: %w", err)
 		}
 		echo := FromStoredRecord(stored)
-		if err := results.Append(echo); err != nil {
-			return nil, err
-		}
+		results = append(results, echo)
 	}
-	return recordlayer.FromList(results.Items()), nil
+	return recordlayer.FromList(results), nil
 }
 
 func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
@@ -2624,7 +2623,7 @@ func executeRecursiveLevelUnion(
 	}
 
 	var allResults []QueryResult
-	items, err := CollectAllBounded(ctx, initialCursor, props.State, props.GetMaterializationLimit(), "recursive CTE initial state")
+	items, err := collectAllRowCapped(ctx, initialCursor, props.GetMaterializationLimit(), "recursive CTE initial state")
 	initialCursor.Close()
 	if err != nil {
 		return nil, fmt.Errorf("executor: recursive level union initial collect: %w", err)
@@ -2687,7 +2686,7 @@ func executeRecursiveLevelUnion(
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive: %w", err)
 		}
-		items, err := CollectAllBounded(ctx, recursiveCursor, props.State, props.GetMaterializationLimit(), "recursive CTE recursive level")
+		items, err := collectAllRowCapped(ctx, recursiveCursor, props.GetMaterializationLimit(), "recursive CTE recursive level")
 		recursiveCursor.Close()
 		if err != nil {
 			return nil, fmt.Errorf("executor: recursive level union recursive collect: %w", err)
@@ -2987,6 +2986,18 @@ func CollectAllBounded(ctx context.Context, cursor recordlayer.RecordCursor[Quer
 		}
 	}
 	return buf.Items(), nil
+}
+
+// collectAllRowCapped drains a cursor into a slice enforcing the MaterializationLimit
+// ROW cap but charging NO bytes against the statement memory budget — for cursors
+// whose rows are already byte-charged upstream. The recursive-CTE initial/recursive
+// level cursors have a TempTableInsertPlan at the top, which charges each row in
+// tt.Add (monotonic, statement-wide, surviving the per-level Clear); re-charging the
+// same shared records here would double-count and trip the budget at ~half its true
+// value (RFC-130, code-review #328). Passing a nil ExecuteState makes the boundedBuffer
+// skip both the estimate and the charge while keeping the row cap.
+func collectAllRowCapped(ctx context.Context, cursor recordlayer.RecordCursor[QueryResult], limit int, opName string) ([]QueryResult, error) {
+	return CollectAllBounded(ctx, cursor, nil, limit, opName)
 }
 
 // errIfBufferTruncated returns a 54F01-mapped error when an eager/buffered
