@@ -110,6 +110,17 @@ type keyValueCursor struct {
 	// per-record method calls and to skip version key lookups entirely when false.
 	storeRecordVersions bool
 
+	// omitUnsplitRecordSuffix is true for legacy stores whose unsplit records are
+	// written at the bare primary key with no suffix. Only meaningful when the
+	// metadata does NOT split long records. When set, each KV is a complete record.
+	omitUnsplitRecordSuffix bool
+
+	// useOldVersionFormat is true for legacy stores whose record versions live in
+	// the separate RecordVersionKey(8) subspace rather than inline at pk+-1. When
+	// set, the scan does not look for inline version keys; the version (if any) is
+	// loaded with a separate read per record, matching Java's scanTypedRecords.
+	useOldVersionFormat bool
+
 	// Buffered KV pair for split record handling.
 	// When collecting split chunks, we may read the first KV of the next record.
 	// That KV is buffered here for the next OnNext() call.
@@ -239,6 +250,11 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 // and skips version keys (suffix -1).
 // Returns (nil, nil, nil) when the iterator is exhausted.
 func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
+	// Legacy bare-key layout: every KV is a complete record with no suffix.
+	if c.omitUnsplitRecordSuffix {
+		return c.readNextBareRecord(ctx)
+	}
+
 	recordsSubspace := c.recordsSubspace
 
 	prefixLen := c.prefixLength
@@ -302,24 +318,12 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 			if deserErr != nil {
 				return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 			}
-			// Attach version if versioning is enabled
-			var version *FDBRecordVersion
-			if c.storeRecordVersions {
-				// From pendingVersion (forward scan) or peek ahead (reverse scan)
-				version = c.takePendingVersion(primaryKey)
-				if version == nil {
-					version, err = c.peekVersionKey(recordsSubspace, primaryKey)
-					if err != nil {
-						return nil, nil, err
-					}
-				}
-				// Fallback: check local version cache for records saved but not yet
-				// committed in this transaction. The version key is a pending
-				// SET_VERSIONSTAMPED_VALUE mutation, not in FDB yet.
-				// Matches Java's SplitHelper.KeyValueUnsplitter (line 890-899).
-				if version == nil {
-					version = c.localVersionFallback(primaryKey)
-				}
+			// Attach version if versioning is enabled. In the modern layout this uses
+			// the inline version (pendingVersion / peek-ahead / local cache); in the
+			// legacy layout resolveVersion does a separate read from subspace 8.
+			version, verErr := c.resolveVersion(recordsSubspace, primaryKey, true)
+			if verErr != nil {
+				return nil, nil, verErr
 			}
 			return &FDBStoredRecord[proto.Message]{
 				PrimaryKey: primaryKey,
@@ -432,6 +436,89 @@ func (c *keyValueCursor) localVersionFallback(primaryKey tuple.Tuple) *FDBRecord
 	return ver
 }
 
+// isSnapshot reports whether this scan reads at snapshot isolation (no read conflicts).
+func (c *keyValueCursor) isSnapshot() bool {
+	return c.scanProperties.ExecuteProperties.IsolationLevel == SnapshotIsolation
+}
+
+// resolveVersion returns the version for the record with the given primary key, or nil.
+//
+// Legacy layout (useOldVersionFormat): the version lives in the separate
+// RecordVersionKey(8) subspace, so it is fetched with a per-record read via
+// LoadRecordVersion (which also consults the local version cache and applies the
+// skip-I/O optimization). Matches Java's scanTypedRecords, which calls
+// loadRecordVersionAsync per record when useOldVersionFormat().
+//
+// Modern layout: the version was captured inline while scanning (pendingVersion);
+// for reverse scans of unsplit records it may follow the data key, so allowPeek
+// enables a one-KV look-ahead. The local version cache covers same-transaction saves
+// whose inline SET_VERSIONSTAMPED_VALUE has not been committed yet.
+func (c *keyValueCursor) resolveVersion(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple, allowPeek bool) (*FDBRecordVersion, error) {
+	if !c.storeRecordVersions {
+		return nil, nil
+	}
+	if c.useOldVersionFormat {
+		return c.store.LoadRecordVersion(primaryKey, c.isSnapshot())
+	}
+	version := c.takePendingVersion(primaryKey)
+	if version == nil && allowPeek {
+		v, err := c.peekVersionKey(recordsSubspace, primaryKey)
+		if err != nil {
+			return nil, err
+		}
+		version = v
+	}
+	if version == nil {
+		version = c.localVersionFallback(primaryKey)
+	}
+	return version, nil
+}
+
+// readNextBareRecord reads the next record from a legacy store that omits the unsplit
+// record suffix: every KV under the records subspace is a complete record stored at the
+// bare primary key (no trailing suffix), and versions (if any) live in the separate
+// RecordVersionKey(8) subspace. Matches Java's scanTypedRecords omitUnsplitRecordSuffix
+// branch (each KV mapped directly to an FDBRawRecord with a null inline version).
+func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	kv, ok, err := c.nextKV()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, nil, nil // exhausted
+	}
+	if len(kv.Key) <= c.prefixLength {
+		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.prefixLength)
+	}
+	// The whole tuple after the prefix is the primary key — there is no suffix.
+	primaryKey, pkErr := fastUnpack(kv.Key[c.prefixLength:])
+	if pkErr != nil {
+		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
+	}
+	recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
+	if deserErr != nil {
+		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+	}
+	version, verErr := c.resolveVersion(c.recordsSubspace, primaryKey, false)
+	if verErr != nil {
+		return nil, nil, verErr
+	}
+	return &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		RecordType: recordType,
+		Record:     protoMessage,
+		Version:    version,
+		Store:      c.store,
+		KeyCount:   1,
+		ValueSize:  len(kv.Value),
+		KeySize:    len(kv.Key),
+		Split:      false,
+	}, kv.Key, nil
+}
+
 // splitChunk holds a split record chunk with its suffix index for proper ordering.
 type splitChunk struct {
 	suffix int64
@@ -540,13 +627,11 @@ func (c *keyValueCursor) readSplitRecord(
 		return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
 
-	// Attach version captured during chunk collection (forward or reverse scan)
-	var version *FDBRecordVersion
-	if c.storeRecordVersions {
-		version = c.takePendingVersion(primaryKey)
-		if version == nil {
-			version = c.localVersionFallback(primaryKey)
-		}
+	// Attach version captured during chunk collection (forward or reverse scan). In
+	// the legacy layout resolveVersion does a separate read from subspace 8 instead.
+	version, verErr := c.resolveVersion(recordsSubspace, primaryKey, false)
+	if verErr != nil {
+		return nil, nil, verErr
 	}
 
 	return &FDBStoredRecord[proto.Message]{
@@ -749,11 +834,12 @@ func (c *keyValueCursor) initIterator() error {
 			limit = 1
 		}
 		recordLimit := saturatingAdd(limit, 1)
-		// When versioning is enabled, each record has 2 KV pairs
-		// (version at suffix -1, data at suffix 0). Double the FDB limit
-		// to account for version KVs.
-		// Matches Java's FDBRecordStore scanRecords which uses 2 * returnedRowLimit.
-		if c.storeRecordVersions {
+		// When versioning is enabled AND versions are inline, each record has 2 KV
+		// pairs (version at suffix -1, data at suffix 0). Double the FDB limit to
+		// account for the version KVs. Matches Java's FDBRecordStore scanRecords which
+		// uses 2 * returnedRowLimit. Legacy stores keep versions in a separate subspace
+		// (or omit the suffix entirely → 1 KV per record), so no doubling is needed.
+		if c.storeRecordVersions && !c.useOldVersionFormat {
 			if recordLimit > math.MaxInt/2 {
 				recordLimit = math.MaxInt
 			} else {

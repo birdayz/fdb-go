@@ -30,6 +30,26 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		return nil, nil
 	}
 
+	// The batch fast path precomputes pk+0 record keys; it does not implement the
+	// legacy bare-key (omit_unsplit_record_suffix) layout. Fall back to per-record
+	// SaveRecord — which handles every layout — for legacy stores. (Java has no
+	// batch API, so this is a Go-only optimization and the fallback is semantically
+	// identical to N SaveRecord calls.)
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return nil, fmt.Errorf("load store state: %w", err)
+	}
+	if store.omitUnsplitRecordSuffix() {
+		results := make([]*FDBStoredRecord[proto.Message], len(records))
+		for i, rec := range records {
+			saved, err := store.SaveRecord(rec)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: %w", i, err)
+			}
+			results[i] = saved
+		}
+		return results, nil
+	}
+
 	tx := store.context.Transaction()
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
@@ -177,7 +197,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				oldsizeInfoPtr = &oldsizeInfo
 			}
 			if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
-				splitEnabled, oldsizeInfoPtr, &newsizeInfo); err != nil {
+				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save: %w", i, err)
 			}
 		}

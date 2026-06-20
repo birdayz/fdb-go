@@ -81,6 +81,20 @@ func CompleteVersionFromBytes(b []byte) (*FDBRecordVersion, error) {
 	return &FDBRecordVersion{raw: raw, complete: true}, nil
 }
 
+// completeVersionFromBytesUnchecked wraps 12 raw bytes as a complete version WITHOUT
+// rejecting the all-0xFF (incomplete) global marker. Matches Java's
+// FDBRecordVersion.complete(byte[], boolean), which forces complete=true regardless of
+// the bytes — used when reading legacy-format versions from the RecordVersionKey(8)
+// subspace, where a stored value is always a committed (complete) version.
+func completeVersionFromBytesUnchecked(b []byte) (*FDBRecordVersion, error) {
+	if len(b) != VersionBytes {
+		return nil, fmt.Errorf("version must be %d bytes, got %d", VersionBytes, len(b))
+	}
+	var raw [VersionBytes]byte
+	copy(raw[:], b)
+	return &FDBRecordVersion{raw: raw, complete: true}, nil
+}
+
 // IncompleteVersion creates an incomplete version with the given local version.
 // The global version is set to all-0xFF (will be filled in at commit time).
 func IncompleteVersion(localVersion int) (*FDBRecordVersion, error) {

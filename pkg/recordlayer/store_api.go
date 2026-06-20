@@ -269,6 +269,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&oldsizeInfo,
 	)
 	if err != nil {
@@ -358,6 +359,7 @@ func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, e
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&sizeInfo,
 	)
 	if err != nil {
@@ -525,5 +527,9 @@ func (store *FDBRecordStore) ScanRecordKeys(
 		continuation:   continuation,
 		scanProperties: scanProperties,
 		startTime:      time.Now(),
+		// Bare-key layout applies ONLY when the store does not split long records
+		// (a split-capable store always suffixes its keys). Matches Java's
+		// scanRecordKeys, which gates the bare-key branch on !isSplitLongRecords().
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
 	}
 }

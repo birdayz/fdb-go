@@ -20,7 +20,18 @@ import (
 // Record Layer format versions - should match Java FormatVersion enum.
 // See FormatVersion.java for the full list.
 const (
-	formatVersionInfoAdded             = 1  // Minimum version (INFO_ADDED in Java)
+	formatVersionInfoAdded = 1 // Minimum version (INFO_ADDED in Java)
+	// formatVersionSaveUnsplitWithSuffix (5, SAVE_UNSPLIT_WITH_SUFFIX) is the version at
+	// which every record key carries a split suffix even when split_long_records is false —
+	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
+	// earlier format version is upgraded). Below this version, unsplit records are stored at
+	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
+	formatVersionSaveUnsplitWithSuffix = 5
+	// formatVersionSaveVersionWithRecord (6, SAVE_VERSION_WITH_RECORD) is the version at which
+	// record versions are stored inline adjacent to the record (recordsSubspace.pack(pk, -1))
+	// rather than in the separate RecordVersionKey(8) subspace. See useOldVersionFormat().
+	formatVersionSaveVersionWithRecord = 6
+	// (7 = CACHEABLE_STATE; declared separately as formatVersionCacheableState below.)
 	formatVersionHeaderUserFields      = 8  // User-defined key→bytes map in store header
 	formatVersionReadableUniquePending = 9  // READABLE_UNIQUE_PENDING index state
 	formatVersionCheckIndexBuildType   = 10 // Non-idempotent index build-from-source validation
@@ -254,6 +265,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		recordsSubspace,
 		primaryKey,
 		store.metaData.IsSplitLongRecords(),
+		store.omitUnsplitRecordSuffix(),
 		&sizeInfo,
 	)
 	if err != nil {
@@ -318,6 +330,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&oldsizeInfo,
 	)
 	if err != nil {
@@ -347,9 +360,12 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		}
 	}
 
-	// Check for inline version
+	// Mark the inline version for cleanup by deleteSplit — but only in the modern
+	// layout. In the legacy layout the version lives in the separate RecordVersionKey(8)
+	// subspace, not inline, so deleteSplit must not try to clear pk+-1 (it's cleared
+	// explicitly below).
 	if store.metaData.IsStoreRecordVersions() {
-		oldsizeInfo.VersionedInline = true
+		oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
 	}
 
 	// Load old record's version BEFORE deleteSplit clears the FDB keys and
@@ -366,16 +382,31 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	}
 
 	// Delete all KV pairs for this record
-	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldsizeInfo)
+	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo)
 
-	// Clean up version mutations (incomplete versionstamp + local version cache).
-	// deleteSplit clears the FDB key, but we also need to dequeue any pending
-	// incomplete version mutation from the context. Matches Java's deleteTypedRecord
-	// which calls context.removeVersionMutation().
+	// Clean up the record version. Matches Java's deleteTypedRecord.
 	if store.metaData.IsStoreRecordVersions() {
 		versionKey := store.versionKey(primaryKey)
-		store.context.RemoveLocalVersion(versionKey)
-		store.context.RemoveVersionMutation(versionKey)
+		if store.useOldVersionFormat() {
+			// Legacy layout: the version lives in the separate subspace and was NOT
+			// touched by deleteSplit. Clear the committed value AND drop any pending
+			// same-transaction mutation / local cache entry. We must do both: if the
+			// record was updated earlier in THIS transaction its committed (pre-tx)
+			// version is still present in FDB while a pending incomplete SET sits in the
+			// mutation queue — clearing only one of them would orphan the other. (This
+			// is slightly more defensive than Java's deleteTypedRecord, whose
+			// incomplete-version branch drops the mutation but leaves the prior committed
+			// value behind; clearing is harmless for a pure insert and avoids a stale
+			// version surviving for a deleted record.)
+			store.context.Transaction().Clear(versionKey)
+			store.context.RemoveVersionMutation(versionKey)
+			store.context.RemoveLocalVersion(versionKey)
+		} else {
+			// Modern layout: deleteSplit cleared the inline FDB key; just dequeue any
+			// pending incomplete version mutation + local version cache entry.
+			store.context.RemoveLocalVersion(versionKey)
+			store.context.RemoveVersionMutation(versionKey)
+		}
 	}
 
 	// Decrement record count
@@ -426,7 +457,7 @@ func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel
 		tx = store.context.Transaction()
 	}
 
-	return recordExistsWithSplit(tx, recordsSubspace, primaryKey, store.metaData.IsSplitLongRecords())
+	return recordExistsWithSplit(tx, recordsSubspace, primaryKey, store.metaData.IsSplitLongRecords(), store.omitUnsplitRecordSuffix())
 }
 
 // SaveRecordWithOptions saves a protobuf record with existence checking.
@@ -495,6 +526,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		&oldsizeInfo,
 	)
 	if err != nil {
@@ -573,9 +605,12 @@ func (store *FDBRecordStore) saveRecordInternal(
 		oldRecordVersion = ver
 	}
 
-	// If versioning is enabled, mark old record as having inline version for proper cleanup
+	// If versioning is enabled, mark old record as having an inline version so the
+	// split helper clears it — but only in the modern layout. In the legacy layout
+	// the version lives in the separate subspace and is overwritten in place by
+	// saveRecordVersion below, so it must not be treated as inline.
 	if store.metaData.IsStoreRecordVersions() && oldRecordExists {
-		oldsizeInfo.VersionedInline = true
+		oldsizeInfo.VersionedInline = !store.useOldVersionFormat()
 	}
 
 	// Save using split helper (handles both split and unsplit data)
@@ -591,6 +626,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		primaryKey,
 		data,
 		splitEnabled,
+		store.omitUnsplitRecordSuffix(),
 		oldsizeInfoPtr,
 		&newsizeInfo,
 	); err != nil {
@@ -1265,6 +1301,11 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		startTime:           time.Now(),
 		recordsSubspace:     recordsSubspace,
 		storeRecordVersions: store.metaData.IsStoreRecordVersions(),
+		// Bare-key layout applies ONLY when the store does not split long records;
+		// a split-capable store always suffixes its keys even at format < 5. Matches
+		// Java's scan logic, which gates the bare-key path on !isSplitLongRecords().
+		omitUnsplitRecordSuffix: store.omitUnsplitRecordSuffix() && !store.metaData.IsSplitLongRecords(),
+		useOldVersionFormat:     store.useOldVersionFormat(),
 	}
 }
 
@@ -1333,6 +1374,48 @@ func (store *FDBRecordStore) getFormatVersionLocked() int32 {
 		return *store.storeHeader.FormatVersion
 	}
 	return 0
+}
+
+// omitUnsplitRecordSuffix reports whether records are stored WITHOUT the unsplit
+// record suffix (legacy layout: the value lives at the bare key
+// recordsSubspace.pack(primaryKey) with no trailing suffix). This only takes
+// effect when split_long_records is false; split stores always suffix their keys.
+//
+// Matches Java's FDBRecordStore.omitUnsplitRecordSuffix field, as initialized in
+// checkVersion(): the persisted DataStoreInfo flag is authoritative once the store
+// is at format version >= SAVE_UNSPLIT_WITH_SUFFIX (5); below that the records were
+// necessarily saved without a suffix, so the flag is implicitly true.
+func (store *FDBRecordStore) omitUnsplitRecordSuffix() bool {
+	h := store.storeHeader
+	if h == nil {
+		// No header yet (new store being created) — current layout.
+		return false
+	}
+	if h.GetFormatVersion() >= formatVersionSaveUnsplitWithSuffix {
+		// "Note that this depends on the property that calling get on an unset
+		// boolean field results in getting back false." (Java checkVersion.)
+		return h.GetOmitUnsplitRecordSuffix()
+	}
+	return true
+}
+
+// useOldVersionFormat reports whether record versions are stored in the legacy
+// separate RecordVersionKey(8) subspace (keyed by the bare primary key) rather
+// than inline adjacent to the record at recordsSubspace.pack(pk, -1).
+//
+// Matches Java's FDBRecordStore.useOldVersionFormat():
+//
+//	formatVersion < SAVE_VERSION_WITH_RECORD (6) || omitUnsplitRecordSuffix
+//
+// The omit clause is required because a store that omits the unsplit suffix has
+// no place to put the inline version key, so versions stay in the old subspace
+// even after the format version is bumped past 6.
+func (store *FDBRecordStore) useOldVersionFormat() bool {
+	h := store.storeHeader
+	if h == nil {
+		return false
+	}
+	return h.GetFormatVersion() < formatVersionSaveVersionWithRecord || store.omitUnsplitRecordSuffix()
 }
 
 // GetUserVersion returns the user-defined store version.

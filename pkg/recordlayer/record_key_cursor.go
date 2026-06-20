@@ -20,6 +20,12 @@ type recordKeyCursor struct {
 	continuation   []byte
 	scanProperties ScanProperties
 
+	// omitUnsplitRecordSuffix is true for legacy stores whose records are stored at
+	// the bare primary key with no suffix. When set, each KV's full key (after the
+	// records-subspace prefix) IS the primary key, with no suffix to strip and no
+	// duplicate PKs to dedup. Matches Java's scanRecordKeys omit branch.
+	omitUnsplitRecordSuffix bool
+
 	// Internal state
 	iterator      rangeIterator
 	closed        bool
@@ -112,18 +118,32 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 
 		c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
 
-		// Unpack the key relative to the records subspace: (pk..., suffix)
+		// Unpack the key relative to the records subspace.
+		// Modern layout: (pk..., suffix); legacy omit layout: (pk...) with no suffix.
 		keyTuple, err := fastSubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
-		if err != nil || len(keyTuple) < 2 {
+		if err != nil {
 			continue // skip unparseable keys
 		}
 
-		// Extract PK by stripping the suffix (last element)
-		pk := tuple.Tuple(keyTuple[:len(keyTuple)-1])
+		var pk tuple.Tuple
+		if c.omitUnsplitRecordSuffix {
+			// Bare-key layout: the whole tuple is the PK; each PK appears exactly once,
+			// so there is nothing to strip and no dedup needed.
+			if len(keyTuple) < 1 {
+				continue
+			}
+			pk = tuple.Tuple(keyTuple)
+		} else {
+			if len(keyTuple) < 2 {
+				continue // need at least (pk, suffix)
+			}
+			// Extract PK by stripping the suffix (last element)
+			pk = tuple.Tuple(keyTuple[:len(keyTuple)-1])
 
-		// Dedup: skip if same PK as last returned
-		if c.lastPK != nil && tuplesEqual(pk, c.lastPK) {
-			continue
+			// Dedup: skip if same PK as last returned
+			if c.lastPK != nil && tuplesEqual(pk, c.lastPK) {
+				continue
+			}
 		}
 
 		c.keysScanned++

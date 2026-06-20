@@ -224,6 +224,7 @@ go_test(
         "key_value_cursor_test.go",
         "key_value_cursor_unit_test.go",
         "large_scan_test.go",
+        "legacy_format_test.go",
         "list_key_expression_test.go",
         "long_arithmetic_function_test.go",
         "max_ever_version_index_test.go",
