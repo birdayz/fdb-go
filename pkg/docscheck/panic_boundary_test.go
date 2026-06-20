@@ -71,15 +71,21 @@ func TestPanicBoundary_FuzzNetsWired(t *testing.T) {
 	}
 }
 
-// srcsAttrRe finds a `srcs = [` attribute. The \b prevents matching `embedsrcs`/`data` etc.
-var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=\s*\[`)
+// srcsAttrRe finds the `srcs =` attribute. The \b prevents matching `embedsrcs`/`data`/`x_srcs`.
+var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=`)
+
+// nextAttrRe matches the start of the NEXT named attribute (`name =` at line start), which bounds the
+// srcs attribute's value. List/concat entries (`"x.go",`) start with a quote, not `ident =`, so they
+// don't match.
+var nextAttrRe = regexp.MustCompile(`(?m)^\s*[A-Za-z_]\w*\s*=`)
 
 // goTestWiresSrc reports whether any go_test(...) target in a BUILD.bazel lists srcFile in its `srcs`
 // attribute — i.e. the file is actually compiled + replayed under bazelisk test. It scans only inside
 // the balanced parens of each go_test( call (so a top-level exports_files([...]) occurrence — as these
-// fuzz files have, to feed this test's data dep — does NOT count), and within that, only the balanced
-// `srcs = [...]` list (so the same name appearing in `data`, `embedsrcs`, or a comment inside the call
-// does NOT count either — codex #332).
+// fuzz files have, to feed this test's data dep — does NOT count), and within that, only the `srcs`
+// attribute's VALUE, from `srcs =` up to the next attribute. That value may be any Starlark expression
+// — a literal `[...]`, a concat `common + [...]`, or a `select(...) + [...]` (codex #332) — and the
+// same filename appearing in `data`/`embedsrcs`/a comment does NOT count (comments are stripped first).
 func goTestWiresSrc(build, srcFile string) bool {
 	build = stripStarlarkComments(build) // a commented-out `# "x_test.go"` is NOT a real srcs entry (codex #332)
 	needle := `"` + srcFile + `"`
@@ -91,13 +97,16 @@ func goTestWiresSrc(build, srcFile string) bool {
 		callStart := i + j + len("go_test(")
 		call, callEnd := balanced(build, callStart, '(', ')')
 		i = callEnd
-		// Restrict to the go_test's srcs = [...] list.
+
 		loc := srcsAttrRe.FindStringIndex(call)
 		if loc == nil {
 			continue
 		}
-		list, _ := balanced(call, loc[1], '[', ']')
-		if strings.Contains(list, needle) {
+		val := call[loc[1]:] // everything after `srcs =`
+		if nb := nextAttrRe.FindStringIndex(val); nb != nil {
+			val = val[:nb[0]] // ...up to the next attribute
+		}
+		if strings.Contains(val, needle) {
 			return true
 		}
 	}
@@ -146,6 +155,33 @@ func balanced(s string, open int, openCh, closeCh byte) (string, int) {
 		k++
 	}
 	return s[open : k-1], k
+}
+
+// TestGoTestWiresSrc pins the BUILD wiring parser against the edge cases codex #332 raised — only a
+// real go_test `srcs` entry counts; data/embedsrcs/comments/exports_files/substrings do not; and any
+// srcs expression (literal, concat, select) is accepted.
+func TestGoTestWiresSrc(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		build string
+		want  bool
+	}{
+		{"literal srcs", `go_test(name="t", srcs = ["a_test.go", "fuzz_test.go"], embed=[":x"])`, true},
+		{"concat srcs", "go_test(\n  name=\"t\",\n  srcs = common + [\n    \"fuzz_test.go\",\n  ],\n  embed=[\":x\"],\n)", true},
+		{"select srcs", "go_test(\n  srcs = select({\"//c\": [\"x.go\"]}) + [\"fuzz_test.go\"],\n  embed=[\":x\"],\n)", true},
+		{"only in data", "go_test(\n  srcs = [\"a_test.go\"],\n  data = [\"fuzz_test.go\"],\n)", false},
+		{"only in embedsrcs", "go_test(\n  srcs = [\"a_test.go\"],\n  embedsrcs = [\"fuzz_test.go\"],\n)", false},
+		{"commented out in srcs", "go_test(\n  srcs = [\n    \"a_test.go\",\n    # \"fuzz_test.go\",\n  ],\n)", false},
+		{"only exports_files (outside go_test)", `exports_files(["fuzz_test.go"])` + "\n" + `go_test(srcs=["a_test.go"])`, false},
+		{"substring not whole name", `go_test(srcs=["myfuzz_test.go"])`, false},
+		{"absent", `go_test(srcs=["a_test.go", "b_test.go"])`, false},
+	}
+	for _, c := range cases {
+		if got := goTestWiresSrc(c.build, "fuzz_test.go"); got != c.want {
+			t.Errorf("%s: goTestWiresSrc = %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 // docRowRe matches a §2 boundary-table row in docs/panic-audit.md: | `path.go` | N | role |
