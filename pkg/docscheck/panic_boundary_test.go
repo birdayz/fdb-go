@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,8 +16,11 @@ import (
 // boundaries must keep a no-panic fuzz target that has a real seed corpus, so it actually exercises
 // malformed input under `bazelisk test`/`go test` rather than being an empty no-op (Torvalds:
 // name-presence alone is theater — assert the seed corpus, the concrete "it does something" signal).
-// A boundary silently losing its fuzz (rename / delete) or its seeds turns this red. The four fuzz
-// files are data-staged into the test's runfiles.
+// It checks three things per boundary: (a) the fuzz fn exists, (b) its body seeds a corpus (f.Add),
+// and (c) the file is wired into a go_test target's srcs (codex #332: f.Add in the source does not
+// prove the fuzzer still compiles/runs in CI — it could be present yet dropped from go_test). A
+// boundary silently losing its fuzz (rename / delete / unwire) or its seeds turns this red. The four
+// fuzz files AND their BUILD.bazel are data-staged into the test's runfiles.
 var panicBoundaryFuzz = []struct {
 	boundary string
 	fuzzFn   string
@@ -53,6 +57,46 @@ func TestPanicBoundary_FuzzNetsWired(t *testing.T) {
 			t.Errorf("%s boundary: fuzz target %s in %s has no f.Add() seed corpus — an unseeded fuzz "+
 				"does not replay malformed inputs under bazelisk test (RFC-134)", b.boundary, b.fuzzFn, b.file)
 		}
+
+		// (c) the file is wired into a go_test target's srcs in its dir's BUILD.bazel — i.e. actually
+		// compiled and replayed under `bazelisk test`, not merely present + exported for this test's
+		// data dep (codex #332: f.Add in the source is not proof the fuzzer still runs in CI).
+		dir := filepath.Dir(b.file)
+		build := readDoc(t, root, filepath.Join(dir, "BUILD.bazel"))
+		if !goTestWiresSrc(build, filepath.Base(b.file)) {
+			t.Errorf("%s boundary: %s is not in a go_test srcs in %s/BUILD.bazel — the fuzzer is no longer "+
+				"compiled/replayed under bazelisk test even though the file still exists (RFC-134)",
+				b.boundary, filepath.Base(b.file), dir)
+		}
+	}
+}
+
+// goTestWiresSrc reports whether any go_test(...) target in a BUILD.bazel lists srcFile in its srcs.
+// It scans only inside the balanced parens of each go_test( call, so a file that appears merely in a
+// top-level exports_files([...]) (as these fuzz files do, to feed this test's data dep) does NOT
+// count — only genuine go_test membership, which is what makes the fuzzer run under Bazel.
+func goTestWiresSrc(build, srcFile string) bool {
+	needle := `"` + srcFile + `"`
+	for i := 0; ; {
+		j := strings.Index(build[i:], "go_test(")
+		if j < 0 {
+			return false
+		}
+		start := i + j + len("go_test(")
+		depth, k := 1, start
+		for k < len(build) && depth > 0 {
+			switch build[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			k++
+		}
+		if strings.Contains(build[start:k], needle) {
+			return true
+		}
+		i = k
 	}
 }
 

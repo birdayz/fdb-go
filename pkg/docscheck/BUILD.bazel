@@ -26,11 +26,16 @@ go_test(
         "//:go.mod",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",
-        # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles.
+        # keep: RFC-134 panic-boundary doc-sync + fuzz-net guards staged into runfiles
+        # (the fuzz _test.go files AND their BUILD.bazel — the guard checks go_test wiring).
         "//docs:panic-audit.md",
+        "//pkg/fdbgo/fdb/tuple:BUILD.bazel",
         "//pkg/fdbgo/fdb/tuple:tuple_malformed_test.go",
+        "//pkg/fdbgo/wire:BUILD.bazel",
         "//pkg/fdbgo/wire:reader_fuzz_test.go",
+        "//pkg/relational/core/parser:BUILD.bazel",
         "//pkg/relational/core/parser:fuzz_test.go",
+        "//pkg/relational/core/query:BUILD.bazel",
         "//pkg/relational/core/query:cascades_translator_test.go",
     ],
     embed = [":docscheck"],

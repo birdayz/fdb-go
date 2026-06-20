@@ -22,8 +22,7 @@
   "norecover": {
     "exclude_files": {
       "gen/": "generated protobuf code",
-      "\\.pb\\.go$": "generated protobuf code",
-      "pkg/linters/norecover/testdata/": "analyzer fixtures intentionally contain recover()"
+      "\\.pb\\.go$": "generated protobuf code"
     }
   },
   "shadow": {

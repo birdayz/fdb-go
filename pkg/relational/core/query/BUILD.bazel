@@ -36,4 +36,7 @@ go_test(
 )
 
 # keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
-exports_files(["cascades_translator_test.go"])
+exports_files([
+    "cascades_translator_test.go",
+    "BUILD.bazel",
+])
