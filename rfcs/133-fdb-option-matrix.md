@@ -1,6 +1,6 @@
 # RFC-133 — Public FDB client option honored/unsupported/no-op matrix
 
-**Status:** Accepted (FDB C++ dev + Torvalds ACK)
+**Status:** Implemented (PR #331 — FDB C++ dev + Torvalds + codex + @claude ACK; CI green)
 **Item:** prod-readiness-audit-2026-06-19.md **P2** — "FDB Option Semantics Need A Public
 Honored/Unsupported/No-Op Matrix."
 **Reviewers:** FDB C++ client developer (the classification is a `libfdb_c` 7.3.75 spec call — their

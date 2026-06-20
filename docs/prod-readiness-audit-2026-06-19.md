@@ -287,6 +287,19 @@ Recommended fix:
 
 ### P2: FDB Option Semantics Need A Public Honored/Unsupported/No-Op Matrix
 
+> **RESOLVED — RFC-133 / PR #331 (2026-06-20, MERGED).** Published `pkg/fdbgo/fdb/OPTIONS.md` — the
+> full matrix (every `Set*` option · pure-Go behaviour · `libfdb_c` 7.3.75 file:line · unsafe-if-
+> ignored · why safe / why it errors), pinned by a completeness guard (`options_matrix_test.go`: an
+> option without a row fails CI). The "convert unsafe silent no-ops to errors" recommendation was
+> *verified already done* — every access/auth/idempotency/quota option already returns
+> `UnsupportedOptionError`. The deep-review gauntlet (FDB C++ dev + codex) additionally found that
+> **three** database-level read-semantics defaults were silently dropped despite having honored per-tx
+> forms — `snapshot_ryw_disable`/`enable` (now a cumulative counter, replayed idempotently across
+> retries), `transaction_bypass_unreadable`, and `transaction_causal_read_risky` — all now **honored**
+> via `txDefaults`, matching `libfdb_c`. An exhaustive 20-option sweep confirmed no further drops.
+> Pinned by `options_dbdefault_test.go`. One adjacent pre-existing divergence (`GetAddressesForKey`
+> emits `ip:port` vs C++'s default ip-only) was tracked in `TODO.md` Known gaps, not gating.
+
 Impact: users can mistakenly believe a libfdb option is active when the pure-Go backend ignores it.
 
 Positive evidence:
