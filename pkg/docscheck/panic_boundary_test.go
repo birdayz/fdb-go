@@ -71,10 +71,15 @@ func TestPanicBoundary_FuzzNetsWired(t *testing.T) {
 	}
 }
 
-// goTestWiresSrc reports whether any go_test(...) target in a BUILD.bazel lists srcFile in its srcs.
-// It scans only inside the balanced parens of each go_test( call, so a file that appears merely in a
-// top-level exports_files([...]) (as these fuzz files do, to feed this test's data dep) does NOT
-// count — only genuine go_test membership, which is what makes the fuzzer run under Bazel.
+// srcsAttrRe finds a `srcs = [` attribute. The \b prevents matching `embedsrcs`/`data` etc.
+var srcsAttrRe = regexp.MustCompile(`\bsrcs\s*=\s*\[`)
+
+// goTestWiresSrc reports whether any go_test(...) target in a BUILD.bazel lists srcFile in its `srcs`
+// attribute — i.e. the file is actually compiled + replayed under bazelisk test. It scans only inside
+// the balanced parens of each go_test( call (so a top-level exports_files([...]) occurrence — as these
+// fuzz files have, to feed this test's data dep — does NOT count), and within that, only the balanced
+// `srcs = [...]` list (so the same name appearing in `data`, `embedsrcs`, or a comment inside the call
+// does NOT count either — codex #332).
 func goTestWiresSrc(build, srcFile string) bool {
 	needle := `"` + srcFile + `"`
 	for i := 0; ; {
@@ -82,22 +87,36 @@ func goTestWiresSrc(build, srcFile string) bool {
 		if j < 0 {
 			return false
 		}
-		start := i + j + len("go_test(")
-		depth, k := 1, start
-		for k < len(build) && depth > 0 {
-			switch build[k] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-			k++
+		callStart := i + j + len("go_test(")
+		call, callEnd := balanced(build, callStart, '(', ')')
+		i = callEnd
+		// Restrict to the go_test's srcs = [...] list.
+		loc := srcsAttrRe.FindStringIndex(call)
+		if loc == nil {
+			continue
 		}
-		if strings.Contains(build[start:k], needle) {
+		list, _ := balanced(call, loc[1], '[', ']')
+		if strings.Contains(list, needle) {
 			return true
 		}
-		i = k
 	}
+}
+
+// balanced returns the substring of s starting at open (the index just past an already-consumed
+// opening delimiter) up to its matching close delimiter, and the index just past that close. open
+// is treated as nesting depth 1.
+func balanced(s string, open int, openCh, closeCh byte) (string, int) {
+	depth, k := 1, open
+	for k < len(s) && depth > 0 {
+		switch s[k] {
+		case openCh:
+			depth++
+		case closeCh:
+			depth--
+		}
+		k++
+	}
+	return s[open : k-1], k
 }
 
 // docRowRe matches a §2 boundary-table row in docs/panic-audit.md: | `path.go` | N | role |
