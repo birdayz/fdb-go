@@ -185,6 +185,24 @@ func TestFDB_PlainTopLevelLimit_RFC128(t *testing.T) {
 	wantInts(t, got, []int64{1, 2, 3, 4}, "plain top-level LIMIT, no offset")
 }
 
+// Qualified-star (a.*) + LIMIT regression (code-review finder on the RFC-128 impl).
+// The a.* projection forces VisitSimpleTable's needRebuild path, which REPLACES op
+// via buildLogicalPlanForSelect(sq); sq came from selectQueryFromClassification with
+// limit:-1, so before the fix the LIMIT operator was never re-applied and
+// `SELECT a.* FROM t a LIMIT 5` returned ALL rows (the post-execution hoist used to
+// mask this; RFC-128 removed it). Revert-proven: without the parseLimitClause carry
+// in the rebuild branch this returns 10 rows.
+func TestFDB_QualifiedStarLimit_RFC128(t *testing.T) {
+	t.Parallel()
+	db, ctx := rfc128DB(t, "qstar")
+
+	got := getInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 5")
+	wantInts(t, got, []int64{1, 2, 3, 4, 5}, "qualified-star a.* + LIMIT")
+
+	got = getInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 3 OFFSET 2")
+	wantInts(t, got, []int64{3, 4, 5}, "qualified-star a.* + LIMIT OFFSET")
+}
+
 // ---------------------------------------------------------------------------
 // §4.5 — SELECT DISTINCT … LIMIT (LIMIT applies AFTER distinct).
 // ---------------------------------------------------------------------------

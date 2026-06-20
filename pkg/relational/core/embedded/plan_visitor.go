@@ -424,6 +424,14 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		needRebuild = true
 	}
 	if needRebuild {
+		// The rebuild REPLACES op, discarding the LIMIT wrapper visitLimit
+		// applied above — and sq (from selectQueryFromClassification) carries
+		// limit:-1. Carry the clause's LIMIT/OFFSET into sq so buildSelectShell
+		// re-applies it (RFC-128: with the post-execution hoist removed, the
+		// in-tree operator is the only carrier; without this `SELECT a.* … LIMIT
+		// 5` returned all rows). Only the rebuild path needs it — the non-rebuild
+		// path keeps the visitLimit wrapper.
+		sq.limit, sq.offset = parseLimitClause(simpleTable)
 		op = buildLogicalPlanForSelect(sq)
 		if op == nil {
 			return op, nil
