@@ -308,13 +308,13 @@ func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 	}
 }
 
-// TestFDB_RFC130_UpdateEchoChargedNoPartial (codex #328): the UPDATE result echo (a
-// fresh stored record per updated row) IS genuinely new memory, so it must be charged —
-// but charging it mid-loop (after a write is staged) could persist a PARTIAL UPDATE,
-// since runInTx does not roll back on a statement error. So the echo's anticipated bytes
-// are charged UP FRONT, before any SaveRecord. A budget that fits the target set (~10KB)
-// but NOT target+echo (~20KB) must trip 54F01 with ZERO rows mutated — proving the cap
-// is enforced (codex P2) AND no partial mutation (codex P1).
+// TestFDB_RFC130_UpdateEchoChargedNoPartial (codex #328): the UPDATE echo is charged by
+// its ACTUAL post-transform record size, up front (build-all-then-save). The key case is a
+// GROWING update — tiny source rows, SET to a large value: the small target set easily fits
+// the budget, but the large NEW records exceed it, so it trips 54F01 with ZERO rows mutated.
+// The earlier estimate-over-source would have charged only the tiny source and silently
+// bypassed the cap (codex re-review P2); charging the built record catches the growth, and
+// charging it before any SaveRecord keeps the mutation all-or-nothing (codex P1).
 func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc130_upd", "rfc130upd",
@@ -322,17 +322,18 @@ func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	ctx := context.Background()
 
 	const rows = 20
-	wide := strings.Repeat("r", 600) // ~10KB target set; +~10KB echo charged up front = ~20KB
+	small := "x" // tiny source rows → the target set is only a few hundred bytes
 	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
-	seedItemsOnConn(t, ctx, seedConn, rows, wide)
+	seedItemsOnConn(t, ctx, seedConn, rows, small)
 
-	const budget = 15_000 // fits the ~10KB target set; target+echo (~20KB) trips before any write
+	large := strings.Repeat("U", 600) // UPDATE grows each row to ~600B → ~12KB of new records
+	const budget = 8_000              // fits the tiny target set; the large new records (~12KB) trip
 	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
-	_, err := capConn.ExecContext(ctx, "UPDATE Item SET payload = 'UPDATED'")
-	wantExecLimit(t, err) // 54F01 — the up-front echo charge trips before mutating
+	_, err := capConn.ExecContext(ctx, fmt.Sprintf("UPDATE Item SET payload = '%s'", large))
+	wantExecLimit(t, err) // the ACTUAL built-record size trips, before any write
 
-	// No partial mutation: not one row carries the new value.
-	changed, qerr := drainIDs(ctx, capConn, "SELECT id FROM Item WHERE payload = 'UPDATED'")
+	// No partial mutation: not one row carries the large value.
+	changed, qerr := drainIDs(ctx, capConn, fmt.Sprintf("SELECT id FROM Item WHERE payload = '%s'", large))
 	if qerr != nil {
 		t.Fatalf("verify query after UPDATE: %v", qerr)
 	}

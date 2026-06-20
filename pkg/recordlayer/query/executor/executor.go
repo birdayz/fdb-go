@@ -2201,14 +2201,14 @@ func executeInsert(
 	// a statement error, so a 54F01 could persist a PARTIAL INSERT. So charge the
 	// echo's ESTIMATE (≈ the source rows, same cardinality) before any mutation: the
 	// budget is enforced AND a breach aborts with zero writes staged.
-	if props.State.HasMemLimit() {
-		for _, src := range innerRows {
-			if err := props.State.ChargeMemory(estimateQueryResultBytes(src)); err != nil {
-				return nil, err
-			}
-		}
-	}
-	var results []QueryResult
+	// Phase 1: build every record to insert and charge its ACTUAL size against the
+	// budget — BEFORE any write. Charging the built record (not the source row) accounts
+	// INSERT … VALUES with a large literal / a growing projection for its true bytes
+	// (codex #328 re-review P2); all charging precedes phase 2's saves, so a budget
+	// breach — or any build error — returns with zero SaveRecord calls (no partial
+	// INSERT). The built messages ARE the echo content, so no extra residency.
+	// proto.Size is gated on HasMemLimit (zero-overhead when off).
+	built := make([]proto.Message, 0, len(innerRows))
 	for _, qr := range innerRows {
 		// INSERT always coerces the inner result to the target type (Java's
 		// InsertExpression computation value), so build from the row datum
@@ -2237,12 +2237,23 @@ func executeInsert(
 			msg = qr.Record.Record
 		}
 
-		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
-		if err != nil {
-			return nil, fmt.Errorf("executor: inserting record: %w", err)
+		if props.State.HasMemLimit() {
+			if cerr := props.State.ChargeMemory(int64(proto.Size(msg))); cerr != nil {
+				return nil, cerr
+			}
 		}
-		echo := FromStoredRecord(stored)
-		results = append(results, echo)
+		built = append(built, msg)
+	}
+
+	// Phase 2: save the already-charged records (no further charging — the budget is
+	// settled before the first write).
+	results := make([]QueryResult, 0, len(built))
+	for _, msg := range built {
+		stored, serr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+		if serr != nil {
+			return nil, fmt.Errorf("executor: inserting record: %w", serr)
+		}
+		results = append(results, FromStoredRecord(stored))
 	}
 	return recordlayer.FromList(results), nil
 }
@@ -2347,14 +2358,14 @@ func executeUpdate(
 	// statement error, so a 54F01 could persist a PARTIAL UPDATE. So charge the echo's
 	// ESTIMATE (≈ the target rows, same cardinality) before any mutation: the budget
 	// is enforced AND a breach aborts with zero writes staged.
-	if props.State.HasMemLimit() {
-		for _, src := range targets {
-			if err := props.State.ChargeMemory(estimateQueryResultBytes(src)); err != nil {
-				return nil, err
-			}
-		}
-	}
-	var results []QueryResult
+	// Phase 1: build every updated record and charge its ACTUAL post-transform size
+	// against the budget — BEFORE any write is staged. Charging the built record (not
+	// the source row) accounts a growing UPDATE (small row → large value) for its true
+	// bytes (codex #328 re-review P2); doing all of it before phase 2's saves means a
+	// budget breach — or any build/transform error — returns with zero SaveRecord calls
+	// (no partial mutation). The built messages ARE the echo content, so no extra
+	// residency. proto.Size is gated on HasMemLimit (zero-overhead when off).
+	built := make([]proto.Message, 0, len(targets))
 	for _, qr := range targets {
 		if qr.Record == nil || qr.Record.Record == nil {
 			continue
@@ -2393,12 +2404,23 @@ func executeUpdate(
 			}
 		}
 
+		if props.State.HasMemLimit() {
+			if err := props.State.ChargeMemory(int64(proto.Size(msg))); err != nil {
+				return nil, err
+			}
+		}
+		built = append(built, msg)
+	}
+
+	// Phase 2: save the already-charged records (no further charging — the budget is
+	// settled before the first write).
+	results := make([]QueryResult, 0, len(built))
+	for _, msg := range built {
 		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 		if err != nil {
 			return nil, fmt.Errorf("executor: updating record: %w", err)
 		}
-		echo := FromStoredRecord(stored)
-		results = append(results, echo)
+		results = append(results, FromStoredRecord(stored))
 	}
 	return recordlayer.FromList(results), nil
 }
