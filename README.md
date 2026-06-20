@@ -16,7 +16,7 @@ before relying on it.** Maturity varies by layer:
 |-------|----------|-------|
 | **Record store** (CRUD, indexes, versions, continuations, split records) | **Most mature** | Wire-compatibility is the project's hard line, exercised by the Java conformance + binding-stress suites. This is the part to trust first. |
 | **Cascades SQL engine** | **Usable, evolving** | Wide SQL surface (see below) validated by a cross-engine differential harness, but still has open correctness items — consult the conformance report and `TODO.md` before depending on a given query shape. |
-| **Pure-Go FDB client** (`pkg/fdbgo`) | **Youngest** | Reimplements the FDB wire protocol from scratch (RYW, retries, `commit_unknown_result`). Validated against libfdb_c via the binding tester; there is no drop-in escape hatch to the C client yet. |
+| **Pure-Go FDB client** (`pkg/fdbgo`) | **Youngest** | Reimplements the FDB wire protocol from scratch (RYW, retries, `commit_unknown_result`). Validated against libfdb_c via the binding tester. It is the default backend; if you'd rather link Apple's C client, the `CGO_ENABLED=1 ... -tags libfdbc` build flag swaps it in — both read/write byte-identical records (see the build commands below). |
 
 Before production use: pin a commit, run the conformance + differential + stress
 suites against your workload, and review `PRODUCTION_READINESS.md` /
@@ -141,9 +141,9 @@ rows, _ = db.Query("SELECT name FROM Users ORDER BY id DESC")  // reverse PK sca
 rows, _ = db.Query("SELECT email, COUNT(*) FROM Users GROUP BY email ORDER BY email ASC")
 ```
 
-Supported SQL (authoritative, tested surface: the yamsql scenarios under
-`pkg/relational/conformance/yamsql/testdata/` + `DIVERGENCES.md`; this list is a
-summary, accurate as of 2026-06-07):
+Supported SQL (the authoritative, tested surface is the yamsql scenarios under
+`pkg/relational/conformance/yamsql/testdata/` + `DIVERGENCES.md` **at HEAD**; the list
+below is a hand summary of those, not a separately-maintained source of truth):
 - SELECT with WHERE, ORDER BY (ASC/DESC, including mixed directions), DISTINCT,
   GROUP BY, HAVING, LIMIT / OFFSET
 - Aggregates: COUNT, SUM, MIN, MAX, AVG

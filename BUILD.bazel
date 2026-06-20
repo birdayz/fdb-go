@@ -3,6 +3,16 @@ load("@rules_go//go:def.bzl", "nogo")
 
 exports_files(["buf.yaml"])
 
+# Living docs exported as data for the RFC-131 doc-consistency guard
+# (//pkg/docscheck:docscheck_test). MODULE.bazel is the version source of truth.
+exports_files([
+    "MODULE.bazel",
+    "README.md",
+    "PRODUCTION_READINESS.md",
+    "TODO.md",
+    "DIVERGENCES.md",
+])
+
 # gazelle:prefix github.com/birdayz/fdb-record-layer-go
 # gazelle:proto disable
 gazelle(name = "gazelle")

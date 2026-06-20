@@ -155,6 +155,20 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] recordlayer: no read path for format-version-<6 record versions / unsplit records (surfaced by the doc-drift audit, RFC-131, 2026-06-20)
+
+Go reads record versions **only inline** at the `pk + -1` suffix (`store.go:350`; the inline layout
+used at Java `FormatVersion >= SAVE_VERSION_WITH_RECORD (6)`), and `formatVersionCurrent` is the newest
+format. There is **no read path for the legacy `RecordVersionKey = 8` version subspace and no
+`omitUnsplitRecordSuffix` concept** (subspace-8 is only ever *cleared*, `store_delete_where.go`, never
+loaded). So a Go client opening a Java store created at **format version < 6 silently cannot see
+record-version data** (and the unsplit-record-suffix layout is likewise unhandled). This is a real
+wire-compat read gap on the project's hard line — Go writes/reads the current format fine and shares
+data with current Java/C apps, but cannot fully read *legacy-format* stores. Lifted here from the
+archived 2026-03-09 `wire_compat_audit.md` / `behavior_compat_audit.md` so it isn't lost to the
+archive. **Fix is its own wire-compat RFC** (port the subspace-8 read + `omitUnsplitRecordSuffix`
+handling against the Java/C++ spec; fdb-client-engineer gate) — RFC-131 only tracks it.
+
 ### [x] fdbgo/client: Get/GetRange over-conflict vs libfdb_c — RFC-121 DONE (PR #319; conflict-range audit 2026-06-19)
 
 Two confirmed serializability-outcome divergences (both SAFE over-conflicts — Go aborted where C/Java

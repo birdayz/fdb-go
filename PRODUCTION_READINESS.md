@@ -1,5 +1,14 @@
 # Production Readiness Checklist
 
+> **This is the single authoritative current-status page.** Target versions: Java
+> `fdb-record-layer-core` **4.11.1.0**, FDB C++ client **7.3.75**, Go **1.26.x** (the pins in
+> `MODULE.bazel` are the source of truth). The executable truth is the test suites
+> (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
+> `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under
+> `docs/archive/` and are **not** current status — do not cite them. A `docs_consistency_test.go`
+> guard (anchored to `MODULE.bazel`) fails CI if a living doc drifts from these versions or
+> reintroduces the README escape-hatch contradiction.
+
 This document collects the work needed to make `fdb-record-layer-go` credible as
 a production-grade project that users can rely on, and as a near-term public HN
 launch candidate.
@@ -33,28 +42,25 @@ sections that disagree with each other, the launch is not ready.
 These are launch blockers because HN readers and early adopters will check them
 first.
 
-### Make Documentation Internally Consistent
+### Make Documentation Internally Consistent — RESOLVED (RFC-131)
 
-Current state has drift between README, TODO, and reports. For example, some docs
-say outer joins and subqueries are unsupported while newer notes say they are
-implemented; older reports reference Java 4.2.6.0 while the README targets Java
-4.11.1.0.
+Earlier drift between README, TODO, and the `reports/` audits — some docs called outer
+joins / subqueries unsupported while they were implemented; older reports referenced an
+earlier Java target than the README's current 4.11.1.0 — is fixed by **RFC-131**:
 
-Actions:
+- the six 2026-03-09 `reports/*.md` were archived under `docs/archive/reports-2026-03-09/`,
+  headered as superseded point-in-time snapshots;
+- the README client-maturity row no longer denies the `-tags libfdbc` escape hatch it
+  documents, and the SQL-summary's hard-coded date is replaced by a "yamsql corpus at HEAD"
+  pointer;
+- the one *live* finding buried in those snapshots (no read path for format-version-<6
+  record versions) was lifted into `TODO.md` so the archive loses nothing;
+- `pkg/docscheck/docs_consistency_test.go` is a CI guard that fails if a living doc cites a
+  record-layer version other than the `MODULE.bazel` pin, or reintroduces the README
+  escape-hatch contradiction, or leaves a stale report under `reports/`.
 
-- Replace stale feature-completeness reports with a generated or manually
-  maintained `FEATURE_MATRIX.md`.
-- Mark old reports as historical, with dates and a warning at the top.
-- Keep README short and current; move detailed compatibility tables elsewhere.
-- Add a "Known limitations" section that is specific, dated, and tested.
-- Add a "What is experimental" section for pure-Go FDB client, SQL engine, vector
-  indexes, and planner extensions if they are not yet supported as stable APIs.
-
-Done when:
-
-- README, TODO, feature matrix, and conformance docs do not contradict each
-  other.
-- Every README capability claim links to a test suite, report, or package doc.
+Remaining (deferred, **not** a launch blocker): a generated/maintained `FEATURE_MATRIX.md`
+— the dated README + `DIVERGENCES.md` pointer is the interim source of truth.
 
 ### Publish Reproducible Compatibility Evidence
 
