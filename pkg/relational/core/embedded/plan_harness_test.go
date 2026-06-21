@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -1254,5 +1255,81 @@ func assertPlanNotContains(t *testing.T, plan, substr string) {
 	t.Helper()
 	if strings.Contains(plan, substr) {
 		t.Errorf("plan should not contain %q:\n  %s", substr, plan)
+	}
+}
+
+// TestPlanHarness_AtOrdinalityRejected is the R3→R5 sentinel (RFC-140). The 4.12 `AT
+// atAlias` grammar (Java #4112) is parsed in R3, but binding/executing the ordinal is R5.
+// Until then the planner REJECTS AT clauses rather than ignoring the alias: ignoring it would
+// let a reference to the ordinal silently resolve to a same-named existing table column and
+// return the wrong value (codex). R5 removes this guard, binds the ordinal, and flips the
+// reject into real rows.
+func TestPlanHarness_AtOrdinalityRejected(t *testing.T) {
+	t.Parallel()
+
+	// No colliding column: AT is rejected — not silently ignored, not a different error.
+	_, err := PlanQueryForTest("SELECT id FROM orders AS e AT p", ordersSchema, nil)
+	assertAtOrdinalityRejected(t, err)
+
+	// Colliding column: `orders` HAS a `tier` column, and the AT alias is `tier`. If the
+	// planner ignored the AT clause, `SELECT tier` would resolve to the real column and
+	// silently return the wrong value. It must still be rejected.
+	_, err = PlanQueryForTest("SELECT tier FROM orders AS e AT tier", ordersSchema, nil)
+	assertAtOrdinalityRejected(t, err)
+
+	// AT on a JOIN source is rejected too (the guard covers the JOIN lowering path).
+	joinSchema := `
+CREATE TABLE A (id BIGINT NOT NULL, PRIMARY KEY (id))
+CREATE TABLE B (id BIGINT NOT NULL, PRIMARY KEY (id))
+`
+	_, err = PlanQueryForTest("SELECT a.id FROM A a JOIN B b AT p ON a.id = b.id", joinSchema, nil)
+	assertAtOrdinalityRejected(t, err)
+}
+
+// TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL pins the aggregate-index DDL path
+// (ddl.go parseAggregateIndexDefinition), a separate AtomTableItem consumer from the query
+// planner (codex). `ga` HAS a column `p`, and the index body embeds `FROM ga AT p GROUP BY p`:
+// ignoring the AT clause would build an index grouped by the real column p (wrong semantics).
+// The guard rejects it.
+func TestPlanHarness_AtOrdinalityRejectedInAggregateIndexDDL(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX sum_by_p AS SELECT SUM(v) FROM ga AT p GROUP BY p
+`
+	_, err := PlanQueryForTest("SELECT id FROM ga", schema, nil)
+	assertAtOrdinalityRejected(t, err)
+}
+
+// TestPlanHarness_AggregateIndexJoinRejected pins that an aggregate-index definition with a
+// JOIN is rejected rather than silently reduced to its leading table — which previously also
+// dropped any AT-ordinality clause on the joined source (codex). Aggregate indexes are
+// single-table; the `AT p` on the joined `gb` here would otherwise slip past the leading-atom
+// guard entirely.
+func TestPlanHarness_AggregateIndexJoinRejected(t *testing.T) {
+	t.Parallel()
+	schema := `
+CREATE TABLE ga (id BIGINT NOT NULL, p BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE gb (id BIGINT NOT NULL, p BIGINT, PRIMARY KEY (id))
+CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb AT p ON ga.id = gb.id GROUP BY p
+`
+	_, err := PlanQueryForTest("SELECT id FROM ga", schema, nil)
+	if err == nil {
+		t.Fatal("aggregate index with a JOIN (AT on the joined source) must be rejected, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeInvalidSchemaTemplate}", err, err)
+	}
+}
+
+func assertAtOrdinalityRejected(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("AT ordinality must be rejected until R5, got nil (silent ignore / wrong rows)")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeUnsupportedQuery}", err, err)
 	}
 }

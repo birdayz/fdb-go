@@ -358,10 +358,23 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q: unsupported table source type", indexName)
 	}
+	// An aggregate index is over a single table; parseAggregateIndexDefinition reads only the
+	// leading table source and would otherwise silently drop any JOIN (and any AT-ordinality
+	// clause on a joined source — codex). Reject JOINs explicitly rather than ignore them.
+	if len(tsb.AllJoinPart()) > 0 {
+		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"aggregate index %q: JOIN is not supported in an aggregate index definition", indexName)
+	}
 	ati, ok := tsb.TableSourceItem().(*antlrgen.AtomTableItemContext)
 	if !ok {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q: table source must be a simple table reference", indexName)
+	}
+	// The grammar parses `AT atAlias` here too (RFC-140 / R3); reject it rather than silently
+	// ignore the ordinal clause, which would otherwise build an index grouped by a same-named
+	// real column instead. Removed in R5 when the ordinal is bound (codex).
+	if err := rejectAtOrdinality(ati); err != nil {
+		return err
 	}
 	tableName := functions.FullIdToName(ati.TableName().FullId())
 

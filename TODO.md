@@ -93,8 +93,12 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
      instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
      (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
-   - **[ ] R3** — parser grammar: `AT ordinality` table source, `functionNameKeyword` in
-     `scalarFunctionName` (`RelationalParser.g4`). Gate: **Graefe** + Torvalds.
+   - **[x] R3 — DONE (RFC-140)** — parser grammar: `(AT atAlias=uid)?` on `atomTableItem` (#4112) +
+     `functionNameKeyword: LEFT|RIGHT` moved out of `functionNameBase` into `scalarFunctionName` (#4272).
+     Parser regenerated. LEFT/RIGHT remain function names but are rejected as identifiers/aliases; AT
+     parses + `atAlias` captured but is **rejected** at every consumer (planner FROM/JOIN, aggregate-index
+     DDL incl. its silently-dropped JOINs, semantic scope) with `ErrCodeUnsupportedQuery` until R5 binds
+     it — codex caught 3 silent-drop holes (column collision, DDL, DDL-JOIN). Graefe + Torvalds + codex ACK.
    - **[ ] R4** — EXISTS in the projection list (`PExistsValue.value`). Gate: **Graefe** + Torvalds.
    - **[ ] R5** — `AT ordinality` array unnest (`PRecordQueryExplodePlan.with_ordinality`). Gate:
      **Graefe** + Torvalds.

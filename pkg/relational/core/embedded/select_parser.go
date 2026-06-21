@@ -1516,6 +1516,20 @@ type fromSource struct {
 	whereExpr    antlrgen.IWhereExprContext
 }
 
+// rejectAtOrdinality rejects a table source that carries the `AT atAlias`
+// unnest-with-ordinality clause (Java 4.12 #4112). The grammar parses `AT` (RFC-140 / R3),
+// but binding the ordinal to a value is R5. Until then the planner MUST reject it rather
+// than silently ignore the alias: ignoring it would let a reference to the ordinal resolve
+// to a same-named existing table column and return the wrong value (codex). When R5 wires
+// the binder/explode, this guard is removed.
+func rejectAtOrdinality(item *antlrgen.AtomTableItemContext) error {
+	if item != nil && item.GetAtAlias() != nil {
+		return api.NewError(api.ErrCodeUnsupportedQuery,
+			"AT ordinality (unnest with ordinal position) is not yet supported")
+	}
+	return nil
+}
+
 // parseFromSource walks the FROM clause of a SimpleTableContext and
 // returns the parsed source metadata. Returns an error for unsupported
 // shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
@@ -1563,6 +1577,9 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		}
 		switch item := eb.TableSourceItem().(type) {
 		case *antlrgen.AtomTableItemContext:
+			if err := rejectAtOrdinality(item); err != nil {
+				return nil, err
+			}
 			uids := item.TableName().FullId().AllUid()
 			parts := make([]string, len(uids))
 			for i, u := range uids {
@@ -1626,6 +1643,9 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
+	}
+	if err := rejectAtOrdinality(atomItem); err != nil {
+		return nil, err
 	}
 	// Build table name from uid segments, stripping identifier quotes.
 	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
@@ -1728,6 +1748,9 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"JOIN: unsupported table source item %T", j.TableSourceItem())
 		}
+		if err := rejectAtOrdinality(atomItem); err != nil {
+			return joinClause{}, err
+		}
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))
 		for i, u := range uids {
@@ -1754,6 +1777,9 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if !ok {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"JOIN: unsupported table source item %T", j.TableSourceItem())
+		}
+		if err := rejectAtOrdinality(atomItem); err != nil {
+			return joinClause{}, err
 		}
 		uids := atomItem.TableName().FullId().AllUid()
 		parts := make([]string, len(uids))

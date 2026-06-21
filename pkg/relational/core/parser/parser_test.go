@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
 func TestParse_ValidStatements(t *testing.T) {
@@ -83,6 +85,88 @@ func TestParse_CaseInsensitiveKeywords(t *testing.T) {
 	if strings.Contains(root.GetText(), "SELECT") && !strings.Contains(sql, "SELECT") {
 		t.Fatalf("GetText() reports uppercased keyword not in source: %q", root.GetText())
 	}
+}
+
+// TestParse_LeftRightDisambiguation pins Java 4.12 #4272 (RFC-140 / R3): LEFT and RIGHT
+// were moved out of functionNameBase into functionNameKeyword, so they remain usable as
+// scalar function names but are no longer accepted as bare identifiers / table aliases
+// (which was ambiguous with the {LEFT|RIGHT} [OUTER] JOIN clause).
+func TestParse_LeftRightDisambiguation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("LEFT/RIGHT still parse as scalar function names", func(t *testing.T) {
+		t.Parallel()
+		for _, sql := range []string{
+			`SELECT LEFT(name, 3) FROM orders`,
+			`SELECT RIGHT(name, 3) FROM orders`,
+		} {
+			if _, err := Parse(sql); err != nil {
+				t.Errorf("Parse(%q) err = %v, want nil (LEFT/RIGHT via functionNameKeyword)", sql, err)
+			}
+		}
+	})
+
+	t.Run("LEFT/RIGHT rejected as a table alias (syntax error)", func(t *testing.T) {
+		t.Parallel()
+		for _, sql := range []string{
+			`SELECT id FROM orders AS LEFT`,
+			`SELECT id FROM orders AS RIGHT`,
+		} {
+			_, err := Parse(sql)
+			if err == nil {
+				t.Errorf("Parse(%q) err = nil, want syntax error (LEFT/RIGHT no longer identifiers)", sql)
+				continue
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError {
+				t.Errorf("Parse(%q) err = %v, want *api.Error{ErrCodeSyntaxError}", sql, err)
+			}
+		}
+	})
+}
+
+// TestParse_AtOrdinalitySyntax pins Java 4.12 #4112 (RFC-140 / R3): the PartiQL
+// `AT atAlias` unnest-with-ordinality table source now parses, and the atAlias is captured
+// on atomTableItem. (Binding/execution of the ordinal is R5; here it is parsed-but-unbound.)
+func TestParse_AtOrdinalitySyntax(t *testing.T) {
+	t.Parallel()
+
+	root, err := Parse(`SELECT e FROM orders AS e AT p`)
+	if err != nil {
+		t.Fatalf("Parse(AT ordinality) err = %v, want nil (AT clause must parse)", err)
+	}
+	atom := findAtomTableItem(root)
+	if atom == nil {
+		t.Fatal("no AtomTableItemContext in parse tree")
+	}
+	if atom.GetAtAlias() == nil {
+		t.Fatal("atAlias is nil — the AT clause parsed but was not bound to the atAlias field")
+	}
+	if got := atom.GetAtAlias().GetText(); !strings.EqualFold(got, "p") {
+		t.Fatalf("atAlias = %q, want %q", got, "p")
+	}
+
+	// Without AT, atAlias must be nil (the field is genuinely optional, not always-populated).
+	noAt, err := Parse(`SELECT e FROM orders AS e`)
+	if err != nil {
+		t.Fatalf("Parse(no AT) err = %v", err)
+	}
+	if a := findAtomTableItem(noAt); a == nil || a.GetAtAlias() != nil {
+		t.Fatal("atAlias should be nil when no AT clause is present")
+	}
+}
+
+// findAtomTableItem returns the first AtomTableItemContext in the parse tree, or nil.
+func findAtomTableItem(t antlr.Tree) *antlrgen.AtomTableItemContext {
+	if a, ok := t.(*antlrgen.AtomTableItemContext); ok {
+		return a
+	}
+	for i := 0; i < t.GetChildCount(); i++ {
+		if r := findAtomTableItem(t.GetChild(i)); r != nil {
+			return r
+		}
+	}
+	return nil
 }
 
 func TestParse_SyntaxError(t *testing.T) {

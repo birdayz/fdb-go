@@ -840,4 +840,7 @@ type RelationalParserVisitor interface {
 
 	// Visit a parse tree produced by RelationalParser#functionNameBase.
 	VisitFunctionNameBase(ctx *FunctionNameBaseContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#functionNameKeyword.
+	VisitFunctionNameKeyword(ctx *FunctionNameKeywordContext) interface{}
 }

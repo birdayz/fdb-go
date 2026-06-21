@@ -1802,3 +1802,9 @@ func (s *BaseRelationalParserListener) EnterFunctionNameBase(ctx *FunctionNameBa
 
 // ExitFunctionNameBase is called when production functionNameBase is exited.
 func (s *BaseRelationalParserListener) ExitFunctionNameBase(ctx *FunctionNameBaseContext) {}
+
+// EnterFunctionNameKeyword is called when production functionNameKeyword is entered.
+func (s *BaseRelationalParserListener) EnterFunctionNameKeyword(ctx *FunctionNameKeywordContext) {}
+
+// ExitFunctionNameKeyword is called when production functionNameKeyword is exited.
+func (s *BaseRelationalParserListener) ExitFunctionNameKeyword(ctx *FunctionNameKeywordContext) {}

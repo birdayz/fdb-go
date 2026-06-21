@@ -25,7 +25,11 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":parser"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
 )
 
 # keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
