@@ -1715,8 +1715,10 @@ func (r *Resolver) walkScalarSubquery(ctx *antlrgen.SubqueryExpressionAtomContex
 
 // walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the
 // Resolver's SubqueryPlanner to build the inner query's logical plan
-// and allocate a fresh existential alias. Returns an ExistsPredicate
-// wrapping the alias. Declines with UnsupportedExpressionShapeError
+// and allocate a fresh existential alias. Returns an
+// ExistentialValuePredicate over a QuantifiedObjectValue of the alias
+// (RFC-141: the single EXISTS representation, built via the ExistsValue
+// → toQueryPredicate bridge). Declines with UnsupportedExpressionShapeError
 // when no SubqueryPlanner is installed.
 func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext) (predicates.QueryPredicate, error) {
 	if r.subqueryPlanner == nil {
@@ -1730,7 +1732,7 @@ func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext
 	if err != nil {
 		return nil, err
 	}
-	return predicates.NewExistsPredicate(alias), nil
+	return predicates.ExistsValueToQueryPredicate(values.NewExistsValue(alias)), nil
 }
 
 // NumericOverflowLiteralError signals that a numeric literal overflows

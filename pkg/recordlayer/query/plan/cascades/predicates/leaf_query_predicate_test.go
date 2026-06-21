@@ -15,7 +15,7 @@ func TestIsLeafQueryPredicate_True_OnLeaves(t *testing.T) {
 			values.LiteralValue(int64(1)),
 			Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 		),
-		NewExistsPredicate(values.NamedCorrelationIdentifier("x")),
+		NewExistentialAlias(values.NamedCorrelationIdentifier("x")),
 	}
 	for i, p := range cases {
 		if !IsLeafQueryPredicate(p) {

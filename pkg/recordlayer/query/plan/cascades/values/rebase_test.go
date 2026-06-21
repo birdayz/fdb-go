@@ -290,14 +290,19 @@ func TestRebaseValue_ExistsValue(t *testing.T) {
 	t.Parallel()
 	oldAlias := NamedCorrelationIdentifier("old")
 	newAlias := NamedCorrelationIdentifier("new")
-	v := &ExistsValue{Alias: oldAlias}
+	v := NewExistsValue(oldAlias)
 	result := RebaseValue(v, AliasMap{oldAlias: newAlias})
 	ev, ok := result.(*ExistsValue)
 	if !ok {
 		t.Fatalf("expected *ExistsValue, got %T", result)
 	}
-	if ev.Alias != newAlias {
-		t.Fatalf("expected alias %v, got %v", newAlias, ev.Alias)
+	// RFC-141: the alias lives on the child QuantifiedObjectValue now.
+	qov, ok := ev.GetChild().(*QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("child should be *QuantifiedObjectValue, got %T", ev.GetChild())
+	}
+	if qov.Correlation != newAlias {
+		t.Fatalf("expected alias %v, got %v", newAlias, qov.Correlation)
 	}
 }
 

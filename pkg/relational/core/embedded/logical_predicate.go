@@ -1643,16 +1643,11 @@ func splitNonExistsPredicatesFromWalked(p predicates.QueryPredicate) predicates.
 	if p == nil {
 		return nil
 	}
-	if _, ok := p.(*predicates.ExistsPredicate); ok {
+	if _, ok := predicates.IsExistentialPredicate(p); ok {
 		return nil
 	}
-	if not, ok := p.(*predicates.NotPredicate); ok {
-		ch := not.Children()
-		if len(ch) == 1 {
-			if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
-				return nil
-			}
-		}
+	if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+		return nil
 	}
 	if and, ok := p.(*predicates.AndPredicate); ok {
 		var nonExists []predicates.QueryPredicate
@@ -1679,16 +1674,11 @@ func stripNonExistsPredicates(p predicates.QueryPredicate) predicates.QueryPredi
 	if p == nil {
 		return nil
 	}
-	if _, ok := p.(*predicates.ExistsPredicate); ok {
+	if _, ok := predicates.IsExistentialPredicate(p); ok {
 		return p
 	}
-	if not, ok := p.(*predicates.NotPredicate); ok {
-		ch := not.Children()
-		if len(ch) == 1 {
-			if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
-				return p
-			}
-		}
+	if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+		return p
 	}
 	if and, ok := p.(*predicates.AndPredicate); ok {
 		var existsPreds []predicates.QueryPredicate
@@ -1724,7 +1714,7 @@ func existsReachableUnderOr(p predicates.QueryPredicate, underOr bool) bool {
 	if p == nil {
 		return false
 	}
-	if _, ok := p.(*predicates.ExistsPredicate); ok {
+	if _, ok := predicates.IsExistentialPredicate(p); ok {
 		return underOr
 	}
 	if _, ok := p.(*predicates.OrPredicate); ok {

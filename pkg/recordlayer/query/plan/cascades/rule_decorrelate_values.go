@@ -412,8 +412,9 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 			alias = n.Correlation
 		case *values.QuantifiedRecordValue:
 			alias = n.Alias
-		case *values.ExistsValue:
-			alias = n.Alias
+		// ExistsValue is a transparent composite (RFC-141), not a leaf —
+		// its child QuantifiedObjectValue is the leaf that gets translated
+		// by the *QuantifiedObjectValue case above.
 		case *values.ScalarSubqueryValue:
 			alias = n.Alias
 		case *values.ObjectValue:
@@ -491,15 +492,15 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 			return p
 		}
 		return predicates.NewNot(newChild)
-	case *predicates.ExistsPredicate:
-		if !tm.ContainsSourceAlias(pred.ExistentialAlias) {
+	case *predicates.ExistentialValuePredicate:
+		// RFC-141: translate the QuantifiedObjectValue operand's correlation
+		// via the shared value path (which remaps the QOV alias). The
+		// comparison (NOT_NULL) is carried unchanged.
+		newVal := translateValueCorrelations(pred.Value, tm)
+		if newVal == pred.Value {
 			return p
 		}
-		targetAlias, ok := tm.GetTargetAlias(pred.ExistentialAlias)
-		if !ok {
-			return p
-		}
-		return predicates.NewExistsPredicate(targetAlias)
+		return predicates.NewExistentialValuePredicate(newVal, pred.Comparison)
 	case *predicates.Placeholder:
 		newVal := translateValueCorrelations(pred.Value, tm)
 		newAlias := pred.ParameterAlias

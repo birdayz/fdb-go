@@ -352,6 +352,14 @@ func withChildren(v Value, newChildren []Value) Value {
 		}
 		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0]}
 
+	case *ExistsValue:
+		// Transparent composite (RFC-141) over a single child
+		// QuantifiedObjectValue.
+		if len(newChildren) != 1 {
+			return v
+		}
+		return &ExistsValue{Value: newChildren[0]}
+
 	default:
 		panic(fmt.Sprintf("withChildren: unhandled Value type %T", v))
 	}

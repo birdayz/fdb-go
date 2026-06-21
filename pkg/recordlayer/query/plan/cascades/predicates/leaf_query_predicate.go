@@ -11,7 +11,7 @@ package predicates
 // IsLeafQueryPredicate(p) before recursing into Children();
 // avoids tight coupling to specific concrete types
 // (ConstantPredicate / ValuePredicate / ComparisonPredicate /
-// ExistsPredicate / etc.).
+// ExistentialValuePredicate / etc.).
 func IsLeafQueryPredicate(p QueryPredicate) bool {
 	return p != nil && len(p.Children()) == 0
 }

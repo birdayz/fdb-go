@@ -42,12 +42,15 @@ func StructurallyEqual(a, b QueryPredicate) bool {
 			return false
 		}
 		return ap.Value == bp.Value
-	case *ExistsPredicate:
-		bp, ok := b.(*ExistsPredicate)
+	case *ExistentialValuePredicate:
+		bp, ok := b.(*ExistentialValuePredicate)
 		if !ok {
 			return false
 		}
-		return ap.ExistentialAlias == bp.ExistentialAlias
+		if ap.Comparison.Type != bp.Comparison.Type {
+			return false
+		}
+		return values.ValuesStructurallyEqual(ap.Value, bp.Value)
 	case *Placeholder:
 		bp, ok := b.(*Placeholder)
 		if !ok {

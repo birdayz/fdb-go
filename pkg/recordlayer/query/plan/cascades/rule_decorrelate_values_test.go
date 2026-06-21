@@ -591,7 +591,7 @@ func TestDecorrelateValuesRule_DoNotPushDownExistentialValuesQuantifier(t *testi
 		values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
 		[]expressions.Quantifier{baseQ, existsQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistsPredicate(existsQ.GetAlias()),
+			predicates.NewExistentialAlias(existsQ.GetAlias()),
 		},
 	)
 	outerRef := expressions.InitialOf(outerSel)
@@ -640,8 +640,8 @@ func TestDecorrelateValuesRule_DoNotMatchIfAllExistentialQuantifiers(t *testing.
 		&values.ConstantValue{Value: "y"},
 		[]expressions.Quantifier{existsValuesQ, existsTQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistsPredicate(existsValuesQ.GetAlias()),
-			predicates.NewExistsPredicate(existsTQ.GetAlias()),
+			predicates.NewExistentialAlias(existsValuesQ.GetAlias()),
+			predicates.NewExistentialAlias(existsTQ.GetAlias()),
 		},
 	)
 	outerRef := expressions.InitialOf(outerSel)
@@ -1130,10 +1130,10 @@ func TestDecorrelateValuesRule_NotPredicateTranslation(t *testing.T) {
 	}
 }
 
-// TestDecorrelateValuesRule_ExistsPredicateNotTranslated verifies that
-// an ExistsPredicate whose alias is NOT a values box is left unchanged
+// TestDecorrelateValuesRule_ExistentialPredicateNotTranslated verifies that
+// an ExistentialValuePredicate whose alias is NOT a values box is left unchanged
 // by the translation.
-func TestDecorrelateValuesRule_ExistsPredicateNotTranslated(t *testing.T) {
+func TestDecorrelateValuesRule_ExistentialPredicateNotTranslated(t *testing.T) {
 	t.Parallel()
 
 	valuesBoxQ, _ := makeValuesBox(&values.ConstantValue{Value: int64(1)})
@@ -1145,7 +1145,7 @@ func TestDecorrelateValuesRule_ExistsPredicateNotTranslated(t *testing.T) {
 		values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistsPredicate(baseQ.GetAlias()),
+			predicates.NewExistentialAlias(baseQ.GetAlias()),
 		},
 	)
 	outerRef := expressions.InitialOf(outerSel)
@@ -1160,13 +1160,13 @@ func TestDecorrelateValuesRule_ExistsPredicateNotTranslated(t *testing.T) {
 	if len(decorrelated.GetQuantifiers()) != 1 {
 		t.Fatalf("expected 1 quantifier, got %d", len(decorrelated.GetQuantifiers()))
 	}
-	// ExistsPredicate should still reference baseQ's alias.
-	ep, ok := decorrelated.GetPredicates()[0].(*predicates.ExistsPredicate)
+	// ExistentialValuePredicate should still reference baseQ's alias.
+	ep, ok := decorrelated.GetPredicates()[0].(*predicates.ExistentialValuePredicate)
 	if !ok {
-		t.Fatalf("expected ExistsPredicate, got %T", decorrelated.GetPredicates()[0])
+		t.Fatalf("expected ExistentialValuePredicate, got %T", decorrelated.GetPredicates()[0])
 	}
-	if ep.ExistentialAlias != baseQ.GetAlias() {
-		t.Errorf("expected ExistsPredicate alias %v, got %v", baseQ.GetAlias(), ep.ExistentialAlias)
+	if ep.GetExistentialAlias() != baseQ.GetAlias() {
+		t.Errorf("expected ExistentialValuePredicate alias %v, got %v", baseQ.GetAlias(), ep.GetExistentialAlias())
 	}
 }
 

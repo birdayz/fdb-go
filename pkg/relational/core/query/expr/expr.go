@@ -91,7 +91,7 @@ import (
 //   - err: non-nil when the inner query cannot be planned
 //
 // The planner stores the (alias → plan) mapping externally; the
-// Resolver creates an ExistsPredicate or ScalarSubqueryValue
+// Resolver creates an ExistentialValuePredicate or ScalarSubqueryValue
 // referencing the alias.
 type SubqueryPlanner interface {
 	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)

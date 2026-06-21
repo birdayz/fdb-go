@@ -56,8 +56,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 	// EXISTS subquery: when the right quantifier is existential, wrap
 	// the inner in FirstOrDefault and use a semi-join (EXISTS) plan
-	// shape. The ExistsPredicate in the predicate list evaluates to
-	// TRUE when FirstOrDefault returns a non-null row.
+	// shape. The ExistentialValuePredicate in the predicate list
+	// evaluates to TRUE when FirstOrDefault returns a non-null row.
 	if quants[1].Kind() == expressions.QuantifierExistential {
 		r.implementExistentialSelect(call, sel, quants)
 		return
@@ -277,17 +277,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	var regularPreds []predicates.QueryPredicate
 	negated := false
 	for _, p := range flattenAndPredicates(allPreds) {
-		if _, ok := p.(*predicates.ExistsPredicate); ok {
+		if _, ok := predicates.IsExistentialPredicate(p); ok {
 			continue
 		}
-		if not, ok := p.(*predicates.NotPredicate); ok {
-			ch := not.Children()
-			if len(ch) == 1 {
-				if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
-					negated = true
-					continue
-				}
-			}
+		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+			negated = true
+			continue
 		}
 		regularPreds = append(regularPreds, p)
 	}
@@ -433,18 +428,13 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	var joinPreds, existPreds []predicates.QueryPredicate
 	negated := false
 	for _, p := range allPreds {
-		if _, ok := p.(*predicates.ExistsPredicate); ok {
+		if _, ok := predicates.IsExistentialPredicate(p); ok {
 			// Pure EXISTS predicate — belongs on the outer level.
 			continue
 		}
-		if not, ok := p.(*predicates.NotPredicate); ok {
-			ch := not.Children()
-			if len(ch) == 1 {
-				if _, ok := ch[0].(*predicates.ExistsPredicate); ok {
-					negated = true
-					continue
-				}
-			}
+		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+			negated = true
+			continue
 		}
 		existCorr := values.NamedCorrelationIdentifier(existAlias)
 		if _, ok := predicates.GetCorrelatedToOfPredicate(p)[existCorr]; ok {

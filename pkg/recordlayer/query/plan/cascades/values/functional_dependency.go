@@ -29,10 +29,9 @@ func IsFunctionallyDependentOn(v Value, otherValue Value) bool {
 			if n.Alias != otherQOV.Correlation {
 				allDependent = false
 			}
-		case *ExistsValue:
-			if n.Alias != otherQOV.Correlation {
-				allDependent = false
-			}
+		// ExistsValue is a transparent composite (RFC-141): its child
+		// QuantifiedObjectValue is walked by WalkValue and handled by the
+		// *QuantifiedObjectValue case above.
 		case *ScalarSubqueryValue:
 			if n.Alias != otherQOV.Correlation {
 				allDependent = false

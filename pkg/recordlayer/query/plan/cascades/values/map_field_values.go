@@ -320,8 +320,11 @@ func EqualsWithoutChildren(a, b Value) bool {
 		bv, ok := b.(*AndOrValue)
 		return ok && av.Op == bv.Op
 	case *ExistsValue:
-		bv, ok := b.(*ExistsValue)
-		return ok && av.Alias == bv.Alias
+		// Transparent composite (RFC-141): no own attributes — the child
+		// QuantifiedObjectValue is compared separately by the children
+		// recursion. Two ExistsValues are equal-without-children.
+		_, ok := b.(*ExistsValue)
+		return ok
 	case *ScalarSubqueryValue:
 		bv, ok := b.(*ScalarSubqueryValue)
 		return ok && av.Alias == bv.Alias

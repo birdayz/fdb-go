@@ -690,7 +690,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 
 	// EXISTS subqueries: when the filter carries existential subquery
 	// plans, build a SelectExpression with ForEach + Existential
-	// quantifiers. The ExistsPredicate in the predicate tree references
+	// quantifiers. The ExistentialValuePredicate in the predicate tree references
 	// the existential alias; the planner's ImplementSimpleSelectRule
 	// handles the existential quantifier via FirstOrDefaultPlan.
 	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
@@ -1364,21 +1364,17 @@ func (t *cascadesTranslator) translateJoinWithExists(
 // splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
 // tree. EXISTS predicates (and NOT EXISTS) are dropped — they're
 // represented by the Existential quantifier in the SelectExpression.
-// Compound AND predicates are flattened: AND(ExistsPredicate, c.id < 10)
+// Compound AND predicates are flattened: AND(ExistentialValuePredicate, c.id < 10)
 // yields just [c.id < 10].
 func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
 	}
-	if _, ok := pred.(*predicates.ExistsPredicate); ok {
+	if _, ok := predicates.IsExistentialPredicate(pred); ok {
 		return nil
 	}
-	if not, ok := pred.(*predicates.NotPredicate); ok {
-		if len(not.Children()) == 1 {
-			if _, ok := not.Children()[0].(*predicates.ExistsPredicate); ok {
-				return nil
-			}
-		}
+	if _, ok := predicates.IsNotExistentialPredicate(pred); ok {
+		return nil
 	}
 	if and, ok := pred.(*predicates.AndPredicate); ok {
 		var result []predicates.QueryPredicate
@@ -1391,22 +1387,18 @@ func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.Query
 }
 
 // extractExistsPredicates returns the EXISTS-related predicates that
-// splitNonExistsPredicates drops: bare ExistsPredicate or
-// NOT(ExistsPredicate). The rule's implementExistentialSelect needs
-// these to detect EXISTS vs NOT EXISTS.
+// splitNonExistsPredicates drops: bare ExistentialValuePredicate or
+// NOT(ExistentialValuePredicate). The rule's implementExistentialSelect
+// needs these to detect EXISTS vs NOT EXISTS.
 func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
 	}
-	if _, ok := pred.(*predicates.ExistsPredicate); ok {
+	if _, ok := predicates.IsExistentialPredicate(pred); ok {
 		return []predicates.QueryPredicate{pred}
 	}
-	if not, ok := pred.(*predicates.NotPredicate); ok {
-		if len(not.Children()) == 1 {
-			if _, ok := not.Children()[0].(*predicates.ExistsPredicate); ok {
-				return []predicates.QueryPredicate{pred}
-			}
-		}
+	if _, ok := predicates.IsNotExistentialPredicate(pred); ok {
+		return []predicates.QueryPredicate{pred}
 	}
 	if and, ok := pred.(*predicates.AndPredicate); ok {
 		var result []predicates.QueryPredicate

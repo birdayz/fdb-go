@@ -11,8 +11,8 @@ import (
 // SemanticHashCode returns an ALIAS-INVARIANT structural hash of a
 // QueryPredicate, consistent with alias-aware predicate equality
 // (SemanticEqualsUnderAliasMap). Value-bearing predicates fold their Values
-// via the alias-invariant values.SemanticHashCode; ExistsPredicate's alias is
-// EXCLUDED; compound predicates recurse via Children() (NOT alias-bearing
+// via the alias-invariant values.SemanticHashCode; ExistentialValuePredicate's
+// operand alias is EXCLUDED; compound predicates recurse via Children() (NOT alias-bearing
 // Explain() text).
 //
 // Lives in the predicates package (RFC-040 040.1b relocation) so expressions
@@ -38,9 +38,10 @@ func writeSemanticHash(h io.Writer, p QueryPredicate) {
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Operand), 16))
 		_, _ = io.WriteString(h, "/")
 		_, _ = io.WriteString(h, strconv.FormatUint(values.SemanticHashCode(t.Comparison.Operand), 16))
-	case *ExistsPredicate:
-		// ExistentialAlias EXCLUDED — alias-invariant.
-		_, _ = io.WriteString(h, "exists")
+	case *ExistentialValuePredicate:
+		// QuantifiedObjectValue operand's alias EXCLUDED — alias-invariant.
+		// The operand's value hash (qov tag, alias-free) folds in too.
+		_, _ = io.WriteString(h, "existential:"+strconv.FormatUint(values.SemanticHashCode(t.Value), 16))
 	case *AndPredicate:
 		_, _ = io.WriteString(h, "and")
 	case *OrPredicate:

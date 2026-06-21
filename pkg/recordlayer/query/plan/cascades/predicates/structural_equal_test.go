@@ -85,12 +85,12 @@ func TestStructurallyEqual_DifferentTypes(t *testing.T) {
 func TestStructurallyEqual_Exists(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("q")
-	a := NewExistsPredicate(alias)
-	b := NewExistsPredicate(alias)
+	a := NewExistentialAlias(alias)
+	b := NewExistentialAlias(alias)
 	if !StructurallyEqual(a, b) {
 		t.Fatal("same alias EXISTS should be equal")
 	}
-	c := NewExistsPredicate(values.NamedCorrelationIdentifier("other"))
+	c := NewExistentialAlias(values.NamedCorrelationIdentifier("other"))
 	if StructurallyEqual(a, c) {
 		t.Fatal("different alias EXISTS should not be equal")
 	}

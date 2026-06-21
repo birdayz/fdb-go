@@ -99,7 +99,16 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      parses + `atAlias` captured but is **rejected** at every consumer (planner FROM/JOIN, aggregate-index
      DDL incl. its silently-dropped JOINs, semantic scope) with `ErrCodeUnsupportedQuery` until R5 binds
      it — codex caught 3 silent-drop holes (column collision, DDL, DDL-JOIN). Graefe + Torvalds + codex ACK.
-   - **[ ] R4** — EXISTS in the projection list (`PExistsValue.value`). Gate: **Graefe** + Torvalds.
+   - **[~] R4** — EXISTS in the projection list (`PExistsValue.value`), RFC-141. Gate: **Graefe** + Torvalds.
+     **Phase 1 DONE:** representation collapse to Java 4.12's single mechanism — `ExistsValue` is now an
+     evaluable `ValueWithChild` over a `QuantifiedObjectValue` child (`eval = child != nil`);
+     `ExistentialValuePredicate` replaces the deleted leaf-alias `ExistsPredicate`; 8 value-walk sites
+     delegate to the child; the 4 join-rule detection sites use `IsExistentialPredicate`. WHERE-EXISTS +
+     NOT-EXISTS suite green after the swap, 10× deterministic. codex caught 3 eval/detection subtleties
+     (QOV outer-row fallback, non-NOT_NULL misclassification, typed-nil binding). Graefe+Torvalds+codex ACK.
+     **Phase 2 TODO:** wire projected EXISTS in walk.go + select-element lowering; port
+     `exists-in-select.yamsql` (correlated/non-correlated/NOT-EXISTS/multi-join) with EXPLAIN plan-shape
+     asserts. (The Phase-1 `ExistsValue.Evaluate` is already correct for projected execution.)
    - **[ ] R5** — `AT ordinality` array unnest (`PRecordQueryExplodePlan.with_ordinality`). Gate:
      **Graefe** + Torvalds.
    - **[ ] R6** — `CARDINALITY()` function + index support. Gate: **Graefe** + Torvalds.

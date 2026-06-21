@@ -69,7 +69,7 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Only partition binary joins (both ForEach). Existential quantifiers
 	// (EXISTS subqueries) have special alias semantics that break when
-	// wrapped in sub-SelectExpressions — the ExistsPredicate references
+	// wrapped in sub-SelectExpressions — the ExistentialValuePredicate references
 	// the existential's alias, and wrapping would change the structure
 	// downstream rules expect. Java handles this in the exploration
 	// phase where Memo-level dedup prevents interference; Go's fixpoint

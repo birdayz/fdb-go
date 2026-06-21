@@ -15,7 +15,7 @@ import (
 // Unlike RecordQueryFilterPlan (which also takes QueryPredicates),
 // this variant is produced by ImplementSimpleSelectRule and models the
 // Cascades-era predicate-filter operator that works with the richer
-// predicate hierarchy (ValuePredicate, ExistsPredicate, etc.) rather
+// predicate hierarchy (ValuePredicate, ExistentialValuePredicate, etc.) rather
 // than the legacy comparison-based filter.
 type RecordQueryPredicatesFilterPlan struct {
 	inner      RecordQueryPlan
