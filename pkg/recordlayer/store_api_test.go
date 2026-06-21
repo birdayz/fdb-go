@@ -357,6 +357,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				SetIndex(priceIdx).
 				SetSubspace(ks).
 				SetLimit(5).
+				SetMarkReadable(false). // leave WRITE_ONLY so the type-stamp survives; we mark readable directly below.
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -369,10 +370,18 @@ var _ = Describe("FDBRecordStore API", func() {
 					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 
+				// The index was built with SetMarkReadable(false), so it is still
+				// WRITE_ONLY and the type-stamp survives. Mark it readable directly:
+				// MarkIndexReadableOrUniquePending clears the range set + heartbeats (via
+				// clearReadableIndexBuildData) but deliberately does NOT erase the
+				// type-stamp — leaving exactly the state this vacuum test needs: a
+				// READABLE index that still carries a leftover type-stamp artifact.
+				idx := mdWithIdx.GetIndex("Order$price")
+				_, err = store.MarkIndexReadableOrUniquePending("Order$price")
+				Expect(err).NotTo(HaveOccurred())
 				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
 
-				// Build stamp should exist before vacuum.
-				idx := mdWithIdx.GetIndex("Order$price")
+				// Build stamp should still exist before vacuum.
 				stamp, err := store.LoadIndexingTypeStamp(idx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
@@ -380,7 +389,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				// Vacuum.
 				store.VacuumReadableIndexesBuildData()
 
-				// After vacuum, stamp and range data should be cleared.
+				// After vacuum, the leftover type-stamp should be cleared.
 				stamp, err = store.LoadIndexingTypeStamp(idx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).To(BeNil())

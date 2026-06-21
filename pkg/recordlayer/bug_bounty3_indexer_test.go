@@ -433,7 +433,8 @@ var _ = Describe("BugBounty3Indexer", func() {
 				SetMetaData(mdWithIndex).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
-				SetLimit(100). // single chunk
+				SetLimit(100).          // single chunk
+				SetMarkReadable(false). // keep WRITE_ONLY so the scanned-records counter survives for LoadBuildProgress.
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 

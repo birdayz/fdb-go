@@ -219,6 +219,12 @@ type OnlineIndexer struct {
 	mutual           bool              // true = MUTUAL_BY_RECORDS (concurrent building)
 	mutualBoundaries [][]byte          // pre-set fragment boundaries (nil = single fragment)
 	leaseLengthMs    int64             // heartbeat lease duration in ms (default 30000)
+	// markReadableEnabled controls whether BuildIndex marks the index readable (and
+	// thus erases the per-build bookkeeping) at the end. Defaults to true. Matches
+	// Java's OnlineIndexer.buildIndex(boolean markReadable): set false to build the
+	// index data while leaving it WRITE_ONLY with its build stamp/progress intact
+	// (e.g. to inspect or resume the build).
+	markReadableEnabled bool
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -241,8 +247,9 @@ type OnlineIndexerBuilder struct {
 func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 	return &OnlineIndexerBuilder{
 		indexer: OnlineIndexer{
-			limit:            100,
-			recordsPerSecond: 10000, // matches Java DEFAULT_RECORDS_PER_SECOND
+			limit:               100,
+			recordsPerSecond:    10000, // matches Java DEFAULT_RECORDS_PER_SECOND
+			markReadableEnabled: true,  // Java buildIndex() defaults markReadable=true
 		},
 	}
 }
@@ -250,6 +257,15 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 // SetDatabase sets the FDB database.
 func (b *OnlineIndexerBuilder) SetDatabase(db *FDBDatabase) *OnlineIndexerBuilder {
 	b.indexer.db = db
+	return b
+}
+
+// SetMarkReadable controls whether BuildIndex marks the index readable when the build
+// completes (default true). With false, the build populates the index but leaves it
+// WRITE_ONLY with its build stamp and progress counter intact — matching Java's
+// OnlineIndexer.buildIndex(boolean markReadable).
+func (b *OnlineIndexerBuilder) SetMarkReadable(v bool) *OnlineIndexerBuilder {
+	b.indexer.markReadableEnabled = v
 	return b
 }
 
@@ -560,9 +576,12 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 		}
 	}
 
-	// Step 3: Mark all target indexes as READABLE.
-	if err := oi.markReadable(ctx); err != nil {
-		return totalRecords, fmt.Errorf("mark readable: %w", err)
+	// Step 3: Mark all target indexes as READABLE (unless disabled — e.g. to inspect or
+	// resume the build). Matches Java OnlineIndexer.buildIndex(boolean markReadable).
+	if oi.markReadableEnabled {
+		if err := oi.markReadable(ctx); err != nil {
+			return totalRecords, fmt.Errorf("mark readable: %w", err)
+		}
 	}
 
 	return totalRecords, nil
@@ -611,9 +630,12 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 		}
 	}
 
-	// Mark all target indexes as READABLE.
-	if err := oi.markReadable(ctx); err != nil {
-		return totalRecords, fmt.Errorf("mark readable: %w", err)
+	// Mark all target indexes as READABLE (unless disabled). Matches Java
+	// OnlineIndexer.buildIndex(boolean markReadable).
+	if oi.markReadableEnabled {
+		if err := oi.markReadable(ctx); err != nil {
+			return totalRecords, fmt.Errorf("mark readable: %w", err)
+		}
 	}
 
 	return totalRecords, nil
@@ -852,8 +874,14 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			_, err = store.MarkIndexReadableOrUniquePending(idx.Name)
-			return nil, err
+			if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+				return nil, err
+			}
+			// Once the index is readable there is no need for the per-build bookkeeping.
+			// Matches Java's IndexingBase: erase scanned-records/type-stamp/heartbeats in
+			// the same transaction as the mark (eraseAllIndexingDataButTheLockAndRangeSet),
+			// for both READABLE and READABLE_UNIQUE_PENDING.
+			return nil, store.eraseAllIndexingDataButTheLockAndRangeSet(idx)
 		})
 		if err != nil && firstErr == nil {
 			firstErr = err

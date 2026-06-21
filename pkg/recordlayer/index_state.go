@@ -538,3 +538,34 @@ func (store *FDBRecordStore) clearReadableIndexBuildData(index *Index) {
 	// and cause transient blocking on re-builds.
 	CleanupAllHeartbeats(store.context.Transaction(), store.subspace, index)
 }
+
+// eraseAllIndexingDataButTheLockAndRangeSet clears the per-build bookkeeping that is no
+// longer needed once an index is readable: the scanned-records counter (subkey 1), the
+// indexing type-stamp (subkey 2), and the heartbeats (subkey 7). It deliberately leaves
+// the range set (a separate IndexRangeSpaceKey subspace) and the sync lock untouched.
+//
+// Matches Java's IndexingSubspaces.eraseAllIndexingDataButTheLockAndRangeSet, which the
+// online indexer calls after markIndexReadable(OrUniquePending). PrefixRange (Java's
+// Range.startsWith) is required because the scanned counter and type-stamp are single keys
+// at the exact subspace prefix, which subspace.Range() would exclude.
+//
+// Two Java steps are intentionally absent: the scrubbing subspaces (Go has no index
+// scrubbing) and the lock subspace. Go writes NO lock subkey at all (subkey 0) — concurrent
+// builders coordinate purely via heartbeats — so the lock is untouched by construction. A
+// future lock implementation MUST NOT reuse subkeys 1/2/7, which this method clears.
+func (store *FDBRecordStore) eraseAllIndexingDataButTheLockAndRangeSet(index *Index) error {
+	tr := store.context.Transaction()
+	prefixes := [][]byte{
+		store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey(), indexBuildScannedRecordsSubKey).Bytes(),
+		store.indexBuildTypeSubspace(index).Bytes(),
+		heartbeatSubspace(store.subspace, index).Bytes(),
+	}
+	for _, p := range prefixes {
+		pr, err := fdb.PrefixRange(p)
+		if err != nil {
+			return fmt.Errorf("erase indexing data after readable: %w", err)
+		}
+		tr.ClearRange(pr)
+	}
+	return nil
+}
