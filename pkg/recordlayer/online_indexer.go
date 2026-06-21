@@ -544,6 +544,138 @@ func indexRecordTypes(md *RecordMetaData, idx *Index) []string {
 	return names
 }
 
+// indexedRecordTypes returns the record types this build targets — the explicit
+// SetRecordTypes filter, or the union of types covered by the target indexes.
+// Matches Java's IndexingCommon.getAllRecordTypes().
+func (oi *OnlineIndexer) indexedRecordTypes() []*RecordType {
+	if len(oi.recordTypes) > 0 {
+		types := make([]*RecordType, 0, len(oi.recordTypes))
+		for _, name := range oi.recordTypes {
+			if rt := oi.metaData.GetRecordType(name); rt != nil {
+				types = append(types, rt)
+			}
+		}
+		return types
+	}
+	seen := make(map[string]bool)
+	var types []*RecordType
+	for _, idx := range oi.targetIndexes {
+		for _, rt := range oi.metaData.RecordTypesForIndex(idx) {
+			if !seen[rt.Name] {
+				seen[rt.Name] = true
+				types = append(types, rt)
+			}
+		}
+	}
+	return types
+}
+
+// computeRecordsRange computes the [begin, end) byte range covering the records of the
+// indexed record types, when each has a record-type-key primary-key prefix and none is
+// synthetic. Returns ok=false (the whole records space may be relevant) if any indexed
+// type lacks the prefix or is synthetic, or if there are no indexed types. The returned
+// bounds are byte-for-byte Java's TupleRange.betweenInclusive(low, high).toRange():
+// begin = low.Pack() verbatim, end = high.Pack()+0xff (RANGE_INCLUSIVE high appends one
+// 0xff, NOT strinc). Matches Java's IndexingCommon.computeRecordsRange().
+func (oi *OnlineIndexer) computeRecordsRange() (begin, end []byte, ok bool) {
+	var lowBytes, highBytes []byte
+	for _, rt := range oi.indexedRecordTypes() {
+		if !rt.PrimaryKeyHasRecordTypePrefix() || rt.IsSynthetic() {
+			return nil, nil, false
+		}
+		// Give up for non-integer record-type keys, and normalize integer keys to int64 before
+		// packing. Go's RecordTypeKeyExpression only binds integer keys (int/int32/int64) — as
+		// int64 (metadata.go bindTypeKeys) — and falls back to the message type NAME for string/
+		// bytes explicit keys at save time (key_expression.go Evaluate). So (a) bounds from a
+		// non-integer key would not match where records are stored (the preset could mark the
+		// real records built and skip them), and (b) the tuple encoder panics on a raw int32 (it
+		// handles only int/int64). Normalizing to int64 matches bindTypeKeys exactly, so the
+		// bounds match record placement, and avoids the int32 panic. (Java encodes every key
+		// type; the RecordTypeKeyExpression int-only limitation is a separate, pre-existing gap.)
+		var keyInt int64
+		switch k := rt.GetRecordTypeKey().(type) {
+		case int:
+			keyInt = int64(k)
+		case int32:
+			keyInt = int64(k)
+		case int64:
+			keyInt = k
+		default:
+			return nil, nil, false
+		}
+		prefix := tuple.Tuple{keyInt}.Pack()
+		switch {
+		case lowBytes == nil:
+			lowBytes, highBytes = prefix, prefix
+		case bytes.Compare(lowBytes, prefix) > 0:
+			lowBytes = prefix
+		case bytes.Compare(highBytes, prefix) < 0:
+			highBytes = prefix
+		}
+	}
+	if lowBytes == nil {
+		return nil, nil, false
+	}
+	// end = high.pack() + 0xff — Java TupleRange.toRange, RANGE_INCLUSIVE high.
+	end = make([]byte, len(highBytes)+1)
+	copy(end, highBytes)
+	end[len(highBytes)] = 0xff
+	return lowBytes, end, true
+}
+
+// maybePresetRecordsRange preemptively marks the key ranges OUTSIDE the indexed record
+// types' range as already-built in every target index's range set, so the build skips
+// scanning keys that cannot hold an indexed-type record. No-op when the whole records
+// space may be relevant. Matches Java's IndexingBase.maybePresetRecordsRangeAsync (used
+// by the multi-target and mutual build paths).
+func (oi *OnlineIndexer) maybePresetRecordsRange(ctx context.Context) error {
+	begin, end, ok := oi.computeRecordsRange()
+	if !ok {
+		return nil
+	}
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		tr := store.context.Transaction()
+		// Mark the leading and trailing out-of-range gaps as built, sequentially per
+		// target (ordered mutations within the transaction, matching Java's insertRanges):
+		// [nil, begin) then [end, nil). requireEmpty=true keeps it resume-safe.
+		for _, idx := range oi.targetIndexes {
+			rangeSet := NewIndexingRangeSet(store.subspace, idx)
+			if _, err := rangeSet.InsertRange(tr, nil, begin, true); err != nil {
+				return nil, err
+			}
+			if _, err := rangeSet.InsertRange(tr, end, nil, true); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
+// unpackRangeEndBoundary converts a range-set END boundary into a scan tuple plus its high
+// endpoint type. A normal boundary is a packed primary key, scanned EXCLUSIVE. A
+// RANGE_INCLUSIVE-high boundary — a tuple followed by a single 0xff (Java
+// TupleRange.toRange's representation, written by the typed-records preset's high bound) —
+// is not itself a valid tuple; it is scanned as the stripped tuple with an INCLUSIVE high
+// endpoint, covering that tuple's whole sub-range exactly as the 0xff byte does. The plain
+// tuple is tried first, so an ordinary key whose pack happens to end in 0xff (e.g. int 255 =
+// 0x15 0xff) is correctly treated as that key, not as a +0xff bound.
+func unpackRangeEndBoundary(b []byte) (tuple.Tuple, EndpointType, error) {
+	if t, err := fastUnpack(b); err == nil {
+		return t, EndpointTypeRangeExclusive, nil
+	}
+	if n := len(b); n > 0 && b[n-1] == 0xff {
+		if t, err := fastUnpack(b[:n-1]); err == nil {
+			return t, EndpointTypeRangeInclusive, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("range end boundary %x is neither a tuple nor a tuple+0xff bound", b)
+}
+
 // BuildIndex runs the full index build: marks WRITE_ONLY, builds all records,
 // then marks READABLE. Returns the number of records indexed.
 // Matches Java's OnlineIndexer.buildIndex().
@@ -558,6 +690,16 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	// Step 2: Build in chunks across multiple transactions.
 	if oi.mutual {
 		return oi.buildIndexMutual(ctx, startTime)
+	}
+
+	// Multi-target (BY_RECORDS) builds preset the out-of-range gaps as already-built so
+	// the scan skips them (Java IndexingMultiTargetByRecords). Single-target BY_RECORDS
+	// and BY_INDEX do not — matching Java, which only presets in the multi-target/mutual
+	// paths.
+	if oi.isMultiTarget() {
+		if err := oi.maybePresetRecordsRange(ctx); err != nil {
+			return 0, fmt.Errorf("preset records range: %w", err)
+		}
 	}
 
 	buildFn := oi.buildRange
@@ -607,6 +749,12 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 		return 0, fmt.Errorf("init mutual builder: %w", err)
 	}
 	defer mutual.cleanup(ctx)
+
+	// Mutual builds preset the out-of-range gaps as already-built (Java
+	// IndexingMutuallyByRecords), before the fragmented build loop.
+	if err := oi.maybePresetRecordsRange(ctx); err != nil {
+		return 0, fmt.Errorf("preset records range: %w", err)
+	}
 
 	var totalRecords int64
 	for {
@@ -966,19 +1114,21 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			return nil, nil
 		}
 
-		// Convert byte boundaries to TupleRange for record scanning.
+		// Convert byte boundaries to a TupleRange for record scanning. The end boundary may
+		// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, which
+		// unpackRangeEndBoundary maps to an INCLUSIVE high endpoint.
 		var rangeStart, rangeEnd tuple.Tuple
-		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
-			rangeStart, err = fastUnpack(missing.Begin)
-			if err != nil {
-				return nil, fmt.Errorf("unpack range start: %w", err)
-			}
+		lowEp := EndpointTypeRangeInclusive
+		highEp := EndpointTypeRangeExclusive
+		if bytes.Equal(missing.Begin, rangeSetFirstKey) {
+			lowEp = EndpointTypeTreeStart
+		} else if rangeStart, err = fastUnpack(missing.Begin); err != nil {
+			return nil, fmt.Errorf("unpack range start: %w", err)
 		}
-		if !bytes.Equal(missing.End, rangeSetFinalKey) {
-			rangeEnd, err = fastUnpack(missing.End)
-			if err != nil {
-				return nil, fmt.Errorf("unpack range end: %w", err)
-			}
+		if bytes.Equal(missing.End, rangeSetFinalKey) {
+			highEp = EndpointTypeTreeEnd
+		} else if rangeEnd, highEp, err = unpackRangeEndBoundary(missing.End); err != nil {
+			return nil, fmt.Errorf("unpack range end: %w", err)
 		}
 
 		// Scan limit+1 records: process up to limit, use the extra as continuation.
@@ -989,15 +1139,6 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(oi.limit, 1)
 		if oi.allTargetIndexesIdempotent() {
 			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
-		}
-
-		lowEp := EndpointTypeRangeInclusive
-		highEp := EndpointTypeRangeExclusive
-		if rangeStart == nil {
-			lowEp = EndpointTypeTreeStart
-		}
-		if rangeEnd == nil {
-			highEp = EndpointTypeTreeEnd
 		}
 
 		cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
@@ -1046,8 +1187,11 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			rangeEndBytes = extraPK.Pack()
 			hasMore = true
 		} else {
-			if rangeEnd != nil {
-				rangeEndBytes = rangeEnd.Pack()
+			// Mark up to the ORIGINAL byte boundary, not rangeEnd.Pack(): the boundary may
+			// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, and
+			// the stripped rangeEnd.Pack() would drop the 0xff and invert the range.
+			if !bytes.Equal(missing.End, rangeSetFinalKey) {
+				rangeEndBytes = missing.End
 			}
 			hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
 		}

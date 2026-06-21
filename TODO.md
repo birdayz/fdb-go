@@ -74,14 +74,23 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    allowed Go-extension.**
    - **[ ] R1** — metadata-evolution field renames (`allow{Field,DeprecatedFieldRenames,Undeprecating}` +
      `RenameFieldsVisitor`) vs Java `MetaDataEvolutionValidator`. Gate: Torvalds + codex + @claude.
-   - **[~] R2** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
+   - **[x] R2 — DONE** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
      `markReadable` now erases scanned-records(1)/type-stamp(2)/heartbeat(7) per Java
      `eraseAllIndexingDataButTheLockAndRangeSet`; added `SetMarkReadable(bool)` (Java `buildIndex(markReadable)`
      parity) so build-state can be inspected pre-readable. Torvalds+codex ACK. **(b) DONE (RFC-138):**
      `SetEnforcedPostTransactionDelay(ms)` — fixed per-transaction delay replacing records-per-second
-     when >0 (Java `setEnforcedPostTransactionDelay` #4229). **Remaining R2c:** typed-record build-range
-     preset (`maybePresetRecordsRangeAsync`/`IndexingCommon.computeRecordsRange`, #4244) — REAL GAP,
-     larger; own RFC. **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
+     when >0 (Java `setEnforcedPostTransactionDelay` #4229). **(c) DONE (RFC-139):** typed-record build-range
+     preset (#4244) — `computeRecordsRange` (over the indexed types; null if any lacks a record-type PK
+     prefix or is synthetic) + `maybePresetRecordsRange` marks the out-of-range gaps `[nil,begin)`+`[end,nil)`
+     built before multi-target/mutual builds, with byte-exact `begin=low.Pack()` / `end=high.Pack()+0xff`
+     bounds (Torvalds NAK caught strinc-vs-`0xff`; codex P1 caught the build loop couldn't unpack the
+     `+0xff` end — fixed via `unpackRangeEndBoundary`/raw-boundary mark; codex P2 caught non-integer
+     record-type keys — preset now gives up for them); added `RecordType.PrimaryKeyHasRecordTypePrefix()` +
+     `IsSynthetic()`. **Follow-up (pre-existing, out of scope):** Go's `RecordTypeKeyExpression` only
+     encodes integer record-type keys (`int/int32/int64`) and silently falls back to the message type
+     NAME for string/bytes explicit `SetRecordTypeKey` — a wire divergence from Java (which encodes every
+     key type); the R2c preset already guards against it but the encoding itself should be fixed.
+     **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
      instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
      (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
    - **[ ] R3** — parser grammar: `AT ordinality` table source, `functionNameKeyword` in

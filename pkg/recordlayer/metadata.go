@@ -945,6 +945,23 @@ func (rt *RecordType) GetRecordTypeKey() any {
 	return rt.RecordTypeIndex
 }
 
+// PrimaryKeyHasRecordTypePrefix returns true if this record type's primary key
+// starts with a RecordTypeKeyExpression — i.e. its records live in a contiguous
+// record-type-keyed sub-range of the records space.
+// Matches Java's RecordType.primaryKeyHasRecordTypePrefix().
+func (rt *RecordType) PrimaryKeyHasRecordTypePrefix() bool {
+	return primaryKeyStartsWithRecordType(rt.PrimaryKey)
+}
+
+// IsSynthetic reports whether this is a synthetic record type (one assembled from
+// other records, e.g. a joined type). The Go port does not model synthetic record
+// types — they are out of scope (see CLAUDE.md) — so this is always false. Kept as
+// a method for 1:1 fidelity with Java's RecordType.isSynthetic() so callers (e.g.
+// the typed-records range preset) read identically to the Java algorithm.
+func (rt *RecordType) IsSynthetic() bool {
+	return false
+}
+
 // GetIndexesForRecordType returns the indexes defined for a specific record type,
 // including both single-type and multi-type indexes.
 // Does NOT include universal indexes — use GetUniversalIndexes() for those.

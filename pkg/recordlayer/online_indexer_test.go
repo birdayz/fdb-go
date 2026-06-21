@@ -473,6 +473,164 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond), "must not pay the enforced delay when over the time limit")
 		})
 
+		It("presets the out-of-range gaps as built for a typed multi-target build (RFC-139)", func() {
+			ks := specSubspace()
+
+			// Record-type-prefix PKs so each type's records live in a contiguous
+			// record-type-keyed sub-range. Two Order indexes → a multi-target build (the
+			// preset fires only for multi-target/mutual).
+			typedBuilder := func() *RecordMetaDataBuilder {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+				return b
+			}
+			mdNoIdx, err := typedBuilder().Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIdx := NewIndex("order_price_idx", Field("price"))
+			qtyIdx := NewIndex("order_qty_idx", Field("quantity"))
+			b2 := typedBuilder()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(ks).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only Order is indexed → range = [pack(OrderKey), pack(OrderKey)+0xff).
+			begin, end, ok := indexer.computeRecordsRange()
+			Expect(ok).To(BeTrue())
+			orderKey := mdWithIdx.GetRecordType("Order").GetRecordTypeKey()
+			Expect(begin).To(Equal(tuple.Tuple{orderKey}.Pack()))
+			Expect(end).To(Equal(append(tuple.Tuple{orderKey}.Pack(), 0xff)))
+
+			// markWriteOnly + preset, then verify the out-of-range gaps are marked built:
+			// only [begin, end) (Order's records range) remains missing. Without the preset,
+			// the whole space would be missing (revert-proof).
+			Expect(indexer.markWriteOnly(ctx)).To(Succeed())
+			Expect(indexer.maybePresetRecordsRange(ctx)).To(Succeed())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for _, idx := range []*Index{priceIdx, qtyIdx} {
+					rangeSet := NewIndexingRangeSet(store.subspace, idx)
+					missing, err := rangeSet.ListMissingRanges(rtx.Transaction())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(missing).To(HaveLen(1), "only Order's records range should remain missing")
+					Expect(missing[0].Begin).To(Equal(begin))
+					Expect(missing[0].End).To(Equal(end))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("completes a typed multi-target build over the preset (+0xff) range (RFC-139)", func() {
+			ks := specSubspace()
+
+			typedBuilder := func() *RecordMetaDataBuilder {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+				return b
+			}
+			mdNoIdx, err := typedBuilder().Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 4; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIdx := NewIndex("order_price_idx", Field("price"))
+			qtyIdx := NewIndex("order_qty_idx", Field("quantity"))
+			b2 := typedBuilder()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Multi-target build presets the gaps then scans the [low, high]+0xff range. A
+			// small limit forces multiple chunks. Without buildRange handling the +0xff end
+			// boundary, this fails with "unpack range end" (revert-proof for the codex P1).
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(ks).SetLimit(2).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred(), "typed multi-target build must complete (no unpack-range-end failure)")
+			Expect(total).To(BeNumerically(">=", int64(4)))
+
+			// Both indexes contain ALL 4 Order records (incl. the highest, which the +0xff
+			// inclusive-high bound must cover); Customer is not in these Order indexes.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("order_price_idx")).To(BeTrue())
+				Expect(store.IsIndexReadable("order_qty_idx")).To(BeTrue())
+				priceEntries, err := AsList(ctx, store.ScanIndex(priceIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(priceEntries).To(HaveLen(4))
+				qtyEntries, err := AsList(ctx, store.ScanIndex(qtyIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(qtyEntries).To(HaveLen(4))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("an all-types build does not preset (computeRecordsRange not-ok) (RFC-139)", func() {
+			// With no record-type-prefix PKs (the default demo types use Field-only PKs),
+			// computeRecordsRange gives up → no preset → behaviour unchanged.
+			priceIdx := NewIndex("Order$price", Field("price"))
+			qtyIdx := NewIndex("Order$qty", Field("quantity"))
+			_, b2 := baseMetaData()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(specSubspace()).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, _, ok := indexer.computeRecordsRange()
+			Expect(ok).To(BeFalse(), "Field-only PKs lack a record-type prefix → no preset")
+		})
+
 		It("filters to correct record type", func() {
 			ks := specSubspace()
 
