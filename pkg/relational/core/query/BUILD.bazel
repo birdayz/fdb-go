@@ -4,6 +4,7 @@ go_library(
     name = "query",
     srcs = [
         "cascades_translator.go",
+        "exists_guard.go",
         "plan.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query",

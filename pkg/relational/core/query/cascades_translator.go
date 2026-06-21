@@ -693,7 +693,13 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// quantifiers. The ExistentialValuePredicate in the predicate tree references
 	// the existential alias; the planner's ImplementSimpleSelectRule
 	// handles the existential quantifier via FirstOrDefaultPlan.
-	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
+	// RFC-141: the existential quantifier attaches whenever the filter
+	// carries existential subqueries — including a PROJECTED EXISTS with no
+	// WHERE (f.Predicate == nil). For a projected-only EXISTS the existential
+	// boolean is computed by the projection's ExistsValue, so no existential
+	// WHERE filter is generated; the quantifier still must attach so the
+	// FlatMap (FirstOrDefault inner) is built.
+	if len(f.ExistsSubqueries) > 0 {
 		// When the filter's input is a join, flatten into a single
 		// SelectExpression with ForEach(left), ForEach(right), and
 		// Existential(exists_scan). This avoids nesting one
@@ -733,41 +739,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		return nil
 	}
 
-	if len(f.ExistsSubqueries) > 0 && f.Predicate != nil {
-		outerAlias := sourceAlias(f.Input)
-		outerQ := t.namedQuantifier(outerAlias, innerRef)
-		quantifiers := []expressions.Quantifier{outerQ}
-
-		allPreds := splitNonExistsPredicates(f.Predicate)
-		allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
-		for _, esq := range f.ExistsSubqueries {
-			subRef := t.translateRef(esq.Plan)
-			if subRef == nil {
-				return nil
-			}
-			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-			quantifiers = append(quantifiers, existQ)
-			if esq.JoinPredicate != nil {
-				allPreds = append(allPreds, esq.JoinPredicate)
-			}
-		}
-
-		var sourceAliases []string
-		if outerAlias != "" {
-			sourceAliases = []string{outerAlias}
-			for _, esq := range f.ExistsSubqueries {
-				innerA := sourceAlias(esq.Plan)
-				sourceAliases = append(sourceAliases, innerA)
-			}
-		}
-
-		resultValue := values.NewQuantifiedObjectValue(outerQ.GetAlias())
-		return expressions.NewSelectExpressionWithAliases(
-			resultValue,
-			quantifiers,
-			allPreds,
-			sourceAliases,
-		)
+	if len(f.ExistsSubqueries) > 0 {
+		// resultOverride nil ⇒ WHERE-EXISTS: the SelectExpression returns the
+		// bare outer row (a projection above handles the SELECT list). RFC-141
+		// projected-EXISTS folds the projection's RecordConstructor in here as
+		// the result value (see translateProjectOverExistsFilter).
+		return t.buildExistentialSelect(f, innerRef, nil)
 	}
 
 	var preds []predicates.QueryPredicate
@@ -778,6 +755,791 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		preds,
 		t.namedQuantifier(sourceAlias(f.Input), innerRef),
 	)
+}
+
+// buildExistentialSelect builds the SelectExpression for a LogicalFilter that
+// carries existential subqueries (RFC-141). It attaches a ForEach(outer) plus
+// one Existential quantifier per subquery, threading the WHERE predicates (the
+// ExistentialValuePredicate routes to the residual semi-join filter in the NLJ
+// rule) and each subquery's correlation predicate. The resultValue is:
+//
+//   - resultOverride when non-nil — a PROJECTED EXISTS folds its projection's
+//     RecordConstructor in here so the existential boolean is evaluated by the
+//     FlatMap's result value with the inner binding live (matching Java's
+//     "FLATMAP q0 -> { ... DEFAULT NULL AS q1 RETURN (q0.ID, exists(q1)) }");
+//   - the bare outer QuantifiedObjectValue otherwise (WHERE-EXISTS — a separate
+//     projection above handles the SELECT list).
+func (t *cascadesTranslator) buildExistentialSelect(
+	f *logical.LogicalFilter,
+	innerRef *expressions.Reference,
+	resultOverride values.Value,
+) expressions.RelationalExpression {
+	// Projected EXISTS + JOIN in FROM (no WHERE): the existential filter's input
+	// is a LogicalJoin. Flatten the join's two ForEach quantifiers and the
+	// existential quantifier(s) into ONE SelectExpression with the projection as
+	// the result value — the same 2+1 flatten translateJoinWithExists does for
+	// WHERE-EXISTS, but emitting the folded projection. Nesting the join
+	// SelectExpression inside the existential one (the non-join path's single
+	// outer quantifier over translateJoin(join)) would put the projected
+	// ExistsValue above the join's own select; the flatten keeps the projection —
+	// and its ExistsValue — in the same SelectExpression that owns the existential
+	// quantifier, so the §8 guard passes and the boolean is computed with the
+	// inner binding live (Java's single SelectExpression: all FROM quantifiers +
+	// the existential + the projection).
+	if join, ok := f.Input.(*logical.LogicalJoin); ok && resultOverride != nil {
+		return t.buildExistentialJoinSelect(join, f, resultOverride)
+	}
+
+	outerAlias := sourceAlias(f.Input)
+	outerQ := t.namedQuantifier(outerAlias, innerRef)
+	quantifiers := []expressions.Quantifier{outerQ}
+
+	allPreds := splitNonExistsPredicates(f.Predicate)
+	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
+	var innerCorrNames []string
+	for _, esq := range f.ExistsSubqueries {
+		subRef := t.translateRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+		quantifiers = append(quantifiers, existQ)
+		// Register the existential inner under its UNIQUE alias (esq.Alias) and
+		// rebase the join predicate onto it, so the inner correlation can never
+		// collide with the outer source alias (the alias-shadow regression).
+		innerCorrName, joinPred := existsInnerCorrelation(esq)
+		innerCorrNames = append(innerCorrNames, innerCorrName)
+		if joinPred != nil {
+			allPreds = append(allPreds, joinPred)
+		}
+	}
+
+	var sourceAliases []string
+	if outerAlias != "" {
+		sourceAliases = []string{outerAlias}
+		sourceAliases = append(sourceAliases, innerCorrNames...)
+	}
+
+	resultValue := resultOverride
+	if resultValue == nil {
+		resultValue = values.NewQuantifiedObjectValue(outerQ.GetAlias())
+	}
+	return expressions.NewSelectExpressionWithAliases(
+		resultValue,
+		quantifiers,
+		allPreds,
+		sourceAliases,
+	)
+}
+
+// buildExistentialJoinSelect folds a projection (resultValue) over a
+// JOIN-in-FROM that carries projected-EXISTS subqueries into a single
+// SelectExpression: ForEach(left), ForEach(right), and one Existential
+// quantifier per subquery, with the join ON predicate and each subquery's
+// correlation predicate threaded. Mirrors translateJoinWithExists but emits the
+// folded projection as the result value instead of the join's anchored record,
+// so the projected ExistsValue is evaluated by the FlatMap with the inner
+// binding live (RFC-141 §8). Only INNER joins reach here for the projected fold;
+// a LEFT/RIGHT/FULL outer FROM join with a projected EXISTS is left unfolded and
+// the §8 guard rejects it cleanly.
+func (t *cascadesTranslator) buildExistentialJoinSelect(
+	j *logical.LogicalJoin,
+	f *logical.LogicalFilter,
+	resultValue values.Value,
+) expressions.RelationalExpression {
+	if j.Kind != logical.JoinInner {
+		// Outer-join FROM with a projected EXISTS is not folded — the existential
+		// semi-join cannot carry the NULL-padded drain. Return nil so the caller
+		// falls back to the ordinary projection path; the §8 guard then rejects
+		// the unfolded projected EXISTS cleanly (never a wrong result).
+		return nil
+	}
+	leftRef := t.translateRef(j.Left)
+	if leftRef == nil {
+		return nil
+	}
+	rightRef := t.translateRef(j.Right)
+	if rightRef == nil {
+		return nil
+	}
+	leftAlias := sourceAlias(j.Left)
+	rightAlias := sourceAlias(j.Right)
+
+	leftQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+	rightQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(rightAlias), rightRef)
+	quantifiers := []expressions.Quantifier{leftQ, rightQ}
+
+	var allPreds []predicates.QueryPredicate
+	if j.OnPredicate != nil {
+		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
+			allPreds = append(allPreds, qp)
+		}
+	}
+	// A projected EXISTS with no WHERE carries no filter predicate, but defend
+	// against a residual non-EXISTS predicate riding on the synthesized filter.
+	allPreds = append(allPreds, splitNonExistsPredicates(f.Predicate)...)
+	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
+
+	sourceAliases := []string{leftAlias, rightAlias}
+	for _, esq := range f.ExistsSubqueries {
+		subRef := t.translateRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+		quantifiers = append(quantifiers, existQ)
+		innerCorrName, joinPred := existsInnerCorrelation(esq)
+		if joinPred != nil {
+			allPreds = append(allPreds, joinPred)
+		}
+		sourceAliases = append(sourceAliases, innerCorrName)
+	}
+
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		quantifiers,
+		allPreds,
+		sourceAliases,
+		expressions.JoinInner,
+	)
+}
+
+// translateProjectOverExistsFilter folds a projection that references a
+// projected EXISTS into the existential SelectExpression's result value
+// (RFC-141 Phase 2). It builds a RecordConstructorValue from the projection's
+// values + output aliases and passes it as the SelectExpression result value,
+// so the FlatMap's result computes the projected columns — including the
+// existential boolean (ExistsValue.eval reads the inner binding the FlatMap
+// establishes). Returns nil to fall back to the ordinary projection path when
+// any projected Value is unresolved (the walker couldn't build it).
+//
+// chain holds the intervening unary operators (ORDER BY / LIMIT) that sat
+// between the project and the existential filter, ordered top-to-bottom (the
+// element closest to the project first). They are re-applied ON TOP of the
+// folded SelectExpression so ORDER BY / LIMIT semantics are preserved — the
+// sort/limit operates over the projected output rows (including the computed
+// existential boolean), matching Java's
+// `generateSort(generateSimpleSelect(output...), orderBys)`.
+func (t *cascadesTranslator) translateProjectOverExistsFilter(
+	p *logical.LogicalProject,
+	f *logical.LogicalFilter,
+	chain []logical.LogicalOperator,
+) expressions.RelationalExpression {
+	// Collect the FILTER's (uncorrelated) scalar subqueries. The fold's early
+	// return in translateProject bypasses translateFilter — which is where
+	// f.ScalarSubqueries would otherwise be registered — so a scalar subquery in
+	// the WHERE of a projected-EXISTS query (`SELECT id, EXISTS(...) FROM t1 WHERE
+	// price > (SELECT MAX(x) FROM t2)`) would never be pre-evaluated, leaving its
+	// value unbound (NULL) and the comparison silently dropped (RFC-141 R4
+	// round-11, the projected variant). Register them here, exactly as
+	// translateFilter does, so the executor pre-evaluates and binds them. A
+	// CORRELATED scalar subquery in the WHERE is not collected here (Java's
+	// grammar cannot place one there either); only the uncorrelated list is
+	// pre-evaluated.
+	for _, ssq := range f.ScalarSubqueries {
+		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
+			Alias: ssq.Alias,
+			Plan:  ssq.Plan,
+		})
+	}
+
+	innerRef := t.translateRef(f.Input)
+	if innerRef == nil {
+		return nil
+	}
+
+	fields := make([]values.RecordConstructorField, len(p.Projections))
+	outputNames := make(map[string]struct{}, len(p.Projections))
+	for i, col := range p.Projections {
+		var v values.Value
+		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
+			v = p.ProjectedValues[i]
+		} else if i < len(p.IsComputed) && p.IsComputed[i] {
+			// A computed projection the walker couldn't resolve — bail so the
+			// ordinary projection path (text fallback) handles it.
+			return nil
+		} else {
+			v = &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
+		}
+		name := strings.ToUpper(col)
+		if i < len(p.Aliases) && p.Aliases[i] != "" {
+			name = strings.ToUpper(p.Aliases[i])
+		} else if _, isField := v.(*values.FieldValue); !isField {
+			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
+			// CASE, etc. The normal projection path names it with the GENERATED
+			// positional `_i` (deriveProjectionColumnDef's `_idx` rule;
+			// executeProjection also stores the value under the `_i` key). Using the
+			// expression TEXT (`ID + 1`) here would change Rows.Columns() from `_0`
+			// to `ID + 1` purely because an EXISTS was added — and break a downstream
+			// positional reference to the generated column. Use the SAME positional
+			// name so the folded column's record key + Name + Label are identical to
+			// the non-EXISTS control on every axis (RecordConstructorValue.Evaluate
+			// keys the row by f.Name; foldedColumnDef derives Name/Label from it).
+			name = "_" + strconv.Itoa(i)
+		}
+		fields[i] = values.RecordConstructorField{Name: name, Value: v}
+		outputNames[name] = struct{}{}
+	}
+	outputCount := len(fields)
+
+	// Classify the FROM source as single-table or a (binary INNER) JOIN. This
+	// drives how qualified ORDER BY keys are handled: for a single-table source
+	// the merged outer row carries columns under BARE keys, so a qualified key is
+	// stripped to its bare column; for a JOIN source the merged outer row carries
+	// columns under QUALIFIED `LEG.COL` keys (the bare key is last-leg-wins and
+	// would pick the WRONG leg — mergeRows writes both), so the qualified key must
+	// be PRESERVED and resolve against the qualified merged-row key. This is the
+	// sort-key analog of rebaseOuterLegValue / the P1a alias-binding fix.
+	src := classifySortSource(f.Input)
+
+	// A COMPUTED (non-column) ORDER BY key that is NOT one of the projected SELECT outputs
+	// cannot be carried through the fold: collectExtraSortColumns can only append NAMED
+	// columns, so the sort re-applied above the folded FlatMap would read a record that lacks
+	// the expression's input columns and silently mis-order (e.g. `... ORDER BY col1 + 1`
+	// where `col1 + 1` is not selected — codex). Bail the fold (→ the projected-EXISTS guard
+	// rejects the query cleanly with ErrCodeUnsupportedQuery) rather than return wrong rows. A
+	// SELECTED computed expression pulls up to its own output field and remains foldable.
+	for _, op := range chain {
+		s, ok := op.(*logical.LogicalSort)
+		if !ok {
+			continue
+		}
+		for _, k := range s.Keys {
+			if src.sortKeyName(k) != "" {
+				continue // a nameable column — appended as a hidden field or already in output
+			}
+			if k.Value == nil {
+				return nil // computed via raw ORDER BY text, not nameable → unfoldable
+			}
+			if _, ok := pullUpToOutputField(k.Value, fields); !ok {
+				return nil // computed key absent from the projection → unfoldable; guard rejects
+			}
+		}
+	}
+
+	// ORDER BY a column that is NOT in the SELECT output (e.g.
+	// `SELECT id, EXISTS(...) FROM t1 ORDER BY col1`) needs Java's
+	// remainingOrderByExpressions branch (LogicalOperator.generateSelect):
+	// concat the extra sort columns onto the folded projection, sort, then
+	// re-project to drop them. Without this the sort key (a FieldValue over a
+	// column the result record doesn't carry) silently fails to resolve and the
+	// sort becomes a no-op (wrong order). We therefore append every sort-key
+	// column missing from the output as an extra trailing field — those
+	// reference the outer scan row, which the existential SelectExpression's
+	// outer quantifier flows in full, so they resolve.
+	extraSortCols := collectExtraSortColumns(chain, fields, src)
+	for _, ec := range extraSortCols {
+		// The hidden field is named by its QUALIFIED field reference (`T1.ID`,
+		// `T2.SK`) — collision-free with an output alias that shares the bare column
+		// name — and carries the source-column VALUE: a bare field over the outer
+		// scan row for single-table (`FieldValue{ID}`), a QUALIFIED leg reference for
+		// a JOIN (`FieldValue{Field:COL, Child:QOV(LEG)}`, which the NLJ rule's
+		// rebaseOuterLegValue rewrites onto the merged row's `LEG.COL` key). The sort
+		// above resolves the key to this field; the final cleanup pull-up drops it.
+		fields = append(fields, values.RecordConstructorField{Name: ec.name, Value: ec.val})
+		outputNames[ec.name] = struct{}{}
+	}
+
+	resultValue := values.NewRecordConstructorValue(fields...)
+	folded := t.buildExistentialSelect(f, innerRef, resultValue)
+	if folded == nil {
+		return nil
+	}
+
+	// Re-apply the intervening sort/limit on top of the folded projection.
+	// chain is top-to-bottom; we rebuild bottom-up, wrapping the folded result
+	// with the operator nearest the filter first, so the original nesting is
+	// preserved (Project(Sort(Limit(Filter))) → Sort(Limit(FoldedSelect))).
+	expr := folded
+	for i := len(chain) - 1; i >= 0; i-- {
+		ref := expressions.InitialOf(expr)
+		switch op := chain[i].(type) {
+		case *logical.LogicalSort:
+			expr = t.applySortOverRef(op, ref, fields, src)
+		case *logical.LogicalLimit:
+			expr = expressions.NewLogicalLimitExpression(op.Limit, op.Offset, expressions.ForEachQuantifier(ref))
+		default:
+			// findExistsFilterUnderUnaryChain only collects Sort/Limit; any
+			// other operator here is a bug — bail to the ordinary path.
+			return nil
+		}
+		if expr == nil {
+			return nil
+		}
+	}
+
+	// Java's final pull-up: when extra ORDER BY columns were appended, re-project
+	// only the original output so the sort columns don't leak into the result.
+	//
+	// RFC-141 round-8 ROOT FIX (P2): the cleanup MUST reuse the ORIGINAL per-column
+	// alias provenance — leaving an unaliased column UNALIASED — so adding a hidden
+	// sort column does not change any visible column's public label. The earlier
+	// code force-aliased EVERY field to its datum Name (projAliases[i] = name),
+	// which turned `SELECT t1.id` into an explicit alias `T1.ID` (label leaked the
+	// qualifier) and re-aliased the EXISTS column to its raw expression. The fold's
+	// first `outputCount` fields are the original SELECT outputs (extras are
+	// appended after), so p.Aliases[i] (""==unaliased) is the original provenance.
+	// We also preserve each projected value's TYPE (FieldValue.Typ = the folded
+	// field's value type), so the EXISTS column stays BOOLEAN through the cleanup.
+	if len(extraSortCols) > 0 {
+		projVals := make([]values.Value, outputCount)
+		projAliases := make([]string, outputCount)
+		for i := 0; i < outputCount; i++ {
+			// FieldValue.Field MUST equal the fold's f.Name exactly: the folded
+			// output record is keyed by f.Name and FieldValue.Evaluate does an
+			// exact-key lookup (no qualified→bare fallback). The cleanup column's
+			// datum Name then equals that key, so a Scan never reads NULL.
+			name := fields[i].Name
+			typ := values.UnknownType
+			if fields[i].Value != nil {
+				if vt := fields[i].Value.Type(); vt != nil {
+					typ = vt
+				}
+			}
+			projVals[i] = &values.FieldValue{Field: name, Typ: typ}
+			// Reuse the original SELECT-list alias (""==unaliased) so the cleanup's
+			// label derivation matches the non-hidden-sort path exactly.
+			if i < len(p.Aliases) {
+				projAliases[i] = strings.ToUpper(p.Aliases[i])
+			}
+		}
+		expr = expressions.NewLogicalProjectionExpressionWithAliases(
+			projVals, projAliases, expressions.ForEachQuantifier(expressions.InitialOf(expr)))
+	}
+	return expr
+}
+
+// sortSource classifies a projected-EXISTS fold's FROM source for ORDER BY
+// key handling. The FlatMap's merged outer row carries columns under different
+// key shapes depending on the source:
+//
+//   - single-table (isJoin=false): the outer scan row flows columns under their
+//     BARE names (`ID`, `COL1`). A qualified ORDER BY key (`t1.col1`) is stripped
+//     to its bare column so it resolves against that row.
+//   - binary INNER JOIN (isJoin=true): mergeRows writes BOTH bare last-leg-wins
+//     keys AND authoritative QUALIFIED `LEG.COL` keys. The bare key picks the
+//     WRONG leg, so a qualified ORDER BY key (`t2.sk`) must be PRESERVED as the
+//     QUALIFIED key (`T2.SK`) and resolve against the qualified merged-row key.
+//     legAliases are the join's leg FROM-aliases (left, right) — a qualified
+//     sort key whose qualifier names a leg is rebased onto that leg; one whose
+//     qualifier names neither leg is treated as bare (defensive: it cannot be
+//     attributed to a known leg).
+//
+// This is the sort-key analog of the NLJ rule's rebaseOuterLegValue / the P1a
+// alias-binding fix: a join's merged row is resolved by qualified key, never the
+// last-leg-wins bare key.
+type sortSource struct {
+	isJoin     bool
+	legAliases []string
+}
+
+// classifySortSource inspects the fold's FROM input. A binary INNER LogicalJoin
+// is a join source (its two legs flow under qualified merged-row keys); anything
+// else (a single scan, a CTE/derived table) is single-table. Only INNER joins
+// reach the projected-EXISTS fold (buildExistentialJoinSelect rejects outer
+// joins), so we classify only that shape as a join.
+func classifySortSource(input logical.LogicalOperator) sortSource {
+	if j, ok := input.(*logical.LogicalJoin); ok && j.Kind == logical.JoinInner {
+		return sortSource{
+			isJoin:     true,
+			legAliases: []string{sourceAlias(j.Left), sourceAlias(j.Right)},
+		}
+	}
+	return sortSource{isJoin: false}
+}
+
+// sortKeyName returns the upper-cased name a sort key resolves against the folded
+// output record. Single-table: the BARE column (`T1.COL1`→`COL1`). JOIN: the
+// QUALIFIED key when the qualifier names a known leg (`T2.SK`→`T2.SK`), else the
+// bare column. Returns "" when the key is not a simple column reference (a
+// computed expression). Used only by the computed-key nameability guard;
+// output membership is VALUE-based (sortKeyInOutput), not by this name.
+func (s sortSource) sortKeyName(k logical.SortKey) string {
+	field := sortKeyFieldRef(k)
+	if field == "" {
+		return ""
+	}
+	return s.resolveKeyName(field)
+}
+
+// sortKeyFieldRef returns the RAW (possibly-qualified) upper-cased field reference
+// a column sort key names — `T1.ID`, `COL1` — or "" when the key is a computed
+// expression. Unlike sortKeyName it does NOT strip the qualifier, so callers can
+// (a) build the source-column VALUE the key references for value-based output
+// membership, and (b) name an appended hidden field by the qualified provenance
+// (collision-free with an output alias — RFC-141 R4 round-10 P2b).
+func sortKeyFieldRef(k logical.SortKey) string {
+	if fv, ok := k.Value.(*values.FieldValue); ok {
+		if fv.Child == nil {
+			return strings.ToUpper(fv.Field)
+		}
+		// A composite leg reference (FieldValue{col, QOV(leg)}) — render LEG.COL.
+		return strings.ToUpper(values.ExplainValue(fv))
+	}
+	if k.Value != nil {
+		// Non-field Value (computed expression) — not a nameable column.
+		return ""
+	}
+	field := strings.TrimSpace(k.Expr)
+	if field == "" {
+		return ""
+	}
+	// A bare or qualified identifier only — reject anything with operators,
+	// parentheses, or whitespace (a computed expression), which the folded
+	// record cannot expose by a single name.
+	for _, r := range field {
+		if !(r == '_' || r == '.' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
+			return ""
+		}
+	}
+	return strings.ToUpper(field)
+}
+
+// sortKeySourceValue returns the SOURCE-COLUMN value a column sort key references
+// — the value that, when evaluated against the existential SelectExpression's
+// flowed outer/merged row, yields the column the user asked to sort by:
+//
+//   - single-table: a BARE FieldValue over the outer scan row (`t1.id`→FieldValue{ID}).
+//   - JOIN leg: a QUALIFIED leg reference (`t2.sk`→FieldValue{Field:SK, Child:QOV(T2)})
+//     so the NLJ rule's rebaseOuterLegValue rewrites it onto the authoritative
+//     merged-row `LEG.COL` key (never the last-leg-wins bare key).
+//
+// This is the value used for VALUE-based output membership: a sort key is "in the
+// output" iff an output field's VALUE equals this source-column value — NOT iff
+// its bare name matches an output field NAME. The bare-name test conflated a
+// qualified source reference (`t1.id`) with an unrelated output alias that shares
+// the bare name (`col1 AS id` → output column named `ID`), so the sort ordered by
+// the wrong column (RFC-141 R4 round-10 P2b). Returns nil for a computed key.
+func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
+	field := sortKeyFieldRef(k)
+	if field == "" {
+		return nil
+	}
+	if s.isJoin {
+		if qual, col, ok := splitQualifier(field); ok {
+			for _, leg := range s.legAliases {
+				if leg != "" && strings.ToUpper(leg) == qual {
+					return values.NewFieldValue(
+						values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qual)),
+						col, values.UnknownType)
+				}
+			}
+		}
+		return &values.FieldValue{Field: stripSortQualifier(field), Typ: values.UnknownType}
+	}
+	// Single-table: the outer scan row carries bare keys, so the source column is
+	// the bare leaf (`t1.id`→ID), regardless of the qualifier.
+	return &values.FieldValue{Field: stripSortQualifier(field), Typ: values.UnknownType}
+}
+
+// sortKeyInOutput reports whether some output field genuinely PROJECTS the source
+// column a sort key references — a VALUE match against the source-column value,
+// not a bare-name match against an output field's NAME. Returns the matching
+// output field name (so the caller can pull the key up to it), or "" when the
+// source column is not projected (a hidden remainingOrderBy column is appended).
+func (s sortSource) sortKeyInOutput(k logical.SortKey, fields []values.RecordConstructorField) (string, bool) {
+	src := s.sortKeySourceValue(k)
+	if src == nil {
+		return "", false
+	}
+	for _, f := range fields {
+		if f.Value != nil && values.SemanticEqualsUnderAliasMap(src, f.Value, values.AliasMap{}) {
+			return f.Name, true
+		}
+	}
+	return "", false
+}
+
+// resolveKeyName maps a (possibly qualified) sort-key field reference to the name
+// it resolves against the folded output record, per the source's key shape.
+func (s sortSource) resolveKeyName(field string) string {
+	up := strings.ToUpper(field)
+	if !s.isJoin {
+		return stripSortQualifier(up)
+	}
+	// JOIN source: keep the qualified `LEG.COL` key when the qualifier names a
+	// known leg (it resolves the authoritative merged-row qualified key). A bare
+	// key, or one whose qualifier is not a leg, falls back to the bare column.
+	if qual, _, ok := splitQualifier(up); ok {
+		for _, leg := range s.legAliases {
+			if leg != "" && strings.ToUpper(leg) == qual {
+				return up
+			}
+		}
+	}
+	return stripSortQualifier(up)
+}
+
+// extraSortCol is a hidden remainingOrderBy column appended to the folded
+// projection: a collision-free NAME (the qualified field reference) and the
+// source-column VALUE it reads (bare for single-table, qualified leg ref for a
+// JOIN). The qualified name guarantees the hidden column never shadows an output
+// alias that happens to share the bare column name (RFC-141 R4 round-10 P2b).
+type extraSortCol struct {
+	name string
+	val  values.Value
+}
+
+// collectExtraSortColumns returns the hidden columns to append to the folded
+// projection: the ORDER BY columns whose SOURCE column is NOT already projected
+// by an output field (Java's remainingOrderByExpressions). Membership is
+// VALUE-based (sortKeyInOutput) — a key is "in output" only when an output field
+// genuinely projects its source column, never merely sharing a bare name with an
+// output alias. Each appended column is named by its QUALIFIED field reference so
+// it cannot collide with an output column. A sort key whose column can't be named
+// (a computed expression) is skipped here — the caller
+// (translateProjectOverExistsFilter) has already bailed the fold for any computed
+// key absent from the projection, so a computed key reaching this point is a
+// SELECTED expression that pulls up to its own output field. Order is stable and
+// de-duplicated by name.
+func collectExtraSortColumns(chain []logical.LogicalOperator, fields []values.RecordConstructorField, src sortSource) []extraSortCol {
+	var extra []extraSortCol
+	seen := map[string]struct{}{}
+	for _, op := range chain {
+		s, ok := op.(*logical.LogicalSort)
+		if !ok {
+			continue
+		}
+		for _, k := range s.Keys {
+			name := sortKeyFieldRef(k)
+			if name == "" {
+				continue
+			}
+			if _, inOutput := src.sortKeyInOutput(k, fields); inOutput {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			val := src.sortKeySourceValue(k)
+			if val == nil {
+				continue
+			}
+			seen[name] = struct{}{}
+			extra = append(extra, extraSortCol{name: name, val: val})
+		}
+	}
+	return extra
+}
+
+// stripSortQualifier returns the upper-cased BARE column name of a (possibly
+// qualified) sort-key field reference: `T1.COL1` → `COL1`, `COL1` → `COL1`. A SQL
+// `alias.column` reference has the column as its FINAL dotted segment, so we take
+// everything after the last `.`. An empty or trailing-dot input yields the
+// upper-cased whole (defensive).
+func stripSortQualifier(field string) string {
+	up := strings.ToUpper(field)
+	if i := strings.LastIndex(up, "."); i >= 0 && i+1 < len(up) {
+		return up[i+1:]
+	}
+	return up
+}
+
+// splitQualifier splits an upper-cased `QUAL.COL` reference into (QUAL, COL, true).
+// A bare name, an empty string, or a trailing/leading dot yields ("", "", false).
+// Only a SINGLE qualifier is split (the LAST dot) — a deeper `A.B.C` is uncommon
+// in the EXISTS fold and is treated as qualifier `A.B`, column `C`.
+func splitQualifier(field string) (string, string, bool) {
+	up := strings.ToUpper(field)
+	i := strings.LastIndex(up, ".")
+	if i <= 0 || i+1 >= len(up) {
+		return "", "", false
+	}
+	return up[:i], up[i+1:], true
+}
+
+// applySortOverRef builds a LogicalSortExpression with the given inner
+// reference, deriving its sort keys from the LogicalSort's keys. The keys
+// reference the projected output record's columns (the folded SelectExpression
+// flows a record whose fields are the projected columns by name), so a
+// FieldValue over the column name resolves against that output — mirroring
+// Java's OrderByExpression.pullUp onto the projection's result value.
+//
+// fields are the folded projection's output fields. A sort key that references a
+// SELECT-list alias whose value is a COMPUTED expression — most importantly the
+// projected ExistsValue for `ORDER BY has_t2 DESC` — arrives with k.Value set to
+// the raw expression (upgradeSortKeyValues copies proj.ProjectedValues[idx]). If
+// that raw value were re-applied here, it would be evaluated ABOVE the FlatMap,
+// where the existential binding is dead — the EXISTS sort key would be false for
+// every row and the order would be wrong. pullUpSortKeyValue rewrites such a key
+// to a FieldValue over the already-computed output column (Java's pull-up onto
+// the lower select's getResultValue()), so the sort orders by the materialized
+// boolean column.
+func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expressions.Reference, fields []values.RecordConstructorField, src sortSource) expressions.RelationalExpression {
+	sortKeys := make([]expressions.SortKey, len(s.Keys))
+	for i, k := range s.Keys {
+		nf := k.NullsFirst
+		v := k.Value
+		if v == nil {
+			v = &values.FieldValue{Field: k.Expr, Typ: values.UnknownType}
+		}
+		v = pullUpSortKeyValue(k, v, fields, src)
+		sortKeys[i] = expressions.SortKey{
+			Value:      v,
+			Reverse:    k.Dir == logical.SortDesc,
+			NullsFirst: &nf,
+		}
+	}
+	return expressions.NewLogicalSortExpression(sortKeys, expressions.ForEachQuantifier(ref))
+}
+
+// pullUpSortKeyValue rewrites a sort-key Value onto the folded projection's
+// output record (Java's OrderByExpression.pullUp against the select's result
+// value). The fold re-applies the ORDER BY ON TOP of the folded projection, so a
+// sort key must resolve to the OUTPUT field that produced it — exactly the
+// correspondence the normal ORDER BY path (upgradeSortKeyValues) establishes
+// when it resolves a SELECT-list alias to its projected Value.
+//
+// The resolution is, in priority order:
+//
+//  1. OUTPUT-FIELD-VALUE MATCH (pullUpToOutputField): the key's Value
+//     semantically equals one of the projected output fields' Values → it is the
+//     pull-up of a SELECT-list alias (or the computed EXISTS boolean), so it is
+//     replaced by a FieldValue over THAT output column's name. This is the same
+//     match the normal ORDER BY alias path performs: `upgradeSortKeyValues` set
+//     the key's Value to the exact projected Value (pointer identity), so an
+//     alias key — even one rewritten to a flat FieldValue over the underlying
+//     column (`col1 AS id, id AS x ORDER BY x` rewrites `x`→FieldValue{ID} =
+//     ProjectedValues[X]) — pulls up to the output field whose value it IS (`X`),
+//     NOT to the output column that merely shares the underlying name (`ID`,
+//     which here holds col1). Running this match FIRST for every key shape is the
+//     fix for the round-6 P2a divergence: previously the FieldValue case returned
+//     before trying it, so an alias whose value was a simple column read the
+//     wrong output field.
+//
+//  2. SOURCE-COLUMN-VALUE MATCH (column keys only): a key that is a (possibly
+//     qualified) column reference — `t1.id`, `col1`, `t2.sk` — resolves to the
+//     output field whose VALUE is that SOURCE column. The source-column value is
+//     built source-aware (src.sortKeySourceValue): a BARE FieldValue over the
+//     outer scan row for single-table, a QUALIFIED leg reference for a JOIN leg
+//     (resolving the AUTHORITATIVE merged-row `LEG.COL` key, never the last-leg-
+//     wins bare key). The match runs against the EXTENDED output fields, which
+//     include the hidden remainingOrderBy columns appended for keys not otherwise
+//     projected — so a non-selected key (`ORDER BY t1.id` over `SELECT col1 AS
+//     id`) pulls up to its hidden field (named by the QUALIFIED ref, collision-
+//     free), and a SELECTED source column (`SELECT t1.id … ORDER BY t1.id`) pulls
+//     up to that output field. Matching by VALUE — not by stripping the qualifier
+//     to a bare name and searching output NAMES — is the round-10 P2b fix: the
+//     bare-name search resolved a qualified source key to an unrelated output
+//     alias that merely shared the bare name (sorting by the wrong column).
+//
+// A key matching neither is left unchanged — it resolves against the flowed
+// record as-is.
+func pullUpSortKeyValue(k logical.SortKey, v values.Value, fields []values.RecordConstructorField, src sortSource) values.Value {
+	// (1) Output-field-value match on the key's RAW value — runs for EVERY key
+	// shape, mirroring the normal ORDER BY alias resolution. Handles SELECT-list
+	// aliases (incl. the computed EXISTS boolean) whose Value upgradeSortKeyValues
+	// set to the projected Value.
+	if pulled, ok := pullUpToOutputField(v, fields); ok {
+		return pulled
+	}
+	// (2) Source-column-value match — a column key resolves to the output field
+	// (incl. the hidden remainingOrderBy columns) whose VALUE is its source column.
+	if srcVal := src.sortKeySourceValue(k); srcVal != nil {
+		if pulled, ok := pullUpToOutputField(srcVal, fields); ok {
+			return pulled
+		}
+	}
+	// Bare/already-resolved key (or an outer-row reference): resolves against the
+	// flowed record unchanged.
+	return v
+}
+
+// pullUpToOutputField rewrites a sort-key Value to a FieldValue over the folded
+// projection's OUTPUT column whose Value the key semantically equals — Java's
+// OrderByExpression.pullUp onto the lower select's getResultValue(). This is the
+// shared key↔output-field correspondence: a SELECT-list alias key (whose Value
+// upgradeSortKeyValues set to the exact projected Value) pulls up to the output
+// field it IS, not to a same-named column. Returns (rewritten, true) on a match,
+// (nil, false) otherwise.
+//
+// A flat-name FieldValue key that is already an output column BY NAME (a bare
+// column carried straight through, e.g. `ORDER BY id` where `id` is also the
+// output name) is intentionally NOT matched here unless its VALUE matches an
+// output field — it falls to the name-based resolution so it keeps resolving by
+// name. The value match only fires when the key's Value is structurally the
+// projected expression (the alias / computed case), which is precisely when
+// pulling up to the output field is required for correctness.
+//
+// POINTER IDENTITY is preferred over structural semantic equality: when two
+// output fields share a semantically-equal value (`id AS a, id AS b ORDER BY
+// b`), `upgradeSortKeyValues` copied the EXACT projected Value pointer into the
+// sort key, so the pointer-identical field is the one the key actually names
+// (`b`). A single semantic-equality pass alone would return the first equal
+// field (`a`) — harmless for the sort result (the values are equal so the order
+// is identical), but it would pull up to the wrong output column name. The two
+// passes keep the pulled-up name faithful to the named alias.
+func pullUpToOutputField(v values.Value, fields []values.RecordConstructorField) (values.Value, bool) {
+	// Pass 1: exact pointer identity — the field whose Value the sort key IS.
+	for _, f := range fields {
+		if f.Value != nil && f.Value == v {
+			return &values.FieldValue{Field: f.Name, Typ: values.UnknownType}, true
+		}
+	}
+	// Pass 2: structural semantic equality — for keys whose Value was rebuilt
+	// (not pointer-copied) but is structurally the projected expression.
+	for _, f := range fields {
+		if f.Value != nil && values.SemanticEqualsUnderAliasMap(v, f.Value, values.AliasMap{}) {
+			return &values.FieldValue{Field: f.Name, Typ: values.UnknownType}, true
+		}
+	}
+	return nil, false
+}
+
+// findExistsFilterUnderUnaryChain descends from a project's input through any
+// intervening single-child unary operators (ORDER BY / LIMIT) to find a
+// LogicalFilter that carries existential subqueries. It returns that filter and
+// the chain of intervening operators ordered top-to-bottom (closest to the
+// project first), or (nil, nil) when the input is not such a shape. Only Sort
+// and Limit are treated as "transparent" intervening operators — a Project,
+// Join, Aggregate, etc. between the outer project and the filter changes the
+// row shape and is NOT folded through.
+func findExistsFilterUnderUnaryChain(input logical.LogicalOperator) (*logical.LogicalFilter, []logical.LogicalOperator) {
+	var chain []logical.LogicalOperator
+	cur := input
+	for {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			if len(f.ExistsSubqueries) > 0 {
+				return f, chain
+			}
+			return nil, nil
+		}
+		// Descend only through fold-transparent unary operators (Sort/Limit);
+		// logical.FoldTransparentUnaryInput is the shared transparency set the
+		// generator's existsFilterReachableForFold also consults.
+		next, ok := logical.FoldTransparentUnaryInput(cur)
+		if !ok {
+			return nil, nil
+		}
+		chain = append(chain, cur)
+		cur = next
+	}
+}
+
+// projectionReferencesExistsSubquery reports whether any projected Value is (or
+// contains) an ExistsValue — the structural signal that the projection must be
+// folded into the existential SelectExpression's result value (RFC-141 Phase 2)
+// so the boolean is computed with the inner existential binding live.
+func projectionReferencesExistsSubquery(projected []values.Value) bool {
+	for _, v := range projected {
+		if v == nil {
+			continue
+		}
+		found := false
+		values.WalkValue(v, func(node values.Value) bool {
+			if _, ok := node.(*values.ExistsValue); ok {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 func valueContainsUnsafeScalarFunction(v values.Value) bool {
@@ -867,12 +1629,52 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 }
 
 func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) expressions.RelationalExpression {
-	// Collect scalar subquery plans from projections.
+	// Collect scalar subquery plans from projections. This MUST run for every
+	// projection — including the RFC-141 projected-EXISTS fold below — because
+	// a SELECT can mix a projected EXISTS with an (uncorrelated) scalar
+	// subquery, e.g. `SELECT id, EXISTS(...), (SELECT MAX(id) FROM t2) FROM t1`.
+	// The scalar subquery's plan is pre-evaluated by the executor and bound by
+	// alias; skipping this collection (as the early-return fold path used to)
+	// left the scalar column unbound → it came back NULL.
 	for _, ssq := range p.ScalarSubqueries {
 		t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{
 			Alias: ssq.Alias,
 			Plan:  ssq.Plan,
 		})
+	}
+
+	// RFC-141 Phase 2: a projection over a filter that carries existential
+	// subqueries, where the projection itself references a projected EXISTS,
+	// folds INTO the existential SelectExpression's result value — so the
+	// existential boolean is computed by the FlatMap with the inner binding
+	// live (a separate Map above the FlatMap could not see that binding). Java
+	// builds exactly this single FlatMap whose RETURN is the projection.
+	//
+	// The filter may not be the project's DIRECT input: an ORDER BY / LIMIT
+	// sits between them (the builder emits Project(Sort(Filter)), with LIMIT
+	// hoisted above the Project). findExistsFilterUnderUnaryChain sees THROUGH
+	// those intervening unary operators to the existential filter. The fold
+	// then re-applies the sort/limit ON TOP of the folded SelectExpression —
+	// matching Java's `generateSort(generateSimpleSelect(output...), orderBys)`
+	// (LogicalOperator.generateSelect): the projection is built first with the
+	// existential binding live, then the sort wraps it, its keys rebased onto
+	// the projected output record.
+	if filter, chain := findExistsFilterUnderUnaryChain(p.Input); filter != nil &&
+		projectionReferencesExistsSubquery(p.ProjectedValues) {
+		// A projected EXISTS combined with a CORRELATED scalar subquery in the same
+		// SELECT list cannot be folded (the fold's existential SelectExpression and
+		// the correlated-scalar LEFT-OUTER join select are incompatible structures —
+		// see findUnfoldableProjectedExists). The logical guard rejects this shape
+		// before translation; this is defense-in-depth so the fold's early return can
+		// NEVER bypass the correlated-scalar dispatch below and silently drop the
+		// scalar column. Bailing here returns nil → the caller emits a clean
+		// ErrCodeUnsupportedQuery rather than wrong rows.
+		if len(p.CorrelatedScalarSubqueries) > 0 {
+			return nil
+		}
+		if sel := t.translateProjectOverExistsFilter(p, filter, chain); sel != nil {
+			return sel
+		}
 	}
 
 	if len(p.CorrelatedScalarSubqueries) > 1 {
@@ -1318,6 +2120,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	}
 
 	// Add EXISTS subqueries as existential quantifiers.
+	sourceAliases := []string{leftAlias, rightAlias}
 	for _, esq := range f.ExistsSubqueries {
 		subRef := t.translateRef(esq.Plan)
 		if subRef == nil {
@@ -1325,14 +2128,11 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 		quantifiers = append(quantifiers, existQ)
-		if esq.JoinPredicate != nil {
-			allPreds = append(allPreds, esq.JoinPredicate)
+		innerCorrName, joinPred := existsInnerCorrelation(esq)
+		if joinPred != nil {
+			allPreds = append(allPreds, joinPred)
 		}
-	}
-
-	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esq := range f.ExistsSubqueries {
-		sourceAliases = append(sourceAliases, sourceAlias(esq.Plan))
+		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
 	var joinType expressions.JoinType
@@ -1416,6 +2216,107 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 			values.NamedCorrelationIdentifier(alias), ref)
 	}
 	return expressions.ForEachQuantifier(ref)
+}
+
+// existsInnerCorrelation registers an existential subquery's inner correlation
+// under the existential quantifier's UNIQUE alias (esq.Alias, minted by
+// values.UniqueCorrelationIdentifier()) rather than the subquery's SOURCE table
+// name (sourceAlias(esq.Plan)). It returns:
+//
+//   - the source alias string to register in the SelectExpression's
+//     GetSourceAliases() (the unique alias name), so the NLJ rule derives the
+//     existential INNER correlation from it; and
+//   - the join predicate with its inner-leg references rebased from the source
+//     alias to the unique alias, so the predicate's QOV correlation MATCHES the
+//     FlatMap inner binding (the join-pred filter binds under the same alias).
+//
+// Java gives every existential quantifier its own unique correlation identity;
+// the inner correlation predicate references THAT identity, never the source
+// table's name. Go's buildCorrelatedExists qualified inner refs under the source
+// table name, which COLLIDES with the outer source alias when the subquery scans
+// the same table (`... FROM t WHERE id > 1 AND EXISTS (SELECT 1 FROM t ...)`):
+// the FlatMap would bind both the outer row and the FirstOrDefault inner under
+// the SAME correlation (the inner clobbers the outer → NULL pass-through row),
+// and an outer-only predicate (`id > 1`, correlated to the shared name) would be
+// misclassified as an INNER join predicate and pushed below the FOD. Routing the
+// existential inner through the unique alias makes outer and inner correlations
+// distinct by construction, so neither the binding nor the predicate
+// classification can collide. The source table's columns still flow up under
+// their bare names inside the subquery plan; only the JOIN-LEVEL correlation
+// identity changes, so field lookups (bm["COL"]) are unaffected.
+func existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.QueryPredicate) {
+	// The rename is ONLY safe when the inner is a plain single-table scan whose
+	// ENTIRE correlation to the parent is captured in esq.JoinPredicate. Two
+	// inner shapes carry references to their OWN source alias that the rename
+	// cannot reach, so renaming the binding orphans them and the EXISTS goes
+	// silently false:
+	//
+	//   - a JOIN inner emits a MERGED row resolved by qualified leg keys
+	//     (T2.ID, T3.T2_ID, …), never a single-alias binding
+	//     (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false);
+	//     pointing the predicate at a `<uniqueAlias>.*` namespace nothing writes
+	//     yields NULL; and
+	//   - a NESTED-EXISTS inner (a LogicalFilter carrying its own
+	//     ExistsSubqueries) has a nested existential correlation that references
+	//     the MIDDLE scan's source alias from INSIDE esq.Plan — not in
+	//     esq.JoinPredicate — so the rename leaves it bound to the old alias.
+	//
+	// Both keep the leg/source-alias routing. The alias-shadow collision the
+	// rename fixes only arises for a clean single-table inner (one bare
+	// namespace bound under one alias); the merged-row / nested-EXISTS inners
+	// route by distinct qualified keys and cannot clobber the outer binding.
+	if !existsInnerSafeToRename(esq.Plan) {
+		return sourceAlias(esq.Plan), esq.JoinPredicate
+	}
+	uniqueAlias := esq.Alias
+	srcAlias := values.NamedCorrelationIdentifier(sourceAlias(esq.Plan))
+	joinPred := esq.JoinPredicate
+	if joinPred != nil && srcAlias != uniqueAlias {
+		joinPred = predicates.RebasePredicate(joinPred, values.AliasMap{srcAlias: uniqueAlias})
+	}
+	return uniqueAlias.Name(), joinPred
+}
+
+// existsInnerSafeToRename reports whether an existential subquery's plan is a
+// clean single-table scan whose only correlation to the parent lives in
+// esq.JoinPredicate — the only shape for which renaming the inner correlation to
+// the unique existential alias is safe. Returns false for a JOIN (merged-row
+// keyed by leg aliases), a CTE/derived-table (its own correlation namespace), or
+// a LogicalFilter carrying ExistsSubqueries (a nested EXISTS whose correlation
+// references the inner scan's alias from inside the plan). Walks the single-child
+// chain the same way sourceAlias does; a plain WHERE filter (no nested EXISTS) is
+// transparent.
+func existsInnerSafeToRename(op logical.LogicalOperator) bool {
+	for cur := op; cur != nil; {
+		switch o := cur.(type) {
+		case *logical.LogicalScan:
+			return true
+		case *logical.LogicalJoin:
+			return false
+		case *logical.LogicalCTE:
+			return false
+		case *logical.LogicalFilter:
+			// A nested EXISTS inside the inner WHERE references the inner scan's
+			// own alias from within esq.Plan — the rename can't reach it.
+			if len(o.ExistsSubqueries) > 0 {
+				return false
+			}
+			ch := o.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return false
+		default:
+			ch := cur.Children()
+			if len(ch) == 1 {
+				cur = ch[0]
+				continue
+			}
+			return false
+		}
+	}
+	return false
 }
 
 func sourceAlias(op logical.LogicalOperator) string {

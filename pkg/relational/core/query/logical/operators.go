@@ -215,6 +215,26 @@ func NewLimit(input LogicalOperator, limit, offset int64) *LogicalLimit {
 	return &LogicalLimit{Input: input, Limit: limit, Offset: offset}
 }
 
+// FoldTransparentUnaryInput returns (input, true) when op is a fold-transparent
+// unary operator — one the RFC-141 projected-EXISTS fold descends THROUGH to
+// reach the existential filter without changing the row shape. Only Sort and
+// Limit qualify (a Project/Join/Aggregate/Distinct/Union reshapes the rows and is
+// NOT fold-transparent). This is the SINGLE source of truth for the transparency
+// set: both the translator's `findExistsFilterUnderUnaryChain` (which folds the
+// projection through the chain) and the generator's `existsFilterReachableForFold`
+// (which rejects a projected EXISTS the fold cannot reach) consult it, so the two
+// can never silently diverge. Returns (nil, false) for any non-transparent op.
+func FoldTransparentUnaryInput(op LogicalOperator) (LogicalOperator, bool) {
+	switch o := op.(type) {
+	case *LogicalSort:
+		return o.Input, true
+	case *LogicalLimit:
+		return o.Input, true
+	default:
+		return nil, false
+	}
+}
+
 func (l *LogicalLimit) Children() []LogicalOperator { return []LogicalOperator{l.Input} }
 func (l *LogicalLimit) Explain(indent string) string {
 	// Negative Limit means "no cap" — plan output reads better as

@@ -31,6 +31,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -296,10 +297,41 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
 	}
 
+	// RFC-141 §8 safety guard (logical half): a projected EXISTS in a shape the
+	// fold cannot thread through (GROUP BY / aggregate / DISTINCT / UNION between
+	// the projection and the existential filter) is dropped before translation —
+	// the post-translation guard below cannot see a value that no longer exists,
+	// so catch it here.
+	if msg := findUnfoldableProjectedExists(logicalOp); msg != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
+	}
+
 	ref, scalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
+	}
+
+	// RFC-141 §8 safety guard: a projected ExistsValue is correct ONLY when it is
+	// folded into the result value of the SelectExpression that owns its
+	// existential quantifier (evaluated by the FlatMap with the inner binding
+	// live). If the fold's structural pattern-matching did NOT recognize the
+	// query shape, the projected ExistsValue is left in a Map above the FlatMap
+	// where its binding is dead — ExistsValue.Evaluate would silently return
+	// false for every row. Reject such a plan cleanly rather than ship wrong rows.
+	if existsErr := query.CheckProjectedExistsFolded(ref); existsErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+	}
+
+	// RFC-141 R4 round-12 convergence backstop (P1a): a WHERE existential
+	// predicate buried under a wrapper the NLJ rule's IsExistentialPredicate /
+	// IsNotExistentialPredicate routing does not recognize (`WHERE NOT (NOT
+	// EXISTS(...))`, deeper AND/OR/NOT nesting) falls into the regular-predicate
+	// bucket, where the empty FirstOrDefault inner's NULL default is never removed
+	// and every outer row silently passes. Detect any such buried existential
+	// structurally and reject cleanly rather than mis-evaluate it.
+	if buriedErr := query.CheckBuriedExistentialPredicate(ref); buriedErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
 	rules := cascades.DefaultExpressionRules()
@@ -561,10 +593,33 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
 	if del := dml.DeleteStatement(); del != nil {
+		// RFC-141 R4 round-12: an EXISTS buried in a SCALAR expression in the DML
+		// WHERE clause (`DELETE … WHERE CASE WHEN EXISTS(...) THEN 1 ELSE 0 END =
+		// 1`) is lowered to a constant in the DML WHERE-build path (which differs
+		// from the SELECT PlanVisitor path), so it silently affects the wrong rows.
+		// Detect the buried EXISTS structurally and reject, same as the SELECT path.
+		if w := del.WhereExpr(); w != nil && expr.WhereExistsInScalarPosition(w.Expression()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"EXISTS nested in a scalar expression is not yet supported")
+		}
 		logicalOp = buildLogicalPlanForDeleteWithCatalog(del, md)
 	} else if upd := dml.UpdateStatement(); upd != nil {
+		if w := upd.WhereExpr(); w != nil && expr.WhereExistsInScalarPosition(w.Expression()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"EXISTS nested in a scalar expression is not yet supported")
+		}
 		logicalOp = buildLogicalPlanForUpdateWithCatalog(upd, md)
 	} else if ins := dml.InsertStatement(); ins != nil {
+		// RFC-141 R4 round-12: an INSERT … SELECT whose SELECT-body WHERE buries an
+		// EXISTS in a scalar (`INSERT … SELECT … WHERE CASE WHEN EXISTS(...) …`) is
+		// rebuilt through a path that bypasses the per-statement WHERE guard, so the
+		// buried EXISTS folds to a constant and the wrong rows are inserted. Scan the
+		// INSERT subtree for any such WHERE and reject (the SELECT body's other
+		// EXISTS positions are guarded when its body plans through the SELECT path).
+		if expr.AnyWhereExistsInScalarPosition(ins) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"EXISTS nested in a scalar expression is not yet supported")
+		}
 		insStmt = ins
 		logicalOp = buildLogicalPlanForInsertWithCatalog(ins, md)
 	}
@@ -637,6 +692,17 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
+	}
+
+	// RFC-141 §8 / R4 round-12: the same EXISTS safety guards as the SELECT path
+	// must run for DML (`DELETE/UPDATE … WHERE NOT (NOT EXISTS(...))`) — the DML
+	// planner reuses the existential NLJ rule, so a buried WHERE existential is
+	// just as silently-wrong (every targeted row matches) without the guard.
+	if existsErr := query.CheckProjectedExistsFolded(ref); existsErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+	}
+	if buriedErr := query.CheckBuriedExistentialPredicate(ref); buriedErr != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
 	rules := cascades.DefaultExpressionRules()
@@ -2094,79 +2160,214 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	// first one (the single-leaf lookup left the other leg's columns UNKNOWN).
 	descs := allLeafDescriptors(proj.GetInner(), md)
 	aliases := proj.GetAliases()
-	cols := make([]executor.ColumnDef, len(proj.GetProjections()))
-	for i, v := range proj.GetProjections() {
-		var name string
-		if fv, ok := v.(*values.FieldValue); ok {
-			if fv.Child != nil {
-				name = values.ExplainValue(v)
-			} else {
-				name = fv.Field
-			}
-		} else {
-			name = values.ExplainValue(v)
+	projections := proj.GetProjections()
+
+	// A pull-up / pass-through projection (e.g. the RFC-141 projected-EXISTS fold's
+	// cleanup re-projection that drops a hidden ORDER BY column) references its
+	// columns by the INNER plan's OUTPUT key — which for an aliased column is the
+	// alias (`THE_ID`), not a proto field. The descriptor-based type lookup then
+	// can't resolve it (there is no proto field `THE_ID`) and yields UNKNOWN. The
+	// projection never RE-TYPES a column it merely renames/drops, so inherit the
+	// type+nullability from the inner plan's same-named derived column. This keeps
+	// the cleanup a true metadata pass-through, consistent-by-construction with the
+	// folded FlatMap's own column derivation (foldedColumnDef). The inner columns
+	// are derived lazily — only when a column's type is genuinely unresolved — so
+	// the ordinary projection path pays nothing.
+	var innerByName map[string]executor.ColumnDef
+	cols := make([]executor.ColumnDef, len(projections))
+	for i, v := range projections {
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
 		}
-		var label string
-		if i < len(aliases) && aliases[i] != "" {
-			label = strings.ToUpper(aliases[i])
-		} else if _, isField := v.(*values.FieldValue); !isField {
-			label = fmt.Sprintf("_%d", i)
-		}
-		// Resolve THIS column against the leg that defines it (a join
-		// projects same-named columns from different legs; the qualifier
-		// disambiguates). Falling back to descs[0] for non-FieldValue
-		// expressions keeps the prior aggregate-operand behaviour.
-		colDesc := descriptorForColumn(name, descs)
-		typeDesc := colDesc
-		if typeDesc == nil && len(descs) > 0 {
-			typeDesc = descs[0]
-		}
-		typeName := valueTypeName(v, typeDesc)
-		if typeName == "" && colDesc != nil {
-			typeName = protoFieldTypeName(colDesc, name)
-		}
-		if typeName == "" {
-			typeName = "UNKNOWN"
-		}
-		// Use the alias as the datum lookup key (Name) when available.
-		// executeProjection stores values under both the original name
-		// and the alias, so the alias is a valid lookup key and gives
-		// CTE consumers the column name they reference.
-		colName := strings.ToUpper(name)
-		if label != "" {
-			colName = label
-		}
-		// Display label — what ResultSetMetaData.getColumnLabel returns and
-		// what database/sql Rows.Columns() surfaces to the caller. For an
-		// unaliased field reference this is the UNQUALIFIED field name,
-		// matching Java: `SELECT u.name` over a join yields column NAME, not
-		// U.NAME. The datum key (colName/Name) stays qualified — a join
-		// projects same-named columns from different legs and the qualifier
-		// disambiguates the lookup — but the qualifier must never leak into
-		// the user-visible metadata.
-		displayLabel := label
-		if label == "" {
-			if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
-				// fv.Field is qualified ("U.NAME") for a join projection but
-				// bare ("NAME") for a single source; the user-visible label is
-				// always the bare column, matching Java.
-				displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
+		cd := deriveProjectionColumnDef(v, alias, i, descs)
+		if cd.TypeName == "" || cd.TypeName == "UNKNOWN" {
+			// Inherit from the inner column the projection reads (matched by the
+			// projected FieldValue's field = the inner output key).
+			if fv, ok := v.(*values.FieldValue); ok && fv.Child == nil {
+				if innerByName == nil {
+					innerByName = make(map[string]executor.ColumnDef)
+					for _, ic := range deriveColumnsFromPlan(proj.GetInner(), md) {
+						innerByName[strings.ToUpper(ic.Name)] = ic
+					}
+				}
+				if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+					cd.TypeName = ic.TypeName
+					cd.Nullable = ic.Nullable
+				}
 			}
 		}
-		nullable := api.ColumnNullable
-		if colDesc != nil {
-			if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
-				nullable = api.ColumnNoNulls
-			}
-		}
-		cols[i] = executor.ColumnDef{
-			Name:     colName,
-			Label:    displayLabel,
-			TypeName: typeName,
-			Nullable: nullable,
-		}
+		cols[i] = cd
 	}
 	return cols
+}
+
+// deriveProjectionColumnDef derives the ResultSet ColumnDef (datum-lookup Name,
+// user-visible display Label, type, nullability) for a single projected column
+// from its Value + optional SELECT-list alias. This is the SHARED derivation
+// reused by BOTH the normal projection path (deriveColumnsFromProjection) AND
+// the RFC-141 projected-EXISTS fold (deriveColumnsFromFlatMap), so the two can
+// never diverge — adding a projected EXISTS must not change the labels of the
+// other projected columns.
+//
+// The derivation matches Java's ResultSetMetaData:
+//   - Name (datum lookup key): the alias when aliased, else the column's
+//     reference name — QUALIFIED ("U.NAME") for a join projection so same-named
+//     columns of different legs stay disambiguable in the row map.
+//   - Label (getColumnLabel — what Rows.Columns() surfaces): the alias when
+//     aliased; for an unaliased field reference the UNQUALIFIED leaf name
+//     (`SELECT u.name` → label NAME, never U.NAME); for an unaliased non-field
+//     expression the positional `_i`. The qualifier must NEVER leak into the
+//     user-visible metadata.
+//
+// idx is the column's position (for the `_i` positional label of an unaliased
+// computed expression). descs are the leaf descriptors the column type/nullable
+// is resolved against (the leg that defines the column).
+func deriveProjectionColumnDef(v values.Value, alias string, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+	var name string
+	if fv, ok := v.(*values.FieldValue); ok {
+		if fv.Child != nil {
+			name = values.ExplainValue(v)
+		} else {
+			name = fv.Field
+		}
+	} else {
+		name = values.ExplainValue(v)
+	}
+	var label string
+	if alias != "" {
+		label = strings.ToUpper(alias)
+	} else if _, isField := v.(*values.FieldValue); !isField {
+		label = fmt.Sprintf("_%d", idx)
+	}
+	// Resolve THIS column against the leg that defines it (a join
+	// projects same-named columns from different legs; the qualifier
+	// disambiguates). Falling back to descs[0] for non-FieldValue
+	// expressions keeps the prior aggregate-operand behaviour.
+	colDesc := descriptorForColumn(name, descs)
+	typeDesc := colDesc
+	if typeDesc == nil && len(descs) > 0 {
+		typeDesc = descs[0]
+	}
+	typeName := valueTypeName(v, typeDesc)
+	if typeName == "" && colDesc != nil {
+		typeName = protoFieldTypeName(colDesc, name)
+	}
+	if typeName == "" {
+		typeName = "UNKNOWN"
+	}
+	// Use the alias as the datum lookup key (Name) when available.
+	// executeProjection stores values under both the original name
+	// and the alias, so the alias is a valid lookup key and gives
+	// CTE consumers the column name they reference.
+	colName := strings.ToUpper(name)
+	if label != "" {
+		colName = label
+	}
+	// Display label — what ResultSetMetaData.getColumnLabel returns and
+	// what database/sql Rows.Columns() surfaces to the caller. For an
+	// unaliased field reference this is the UNQUALIFIED field name,
+	// matching Java: `SELECT u.name` over a join yields column NAME, not
+	// U.NAME. The datum key (colName/Name) stays qualified — a join
+	// projects same-named columns from different legs and the qualifier
+	// disambiguates the lookup — but the qualifier must never leak into
+	// the user-visible metadata.
+	displayLabel := label
+	if label == "" {
+		if fv, isField := v.(*values.FieldValue); isField && fv.Field != "" {
+			// fv.Field is qualified ("U.NAME") for a join projection but
+			// bare ("NAME") for a single source; the user-visible label is
+			// always the bare column, matching Java.
+			displayLabel = strings.ToUpper(parseColRef(fv.Field).bare())
+		}
+	}
+	nullable := api.ColumnNullable
+	if colDesc != nil {
+		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
+			nullable = api.ColumnNoNulls
+		}
+	}
+	return executor.ColumnDef{
+		Name:     colName,
+		Label:    displayLabel,
+		TypeName: typeName,
+		Nullable: nullable,
+	}
+}
+
+// foldedColumnDef derives the ResultSet ColumnDef for ONE field of a
+// projected-EXISTS fold's RecordConstructor (RFC-141 round-8 ROOT FIX). It is the
+// consistent-by-construction counterpart of the normal projection path's
+// deriveProjectionColumnDef, but it takes its Name+Label from the field NAME the
+// fold set rather than re-deriving them from the field VALUE.
+//
+// The contract is dictated by execution: RecordConstructorValue.Evaluate keys the
+// executed row by `f.Name` (one map key per field), and a positional/named Scan
+// looks the column up by `ColumnDef.Name`. Therefore:
+//
+//   - Name (datum lookup key) = f.Name, ALWAYS. The fold set f.Name to the
+//     SELECT-list alias when the column was explicitly aliased, else to the
+//     column's reference (bare `ID` for a single-table column, qualified
+//     `T1.ID`/`T2.ID` for a JOIN leg so same-named legs stay disambiguable). It
+//     cannot diverge from the record key, so a Scan never reads NULL.
+//   - Label (the user-visible getColumnLabel) = the BARE LEAF of f.Name —
+//     matching Java exactly (the SELECT-list Identifier after clearQualifier):
+//     `SELECT t1.id` → ID, `t1.id AS id` → ID, `id AS the_id` → THE_ID,
+//     `t2.id` over a JOIN → ID (never the qualified T2.ID).
+//   - Type resolves from the field VALUE (the EXISTS boolean → BOOLEAN via
+//     ExistsValue.Type(); a leg column against its defining descriptor). The
+//     value's column reference (ExplainValue — qualified `T2.ID` for a JOIN
+//     composite) is what the descriptor lookup keys on, so the type resolves
+//     against the correct leg even though the public label is the bare leaf.
+//
+// No alias inference, no value-derived Name: the divergences round-8 found
+// (explicit-alias==bare-leaf reading NULL, JOIN composite leaking a qualified
+// label) are impossible by construction.
+func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+	name := strings.ToUpper(f.Name)
+	label := strings.ToUpper(parseColRef(f.Name).bare())
+
+	// Resolve the column TYPE against the leg that defines it. Use the VALUE's
+	// reference name (qualified for a JOIN composite) so descriptorForColumn keys
+	// the right leg; fall back to the field Name for a non-FieldValue value.
+	typeRef := name
+	if fv, ok := f.Value.(*values.FieldValue); ok {
+		if fv.Child != nil {
+			typeRef = strings.ToUpper(values.ExplainValue(f.Value))
+		} else {
+			typeRef = strings.ToUpper(fv.Field)
+		}
+	}
+	colDesc := descriptorForColumn(typeRef, descs)
+	typeDesc := colDesc
+	if typeDesc == nil && len(descs) > 0 {
+		typeDesc = descs[0]
+	}
+	typeName := valueTypeName(f.Value, typeDesc)
+	if typeName == "" && colDesc != nil {
+		typeName = protoFieldTypeName(colDesc, typeRef)
+	}
+	// A column the leaf descriptors couldn't resolve (genuinely unknown type)
+	// flows under the FlatMap's merged outer row where a numeric BIGINT is the
+	// safe default; the EXISTS boolean and other resolved columns keep their real
+	// type (valueTypeName returns it). This preserves the fold's prior behaviour
+	// for genuinely-unresolved columns.
+	if typeName == "" || typeName == "UNKNOWN" {
+		typeName = "BIGINT"
+	}
+
+	nullable := api.ColumnNullable
+	if colDesc != nil {
+		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(typeRef).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
+			nullable = api.ColumnNoNulls
+		}
+	}
+	return executor.ColumnDef{
+		Name:     name,
+		Label:    label,
+		TypeName: typeName,
+		Nullable: nullable,
+	}
 }
 
 func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -2197,9 +2398,6 @@ func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
 
 func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	outerCols := deriveColumnsFromPlan(nlj.GetOuter(), md)
-	if nlj.GetJoinType() == plans.JoinExists || nlj.GetJoinType() == plans.JoinNotExists {
-		return outerCols
-	}
 	innerCols := deriveColumnsFromPlan(nlj.GetInner(), md)
 	if outerCols == nil && innerCols == nil {
 		return nil
@@ -2219,6 +2417,56 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 }
 
 func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
+	// RFC-141 Phase 2: a projected-EXISTS FlatMap folds the SELECT projection
+	// into its result value — an ordinary (non-anchored-join) RecordConstructor.
+	// Its field names ARE the output columns (e.g. ID, HAS_T2), so derive from
+	// them directly rather than merging the outer+inner table columns.
+	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && !rc.AnchoredJoin && len(rc.Fields) > 0 {
+		// RFC-141 round-8 ROOT FIX: derive each folded column's metadata DIRECTLY
+		// from the RecordConstructorField's Name — the SAME name the fold set as the
+		// output column key and that RecordConstructorValue.Evaluate keys the
+		// executed row by (`out[f.Name] = …`). The earlier code re-derived the datum
+		// Name from the field's VALUE (a since-removed bare-name inference heuristic),
+		// which DIVERGED from f.Name in two cases:
+		//   - an explicit alias equal to the bare leaf (`t1.id AS id`): inferred
+		//     UNALIASED, datum Name became the qualified value name `T1.ID` while the
+		//     record key is the alias `ID` → a Scan of that column read NULL;
+		//   - an unaliased qualified column over a JOIN (`t2.id`): the NLJ rule
+		//     rebases the value to the composite FieldValue{Field:ID, Child:QOV} so
+		//     the old bare-name compare was skipped → the qualified f.Name was
+		//     returned as a fake alias → label leaked `T2.ID`.
+		// Using f.Name as the datum Name is correct BY CONSTRUCTION (it cannot
+		// diverge from the record key), and the display label is the bare leaf of
+		// f.Name — exactly Java's rule (the SELECT-list Identifier post-clearQualifier:
+		// `SELECT t1.id` → label ID, `t1.id AS id` → ID, `id AS the_id` → THE_ID),
+		// with no value inference. The value is used ONLY for the column TYPE (the
+		// EXISTS boolean reports BOOLEAN via ExistsValue.Type(); a column resolves
+		// against its defining leg descriptor).
+		descs := allLeafDescriptors(fm.GetOuter(), md)
+		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
+		for _, f := range rc.Fields {
+			cols = append(cols, foldedColumnDef(f, descs))
+		}
+		return cols
+	}
+
+	// RFC-141: a plain `WHERE EXISTS` / `WHERE NOT EXISTS` is planned as an
+	// IDENTITY FlatMap — its result value is the OUTER row's QuantifiedObjectValue
+	// (the existential level only filters; the row that flows out is the outer row
+	// unchanged), with the semi-join boolean dropped by a PredicatesFilter above.
+	// The cursor emits ONLY the outer row, so the columns are EXACTLY the outer
+	// plan's columns. Falling through to the outer+inner merge below would report
+	// the inner subquery's columns too (a metadata leak: `SELECT * FROM t1 WHERE
+	// EXISTS(SELECT … FROM t2 …)` would advertise t1's AND t2's columns even though
+	// only t1's row is returned). Detect the identity-over-outer shape and return
+	// the outer columns alone. Projected EXISTS (a RecordConstructor result value)
+	// was already handled above; this covers the WHERE-only case where the result
+	// value is the bare outer QOV.
+	if qov, ok := fm.GetResultValue().(*values.QuantifiedObjectValue); ok &&
+		strings.EqualFold(qov.Correlation.Name(), fm.GetOuterAlias().Name()) {
+		return deriveColumnsFromPlan(fm.GetOuter(), md)
+	}
+
 	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
 	innerCols := deriveColumnsFromPlan(fm.GetInner(), md)
 	if outerCols == nil && innerCols == nil {
@@ -2580,6 +2828,114 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 		}
 	}
 	return ""
+}
+
+// findFullOuterWithExists rejects FULL OUTER JOIN combined with an
+// EXISTS / NOT EXISTS subquery in the same WHERE. The join+EXISTS
+// flatten path (translateJoinWithExists) builds a semi-join shape that
+// cannot carry the FULL-outer drain, so such a query would otherwise be
+// silently mistranslated to an inner join. FULL OUTER is a Go-only query
+// extension; Java's SQL layer has no outer joins at all.
+// findUnfoldableProjectedExists rejects a PROJECTED EXISTS (an ExistsValue in a
+// SELECT-list value) in a query shape the RFC-141 fold cannot thread through, so
+// the EXISTS would otherwise be silently dropped before translation (the
+// post-translation §8 guard can't see a value that no longer exists). This is
+// the logical-tree half of the safety guard.
+//
+// The fold (translateProject → findExistsFilterUnderUnaryChain) folds the
+// projection into the existential SelectExpression only when the existential
+// filter is reachable from the project's input through transparent unary
+// operators — Sort / Limit — or sits directly over a JOIN in FROM. A GROUP BY /
+// aggregate, DISTINCT, UNION, or a second Project between the projection and the
+// existential filter changes the row shape and is NOT foldable; the projected
+// ExistsValue cannot be evaluated with the existential binding live. Reject those
+// cleanly with ErrCodeUnsupportedQuery (returned as a message) rather than
+// returning constant-false rows.
+func findUnfoldableProjectedExists(op logical.LogicalOperator) string {
+	if op == nil {
+		return ""
+	}
+	if proj, ok := op.(*logical.LogicalProject); ok && projectValuesReferenceExists(proj.ProjectedValues) {
+		if !existsFilterReachableForFold(proj.Input) {
+			return "projected EXISTS in this query shape is not yet supported"
+		}
+		// A projected EXISTS alongside a CORRELATED scalar subquery in the SAME
+		// SELECT list (`SELECT id, EXISTS(...), (SELECT v FROM t2 WHERE t2.fk =
+		// t1.id) FROM t1`) cannot be folded: the projected-EXISTS fold builds an
+		// existential SelectExpression whose result value is the projection
+		// RecordConstructor evaluated by the FlatMap, while the correlated-scalar
+		// path (translateProjectWithCorrelatedScalar) builds a DIFFERENT structure
+		// — a LEFT-OUTER join select anchored on the outer row with
+		// NewScalarSubqueryAnchoredRecord and its own per-row LIMIT-peel. Composing
+		// both into one SelectExpression is a 3-way quantifier nest the NLJ rule
+		// does not implement (the multi-quantifier boundary the port rejects).
+		// Without this check the fold's early return in translateProject bypasses
+		// the correlated-scalar dispatch and the correlated ScalarSubqueryValue is
+		// left unbound → that column silently reads NULL every row. Reject cleanly.
+		// (Uncorrelated scalar subqueries DO compose — they are pre-evaluated and
+		// collected before the fold's early return, so they are not rejected here.)
+		if len(proj.CorrelatedScalarSubqueries) > 0 {
+			return "projected EXISTS in this query shape is not yet supported"
+		}
+	}
+	// A projected EXISTS that also appears as a GROUP BY key or an aggregate
+	// operand lands in the LogicalAggregate's resolved Value trees, NOT the
+	// project's — the aggregate never folds an existential, so the EXISTS would
+	// be silently dropped. Reject.
+	if agg, ok := op.(*logical.LogicalAggregate); ok {
+		if projectValuesReferenceExists(agg.GroupKeyValues) || projectValuesReferenceExists(agg.AggregateOperands) {
+			return "projected EXISTS in this query shape is not yet supported"
+		}
+	}
+	for _, ch := range op.Children() {
+		if msg := findUnfoldableProjectedExists(ch); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+// projectValuesReferenceExists reports whether any projected Value is (or
+// contains) an ExistsValue — structurally, no text matching.
+func projectValuesReferenceExists(vals []values.Value) bool {
+	for _, v := range vals {
+		if v == nil {
+			continue
+		}
+		found := false
+		values.WalkValue(v, func(node values.Value) bool {
+			if _, ok := node.(*values.ExistsValue); ok {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// existsFilterReachableForFold reports whether a LogicalFilter carrying
+// existential subqueries is reachable from `input` through ONLY fold-transparent
+// unary operators (Sort/Limit). It consults logical.FoldTransparentUnaryInput —
+// the SAME shared transparency set the translator's findExistsFilterUnderUnaryChain
+// folds through — so a shape this accepts is exactly a shape the translator folds,
+// and the two can never silently diverge. Any other intervening operator (Project,
+// Aggregate, Distinct, Union) means the projected EXISTS cannot be folded.
+func existsFilterReachableForFold(input logical.LogicalOperator) bool {
+	cur := input
+	for {
+		if f, ok := cur.(*logical.LogicalFilter); ok {
+			return len(f.ExistsSubqueries) > 0
+		}
+		next, ok := logical.FoldTransparentUnaryInput(cur)
+		if !ok {
+			return false
+		}
+		cur = next
+	}
 }
 
 // findFullOuterWithExists rejects FULL OUTER JOIN combined with an

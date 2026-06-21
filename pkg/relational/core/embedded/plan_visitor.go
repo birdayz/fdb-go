@@ -517,6 +517,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				return nil, api.NewError(api.ErrCodeUnsupportedSort,
 					"ORDER BY with scalar subquery is not supported")
 			}
+			// RFC-141 R4 round-12: EXISTS in an ORDER BY key is NOT a
+			// directly-handled position. The sort-key resolver carries no
+			// SubqueryPlanner, so the EXISTS fails to resolve, the key keeps its
+			// raw text form, and the existential is never evaluated → a silent
+			// WRONG ORDERING (every row ties on a constant). Reject cleanly rather
+			// than mis-order (mirrors the scalar-subquery rejection above).
+			if expr.ContainsExistsAtom(ob.rawExpr) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"EXISTS in an ORDER BY clause is not yet supported")
+			}
 		}
 	}
 	if resolver != nil {
@@ -599,6 +609,12 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if errors.As(walkErr, &corrErr) {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
+				// RFC-141 R4 round-12 (P1b): a SELECT item with a NESTED EXISTS is
+				// not foldable; reject cleanly (never a silent constant-false / NULL).
+				var nestedExists *expr.NestedExistsProjectionError
+				if errors.As(walkErr, &nestedExists) {
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery, nestedExists.Error())
+				}
 			}
 		}
 	}
@@ -659,6 +675,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// (15) Upgrade sort key values.
 	upgradeSortKeyValues(op, sq, v.md, v.cteScopes)
 
+	// (15b) RFC-141 Phase 2: register projected-EXISTS subqueries so the
+	// translator attaches the existential quantifier and builds the FlatMap
+	// even with no WHERE clause. upgradeProjectionValues already ran BuildExists
+	// for projected EXISTS (populating existsPlanner.subqueries); synthesize a
+	// filter to hold them. The existential boolean is computed by the
+	// projection's ExistsValue inside the SelectExpression result value.
+	if sq.whereExpr == nil && len(existsPlanner.subqueries) > 0 && projectionHasExistsValue(op) {
+		op = attachOrSynthesizeExistsFilter(op, existsPlanner.subqueries)
+		existsPlanner.subqueries = nil
+	}
+
 	// (16) Upgrade WHERE predicate.
 	if sq.whereExpr == nil {
 		// No WHERE, but a QUALIFY filter (vector K-NN ROW_NUMBER() <= K) must
@@ -675,6 +702,21 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	if resolver != nil {
 		resolver.SetSubqueryPlanner(existsPlanner)
+	}
+
+	// RFC-141 R4 round-12: an EXISTS atom in the WHERE clause is directly-handled
+	// only when it is a top-level boolean term (the whole WHERE, an AND conjunct,
+	// or a single-NOT). An EXISTS nested inside a SCALAR expression — `WHERE CASE
+	// WHEN EXISTS(...) THEN 1 ELSE 0 END = 1`, `WHERE (EXISTS(...)) = true`,
+	// `WHERE f(EXISTS(...))` — is lowered into a scalar Value (a CASE / comparison
+	// operand) with no existential quantifier driving it, so it evaluates to a
+	// constant false → a silent wrong result (every row dropped). Detect such a
+	// buried EXISTS structurally on the parse tree (the WHERE companion to the
+	// projected nested-EXISTS guard) and reject cleanly. (A top-level EXISTS under
+	// an OR is separately rejected below.)
+	if expr.WhereExistsInScalarPosition(sq.whereExpr.Expression()) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"EXISTS nested in a scalar expression is not yet supported")
 	}
 
 	var preWalkPred predicates.QueryPredicate
@@ -714,6 +756,17 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			if errors.As(walkErr, &corrExistsErr) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"nested correlated EXISTS: %v", walkErr)
+			}
+			// A structured *api.Error from the walk is a deliberate, already
+			// SQLSTATE-classified rejection raised by a nested subquery's build
+			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
+			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
+			// RFC-141 R4 round-13). Surface it VERBATIM rather than fall through to
+			// the text-fallback predicate builder below, which declines the EXISTS
+			// shape and reports a generic "could not plan", masking the real reason.
+			var apiErr *api.Error
+			if errors.As(walkErr, &apiErr) {
+				return nil, apiErr
 			}
 		} else {
 			preWalkPred = walked

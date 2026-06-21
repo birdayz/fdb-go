@@ -237,10 +237,28 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 
 // implementExistentialSelect handles a SelectExpression with a
 // ForEach outer and an Existential inner (EXISTS subquery).
-// Wraps the inner in FirstOrDefault and uses a semi-join (EXISTS
-// or NOT EXISTS) plan shape. Non-EXISTS predicates (e.g. `x > 5`
-// in `WHERE x > 5 AND EXISTS (...)`) are passed as NLJ join
-// predicates evaluated against the merged outer+inner row.
+//
+// RFC-141: this matches Java's ImplementNestedLoopJoinRule exactly. The
+// FlatMap is a PURE MAP — there is no EXISTS/NOT-EXISTS join mode. The
+// existential semantics are emergent from what wraps the inner:
+//
+//   - The existential inner is wrapped in FirstOrDefault(inner, NULL) so it
+//     yields EXACTLY ONE row (the first real inner row, or a NULL default on
+//     an empty subquery), and that FOD plan is used AS THE FLATMAP INNER.
+//   - WHERE-EXISTS is a SEPARATE residual filter on top of the FOD: Java's
+//     ExistentialValuePredicate.toResidualPredicate() → ValuePredicate(QOV,
+//     NOT_NULL). For an empty subquery FOD yields NULL → QOV IS NOT NULL is
+//     FALSE → the inner yields zero rows → the pure-map FlatMap emits nothing
+//     for that outer row (the semi-join). NOT-EXISTS flips the comparison to
+//     IS NULL (the FlatMap inner yields the outer iff the subquery is empty).
+//   - SELECT-EXISTS (projection) needs NO residual filter at all: the boolean
+//     is computed by the map's resultValue (ExistsValue.eval reads the inner
+//     binding — bound non-null ⇒ true, NULL ⇒ false).
+//
+// Correlation/join predicates that filter the inner rows (e.g. child.pid =
+// parent.id) live INSIDE the inner subquery's plan already, or are pushed onto
+// the inner scan range by tryExistsFlatMap; they filter the inner BELOW the
+// FOD so FOD takes the first MATCHING inner row.
 func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	call *ExpressionRuleCall,
 	sel *expressions.SelectExpression,
@@ -272,27 +290,26 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	}
 	innerPlan := innerPh.GetRecordQueryPlan()
 
-	// Separate predicates into EXISTS-related and non-EXISTS.
+	// Separate predicates into EXISTS-related and non-EXISTS. A bare
+	// EXISTS (no surrounding NOT) gives a positive existential filter; a
+	// NOT-EXISTS wraps it in NotPredicate, which flips the residual
+	// comparison polarity below.
 	allPreds := sel.GetPredicates()
 	var regularPreds []predicates.QueryPredicate
+	hasExistsFilter := false
 	negated := false
 	for _, p := range flattenAndPredicates(allPreds) {
 		if _, ok := predicates.IsExistentialPredicate(p); ok {
+			hasExistsFilter = true
 			continue
 		}
 		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+			hasExistsFilter = true
 			negated = true
 			continue
 		}
 		regularPreds = append(regularPreds, p)
 	}
-
-	joinType := plans.JoinExists
-	if negated {
-		joinType = plans.JoinNotExists
-	}
-
-	outerMemoRef := call.MemoizeExpression(outerExpr)
 
 	// Extract source aliases for datum qualification.
 	aliases := sel.GetSourceAliases()
@@ -304,55 +321,382 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
+	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+	innerCorr := values.NamedCorrelationIdentifier(innerAlias)
+
+	// The SelectExpression's result value references the outer and existential
+	// QUANTIFIER aliases (e.g. q$43), but the FlatMap binds the outer/inner rows
+	// under the SOURCE aliases the rule uses (T1 / T2). Rebase the result value
+	// so a projected ExistsValue's QOV(existential-quantifier) resolves against
+	// the FlatMap's inner binding (RFC-141 projected EXISTS); WHERE-EXISTS keeps
+	// its bare-outer-QOV result value, which rebases to QOV(outer) unchanged.
+	resultValue := remapExistentialResultValue(sel.GetResultValue(),
+		quants[0].GetAlias(), outerCorr, quants[1].GetAlias(), innerCorr)
+
 	// Try correlated-scan FlatMap: if a correlated predicate matches the
-	// inner table's PK or index, use a correlated scan (fast path).
+	// inner table's PK or index, push the correlation into a parameterized
+	// inner scan (fast path). This is the pure-map FlatMap with the FOD
+	// inner; see buildExistsFlatMap. The fast path MUST use the SAME rebased
+	// resultValue: it binds the inner under innerCorr, so a projected
+	// ExistsValue's QOV(existential-quantifier) would otherwise stay unbound
+	// and read FALSE for every matched row (the non-fast path's rebase is the
+	// only thing that makes the projected boolean resolve).
 	if len(regularPreds) > 0 && !sel.IsQuantifiersSwapped() {
-		if r.tryExistsFlatMap(call, sel, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, regularPreds) {
+		if r.tryExistsFlatMap(call, resultValue, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, hasExistsFilter, negated, regularPreds) {
 			return
 		}
 	}
 
-	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), outerMemoRef)
-
-	// Non-correlated: NLJ with materialized inner (one-shot).
-	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(innerPlan, values.NewNullValue(values.UnknownType))
-	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
-		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
-	fodRef := call.MemoizeExpression(fodWrapper)
-
-	innerCorr := values.NamedCorrelationIdentifier(innerAlias)
+	// Split the non-EXISTS predicates: anything that references the INNER
+	// subquery filters the inner rows BELOW the FOD (so the FOD picks the first
+	// surviving match); a predicate that references ONLY the outer (or a
+	// pre-evaluated external binding) filters the outer above the FlatMap.
+	//
+	// The discriminator is POSITIVE membership in the existential inner's
+	// FROM-source-alias set (innerLegs): a predicate routes below the FOD iff it
+	// references a correlation IN that set. innerLegs is `{innerCorr}` ∪ {all
+	// FROM-source aliases the existential subplan declares} — for a single-table
+	// inner the one renamed inner correlation, for a multi-table FROM inner like
+	// `EXISTS (SELECT 1 FROM t2, t3 WHERE t2.t1_id = t1.id)` EVERY leg (t2, t3).
+	//
+	// Earlier rounds tested by ABSENCE — "references any correlation other than
+	// the outer". That over-routed: an UNCORRELATED SCALAR SUBQUERY in a
+	// predicate (`price > (SELECT MAX(x) FROM t2)`) has its OWN alias
+	// (ScalarSubqueryValue.GetCorrelatedTo adds it) that is non-outer yet NOT an
+	// inner leg — it is a pre-evaluated external binding. The absence test pushed
+	// that scalar predicate BELOW the FOD; alongside an empty NOT-EXISTS it never
+	// evaluated (the empty FOD's IS-NULL residual admitted every outer row), so
+	// the scalar comparison was silently dropped (RFC-141 R4 round-11). Routing
+	// by inner-leg-set MEMBERSHIP keeps round-10's multi-table fix (all inner legs
+	// route below, where the merged inner row's qualified leg keys T2.T1_ID and
+	// the live outer binding both resolve) AND keeps scalar-subquery / parameter /
+	// other external-binding predicates outer (where their pre-evaluated value is
+	// read and the comparison actually filters the outer row).
+	innerLegs := collectInnerLegAliases(innerRef, innerCorr)
 	var joinPreds []predicates.QueryPredicate
 	var outerOnlyPreds []predicates.QueryPredicate
 	for _, p := range regularPreds {
-		if _, ok := predicates.GetCorrelatedToOfPredicate(p)[innerCorr]; ok {
+		if predicateReferencesInnerLeg(p, innerLegs) {
 			joinPreds = append(joinPreds, p)
 		} else {
 			outerOnlyPreds = append(outerOnlyPreds, p)
 		}
 	}
 
-	var nljOuter plans.RecordQueryPlan = outerPlan
-	if len(outerOnlyPreds) > 0 {
-		outerCorr := values.NamedCorrelationIdentifier(outerAlias)
-		nljOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+	// Build the inner: [inner subplan | join-pred filter] | FirstOrDefault(NULL)
+	// | [residual existential filter]. The residual filter — Java's
+	// toResidualPredicate of the ExistentialValuePredicate — is what makes the
+	// pure-map FlatMap behave as a semi-join for WHERE-EXISTS.
+	var belowFOD plans.RecordQueryPlan = innerPlan
+	if len(joinPreds) > 0 {
+		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(innerPlan, joinPreds, innerCorr)
+	}
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+
+	var flatMapInner plans.RecordQueryPlan = fodPlan
+	if hasExistsFilter {
+		// EXISTS ⇒ QOV(inner) IS NOT NULL drops empty-subquery (NULL) rows;
+		// NOT-EXISTS ⇒ QOV(inner) IS NULL drops non-empty rows. Either way the
+		// pure-map FlatMap emits the outer row iff the residual survives.
+		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
+		if negated {
+			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
+		}
+		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorr), cmp)
+		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorr)
 	}
 
-	// A semi-join (EXISTS / NOT EXISTS) decides on the *presence* of inner
-	// rows, so the inner must be the raw subquery plan — the FlatMap cursor
-	// checks "did the inner yield a row". FirstOrDefault always yields one
-	// row (the real first or a NULL default), which would make a
-	// non-correlated EXISTS always true and NOT EXISTS always false. The
-	// correlated path already used innerPlan; use it unconditionally.
-	joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		nljOuter, innerPlan,
-		joinPreds,
-		joinType,
-		outerAlias, innerAlias,
-		sel.GetResultValue(),
+	var flatMapOuter plans.RecordQueryPlan = outerPlan
+	if len(outerOnlyPreds) > 0 {
+		flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerOnlyPreds, outerCorr)
+	}
+
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		flatMapOuter, flatMapInner,
+		outerCorr, innerCorr,
+		resultValue, false,
 	)
 
-	fodQuant := expressions.NewPhysicalQuantifier(fodRef)
-	call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, outerQuant, fodQuant))
+	// The FlatMap wrapper needs the outer + inner physical quantifiers for
+	// Cascades bookkeeping and cost. Range the inner quantifier over the FOD
+	// wrapper (the existential one-row inner) so cost/ordering see the
+	// FirstOrDefault, not the raw subquery.
+	outerQuant := expressions.NamedPhysicalQuantifier(quants[0].GetAlias(), call.MemoizeExpression(outerExpr))
+	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
+		expressions.NamedPhysicalQuantifier(quants[1].GetAlias(), call.MemoizeExpression(innerExpr)))
+	innerQuant := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQuant, innerQuant))
+}
+
+// remapExistentialResultValue rebases an existential SelectExpression's result
+// value so quantifier-alias references resolve against the FlatMap's source
+// correlations (RFC-141). A projected ExistsValue references the existential
+// QUANTIFIER alias (e.g. q$43); the FlatMap binds the inner row under the rule's
+// inner source correlation. Mapping q1.alias→innerCorr (and q0.alias→outerCorr)
+// makes the projected boolean resolve. When the aliases already coincide (the
+// bare-outer-QOV WHERE-EXISTS result), the rebase is an identity.
+func remapExistentialResultValue(
+	rv values.Value,
+	outerQAlias, outerCorr, innerQAlias, innerCorr values.CorrelationIdentifier,
+) values.Value {
+	if rv == nil {
+		return nil
+	}
+	am := values.AliasMap{}
+	if outerQAlias != outerCorr {
+		am[outerQAlias] = outerCorr
+	}
+	if innerQAlias != innerCorr {
+		am[innerQAlias] = innerCorr
+	}
+	if len(am) == 0 {
+		return rv
+	}
+	return values.RebaseValue(rv, am)
+}
+
+// resultValueReferencesAlias reports whether a SelectExpression result value's
+// correlation set includes `alias` — the structural signal (RFC-141 round-3)
+// that the result value is a PROJECTED EXISTS over a join (it reads the
+// existential quantifier), not the WHERE-EXISTS pass-through (a bare merged-row
+// identity, which is correlated only to the merged outer, never to the
+// existential quantifier). Returns false for a nil value.
+func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentifier) bool {
+	if rv == nil {
+		return false
+	}
+	_, ok := values.GetCorrelatedToOfValue(rv)[alias]
+	return ok
+}
+
+// rebaseOuterLegRefsToMerged rewrites references to the original join-outer leg
+// aliases (legAliases, e.g. ["E","D"]) so they resolve against the inner-join's
+// MERGED row bound under mergedCorr (RFC-141 Phase 2, P1a). A leg reference
+// `FieldValue{Field:"ID", Child:QOV("E")}` becomes
+// `FieldValue{Field:"E.ID", Child:QOV(mergedCorr)}` — i.e. it targets the merged
+// row's QUALIFIED "LEG.COL" key (written by the NLJ cursor's mergeRows), not the
+// last-leg-wins bare "ID" key. References to any other alias (the existential
+// inner P, parameters, constants) pass through untouched. Mirrors the predicate
+// shapes that can appear in existPreds (Comparison/And/Or/Not); other shapes are
+// returned unchanged.
+func rebaseOuterLegRefsToMerged(
+	p predicates.QueryPredicate,
+	legAliases []string,
+	mergedCorr values.CorrelationIdentifier,
+) predicates.QueryPredicate {
+	if p == nil {
+		return p
+	}
+	switch pred := p.(type) {
+	case *predicates.ComparisonPredicate:
+		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr)
+		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr)
+		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
+			return p
+		}
+		return &predicates.ComparisonPredicate{
+			Operand: newOperand,
+			Comparison: predicates.Comparison{
+				Type:    pred.Comparison.Type,
+				Operand: newCompOperand,
+				Escape:  pred.Comparison.Escape,
+			},
+		}
+	case *predicates.ValuePredicate:
+		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr)
+		if newVal == pred.Value {
+			return p
+		}
+		return predicates.NewValuePredicate(newVal)
+	case *predicates.AndPredicate:
+		changed := false
+		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr)
+			if subs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewAnd(subs...)
+	case *predicates.OrPredicate:
+		changed := false
+		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		for i, s := range pred.SubPredicates {
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr)
+			if subs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewOr(subs...)
+	case *predicates.NotPredicate:
+		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr)
+		if newChild == pred.Child {
+			return p
+		}
+		return predicates.NewNot(newChild)
+	default:
+		return p
+	}
+}
+
+// rebaseOuterLegValue is the value-tree half of rebaseOuterLegRefsToMerged. It
+// recurses the value tree; a leaf `FieldValue{Field, Child:QOV(leg)}` whose leg
+// matches (case-insensitively) one of legAliases is rewritten to a flat
+// qualified field over mergedCorr, so the FlatMap inner's binding-path lookup
+// resolves bm["LEG.COL"] (the merged row's unambiguous qualified key).
+func rebaseOuterLegValue(
+	v values.Value,
+	legAliases []string,
+	mergedCorr values.CorrelationIdentifier,
+) values.Value {
+	if v == nil {
+		return v
+	}
+	if fv, ok := v.(*values.FieldValue); ok {
+		// Only direct leg columns are rewritten. An already-dotted Field would
+		// indicate a pre-qualified reference from a deeper join level — those do
+		// not reach the EXISTS path (they are handled by tryFlatMapPlan's probe
+		// machinery), and re-qualifying would invent a key like "E.A.B".
+		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && !strings.Contains(fv.Field, ".") {
+			corr := strings.ToUpper(qov.Correlation.String())
+			for _, leg := range legAliases {
+				if leg != "" && strings.ToUpper(leg) == corr {
+					qualField := corr + "." + strings.ToUpper(fv.Field)
+					return values.NewFieldValue(
+						values.NewQuantifiedObjectValue(mergedCorr),
+						qualField, fv.Typ,
+					)
+				}
+			}
+		}
+	}
+	children := v.Children()
+	if len(children) == 0 {
+		return v
+	}
+	changed := false
+	newChildren := make([]values.Value, len(children))
+	for i, c := range children {
+		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr)
+		if newChildren[i] != c {
+			changed = true
+		}
+	}
+	if !changed {
+		return v
+	}
+	return values.WithChildren(v, newChildren)
+}
+
+// predicateReferencesInnerLeg reports whether a predicate references any
+// correlation in the existential inner's FROM-source-alias set (innerLegs) —
+// i.e. it touches the existential inner subquery and must be evaluated BELOW the
+// FirstOrDefault (against the inner row), not above/around the FlatMap (against
+// the outer row(s) alone).
+//
+// This is POSITIVE membership in the KNOWN inner-leg set, not the negation
+// "references any correlation that is NOT the outer". The two disagree on a
+// correlation that is neither outer NOR an inner leg: an UNCORRELATED SCALAR
+// SUBQUERY in a predicate (`price > (SELECT MAX(x) FROM t2)`) carries its own
+// ScalarSubqueryValue alias (a non-outer correlation), and a parameter marker
+// may too. Those are pre-evaluated EXTERNAL bindings, never inner table legs;
+// the absence test wrongly routed them below the FOD where, alongside an empty
+// NOT-EXISTS, they never evaluated and the comparison was silently dropped
+// (RFC-141 R4 round-11). Membership in innerLegs keeps round-10's multi-table
+// fix (every inner leg routes below) AND keeps such external-binding predicates
+// outer-side (the comparison actually filters the outer row).
+func predicateReferencesInnerLeg(p predicates.QueryPredicate, innerLegs map[values.CorrelationIdentifier]struct{}) bool {
+	for corr := range predicates.GetCorrelatedToOfPredicate(p) {
+		if _, ok := innerLegs[corr]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// collectInnerLegAliases computes the existential inner's FROM-source-alias set:
+// the KNOWN set of correlations the existential subplan declares, against which a
+// predicate is classified as inner (route below the FOD) vs. outer/external
+// (route outer-side). innerCorr is the rule's inner correlation, under which the
+// FlatMap binds the FOD inner.
+//
+// Two cases, distinguished by whether innerCorr is itself one of the subplan's
+// declared FROM-source aliases:
+//
+//   - MULTI-TABLE inner (`EXISTS (SELECT 1 FROM t2, t3 WHERE …)`):
+//     existsInnerCorrelation declines the rename, so innerCorr is the RIGHTMOST
+//     leg (sourceAlias(esq.Plan)) — a declared leg. The correlation predicates
+//     reference RAW leg aliases (t2, t3), resolved through the merged inner row's
+//     qualified LEG.COL keys. The full inner-leg set is ALL declared legs, so
+//     this returns innerCorr ∪ {t2, t3, …}.
+//
+//   - SINGLE-TABLE inner (`EXISTS (SELECT 1 FROM t WHERE …)`):
+//     existsInnerCorrelation RENAMED the inner correlation to a UNIQUE alias
+//     (the alias-shadow fix), and rebased the join predicate onto it. The
+//     predicate references THAT unique alias = innerCorr, never the subplan's
+//     own scan alias. innerCorr is NOT among the subplan's declared aliases, so
+//     this returns {innerCorr} ALONE. Crucially it must NOT include the subplan's
+//     raw scan alias: in the alias-shadow self-subquery (`FROM t … EXISTS (SELECT
+//     1 FROM t …)`) the outer source and the inner scan share the name `T`, and
+//     an outer-only predicate (`id > 1`, correlated to the shared `T`) would be
+//     mis-routed below the FOD if `T` leaked into the inner-leg set (the round-9
+//     regression). Returning {innerCorr} keeps it outer-side.
+//
+// The walk gathers declared aliases from each SelectExpression's
+// GetSourceAliases() and from ForEach/Physical quantifier aliases — never an
+// EXTERNAL value-tree binding (a scalar-subquery / parameter alias is not a FROM
+// quantifier), so such correlations never enter the inner-leg set.
+func collectInnerLegAliases(innerRef *expressions.Reference, innerCorr values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
+	declared := map[values.CorrelationIdentifier]struct{}{}
+	if innerRef != nil {
+		visited := map[*expressions.Reference]struct{}{}
+		var walk func(r *expressions.Reference)
+		walk = func(r *expressions.Reference) {
+			if r == nil {
+				return
+			}
+			r = r.Canonical()
+			if _, seen := visited[r]; seen {
+				return
+			}
+			visited[r] = struct{}{}
+			for _, m := range r.Members() {
+				if sel, ok := m.(*expressions.SelectExpression); ok {
+					for _, a := range sel.GetSourceAliases() {
+						if a != "" {
+							declared[values.NamedCorrelationIdentifier(a)] = struct{}{}
+						}
+					}
+				}
+				for _, q := range m.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierForEach || q.Kind() == expressions.QuantifierPhysical {
+						declared[q.GetAlias()] = struct{}{}
+					}
+					walk(q.GetRangesOver())
+				}
+			}
+		}
+		walk(innerRef)
+	}
+
+	// If innerCorr is itself a declared leg, the inner is multi-table (not
+	// renamed) and predicates reference the raw leg aliases — return all declared
+	// legs. Otherwise the inner correlation was renamed to a unique alias and
+	// predicates reference ONLY that; the subplan's raw aliases are not referenced
+	// and must not leak in (the alias-shadow case).
+	out := map[values.CorrelationIdentifier]struct{}{innerCorr: {}}
+	if _, ok := declared[innerCorr]; ok {
+		for a := range declared {
+			out[a] = struct{}{}
+		}
+	}
+	return out
 }
 
 // flattenAndPredicates extracts individual predicates from an AND
@@ -421,23 +765,41 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		existAlias = aliases[2]
 	}
 
-	// Split predicates into join predicates (for the inner NLJ) and
-	// EXISTS-related predicates (for the outer NLJ). EXISTS predicates
-	// reference the existential alias and belong on the outer level.
+	// Split predicates into join predicates (for the inner join) and
+	// EXISTS-related predicates (for the outer existential level). EXISTS
+	// predicates reference the existential alias and belong on the outer
+	// level.
 	allPreds := flattenAndPredicates(sel.GetPredicates())
 	var joinPreds, existPreds []predicates.QueryPredicate
+	hasExistsFilter := false
 	negated := false
+	existCorr := values.NamedCorrelationIdentifier(existAlias)
+	// The inner-leg set of the EXISTS subquery (existCorr ∪ all FROM-source
+	// aliases the existential subplan declares). A predicate that references a
+	// member belongs on the existential level, BELOW the FOD; a predicate that
+	// references ONLY the outer JOIN legs is the inner-join condition; an external
+	// binding (uncorrelated scalar subquery alias / parameter) stays on the
+	// left×right join, never pushed below the FOD (RFC-141 R4 round-11).
+	existLegs := collectInnerLegAliases(existRef, existCorr)
 	for _, p := range allPreds {
 		if _, ok := predicates.IsExistentialPredicate(p); ok {
 			// Pure EXISTS predicate — belongs on the outer level.
+			hasExistsFilter = true
 			continue
 		}
 		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+			hasExistsFilter = true
 			negated = true
 			continue
 		}
-		existCorr := values.NamedCorrelationIdentifier(existAlias)
-		if _, ok := predicates.GetCorrelatedToOfPredicate(p)[existCorr]; ok {
+		// A predicate referencing a member of the EXISTS inner-leg set belongs on
+		// the existential level, below the FOD. The earlier "any non-outer-leg
+		// correlation" test misclassified a correlation predicate referencing a
+		// NON-rightmost leg of a MULTI-TABLE EXISTS inner as an exist predicate but
+		// also over-routed an uncorrelated scalar-subquery predicate below the FOD;
+		// membership in existLegs is the precise discriminator (RFC-141 R4 round-10
+		// P2a + round-11, JOIN-in-FROM variant).
+		if predicateReferencesInnerLeg(p, existLegs) {
 			existPreds = append(existPreds, p)
 		} else {
 			joinPreds = append(joinPreds, p)
@@ -453,7 +815,8 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		joinType = plans.JoinInner
 	}
 
-	// Step 1: build inner join (left × right).
+	// Step 1: build inner join (left × right). Its merged row is the outer
+	// of the existential FlatMap.
 	innerJoinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 		leftPlan, rightPlan,
 		joinPreds,
@@ -462,42 +825,97 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		sel.GetResultValue(),
 	)
 
-	// Step 2: build EXISTS semi-join on top.
-	existJoinType := plans.JoinExists
-	if negated {
-		existJoinType = plans.JoinNotExists
-	}
+	// The inner-join's merged row is bound under a FRESH outer correlation in
+	// the existential FlatMap (Go's 3-quantifier join+EXISTS is a two-level
+	// plan: NLJ → FlatMap, unlike Java's single FlatMap that keeps both source
+	// aliases bound). Allocate that correlation up front so the existential
+	// predicates can be rebased onto it before they are pushed into the inner.
+	mergedOuterCorr := values.UniqueCorrelationIdentifier()
 
-	// Use raw existPlan when there are correlated predicates; FOD when
-	// uncorrelated (same logic as implementExistentialSelect).
-	var nljExistInner plans.RecordQueryPlan
+	// Step 2: build the existential level as a PURE-MAP FlatMap (RFC-141 —
+	// no EXISTS join mode). The inner is the existential subplan filtered by
+	// any correlated EXISTS predicates, wrapped in FirstOrDefault(NULL), then
+	// (for WHERE-EXISTS) a residual existential filter (QOV IS NOT NULL /
+	// IS NULL). The FlatMap returns the inner-join's merged row unchanged.
+	// (existCorr is computed above for the inner-leg-set classification.)
+
+	// RFC-141 Phase 2 (P1a): the existential-filter predicates (e.g.
+	// `proj.owner_id = e.id`) reference the ORIGINAL outer leg aliases (E / D),
+	// but they run INSIDE the FlatMap inner where those leg aliases are no
+	// longer bound — only `mergedOuterCorr` is (bound to the inner-join's
+	// merged row). Rebase every outer-leg reference onto `mergedOuterCorr`,
+	// resolving through the merged row's QUALIFIED "LEG.COL" key (the bare key
+	// is last-leg-wins and would silently pick the wrong leg). The existential
+	// alias references (P) are left untouched — they resolve against the inner
+	// scan's own binding below the FOD. Without this rebase E.ID evaluates to
+	// NULL ⇒ the correlation never matches ⇒ WHERE EXISTS drops every joined
+	// row and NOT EXISTS admits all.
 	if len(existPreds) > 0 {
-		nljExistInner = existPlan
-	} else {
-		nljExistInner = plans.NewRecordQueryFirstOrDefaultPlan(
-			existPlan, values.NewNullValue(values.UnknownType))
+		rebased := make([]predicates.QueryPredicate, len(existPreds))
+		for i, p := range existPreds {
+			rebased[i] = rebaseOuterLegRefsToMerged(p, []string{leftAlias, rightAlias}, mergedOuterCorr)
+		}
+		existPreds = rebased
 	}
 
-	outerJoinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
-		innerJoinPlan, nljExistInner,
-		existPreds,
-		existJoinType,
-		"", existAlias,
-		nil,
+	var belowFOD plans.RecordQueryPlan = existPlan
+	if len(existPreds) > 0 {
+		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(existPlan, existPreds, existCorr)
+	}
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+
+	var flatMapInner plans.RecordQueryPlan = fodPlan
+	if hasExistsFilter {
+		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
+		if negated {
+			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
+		}
+		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(existCorr), cmp)
+		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, existCorr)
+	}
+
+	// The FlatMap's result value.
+	//
+	//   - WHERE-EXISTS over a join (the original 3-quantifier shape): the
+	//     existential level only FILTERS — a separate projection sits above. The
+	//     result value is the identity over the merged outer row (QOV) so the
+	//     inner-join's merged "ALIAS.COL" keys pass through unchanged.
+	//
+	//   - PROJECTED EXISTS over a JOIN in FROM (RFC-141 round-3): the projection
+	//     (a RecordConstructor referencing the existential quantifier) was folded
+	//     into sel.GetResultValue(). It MUST be computed HERE, at the FlatMap,
+	//     with the existential FOD inner binding live — a projection above the
+	//     FlatMap would read the ExistsValue with a dead binding (constant false +
+	//     leaked columns). Rebase it onto the FlatMap's two bindings: leg columns
+	//     (T1.ID, T2.ID) resolve against the merged outer row's QUALIFIED keys
+	//     under mergedOuterCorr; the existential QOV (the projected ExistsValue's
+	//     child, keyed by the existential QUANTIFIER alias) resolves against the
+	//     inner FOD row under existCorr.
+	flatMapResult := values.Value(values.NewQuantifiedObjectValue(mergedOuterCorr))
+	if resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
+		// Leg references → merged outer row's qualified keys.
+		projected := rebaseOuterLegValue(sel.GetResultValue(), []string{leftAlias, rightAlias}, mergedOuterCorr)
+		// Existential quantifier alias → the FlatMap inner binding (existCorr).
+		if quants[2].GetAlias() != existCorr {
+			projected = values.RebaseValue(projected, values.AliasMap{quants[2].GetAlias(): existCorr})
+		}
+		flatMapResult = projected
+	}
+
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		innerJoinPlan, flatMapInner,
+		mergedOuterCorr, existCorr,
+		flatMapResult, false,
 	)
 
-	// Build quantifiers for the physical wrapper. The wrapper needs
-	// exactly 2 quantifiers. Use left + right as a representative
-	// pair for the memoized expression structure.
 	leftMemoRef := call.MemoizeExpression(leftExpr)
-	rightMemoRef := call.MemoizeExpression(rightExpr)
-
-	// The outerJoinPlan is the full physical plan (inner join + EXISTS
-	// semi-join). The wrapper quantifiers are for Cascades bookkeeping.
-	call.Yield(newPhysicalNestedLoopJoinWrapper(
-		outerJoinPlan,
+	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
+		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
+	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
+	call.Yield(newPhysicalFlatMapWrapper(
+		flatMapPlan,
 		expressions.ForEachQuantifier(leftMemoRef),
-		expressions.ForEachQuantifier(rightMemoRef),
+		innerQ,
 	))
 }
 
@@ -610,10 +1028,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 		switch joinType {
 		case plans.JoinLeftOuter:
 			flatMapPlan.SetLeftOuter(true)
-		case plans.JoinExists:
-			flatMapPlan.SetExists(true)
-		case plans.JoinNotExists:
-			flatMapPlan.SetNotExists(true)
 		}
 		rightCorr := values.NamedCorrelationIdentifier(rightAlias)
 		leftCorr := values.NamedCorrelationIdentifier(leftAlias)
@@ -655,10 +1069,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			switch joinType {
 			case plans.JoinLeftOuter:
 				flatMapPlan.SetLeftOuter(true)
-			case plans.JoinExists:
-				flatMapPlan.SetExists(true)
-			case plans.JoinNotExists:
-				flatMapPlan.SetNotExists(true)
 			}
 		}
 
@@ -749,10 +1159,6 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 			switch joinType {
 			case plans.JoinLeftOuter:
 				flatMapPlan.SetLeftOuter(true)
-			case plans.JoinExists:
-				flatMapPlan.SetExists(true)
-			case plans.JoinNotExists:
-				flatMapPlan.SetNotExists(true)
 			}
 			idxRightCorr := values.NamedCorrelationIdentifier(rightAlias)
 			idxLeftCorr := values.NamedCorrelationIdentifier(leftAlias)
@@ -815,15 +1221,18 @@ func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
 }
 
 // tryExistsFlatMap is like tryFlatMapPlan but for EXISTS subqueries.
-// The key difference: residual predicates wrap the INNER plan (filter
-// inner rows before EXISTS check) rather than wrapping above the FlatMap.
+// It pushes the correlation predicate into a parameterized inner scan
+// (PK or secondary index), then wraps that correlated inner in
+// FirstOrDefault(NULL) and (for WHERE-EXISTS) a residual existential
+// filter — the pure-map FlatMap shape (RFC-141). Inner residuals filter
+// BELOW the FOD; the existential residual filters ABOVE it.
 func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 	call *ExpressionRuleCall,
-	sel *expressions.SelectExpression,
+	resultValue values.Value,
 	outerPlan, innerPlan plans.RecordQueryPlan,
 	outerAlias, innerAlias string,
 	outerExpr, innerExpr expressions.RelationalExpression,
-	joinType plans.JoinType,
+	hasExistsFilter, negated bool,
 	preds []predicates.QueryPredicate,
 ) bool {
 	innerScan, ok := innerPlan.(*plans.RecordQueryScanPlan)
@@ -854,7 +1263,7 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			if outerVal == nil {
 				continue
 			}
-			return r.buildExistsFlatMap(call, sel, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, joinType, outerVal, pred, preds)
+			return r.buildExistsFlatMap(call, resultValue, outerPlan, innerScan, outerAlias, innerAlias, outerExpr, innerExpr, hasExistsFilter, negated, outerVal, pred, preds)
 		}
 	}
 
@@ -913,31 +1322,9 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				}
 			}
 
-			var innerWithFilter plans.RecordQueryPlan = correlatedIndexScan
-			if len(innerResiduals) > 0 {
-				innerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedIndexScan, innerResiduals, existInnerCorr)
-			}
-
-			var outerWithFilter plans.RecordQueryPlan = outerPlan
-			if len(outerResiduals) > 0 {
-				outerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
-			}
-
-			innerCorrelation := existInnerCorr
-			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-				outerWithFilter, innerWithFilter,
-				outerCorrelation, innerCorrelation,
-				sel.GetResultValue(), true,
-			)
-			switch joinType {
-			case plans.JoinExists:
-				flatMapPlan.SetExists(true)
-			case plans.JoinNotExists:
-				flatMapPlan.SetNotExists(true)
-			}
-			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
-			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-			call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+			r.yieldExistsFlatMap(call, resultValue, outerPlan, correlatedIndexScan,
+				outerCorrelation, existInnerCorr, outerExpr, innerExpr,
+				hasExistsFilter, negated, innerResiduals, outerResiduals)
 			return true
 		}
 	}
@@ -946,11 +1333,11 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 
 func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 	call *ExpressionRuleCall,
-	sel *expressions.SelectExpression,
+	resultValue values.Value,
 	outerPlan plans.RecordQueryPlan, innerScan *plans.RecordQueryScanPlan,
 	outerAlias, innerAlias string,
 	outerExpr, innerExpr expressions.RelationalExpression,
-	joinType plans.JoinType,
+	hasExistsFilter, negated bool,
 	outerVal *values.FieldValue,
 	matchedPred predicates.QueryPredicate,
 	allPreds []predicates.QueryPredicate,
@@ -983,32 +1370,63 @@ func (r *ImplementNestedLoopJoinRule) buildExistsFlatMap(
 		}
 	}
 
-	var innerWithFilter plans.RecordQueryPlan = correlatedScan
-	if len(innerResiduals) > 0 {
-		innerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedScan, innerResiduals, buildInnerCorr)
-	}
-
-	var outerWithFilter plans.RecordQueryPlan = outerPlan
-	if len(outerResiduals) > 0 {
-		outerWithFilter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
-	}
-
-	innerCorrelation := buildInnerCorr
-	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-		outerWithFilter, innerWithFilter,
-		outerCorrelation, innerCorrelation,
-		sel.GetResultValue(), true,
-	)
-	switch joinType {
-	case plans.JoinExists:
-		flatMapPlan.SetExists(true)
-	case plans.JoinNotExists:
-		flatMapPlan.SetNotExists(true)
-	}
-	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
-	rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
-	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
+	r.yieldExistsFlatMap(call, resultValue, outerPlan, correlatedScan,
+		outerCorrelation, buildInnerCorr, outerExpr, innerExpr,
+		hasExistsFilter, negated, innerResiduals, outerResiduals)
 	return true
+}
+
+// yieldExistsFlatMap assembles and yields the pure-map FlatMap for an
+// EXISTS subquery whose correlation has been pushed into `correlatedInner`
+// (a parameterized PK/index scan). The inner is wrapped:
+//
+//	correlatedInner [| inner-residual filter] | FirstOrDefault(NULL)
+//	  [| residual existential filter (QOV IS NOT NULL / IS NULL)]
+//
+// The existential residual is omitted for a projected-only EXISTS
+// (hasExistsFilter == false), where the boolean is computed by the map's
+// resultValue instead.
+func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
+	call *ExpressionRuleCall,
+	resultValue values.Value,
+	outerPlan plans.RecordQueryPlan,
+	correlatedInner plans.RecordQueryPlan,
+	outerCorrelation, innerCorrelation values.CorrelationIdentifier,
+	outerExpr, innerExpr expressions.RelationalExpression,
+	hasExistsFilter, negated bool,
+	innerResiduals, outerResiduals []predicates.QueryPredicate,
+) {
+	var belowFOD plans.RecordQueryPlan = correlatedInner
+	if len(innerResiduals) > 0 {
+		belowFOD = plans.NewRecordQueryPredicatesFilterPlanWithAlias(correlatedInner, innerResiduals, innerCorrelation)
+	}
+	fodPlan := plans.NewRecordQueryFirstOrDefaultPlan(belowFOD, values.NewNullValue(values.UnknownType))
+
+	var flatMapInner plans.RecordQueryPlan = fodPlan
+	if hasExistsFilter {
+		cmp := predicates.Comparison{Type: predicates.ComparisonIsNotNull}
+		if negated {
+			cmp = predicates.Comparison{Type: predicates.ComparisonIsNull}
+		}
+		residual := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(innerCorrelation), cmp)
+		flatMapInner = plans.NewRecordQueryPredicatesFilterPlanWithAlias(fodPlan, []predicates.QueryPredicate{residual}, innerCorrelation)
+	}
+
+	var flatMapOuter plans.RecordQueryPlan = outerPlan
+	if len(outerResiduals) > 0 {
+		flatMapOuter = plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, outerResiduals, outerCorrelation)
+	}
+
+	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
+		flatMapOuter, flatMapInner,
+		outerCorrelation, innerCorrelation,
+		resultValue, false,
+	)
+	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
+	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
+		expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr)))
+	rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
+	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 }
 
 // matchJoinPKPredicate checks if a comparison predicate matches the

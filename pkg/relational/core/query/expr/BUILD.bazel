@@ -14,6 +14,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/semantic",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )
 
@@ -25,6 +26,7 @@ go_test(
         "expr_test.go",
         "fullstack_test.go",
         "walk_test.go",
+        "where_exists_position_test.go",
         "window_walk_test.go",
     ],
     deps = [

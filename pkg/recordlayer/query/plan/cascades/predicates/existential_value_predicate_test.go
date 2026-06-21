@@ -141,3 +141,39 @@ func TestExistsValueToQueryPredicate(t *testing.T) {
 		t.Fatalf("comparison = %v, want ComparisonIsNotNull", evp.Comparison.Type)
 	}
 }
+
+// TestContainsExistentialPredicate covers the RFC-141 R4 round-12 convergence
+// backstop primitive: detection of an existential semi-join predicate at ANY
+// depth in a predicate tree.
+func TestContainsExistentialPredicate(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier("e")
+	evp := NewExistentialAlias(alias)
+	other := NewConstantPredicate(TriTrue)
+
+	cases := []struct {
+		name string
+		p    QueryPredicate
+		want bool
+	}{
+		{"bare existential", evp, true},
+		{"single NOT existential", NewNot(evp), true},
+		{"double NOT existential", NewNot(NewNot(evp)), true},
+		{"existential under AND", NewAnd(other, evp), true},
+		{"existential under OR", NewOr(other, evp), true},
+		{"existential deeply nested", NewNot(NewOr(other, NewAnd(other, evp))), true},
+		{"no existential (constant)", other, false},
+		{"no existential (NOT constant)", NewNot(other), false},
+		{"no existential (AND of constants)", NewAnd(other, NewConstantPredicate(TriFalse)), false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ContainsExistentialPredicate(c.p); got != c.want {
+				t.Fatalf("ContainsExistentialPredicate(%s) = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+}

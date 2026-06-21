@@ -36,8 +36,12 @@ const (
 	JoinInner JoinType = iota
 	JoinLeftOuter
 	JoinCross
-	JoinExists    // semi-join for EXISTS subqueries
-	JoinNotExists // anti semi-join for NOT EXISTS subqueries
+	// Slots 3 and 4 were JoinExists / JoinNotExists, removed in RFC-141 Phase 2:
+	// EXISTS is no longer a fused join mode — the existential semi-join is emergent
+	// (FirstOrDefault-wrapped inner + a separate IS-NOT-NULL filter, matching Java).
+	// The slots are kept blank so the subsequent iota values stay stable.
+	_
+	_
 	// JoinFullOuter — FULL OUTER JOIN: every left row (matched or
 	// NULL-padded right) plus every right row that matched no left row
 	// (NULL-padded left). Go-only query extension; Java's SQL layer has
@@ -56,10 +60,6 @@ func (jt JoinType) String() string {
 		return "LEFT OUTER"
 	case JoinCross:
 		return "CROSS"
-	case JoinExists:
-		return "EXISTS"
-	case JoinNotExists:
-		return "NOT EXISTS"
 	case JoinFullOuter:
 		return "FULL OUTER"
 	}

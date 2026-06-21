@@ -158,3 +158,31 @@ func IsNotExistentialPredicate(p QueryPredicate) (values.CorrelationIdentifier, 
 	}
 	return IsExistentialPredicate(ch[0])
 }
+
+// ContainsExistentialPredicate reports whether the predicate tree rooted at p
+// contains an existential semi-join predicate ANYWHERE in its subtree — an
+// *ExistentialValuePredicate, or the bare QuantifiedObjectValue-IS-NOT-NULL
+// *ComparisonPredicate it lowers to (the same shape IsExistentialPredicate
+// recognises). A structural (typed-node) walk, not text matching.
+//
+// This is the RFC-141 R4 round-12 convergence backstop primitive. EXISTS can
+// appear at any depth in a WHERE predicate tree, and only a TOP-LEVEL (or
+// single-NOT-wrapped) existential is a directly-handled semi-join shape that
+// the NLJ rule lowers to a FirstOrDefault + residual filter. An existential
+// buried under any OTHER wrapper — `NOT (NOT EXISTS(...))`, `EXISTS(...) OR p`,
+// arbitrary AND/OR/NOT nesting that is not the direct/single-NOT shape — falls
+// into the regular-predicate bucket where the empty FirstOrDefault's NULL
+// default is never removed and every outer row silently passes. The guard uses
+// this to DETECT any such buried existential and REJECT the query cleanly rather
+// than mis-evaluate it.
+func ContainsExistentialPredicate(p QueryPredicate) bool {
+	found := false
+	WalkPredicate(p, func(node QueryPredicate) bool {
+		if _, ok := IsExistentialPredicate(node); ok {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}

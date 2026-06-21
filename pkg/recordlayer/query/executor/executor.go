@@ -1715,7 +1715,7 @@ func executeFlatMap(
 		outerCursor, p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
-		p.IsLeftOuter(), p.IsExists(), p.IsNotExists(),
+		p.IsLeftOuter(),
 		nestedProps,
 	)
 	cursor.initialInnerCont = innerCont

@@ -4890,17 +4890,22 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Correlated EXISTS in CASE expression — now works.
-	rows, err := db.QueryContext(ctx, `
+	// A NESTED projected EXISTS — `CASE WHEN EXISTS(...) THEN ... ELSE ... END` —
+	// is NOT a directly-foldable projected-EXISTS shape (RFC-141 R4 round-12 P1b).
+	// The EXISTS would be evaluated ABOVE the FlatMap with the existential binding
+	// dead, so the CASE condition reads a constant false and EVERY row takes the
+	// ELSE branch — a silent wrong result. The round-12 convergence backstop
+	// detects the nested EXISTS structurally and rejects the query cleanly with
+	// ErrCodeUnsupportedQuery, rather than returning the wrong rows.
+	//
+	// (This test previously only asserted err==nil and logged the rows without
+	// validating them — a fake checkbox: the shape was silently-wrong the whole
+	// time. Now it pins the clean rejection.)
+	_, err = db.QueryContext(ctx, `
 		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	for rows.Next() {
-		var name, status string
-		g.Expect(rows.Scan(&name, &status)).To(gomega.Succeed())
-		t.Logf("%s: %s", name, status)
-	}
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("projected EXISTS in this query shape is not yet supported"))
 }
 
 func TestFDB_AggregateOnCTE(t *testing.T) {

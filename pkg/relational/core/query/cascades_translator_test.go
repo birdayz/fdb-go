@@ -995,3 +995,66 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)
 	}
 }
+
+// TestPullUpToOutputField_PointerIdentityPreferred pins that pullUpToOutputField
+// prefers an EXACT POINTER-identity output field over an earlier
+// semantically-equal one. When two SELECT-list aliases share a
+// semantically-equal value (`id AS a, id AS b ORDER BY b`),
+// upgradeSortKeyValues copies the EXACT projected Value pointer into the sort
+// key, so the key actually names the pointer-identical field (`b`). A single
+// semantic-equality pass would return the first equal field (`a`) and pull up to
+// the WRONG output column name. The two-pass design (Torvalds round-6 review)
+// keeps the pulled-up name faithful to the aliased column.
+func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
+	t.Parallel()
+
+	// Two distinct FieldValue pointers that are SEMANTICALLY EQUAL (same field).
+	valA := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	valB := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if !values.SemanticEqualsUnderAliasMap(valA, valB, values.AliasMap{}) {
+		t.Fatalf("test setup: valA and valB must be semantically equal")
+	}
+	if valA == valB {
+		t.Fatalf("test setup: valA and valB must be distinct pointers")
+	}
+
+	fields := []values.RecordConstructorField{
+		{Name: "A", Value: valA},
+		{Name: "B", Value: valB},
+	}
+
+	// Sort key Value is the EXACT pointer of output field B. The pull-up must
+	// resolve to B (pointer identity), NOT A (earlier semantic match).
+	got, ok := pullUpToOutputField(valB, fields)
+	if !ok {
+		t.Fatalf("pullUpToOutputField returned no match for a pointer-identical key")
+	}
+	fv, isField := got.(*values.FieldValue)
+	if !isField {
+		t.Fatalf("pull-up returned %T, want *FieldValue", got)
+	}
+	if fv.Field != "B" {
+		t.Errorf("pull-up resolved to output field %q, want %q — pointer-identical field must win over an earlier semantic match", fv.Field, "B")
+	}
+
+	// Symmetric: keying on valA must resolve to A.
+	if got, ok := pullUpToOutputField(valA, fields); ok {
+		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
+			t.Errorf("pull-up on valA resolved to %q, want %q", fv.Field, "A")
+		}
+	} else {
+		t.Errorf("pullUpToOutputField returned no match for valA")
+	}
+
+	// A key that is only SEMANTICALLY equal (a third distinct pointer) falls to
+	// pass 2 and resolves to the FIRST semantically-equal field (A) — the
+	// documented fallback for rebuilt (non-pointer-copied) keys.
+	valC := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if got, ok := pullUpToOutputField(valC, fields); ok {
+		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
+			t.Errorf("semantic-only pull-up resolved to %q, want first equal field %q", fv.Field, "A")
+		}
+	} else {
+		t.Errorf("pullUpToOutputField returned no match for a semantically-equal key")
+	}
+}

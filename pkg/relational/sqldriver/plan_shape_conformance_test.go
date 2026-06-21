@@ -741,20 +741,37 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Non-PK correlated EXISTS → NLJ(EXISTS) fallback.
+	// RFC-141: WHERE-EXISTS is a PURE-MAP FlatMap whose existential inner is
+	// FirstOrDefault(inner, NULL) topped by a residual existential filter
+	// (QOV IS NOT NULL). There is no fused EXISTS join mode any more — the
+	// semi-join is emergent (matches Java's
+	// "... MAP | DEFAULT NULL | FILTER _ NOT_NULL ..." shape).
+	//
+	// Non-PK correlated EXISTS: the inner correlation can't push to a scan
+	// range, so the inner is Scan(child)+filter | FirstOrDefault | filter.
 	plan := planExplainVia(t, ctx, db,
 		"SELECT id FROM parent WHERE EXISTS (SELECT 1 FROM child WHERE child.parent_id = parent.id)")
 	t.Logf("Non-PK EXISTS plan:\n%s", plan)
-	if !strings.Contains(plan, "EXISTS") {
-		t.Errorf("expected EXISTS in plan, got:\n%s", plan)
+	if !strings.Contains(plan, "FlatMap") {
+		t.Errorf("expected FlatMap in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "FirstOrDefault") {
+		t.Errorf("expected FirstOrDefault (existential one-row inner) in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "PredicatesFilter") {
+		t.Errorf("expected PredicatesFilter (residual existential filter) in plan, got:\n%s", plan)
 	}
 
-	// PK-matching correlated EXISTS → FlatMap(EXISTS).
+	// PK-matching correlated EXISTS: the inner correlation pushes into a
+	// parameterized PK scan (Scan(parent, [=])) below the FirstOrDefault.
 	plan = planExplainVia(t, ctx, db,
 		"SELECT id FROM child WHERE EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id)")
 	t.Logf("PK EXISTS plan:\n%s", plan)
-	if !strings.Contains(plan, "FlatMap") && !strings.Contains(plan, "EXISTS") {
-		t.Errorf("expected FlatMap or EXISTS in plan, got:\n%s", plan)
+	if !strings.Contains(plan, "FlatMap") {
+		t.Errorf("expected FlatMap in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "FirstOrDefault") {
+		t.Errorf("expected FirstOrDefault (existential one-row inner) in plan, got:\n%s", plan)
 	}
 }
 

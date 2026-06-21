@@ -927,12 +927,6 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
-				case plans.JoinExists:
-					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
-					c.currentOuter = nil
-					return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
-				case plans.JoinNotExists:
-					c.currentOuter = nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -964,12 +958,6 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
-				case plans.JoinExists:
-					row := qualifyOuterRow(*c.currentOuter, c.outerAlias)
-					c.currentOuter = nil
-					return recordlayer.NewResultWithValue(row, nonEndContinuation), nil
-				case plans.JoinNotExists:
-					c.currentOuter = nil
 				}
 				if c.currentOuter == nil {
 					break
@@ -991,12 +979,6 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				return recordlayer.NewResultWithValue(
 					qualifyOuterRow(outerRow, c.outerAlias), nonEndContinuation,
 				), nil
-			case plans.JoinNotExists:
-				qualified := outerRow
-				if c.outerAlias != "" {
-					qualified = qualifyOuterRow(outerRow, c.outerAlias)
-				}
-				return recordlayer.NewResultWithValue(qualified, nonEndContinuation), nil
 			}
 		}
 	}

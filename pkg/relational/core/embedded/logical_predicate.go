@@ -441,6 +441,16 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
+			// RFC-141 R4 round-12: EXISTS in a JOIN ON clause is NOT a
+			// directly-handled position. The ON resolver carries no
+			// SubqueryPlanner, so WalkPredicate would error on the EXISTS and the
+			// whole ON predicate would be silently DROPPED → every joined row
+			// passes (a silent wrong result). Detect a contained EXISTS atom
+			// structurally and reject cleanly rather than drop the condition.
+			if expr.ContainsExistsAtom(sq.joins[sqIdx].onExpr) {
+				return api.NewError(api.ErrCodeUnsupportedQuery,
+					"EXISTS in a JOIN ON clause is not yet supported")
+			}
 			pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
 			if walkErr != nil {
 				var srcNotFound *semantic.SourceNotFoundError
@@ -958,6 +968,17 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 				return nil, api.NewError(api.ErrCodeUnsupportedSort,
 					"ORDER BY with scalar subquery is not supported")
 			}
+			// RFC-141 R4 round-12: EXISTS in an ORDER BY key is NOT a
+			// directly-handled position. The sort-key resolver carries no
+			// SubqueryPlanner, so the EXISTS would fail to resolve, the key would
+			// keep its raw text form, and the existential would never be
+			// evaluated → a silent WRONG ORDERING (all rows tie on a constant).
+			// Reject cleanly rather than mis-order (mirrors the scalar-subquery
+			// rejection above).
+			if expr.ContainsExistsAtom(ob.rawExpr) {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+					"EXISTS in an ORDER BY clause is not yet supported")
+			}
 		}
 	}
 	if resolver != nil {
@@ -1114,6 +1135,24 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 
 	upgradeSortKeyValues(op, sq, md, cteScopes)
 
+	// RFC-141 Phase 2 (projected EXISTS, the hidden-blocker step): a projected
+	// ExistsValue carries an existential alias but, unlike a WHERE-EXISTS, it is
+	// not collected into the existential-subquery list the translator reads to
+	// attach the NamedExistentialQuantifier. upgradeProjectionValues already ran
+	// BuildExists for projected EXISTS (populating existsPlanner.subqueries via
+	// the walk's walkExistsValue). When there is no WHERE clause to carry them,
+	// synthesize a LogicalFilter (nil predicate) above the scan to hold the
+	// projected-EXISTS subqueries so the translator attaches the existential
+	// quantifier and builds the FlatMap; the existential boolean is then computed
+	// by the projection's ExistsValue inside the SelectExpression's result value.
+	if sq.whereExpr == nil && existsPlanner != nil && len(existsPlanner.subqueries) > 0 &&
+		projectionHasExistsValue(op) {
+		op = attachOrSynthesizeExistsFilter(op, existsPlanner.subqueries)
+		existsPlanner.subqueries = nil
+		// Fall through to QUALIFY handling below (the synthesized filter and a
+		// QUALIFY predicate are independent).
+	}
+
 	if sq.whereExpr == nil {
 		// No WHERE, but a QUALIFY filter (the vector K-NN ROW_NUMBER() <= K
 		// predicate) must still be attached — synthesize a LogicalFilter above
@@ -1127,6 +1166,22 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			op = attachOrSynthesizeFilter(op, qualPred)
 		}
 		return op, nil
+	}
+
+	// RFC-141 R4 round-13: this select-build path (used for SUBQUERIES — scalar /
+	// EXISTS / derived-table inner plans built via buildLogicalPlanForQueryWith*)
+	// is a SECOND WHERE-build path, distinct from the PlanVisitor's
+	// visitSelectQuery (which carries the same guard). An EXISTS buried in a SCALAR
+	// expression in this subquery's WHERE (`(SELECT MAX(id) FROM t2 WHERE CASE WHEN
+	// EXISTS(...) THEN 1 ELSE 0 END = 1)`) lowers to a constant-false Value with no
+	// existential quantifier driving it — a silent wrong result for the subquery.
+	// Detect it structurally and reject cleanly here too, so a nested subquery
+	// behaves identically whether it runs standalone or embedded in an outer query
+	// (the round-13 boundary stop makes the OUTER detector NOT pre-empt this — the
+	// subquery owns its own clause; this guard is where that ownership is enforced).
+	if sq.whereExpr.Expression() != nil && expr.WhereExistsInScalarPosition(sq.whereExpr.Expression()) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"EXISTS nested in a scalar expression is not yet supported")
 	}
 
 	// Install the SubqueryPlanner on the resolver so EXISTS and scalar
@@ -1181,6 +1236,19 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 			if errors.As(walkErr, &corrExistsErr) {
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 					"nested correlated EXISTS: %v", walkErr)
+			}
+			// A structured *api.Error from the walk is a deliberate, already
+			// SQLSTATE-classified rejection raised by a nested subquery's build
+			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
+			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
+			// RFC-141 R4 round-13). It must surface VERBATIM, not fall through to
+			// the text-fallback predicate builder below — which declines the EXISTS
+			// shape and reports the generic "Cascades planner could not plan",
+			// masking the precise reason. (The specific remappings above run first,
+			// so a fallback-intended ErrCodeUndefinedColumn still takes precedence.)
+			var apiErr *api.Error
+			if errors.As(walkErr, &apiErr) {
+				return nil, apiErr
 			}
 		} else {
 			preWalkPred = walked
@@ -1743,6 +1811,82 @@ func upgradeFirstFilterExistsSubqueries(op logical.LogicalOperator, subqueries [
 	return false
 }
 
+// projectionHasExistsValue reports whether the LogicalProject on op's unary
+// spine carries a projected ExistsValue (RFC-141 Phase 2). Walks the projected
+// Value trees TYPED — no GetText / text matching — so `NOT EXISTS` (NotValue
+// over ExistsValue), CASE branches, etc. are all detected structurally.
+func projectionHasExistsValue(op logical.LogicalOperator) bool {
+	proj := findProjection(op)
+	if proj == nil {
+		return false
+	}
+	for _, v := range proj.ProjectedValues {
+		if v == nil {
+			continue
+		}
+		found := false
+		values.WalkValue(v, func(node values.Value) bool {
+			if _, ok := node.(*values.ExistsValue); ok {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// attachOrSynthesizeExistsFilter attaches the projected-EXISTS subqueries to
+// the first LogicalFilter on op's unary spine; if there is none (a projected
+// EXISTS with no WHERE builds no filter), it synthesizes a LogicalFilter (nil
+// predicate) directly above the base LogicalScan to hold them — the same
+// position a WHERE filter occupies — so the translator attaches the existential
+// quantifier and builds the FlatMap. Returns the (possibly new) plan root.
+func attachOrSynthesizeExistsFilter(op logical.LogicalOperator, subqueries []logical.ExistsSubquery) logical.LogicalOperator {
+	if upgradeFirstFilterExistsSubqueries(op, subqueries) {
+		return op
+	}
+	if _, isScan := op.(*logical.LogicalScan); isScan {
+		f := logical.NewFilterWithPredicate(op, nil, "")
+		f.ExistsSubqueries = subqueries
+		return f
+	}
+	// Walk the unary spine to the deepest unary operator and synthesize the
+	// existential filter as its child — directly above the scan OR the join.
+	// The filter MUST land UNDER the projection (between the last unary op and
+	// the leaf/join), never above it: a filter above the projection runs the
+	// projection — and its projected ExistsValue — BEFORE the FlatMap, where the
+	// existential binding is dead (the round-3 join-from leak). With the filter
+	// below the projection, translateProject's findExistsFilterUnderUnaryChain
+	// reaches the existential filter and folds the projection into the
+	// existential SelectExpression's result value (RFC-141), handling a JOIN
+	// input via buildExistentialSelect's join flatten.
+	for cur := op; cur != nil; {
+		child, ok := unaryInput(cur)
+		if !ok {
+			// op itself is non-unary (e.g. a bare LogicalJoin with no project).
+			// Wrap it directly; there is no projection above to displace.
+			f := logical.NewFilterWithPredicate(op, nil, "")
+			f.ExistsSubqueries = subqueries
+			return f
+		}
+		// child is the deepest unary's input when it is a scan OR a join (any
+		// non-unary). Either way the synthesized filter must sit on top of that
+		// child, below cur, so the spine becomes ...cur -> Filter(child).
+		if _, childUnary := unaryInput(child); !childUnary {
+			f := logical.NewFilterWithPredicate(child, nil, "")
+			f.ExistsSubqueries = subqueries
+			setUnaryInput(cur, f)
+			return op
+		}
+		cur = child
+	}
+	return op
+}
+
 // upgradeFirstFilterScalarSubqueries walks the single-child chain
 // from op and, at the first LogicalFilter, attaches the scalar
 // subquery plans. Returns true when a Filter was found.
@@ -1886,6 +2030,13 @@ func upgradeProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 			var corrErr *CorrelatedExistsError
 			if errors.As(err, &corrErr) {
 				return api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
+			}
+			// RFC-141 R4 round-12 (P1b): a SELECT item with a NESTED EXISTS is not
+			// foldable; reject cleanly rather than fall through to the text path
+			// (which would evaluate the ExistsValue with a dead binding → wrong).
+			var nestedExists *expr.NestedExistsProjectionError
+			if errors.As(err, &nestedExists) {
+				return api.NewError(api.ErrCodeUnsupportedQuery, nestedExists.Error())
 			}
 			continue
 		}
@@ -2183,6 +2334,19 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 }
 
 func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) error {
+	// RFC-141 §8 safety guard: GROUP BY on an EXISTS expression (e.g. `GROUP BY
+	// id, EXISTS(...)` where the EXISTS column is the grouping key) cannot be
+	// folded — the aggregate path has no SubqueryPlanner, so the existential
+	// never resolves to a Value and the group key silently evaluates to a
+	// constant. Reject cleanly rather than ship a constant-false grouped column.
+	// Structural detection (typed ANTLR node), no text matching.
+	for _, gbe := range sq.groupByExprs {
+		if gbe != nil && expr.ContainsExistsAtom(gbe) {
+			return api.NewError(api.ErrCodeUnsupportedQuery,
+				"projected EXISTS in this query shape is not yet supported")
+		}
+	}
+
 	groupBySet := make(map[string]bool, len(sq.groupBy))
 	for _, gb := range sq.groupBy {
 		ref := parseColRef(gb)
