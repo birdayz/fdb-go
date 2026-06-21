@@ -348,6 +348,131 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(Equal(int64(5)))
 		})
 
+		It("applies the enforced post-transaction delay under the default config (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 6 records without index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 6; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// limit=2 → ~3 chunks, 40ms enforced delay each. Crucially NO SetMaxRetries
+			// (default 0): proves the enforced delay applies in the DEFAULT config and only
+			// AFTER each committed range. Without the wiring fix the throttle was gated
+			// behind retries and the delay never fired — this build would finish in ~ms.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetLimit(2).SetEnforcedPostTransactionDelay(40).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			total, err := indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", int64(6)))
+			Expect(elapsed).To(BeNumerically(">=", 60*time.Millisecond), "enforced delay must fire per transaction by default")
+		})
+
+		It("does not apply the enforced delay after the final range (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 2 records — with the default limit they index in a SINGLE range whose
+			// build returns hasMore=false. The enforced delay is a between-transactions
+			// delay, so a single/final range must NOT pay it (Java skips it when done).
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 2; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Large enforced delay (500ms): if the final range wrongly paid it, the build
+			// would take ≥500ms. With the skip, a single-chunk build finishes in ~ms.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetEnforcedPostTransactionDelay(500).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			_, err = indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(elapsed).To(BeNumerically("<", 300*time.Millisecond), "no enforced delay after the final range")
+		})
+
+		It("returns a time-limit error without paying the enforced delay (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 6 records → multiple chunks at limit=2.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 6; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Tiny time limit + a large (1s) enforced delay. After the first range the
+			// between-ranges time check — which accounts for the upcoming 1s delay — trips
+			// and the build returns TimeLimitExceededError WITHOUT sleeping the delay. The
+			// old (sleep-then-check) wiring would have stalled ~1s past the deadline.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetLimit(2).SetTimeLimit(time.Millisecond).SetEnforcedPostTransactionDelay(1000).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			_, buildErr := indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			var tle *TimeLimitExceededError
+			Expect(errors.As(buildErr, &tle)).To(BeTrue(), "expected a time-limit error")
+			Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond), "must not pay the enforced delay when over the time limit")
+		})
+
 		It("filters to correct record type", func() {
 			ks := specSubspace()
 

@@ -210,15 +210,18 @@ type OnlineIndexer struct {
 	sourceIndex      *Index   // non-nil = BY_INDEX strategy (single target only)
 	subspace         subspace.Subspace
 	limit            int
-	maxRetries       int               // max retries per range on transient failures (0 = no retries)
-	recordsPerSecond int               // inter-transaction rate limit (0 = unlimited, default 10000)
-	timeLimit        time.Duration     // overall build time limit (0 = unlimited)
-	recordTypes      []string          // record types to index (empty = all types; not allowed with multi-target)
-	policy           *IndexingPolicy   // stamp conflict resolution policy (nil = default behavior)
-	throttle         *indexingThrottle // adaptive throttle (created at Build time)
-	mutual           bool              // true = MUTUAL_BY_RECORDS (concurrent building)
-	mutualBoundaries [][]byte          // pre-set fragment boundaries (nil = single fragment)
-	leaseLengthMs    int64             // heartbeat lease duration in ms (default 30000)
+	maxRetries       int // max retries per range on transient failures (0 = no retries)
+	recordsPerSecond int // inter-transaction rate limit (0 = unlimited, default 10000)
+	// enforcedPostTransactionDelay, if > 0, is a fixed per-transaction delay (ms) applied
+	// INSTEAD of recordsPerSecond. Java OnlineIndexOperationConfig.enforcedPostTransactionDelay.
+	enforcedPostTransactionDelay int
+	timeLimit                    time.Duration     // overall build time limit (0 = unlimited)
+	recordTypes                  []string          // record types to index (empty = all types; not allowed with multi-target)
+	policy                       *IndexingPolicy   // stamp conflict resolution policy (nil = default behavior)
+	throttle                     *indexingThrottle // adaptive throttle (created at Build time)
+	mutual                       bool              // true = MUTUAL_BY_RECORDS (concurrent building)
+	mutualBoundaries             [][]byte          // pre-set fragment boundaries (nil = single fragment)
+	leaseLengthMs                int64             // heartbeat lease duration in ms (default 30000)
 	// markReadableEnabled controls whether BuildIndex marks the index readable (and
 	// thus erases the per-build bookkeeping) at the end. Defaults to true. Matches
 	// Java's OnlineIndexer.buildIndex(boolean markReadable): set false to build the
@@ -354,6 +357,15 @@ func (b *OnlineIndexerBuilder) SetRecordsPerSecond(rps int) *OnlineIndexerBuilde
 	return b
 }
 
+// SetEnforcedPostTransactionDelay sets a fixed delay in milliseconds applied after each
+// build transaction. When positive, it is used INSTEAD of the records-per-second throttle.
+// Default 0 disables it (records-per-second behaviour). Matches Java's
+// OnlineIndexer.Builder.setEnforcedPostTransactionDelay().
+func (b *OnlineIndexerBuilder) SetEnforcedPostTransactionDelay(ms int) *OnlineIndexerBuilder {
+	b.indexer.enforcedPostTransactionDelay = ms
+	return b
+}
+
 // SetPolicy sets the indexing policy for stamp conflict resolution.
 // Matches Java's OnlineIndexer.Builder.setIndexingPolicy().
 func (b *OnlineIndexerBuilder) SetPolicy(policy *IndexingPolicy) *OnlineIndexerBuilder {
@@ -466,7 +478,7 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 	}
 
 	// Create adaptive throttle (matches Java's IndexingThrottle initialization)
-	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond)
+	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond, b.indexer.enforcedPostTransactionDelay)
 
 	return &b.indexer, nil
 }
@@ -564,15 +576,9 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 			break
 		}
 
-		// Check time limit after each range.
-		if oi.timeLimit > 0 {
-			elapsed := time.Since(startTime)
-			if elapsed >= oi.timeLimit {
-				return totalRecords, &TimeLimitExceededError{
-					TimeLimit: oi.timeLimit,
-					Elapsed:   elapsed,
-				}
-			}
+		// Time-limit check + enforced post-transaction delay between ranges.
+		if err := oi.throttleBetweenRanges(ctx, startTime); err != nil {
+			return totalRecords, err
 		}
 	}
 
@@ -618,15 +624,9 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 			break
 		}
 
-		// Check time limit.
-		if oi.timeLimit > 0 {
-			elapsed := time.Since(startTime)
-			if elapsed >= oi.timeLimit {
-				return totalRecords, &TimeLimitExceededError{
-					TimeLimit: oi.timeLimit,
-					Elapsed:   elapsed,
-				}
-			}
+		// Time-limit check + enforced post-transaction delay between ranges.
+		if err := oi.throttleBetweenRanges(ctx, startTime); err != nil {
+			return totalRecords, err
 		}
 	}
 
@@ -678,27 +678,65 @@ func shouldLessenWork(err error) bool {
 // are returned immediately without retry.
 // Matches Java's IndexingThrottle.mayRetryAfterHandlingException().
 func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func(context.Context) (int64, bool, error)) (int64, bool, error) {
-	if oi.throttle == nil || oi.maxRetries <= 0 {
+	if oi.throttle == nil {
 		return buildFn(ctx)
 	}
 
+	enforcedDelay := oi.enforcedPostTransactionDelay > 0
 	for attempt := 0; ; attempt++ {
 		// Apply adaptive limit from throttle
 		oi.limit = oi.throttle.getLimit()
 
-		// Rate limit between transactions
-		oi.throttle.waitForRateLimit()
+		// Records-per-second rate limit between transactions. Go applies this (and the
+		// adaptive limit/retry machinery) only when retries are enabled — a pre-existing
+		// limitation tracked separately. The enforced post-transaction delay REPLACES the
+		// records-per-second throttle (Java returns one or the other), so skip rps when it
+		// is set rather than stacking both.
+		if oi.maxRetries > 0 && !enforcedDelay {
+			oi.throttle.waitForRateLimit()
+		}
 
 		n, hasMore, err := buildFn(ctx)
 		if err == nil {
 			oi.throttle.handleSuccess(int(n))
+			// The enforced post-transaction delay is applied by the build loop via
+			// throttleBetweenRanges AFTER the time-limit check (Java
+			// doneOrThrottleDelayAndMaybeLogProgress), not here — so an over-budget build
+			// returns a TimeLimitExceededError without paying the delay, and the final range
+			// pays nothing.
 			return n, hasMore, nil
 		}
-		if !oi.throttle.mayRetryAfterHandlingException(err, attempt, int(n)) {
+		if oi.maxRetries <= 0 || !oi.throttle.mayRetryAfterHandlingException(err, attempt, int(n)) {
 			return n, hasMore, err
 		}
 		// Throttle has decreased the limit — retry
 	}
+}
+
+// throttleBetweenRanges paces the build between committed ranges: it validates the time
+// limit FIRST (accounting for the upcoming enforced delay) and only then applies the
+// enforced post-transaction delay. It returns a TimeLimitExceededError — without sleeping —
+// when the build has already run, or after the delay would have run, past its time limit.
+// This matches Java IndexingBase.doneOrThrottleDelayAndMaybeLogProgress + validateTimeLimit,
+// where the time check precedes the wait and includes the wait duration. It is called only
+// when more ranges remain, so the final range pays no delay (Java returns READY_FALSE when
+// done). With no enforced delay configured it reduces to the prior plain time-limit check.
+func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime time.Time) error {
+	// Clamp a non-positive delay to 0 so a negative value behaves exactly like "disabled":
+	// it must not be subtracted from elapsed and loosen the time-limit check.
+	delayMs := oi.enforcedPostTransactionDelay
+	if delayMs < 0 {
+		delayMs = 0
+	}
+	if oi.timeLimit > 0 {
+		if elapsed := time.Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
+			return &TimeLimitExceededError{TimeLimit: oi.timeLimit, Elapsed: elapsed}
+		}
+	}
+	if oi.throttle != nil {
+		oi.throttle.applyEnforcedPostTransactionDelay(ctx)
+	}
+	return nil
 }
 
 // markWriteOnly transitions all target indexes to WRITE_ONLY state.

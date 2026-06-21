@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"context"
 	"time"
 )
 
@@ -12,6 +13,10 @@ type indexingThrottle struct {
 	initialLimit     int // starting limit (from builder)
 	maxRetries       int // max retries per range (0 = no retries)
 	recordsPerSecond int // inter-transaction rate limit (0 = unlimited)
+	// enforcedPostTransactionDelay, if > 0, is a fixed per-transaction delay (ms) applied
+	// INSTEAD of the records-per-second throttle. Matches Java
+	// OnlineIndexOperationConfig.enforcedPostTransactionDelay (0 = disabled).
+	enforcedPostTransactionDelay int
 
 	// Adaptive limit state (matches Java's IndexingThrottle.Booker)
 	recordsLimit              int // current per-transaction limit
@@ -25,18 +30,38 @@ type indexingThrottle struct {
 }
 
 // newIndexingThrottle creates a throttle with the given initial parameters.
-func newIndexingThrottle(initialLimit, maxRetries, recordsPerSecond int) *indexingThrottle {
+func newIndexingThrottle(initialLimit, maxRetries, recordsPerSecond, enforcedPostTransactionDelay int) *indexingThrottle {
 	return &indexingThrottle{
-		initialLimit:     initialLimit,
-		maxRetries:       maxRetries,
-		recordsPerSecond: recordsPerSecond,
-		recordsLimit:     initialLimit,
+		initialLimit:                 initialLimit,
+		maxRetries:                   maxRetries,
+		recordsPerSecond:             recordsPerSecond,
+		enforcedPostTransactionDelay: enforcedPostTransactionDelay,
+		recordsLimit:                 initialLimit,
 	}
 }
 
 // getLimit returns the current per-transaction record limit.
 func (t *indexingThrottle) getLimit() int {
 	return t.recordsLimit
+}
+
+// applyEnforcedPostTransactionDelay sleeps for the configured enforced delay (if > 0)
+// AFTER a committed build transaction. Unlike the records-per-second limiter, this is a
+// fixed, unconditional per-transaction delay (Java OnlineIndexOperationConfig
+// enforcedPostTransactionDelay) — applied independently of the records-per-second path
+// and of whether retries are enabled. The build loop calls it after each successful range.
+func (t *indexingThrottle) applyEnforcedPostTransactionDelay(ctx context.Context) {
+	if t.enforcedPostTransactionDelay <= 0 {
+		return
+	}
+	// Context-aware so a cancelled/deadline-hit build does not block for the full delay
+	// before the next transaction observes ctx.
+	timer := time.NewTimer(time.Duration(t.enforcedPostTransactionDelay) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // mayRetryAfterHandlingException checks if the build should retry after an error.

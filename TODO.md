@@ -77,11 +77,13 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    - **[~] R2** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
      `markReadable` now erases scanned-records(1)/type-stamp(2)/heartbeat(7) per Java
      `eraseAllIndexingDataButTheLockAndRangeSet`; added `SetMarkReadable(bool)` (Java `buildIndex(markReadable)`
-     parity) so build-state can be inspected pre-readable. Torvalds RFC ACK (v2). **Remaining R2b:**
-     **(b)** typed-record build-range preset (`maybePresetRecordsRangeAsync`/`IndexingCommon.computeRecordsRange`)
-     + the `OnlineIndexOperationConfig` `enforcedPostTransactionDelay` option — REAL GAP, larger; own RFC (R2b).
-     **(c)** `SlidingWindowIndexMaintainer` (+163) — **N/A**: pure metrics instrumentation (counters/timers)
-     for an HNSW window-decorator index type Go does not have. Gate: Torvalds + codex + @claude.
+     parity) so build-state can be inspected pre-readable. Torvalds+codex ACK. **(b) DONE (RFC-138):**
+     `SetEnforcedPostTransactionDelay(ms)` — fixed per-transaction delay replacing records-per-second
+     when >0 (Java `setEnforcedPostTransactionDelay` #4229). **Remaining R2c:** typed-record build-range
+     preset (`maybePresetRecordsRangeAsync`/`IndexingCommon.computeRecordsRange`, #4244) — REAL GAP,
+     larger; own RFC. **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
+     instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
+     (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
    - **[ ] R3** — parser grammar: `AT ordinality` table source, `functionNameKeyword` in
      `scalarFunctionName` (`RelationalParser.g4`). Gate: **Graefe** + Torvalds.
    - **[ ] R4** — EXISTS in the projection list (`PExistsValue.value`). Gate: **Graefe** + Torvalds.
