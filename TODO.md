@@ -99,7 +99,7 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      parses + `atAlias` captured but is **rejected** at every consumer (planner FROM/JOIN, aggregate-index
      DDL incl. its silently-dropped JOINs, semantic scope) with `ErrCodeUnsupportedQuery` until R5 binds
      it — codex caught 3 silent-drop holes (column collision, DDL, DDL-JOIN). Graefe + Torvalds + codex ACK.
-   - **[~] R4** — EXISTS in the projection list (`PExistsValue.value`), RFC-141. Gate: **Graefe** + Torvalds.
+   - **[x] R4** — EXISTS in the projection list (`PExistsValue.value`), RFC-141. Phase 1 (ExistsValue→ValueWithChild + ExistentialValuePredicate, WHERE-EXISTS) + Phase 2 (FirstOrDefault re-architecture + projected `SELECT EXISTS(...)` + structural reject-the-rest backstop). Graefe + Torvalds + codex (14 rounds) ACK; full `just test` green; pushed (PR #336).
      **Phase 1 DONE:** representation collapse to Java 4.12's single mechanism — `ExistsValue` is now an
      evaluable `ValueWithChild` over a `QuantifiedObjectValue` child (`eval = child != nil`);
      `ExistentialValuePredicate` replaces the deleted leaf-alias `ExistsPredicate`; 8 value-walk sites

@@ -1,7 +1,8 @@
 # RFC-141 — EXISTS in the projection list (Java 4.12, RFC-135 §4 R4)
 
-**Status:** Draft (v3 — Phase 1 landed; Phase 2 re-architected to Java's FirstOrDefault-inner + pure-map
-FlatMap + separate filter after Graefe's design NAK on a Go-only `existsProjectMode`; codex hardening rounds
+**Status:** Implemented (v3 — Phase 1 + Phase 2 shipped in `f16a0802a`, PR #336; Phase 2 re-architected to
+Java's FirstOrDefault-inner + pure-map FlatMap + separate filter after Graefe's design NAK on a Go-only
+`existsProjectMode`; codex hardening rounds
 1–11, see §8a–§8h)
 **Item:** RFC-135 §4 **R4** — port Java 4.12's "EXISTS subqueries in the projection list" (commit
 `c9274172c` #4168). Today Go accepts `EXISTS(subquery)` only in `WHERE`; 4.12 lets it appear as a
