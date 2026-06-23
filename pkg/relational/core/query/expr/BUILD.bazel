@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/semantic",
         "@com_github_antlr4_go_antlr_v4//:antlr",

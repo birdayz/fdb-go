@@ -229,12 +229,12 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 		return values.NewFieldValue(
 			values.NewQuantifiedObjectValue(corrID),
 			field,
-			sqlTypeToCascadesType(col.Type),
+			columnCascadesType(col),
 		), nil
 	}
 	return &values.FieldValue{
 		Field: field,
-		Typ:   sqlTypeToCascadesType(col.Type),
+		Typ:   columnCascadesType(col),
 	}, nil
 }
 
@@ -272,7 +272,7 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	return values.NewFieldValue(
 		values.NewQuantifiedObjectValue(corrID),
 		field,
-		sqlTypeToCascadesType(col.Type),
+		columnCascadesType(col),
 	), true, nil
 }
 
@@ -563,6 +563,22 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.TypeUnknown
 	}
 	return values.TypeUnknown
+}
+
+// columnCascadesType maps a resolved semantic.Column to its cascades
+// values.Type, wrapping the element type in an ArrayType when the column
+// is a SQL ARRAY (a repeated proto field). The placeholder Type string
+// carries only the element kind; col.IsArray is the array signal. An
+// array-typed resolved Value is what lets CARDINALITY()'s isArray() check
+// pass and what the result-set metadata reports as an array. The array's
+// nullability follows col.Nullable; the element type stays the (legacy)
+// scalar mapping of the Type string.
+func columnCascadesType(col semantic.Column) values.Type {
+	elem := sqlTypeToCascadesType(col.Type)
+	if !col.IsArray {
+		return elem
+	}
+	return values.NewArrayType(col.Nullable, elem)
 }
 
 // ResolveConstant wraps a Go-native literal in a cascades

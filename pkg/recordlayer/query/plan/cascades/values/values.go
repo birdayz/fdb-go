@@ -557,6 +557,10 @@ func ExplainValue(v Value) string {
 			conds[i] = ExplainValue(c)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *CardinalityValue:
+		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
+		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
+		return "cardinality(" + ExplainValue(cv.Child) + ")"
 	case *ScalarSubqueryValue:
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	case *UnmatchedAggregateValue:

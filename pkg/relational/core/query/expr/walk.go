@@ -11,6 +11,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
@@ -272,6 +273,15 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 	}
 	if scalar, ok := fc.(*antlrgen.ScalarFunctionCallContext); ok {
 		return r.walkScalarFunction(scalar)
+	}
+	if udf, ok := fc.(*antlrgen.UserDefinedScalarFunctionCallContext); ok {
+		// `CARDINALITY(arr)` and other bare-ID function calls parse as a
+		// UserDefinedScalarFunctionCall (the grammar's `ID '(' args ')'`
+		// fallthrough). Route recognised by-name built-ins here through the
+		// dedicated dispatch; everything else declines so the caller falls
+		// back. This is the SINGLE by-name gate Torvalds blessed — not a
+		// fourth hand-maintained keyword list.
+		return r.walkUserDefinedScalarFunction(udf)
 	}
 	if nonAgg, ok := fc.(*antlrgen.NonAggregateFunctionCallContext); ok {
 		return r.walkNonAggregateWindowedFunction(nonAgg)
@@ -711,6 +721,97 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 		}
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
+// name is a bare ID (the grammar's UserDefinedScalarFunctionCall). The
+// only such call wired today is the CARDINALITY built-in: it parses here
+// rather than as a ScalarFunctionCall because CARDINALITY has no grammar
+// token (it is not in the `scalarFunctionName` keyword set). This is the
+// single by-name built-in dispatch gate (Torvalds' option (b)) — a
+// recognised name builds its dedicated Value; everything else declines so
+// the caller falls back. A quoted name (`"cardinality"`) is a deliberate
+// user-defined reference, not the built-in, so only the unquoted ID form
+// is matched.
+func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalarFunctionCallContext) (values.Value, error) {
+	if udf == nil {
+		return nil, fmt.Errorf("expr.walkUserDefinedScalarFunction: nil")
+	}
+	nameCtx := udf.UserDefinedScalarFunctionName()
+	if nameCtx == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "UserDefinedScalarFunctionCall without name"}
+	}
+	nameNode, ok := nameCtx.(*antlrgen.UserDefinedScalarFunctionNameContext)
+	if !ok || nameNode.ID() == nil {
+		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
+	}
+	name := strings.ToUpper(nameNode.ID().GetText())
+	switch name {
+	case "CARDINALITY":
+		return r.walkCardinality(udf.FunctionArgs())
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
+}
+
+// walkCardinality builds the dedicated CardinalityValue for
+// `CARDINALITY(arr)`. Mirrors Java's CardinalityFn.encapsulateInternal:
+// arity exactly 1, and the argument must be array-typed (Java's ctor
+// asserts childValue.getResultType().isArray() → INCOMPATIBLE_TYPE). The
+// array-type check lives here — the earliest point with the resolved
+// argument Type and access to the SQLSTATE error codes — and raises
+// CANNOT_CONVERT_TYPE (22000) for a non-array argument, matching the
+// arrays-cardinality.yamsql expectation (SELECT CARDINALITY("id") /
+// CARDINALITY(1) → CANNOT_CONVERT_TYPE). The result is a dedicated
+// CardinalityValue, NOT a generic ScalarFunctionValue: CARDINALITY needs
+// its own nullable-INT typing and array validation.
+func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
+	args, err := r.walkFunctionArgs(fa)
+	if err != nil {
+		return nil, err
+	}
+	if len(args) != 1 {
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"CARDINALITY takes exactly one argument, got %d", len(args))
+	}
+	arg := args[0]
+	if arg == nil || !values.IsArray(arg.Type()) {
+		// Java: SemanticException.check(isArray(), INCOMPATIBLE_TYPE,
+		// "The argument of CARDINALITY() must be an array expression.").
+		// The SQL layer surfaces that as CANNOT_CONVERT_TYPE (22000).
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"the argument of CARDINALITY() must be an array expression")
+	}
+	return values.NewCardinalityValue(arg), nil
+}
+
+// walkFunctionArgs walks a FunctionArgs context into the resolved
+// argument Value list, recursing each arg through WalkExpression so
+// nested expressions compose. Shared by the by-name built-in dispatch.
+func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.Value, error) {
+	args := []values.Value{}
+	if fa == nil {
+		return args, nil
+	}
+	fac, ok := fa.(*antlrgen.FunctionArgsContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
+	}
+	for _, arg := range fac.AllFunctionArg() {
+		argCtx, ok := arg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}
+		}
+		if argCtx.Expression() == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
+		}
+		v, err := r.WalkExpression(argCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, v)
+	}
+	return args, nil
 }
 
 // polymorphicResultType infers the result type of a value-preserving

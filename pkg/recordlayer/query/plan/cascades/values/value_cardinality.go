@@ -8,16 +8,30 @@ package values
 //	CARDINALITY(arr)  ↔  CardinalityValue{Child: arr}
 //
 // CONFORMANCE: matches Java's eval — returns the array length as
-// an integer. NULL input → NULL.
+// an integer. NULL array → NULL (Java: childResult == null ? null
+// : size()).
 //
-// Type is non-null long (CARDINALITY always returns a definite
-// count, even 0 for empty arrays).
+// The result Type is a nullable 32-bit INT — Java's
+// `Type.primitiveType(Type.TypeCode.INT)` ("array indexes and sizes
+// are 32-bit integers"), nullable because a NULL array yields NULL.
+// The metadata layer reports this column as INTEGER.
+//
+// Java's ctor asserts the child is array-typed
+// (`SemanticException.check(childValue.getResultType().isArray(),
+// INCOMPATIBLE_TYPE)`). In Go the array-type validation lives at the
+// SQL walk site (expr.walkCardinality), the earliest point with the
+// resolved argument Type and access to the SQLSTATE error codes — a
+// non-array argument raises CANNOT_CONVERT_TYPE there, matching the
+// yamsql. This constructor stays a permissive data builder so the
+// tree-rewrite machinery (withChildren) can reconstruct the node
+// without re-validating.
 type CardinalityValue struct {
 	Child Value
 }
 
 // NewCardinalityValue constructs the operator over the given
-// array-typed child Value.
+// array-typed child Value. Array-type validation is performed at the
+// walk site (see the type doc); this builder does not re-check.
 func NewCardinalityValue(child Value) *CardinalityValue {
 	return &CardinalityValue{Child: child}
 }
@@ -33,13 +47,21 @@ func (v *CardinalityValue) Children() []Value {
 // Name returns the debug-print kind.
 func (*CardinalityValue) Name() string { return "cardinality" }
 
-// Type returns NotNullLong — CARDINALITY always returns a
-// definite count.
-func (*CardinalityValue) Type() Type { return NotNullLong }
+// Type returns nullable INT — Java's
+// `Type.primitiveType(Type.TypeCode.INT)`. A NULL array makes the
+// result NULL, so the type is nullable; the width is 32-bit INT
+// (reported as INTEGER), not LONG.
+func (*CardinalityValue) Type() Type { return NullableInt }
 
-// Evaluate returns the array length (as int64). Returns nil if
-// Child is nil-Value or evaluates to nil. Returns nil if the
-// Child evaluates to a non-slice (type-degraded UNKNOWN).
+// Evaluate returns the array length. Mirrors Java's eval:
+// childResult == null ? null : ((List)childResult).size(). A NULL
+// array (nil child result) yields NULL; an empty array yields 0; a
+// populated array yields its element count. Returns int64 (the
+// codebase's integer eval representation; the column metadata is
+// INTEGER via Type()). A non-slice child result yields nil — Java
+// would ClassCastException, but array-type validation at the walk
+// site keeps the child array-typed, so this is an unreachable
+// defensive guard, not a silent type-degrade.
 func (v *CardinalityValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil

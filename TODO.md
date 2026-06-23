@@ -475,7 +475,38 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      (all fixed + revert-proof-tested) + Graefe + Torvalds full-pass ACK; the codex quota hit its limit at
      round 33. Run one final `codex review --base <R4-commit>` on the committed R5 when the quota resets
      (Jun 25 ~09:52) to confirm codex-clean; address anything it finds before the umbrella PR merges.
-   - **[ ] R6** — `CARDINALITY()` function + index support. Gate: **Graefe** + Torvalds.
+   - **[~] R6** — `CARDINALITY()` function + index support (RFC-143). Gate: **Graefe** + Torvalds.
+     - **[x] Phase 1 — the scalar function (no index).** `CARDINALITY(array) → nullable INT` wired SQL→
+       `CardinalityValue` via a BY-NAME built-in dispatch at the `walkFunctionCall` leaf
+       (`expr.walkUserDefinedScalarFunction` → `walkCardinality`; CARDINALITY parses as a bare-ID
+       `UserDefinedScalarFunctionCall`). Fixed the 3 divergences in the orphaned `CardinalityValue`:
+       `Type()` → `NullableInt` (Java `primitiveType(INT)`, nullable → metadata INTEGER, was NotNullLong);
+       array-type validation at the walk site (non-array arg → `CANNOT_CONVERT_TYPE`/22000, matching the
+       yamsql); `ExplainValue` renders `cardinality(<child>)`. Satellite gate `isAllowedFunction`
+       (cascades_generator) accepts CARDINALITY by name (NOT added to the generic
+       `IsCascadesSafeScalarFunction`/`evalScalarFunction` lists — it's a dedicated Value). Resolved array
+       columns now carry an `ArrayType` (new `semantic.Column.IsArray` populated from the repeated-field
+       descriptor; `expr.columnCascadesType`), so `isArray()` passes and metadata is correct. FDB tests in
+       `array_cardinality_fdb_test.go` (count, WHERE `= N` / `IS [NOT] NULL`, ORDER BY, error, metadata,
+       EXPLAIN). **§3a note:** Go writes plain-repeated arrays (no nullable-array wrapper), so an
+       empty/unset array is wire-indistinguishable from NULL → reads as NULL → `CARDINALITY([])` is NULL,
+       not 0 (Java's wrapper distinguishes them). The function is faithful; the empty-vs-NULL distinction
+       is the latent §3a nullable-array-wrapper-WRITE gap (below), out of scope for Phase 1.
+     - **[ ] Phase 2 — index support** (the 4.12.3 delta; Graefe-gated planner matching). `"cardinality"`
+       key-expression evaluator, index DDL → `FunctionKeyExpression`, planner index-matching
+       (KeyExpression→Value bridge, ORDER-BY rule rework). See RFC-143 §3 Phase 2.
+     - **[ ] §3a follow-up — nullable-array-wrapper WRITE.** Go's metadata builder emits a plain repeated
+       field for both nullable and NOT-NULL arrays; it does not write Java's `message{ repeated values }`
+       wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
+       `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
+       (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
+   - **[ ] R6 follow-up — BITAND/BITOR/BITXOR unreachable through the walker (pre-existing drift).** The 3
+     scalar-function keyword lists drift: `BITAND/BITOR/BITXOR` are in `IsCascadesSafeScalarFunction` (so
+     the satellite gate admits them) but the `expr` walker's `walkBitExpression` builds a
+     `ScalarFunctionValue("BITAND"/...)` that is then rejected by `isCascadesSafeValue`/the catalog — they
+     never reach a working Cascades plan today. Surfaced while wiring CARDINALITY's by-name gate; NOT fixed
+     here (the by-name collapse only routed CARDINALITY). The clean fix is to finish collapsing the 3 lists
+     onto one by-name table; verify against Java first. Gate: **Graefe** + Torvalds.
    - **[ ] R7** — LEFT/RIGHT OUTER JOIN reclassification (verify Go-extension vs Java-now-supported) +
      boolean-simplification/null/outer-join fixes. Gate: **Graefe** + Torvalds.
    - **[~] R8** — conformance rebaseline from a live 4.12.11.0 run. **Partial in the bump PR:** the 7

@@ -3852,7 +3852,12 @@ func isAllowedFunction(name string) bool {
 	case "COUNT", "SUM", "MIN", "MAX", "AVG",
 		"CASE", "CAST", "IF",
 		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME",
-		"CURRENT_USER":
+		"CURRENT_USER",
+		// CARDINALITY is a dedicated by-name built-in (expr.walkCardinality
+		// → CardinalityValue), not a generic ScalarFunctionValue, so it lives
+		// here rather than in IsCascadesSafeScalarFunction — the Cascades walk
+		// builds its own Value with nullable-INT typing and array validation.
+		"CARDINALITY":
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)
