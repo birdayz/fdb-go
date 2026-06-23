@@ -22,10 +22,10 @@ import (
 // execSystemTableQuery is the executor-free entry point for an
 // INFORMATION_SCHEMA.* SELECT. It serves the simple shape
 // `SELECT [*|cols] FROM INFORMATION_SCHEMA.X [WHERE …] [ORDER BY …]
-// [LIMIT … OFFSET …]` directly off the catalog-synthesized rows, without
-// routing through the legacy embedded SQL interpreter (execSelect →
-// execSelectQuery → …). It detaches the executor (RFC-145 Phase 1) so the
-// interpreter island can be deleted in Phase 2.
+// [LIMIT … OFFSET …]` directly off the catalog-synthesized rows. RFC-145
+// detached this from the legacy embedded interpreter (Phase 1) before that
+// interpreter island was deleted (Phase 2); it never routes through an
+// executor.
 //
 // INFORMATION_SCHEMA is a Go-only extension Java rejects entirely, so no
 // cross-engine reference exists for any shape here. The simple-SELECT subset

@@ -10,64 +10,32 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// Lexical-scope helpers for SQL execution.
+// Lexical-scope read helpers for the shared map/proto expression
+// evaluators (eval_map.go, eval_proto.go).
 //
-// Four stacks hang off EmbeddedConnection during query evaluation:
+// Two EmbeddedConnection fields back correlated-reference resolution:
 //
-//   1. validQualifiers — per-query alias set enforced by the
-//      map-path (JOIN) evaluator so `c.name` rejects with 42F01
-//      unless `c` is in scope.
+//   1. validQualifiers — per-query alias set the map-path evaluator
+//      consults so `c.name` rejects unless `c` is in scope.
 //   2. outerScopes — per-subquery stack of (outer msg or row +
 //      qualifiers) so correlated references like `EXISTS (SELECT …
 //      WHERE x.id = outer_x.id)` resolve past the inner scan.
-//   3. currentSourceAliases — the SQL-level aliases of the
-//      currently executing outer scan; outerScopeFromMsg copies
-//      these into a new scope so inner subqueries expose them.
-//   4. (CTE scope lives on c.ctes; pushCTEScope is a sibling
-//      helper in connection.go.)
 //
-// resolveOuterColumn walks the outerScopes stack innermost-first
-// to bind a column reference that didn't resolve in the inner
-// scope — the SQL semantics of correlated subqueries.
+// resolveOuterColumn walks the outerScopes stack innermost-first to
+// bind a column reference that didn't resolve in the inner scope —
+// the SQL semantics of correlated subqueries.
 //
-// All helpers run on c.* fields that are statement-scoped, so the
-// pop-func-returns-restore-prior-state pattern is safe under
-// nested defer.
-
-// pushCTEScope replaces c.ctes with a fresh map that inherits the outer
-// scope's entries (so inner queries can reference outer CTEs) and returns
-// a pop function that restores the previous scope verbatim. Use with
-// `defer c.pushCTEScope()()` at every point that introduces new CTE names
-// (WITH clauses, derived tables) so inner definitions don't leak out.
-func (c *EmbeddedConnection) pushCTEScope() func() {
-	prior := c.ctes
-	next := make(map[string]*cteData, len(prior))
-	for k, v := range prior {
-		next[k] = v
-	}
-	c.ctes = next
-	return func() { c.ctes = prior }
-}
-
-// pushValidQualifiersScope installs a per-query set of valid qualifier
-// aliases (uppercased) and returns a pop function restoring the prior
-// scope. Called from execSelectJoin so the map-path evaluator can
-// reject WHERE/ON references like `c.name` when no source matches
-// `c`. Outside the JOIN scope c.validQualifiers is nil and the
-// evaluator preserves the pre-fix silent bare-column fallback — the
-// map-path evaluator is JOIN-only so that scope is sufficient.
-func (c *EmbeddedConnection) pushValidQualifiersScope(set map[string]bool) func() {
-	prior := c.validQualifiers
-	c.validQualifiers = set
-	return func() { c.validQualifiers = prior }
-}
+// RFC-145 note: the executor that pushed these scopes (the legacy
+// embedded interpreter) is gone. These read helpers + the outerScope
+// type are retained because the shared evaluators still reference the
+// fields; the kept consumers (INFORMATION_SCHEMA WHERE, INSERT-VALUES
+// folding) never populate the stacks, so the reads fall through.
 
 // outerScope is one level of outer-row binding for correlated subqueries.
 // At least one of msg / row is non-nil:
 //   - msg  : proto-backed outer (single-source SELECT, WHERE call site).
 //   - row  : map-backed outer (JOIN / CTE / HAVING / aggregate). Keys are
-//     both unqualified (`col`) and qualified (`alias.col`) per
-//     scanTableToMaps convention.
+//     both unqualified (`col`) and qualified (`alias.col`) by convention.
 //
 // qualifiers holds the uppercased set of valid qualifier aliases for this
 // outer. A correlated reference `qual.col` matches this scope iff qual is
@@ -77,77 +45,6 @@ type outerScope struct {
 	msg        proto.Message
 	row        map[string]driver.Value
 	qualifiers map[string]bool
-}
-
-// pushOuterScope appends one outer-row scope to the correlation stack and
-// returns a pop function that trims it back. Use with `defer` at every
-// subquery entry point (EXISTS, IN, scalar subquery) so nested
-// correlations stack correctly. Safe to call with a zero-value scope
-// (msg == nil && row == nil) — lookups fall through to the next level.
-func (c *EmbeddedConnection) pushOuterScope(s outerScope) func() {
-	c.outerScopes = append(c.outerScopes, s)
-	return func() { c.outerScopes = c.outerScopes[:len(c.outerScopes)-1] }
-}
-
-// outerScopeFromMsg builds an outerScope for a proto-backed outer row.
-// Qualifier set combines:
-//   - the message's descriptor name (always)
-//   - any user-level aliases recorded on conn.currentSourceAliases
-//     (e.g. `FROM emp AS e` → {"E"} plus the descriptor "EMP")
-//
-// Returns a zero-value scope when msg is nil so the caller doesn't need
-// to nil-check. conn may be nil in unit tests; descriptor name alone
-// is sufficient there.
-func outerScopeFromMsg(conn *EmbeddedConnection, msg proto.Message) outerScope {
-	if msg == nil {
-		return outerScope{}
-	}
-	quals := map[string]bool{
-		strings.ToUpper(string(msg.ProtoReflect().Descriptor().Name())): true,
-	}
-	if conn != nil {
-		for a := range conn.currentSourceAliases {
-			quals[a] = true
-		}
-	}
-	return outerScope{msg: msg, qualifiers: quals}
-}
-
-// pushSourceAliases records the current outer-scan source aliases so
-// a subquery's outerScopeFromMsg can expose them to correlated column
-// resolution. Pass any SQL-level aliases (e.g. sq.tableAlias and
-// sq.tableName) — they're uppercased for case-insensitive match. Returns
-// a pop function.
-func (c *EmbeddedConnection) pushSourceAliases(aliases ...string) func() {
-	prior := c.currentSourceAliases
-	m := make(map[string]bool, len(aliases))
-	for _, a := range aliases {
-		if a == "" {
-			continue
-		}
-		m[strings.ToUpper(a)] = true
-	}
-	c.currentSourceAliases = m
-	return func() { c.currentSourceAliases = prior }
-}
-
-// outerScopeFromMapRow builds an outerScope for a map-backed outer row
-// (JOIN / CTE / HAVING aggregate). qualifiers is derived from every
-// qualified key in the row: for each key of the form `alias.col`, the
-// prefix is added (uppercased) to the qualifier set. Returns a zero-
-// value scope for a nil/empty row.
-func outerScopeFromMapRow(row map[string]driver.Value) outerScope {
-	if len(row) == 0 {
-		return outerScope{}
-	}
-	quals := make(map[string]bool)
-	for k := range row {
-		ref := parseColRef(k)
-		if ref.isQualified() {
-			quals[strings.ToUpper(ref.table)] = true
-		}
-	}
-	return outerScope{row: row, qualifiers: quals}
 }
 
 // outerScopesContainQualifier reports whether any outer scope on the

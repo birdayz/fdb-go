@@ -1901,23 +1901,6 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 	return nil
 }
 
-func cteAliasMapsCollide(maps []map[string]string) bool {
-	if len(maps) <= 1 {
-		return false
-	}
-	seen := make(map[string]struct{})
-	for _, m := range maps {
-		for _, target := range m {
-			upper := strings.ToUpper(target)
-			if _, exists := seen[upper]; exists {
-				return true
-			}
-			seen[upper] = struct{}{}
-		}
-	}
-	return false
-}
-
 func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]string) {
 	proj := findProjection(op)
 	if proj == nil {

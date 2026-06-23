@@ -33,13 +33,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 )
 
-// cteData holds the materialized result of a WITH clause named query.
-type cteData struct {
-	cols     []string
-	colTypes []string // parallel to cols; "" entries mean "type unknown"
-	rows     [][]driver.Value
-}
-
 // ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare
 // column slot when the same column name is defined on more than one
 // FROM-clause source. The map keeps qualified `alias.col` slots intact;
@@ -77,42 +70,26 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
-	// ctes holds materialized CTE results for the current SELECT statement.
-	// Non-nil only during execSelect; nil outside of that scope.
-	ctes map[string]*cteData
-
-	// scalarSubqueryCache memoises uncorrelated scalar subquery results
-	// (one entry per SubqueryExpressionAtomContext) for the current
-	// SELECT. Populated before the outer query's runInTx starts to avoid
-	// nested FDB transactions; read from during per-row evaluation.
-	// Non-nil only during execSelect.
-	scalarSubqueryCache map[antlrgen.IQueryContext]any
-
 	// validQualifiers holds the uppercased set of valid qualifier aliases
-	// for the JOIN query currently executing (left source + every join
-	// source). Used by evalExprAtomOnMap to reject WHERE/ON references
-	// like `c.name` when no source `c` is in scope (42F01). Set via
-	// pushValidQualifiersScope at the top of execSelectJoin and cleared
-	// on return. nil outside of that scope — the map-path evaluator
-	// silently falls back to bare-column lookup when nil, matching the
-	// pre-dayshift-40 behavior for non-JOIN code paths.
+	// in scope for the map-path evaluator (eval_map.go), used to reject
+	// WHERE/ON references like `c.name` when no source `c` is in scope
+	// (42F01). nil falls back to bare-column lookup. After RFC-145 removed
+	// the legacy executor nothing populates it; the read site preserves
+	// the nil-fallthrough semantics.
 	validQualifiers map[string]bool
 
 	// outerScopes is a stack of outer-row scopes used to resolve correlated
-	// column references from inside a subquery (EXISTS / IN / scalar).
-	// Pushed at each subquery entry point (snapshots the current row of
-	// the outer scan), popped on return via the pushOuterScope pop func.
-	// The innermost scope is at the end. Empty stack = no correlation
-	// context. See evalExprAtom / evalExprAtomOnMap for lookup semantics.
+	// column references from inside a subquery. The innermost scope is at
+	// the end; empty stack = no correlation context. Read by
+	// resolveOuterColumn / the map+proto evaluators. After RFC-145 removed
+	// the legacy executor nothing populates it; the read sites fall through.
 	outerScopes []outerScope
 
 	// currentSourceAliases holds the uppercased set of qualifier aliases
-	// for the outer proto-path scan currently executing (e.g. `FROM emp
-	// AS e` → {"E", "EMP"}). Consumed by outerScopeFromMsg so a
-	// correlated inner reference like `e.id` resolves even when the
-	// outer uses an explicit user alias distinct from the proto
-	// descriptor name. nil outside a proto scan — outerScopeFromMsg
-	// falls back to msg's descriptor name.
+	// for the outer proto-path scan currently executing. Consumed by the
+	// proto-path evaluator (eval_proto.go) so a correlated inner reference
+	// resolves against the outer's user alias. nil falls back to the proto
+	// descriptor name.
 	currentSourceAliases map[string]bool
 
 	// planCache caches Cascades physical plans keyed by normalized SQL
@@ -568,7 +545,6 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 //   - schema → defaultSchema (original CONNECT value)
 //   - activeTx → rolled back (prevents a leaked transaction bleeding into
 //     the next checkout)
-//   - ctes → cleared (mid-query panic/error could leave the map populated)
 //   - schemaCache → cleared (schema evolution between checkouts would
 //     otherwise serve a stale descriptor)
 func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
@@ -583,16 +559,9 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		c.activeTx = nil
 		tx.rctx.Cancel()
 	}
-	c.ctes = nil
 	c.outerScopes = nil
 	c.validQualifiers = nil
 	c.currentSourceAliases = nil
-	// Drop any cached scalar-subquery results from the last statement.
-	// Cache entries key off parse-tree pointers that belong to the
-	// caller's freshly-parsed statement; retaining them across pool
-	// checkouts would slowly leak memory (and the keys are invalid
-	// against the next statement's tree anyway).
-	c.scalarSubqueryCache = nil
 	c.sess.ResetSchemaCache()
 	c.invalidatePlanCache()
 	return nil

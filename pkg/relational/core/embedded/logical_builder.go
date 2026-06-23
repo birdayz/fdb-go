@@ -49,10 +49,10 @@ func buildLogicalPlanForQuery(q antlrgen.IQueryContext) logical.LogicalOperator 
 }
 
 // buildLogicalPlanForQueryBody is the general entry point that
-// handles both simple SELECT and UNION shapes. It mirrors
-// execQueryBodyRows' dispatch: QueryTermDefaultContext → simple
-// SELECT; SetQueryContext → UNION (N-ary via nested SetQuery). Called
-// from naive_generator's SELECT ExplainFn.
+// handles both simple SELECT and UNION shapes. It dispatches on the
+// query-body shape: QueryTermDefaultContext → simple SELECT;
+// SetQueryContext → UNION (N-ary via nested SetQuery). Called from the
+// SELECT ExplainFn.
 func buildLogicalPlanForQueryBody(body antlrgen.IQueryExpressionBodyContext) logical.LogicalOperator {
 	if body == nil {
 		return nil

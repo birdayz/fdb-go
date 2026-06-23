@@ -171,9 +171,8 @@ func TestFDB_GroupByOverJoin_SumHavingMultiKey(t *testing.T) {
 // HAVING never fired and returned 0 rows); 4.12 fixed it. The corpus pins the
 // single-table shape (agg_empty_count_having_passes /
 // having_count_star_eq_zero_empty); this is the join variant, end-to-end through
-// the driver (which routes SELECT through the Cascades generator — verified: the
-// legacy embedded aggregateMapRows path is NOT reached for real data queries,
-// only INFORMATION_SCHEMA + explain).
+// the driver. Every SELECT now goes through the Cascades generator — the legacy
+// embedded aggregate executor was removed in RFC-145 (there is no second path).
 func TestFDB_AggOverJoin_EmptyGroupHaving(t *testing.T) {
 	t.Parallel()
 	db, ctx := gojDB(t, "emptyhaving")

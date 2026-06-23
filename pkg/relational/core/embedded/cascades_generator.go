@@ -220,8 +220,8 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 		// Explain-only mode renders the Cascades logical plan via ExplainFn and
 		// is never executed: the plan-equivalence harness (plandiff) calls only
 		// Plan().Explain(). The ExecFn is therefore dead — it formerly re-entered
-		// the legacy embedded interpreter (execSelect). RFC-145 Phase 1 stubs it
-		// so the executor island can be deleted in Phase 2.
+		// the legacy embedded interpreter, which RFC-145 detached (Phase 1) and
+		// deleted (Phase 2). This stub remains as the unreachable ExecFn.
 		ExecFn: func(_ context.Context) (query.Result, error) {
 			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 				"explain-only generator does not execute queries")

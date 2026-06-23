@@ -36,18 +36,6 @@ import (
 // Phase 1c. Phase 2 Cascades subsumes this into Logical* expression
 // builders.
 
-// countStarOutName returns the output column name for a COUNT(*)-only
-// SELECT: the SELECT-list `AS alias` when present, otherwise the
-// canonical reconstruction "COUNT(*)". Used at every emission site so
-// derived tables, UNION arity, and caller projections see the aliased
-// name instead of the canonical form.
-func countStarOutName(sq *selectQuery) string {
-	if sq.countStarAlias != "" {
-		return sq.countStarAlias
-	}
-	return "COUNT(*)"
-}
-
 // selectQuery holds the parsed components of a SELECT statement.
 type selectQuery struct {
 	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
@@ -67,19 +55,10 @@ type selectQuery struct {
 	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
 	// When set, tableName holds the alias; the query is materialized at execution time.
 	derivedQuery antlrgen.IQueryContext
-	// projConstFolded is parallel to projExprs (populated lazily by
-	// foldConstantProjections from execSelectQuery). A slot with
-	// present=true means the expression was determined to be row-
-	// context-independent at plan time; its precomputed Go value lives
-	// in `value` and per-row consumers must use it instead of calling
-	// evalExpr. Slots stay zero-valued for expressions that touched a
-	// FieldValue, declined the walker, or weren't constant after
-	// SimplifyValue. Empty slice = pass not run yet.
-	projConstFolded []projectionFold
 }
 
-// joinType enumerates the join flavours; used to dispatch
-// LEFT/RIGHT/FULL null-padding in execSelectJoin.
+// joinType enumerates the join flavours; threaded through to the
+// Cascades JOIN logical builder for LEFT/RIGHT/FULL null-padding.
 type joinType int
 
 const (
@@ -159,9 +138,6 @@ type orderByClause struct {
 	// `ORDER BY SUM(v)` where colName resolved to "SUM(v)" and expr was
 	// left nil because the expression was a bare aggregate).
 	rawExpr antlrgen.IExpressionContext
-	// isSyntheticExpr is true when colName holds a synthetic sentinel
-	// (set during extraSortFields setup for expression-based ORDER BY).
-	isSyntheticExpr bool
 }
 
 // orderByLess returns true iff value `a` sorts before value `b` under the
@@ -455,7 +431,7 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 // reclassification/harvest results. It contains everything
 // extractFromSimpleTable produces EXCEPT the FROM-derived fields
 // (tableName, tableAlias, joins, derivedQuery, whereExpr) and the
-// execution-only fields (projConstFolded, limit, offset).
+// limit/offset fields.
 //
 // Embedded by selectQuery so the classification fields are promoted —
 // code that reads sq.projCols, sq.aggCols, etc. works unchanged.
@@ -1431,10 +1407,10 @@ func exprReferencesColumn(expr antlrgen.IExpressionContext) bool {
 
 // harvestColumnRefs walks an expression tree and returns the set of column
 // names (dot-separated) referenced outside of aggregate function calls.
-// Used by aggregateMapRows's pre-check to detect ungrouped column
-// references in outExpr projection entries (42803 vs 42703 distinction).
-// Refs inside aggregate calls are correctly computed by the aggregate
-// itself — walking into them would flag false positives.
+// Used by the Cascades aggregate builder's pre-check to detect ungrouped
+// column references in outExpr projection entries (42803 vs 42703
+// distinction). Refs inside aggregate calls are correctly computed by the
+// aggregate itself — walking into them would flag false positives.
 func harvestColumnRefs(expr antlrgen.IExpressionContext) []string {
 	if expr == nil {
 		return nil

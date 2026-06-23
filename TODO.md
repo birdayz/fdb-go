@@ -660,7 +660,22 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8)
+### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
+
+DONE via RFC-145: Phase 1 (`a966835c5`) detached the executor (severed 7 eval back-edges, re-routed
+INFORMATION_SCHEMA to an executor-free system-table handler, stubbed the dead explain ExecFn; exit gate
+`git grep execQueryBodyRows == 0` clean); Phase 2 deleted the island (~11.1k LOC, 39 files; the
+compiler-as-oracle restored 3 functions the static audit wrongly classed island — genuinely shared with
+the Cascades planner). Go now has ONE query path (Cascades). Graefe + Torvalds ACK both phases; codex +
+@claude deferred to Jun 25 (PR #336). **Phase-3 follow-up (Torvalds, non-blocking):** residual vestigial
+connection state the trim left — `EmbeddedConnection.validQualifiers` + `outerScopes` are now
+read-but-never-written (their writers were island-only); `validQualifiers` is read by the kept
+`eval_map.go:57` qualifier check (always-nil → branch never fires) and `outerScopes` by `scope.go:85`.
+Removing them touches the kept map-path eval logic (behavior-preserving since both are always nil for the
+kept consumers — single-source system-table WHERE + constant INSERT-VALUES never set them). Small,
+separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.)
+
+Original writeup (kept for context):
 
 `pkg/relational/core/embedded` still contains a complete hand-rolled SQL interpreter — `execSelect` →
 `execSelectQuery` → `execSelectQueryFull` → `execSelectJoin` / `aggregateMapRows` / `cte_scan` /
