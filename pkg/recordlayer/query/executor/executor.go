@@ -2618,6 +2618,14 @@ func executeExplode(
 	}
 	list, ok := result.([]any)
 	if !ok {
+		// A non-list scalar yields a single row. With ordinality it gets
+		// ordinal 1 (the SQL standard's 1-based position of the sole element).
+		if p.IsWithOrdinality() {
+			return applySkipLimit(
+				recordlayer.FromList([]QueryResult{{Datum: explodeOrdinalityRow(result, 1)}}),
+				props.Skip, props.ReturnedRowLimit,
+			), nil
+		}
 		return applySkipLimit(
 			recordlayer.FromList([]QueryResult{{Datum: result}}),
 			props.Skip, props.ReturnedRowLimit,
@@ -2625,9 +2633,31 @@ func executeExplode(
 	}
 	items := make([]QueryResult, len(list))
 	for i, elem := range list {
+		if p.IsWithOrdinality() {
+			// WITH ORDINALITY: each element becomes a 2-field anonymous record
+			// {_0: element, _1: i+1}. The ordinal is the element's 1-based
+			// position in THIS array (the cursor re-runs per outer row, so the
+			// counter naturally resets per outer binding — Java's
+			// IntStream.rangeClosed(1, list.size())). Mirrors
+			// RecordQueryExplodePlan.executePlan's DynamicMessage(field0,field1).
+			items[i] = QueryResult{Datum: explodeOrdinalityRow(elem, i+1)}
+			continue
+		}
 		items[i] = QueryResult{Datum: elem}
 	}
 	return applySkipLimit(recordlayer.FromList(items), props.Skip, props.ReturnedRowLimit), nil
+}
+
+// explodeOrdinalityRow builds the 2-field anonymous record a WITH
+// ORDINALITY Explode emits: the element under the ordinal-0 key and the
+// 1-based ordinal under the ordinal-1 key (Java's q1._0 / q1._1). Keyed by
+// the same `_0`/`_1` names values.OrdinalFieldName produces, so an
+// ordinal-indexed FieldValue resolves them.
+func explodeOrdinalityRow(element any, ordinal int) map[string]any {
+	return map[string]any{
+		values.OrdinalFieldName(0): element,
+		values.OrdinalFieldName(1): int64(ordinal),
+	}
 }
 
 func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext) (recordlayer.RecordCursor[QueryResult], error) {

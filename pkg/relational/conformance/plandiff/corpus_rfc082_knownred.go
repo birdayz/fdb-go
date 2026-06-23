@@ -32,7 +32,7 @@ var rfc082KnownRed = map[string]bool{
 	"derived_projection_count_star":         true,
 	"nested_derived_aggregate_outer_select": true,
 	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
-	// column metadata/alias-provenance unification (round-8) fixed the derived-column
+	// column metadata/alias-provenance unification fixed the derived-column
 	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).
 	"greatest_all_nonnull":         true, // integer literal -> BIGINT vs Java INTEGER
 	"greatest_null_propagates":     true,

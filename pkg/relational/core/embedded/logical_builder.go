@@ -232,7 +232,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// the current op as Left and scans the joined table as Right.
 	// Produces `InnerJoin(on ...) → LeftScan → RightScan` nested as
 	// the logical operator tree expects.
-	for _, j := range sq.joins {
+	for i, j := range sq.joins {
 		var right logical.LogicalOperator
 		if j.catalogAwareInnerPlan != nil {
 			// catalogAwareInnerPlan is the inner plan built through the
@@ -264,6 +264,14 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			} else {
 				right = innerRight
 			}
+		} else if u := lateralUnnestCandidate(j, visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], nil), nil); u != nil {
+			// A comma source that may be a lateral array unnest
+			// (`FROM t, t.arr AS x [AT ord]`); the translator classifies it
+			// against the scope. This metadata-less path cannot run Java's
+			// table-first check (nil resolver); a schema-qualified table
+			// mis-classified here is demoted to a scan by
+			// demoteSchemaQualifiedUnnest once metadata is in scope. RFC-142.
+			right = u
 		} else {
 			right = logical.NewScan(j.tableName, j.alias)
 		}

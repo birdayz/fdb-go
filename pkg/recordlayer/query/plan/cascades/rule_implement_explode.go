@@ -25,7 +25,8 @@ func (r *ImplementExplodeRule) Matcher() matching.BindingMatcher { return r.matc
 
 func (r *ImplementExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	explode := matching.Get[*expressions.ExplodeExpression](call.Bindings, r.matcher)
-	plan := plans.NewRecordQueryExplodePlan(explode.GetCollectionValue())
+	plan := plans.NewRecordQueryExplodePlanWithOrdinality(
+		explode.GetCollectionValue(), explode.GetWithOrdinality())
 	call.Yield(newPhysicalExplodeWrapper(plan))
 }
 

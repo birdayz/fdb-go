@@ -27,13 +27,14 @@ import (
 //   - (pred, nil) — the QUALIFY predicate (the vector K-NN DistanceRank).
 func buildQualifyPredicate(
 	md *recordlayer.RecordMetaData,
+	schemaName string,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
 ) (predicates.QueryPredicate, error) {
 	if sq == nil || sq.qualifyExpr == nil {
 		return nil, nil
 	}
-	resolver := buildSelectScope(sq, md, cteScopes)
+	resolver := buildSelectScope(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"QUALIFY clause could not be resolved against the query scope")
@@ -63,11 +64,12 @@ func buildQualifyPredicate(
 // no QUALIFY clause; propagates a build error for an unsupported QUALIFY.
 func combineQualifyPred(
 	md *recordlayer.RecordMetaData,
+	schemaName string,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
 	pred predicates.QueryPredicate,
 ) (predicates.QueryPredicate, error) {
-	qualPred, err := buildQualifyPredicate(md, sq, cteScopes)
+	qualPred, err := buildQualifyPredicate(md, schemaName, sq, cteScopes)
 	if err != nil {
 		return nil, err
 	}

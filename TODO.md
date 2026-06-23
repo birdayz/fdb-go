@@ -435,8 +435,46 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      WHERE-EXISTS (`WHERE EXISTS(...) AND EXISTS(...)`) already "could not plan query" on master;
      `implementExistentialSelect` handles a single existential (2 quantifiers) only. Now CLEANLY REJECTED by the
      round-3 guard (was silently-wrong); out of scope for Phase 2 as a feature.
-   - **[ ] R5** — `AT ordinality` array unnest (`PRecordQueryExplodePlan.with_ordinality`). Gate:
-     **Graefe** + Torvalds.
+   - **[x] R5** — correlated array UNNEST in FROM (`FROM t, t.arr AS x`) + `AT ordinality`
+     (`PRecordQueryExplodePlan.with_ordinality`, 1-based INT). Implemented in RFC-142: parser preserves
+     uid segments + AT alias on comma sources (`select_parser.go`); a `LogicalUnnest` operator carries
+     them to the translator, which classifies a comma source against the in-scope record types and lowers
+     a correlated `FlatMap(outer, Explode(FieldValue{arr} over QOV(outer)), …, resultValue, false)` —
+     reusing the existing NLJ-rule FlatMap path (the Explode guard now only fires on the uncorrelated
+     IN-list shape). `ExplodeExpression`/`RecordQueryExplodePlan` gained `WithOrdinality` (folded into
+     equals/hash/result-type; `executeExplode` emits a 2-field `{_0:element,_1:i+1}` record, 1-based,
+     resetting per outer row); a name-based ordinal `FieldValue` (`ofOrdinalNumber` analog) binds AS→`_0`,
+     AT→`_1`. AT on a non-array source converges on `ErrCodeWrongObjectType` (42809). Works: base unnest,
+     ordinality, AT-only, NOT-NULL/nullable/empty/single arrays, string arrays, filter-on-element (ordinal
+     preserved), filter-on-ordinal, alias name-collision (unnest shadows via a `Shadowing` ScopeSource).
+     **Follow-ups (clean-rejected, never silently wrong):** multiple/chained unnests in one FROM (nested
+     FlatMap merged-row threading), struct-array element field access, computed SELECT projection over the
+     ordinal (driver-level column projection). Gate: **Graefe** + Torvalds.
+     **Refactor follow-ups (acknowledged-not-blocking by Graefe/Torvalds in the R5 full-pass review):**
+     - **Dedup the group-key-output-name helper.** The aggregate group-key output name is computed three
+       times under three names — `aggKeyName` (executor), `aggregateGroupKeyOutputName` (embedded), and the
+       `havingPredicatePushesBelowAggregate` mirror. Fold into ONE shared helper at the values/executor
+       boundary. This is a pre-existing aggregate-naming wart the unnest shadowing merely exposed; the same
+       pre/post-aggregate name mismatch was rediscovered three separate times during R5. (Graefe)
+     - **Refactor the NLJ rule's `rebaseOuterLegRefsToMerged`** to call the translator's generic
+       `mapPredicateValues` walk instead of carrying its own predicate-tree recursion — the same recursion
+       lives on both sides of a package boundary. (Torvalds)
+     - **Collapse `outerSourceIsCTE` + `outerSourceIsDerivedTable`** into one helper: they are always invoked
+       together as a single `||` (the CTE/derived-output rejection), so the two-arm split is redundant. (Torvalds)
+     - **Unify the two SELECT-build paths behind one driver.** There are two SELECT builders — `PlanVisitor`
+       (top-level) and the catalog builder `buildLogicalPlanForSelectWithCTECatalog` (subquery/DML/derived) —
+       which today share the identical unnest-aware helpers but are still two drivers. Rounds 25/28/30 each
+       found the catalog path missing a step the top-level path had; the round-26 audit confirmed parity, but
+       a single driver would make it *structurally impossible* to add an unnest-aware step to one and miss the
+       other. (Graefe, R5 full-pass round-32)
+     - **Reject general duplicate FROM range-variable aliases.** `FROM A AS X, B AS X` (two real tables, same
+       alias) plans cleanly in Go but Java rejects it (`SemanticAnalyzer` forbids duplicate range-variable
+       names); R5 added the unnest-specific `rejectDuplicateUnnestAlias` but the general case is a separate
+       pre-existing divergence. (surfaced during R5 round-29)
+   - **R5 final codex pass — DEFERRED to Jun 25 (codex quota exhausted).** R5 went through 32 codex rounds
+     (all fixed + revert-proof-tested) + Graefe + Torvalds full-pass ACK; the codex quota hit its limit at
+     round 33. Run one final `codex review --base <R4-commit>` on the committed R5 when the quota resets
+     (Jun 25 ~09:52) to confirm codex-clean; address anything it finds before the umbrella PR merges.
    - **[ ] R6** — `CARDINALITY()` function + index support. Gate: **Graefe** + Torvalds.
    - **[ ] R7** — LEFT/RIGHT OUTER JOIN reclassification (verify Go-extension vs Java-now-supported) +
      boolean-simplification/null/outer-join fixes. Gate: **Graefe** + Torvalds.

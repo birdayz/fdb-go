@@ -45,7 +45,7 @@ func TestQualify_BuildsDistanceRankPredicate(t *testing.T) {
 		t.Fatal("qualifyExpr was not captured from the QUALIFY clause")
 	}
 
-	pred, err := buildQualifyPredicate(md, sq, nil)
+	pred, err := buildQualifyPredicate(md, defaultEmbeddedSchema, sq, nil)
 	if err != nil {
 		t.Fatalf("buildQualifyPredicate: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestQualify_InvertedComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractSelectParts: %v", err)
 	}
-	pred, err := buildQualifyPredicate(md, sq, nil)
+	pred, err := buildQualifyPredicate(md, defaultEmbeddedSchema, sq, nil)
 	if err != nil {
 		t.Fatalf("buildQualifyPredicate (inverted comparison): %v", err)
 	}

@@ -129,7 +129,7 @@ func IsExistentialPredicate(p QueryPredicate) (values.CorrelationIdentifier, boo
 		// An existential semi-join is specifically "the existential QOV IS NOT NULL". The
 		// exported constructor permits any comparison (mirroring Java's), so guard on NOT_NULL
 		// here too — consistent with the *ComparisonPredicate branch — lest an IS NULL (or other)
-		// comparison over the QOV be mis-planned as a positive EXISTS (codex).
+		// comparison over the QOV be mis-planned as a positive EXISTS.
 		if pred.Comparison.Type != ComparisonIsNotNull {
 			return values.CorrelationIdentifier{}, false
 		}
@@ -165,7 +165,7 @@ func IsNotExistentialPredicate(p QueryPredicate) (values.CorrelationIdentifier, 
 // *ComparisonPredicate it lowers to (the same shape IsExistentialPredicate
 // recognises). A structural (typed-node) walk, not text matching.
 //
-// This is the RFC-141 R4 round-12 convergence backstop primitive. EXISTS can
+// This is the RFC-141 R4 convergence backstop primitive. EXISTS can
 // appear at any depth in a WHERE predicate tree, and only a TOP-LEVEL (or
 // single-NOT-wrapped) existential is a directly-handled semi-join shape that
 // the NLJ rule lowers to a FirstOrDefault + residual filter. An existential

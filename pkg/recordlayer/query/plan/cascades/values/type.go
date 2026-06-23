@@ -33,6 +33,8 @@ package values
 // it grows past ~1500 LOC; only then does typing/ become its own
 // sub-package.
 
+import "strconv"
+
 // TypeCode enumerates the well-known SQL types. Mirrors Java's
 // `Type.TypeCode`; numeric values are NOT wire-stable (we don't
 // serialise plans yet — RFC-024 punts on hash compatibility).
@@ -464,6 +466,29 @@ func (r *RecordType) GetField(ordinal int) (Field, bool) {
 		return Field{}, false
 	}
 	return r.Fields[ordinal], true
+}
+
+// OrdinalFieldName is the runtime map key used for an anonymous record
+// field addressed by ordinal position. Java's planner names anonymous
+// explode-with-ordinality fields `_0` (element) and `_1` (ordinal) — see
+// the `q1._0` / `q1._1` access in the EXPLAIN output. The runtime Datum is
+// a name-keyed `map[string]any`, so an ordinal-addressed FieldValue
+// (Java's `FieldValue.ofOrdinalNumber`) reads the `_<ordinal>` key.
+func OrdinalFieldName(ordinal int) string {
+	return "_" + strconv.Itoa(ordinal)
+}
+
+// ExplodeOrdinalityResultType builds the result type of a WITH-ORDINALITY
+// Explode: an anonymous 2-field record (element, INT NOT NULL ordinal).
+// Mirrors Java's `ExplodeExpression.explodeResultType(elementType, true)`.
+func ExplodeOrdinalityResultType(elementType Type) Type {
+	if elementType == nil {
+		elementType = UnknownType
+	}
+	return NewRecordType("", true, []Field{
+		{Name: OrdinalFieldName(0), FieldType: elementType, Ordinal: 0},
+		{Name: OrdinalFieldName(1), FieldType: NotNullInt, Ordinal: 1},
+	})
 }
 
 // --- ArrayType -----------------------------------------------------

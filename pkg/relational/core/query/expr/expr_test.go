@@ -84,6 +84,13 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 		TableName: semantic.ParseQualifiedName("MIXED", false),
 		TableColumns: []semantic.Column{
 			{Id: semantic.NewUnquoted("i"), Type: "INT"},
+			// INTEGER is a recognized synonym for INT — it must NOT fall to
+			// UNKNOWN (RFC-142 round-21: the unnest AT-ordinal column type).
+			{Id: semantic.NewUnquoted("ii"), Type: "INTEGER"},
+			// "INT NOT NULL" / "INTEGER NOT NULL" are the planner-internal
+			// non-null INT spellings (the WITH ORDINALITY ordinal) → NotNullInt.
+			{Id: semantic.NewUnquoted("inn"), Type: "INT NOT NULL"},
+			{Id: semantic.NewUnquoted("intnn"), Type: "INTEGER NOT NULL"},
 			{Id: semantic.NewUnquoted("s"), Type: "STRING"},
 			{Id: semantic.NewUnquoted("e"), Type: "ENUM"},
 			{Id: semantic.NewUnquoted("b"), Type: "BOOL"},
@@ -101,13 +108,16 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 	r := expr.New(a, s)
 
 	cases := map[string]values.Type{
-		"i":   values.TypeInt,
-		"s":   values.TypeString,
-		"e":   values.TypeString,
-		"b":   values.TypeBool,
-		"f":   values.TypeUnknown, // no TypeFloat yet
-		"by":  values.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
-		"rec": values.TypeUnknown, // no struct/record type yet
+		"i":     values.TypeInt,
+		"ii":    values.TypeInt,    // INTEGER is a synonym for INT, never UNKNOWN
+		"inn":   values.NotNullInt, // "INT NOT NULL" → non-null INT (unnest ordinal)
+		"intnn": values.NotNullInt, // "INTEGER NOT NULL" → non-null INT
+		"s":     values.TypeString,
+		"e":     values.TypeString,
+		"b":     values.TypeBool,
+		"f":     values.TypeUnknown, // no TypeFloat yet
+		"by":    values.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
+		"rec":   values.TypeUnknown, // no struct/record type yet
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))

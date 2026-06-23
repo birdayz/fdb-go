@@ -20,13 +20,16 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
+		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
+		// preserving Escape (the LIKE escape rune) AND every other Comparison
+		// subclass field (ParameterName, the Text* fields, the DistanceRank
+		// vector fields). A partial {Type, Operand, Escape} reconstruction would
+		// silently drop the rest and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
 		return &ComparisonPredicate{
-			Operand: newOperand,
-			Comparison: Comparison{
-				Type:    pred.Comparison.Type,
-				Operand: newCompOperand,
-				Escape:  pred.Comparison.Escape,
-			},
+			Operand:    newOperand,
+			Comparison: cmp,
 		}
 	case *ValuePredicate:
 		newVal := values.RebaseValue(pred.Value, aliases)

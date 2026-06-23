@@ -1,6 +1,7 @@
 package query
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -1056,5 +1058,54 @@ func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
 		}
 	} else {
 		t.Errorf("pullUpToOutputField returned no match for a semantically-equal key")
+	}
+}
+
+// TestTranslateUnnest_NilMetadataIsCleanError pins codex P2b: the
+// metadata-less translation path (TranslateToCascades / the nil-md
+// TranslateToCascadesWithSubqueries, used by scalar-subquery / DML translation
+// and unit tests) must NOT panic when handed a LogicalJoin whose Right is a
+// LogicalUnnest. Classifying a lateral array unnest requires the outer source's
+// proto descriptor (resolveRecordType → t.md); with t.md == nil the translator
+// declines CLEANLY with ErrCodeUnsupportedQuery rather than dereferencing nil
+// metadata. RFC-142.
+func TestTranslateUnnest_NilMetadataIsCleanError(t *testing.T) {
+	// FROM T1, T1.ARR1 AS V — a lateral unnest whose array field lives on T1.
+	unnest := &logical.LogicalUnnest{Segments: []string{"T1", "ARR1"}, Alias: "V"}
+	join := logical.NewJoin(logical.NewScan("T1", ""), unnest, logical.JoinInner, "")
+
+	// 1. TranslateToCascades (the bare nil-md entry) must not panic.
+	if ref := TranslateToCascades(join); ref != nil {
+		t.Fatalf("nil-md unnest: expected untranslatable (nil ref), got %v", ref)
+	}
+
+	// 2. TranslateToCascadesWithError surfaces the specific clean code.
+	ref, _, err := TranslateToCascadesWithError(join, nil)
+	if ref != nil {
+		t.Fatalf("nil-md unnest: expected nil ref, got %v", ref)
+	}
+	if err == nil {
+		t.Fatalf("nil-md unnest: expected a clean error, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("nil-md unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
+	}
+}
+
+// TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError is the AT-ordinality
+// variant of P2b: the AT-only form (no AS) also reaches translateUnnestJoin and
+// must decline cleanly on the nil-md path, never panic. RFC-142.
+func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
+	unnest := &logical.LogicalUnnest{Segments: []string{"T1", "ARR1"}, AtAlias: "ORD"}
+	join := logical.NewJoin(logical.NewScan("T1", ""), unnest, logical.JoinInner, "")
+
+	ref, _, err := TranslateToCascadesWithError(join, nil)
+	if ref != nil {
+		t.Fatalf("nil-md AT unnest: expected nil ref, got %v", ref)
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("nil-md AT unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
 	}
 }

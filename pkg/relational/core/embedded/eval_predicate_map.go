@@ -353,7 +353,7 @@ func evalPredicateOnMapTri(ctx context.Context, conn *EmbeddedConnection, row ma
 		// to triNull, which is wrong for NOT BETWEEN: `0 NOT BETWEEN
 		// 1 AND NULL` is `(0 < 1) OR (0 > NULL)` = `(TRUE OR UNKNOWN)`
 		// = TRUE, but the short-circuit returned UNKNOWN and silently
-		// filtered the row out (round-5 review).
+		// filtered the row out.
 		lo, loErr := evalExprAtomOnMap(ctx, conn, row, p.GetLeft())
 		if loErr != nil {
 			return triFalse, loErr

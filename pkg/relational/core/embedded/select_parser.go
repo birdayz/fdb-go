@@ -94,6 +94,31 @@ type joinClause struct {
 	joinType  joinType
 	alias     string
 	onExpr    antlrgen.IExpressionContext
+	// segments preserves the un-flattened uid segments of the source's
+	// dotted name (`FullId().AllUid()`, quote-stripped). For a single-name
+	// table source it is `[name]`; for a correlated array source
+	// `outer.arr` it is `["OUTER", "ARR"]`. The translator classifies a
+	// comma source as a LATERAL UNNEST (vs a table) by resolving segment 0
+	// against the in-scope source aliases — it MUST NOT re-split tableName,
+	// which is a lossy `strings.Join` of these segments (Torvalds: no
+	// text-heuristic re-split). RFC-142 R5.
+	segments []string
+	// atAlias is the `AT atAlias` ordinal alias of a lateral array unnest
+	// (`FROM t, t.arr AS x AT ord`), empty when absent. Its presence makes
+	// the Explode produce 1-based ordinals (WITH ORDINALITY). Carried
+	// through for the translator to bind; the parser no longer rejects AT.
+	atAlias string
+	// fromComma is true when this entry is a COMMA-separated FROM source
+	// (`FROM t, x`), false when it is produced by extractJoinClause from an
+	// explicit JOIN part (`... INNER/LEFT/RIGHT/FULL JOIN x ...`). Only a
+	// comma source may be a lateral array unnest: Java unnests via the
+	// COMMA-syntax `FROM t, t.arr AS x` correlated-field path; an explicit
+	// JOIN source is always resolved as a table/derived source, never a
+	// lateral array unnest (the JOIN visitor adds it as a normal operator).
+	// onExpr alone cannot distinguish them — an `INNER JOIN x` with no ON
+	// also has onExpr == nil — so the unnest classifier gates on this flag.
+	// RFC-142 R5.
+	fromComma bool
 	// derivedQuery is set when the join's right-hand source is a
 	// subquery (`... , (SELECT ...) AS x` or `INNER JOIN (SELECT ...)
 	// AS x ON ...`). The dispatcher materializes the subquery as a
@@ -1516,18 +1541,249 @@ type fromSource struct {
 	whereExpr    antlrgen.IWhereExprContext
 }
 
-// rejectAtOrdinality rejects a table source that carries the `AT atAlias`
-// unnest-with-ordinality clause (Java 4.12 #4112). The grammar parses `AT` (RFC-140 / R3),
-// but binding the ordinal to a value is R5. Until then the planner MUST reject it rather
-// than silently ignore the alias: ignoring it would let a reference to the ordinal resolve
-// to a same-named existing table column and return the wrong value (codex). When R5 wires
-// the binder/explode, this guard is removed.
+// rejectAtOrdinality rejects an `AT atAlias` ordinality clause on a table
+// source that can NEVER be a lateral array unnest — the PRIMARY FROM source
+// and JOIN sources. Lateral unnest (`FROM t, t.arr AS x AT ord`) only
+// occurs on a COMMA source whose dotted name resolves to a prior source's
+// array field; those carry the AT alias through to the translator instead
+// (it classifies and binds). AT on a genuine table/CTE/view is invalid —
+// Java's WRONG_OBJECT_TYPE. R5 converges the rejection on the single
+// ErrCodeWrongObjectType code so a rejection test is revert-proof
+// (previously the parser threw ErrCodeUnsupportedQuery while scope_build
+// threw UnsupportedFromShapeError — two errors for one shape). RFC-142.
 func rejectAtOrdinality(item *antlrgen.AtomTableItemContext) error {
 	if item != nil && item.GetAtAlias() != nil {
-		return api.NewError(api.ErrCodeUnsupportedQuery,
-			"AT ordinality (unnest with ordinal position) is not yet supported")
+		return api.NewError(api.ErrCodeWrongObjectType,
+			"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord), not on a table, CTE, or view")
 	}
 	return nil
+}
+
+// atAliasOf returns the quote-stripped `AT atAlias` ordinal alias of a
+// table source, or "" when absent. Used for comma sources that may be a
+// lateral array unnest (the translator binds the ordinal). RFC-142.
+func atAliasOf(item *antlrgen.AtomTableItemContext) string {
+	if item == nil || item.GetAtAlias() == nil {
+		return ""
+	}
+	return functions.StripIdentifierQuotes(item.GetAtAlias().GetText())
+}
+
+// visibleFromAliases returns the set (upper-cased) of FROM-source aliases
+// that are VISIBLE in the current query's FROM scope at the point of a comma
+// source: the primary source's effective alias plus every PRIOR join's
+// effective alias. A derived-table / CTE / subquery JOIN source contributes
+// ONLY its outer alias (`d` in `(SELECT …) AS d`), never the table names
+// hidden inside its body — those are out of scope here. This is the Go analog
+// of Java's `currentPlanFragment.getLogicalOperatorsIncludingOuter()`: the
+// visible in-scope quantifiers a correlated unnest may bind to.
+//
+// `priorJoins` is the slice of joins BEFORE the candidate comma source (the
+// candidate may only correlate to a source to its left in the FROM list).
+// RFC-142.
+func visibleFromAliases(primaryTable, primaryAlias string, priorJoins []joinClause, resolvesToTable tableResolver) map[string]struct{} {
+	set := make(map[string]struct{}, len(priorJoins)+1)
+	add := func(table, alias string) {
+		eff := alias
+		if eff == "" {
+			eff = table
+		}
+		if eff != "" {
+			set[strings.ToUpper(eff)] = struct{}{}
+		}
+	}
+	add(primaryTable, primaryAlias)
+	for _, pj := range priorJoins {
+		// A derived/CTE/subquery join exposes only its outer alias as a
+		// visible source; the hidden body tables are out of scope.
+		if pj.derivedQuery != nil || pj.catalogAwareInnerPlan != nil {
+			if pj.alias != "" {
+				set[strings.ToUpper(pj.alias)] = struct{}{}
+			}
+			continue
+		}
+		// Classify the prior leg against the set accumulated SO FAR (the aliases
+		// visible to its left) using the SAME shape predicate the candidate uses.
+		// A prior lateral-unnest leg exposes its element/ordinal binding alias,
+		// not a real table; a prior table leg exposes its table alias. RFC-142.
+		if pj.onExpr == nil && unnestCandidateShape(pj, set, resolvesToTable) {
+			asAlias, atAlias := unnestAliases(pj)
+			if asAlias != "" {
+				set[strings.ToUpper(asAlias)] = struct{}{}
+			}
+			if atAlias != "" {
+				set[strings.ToUpper(atAlias)] = struct{}{}
+			}
+			continue
+		}
+		add(pj.tableName, pj.alias)
+	}
+	return set
+}
+
+// lateralUnnestCandidate returns a LogicalUnnest for a comma FROM source
+// that IS a lateral array unnest candidate (`FROM t, t.arr AS x [AT ord]`),
+// else nil. The translator does the final array-vs-scalar / collision check.
+//
+// A source is a candidate IFF it is a plain comma source (no ON predicate, not
+// a derived/CTE source) AND `unnestCandidateShape` holds. See that helper for
+// the precise gate; in short:
+//
+//   - a DOTTED source (≥2 segments) is a candidate ONLY when segment 0 names a
+//     VISIBLE in-scope FROM-source alias — NOT a schema-qualified table (`s.B`,
+//     where `s` is a schema, not a source) and NOT a table hidden inside a
+//     CTE/derived body (only the outer alias `d` is visible). This mirrors
+//     Java's `generateAccess`, which resolves a FROM identifier as a
+//     CTE/table/view/function FIRST and only falls through to
+//     `resolveCorrelatedIdentifier` (an in-scope correlated field) otherwise.
+//   - a source carrying an `AT` ordinal alias is ALWAYS a candidate, even when
+//     segment 0 is not a visible source: AT explicitly requests ordinality,
+//     which is valid ONLY on a correlated array, so the translator must reach
+//     it and reject a non-array AT cleanly (WRONG_OBJECT_TYPE) rather than
+//     silently dropping the AT and treating the source as a plain table.
+//
+// RFC-142.
+func lateralUnnestCandidate(j joinClause, visible map[string]struct{}, resolvesToTable tableResolver) *logical.LogicalUnnest {
+	if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil || j.onExpr != nil {
+		return nil
+	}
+	if !unnestCandidateShape(j, visible, resolvesToTable) {
+		return nil
+	}
+	asAlias, atAlias := unnestAliases(j)
+	return &logical.LogicalUnnest{
+		Segments: j.segments,
+		Alias:    asAlias,
+		AtAlias:  atAlias,
+	}
+}
+
+// tableResolver reports whether a dotted FROM-source name (its un-flattened uid
+// segments) resolves to a real TABLE or CTE — i.e. Java's `tableExists` /
+// `findCteMaybe`. When it returns true, `generateAccess`'s table/CTE branch wins
+// and the source is NOT a correlated unnest. nil means "no metadata available
+// here" (the parser-only path); the table-first demotion is then applied later
+// by `demoteSchemaQualifiedUnnest` once metadata is in scope. RFC-142.
+type tableResolver func(segments []string) bool
+
+// unnestCandidateShape is the SINGLE classification predicate shared by the
+// logical lowering (lateralUnnestCandidate) and the WHERE/projection scope
+// binding (isLateralUnnestJoin). They MUST agree exactly or the scope source
+// is registered for a shape the lowering treats as a table (or vice versa).
+// `j` must already be known to be a plain comma source (no ON/derived).
+//
+// Mirrors Java's `LogicalOperator.generateAccess` resolution ORDER: a FROM
+// identifier is a CTE/TABLE/view/function FIRST, and only falls through to a
+// correlated array field otherwise. So a dotted source that `resolvesToTable`
+// (a schema-qualified real table, e.g. `s.PB` where `s` is the schema name, or a
+// CTE) is NOT an unnest — UNLESS it carries an AT ordinal alias, which Java
+// rejects on a table with WRONG_OBJECT_TYPE; that AT case stays on the unnest
+// path so the translator surfaces the faithful diagnostic. RFC-142.
+func unnestCandidateShape(j joinClause, visible map[string]struct{}, resolvesToTable tableResolver) bool {
+	// Only a COMMA-separated FROM source may be a lateral array unnest. Java
+	// unnests via the comma-syntax `FROM t, t.arr AS x` correlated-field path
+	// (generateCorrelatedFieldAccess); an explicit JOIN source — even an
+	// `INNER JOIN t.arr AS x` with no ON clause — is always resolved as a
+	// table/derived source (the JOIN visitor adds it as a normal operator),
+	// never a lateral unnest. onExpr alone cannot distinguish the two (a
+	// no-ON inner join also has onExpr == nil), so the origin flag gates here.
+	// RFC-142 R5.
+	if !j.fromComma {
+		return false
+	}
+	// An AT ordinal alias forces the unnest LOGICAL node so the AT survives to the
+	// translator / demoteSchemaQualifiedUnnest, which validate it (AT is valid only
+	// on a correlated array; AT on a table → WRONG_OBJECT_TYPE). Even an
+	// AT-on-a-schema-qualified-table stays a LogicalUnnest here so the AT is not
+	// silently dropped into a plain table scan; the scope binding separately
+	// declines to register a virtual unnest source for it (see schemaQualifiedTableUnnest).
+	// RFC-142.
+	if j.atAlias != "" {
+		return true
+	}
+	// A dotted source is an unnest ONLY when segment 0 is a visible in-scope
+	// FROM-source alias (a real correlated source). Otherwise it is a
+	// (schema-qualified or unknown) table — the table path.
+	if len(j.segments) < 2 {
+		return false
+	}
+	if !isVisibleFromAlias(j.segments[0], visible) {
+		return false
+	}
+	// Table-first (Java generateAccess): even though segment 0 names a visible
+	// alias, if the WHOLE dotted name resolves to a real schema-qualified table
+	// or CTE, the table branch wins — it is a cross join, not a correlated
+	// unnest. (`FROM PA AS s, s.PB`: `s` is a visible alias AND the schema name,
+	// but `s.PB` is the real table PB — a table, not an unnest of PA.) RFC-142.
+	if resolvesToTable != nil && resolvesToTable(j.segments) {
+		return false
+	}
+	return true
+}
+
+// schemaQualifiedTableUnnest reports whether a comma source is a SCHEMA-QUALIFIED
+// table (segments `[schema, table]` where the resolver confirms the dotted name
+// is a real table/CTE). Used by the WHERE/projection scope binding to decline
+// registering a virtual unnest scope source for such a source — it is a table,
+// so the scope must resolve its columns as a table cross join, not an unnest.
+// (Without this, an AT-on-a-table source like `FROM PA, s.PB AT a`, which
+// unnestCandidateShape keeps as a LogicalUnnest so the AT survives to the
+// WRONG_OBJECT_TYPE rejection, would also be mis-registered as an unnest source
+// and shadow the real table resolution.) RFC-142.
+func schemaQualifiedTableUnnest(j joinClause, resolvesToTable tableResolver) bool {
+	return resolvesToTable != nil && len(j.segments) == 2 && resolvesToTable(j.segments)
+}
+
+// isVisibleFromAlias reports whether `seg` (case-insensitive) is a visible
+// in-scope FROM-source alias. RFC-142.
+func isVisibleFromAlias(seg string, visible map[string]struct{}) bool {
+	_, ok := visible[strings.ToUpper(seg)]
+	return ok
+}
+
+// unnestAliases extracts the EXPLICIT-or-defaulted AS alias and the AT (ordinal)
+// alias of a lateral-unnest comma source. The parser defaults `j.alias` to the
+// flattened segment name (`T1.ARR1`) when no `AS` was written, so an AS alias is
+// "explicit" only when it differs from the joined segments.
+//
+// When no AS alias was written, the element's binding alias DEFAULTS to the LAST
+// segment — the array field name (`ARR` for `t.ARR`) — mirroring Java's
+// `QueryVisitor.visitAtomTableItem`, which defaults `tableAlias` to
+// `visitTableName(...)` (the source name) when the `alias` token is absent. This
+// guarantees the element is always referenceable by a non-empty name and that
+// `unnestSourceCorrelation` never yields the zero CorrelationIdentifier (which
+// would panic in NewQuantifiedObjectValue when planning `FROM t, t.arr` with
+// neither AS nor AT).
+//
+// This is the SINGLE source of truth for the (AS, AT) pair so the logical
+// lowering (lateralUnnestCandidate) and the WHERE/projection scope binding
+// (unnestScopeSourceAdder) agree on the unnest's correlation name — they MUST,
+// or a WHERE-on-element/ordinal predicate resolves to a correlation the inner
+// Explode quantifier is not bound under and silently fails to push into the
+// inner filter. RFC-142.
+func unnestAliases(j joinClause) (asAlias, atAlias string) {
+	if j.alias != "" && j.alias != strings.Join(j.segments, ".") {
+		asAlias = j.alias
+	} else if len(j.segments) > 0 {
+		// No explicit AS: default the element binding to the last segment (the
+		// array field name), Java's table-name-as-alias fallback.
+		asAlias = j.segments[len(j.segments)-1]
+	}
+	return asAlias, j.atAlias
+}
+
+// uidSegments returns the quote-stripped uid segments of a table name's
+// FullId. `"OUTER"."ARR"` → ["OUTER","ARR"]. Preserved un-flattened on the
+// carried FROM source so the translator can resolve a comma source
+// segment-by-segment against the scope without re-splitting a joined string
+// (Torvalds: no text-heuristic re-split). RFC-142.
+func uidSegments(tableName antlrgen.ITableNameContext) []string {
+	uids := tableName.FullId().AllUid()
+	parts := make([]string, len(uids))
+	for i, u := range uids {
+		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+	}
+	return parts
 }
 
 // parseFromSource walks the FROM clause of a SimpleTableContext and
@@ -1577,14 +1833,15 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		}
 		switch item := eb.TableSourceItem().(type) {
 		case *antlrgen.AtomTableItemContext:
-			if err := rejectAtOrdinality(item); err != nil {
-				return nil, err
-			}
-			uids := item.TableName().FullId().AllUid()
-			parts := make([]string, len(uids))
-			for i, u := range uids {
-				parts[i] = functions.StripIdentifierQuotes(u.GetText())
-			}
+			// A comma source may be a LATERAL ARRAY UNNEST (`FROM t, t.arr AS x
+			// [AT ord]`) or a plain table cross-join. The parser carries the
+			// un-flattened uid segments + the AT alias through; the translator
+			// classifies (segment 0 = an in-scope source alias whose record type
+			// has an array field named by the remaining segments → unnest, else
+			// table). AT is NOT rejected here — the translator binds it for the
+			// unnest case and rejects it (WRONG_OBJECT_TYPE) for the table case.
+			// RFC-142.
+			parts := uidSegments(item.TableName())
 			tblName := strings.Join(parts, ".")
 			alias := tblName
 			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
@@ -1596,6 +1853,9 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				joinType:  joinTypeInner,
 				alias:     alias,
 				onExpr:    nil,
+				segments:  parts,
+				atAlias:   atAliasOf(item),
+				fromComma: true,
 			})
 		case *antlrgen.SubqueryTableItemContext:
 			alias := ""
@@ -1612,6 +1872,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				alias:        alias,
 				onExpr:       nil,
 				derivedQuery: item.Query(),
+				fromComma:    true,
 			})
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -1644,16 +1905,14 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			"unsupported table source item %T; only plain table names are supported",
 			srcBase.TableSourceItem())
 	}
+	// The PRIMARY FROM source can never be a lateral array unnest (no prior
+	// scope to correlate to), so AT here is always invalid (WRONG_OBJECT_TYPE).
 	if err := rejectAtOrdinality(atomItem); err != nil {
 		return nil, err
 	}
 	// Build table name from uid segments, stripping identifier quotes.
 	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
-	uids := atomItem.TableName().FullId().AllUid()
-	parts := make([]string, len(uids))
-	for i, u := range uids {
-		parts[i] = functions.StripIdentifierQuotes(u.GetText())
-	}
+	parts := uidSegments(atomItem.TableName())
 	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
 	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
 	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
@@ -1748,14 +2007,12 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"JOIN: unsupported table source item %T", j.TableSourceItem())
 		}
+		// A JOIN source is never a lateral array unnest (Java only unnests via
+		// the comma FROM list), so AT here is invalid (WRONG_OBJECT_TYPE).
 		if err := rejectAtOrdinality(atomItem); err != nil {
 			return joinClause{}, err
 		}
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
+		parts := uidSegments(atomItem.TableName())
 		tblName := strings.Join(parts, ".")
 		alias := tblName
 		// Grammar is `tableName (AS? alias=uid)?` — AS is optional.
@@ -1770,7 +2027,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if j.Expression() != nil {
 			onExpr = j.Expression()
 		}
-		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr}, nil
+		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, segments: parts}, nil
 
 	case *antlrgen.OuterJoinContext:
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
@@ -1778,14 +2035,11 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"JOIN: unsupported table source item %T", j.TableSourceItem())
 		}
+		// A JOIN source is never a lateral array unnest, so AT is invalid here.
 		if err := rejectAtOrdinality(atomItem); err != nil {
 			return joinClause{}, err
 		}
-		uids := atomItem.TableName().FullId().AllUid()
-		parts := make([]string, len(uids))
-		for i, u := range uids {
-			parts[i] = functions.StripIdentifierQuotes(u.GetText())
-		}
+		parts := uidSegments(atomItem.TableName())
 		tblName := strings.Join(parts, ".")
 		alias := tblName
 		// Same implicit-alias note as InnerJoin.
@@ -1802,7 +2056,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if j.Expression() != nil {
 			onExpr = j.Expression()
 		}
-		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr}, nil
+		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr, segments: parts}, nil
 
 	default:
 		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,

@@ -33,13 +33,16 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		if op == q.Operand && rhs == q.Comparison.Operand {
 			return q
 		}
+		// Copy the whole Comparison and replace ONLY the simplified RHS operand,
+		// preserving Escape AND every other Comparison subclass field
+		// (ParameterName, the Text* fields, the DistanceRank vector fields).
+		// A partial {Type, Operand, Escape} reconstruction would drop the rest
+		// and change the comparison's semantics.
+		cmp := q.Comparison
+		cmp.Operand = rhs
 		return &ComparisonPredicate{
-			Operand: op,
-			Comparison: Comparison{
-				Type:    q.Comparison.Type,
-				Operand: rhs,
-				Escape:  q.Comparison.Escape,
-			},
+			Operand:    op,
+			Comparison: cmp,
 		}
 	case *ValuePredicate:
 		v := values.SimplifyValue(q.Value)

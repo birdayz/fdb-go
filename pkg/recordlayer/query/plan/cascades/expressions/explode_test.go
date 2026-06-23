@@ -100,3 +100,65 @@ func TestExplode_HashCodeNilCollection(t *testing.T) {
 		t.Fatal("HashCodeWithoutChildren = 0, want non-zero class discriminator")
 	}
 }
+
+// TestExplode_WithOrdinalityDistinct pins Graefe's RFC-142 concern: an ordinal
+// and a non-ordinal Explode over the SAME array Value must NOT be conflated by
+// EqualsWithoutChildren / HashCodeWithoutChildren — they produce different
+// result shapes (a 2-field record vs the bare element), so the memo must keep
+// them distinct (mirrors Java hashing/equals on (collectionValue, withOrdinality)).
+func TestExplode_WithOrdinalityDistinct(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+	})
+	plain := NewExplodeExpression(arr)
+	ord := NewExplodeExpressionWithOrdinality(arr, true)
+
+	if plain.EqualsWithoutChildren(ord, nil) {
+		t.Fatal("ordinal and non-ordinal Explode over the same array must NOT be equal")
+	}
+	if ord.EqualsWithoutChildren(plain, nil) {
+		t.Fatal("equality must be symmetric: ordinal != non-ordinal")
+	}
+	if plain.HashCodeWithoutChildren() == ord.HashCodeWithoutChildren() {
+		t.Fatal("ordinal and non-ordinal Explode must hash differently")
+	}
+	if plain.GetWithOrdinality() || !ord.GetWithOrdinality() {
+		t.Fatal("GetWithOrdinality flag mismatch")
+	}
+
+	// Two ordinal Explodes over the same array ARE equal.
+	ord2 := NewExplodeExpressionWithOrdinality(arr, true)
+	if !ord.EqualsWithoutChildren(ord2, nil) {
+		t.Fatal("two WITH ORDINALITY Explodes over the same array should be equal")
+	}
+}
+
+// TestExplode_OrdinalityResultType pins the WITH ORDINALITY result type: an
+// anonymous 2-field record (element, INT NOT NULL), keyed _0 / _1.
+func TestExplode_OrdinalityResultType(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+	})
+	ord := NewExplodeExpressionWithOrdinality(arr, true)
+	rt, ok := ord.GetExplodeResultType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("ordinality result type = %T, want *RecordType", ord.GetExplodeResultType())
+	}
+	if len(rt.Fields) != 2 {
+		t.Fatalf("ordinality record has %d fields, want 2", len(rt.Fields))
+	}
+	if rt.Fields[0].Name != values.OrdinalFieldName(0) || rt.Fields[1].Name != values.OrdinalFieldName(1) {
+		t.Fatalf("ordinality field names = %q,%q, want _0,_1", rt.Fields[0].Name, rt.Fields[1].Name)
+	}
+	if rt.Fields[1].FieldType.Code() != values.TypeCodeInt || rt.Fields[1].FieldType.IsNullable() {
+		t.Fatalf("ordinal field type = %v, want INT NOT NULL", rt.Fields[1].FieldType)
+	}
+
+	// Non-ordinal: bare element type (NotNullLong), not a record.
+	plain := NewExplodeExpression(arr)
+	if _, isRec := plain.GetExplodeResultType().(*values.RecordType); isRec {
+		t.Fatal("non-ordinal Explode result type must be the bare element, not a record")
+	}
+}

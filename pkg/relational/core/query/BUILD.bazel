@@ -14,6 +14,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/query/logical",
         "@org_golang_google_protobuf//reflect/protoreflect",
@@ -32,6 +33,7 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
         "//pkg/relational/core/query/logical",
     ],
 )

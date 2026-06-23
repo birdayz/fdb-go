@@ -128,3 +128,36 @@ func TestExplodePlan_Explain_Nil(t *testing.T) {
 		t.Fatalf("Explain = %q, want 'Explode(<nil>)'", got)
 	}
 }
+
+// TestExplodePlan_WithOrdinality pins the physical plan's RFC-142 ordinality
+// threading: a WITH ORDINALITY plan is distinct (equals/hash) from a bare one
+// over the same array, its result type is the 2-field record, and its Explain
+// surfaces WITH ORDINALITY.
+func TestExplodePlan_WithOrdinality(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+	})
+	plain := NewRecordQueryExplodePlan(arr)
+	ord := NewRecordQueryExplodePlanWithOrdinality(arr, true)
+
+	if !ord.IsWithOrdinality() || plain.IsWithOrdinality() {
+		t.Fatal("IsWithOrdinality flag mismatch")
+	}
+	if plain.EqualsWithoutChildren(ord) {
+		t.Fatal("ordinal and non-ordinal Explode plans must NOT be equal")
+	}
+	if plain.HashCodeWithoutChildren() == ord.HashCodeWithoutChildren() {
+		t.Fatal("ordinal and non-ordinal Explode plans must hash differently")
+	}
+	rt, ok := ord.GetResultType().(*values.RecordType)
+	if !ok || len(rt.Fields) != 2 {
+		t.Fatalf("ordinality result type = %v, want 2-field record", ord.GetResultType())
+	}
+	if !strings.Contains(ord.Explain(), "WITH ORDINALITY") {
+		t.Fatalf("ordinal Explain = %q, want WITH ORDINALITY", ord.Explain())
+	}
+	if strings.Contains(plain.Explain(), "WITH ORDINALITY") {
+		t.Fatalf("non-ordinal Explain = %q, must NOT contain WITH ORDINALITY", plain.Explain())
+	}
+}

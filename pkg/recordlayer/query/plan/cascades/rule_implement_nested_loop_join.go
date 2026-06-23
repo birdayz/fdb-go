@@ -69,7 +69,19 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	if getExplodeExpression(leftRef) != nil || getExplodeExpression(rightRef) != nil {
+	// An UNCORRELATED Explode leg is the IN-list shape (col IN (v1,v2,…) →
+	// SelectExpression with an Explode over a constant list); that is owned by
+	// ImplementInJoinRule, not the NLJ rule — bail. But a CORRELATED Explode (a
+	// lateral array UNNEST, `FROM t, t.arr AS x` → Explode of FieldValue{arr}
+	// over the outer QOV) IS a correlated FlatMap: let it fall through to the
+	// rightDepsLeft/leftDepsRight FlatMap path below, which builds
+	// RecordQueryFlatMapPlan(outer, explode, …, resultValue, false) — the
+	// non-existential, no-FirstOrDefault path (RFC-142). The guard fires only
+	// when an Explode leg is not correlated to the OTHER leg.
+	if le := getExplodeExpression(leftRef); le != nil && !referenceIsCorrelatedTo(leftRef, quants[1].GetAlias()) {
+		return
+	}
+	if re := getExplodeExpression(rightRef); re != nil && !referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
 		return
 	}
 
@@ -366,8 +378,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// inner leg — it is a pre-evaluated external binding. The absence test pushed
 	// that scalar predicate BELOW the FOD; alongside an empty NOT-EXISTS it never
 	// evaluated (the empty FOD's IS-NULL residual admitted every outer row), so
-	// the scalar comparison was silently dropped (RFC-141 R4 round-11). Routing
-	// by inner-leg-set MEMBERSHIP keeps round-10's multi-table fix (all inner legs
+	// the scalar comparison was silently dropped (RFC-141 R4). Routing
+	// by inner-leg-set MEMBERSHIP keeps the multi-table fix (all inner legs
 	// route below, where the merged inner row's qualified leg keys T2.T1_ID and
 	// the live outer binding both resolve) AND keeps scalar-subquery / parameter /
 	// other external-binding predicates outer (where their pre-evaluated value is
@@ -456,7 +468,7 @@ func remapExistentialResultValue(
 }
 
 // resultValueReferencesAlias reports whether a SelectExpression result value's
-// correlation set includes `alias` — the structural signal (RFC-141 round-3)
+// correlation set includes `alias` — the structural signal (RFC-141)
 // that the result value is a PROJECTED EXISTS over a join (it reads the
 // existential quantifier), not the WHERE-EXISTS pass-through (a bare merged-row
 // identity, which is correlated only to the merged outer, never to the
@@ -467,6 +479,45 @@ func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentif
 	}
 	_, ok := values.GetCorrelatedToOfValue(rv)[alias]
 	return ok
+}
+
+// mergedOuterLegAliases returns the COMPLETE set of source-leg aliases the
+// inner-join's merged outer row anchors columns for: the two top-level quantifier
+// aliases PLUS every alias BURIED inside a leg that is itself a JOIN/UNNEST subtree
+// (`FROM T1, T1.arr AS V, U` anchors T1, V, U — T1 buried under the unnest leg whose
+// row flows under V). The buried aliases are read ALGEBRAICALLY off the anchored
+// result value's dotted field-name prefixes: that value IS the merged-row schema
+// (NewAnchoredJoinRecord names each leg column "LEG.COL", dotted columns verbatim),
+// so the prefixes are the exact source-alias inventory the merged binding carries.
+// A residual referencing a buried source (QOV(T1).ID) must rebase to that verbatim
+// "T1.ID" key; reading only {leftAlias,rightAlias} left it unbound → NULL → rows
+// dropped. leftAlias/rightAlias are always included, so a non-anchored result value
+// (a folded projection) and a plain `FROM A,B` join degenerate to the prior
+// behaviour (a no-op for any already-bound reference). RFC-142.
+func mergedOuterLegAliases(rv values.Value, leftAlias, rightAlias string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(a string) {
+		if a == "" {
+			return
+		}
+		up := strings.ToUpper(a)
+		if _, ok := seen[up]; ok {
+			return
+		}
+		seen[up] = struct{}{}
+		out = append(out, up)
+	}
+	add(leftAlias)
+	add(rightAlias)
+	if rc, ok := rv.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
+		for _, f := range rc.Fields {
+			if dot := strings.IndexByte(f.Name, '.'); dot > 0 {
+				add(f.Name[:dot])
+			}
+		}
+	}
+	return out
 }
 
 // rebaseOuterLegRefsToMerged rewrites references to the original join-outer leg
@@ -494,13 +545,16 @@ func rebaseOuterLegRefsToMerged(
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
+		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
+		// preserving Escape (the LIKE escape rune) AND every other Comparison
+		// subclass field (ParameterName, the Text* fields, the DistanceRank
+		// vector fields). A partial {Type, Operand, Escape} reconstruction would
+		// silently drop the rest and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
 		return &predicates.ComparisonPredicate{
-			Operand: newOperand,
-			Comparison: predicates.Comparison{
-				Type:    pred.Comparison.Type,
-				Operand: newCompOperand,
-				Escape:  pred.Comparison.Escape,
-			},
+			Operand:    newOperand,
+			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
 		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr)
@@ -608,7 +662,7 @@ func rebaseOuterLegValue(
 // may too. Those are pre-evaluated EXTERNAL bindings, never inner table legs;
 // the absence test wrongly routed them below the FOD where, alongside an empty
 // NOT-EXISTS, they never evaluated and the comparison was silently dropped
-// (RFC-141 R4 round-11). Membership in innerLegs keeps round-10's multi-table
+// (RFC-141 R4). Membership in innerLegs keeps the multi-table
 // fix (every inner leg routes below) AND keeps such external-binding predicates
 // outer-side (the comparison actually filters the outer row).
 func predicateReferencesInnerLeg(p predicates.QueryPredicate, innerLegs map[values.CorrelationIdentifier]struct{}) bool {
@@ -645,7 +699,7 @@ func predicateReferencesInnerLeg(p predicates.QueryPredicate, innerLegs map[valu
 //     raw scan alias: in the alias-shadow self-subquery (`FROM t … EXISTS (SELECT
 //     1 FROM t …)`) the outer source and the inner scan share the name `T`, and
 //     an outer-only predicate (`id > 1`, correlated to the shared `T`) would be
-//     mis-routed below the FOD if `T` leaked into the inner-leg set (the round-9
+//     mis-routed below the FOD if `T` leaked into the inner-leg set (that
 //     regression). Returning {innerCorr} keeps it outer-side.
 //
 // The walk gathers declared aliases from each SelectExpression's
@@ -779,7 +833,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// member belongs on the existential level, BELOW the FOD; a predicate that
 	// references ONLY the outer JOIN legs is the inner-join condition; an external
 	// binding (uncorrelated scalar subquery alias / parameter) stays on the
-	// left×right join, never pushed below the FOD (RFC-141 R4 round-11).
+	// left×right join, never pushed below the FOD (RFC-141 R4).
 	existLegs := collectInnerLegAliases(existRef, existCorr)
 	for _, p := range allPreds {
 		if _, ok := predicates.IsExistentialPredicate(p); ok {
@@ -797,8 +851,8 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// correlation" test misclassified a correlation predicate referencing a
 		// NON-rightmost leg of a MULTI-TABLE EXISTS inner as an exist predicate but
 		// also over-routed an uncorrelated scalar-subquery predicate below the FOD;
-		// membership in existLegs is the precise discriminator (RFC-141 R4 round-10
-		// P2a + round-11, JOIN-in-FROM variant).
+		// membership in existLegs is the precise discriminator (RFC-141 R4 P2a,
+		// JOIN-in-FROM variant).
 		if predicateReferencesInnerLeg(p, existLegs) {
 			existPreds = append(existPreds, p)
 		} else {
@@ -832,6 +886,14 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// predicates can be rebased onto it before they are pushed into the inner.
 	mergedOuterCorr := values.UniqueCorrelationIdentifier()
 
+	// The COMPLETE outer-leg alias set the merged row anchors columns for — the
+	// two top-level quantifier aliases PLUS every alias buried inside a leg that
+	// is itself a JOIN/UNNEST subtree (`FROM T1, T1.arr AS V, U` anchors T1, V, U).
+	// Every residual/projected reference to ANY of these reads the merged row's
+	// verbatim "LEG.COL" key; rebasing only {leftAlias,rightAlias} left a buried
+	// reference (QOV(T1).ID) unbound below the FlatMap → NULL → dropped rows. RFC-142.
+	outerLegAliases := mergedOuterLegAliases(sel.GetResultValue(), leftAlias, rightAlias)
+
 	// Step 2: build the existential level as a PURE-MAP FlatMap (RFC-141 —
 	// no EXISTS join mode). The inner is the existential subplan filtered by
 	// any correlated EXISTS predicates, wrapped in FirstOrDefault(NULL), then
@@ -853,7 +915,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	if len(existPreds) > 0 {
 		rebased := make([]predicates.QueryPredicate, len(existPreds))
 		for i, p := range existPreds {
-			rebased[i] = rebaseOuterLegRefsToMerged(p, []string{leftAlias, rightAlias}, mergedOuterCorr)
+			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr)
 		}
 		existPreds = rebased
 	}
@@ -881,7 +943,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	//     result value is the identity over the merged outer row (QOV) so the
 	//     inner-join's merged "ALIAS.COL" keys pass through unchanged.
 	//
-	//   - PROJECTED EXISTS over a JOIN in FROM (RFC-141 round-3): the projection
+	//   - PROJECTED EXISTS over a JOIN in FROM (RFC-141): the projection
 	//     (a RecordConstructor referencing the existential quantifier) was folded
 	//     into sel.GetResultValue(). It MUST be computed HERE, at the FlatMap,
 	//     with the existential FOD inner binding live — a projection above the
@@ -893,8 +955,14 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	//     inner FOD row under existCorr.
 	flatMapResult := values.Value(values.NewQuantifiedObjectValue(mergedOuterCorr))
 	if resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
-		// Leg references → merged outer row's qualified keys.
-		projected := rebaseOuterLegValue(sel.GetResultValue(), []string{leftAlias, rightAlias}, mergedOuterCorr)
+		// Leg references → merged outer row's qualified keys. Use the COMPLETE
+		// outer-leg alias set (not just {leftAlias,rightAlias}) so a projected
+		// reference to a BURIED leg (a source under a non-rightmost lateral unnest)
+		// resolves against the merged row's verbatim "LEG.COL" key, symmetrically with
+		// the existential-residual rebase above. For a folded projection (the common
+		// projected-EXISTS result value, AnchoredJoin=false) the set degenerates to
+		// {leftAlias,rightAlias}, so this is a no-op for that path. RFC-142.
+		projected := rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr)
 		// Existential quantifier alias → the FlatMap inner binding (existCorr).
 		if quants[2].GetAlias() != existCorr {
 			projected = values.RebaseValue(projected, values.AliasMap{quants[2].GetAlias(): existCorr})

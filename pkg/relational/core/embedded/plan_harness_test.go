@@ -1258,12 +1258,13 @@ func assertPlanNotContains(t *testing.T, plan, substr string) {
 	}
 }
 
-// TestPlanHarness_AtOrdinalityRejected is the R3→R5 sentinel (RFC-140). The 4.12 `AT
-// atAlias` grammar (Java #4112) is parsed in R3, but binding/executing the ordinal is R5.
-// Until then the planner REJECTS AT clauses rather than ignoring the alias: ignoring it would
-// let a reference to the ordinal silently resolve to a same-named existing table column and
-// return the wrong value (codex). R5 removes this guard, binds the ordinal, and flips the
-// reject into real rows.
+// TestPlanHarness_AtOrdinalityRejected pins the R5 (RFC-142) convergence: AT
+// ordinality is BOUND on a correlated array source (`FROM t, t.arr AS x AT p`),
+// but on a NON-array source — a plain table, a JOIN source, a CTE/view — it is
+// invalid and rejected with ONE converged code, ErrCodeWrongObjectType (42809,
+// Java's WRONG_OBJECT_TYPE). Ignoring the AT alias would let a reference to the
+// ordinal silently resolve to a same-named existing table column and return the
+// wrong value (codex), so the reject is mandatory.
 func TestPlanHarness_AtOrdinalityRejected(t *testing.T) {
 	t.Parallel()
 
@@ -1326,10 +1327,14 @@ CREATE INDEX bad AS SELECT SUM(v) FROM ga JOIN gb AT p ON ga.id = gb.id GROUP BY
 func assertAtOrdinalityRejected(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
-		t.Fatal("AT ordinality must be rejected until R5, got nil (silent ignore / wrong rows)")
+		t.Fatal("AT ordinality on a non-array source must be rejected, got nil (silent ignore / wrong rows)")
 	}
+	// R5 (RFC-142) binds AT on a correlated array source and converges the
+	// rejection of AT on a table / CTE / view / JOIN source / aggregate-index
+	// source onto ONE code: ErrCodeWrongObjectType (42809), Java's
+	// WRONG_OBJECT_TYPE. (R3 threw ErrCodeUnsupportedQuery here.)
 	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeUnsupportedQuery}", err, err)
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeWrongObjectType {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeWrongObjectType}", err, err)
 	}
 }

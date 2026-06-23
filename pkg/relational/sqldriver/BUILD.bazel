@@ -24,6 +24,7 @@ go_test(
     name = "sqldriver_test",
     srcs = [
         "ambiguous_column_star_test.go",
+        "array_unnest_ordinality_fdb_test.go",
         "avg_double_insert_fdb_test.go",
         "cascades_fdb_test.go",
         "case_null_branch_type_test.go",
@@ -98,6 +99,7 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",

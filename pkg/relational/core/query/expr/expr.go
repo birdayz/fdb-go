@@ -238,6 +238,44 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	}, nil
 }
 
+// ResolveColumnShadowingQualified resolves a column reference and, when it binds
+// to a SHADOWING scope source (a lateral array unnest's AS/AT binding, RFC-142),
+// returns a Value QUALIFIED to that source's correlation (FieldValue over
+// QuantifiedObjectValue) — even for a BARE column where ResolveIdentifier would
+// normally emit an UNqualified FieldValue.
+//
+// This is load-bearing for `FROM t, t.arr AS v, u` where a LATER FROM item `u`
+// also has a column `v`: the unnest's element flows the merged row under BOTH the
+// bare key `v` AND the qualified key `v.v`, but a subsequent join's mergeRows
+// overwrites the bare `v` last-leg-wins with u.v. A bare `SELECT v` resolved to
+// the unnest must therefore read the QUALIFIED `v.v` key (which mergeRows
+// preserves verbatim — dotted keys are never re-prefixed), not the clobbered bare
+// key. ok=false (and a nil Value) when the column does not bind to a shadowing
+// source — the caller keeps its existing bare-column handling. A resolution error
+// is returned verbatim (callers already validate separately, so they may ignore
+// it). RFC-142.
+func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identifier) (values.Value, bool, error) {
+	col, src, err := r.analyzer.ResolveColumnRef(r.scope, qualifier, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if !src.Shadowing || src.CorrelationName == "" {
+		return nil, false, nil
+	}
+	field := col.Id.Name()
+	if src.ColumnAliasMap != nil {
+		if real, ok := src.ColumnAliasMap[strings.ToUpper(field)]; ok {
+			field = real
+		}
+	}
+	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
+	return values.NewFieldValue(
+		values.NewQuantifiedObjectValue(corrID),
+		field,
+		sqlTypeToCascadesType(col.Type),
+	), true, nil
+}
+
 // ResolveArithmetic wraps left/right Values in a cascades
 // ArithmeticValue with the given operator. Used when the parser
 // produces an arithmetic expression node — the analyzer resolves
@@ -491,10 +529,28 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 // singletons; everything else falls through to UnknownType. Real
 // type inference (proper nullability + structured-type recursion)
 // is future work.
+//
+// INTEGER is a recognized SYNONYM for INT (the standard SQL spelling —
+// the metadata-derivation paths in cascades_generator / system_rows
+// already emit "INTEGER", so it must not silently fall to UNKNOWN
+// here). Both bridge to the legacy nullable-LONG default (matching
+// Java Record Layer's int64 representation), consistent with the
+// existing INT→LONG width contract.
+//
+// "INT NOT NULL" / "INTEGER NOT NULL" map to the NON-NULL INT singleton
+// (NotNullInt) — Java's Type.primitiveType(INT, false). This is the
+// planner-internal spelling for a column known to be a non-null integer
+// at construction time, notably the array-unnest WITH ORDINALITY ordinal
+// (RFC-142): a 1-based, never-NULL INT whose result-set metadata must
+// report INT, not UNKNOWN, and which matches the translator's ordinal
+// FieldValue type (values.NotNullInt). Real catalog columns never carry
+// this spelling, so the legacy INT→LONG bridge above is undisturbed.
 func sqlTypeToCascadesType(sqlType string) values.Type {
 	switch sqlType {
-	case "INT":
+	case "INT", "INTEGER":
 		return values.TypeInt
+	case "INT NOT NULL", "INTEGER NOT NULL":
+		return values.NotNullInt
 	case "STRING", "ENUM":
 		return values.TypeString
 	case "BOOL":

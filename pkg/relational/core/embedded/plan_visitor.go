@@ -54,6 +54,13 @@ type PlanVisitor struct {
 	cteScopes map[string]semantic.ScopeSource
 	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
 
+	// schemaName is the session schema (e.g. "s"). It is used ONLY to run Java's
+	// table-first resolution order in the lateral-unnest classifier: a dotted
+	// FROM source `schemaName.Table` is a schema-qualified TABLE, not a correlated
+	// unnest, even when the qualifier also names a prior FROM-source alias
+	// (`FROM PA AS s, s.PB`). RFC-142 (P2b).
+	schemaName string
+
 	// inRecursiveCTEBody is set while building the body of a recursive
 	// CTE so the union builder permits UNION DISTINCT (bare UNION)
 	// which is valid for cycle detection. Outside of recursive CTEs,
@@ -116,10 +123,20 @@ func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string
 	return cols, aliases
 }
 
-// NewPlanVisitor creates a PlanVisitor with the given metadata.
-// md may be nil; all catalog-aware upgrades degrade to text fallback.
+// NewPlanVisitor creates a PlanVisitor with the given metadata, defaulting the
+// session schema to the embedded planner's "s". md may be nil; all catalog-aware
+// upgrades degrade to text fallback.
 func NewPlanVisitor(md *recordlayer.RecordMetaData) *PlanVisitor {
-	return &PlanVisitor{md: md}
+	return &PlanVisitor{md: md, schemaName: defaultEmbeddedSchema}
+}
+
+// NewPlanVisitorWithSchema creates a PlanVisitor bound to a specific session
+// schema (the real CONNECT schema on the session path). RFC-142.
+func NewPlanVisitorWithSchema(md *recordlayer.RecordMetaData, schemaName string) *PlanVisitor {
+	if schemaName == "" {
+		schemaName = defaultEmbeddedSchema
+	}
+	return &PlanVisitor{md: md, schemaName: schemaName}
 }
 
 // VisitQuery is the top-level entry point. It handles WITH (CTE)
@@ -354,6 +371,30 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		return nil, nil
 	}
 
+	// AT-on-a-table rejection (Java's generateAccess, at FROM-source analysis
+	// time): a comma source carrying an AT ordinal alias that is in truth a TABLE /
+	// non-array source (`FROM T1, U AT O`, `FROM T1, T1.ID AS X AT O`, …) is
+	// WRONG_OBJECT_TYPE. Surfacing it HERE — before the SELECT/WHERE column
+	// resolution below — prevents a scope-level undefined-column (the AT source's
+	// virtual unnest binding shadows the real table, so a `U.ID` reference fails to
+	// resolve) from MASKING the intended 42809. Mirrors the translator's
+	// translateUnnestJoin AT-rejection exactly. RFC-142.
+	if v.md != nil {
+		// Seed the in-scope CTE-name set from the WITH catalog: the FROM tree `op`
+		// here is built BEFORE the enclosing LogicalCTE wrapper is applied, so a
+		// segment-0 reference to an in-scope WITH CTE (`WITH D AS (…) … FROM D, D.arr
+		// AS x AT o`) is only knowable from v.cteScopes. An AT over such a CTE source
+		// is the translator's outerSourceIsCTE UNSUPPORTED_QUERY, NOT the base-table
+		// WRONG_OBJECT_TYPE — even when the CTE name ALSO matches a real table. RFC-142.
+		cteNames := make(map[string]struct{}, len(v.cteScopes))
+		for name := range v.cteScopes {
+			cteNames[strings.ToUpper(name)] = struct{}{}
+		}
+		if err := rejectAtOrdinalityOnTableWithCTEs(op, v.md, cteNames); err != nil {
+			return nil, err
+		}
+	}
+
 	// Step 2: WHERE → wrap with filter directly from ANTLR.
 	op = v.visitWhere(op, simpleTable)
 
@@ -411,16 +452,16 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	// Build the semantic scope once. All identifier resolution goes
 	// through this scope — same architecture as Java's QueryVisitor
 	// holding a SemanticAnalyzer.
-	resolver := buildSelectScope(sq, v.md, v.cteScopes)
+	resolver := buildSelectScope(sq, v.md, v.schemaName, v.cteScopes)
 
 	// (1) Expand qualified stars (a.*) in the projection list.
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
-		expandProjQualifier(sq, v.md)
+		expandProjQualifier(sq, v.md, v.schemaName)
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
-		expandQualifiedStars(sq, v.md)
+		expandQualifiedStars(sq, v.md, v.schemaName)
 		needRebuild = true
 	}
 	if needRebuild {
@@ -464,6 +505,25 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			}
 			if err := resolveColumnName(resolver, col); err != nil {
 				return nil, err
+			}
+			// A BARE column that binds to a lateral-unnest SHADOWING source
+			// (`FROM t, t.arr AS v, …`) must be projected QUALIFIED to the unnest
+			// correlation (`v.v`), not as a bare `v`. The unnest element flows the
+			// merged row under both bare `v` and qualified `v.v`, but a LATER FROM
+			// item with its own `v` overwrites the bare key last-leg-wins in
+			// mergeRows; the qualified `v.v` survives (dotted keys are preserved
+			// verbatim). Without this the bare projection reads the wrong column
+			// (P2, silent-wrong). RFC-142.
+			if ref := parseColRef(col); !ref.isQualified() && proj != nil {
+				id := semantic.NewUnquoted(ref.bare())
+				if qv, ok, qerr := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id); qerr == nil && ok {
+					if proj.ProjectedValues == nil {
+						proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+					}
+					if i < len(proj.ProjectedValues) {
+						proj.ProjectedValues[i] = qv
+					}
+				}
 			}
 			if parseColRef(col).isQualified() && proj != nil {
 				if proj.ProjectedValues == nil {
@@ -517,7 +577,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				return nil, api.NewError(api.ErrCodeUnsupportedSort,
 					"ORDER BY with scalar subquery is not supported")
 			}
-			// RFC-141 R4 round-12: EXISTS in an ORDER BY key is NOT a
+			// RFC-141 R4: EXISTS in an ORDER BY key is NOT a
 			// directly-handled position. The sort-key resolver carries no
 			// SubqueryPlanner, so the EXISTS fails to resolve, the key keeps its
 			// raw text form, and the existential is never evaluated → a silent
@@ -609,7 +669,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				if errors.As(walkErr, &corrErr) {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation, corrErr.Error())
 				}
-				// RFC-141 R4 round-12 (P1b): a SELECT item with a NESTED EXISTS is
+				// RFC-141 R4 (P1b): a SELECT item with a NESTED EXISTS is
 				// not foldable; reject cleanly (never a silent constant-false / NULL).
 				var nestedExists *expr.NestedExistsProjectionError
 				if errors.As(walkErr, &nestedExists) {
@@ -628,27 +688,28 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.cteScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, v.cteScopes); err != nil {
 			return nil, err
 		}
 	}
 
 	// (10) Upgrade aggregate operands + GROUP BY key values.
 	if len(sq.aggCols) > 0 {
-		upgradeAggregateOperands(op, sq, v.md, v.cteScopes)
+		upgradeAggregateOperands(op, sq, v.md, v.schemaName, v.cteScopes)
 	}
 
 	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
 	existsPlanner := &existsSubqueryPlanner{
 		md:          v.md,
-		outerScopes: buildOuterScopeSources(sq, v.md),
+		schemaName:  v.schemaName,
+		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName),
 		cteScopes:   v.cteScopes,
 		cteBodies:   v.cteBodies,
 	}
 
 	// (12) Upgrade projection values.
 	if len(sq.projExprs) > 0 || len(sq.postAggExprs) > 0 {
-		if err := upgradeProjectionValues(op, sq, v.md, v.cteScopes, existsPlanner); err != nil {
+		if err := upgradeProjectionValues(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner); err != nil {
 			return nil, err
 		}
 	}
@@ -669,11 +730,26 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	// (14) Upgrade HAVING predicate.
 	if sq.havingExpr != nil {
-		upgradeHavingPredicate(op, sq, v.md, v.cteScopes, existsPlanner)
+		upgradeHavingPredicate(op, sq, v.md, v.schemaName, v.cteScopes, existsPlanner)
 	}
 
 	// (15) Upgrade sort key values.
-	upgradeSortKeyValues(op, sq, v.md, v.cteScopes)
+	upgradeSortKeyValues(op, sq, v.md, v.schemaName, v.cteScopes)
+
+	// (15a) RFC-142 (P2a): a BARE ORDER BY sort key that binds to a
+	// lateral-unnest SHADOWING source (`FROM t, t.arr AS v, …`) must sort by the
+	// key QUALIFIED to the unnest correlation (`v.v`), exactly as the bare
+	// PROJECTION column is qualified at step (2) above. The unnest element flows
+	// the merged row under both bare `v` and qualified `v.v`, but a LATER FROM item
+	// with its own `v` overwrites the bare sort key last-leg-wins in mergeRows; the
+	// qualified `v.v` survives (dotted keys preserved verbatim). Without this the
+	// SORT reads the wrong column (the projection reads `v.v`, the sort reads the
+	// clobbered bare key) → rows in the WRONG ORDER (silent-wrong). Reuses the same
+	// scope resolver and ResolveColumnShadowingQualified helper as the projection
+	// path, so the two never diverge. RFC-142.
+	if resolver != nil {
+		qualifyShadowedSortKeys(op, resolver)
+	}
 
 	// (15b) RFC-141 Phase 2: register projected-EXISTS subqueries so the
 	// translator attaches the existential quantifier and builds the FlatMap
@@ -690,7 +766,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 	if sq.whereExpr == nil {
 		// No WHERE, but a QUALIFY filter (vector K-NN ROW_NUMBER() <= K) must
 		// still be attached — synthesize a filter above the scan if none exists.
-		qualPred, qErr := buildQualifyPredicate(v.md, sq, v.cteScopes)
+		qualPred, qErr := buildQualifyPredicate(v.md, v.schemaName, sq, v.cteScopes)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -704,7 +780,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		resolver.SetSubqueryPlanner(existsPlanner)
 	}
 
-	// RFC-141 R4 round-12: an EXISTS atom in the WHERE clause is directly-handled
+	// RFC-141 R4: an EXISTS atom in the WHERE clause is directly-handled
 	// only when it is a top-level boolean term (the whole WHERE, an AND conjunct,
 	// or a single-NOT). An EXISTS nested inside a SCALAR expression — `WHERE CASE
 	// WHEN EXISTS(...) THEN 1 ELSE 0 END = 1`, `WHERE (EXISTS(...)) = true`,
@@ -761,7 +837,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			// SQLSTATE-classified rejection raised by a nested subquery's build
 			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
 			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
-			// RFC-141 R4 round-13). Surface it VERBATIM rather than fall through to
+			// RFC-141 R4). Surface it VERBATIM rather than fall through to
 			// the text-fallback predicate builder below, which declines the EXISTS
 			// shape and reports a generic "could not plan", masking the real reason.
 			var apiErr *api.Error
@@ -791,7 +867,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 				}
 			}
 		}
-		combined, qErr := combineQualifyPred(v.md, sq, v.cteScopes, pred)
+		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -807,7 +883,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 
 	if preWalkPred != nil {
 		pred := predicates.SimplifyPredicateValues(preWalkPred)
-		combined, qErr := combineQualifyPred(v.md, sq, v.cteScopes, pred)
+		combined, qErr := combineQualifyPred(v.md, v.schemaName, sq, v.cteScopes, pred)
 		if qErr != nil {
 			return nil, qErr
 		}
@@ -823,10 +899,10 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 	if !predOk && v.cteScopes != nil && len(sq.joins) > 0 {
-		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, sq, sq.whereExpr, v.cteScopes)
+		pred, predOk = buildWherePredicateForJoinsWithCTEScopes(v.md, v.schemaName, sq, sq.whereExpr, v.cteScopes)
 	}
 	if !predOk {
-		pred, predOk = buildWherePredicate(v.md, sq, sq.whereExpr)
+		pred, predOk = buildWherePredicate(v.md, v.schemaName, sq, sq.whereExpr)
 	}
 	if !predOk {
 		return op, nil
@@ -897,7 +973,8 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
 	// the current op as Left and scans the joined table as Right.
-	for _, j := range fs.joins {
+	resolvesToTable := newUnnestTableResolver(v.md, v.schemaName)
+	for i, j := range fs.joins {
 		var right logical.LogicalOperator
 		if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
@@ -923,6 +1000,13 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			} else {
 				right = innerRight
 			}
+		} else if u := lateralUnnestCandidate(j, visibleFromAliases(fs.tableName, fs.tableAlias, fs.joins[:i], resolvesToTable), resolvesToTable); u != nil {
+			// A comma source that may be a lateral array unnest
+			// (`FROM t, t.arr AS x [AT ord]`). The translator classifies it
+			// against the scope (segment 0 = an in-scope source with an array
+			// field named by the rest → unnest, else a table) — the parser
+			// preserved the uid segments + AT alias for exactly this. RFC-142.
+			right = u
 		} else {
 			right = logical.NewScan(j.tableName, j.alias)
 		}
@@ -1231,6 +1315,62 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 	return logical.NewSort(op, keys)
 }
 
+// qualifyShadowedSortKeys redirects a BARE ORDER BY sort key that binds to a
+// lateral-unnest SHADOWING scope source to the key QUALIFIED to that source's
+// correlation (`FieldValue(QOV(v), v)`), the SORT-key analog of the bare-column
+// PROJECTION qualification in buildSelectShell step (2). Without it, a bare sort
+// key over `FROM t, t.arr AS v, u` (where a LATER FROM item `u` also has a column
+// `v`) sorts by the merged row's BARE `v` key — which mergeRows overwrites
+// last-leg-wins with `u.v` — instead of the unnest element under the protected
+// qualified `v.v` key. The projection reads `v.v` (P2) but the sort read
+// the clobbered bare key, so the rows came back in the WRONG ORDER (P2a,
+// silent-wrong). Only a key whose Value is still UNSET (a bare column, not an
+// alias/computed/raw-expr key already resolved by upgradeSortKeyValues) and that
+// resolves to a Shadowing source is rewritten; everything else is untouched, so
+// an explicitly-qualified `u.v` sort key and non-unnest queries are unaffected.
+// Reuses ResolveColumnShadowingQualified — the same helper the projection path
+// uses — so the two cannot diverge. RFC-142.
+//
+// PRE- vs POST-aggregate distinction (P2b). For a GROUPED /
+// aggregate query (`SELECT V, COUNT(*) … GROUP BY V ORDER BY V DESC`) the sort
+// sits ABOVE the aggregate, so the group-key sort key must read the aggregate's
+// EXPOSED group-key column (the bare name `V`), NOT the FROM-scope-qualified
+// `V.V`. That post-aggregate resolution is handled UPSTREAM in
+// upgradeSortKeyValues (step 15): when the group key resolves to a lateral-unnest
+// FieldValue it sets the sort key's Value to the aggregate OUTPUT column name
+// (aggregateGroupKeyOutputName → the bare field), so the key arrives here already
+// carrying a Value and is skipped by the `Value != nil` guard below. This
+// function therefore only ever qualifies a PRE-aggregate (non-grouped) bare
+// ORDER BY over an unnest — the shadowing case where the sort sits
+// BELOW the merge and a later FROM item could clobber the bare key. RFC-142.
+func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver) {
+	sort := findSort(op)
+	if sort == nil {
+		return
+	}
+	for i := range sort.Keys {
+		// A key already carrying a resolved Value (a projection alias, a computed
+		// expression, an aggregate group key) is not a bare unnest column — leave it.
+		if sort.Keys[i].Value != nil {
+			continue
+		}
+		ref := parseColRef(sort.Keys[i].Expr)
+		if ref.isQualified() {
+			continue
+		}
+		bare := ref.bare()
+		if bare == "" {
+			continue
+		}
+		id := semantic.NewUnquoted(bare)
+		qv, ok, err := resolver.ResolveColumnShadowingQualified(semantic.Identifier{}, id)
+		if err != nil || !ok {
+			continue
+		}
+		sort.Keys[i].Value = qv
+	}
+}
+
 // parseLimitClause reads a LIMIT/OFFSET clause from a SimpleTableContext and
 // returns (limit, offset). limit == -1 means "no LIMIT clause present" (a pure
 // OFFSET still returns limit -1 with offset > 0). Shared by visitLimit (the
@@ -1375,8 +1515,8 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if setQ == nil {
 		return nil, nil
 	}
-	if len(v.cteScopes) == 0 {
+	if len(v.cteScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
 		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
 	}
-	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.cteScopes, v.inRecursiveCTEBody)
+	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.inRecursiveCTEBody)
 }

@@ -167,7 +167,7 @@ func emittedScopeValues(e expressions.RelationalExpression) []values.Value {
 // FirstOrDefault inner emits its NULL default that no residual filter removes,
 // so EVERY outer row silently passes (a silent wrong result). The production
 // path rejects such a plan with ErrCodeUnsupportedQuery rather than ship wrong
-// rows (RFC-141 R4 round-12 convergence backstop, P1a).
+// rows (RFC-141 R4 convergence backstop, P1a).
 //
 // The cleanly-rejected shapes are the wrapped-WHERE-EXISTS long tail: any
 // existential reachable only through a wrapper the rule's IsExistentialPredicate
@@ -181,7 +181,7 @@ func (e *BuriedExistentialPredicateError) Error() string {
 	return "EXISTS in this query shape is not yet supported"
 }
 
-// CheckBuriedExistentialPredicate is the RFC-141 R4 round-12 convergence
+// CheckBuriedExistentialPredicate is the RFC-141 R4 convergence
 // backstop for WHERE EXISTS (P1a). Given the root Reference of a freshly
 // translated (pre-planning) plan tree, it returns a
 // *BuriedExistentialPredicateError when any predicate-bearing expression carries
@@ -260,7 +260,7 @@ func CheckBuriedExistentialPredicate(root *expressions.Reference) error {
 // comparison, an arithmetic) rather than into an ExistentialValuePredicate, so
 // the predicate's operand Value tree carries a raw ExistsValue. Such an EXISTS
 // has no existential quantifier attached and evaluates to a constant (false) —
-// a silent wrong result — so the guard rejects it (RFC-141 R4 round-12).
+// a silent wrong result — so the guard rejects it (RFC-141 R4).
 func predicateContainsExistsValue(p predicates.QueryPredicate) bool {
 	found := false
 	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {

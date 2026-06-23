@@ -58,7 +58,7 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
-	// RFC-141 R4 round-12 convergence backstop (P1b). In a projection position
+	// RFC-141 R4 convergence backstop (P1b). In a projection position
 	// (allowComparisons), only a top-level projected EXISTS / NOT-EXISTS — the
 	// whole SELECT item, or its single paren/NOT wrapper of a bare EXISTS — folds
 	// correctly (the switch arms below place the ExistsValue in the result value
@@ -499,7 +499,7 @@ func commonBranchType(branches []values.Value) values.Type {
 		if t.Code() == values.TypeCodeUnknown {
 			// A non-NULL branch of genuinely unknown type (scalar subquery,
 			// parameter) could yield any type, so we cannot let the concrete
-			// branches dictate the result — keep it unknown (codex P2).
+			// branches dictate the result — keep it unknown (P2).
 			return values.UnknownType
 		}
 		types = append(types, t)
@@ -741,7 +741,7 @@ func polymorphicResultType(name string, args []values.Value) values.Type {
 		}
 	case "MOD":
 		// MOD(a, b) promotes both operands (MOD(id, 2.5) yields a DOUBLE at
-		// runtime), same as arithmetic — codex P2.
+		// runtime), same as arithmetic — P2.
 		return concrete(commonBranchType(args))
 	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN":
 		// Numeric, type-preserving in the first operand.
@@ -1696,7 +1696,7 @@ func (e *UnsupportedExpressionShapeError) Error() string {
 // predicate walk, registering the existential subquery but evaluating the
 // ExistsValue ABOVE the FlatMap with the binding dead — constant false / NULL,
 // a silent wrong result. The callers (logical_predicate.go, plan_visitor.go)
-// convert it to ErrCodeUnsupportedQuery (RFC-141 R4 round-12 convergence
+// convert it to ErrCodeUnsupportedQuery (RFC-141 R4 convergence
 // backstop, P1b).
 type NestedExistsProjectionError struct{}
 
@@ -1846,7 +1846,7 @@ func (r *Resolver) walkExistsValue(ctx *antlrgen.ExistsExpressionAtomContext) (v
 //	                          -> ExistsExpressionAtom
 //	NOT ((EXISTS(q)))   same, nested one more paren-wrap (handled by recursion)
 //
-// The parenthesized form (the round-3 bug) surfaced as a PredicatedExpression
+// The parenthesized form surfaced as a PredicatedExpression
 // over a single-element unnamed RecordConstructor — the same paren-wrap shape
 // walkRecordConstructor unwraps — so existsAtomOf must descend through it to
 // find the ExistsExpressionAtom; otherwise NOT (EXISTS(...)) falls to the
@@ -1909,7 +1909,7 @@ func existsAtomInExpressionAtom(atom antlrgen.IExpressionAtomContext) *antlrgen.
 //     (existsAtomInExpressionAtom).
 //
 // Any OTHER expression that merely CONTAINS an EXISTS somewhere (a CASE, an
-// AND/OR, a comparison, an arithmetic) is NOT directly foldable; the round-12
+// AND/OR, a comparison, an arithmetic) is NOT directly foldable; the
 // backstop rejects it. Used only in projection position.
 func isDirectlyFoldableProjectedExists(ctx antlrgen.IExpressionContext) bool {
 	switch c := ctx.(type) {
@@ -1934,7 +1934,7 @@ func isDirectlyFoldableProjectedExists(ctx antlrgen.IExpressionContext) bool {
 // that subquery, not the enclosing expression. The structural EXISTS detectors
 // below treat these as BOUNDARIES and do not descend into them — otherwise an
 // EXISTS that is the nested subquery's own concern would be mis-attributed to the
-// outer expression and falsely rejected (RFC-141 R4 round-13).
+// outer expression and falsely rejected (RFC-141 R4).
 //
 // An ExistsExpressionAtomContext (`EXISTS (subquery)`) ALSO opens a query scope,
 // but it is the thing the detectors WANT to match at the current level — so it is
@@ -1966,7 +1966,7 @@ func introducesNestedQueryScope(tree antlr.Tree) bool {
 // subquery's concern (classified in its own translation context), not the outer
 // expression's — descending into it would mis-attribute the inner EXISTS to the
 // outer level and falsely reject a query the outer level handles fine (RFC-141 R4
-// round-13). The EXISTS atom itself is matched before descent, so its own
+// RFC-141 R4). The EXISTS atom itself is matched before descent, so its own
 // subquery is correctly never descended either.
 func ContainsExistsAtom(ctx antlr.Tree) bool {
 	if ctx == nil {
@@ -1996,7 +1996,7 @@ func ContainsExistsAtom(ctx antlr.Tree) bool {
 // operand, an arithmetic, a function-call argument). Such an EXISTS lowers to a
 // scalar Value with no existential quantifier driving it, so it evaluates to a
 // constant false → a silent wrong result. The WHERE companion to
-// isDirectlyFoldableProjectedExists (RFC-141 R4 round-12).
+// isDirectlyFoldableProjectedExists (RFC-141 R4).
 //
 // An EXISTS is directly-handled in WHERE iff the path from the WHERE root to the
 // atom traverses ONLY boolean-combinator nodes: AND/OR (LogicalExpression), NOT
@@ -2053,7 +2053,7 @@ func WhereExistsInScalarPosition(ctx antlrgen.IExpressionContext) bool {
 // WHERE is nested and not directly accessible — notably `INSERT … SELECT … WHERE
 // CASE WHEN EXISTS(...) …`, whose SELECT-body WHERE is rebuilt through a path that
 // bypasses the per-statement WHERE guard. A structural typed-node walk
-// (WhereExprContext), no GetText. (RFC-141 R4 round-12.)
+// (WhereExprContext), no GetText. (RFC-141 R4.)
 func AnyWhereExistsInScalarPosition(tree antlr.Tree) bool {
 	if tree == nil {
 		return false
@@ -2068,8 +2068,8 @@ func AnyWhereExistsInScalarPosition(tree antlr.Tree) bool {
 		// Stop at nested-subquery boundaries: a scalar / IN subquery nested in an
 		// expression has its OWN WHERE, classified in its own translation context.
 		// Descending into it would mis-attribute that subquery's buried-scalar
-		// EXISTS to the INSERT's SELECT body and falsely reject (RFC-141 R4
-		// round-13). The nested subquery's WHERE is guarded when it plans in its
+		// EXISTS to the INSERT's SELECT body and falsely reject (RFC-141 R4).
+		// The nested subquery's WHERE is guarded when it plans in its
 		// own context. (The INSERT's own SELECT-body WHERE — a WhereExprContext
 		// child of the SELECT, not nested under a SubqueryExpressionAtom — is still
 		// reached, since the SELECT body itself is not a nested-query-scope node.)

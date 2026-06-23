@@ -181,10 +181,15 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResult, error) {
 	// Build evaluation context with both correlations bound.
 	outerDatum, _ := outerRow.Datum.(map[string]any)
-	innerDatum, _ := innerRow.Datum.(map[string]any)
+	// The inner binding is the RAW inner Datum, not a forced map cast. A
+	// correlated array UNNEST (RFC-142) flows a BARE SCALAR element (e.g.
+	// int64(101)) as the inner row; binding QOV(inner) to it lets the AS
+	// alias read the whole element. A row-shaped inner (a scan/EXISTS
+	// subquery) binds its map[string]any unchanged — FieldValue.evaluateCorrelated
+	// reads the map by key, QOV(inner) reads the whole map.
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerDatum).
-		WithBinding(c.innerAlias, innerDatum)
+		WithBinding(c.innerAlias, innerRow.Datum)
 
 	// Evaluate against a RowEvalContext whose Datum is the outer row, so a BARE
 	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141

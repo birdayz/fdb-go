@@ -10,6 +10,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
@@ -49,6 +50,16 @@ func TranslateToCascades(op logical.LogicalOperator) *expressions.Reference {
 // amendment); md is consulted only to enumerate a leg's columns for the anchored
 // RecordConstructor.
 func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan) {
+	ref, subs, _ := TranslateToCascadesWithError(op, md)
+	return ref, subs
+}
+
+// TranslateToCascadesWithError is TranslateToCascadesWithSubqueries plus an
+// explicit translation error. A non-nil error carries a specific SQL error
+// code (e.g. ErrCodeWrongObjectType for AT-ordinality on a non-array source,
+// RFC-142) that a bare nil ref (untranslatable → UNSUPPORTED_QUERY) cannot.
+// The caller surfaces it verbatim instead of the generic "could not plan".
+func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
 	t := &cascadesTranslator{
 		md:              md,
 		cteScope:        make(map[string]logical.LogicalOperator),
@@ -56,7 +67,7 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlay
 		cteColumnsScope: make(map[string][]values.Field),
 	}
 	ref := t.translateRef(op)
-	return ref, t.scalarSubqueries
+	return ref, t.scalarSubqueries, t.translateErr
 }
 
 type cascadesTranslator struct {
@@ -73,6 +84,20 @@ type cascadesTranslator struct {
 	// the opaque-merge fallback was retired in RFC-077 7.6).
 	cteColumnsScope  map[string][]values.Field
 	scalarSubqueries []ScalarSubqueryPlan
+	// translateErr records the FIRST translation error that carries a
+	// specific SQL error code the bare nil-ref signal cannot (RFC-142:
+	// AT-ordinality on a non-array source → ErrCodeWrongObjectType). Set once
+	// (first writer wins) so the original cause surfaces; the caller reads it
+	// when ref is nil and reports it instead of the generic "could not plan".
+	translateErr error
+}
+
+// setTranslateErr records a translation error (first writer wins) so a
+// specific SQL error code survives to the caller. RFC-142.
+func (t *cascadesTranslator) setTranslateErr(err error) {
+	if t.translateErr == nil {
+		t.translateErr = err
+	}
 }
 
 // tableColumns returns a real table's columns (name + proto-derived type) from
@@ -237,7 +262,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// with its verbatim dotted key (NewRecordConstructorValue would suffix it
 		// "_2" — a spurious key the opaque merge never produces). A buried column is
 		// referenced via its dotted form after PartitionSelectRule rebasing, never
-		// bare. (RFC-077 7.6; Torvalds nested-parity catch — codex's unique-bare
+		// bare. (RFC-077 7.6; Torvalds nested-parity catch — the unique-bare
 		// concern is pinned by TestFDB_NestedJoinUnqualifiedProjection.)
 		var fields []values.Field
 		for _, f := range rc.Fields {
@@ -259,6 +284,19 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
 		}
 		return fields
+	case *logical.LogicalUnnest:
+		// A lateral unnest leg exposes its AS-bound element column (and, with
+		// ordinality, the AT-bound ordinal). The element/ordinal types are
+		// best-effort (UnknownType) — only the NAMES are load-bearing for
+		// name-based resolution by a parent join's anchored RC. RFC-142.
+		var cols []values.Field
+		if o.Alias != "" {
+			cols = append(cols, values.Field{Name: strings.ToUpper(o.Alias), FieldType: values.UnknownType, Ordinal: len(cols)})
+		}
+		if o.AtAlias != "" {
+			cols = append(cols, values.Field{Name: strings.ToUpper(o.AtAlias), FieldType: values.NotNullInt, Ordinal: len(cols)})
+		}
+		return cols
 	case *logical.LogicalSort:
 		// Row-shape-preserving: the sort's output columns are its inner's.
 		return t.legColumns(o.Input)
@@ -356,7 +394,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 // master too; tracked as TODO 7.6-union-remap). So when branch names DIFFER, anchor
 // only if every branch's schema-defining node is normalizable (projection/scan); an
 // aggregate-schema'd mismatched-alias union leg returns nil → untranslatable, a clean
-// "unsupported" error rather than silently-wrong rows (codex). When branch names
+// "unsupported" error rather than silently-wrong rows. When branch names
 // AGREE the remap is a no-op, so any shape is safe. Returns nil for no branches / an
 // underivable first branch.
 func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
@@ -404,8 +442,8 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		// A scan may be a CTE/derived-table reference (translateScan resolves it from
 		// the CTE body, not a real table). A real-table scan is remappable, but a
 		// CTE-reference scan is only remappable if its BODY is — a CTE whose body is a
-		// bare aggregate is NOT (the executor unwraps it to its input scan's names,
-		// codex). Resolve cteScope and recurse, mirroring legColumns (remove-while-
+		// bare aggregate is NOT (the executor unwraps it to its input scan's
+		// names). Resolve cteScope and recurse, mirroring legColumns (remove-while-
 		// recursing so a same-named scan inside the body resolves to the real table,
 		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
 		// conservatively not normalizable.
@@ -428,7 +466,7 @@ func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator)
 		// UNGROUPED: unchanged from RFC-080. An ungrouped aggregate has no aggregate-index
 		// candidate (groupingCount==0) so it always plans as StreamingAgg; RFC-080 allowed these
 		// union join legs and they work — do NOT re-gate them here (regressing previously-working
-		// ungrouped legs, codex). Any residual ungrouped logical-vs-physical name divergence is a
+		// ungrouped legs). Any residual ungrouped logical-vs-physical name divergence is a
 		// pre-existing RFC-080 matter for the naming-unification follow-up, not RFC-081's scope.
 		if len(o.GroupKeys) == 0 {
 			return true
@@ -599,6 +637,979 @@ func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressio
 	return expressions.InitialOf(expr)
 }
 
+// --- Lateral array UNNEST (RFC-142) --------------------------------------
+
+// findOuterScanTable resolves a lateral unnest's outer source alias to its
+// scanned table name among the VISIBLE FROM-scope sources of the outer leg.
+// It is the shared logical.FindOuterScanTable walk (the embedded cascades
+// generator's AT-on-table pass resolves the same way through the same helper),
+// so the translator and the early generator pass never diverge.
+func findOuterScanTable(op logical.LogicalOperator, alias string) string {
+	return logical.FindOuterScanTable(op, alias)
+}
+
+// outerSourceIsCTE reports whether `table` — the RESOLVED scan-table name the
+// unnest's segment-0 source binds to in `j.Left` (findOuterScanTable: the CTE
+// name for a CTE reference `FROM X`, the real table for `FROM T1 AS X`) — names a
+// CTE or derived-table source currently in scope, i.e. its OUTPUT is a
+// CTE-projected schema, not a base-table descriptor. Derived tables lower to a
+// `LogicalCTE` registered under their alias (translateCTE), so both common-table
+// expressions and `(SELECT …) AS d` derived tables appear in the CTE scope maps.
+// A `LogicalUnnest` whose outer BOUND source is such a CTE must be validated
+// against the CTE output type, not base-table metadata (P2a). It is keyed on
+// the resolved scan TABLE — never the segment-0 alias — so a real table aliased
+// with a CTE's name (`FROM T1 AS X` while a CTE `X` exists) does NOT match: the
+// visible scan `T1` shadows the unused CTE (over-rejection). RFC-142.
+func (t *cascadesTranslator) outerSourceIsCTE(table string) bool {
+	key := strings.ToUpper(table)
+	if _, ok := t.cteScope[key]; ok {
+		return true
+	}
+	if _, ok := t.cteExprScope[key]; ok {
+		return true
+	}
+	if _, ok := t.cteColumnsScope[key]; ok {
+		return true
+	}
+	return false
+}
+
+// outerSourceIsDerivedTable reports whether `alias` (the unnest's segment-0
+// outer source name) is bound, in the outer sub-plan `op`, to a DERIVED-TABLE /
+// CTE leg. This is the STRUCTURAL twin of outerSourceIsCTE: it reads the logical
+// tree directly rather than the cteScope maps, so it fires INDEPENDENT of
+// cteScope population order.
+//
+// CRITICAL (silent-wrong): a derived table `(SELECT … ) AS D` lowers to a
+// `LogicalCTE{Name:D, Main:Scan(D)}` inside `j.Left`, but that CTE's body is only
+// registered into cteScope when `j.Left` is *translated* (translateCTE) — which
+// happens AFTER the metadata-validation guard in translateUnnestJoin. So
+// outerSourceIsCTE returns false at the guard, and findOuterScanTable's walk into
+// `Main` resolves `D` to its alias-scan → the REAL table `D` of the same name (if
+// one exists). The unnest then validates `ARR` against the real table's ARRAY
+// metadata while the FlatMap reads the SCALAR `ARR` of the derived row → one
+// wrong scalar row per outer row. Detecting the derived/CTE leg STRUCTURALLY —
+// by the in-scope quantifier alias, exactly as Java's
+// generateCorrelatedFieldAccess resolves the in-scope source, not the catalog
+// table — rejects the derived-output unnest cleanly in ALL cases, even when a
+// real same-named table exists.
+//
+// Delegates to the shared logical.OuterSourceIsDerivedTable walk so the
+// translator's CTE/derived guard and the embedded generator's early AT-on-table
+// pass detect a derived source identically.
+func outerSourceIsDerivedTable(op logical.LogicalOperator, alias string) bool {
+	return logical.OuterSourceIsDerivedTable(op, alias)
+}
+
+// outerBoundAliases collects the source aliases bound by the outer leg of a
+// lateral unnest (the scan/source aliases visible in `op`), so the unnest's
+// element/ordinal binding alias can be checked for a collision against them
+// (P1). Like findOuterScanTable, it does NOT descend into CTE/derived
+// BODIES — only the visible Main leg — so it sees exactly the aliases the
+// unnest's merged outer row flows under. RFC-142.
+func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
+	set := make(map[string]struct{})
+	var walk func(logical.LogicalOperator)
+	walk = func(o logical.LogicalOperator) {
+		switch n := o.(type) {
+		case *logical.LogicalScan:
+			a := n.Alias
+			if a == "" {
+				a = n.Table
+			}
+			if a != "" {
+				set[strings.ToUpper(a)] = struct{}{}
+			}
+		case *logical.LogicalUnnest:
+			// A prior unnest leg binds its element/ordinal alias.
+			if n.Alias != "" {
+				set[strings.ToUpper(n.Alias)] = struct{}{}
+			}
+			if n.AtAlias != "" {
+				set[strings.ToUpper(n.AtAlias)] = struct{}{}
+			}
+		case *logical.LogicalCTE:
+			walk(n.Main)
+		default:
+			for _, c := range o.Children() {
+				walk(c)
+			}
+		}
+	}
+	walk(op)
+	return set
+}
+
+// unnestOuterLegAliases returns the outer leg aliases of a lateral unnest's outer
+// sub-plan EXCEPT the one the merged row flows under (mergedCorr =
+// sourceAlias(j.Left), the RIGHTMOST leg). It is the set rebaseUnnestOuterLegPredicate
+// must rewrite for a multi-source unnest WHERE: a reference to a NON-flow leg
+// (`A.c` in `FROM A, B, A.arr AS X` where the row flows under B) reads its column
+// off the merged QOV via the qualified `A.c` key, while the flow-leg's own column
+// (`B.d`) is already read bare off the merged QOV and must NOT be re-qualified —
+// a single-source unnest (`FROM t, t.arr`) flows under segment-0's own alias, so
+// the set is empty and the rebase is a no-op. RFC-142.
+func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.CorrelationIdentifier) map[string]struct{} {
+	all := outerBoundAliases(op)
+	delete(all, strings.ToUpper(mergedCorr.Name()))
+	return all
+}
+
+// unnestArrayElementType returns the element type for a lateral unnest's
+// array field, whether the field resolves to an array, AND whether the field
+// EXISTS on the outer source at all. It walks the outer source's proto
+// descriptor along the unnest's field segments (`u.Segments[1:]`; segment 0 is
+// the outer source alias) and asserts the final field is repeated
+// (`IsList()`). For a scalar-element array the element type is the scalar;
+// for a struct array (message element) or an unrecognized kind it is
+// UnknownType (the runtime flows the raw element).
+//
+// The `fieldPresent` return distinguishes Java's two failure modes
+// (`generateCorrelatedFieldAccess` / `resolveCorrelatedIdentifier`):
+//
+//   - field MISSING on the source (`fieldPresent == false`): the dotted name
+//     is not a column of the source → the caller treats it as a genuine table
+//     (table-not-found path), mirroring Java falling through from
+//     `resolveCorrelatedIdentifier` to an undefined-table error.
+//   - field PRESENT but NON-array (`fieldPresent == true, isArray == false`):
+//     a real scalar column referenced as an unnest source → Java's
+//     `INVALID_COLUMN_REFERENCE`/`WRONG_OBJECT_TYPE` ("repeated type" assert).
+//
+// RFC-142.
+func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
+	rt := t.resolveRecordType(outerTable)
+	if rt == nil || rt.Descriptor == nil || len(fieldSegments) == 0 {
+		return values.UnknownType, "", false, false
+	}
+	fields := rt.Descriptor.Fields()
+	// Only single-segment array fields are supported (the column directly on
+	// the outer source). A multi-segment path (t.struct.arr) is not a top-level
+	// FROM unnest shape in the yamsql corpus; treat as a missing field (the
+	// nested-struct unnest shape is not yet supported — table fallback).
+	if len(fieldSegments) != 1 {
+		return values.UnknownType, "", false, false
+	}
+	fd := fields.ByName(protoreflect.Name(strings.ToLower(fieldSegments[0])))
+	if fd == nil {
+		// Case-insensitive fallback: proto field names are typically lower /
+		// snake, but the SQL identifier may be upper-cased.
+		for i := 0; i < fields.Len(); i++ {
+			f := fields.Get(i)
+			if strings.EqualFold(string(f.Name()), fieldSegments[0]) {
+				fd = f
+				break
+			}
+		}
+	}
+	if fd == nil {
+		// No such field on the source → not an unnest; let the table path try.
+		return values.UnknownType, "", false, false
+	}
+	if !fd.IsList() {
+		// Present but scalar → WRONG_OBJECT_TYPE (a non-array correlated source).
+		return values.UnknownType, "", false, true
+	}
+	return arrayFieldElementType(fd), strings.ToUpper(string(fd.Name())), true, true
+}
+
+// containsLateralUnnest reports whether a logical sub-plan contains a
+// LogicalUnnest in the SAME (current) FROM scope — i.e. this is a CHAINED /
+// multi-unnest FROM list (`FROM t, t.arr1 AS v1, t.arr2 AS v2`). RFC-142.
+//
+// CRITICAL (P2a): the walk MUST NOT descend into a CTE / derived-table
+// BODY. A derived table `(SELECT v FROM T1, T1.arr AS v) AS d` is its OWN FROM
+// scope; its inner unnest belongs to that scope, not the outer one. The outer
+// FROM scope only sees the derived table's OUTPUT alias `d` (its Main leg). If
+// the walk descended into `LogicalCTE.Body` it would count the derived table's
+// own unnest and wrongly reject the outer query as "multiple lateral array
+// unnests in one FROM clause" — a valid query falsely rejected. So at a
+// LogicalCTE we inspect ONLY its Main (the visible alias projection), never its
+// Body — mirroring findOuterScanTable / outerBoundAliases, which resolve a
+// derived/CTE source against its Main only.
+func containsLateralUnnest(op logical.LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if _, ok := op.(*logical.LogicalUnnest); ok {
+		return true
+	}
+	if cte, ok := op.(*logical.LogicalCTE); ok {
+		// A derived/CTE source is its own FROM scope; only its Main (visible
+		// alias projection) is in the current scope, never its Body.
+		return containsLateralUnnest(cte.Main)
+	}
+	for _, c := range op.Children() {
+		if containsLateralUnnest(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// arrayFieldElementType returns the element type of a repeated proto field.
+// fieldTypeForFD collapses list fields to UnknownType, so the element kind is
+// read directly from the field descriptor's scalar Kind (a struct/message
+// element stays UnknownType — the runtime flows the raw struct map). RFC-142.
+func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
+	switch fd.Kind() {
+	case protoreflect.BoolKind:
+		return values.NewPrimitiveType(values.TypeCodeBoolean, true)
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return values.NewPrimitiveType(values.TypeCodeInt, true)
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return values.NewPrimitiveType(values.TypeCodeLong, true)
+	case protoreflect.FloatKind:
+		return values.NewPrimitiveType(values.TypeCodeFloat, true)
+	case protoreflect.DoubleKind:
+		return values.NewPrimitiveType(values.TypeCodeDouble, true)
+	case protoreflect.StringKind:
+		return values.NewPrimitiveType(values.TypeCodeString, true)
+	case protoreflect.BytesKind:
+		return values.NewPrimitiveType(values.TypeCodeBytes, true)
+	case protoreflect.MessageKind:
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
+			return values.NewPrimitiveType(values.TypeCodeUuid, true)
+		}
+		return values.UnknownType
+	default:
+		return values.UnknownType
+	}
+}
+
+// translateUnnestJoin lowers a lateral array unnest source (`FROM t, t.arr AS
+// x [AT ord]`) — a LogicalJoin whose Right is a LogicalUnnest — into a
+// correlated FlatMap-over-Explode SelectExpression, mirroring Java's
+// `LogicalOperator.generateCorrelatedFieldAccess`:
+//
+//   - outer leg = the source the array field belongs to (j.Left);
+//   - inner = Explode of the correlated array Value (FieldValue{arr} over
+//     QOV(outerAlias)), wrapped in a forEach quantifier under the AS alias;
+//     WITH ORDINALITY when an AT alias is present;
+//   - result value projects the outer columns + the element bound to the AS
+//     alias (and, with ordinality, the 1-based ordinal bound to the AT alias).
+//
+// The ImplementNestedLoopJoinRule's correlated-FlatMap path implements the
+// SelectExpression as RecordQueryFlatMapPlan(outer, explode, …, resultValue,
+// false) — the non-existential, no-FirstOrDefault path Graefe confirmed.
+//
+// Returns nil (untranslatable) for a non-scan outer or an unresolvable field;
+// when the source carries an AT alias but is NOT a correlated array, it
+// records ErrCodeWrongObjectType (Java's WRONG_OBJECT_TYPE) and returns nil so
+// the planner surfaces the faithful diagnostic. RFC-142.
+func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
+	// A lateral unnest is classified by walking the outer source's PROTO
+	// descriptor for the array field (unnestArrayElementType → resolveRecordType
+	// → t.md). The metadata-less translation path (TranslateToCascades /
+	// TranslateToCascadesWithSubqueries(op, nil) — used by scalar-subquery / DML
+	// translation and unit tests) has no descriptor to classify against. Java
+	// never reaches an unnest without a SemanticAnalyzer/metadata in scope, so
+	// rather than dereference nil metadata (a panic) we decline cleanly: an
+	// unnest genuinely needs metadata to classify. No production caller unnests
+	// without metadata (every SQL plan path passes real md). RFC-142.
+	if t.md == nil {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"lateral array unnest requires record metadata to classify the array field"))
+		return nil
+	}
+	// The multiple-unnest guard (CHAINED `FROM t, t.arr1 AS v1, t.arr2 AS v2`)
+	// is applied LATER — only AFTER the right side is confirmed a VALID array
+	// unnest (past the !isArray validation below). Running it here, before the
+	// array-source validation, would mask an invalid right-side candidate after a
+	// prior unnest: `FROM T1, T1.arr AS V, U AT O` (AT on a non-array table) or
+	// `FROM T1, T1.arr AS V, T1.id AS X` (a scalar field) would wrongly report
+	// "multiple unnests" (UNSUPPORTED_QUERY) instead of the faithful
+	// WRONG_OBJECT_TYPE the array validation produces. So: an AT-on-non-array or
+	// scalar candidate after an unnest → the array-validation error fires first; a
+	// genuine SECOND array unnest → the multiple-unnest guard. RFC-142.
+
+	// The FlatMap binds the outer row under sourceAlias(j.Left), which is the
+	// rightmost FROM leg. For a single outer source this IS segment 0
+	// (`FROM t, t.arr`); when the unnest follows MORE THAN ONE prior source
+	// (`FROM A, B, A.arr AS X`) the outer is the merged `A × B` row flowed under
+	// B's alias, and segment 0 (A) is not the flow leg — the array field is read
+	// QUALIFIED to A below.
+	outerAlias := sourceAlias(j.Left)
+	// Resolve segment 0 to the SCAN it actually binds to in `j.Left` FIRST — the
+	// CTE/derived rejection below is tied to that BOUND source, not to the segment-0
+	// alias name (over-rejection). `findOuterScanTable` returns the
+	// scan's TABLE name for the alias: a real table `T1` for `T1 AS X`, the CTE name
+	// `X` for a CTE reference `FROM X` (the scan's Table holds the CTE name), or `d`
+	// for a derived table `(…) AS d` (its Main alias-scan). When segment 0 does not
+	// resolve to a visible scan it is not a correlated source at all (schema-
+	// qualified table, or a name hidden behind a derived-table boundary) — the table
+	// path handles it; an AT alias is then invalid.
+	outerTable := findOuterScanTable(j.Left, u.Segments[0])
+	if outerTable == "" {
+		return t.unnestFallbackOrReject(j, u)
+	}
+	// Java's `generateCorrelatedFieldAccess` validates the array field against the
+	// in-scope source's OUTPUT type (its quantifier's flowed columns), NOT a base-
+	// table descriptor. When the BOUND source is a CTE / derived-table, that output
+	// is the CTE's PROJECTED columns — a renamed/computed schema that may differ from
+	// any base table (`WITH T1 AS (SELECT ID AS ARR FROM T1) … FROM T1, T1.ARR`: the
+	// CTE output `ARR` is the SCALAR renamed `ID`, even though a real base table `T1`
+	// has an ARRAY column `ARR`). Validating `ARR` against the base-table descriptor
+	// here would explode the WRONG column (silent-wrong, P2a). The leg-column
+	// TYPES the translator derives for a CTE/derived output are best-effort
+	// `UnknownType` (legColumns), so the element type is not recoverable at this
+	// point; rather than validate against the wrong base-table metadata, reject a
+	// CTE/derived-source unnest cleanly. Single-array unnest over a REAL table (the
+	// R5 core) is unaffected. RFC-142.
+	//
+	// The rejection is tied to the ACTUAL source bound in `j.Left` for segment 0,
+	// NOT to a CTE that merely SHARES segment 0's name in the global WITH scope
+	// (over-rejection): a real table aliased with a CTE's name
+	// (`WITH X AS (…) SELECT V FROM T1 AS X, X.ARR AS V`) SHADOWS the unused CTE — the
+	// VISIBLE scan `T1 AS X` is the source, so the unnest is valid and MUST plan.
+	// Both arms therefore key on the resolved bound source:
+	//   - outerSourceIsCTE(outerTable): the scan's resolved table name IS a CTE in
+	//     scope. For a CTE used as the source, findOuterScanTable returns the CTE
+	//     name (the scan's Table), so this fires; for `T1 AS X` it returns the real
+	//     table `T1`, so it does NOT fire even when a CTE `X` exists globally.
+	//   - outerSourceIsDerivedTable(j.Left, segment 0): a LogicalCTE leg in j.Left
+	//     whose Name == segment 0 — the STRUCTURAL twin, load-bearing for the
+	//     DERIVED-PRIMARY shape `FROM (SELECT ID AS ARR FROM T1) AS D, D.ARR AS V`.
+	//     A derived table's LogicalCTE body is registered into cteScope only when
+	//     j.Left is *translated* (translateCTE), which is AFTER this guard — so
+	//     outerSourceIsCTE(outerTable) is still false there; the structural arm reads
+	//     the logical tree directly so it fires regardless of cteScope timing and
+	//     regardless of whether the alias also names a real table. The in-scope
+	//     derived source is preferred over the catalog table, exactly as Java
+	//     resolves the in-scope quantifier alias. RFC-142.
+	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"unnest over a CTE/derived-table output is not yet supported"))
+		return nil
+	}
+	elementType, fieldName, isArray, fieldPresent := t.unnestArrayElementType(outerTable, u.Segments[1:])
+	if !isArray {
+		// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
+		// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
+		//
+		//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
+		//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
+		//     assert → WRONG_OBJECT_TYPE (P2c).
+		//   - source is a REAL table but the field is MISSING: an unresolvable
+		//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
+		//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
+		//     fallback that produces a generic translation failure (P2c).
+		//   - source is NOT a real table (a derived-table alias `d` whose record
+		//     type doesn't resolve): the field can't be checked here → table path.
+		if fieldPresent {
+			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+				"join correlation can occur only on a column of repeated (array) type"))
+			return nil
+		}
+		// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
+		// scan, but there are NO field segments to resolve — the source is the
+		// TABLE/alias itself, not an array field on it. AT is valid only on a
+		// correlated array, so this converges with the other AT-on-a-table
+		// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
+		// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
+		// name. (Without the AT this single-segment shape isn't even classified as
+		// an unnest; the AT forces it here so it can be rejected faithfully.)
+		// RFC-142.
+		if u.AtAlias != "" && len(u.Segments) < 2 {
+			t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+				"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
+			return nil
+		}
+		if t.resolveRecordType(outerTable) != nil {
+			// Known source, missing field: unresolvable correlated field.
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
+				"column %q does not exist on source %q",
+				strings.Join(u.Segments[1:], "."), u.Segments[0]))
+			return nil
+		}
+		return t.unnestFallbackOrReject(j, u)
+	}
+
+	// CHAINED unnest (`FROM t, t.arr1 AS v1, t.arr2 AS v2`) lowers to a nested
+	// FlatMap whose inner Explode correlates to the OUTERMOST scan while its
+	// outer is the first unnest's FlatMap — Java's `q3._0._1` deep-tuple shape.
+	// Go's name-keyed merged-row model does not yet thread the first unnest's
+	// element/ordinal columns through the second FlatMap's merged outer row, so
+	// rather than emit silently-wrong rows we reject the multi-unnest shape
+	// cleanly. Single-array unnest (the R5 core) is fully supported.
+	//
+	// This guard runs ONLY now that the right side is confirmed a VALID array
+	// unnest (past the !isArray validation above): a genuine SECOND array unnest
+	// → UNSUPPORTED_QUERY here; an AT-on-non-array or scalar candidate after a
+	// prior unnest already returned the faithful WRONG_OBJECT_TYPE above, so it
+	// never reaches this guard. RFC-142.
+	if containsLateralUnnest(j.Left) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"multiple lateral array unnests in one FROM clause are not yet supported"))
+		return nil
+	}
+
+	outerRef := t.translateRef(j.Left)
+	if outerRef == nil {
+		return nil
+	}
+	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
+
+	// The correlated array Value: FieldValue{arrField} over QOV(outer).
+	//
+	// When the outer is a MERGED row (the array's source is not the rightmost
+	// FROM leg, e.g. `FROM A, B, A.arr AS X`), the merged row flows under the
+	// rightmost leg's alias (`sourceAlias(j.Left)`) and exposes every source's
+	// columns BOTH bare (last-leg-wins) AND qualified `LEG.COL`. Reading the bare
+	// `arr` here would explode the LAST leg's array (`B.arr`), not the array the
+	// classifier type-checked (`A.arr`) — silent wrong rows. So when segment 0 is
+	// not the merged row's flow leg, read the QUALIFIED `SEG0.FIELD` key, which
+	// the anchored merged record always carries for the classified source. For a
+	// single outer scan (`FROM t, t.arr`) the flow alias IS segment 0 and the row
+	// carries only bare keys, so the bare field is read. RFC-142.
+	arrayFieldKey := fieldName
+	seg0 := strings.ToUpper(u.Segments[0])
+	if seg0 != outerAlias {
+		arrayFieldKey = seg0 + "." + fieldName
+	}
+	arrayValue := values.NewFieldValue(
+		values.NewQuantifiedObjectValue(outerCorr),
+		arrayFieldKey,
+		values.NewArrayType(true, elementType),
+	)
+	withOrdinality := u.AtAlias != ""
+	explode := expressions.NewExplodeExpressionWithOrdinality(arrayValue, withOrdinality)
+	explodeRef := expressions.InitialOf(explode)
+
+	// The inner quantifier's correlation MUST be the VISIBLE unnest alias — the
+	// AS alias, or, in the AT-only form (`FROM t, t.arr AT a`), the AT alias.
+	// This is exactly the correlation `unnestScopeSourceAdder` registers the
+	// unnest's virtual scope source under, and the one `rewriteUnnestPredicate`
+	// rebases a WHERE-on-ordinal predicate to (`QOV(<alias>)._1`). Binding the
+	// inner under a PRIVATE synthesized name (as an earlier cut did for AT-only)
+	// left the predicate correlated to `QOV(AT)` while the Explode flowed under
+	// `QOV(__unnest_…)`, so the NLJ rule never pushed the predicate into the inner
+	// Explode filter — `WHERE a = 1` planned as an unbound outer filter and
+	// dropped the wrong rows. Mirrors Java's single `resultingQuantifier` driving
+	// both the AS and AT bindings (`generateCorrelatedFieldAccess`). RFC-142.
+	innerCorr := unnestSourceCorrelation(u)
+	innerAlias := innerCorr.Name()
+
+	// P1 (silent-wrong): the unnest's element/ordinal binding alias MUST
+	// NOT collide with the outer FlatMap correlation or any already-bound outer
+	// source alias. If it did (`FROM T1 AS X, X.arr AS X`, or the aliasless
+	// `FROM T1 AS ARR, ARR.arr` where the defaulted field-name alias ARR equals
+	// the outer alias), innerCorr would equal outerCorr and the flatMapCursor
+	// would bind BOTH the outer row and the inner element under one name — the
+	// inner element overwrites the outer row, silently corrupting projections
+	// and predicates. Reject cleanly instead. Java never reaches this because a
+	// duplicate quantifier alias is a binding error upstream. RFC-142.
+	collide := func(name string) bool {
+		if name == "" {
+			return false
+		}
+		if strings.EqualFold(name, outerAlias) {
+			return true
+		}
+		_, ok := outerBoundAliases(j.Left)[strings.ToUpper(name)]
+		return ok
+	}
+	if collide(u.Alias) || collide(u.AtAlias) {
+		t.setTranslateErr(api.NewError(api.ErrCodeDuplicateAlias,
+			"lateral unnest alias collides with an outer FROM-source alias; use a distinct AS/AT alias"))
+		return nil
+	}
+	// P2b (silent-wrong, overwrite): the AS element alias and the AT
+	// ordinal alias MUST be distinct. `FROM t, t.arr AS X AT X` appends the element
+	// and the ordinal under the SAME bare+qualified names in buildUnnestResultValue;
+	// RecordConstructorValue.Evaluate stores fields in a map, so the ordinal
+	// (appended last) silently OVERWRITES the element — `SELECT X` returns the
+	// ordinal, not the unnested value. Reject cleanly BEFORE constructing the result,
+	// consistent with the unnest-alias-vs-outer-alias rejection above. Java's
+	// visitAtomTableItem binds AS and AT to two distinct quantifier columns; a
+	// duplicate alias is a binding error upstream. RFC-142.
+	if u.Alias != "" && u.AtAlias != "" && strings.EqualFold(u.Alias, u.AtAlias) {
+		t.setTranslateErr(api.NewError(api.ErrCodeDuplicateAlias,
+			"lateral unnest AS and AT aliases must be distinct; use different names for the element and the ordinal"))
+		return nil
+	}
+
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, explodeRef)
+	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
+
+	resultValue := t.buildUnnestResultValue(j.Left, outerCorr, outerAlias, innerCorr, u, elementType)
+	if resultValue == nil {
+		return nil
+	}
+
+	return expressions.NewSelectExpressionWithJoinType(
+		resultValue,
+		[]expressions.Quantifier{outerQ, innerQ},
+		nil,
+		[]string{outerAlias, innerAlias},
+		expressions.JoinInner,
+	)
+}
+
+// unnestFallbackOrReject handles a candidate comma source whose segment 0 did
+// NOT resolve to a real in-scope TABLE source (it is a schema-qualified table,
+// a name hidden behind a derived-table boundary, or a derived-table alias whose
+// record type can't be inspected for an array field). The dotted name is then
+// treated as a genuine table cross-join: re-translate the join with the right
+// child as a plain scan of the joined name (the table-not-found path surfaces
+// later if it is unknown). An AT alias here is still invalid — AT requires a
+// correlated array (Java's WRONG_OBJECT_TYPE).
+//
+// The PRESENT-but-scalar and missing-field-on-a-known-source cases are handled
+// inline by translateUnnestJoin (WRONG_OBJECT_TYPE / UNDEFINED_COLUMN) before
+// this is ever reached. RFC-142.
+func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
+	if u.AtAlias != "" {
+		t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
+			"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
+		return nil
+	}
+	tableName := strings.Join(u.Segments, ".")
+	alias := u.Alias
+	if alias == "" {
+		alias = tableName
+	}
+	rebuilt := &logical.LogicalJoin{
+		Left:        j.Left,
+		Right:       logical.NewScan(tableName, alias),
+		Kind:        j.Kind,
+		OnText:      j.OnText,
+		OnPredicate: j.OnPredicate,
+	}
+	return t.translateJoin(rebuilt)
+}
+
+// buildUnnestResultValue builds the FlatMap RETURN value for a lateral unnest:
+// the outer leg's columns (anchored to QOV(outer)) plus the unnested element
+// (and, with ordinality, the 1-based ordinal). The element is the WHOLE inner
+// quantifier value (QOV(inner)) for the bare variant, or FieldValue.ofOrdinal
+// (element=0, ordinal=1) for the WITH ORDINALITY variant. Mirrors Java's
+// attribute list in generateCorrelatedFieldAccess. RFC-142.
+func (t *cascadesTranslator) buildUnnestResultValue(
+	outer logical.LogicalOperator,
+	outerCorr values.CorrelationIdentifier,
+	outerAlias string,
+	innerCorr values.CorrelationIdentifier,
+	u *logical.LogicalUnnest,
+	elementType values.Type,
+) values.Value {
+	outerCols := t.legColumns(outer)
+	if outerCols == nil {
+		return nil
+	}
+	// Outer leg: bare + qualified ALIAS.COL fields, exactly as a normal join leg.
+	base := values.NewAnchoredJoinRecord([]values.AnchoredJoinLeg{
+		{Alias: outerCorr, Columns: outerCols},
+	})
+	// MULTI-SOURCE outer (`FROM A, B, A.arr AS X`): legColumns(LogicalJoin)
+	// returns ONLY the already-qualified DOTTED columns (A.C, A.ARR, B.D, …);
+	// NewAnchoredJoinRecord propagates a dotted leg column VERBATIM with NO bare
+	// form (the nested-join rule). So the anchored outer record above carries only
+	// dotted keys — `SELECT C` (a bare outer column) and `ORDER BY C` would read a
+	// MISSING bare `C` key → NULL column / no-op sort. But the runtime merged outer
+	// row bound under QOV(outerCorr) ALSO carries bare keys (mergeRows writes both
+	// bare last-leg-wins AND ALIAS.COL — executor.go), exactly as a real join's
+	// result row does. Emit the matching bare fields here so the FlatMap RETURN
+	// value carries the outer merged row's BARE keys as well as the qualified ones,
+	// faithful to mergeRows/NewAnchoredJoinRecord. The bare key is read off
+	// QOV(outerCorr) by its bare name; last-occurrence (= right-leg) wins on a
+	// cross-leg collision, matching NewAnchoredJoinRecord's leg-order last-leg-wins.
+	// A single outer SCAN (`FROM t, t.arr`) already exposes bare columns via
+	// legColumns(LogicalScan), so base already carries them and this adds nothing
+	// new (the bareSeen guard dedups). The unnest AS/AT shadowing still applies
+	// below (the element/ordinal bare key wins over a same-named outer bare key).
+	// RFC-142.
+	bareSeen := map[string]struct{}{}
+	for _, f := range base.Fields {
+		if !strings.Contains(f.Name, ".") {
+			bareSeen[strings.ToUpper(f.Name)] = struct{}{}
+		}
+	}
+	outerBareLast := map[string]values.Value{}
+	var outerBareOrder []string
+	for _, c := range outerCols {
+		dot := strings.LastIndexByte(c.Name, '.')
+		if dot < 0 {
+			continue // a bare leg column — base already emitted it
+		}
+		bare := strings.ToUpper(c.Name[dot+1:])
+		if _, ok := bareSeen[bare]; ok {
+			continue // base already carries this bare key (single-scan leg)
+		}
+		// FieldValue(QOV(outerCorr), bare) reads the merged row's bare key.
+		v := values.NewFieldValue(values.NewQuantifiedObjectValue(outerCorr), bare, c.FieldType)
+		if _, dup := outerBareLast[bare]; !dup {
+			outerBareOrder = append(outerBareOrder, bare)
+		}
+		outerBareLast[bare] = v // last-occurrence (right leg) wins
+	}
+	// The unnest's AS/AT aliases SHADOW any same-named outer column: `... AS x`
+	// binds x to the element, even when the outer source already has a column
+	// named x (the name-collision case). Drop the outer's BARE field for a
+	// colliding name so the unnest's bare field is authoritative; the outer's
+	// explicitly-qualified `OUTER.x` form is preserved for an outer-qualified
+	// reference. RFC-142.
+	shadowed := map[string]struct{}{}
+	if u.Alias != "" {
+		shadowed[strings.ToUpper(u.Alias)] = struct{}{}
+	}
+	if u.AtAlias != "" {
+		shadowed[strings.ToUpper(u.AtAlias)] = struct{}{}
+	}
+	var fields []values.RecordConstructorField
+	for _, f := range base.Fields {
+		if _, clash := shadowed[strings.ToUpper(f.Name)]; clash && !strings.Contains(f.Name, ".") {
+			continue
+		}
+		fields = append(fields, f)
+	}
+	// Append the derived bare keys for a multi-source (dotted) outer leg, in
+	// stable order, skipping any name the unnest AS/AT shadows.
+	for _, bare := range outerBareOrder {
+		if _, clash := shadowed[bare]; clash {
+			continue
+		}
+		fields = append(fields, values.RecordConstructorField{Name: bare, Value: outerBareLast[bare]})
+	}
+
+	innerQOV := values.NewQuantifiedObjectValue(innerCorr)
+	withOrdinality := u.AtAlias != ""
+
+	// The AS-bound element. With ordinality, the inner flows a 2-field record;
+	// the element is ordinal field 0 (its type carried by the FieldValue). Without,
+	// the inner flows the BARE element — the alias IS the whole flowed object
+	// (Java's generateCorrelatedFieldAccess primitive branch binds to the QOV, NOT
+	// a FieldValue). A plain QOV defaults to UnknownType, which result-set column
+	// metadata would report as BIGINT; bind the element's flowed type to the array's
+	// elementType (STRING for a STRING array, etc.) so the element column advertises
+	// its real type, matching the ordinality path. RFC-142.
+	var elementValue values.Value
+	if withOrdinality {
+		elementValue = values.NewOrdinalFieldValue(innerQOV, 0, elementType)
+	} else {
+		elementValue = values.NewQuantifiedObjectValueOfType(innerCorr, elementType)
+	}
+	// The unnest leg's source alias — how the SELECT scope qualifies a
+	// reference to the AS/AT column (the unnest virtual source's correlation
+	// name). Key both the bare and the `<leg>.<col>` qualified forms so a
+	// qualified reference (`<leg>.AT`) also resolves against the FlatMap output.
+	// RFC-142.
+	legAlias := strings.ToUpper(u.Alias)
+	if legAlias == "" {
+		legAlias = strings.ToUpper(u.AtAlias)
+	}
+	addField := func(bareKey string, v values.Value) {
+		fields = append(fields, values.RecordConstructorField{Name: bareKey, Value: v})
+		if q := legAlias + "." + bareKey; q != bareKey {
+			fields = append(fields, values.RecordConstructorField{Name: q, Value: v})
+		}
+	}
+	if u.Alias != "" {
+		addField(strings.ToUpper(u.Alias), elementValue)
+	}
+	// The AT-bound 1-based ordinal (INT NOT NULL), ordinal field 1.
+	if withOrdinality {
+		addField(strings.ToUpper(u.AtAlias), values.NewOrdinalFieldValue(innerQOV, 1, values.NotNullInt))
+	}
+
+	rc := values.NewRecordConstructorValue(fields...)
+	rc.AnchoredJoin = true
+	return rc
+}
+
+// rewriteUnnestPredicate rewrites a WHERE predicate's references to a lateral
+// unnest's AS/AT columns so they match what the inner Explode actually flows,
+// then the NLJ rule pushes the rewritten predicate into the inner Explode filter
+// (Java's `EXPLODE … | FILTER …`). The unnest's WHERE references are
+// `FieldValue{Field:<alias>, Child:QOV(unnestCorr)}` (the virtual scope source
+// resolves the AS/AT columns to a field over the unnest correlation). What the
+// inner Explode flows depends on the ordinality:
+//
+//   - WITH ORDINALITY: the inner flows a 2-field record (`_0`=element,
+//     `_1`=ordinal). Rewrite the AS reference to ordinal field 0 and the AT
+//     reference to ordinal field 1 (`FieldValue{_0|_1, QOV}`) — Java's
+//     `FieldValue.ofOrdinalNumber(qov, 0|1)`.
+//
+//   - NON-ORDINAL: the inner flows the BARE SCALAR element (no struct). The AS
+//     reference must collapse to the WHOLE `QuantifiedObjectValue(unnestCorr)`
+//     (the scalar itself), NOT a FieldValue over it — a FieldValue would read a
+//     named subfield of a scalar and evaluate NULL, filtering everything out.
+//     This mirrors Java's `generateCorrelatedFieldAccess` primitive branch, which
+//     binds the alias directly to `resultingQuantifier.getFlowedObjectValue()`
+//     (the QOV) rather than a FieldValue accessor. RFC-142.
+func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnest) predicates.QueryPredicate {
+	unnestCorr := unnestSourceCorrelation(u)
+	asAlias := strings.ToUpper(u.Alias)
+	atAlias := strings.ToUpper(u.AtAlias)
+	withOrdinality := u.AtAlias != ""
+	rewriteValue := func(v values.Value) values.Value {
+		if v == nil {
+			return v
+		}
+		return values.Replace(v, func(node values.Value) values.Value {
+			fv, ok := node.(*values.FieldValue)
+			if !ok || fv.Child == nil {
+				return node
+			}
+			qov, ok := fv.Child.(*values.QuantifiedObjectValue)
+			if !ok || qov.Correlation != unnestCorr {
+				return node
+			}
+			switch strings.ToUpper(fv.Field) {
+			case asAlias:
+				if asAlias != "" {
+					if withOrdinality {
+						return values.NewOrdinalFieldValue(qov, 0, fv.Typ)
+					}
+					// Bare scalar element: the alias IS the whole flowed object.
+					return qov
+				}
+			case atAlias:
+				if atAlias != "" {
+					return values.NewOrdinalFieldValue(qov, 1, fv.Typ)
+				}
+			}
+			return node
+		})
+	}
+	return mapPredicateValues(p, rewriteValue)
+}
+
+// buriedUnnestLegs collects every lateral-unnest leg in `op` whose element/ordinal
+// columns survive into the outer (NON-rightmost) join's merged row — i.e. an unnest
+// BURIED in the left subtree of a 3+-source FROM list (`FROM T1, T1.arr AS V, U`,
+// where the outer LogicalJoin's Right is U and the unnest is in its Left). Mirrors
+// the `containsLateralUnnest` recursion (and `outerBoundAliases` /
+// `findOuterScanTable`): it does NOT descend into a CTE / derived-table Body — a
+// derived source is its own FROM scope, and its inner unnest belongs to that scope,
+// not the current one. RFC-142.
+func buriedUnnestLegs(op logical.LogicalOperator) []*logical.LogicalUnnest {
+	var out []*logical.LogicalUnnest
+	var walk func(logical.LogicalOperator)
+	walk = func(o logical.LogicalOperator) {
+		if o == nil {
+			return
+		}
+		if u, ok := o.(*logical.LogicalUnnest); ok {
+			out = append(out, u)
+			return
+		}
+		if cte, ok := o.(*logical.LogicalCTE); ok {
+			// A derived/CTE source is its own FROM scope; only its visible Main.
+			walk(cte.Main)
+			return
+		}
+		for _, c := range o.Children() {
+			walk(c)
+		}
+	}
+	walk(op)
+	return out
+}
+
+// predicateRefsCorrelation reports whether predicate p references the
+// correlation identifier corr anywhere in its value tree (GetCorrelatedTo).
+func predicateRefsCorrelation(p predicates.QueryPredicate, corr values.CorrelationIdentifier) bool {
+	if p == nil {
+		return false
+	}
+	_, ok := predicates.GetCorrelatedToOfPredicate(p)[corr]
+	return ok
+}
+
+// pushBuriedUnnestPredicateDown rewrites the logical tree so a WHERE conjunct that
+// filters a BURIED lateral-unnest element/ordinal — an unnest that is NOT the
+// rightmost FROM item (`FROM T1, T1.arr AS V, U WHERE V > 0`, where the outer
+// LogicalJoin's Right is U and the unnest is in its Left) — is pushed DOWN to a
+// LogicalFilter wrapping the inner join in which the unnest IS the rightmost source.
+// That makes the buried case structurally identical to the direct
+// `FROM T1, T1.arr AS V WHERE V > 0` shape, so the SAME proven direct-unnest WHERE
+// path (rewriteUnnestPredicate → folded into the inner Explode's PredicatesFilter,
+// Java's `EXPLODE … | FILTER …`) handles it — for EVERY comparison operator. Left at
+// the OUTER NestedLoopJoin the element reference would read the FlatMap binding under
+// an ambiguous correlation and evaluate NULL → every matching row dropped (P1,
+// silent-wrong).
+//
+// Only a conjunct that references the buried unnest's correlation AND no source
+// OUTSIDE join.Left (i.e. not the rightmost-leg join.Right) is pushed — a conjunct
+// also referencing the rightmost leg (`V = U.x`) is a genuine cross-leg join
+// predicate and STAYS at the outer level. The returned operator is the restructured
+// tree (`Join(Filter(Left, pushedConjuncts), Right)` under the residual
+// LogicalFilter); when nothing is pushable f is returned unchanged so non-buried and
+// pure-cross-leg shapes are untouched. RFC-142.
+//
+// EXISTS composition (silent-wrong): this push runs BEFORE the
+// EXISTS early-return in translateFilter so a buried-unnest element/ordinal filter
+// combined with EXISTS (`FROM T1, T1.arr AS V, U WHERE V > 1 AND EXISTS (…)`) is
+// pushed into the inner Explode FIRST. Otherwise the EXISTS dispatch routes the
+// whole filter through the generic join+EXISTS path (translateJoinWithExists), which
+// appends `V > 1` to the outer NLJ's predicates where QOV(V) is UNBOUND → every
+// matching row silently dropped. Only the buried-unnest NON-EXISTS conjuncts move
+// down; the EXISTS subqueries + their existential markers (extractExistsPredicates)
+// stay in the residual outer filter so the existential semi-join is preserved.
+func pushBuriedUnnestPredicateDown(f *logical.LogicalFilter) *logical.LogicalFilter {
+	if f == nil || f.Predicate == nil {
+		return f
+	}
+	join, ok := f.Input.(*logical.LogicalJoin)
+	if !ok || join.Kind != logical.JoinInner {
+		return f
+	}
+	// Only the BURIED shape: the rightmost source (join.Right) is NOT itself the
+	// unnest (that direct shape is handled by the existing path), but join.Left
+	// contains one or more buried unnest legs.
+	if _, rightIsUnnest := join.Right.(*logical.LogicalUnnest); rightIsUnnest {
+		return f
+	}
+	buried := buriedUnnestLegs(join.Left)
+	if len(buried) == 0 {
+		return f
+	}
+	// The aliases bound by the RIGHTMOST leg (join.Right) — a conjunct that
+	// references any of these is a cross-leg predicate and must NOT be pushed
+	// below the join.
+	rightAliases := outerBoundAliases(join.Right)
+
+	conjuncts := splitNonExistsPredicates(f.Predicate)
+	var pushed, residual []predicates.QueryPredicate
+	for _, c := range conjuncts {
+		corrSet := predicates.GetCorrelatedToOfPredicate(c)
+		// References the rightmost leg? → cross-leg, stays at the outer level.
+		refsRight := false
+		for ra := range rightAliases {
+			if _, ok := corrSet[values.NamedCorrelationIdentifier(ra)]; ok {
+				refsRight = true
+				break
+			}
+		}
+		// References any buried unnest's element/ordinal correlation?
+		refsUnnest := false
+		for _, u := range buried {
+			if predicateRefsCorrelation(c, unnestSourceCorrelation(u)) {
+				refsUnnest = true
+				break
+			}
+		}
+		if refsUnnest && !refsRight {
+			pushed = append(pushed, c)
+		} else {
+			residual = append(residual, c)
+		}
+	}
+	if len(pushed) == 0 {
+		return f
+	}
+
+	// Wrap join.Left in a LogicalFilter carrying the pushed conjuncts (where the
+	// unnest is the rightmost source → the direct-unnest WHERE path fires), then
+	// re-join with join.Right. The residual conjuncts stay in the outer filter.
+	innerFilter := &logical.LogicalFilter{Input: join.Left, Predicate: andOf(pushed)}
+	newJoin := &logical.LogicalJoin{
+		Left:        innerFilter,
+		Right:       join.Right,
+		Kind:        join.Kind,
+		OnText:      join.OnText,
+		OnPredicate: join.OnPredicate,
+	}
+	// When the original filter carried EXISTS, the existential markers
+	// (ExistentialValuePredicate / NOT(...)) and their subqueries MUST survive in
+	// the residual outer filter — splitNonExistsPredicates dropped the markers, so
+	// re-attach them. The EXISTS dispatch in translateFilter then runs on the
+	// restructured tree (the buried-unnest element conjuncts already pushed into the
+	// inner Explode) and threads only the existential + remaining outer conjuncts to
+	// the semi-join. RFC-142.
+	residualPreds := append([]predicates.QueryPredicate{}, residual...)
+	residualPreds = append(residualPreds, extractExistsPredicates(f.Predicate)...)
+	return &logical.LogicalFilter{
+		Input:            newJoin,
+		Predicate:        andOf(residualPreds),
+		ExistsSubqueries: f.ExistsSubqueries,
+		ScalarSubqueries: f.ScalarSubqueries,
+	}
+}
+
+// mapPredicateValues applies fn to every Value operand of a predicate tree,
+// reconstructing the predicate. Mirrors the shapes the cascades NLJ rule's
+// rebaseOuterLegRefsToMerged handles (Comparison/Value/And/Or/Not); other
+// shapes pass through unchanged. RFC-142.
+func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
+	if p == nil {
+		return p
+	}
+	switch pred := p.(type) {
+	case *predicates.ComparisonPredicate:
+		newOperand := fn(pred.Operand)
+		newCompOperand := pred.Comparison.Operand
+		if newCompOperand != nil {
+			newCompOperand = fn(newCompOperand)
+		}
+		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
+			return p
+		}
+		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
+		// preserving Escape (the LIKE escape rune) AND every other Comparison
+		// subclass field (ParameterName, the Text* tokenizer/analyzer/distance
+		// fields, the DistanceRank vector fields). A partial {Type, Operand,
+		// Escape} reconstruction would silently drop the rest. RFC-142.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
+		return &predicates.ComparisonPredicate{
+			Operand:    newOperand,
+			Comparison: cmp,
+		}
+	case *predicates.ValuePredicate:
+		newVal := fn(pred.Value)
+		if newVal == pred.Value {
+			return p
+		}
+		return predicates.NewValuePredicate(newVal)
+	case *predicates.AndPredicate:
+		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		changed := false
+		for i, s := range pred.SubPredicates {
+			subs[i] = mapPredicateValues(s, fn)
+			if subs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewAnd(subs...)
+	case *predicates.OrPredicate:
+		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
+		changed := false
+		for i, s := range pred.SubPredicates {
+			subs[i] = mapPredicateValues(s, fn)
+			if subs[i] != s {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return predicates.NewOr(subs...)
+	case *predicates.NotPredicate:
+		newChild := mapPredicateValues(pred.Child, fn)
+		if newChild == pred.Child {
+			return p
+		}
+		return predicates.NewNot(newChild)
+	default:
+		return p
+	}
+}
+
+// unnestSourceCorrelation is the correlation the unnest's WHERE references are
+// qualified by — the AS alias, else the AT alias (mirroring
+// unnestScopeSourceAdder's correlation-name choice). RFC-142.
+func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentifier {
+	corr := u.Alias
+	if corr == "" {
+		corr = u.AtAlias
+	}
+	return values.NamedCorrelationIdentifier(corr)
+}
+
 func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 	if op == nil {
 		return nil
@@ -665,7 +1676,8 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		return result
 	}
 	return expressions.NewFullUnorderedScanExpression(
-		[]string{s.Table}, values.UnknownType)
+		[]string{s.Table}, values.UnknownType,
+	)
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
@@ -679,6 +1691,36 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		return nil
 	}
 
+	// BURIED lateral-unnest element/ordinal WHERE (P1): push the
+	// unnest-element conjuncts of a non-rightmost unnest (`FROM T1, T1.arr AS V, U
+	// WHERE V > 0`) DOWN to a filter wrapping the inner join where the unnest IS the
+	// rightmost source, so the proven direct-unnest WHERE path folds them into the
+	// inner Explode (Java's `EXPLODE … | FILTER …`) instead of leaving them on the
+	// outer NestedLoopJoin (where the element reference evaluates NULL and drops
+	// every row). A no-op for non-buried / pure-cross-leg shapes. The restructured
+	// filter's residual conjuncts (cross-leg / outer-table predicates) flow through
+	// the normal path below. RFC-142.
+	//
+	// This runs BEFORE the EXISTS dispatch: when a buried-unnest
+	// element/ordinal filter is combined with EXISTS (`… WHERE V > 1 AND EXISTS
+	// (…)`), the EXISTS early-return below would otherwise route the WHOLE filter
+	// through translateJoinWithExists, appending `V > 1` to the outer NLJ where
+	// QOV(V) is unbound → every matching row silently dropped. pushBuriedUnnest
+	// PredicateDown pushes only the buried-unnest NON-EXISTS conjuncts into the inner
+	// Explode and preserves the EXISTS subqueries + existential markers in the
+	// residual outer filter, so the EXISTS dispatch then handles only the remaining
+	// existential + outer conjuncts. RFC-142.
+	pushedAllBuried := false
+	if f.Predicate != nil {
+		pushed := pushBuriedUnnestPredicateDown(f)
+		if pushed != f && pushed.Predicate == nil && len(pushed.ExistsSubqueries) == 0 {
+			// Every conjunct was pushed below the join (the buried-unnest
+			// all-element WHERE, no EXISTS) — the residual filter is empty.
+			pushedAllBuried = true
+		}
+		f = pushed
+	}
+
 	// Collect scalar subquery plans — they'll be planned independently
 	// and pre-evaluated by the executor.
 	for _, ssq := range f.ScalarSubqueries {
@@ -686,6 +1728,13 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			Alias: ssq.Alias,
 			Plan:  ssq.Plan,
 		})
+	}
+
+	// All conjuncts pushed below the join → lower the restructured join directly
+	// rather than wrapping it in a no-op [0 preds] PredicatesFilter. (Scalar
+	// subqueries were already collected above; ExistsSubqueries is empty here.)
+	if pushedAllBuried {
+		return t.translateOp(f.Input)
 	}
 
 	// EXISTS subqueries: when the filter carries existential subquery
@@ -706,7 +1755,19 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		// SelectExpression (the join) inside another (the EXISTS filter),
 		// which causes the Cascades planner to diverge. The NLJ rule
 		// handles the 2+1 quantifier shape directly.
+		//
+		// EXCEPTION — a lateral array UNNEST right child (`FROM t, t.arr AS v
+		// WHERE EXISTS (…)`): the flatten path would feed the CORRELATED Explode
+		// into implementJoinWithExistential's binary NLJ, which materializes its
+		// inner ONCE against an unbound context — the correlated Explode yields no
+		// rows and the query returns empty. The unnest MUST stay its own
+		// FlatMap-over-Explode (translateUnnestJoin) as the existential's OUTER.
+		// translateUnnestExistsFilter builds that nested shape (and folds any
+		// WHERE-on-the-unnest-column into the inner Explode). RFC-142 (P2b).
 		if join, ok := f.Input.(*logical.LogicalJoin); ok {
+			if u, isUnnest := join.Right.(*logical.LogicalUnnest); isUnnest {
+				return t.translateUnnestExistsFilter(f, join, u)
+			}
 			return t.translateJoinWithExists(join, f)
 		}
 	}
@@ -723,7 +1784,42 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			return nil
 		}
 		if sel, ok := joinExpr.(*expressions.SelectExpression); ok {
-			merged := append(sel.GetPredicates(), f.Predicate)
+			pred := f.Predicate
+			// A WHERE predicate over a lateral array unnest references the
+			// unnest's AS/AT columns by their user aliases (qualified by the
+			// unnest correlation). The inner Explode does NOT flow a row keyed by
+			// those aliases, so rewrite the references to what it actually flows:
+			//   - WITH ORDINALITY: a 2-field record keyed `_0`/`_1` → VAL becomes
+			//     ordinal-0, AT becomes ordinal-1 over the unnest QOV.
+			//   - NON-ORDINAL: a BARE SCALAR element → the AS reference collapses
+			//     to the whole QOV(unnestCorr) (the scalar itself); a FieldValue
+			//     over the scalar would read a named subfield of a scalar and
+			//     evaluate NULL, filtering every element out (the P1a bug).
+			// The NLJ rule then pushes the rewritten predicate into the inner
+			// Explode filter (Java's `EXPLODE … | FILTER …`). RFC-142.
+			//
+			// A WHERE that also references an OUTER-LEG column needs a second
+			// rebase when the unnest follows ≥2 prior sources (`FROM A, B, A.arr
+			// AS X WHERE X = A.c`). rewriteUnnestPredicate touches only the X/AT
+			// references; `A.c` stays `FieldValue{c, QOV(A)}`. But the unnest
+			// FlatMap binds the merged outer row under sourceAlias(j.Left) (the
+			// RIGHTMOST leg B), so QOV(A) is UNBOUND inside the inner Explode's
+			// PredicatesFilter → `X = NULL` drops every matching element. The
+			// merged row carries the qualified `A.c` key (mergeRows/
+			// NewAnchoredJoinRecord), so rebase any outer-leg reference (any
+			// outerBoundAliases(j.Left) leg, e.g. A) to that key off the merged
+			// QOV — the SAME outer-leg-to-merged rebase the EXISTS path
+			// (rebaseUnnestOuterLegPredicate) and the real-JOIN+EXISTS path
+			// (rebaseOuterLegRefsToMerged) perform. A single outer scan
+			// (`FROM t, t.arr`) flows under segment-0's own alias, so its leg is
+			// the merged corr itself and the rebase is a no-op. RFC-142.
+			if u, ok := join.Right.(*logical.LogicalUnnest); ok {
+				pred = rewriteUnnestPredicate(pred, u)
+				mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
+				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
+				pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
+			}
+			merged := append(sel.GetPredicates(), pred)
 			return expressions.NewSelectExpressionWithJoinType(
 				sel.GetResultValue(),
 				sel.GetQuantifiers(),
@@ -755,6 +1851,190 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		preds,
 		t.namedQuantifier(sourceAlias(f.Input), innerRef),
 	)
+}
+
+// translateUnnestExistsFilter composes a lateral array UNNEST in the FROM list
+// with a WHERE EXISTS (`SELECT v FROM t, t.arr AS v WHERE [v > 100 AND] EXISTS
+// (…)`). The unnest stays its OWN FlatMap-over-Explode (it CANNOT be flattened
+// into implementJoinWithExistential's binary NLJ — a correlated Explode in a
+// plain NLJ materializes its inner once against an unbound context and yields no
+// rows). The composition is therefore NESTED:
+//
+//		FlatMap(outer = <unnest FlatMap, WHERE-on-element folded into the Explode>,
+//		        inner = FirstOrDefault(EXISTS subplan) | residual existential filter)
+//
+//	  - The unnest leg lowers via translateUnnestJoin (the SAME path the non-EXISTS
+//	    unnest uses — no duplicated lowering). A WHERE that references the unnest's
+//	    AS/AT column is rewritten (rewriteUnnestPredicate) and MERGED into the
+//	    unnest SelectExpression — IDENTICAL to translateFilter's non-EXISTS
+//	    unnest+WHERE merge — so the NLJ rule pushes it into the inner Explode filter
+//	    (Java's `EXPLODE … | FILTER …`). Without the fold the element predicate
+//	    would land on the OUTER scan, where the unnest column does not exist
+//	    (silently dropping every row).
+//	  - The existential semi-join wraps that unnest reference via the shared
+//	    buildExistentialSelect. The non-EXISTS predicate is already folded into the
+//	    unnest ref, so the existential filter passed down carries ONLY the EXISTS
+//	    subqueries + their correlation predicates (Predicate cleared) — never
+//	    re-applying the element filter at the wrong (outer) level.
+//
+// RFC-142 (P2b).
+func (t *cascadesTranslator) translateUnnestExistsFilter(
+	f *logical.LogicalFilter,
+	join *logical.LogicalJoin,
+	u *logical.LogicalUnnest,
+) expressions.RelationalExpression {
+	// Lower the unnest leg (validates the array field; records a faithful
+	// diagnostic + returns nil for an invalid unnest, e.g. AT-on-a-non-array).
+	unnestExpr := t.translateUnnestJoin(join, u)
+	if unnestExpr == nil {
+		return nil
+	}
+
+	// Fold the NON-EXISTS WHERE predicates into the unnest SelectExpression,
+	// rewriting unnest-column references to what the inner Explode flows — the
+	// IDENTICAL merge translateFilter performs for a non-EXISTS unnest+WHERE. Only
+	// the non-EXISTS parts (splitNonExistsPredicates) are merged here; the EXISTS
+	// predicate stays out of the unnest select (it references the existential alias,
+	// which the unnest select does not bind) and is threaded by the existential
+	// select below.
+	nonExists := splitNonExistsPredicates(f.Predicate)
+	if len(nonExists) > 0 {
+		sel, ok := unnestExpr.(*expressions.SelectExpression)
+		if !ok {
+			return nil
+		}
+		merged := append([]predicates.QueryPredicate{}, sel.GetPredicates()...)
+		// Same multi-source outer-leg rebase translateFilter applies: a
+		// non-EXISTS WHERE on an outer-leg column of a ≥2-prior-source unnest
+		// (`FROM A, B, A.arr AS X WHERE X = A.c [AND EXISTS …]`) references
+		// QOV(A), which the inner Explode does not bind — rebase it to the
+		// qualified `A.c` key off the merged outer QOV (sourceAlias(join.Left)).
+		// RFC-142.
+		mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
+		outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
+		for _, p := range nonExists {
+			rebased := rebaseUnnestOuterLegPredicate(rewriteUnnestPredicate(p, u), outerLegs, mergedCorr)
+			merged = append(merged, rebased)
+		}
+		unnestExpr = expressions.NewSelectExpressionWithJoinType(
+			sel.GetResultValue(),
+			sel.GetQuantifiers(),
+			merged,
+			sel.GetSourceAliases(),
+			sel.GetJoinType(),
+		)
+	}
+
+	innerRef := expressions.InitialOf(unnestExpr)
+
+	// P2a (silent-wrong): an EXISTS subquery whose residual
+	// correlation references the ORIGINAL OUTER TABLE (`EXISTS (SELECT 1 FROM U
+	// WHERE U.V > T1.ID)` — the residual `T1.ID`) — NOT the unnest element/ordinal.
+	// buildCorrelatedExists resolved `T1.ID` against the outer scope's REAL table
+	// source T1, so its JoinPredicate carries FieldValue{ID, Child:QOV(T1)}. But the
+	// existential's outer here is the UNNEST FlatMap, whose merged output row is
+	// bound under sourceAlias(join) (= the unnest's AS/AT alias VAL), NOT under T1.
+	// So at execution the residual's QOV(T1) is unbound → `U.V > NULL` is false for
+	// every row → ALL rows silently dropped. The unnest FlatMap output anchors the
+	// outer leg's columns under BOTH bare (ID) and qualified (T1.ID) keys
+	// (buildUnnestResultValue → NewAnchoredJoinRecord), exactly as a non-unnest
+	// `WHERE EXISTS` correlates to its FROM source. Rebase every EXISTS subquery's
+	// JoinPredicate so a reference to an outer-table leg alias (outerBoundAliases of
+	// join.Left, e.g. T1) reads the qualified T1.ID key off the unnest FlatMap's
+	// merged binding (QOV(unnestAlias)) — the same outer-leg-to-merged rebase the
+	// real-JOIN+EXISTS path performs (rebaseOuterLegRefsToMerged). A residual
+	// referencing the unnest ELEMENT (VAL) is bound by the FlatMap already (the
+	// P2c path) and is left untouched: it is NOT an outer-table-leg alias.
+	// RFC-142.
+	mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join))
+	outerLegs := outerBoundAliases(join.Left)
+	existsSubqueries := f.ExistsSubqueries
+	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
+		existsSubqueries = make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
+		for i, esq := range f.ExistsSubqueries {
+			esq.JoinPredicate = rebaseUnnestOuterLegPredicate(esq.JoinPredicate, outerLegs, mergedCorr)
+			existsSubqueries[i] = esq
+		}
+	}
+
+	// The unnest ref now owns the WHERE-on-element; the existential select must
+	// thread ONLY the EXISTS predicate(s) — the ExistentialValuePredicate /
+	// NOT(ExistentialValuePredicate) marker that drives the residual semi-join
+	// filter (QOV IS NOT NULL / IS NULL) in the NLJ rule. The NON-EXISTS parts are
+	// already folded into the unnest ref above; re-applying them here (above the
+	// FlatMap) would push the element filter onto the outer scan where the unnest
+	// column does not exist. Carry ONLY the existential markers in the synthesized
+	// filter's Predicate. The existential's outer correlation is sourceAlias(join)
+	// = the unnest's AS/AT alias, which is what the unnest SelectExpression flows up.
+	existsPreds := extractExistsPredicates(f.Predicate)
+	existsOnly := &logical.LogicalFilter{
+		Input:            join,
+		Predicate:        andOf(existsPreds),
+		ExistsSubqueries: existsSubqueries,
+		ScalarSubqueries: f.ScalarSubqueries,
+	}
+	return t.buildExistentialSelect(existsOnly, innerRef, nil)
+}
+
+// rebaseUnnestOuterLegPredicate rewrites references to an outer-table leg alias
+// (outerLegs — the FROM-source aliases bound under the unnest's outer FlatMap,
+// e.g. T1) so they resolve against the unnest FlatMap's MERGED output row bound
+// under mergedCorr (the unnest's AS/AT alias). A leg reference
+// `FieldValue{Field:"ID", Child:QOV("T1")}` becomes
+// `FieldValue{Field:"T1.ID", Child:QOV(mergedCorr)}` — the qualified "LEG.COL"
+// key the unnest FlatMap output carries (NewAnchoredJoinRecord). This is the
+// query-package twin of the cascades NLJ rule's rebaseOuterLegRefsToMerged (the
+// real-JOIN+EXISTS path); both turn an outer-leg-qualified residual into a read
+// off the existential outer's merged binding. References to the unnest element
+// (the merged corr itself) or to the existential inner pass through untouched.
+// RFC-142.
+func rebaseUnnestOuterLegPredicate(
+	p predicates.QueryPredicate,
+	outerLegs map[string]struct{},
+	mergedCorr values.CorrelationIdentifier,
+) predicates.QueryPredicate {
+	if p == nil || len(outerLegs) == 0 {
+		return p
+	}
+	mergedQOV := values.NewQuantifiedObjectValue(mergedCorr)
+	rewrite := func(v values.Value) values.Value {
+		if v == nil {
+			return v
+		}
+		return values.Replace(v, func(node values.Value) values.Value {
+			fv, ok := node.(*values.FieldValue)
+			if !ok || fv.Child == nil {
+				return node
+			}
+			qov, ok := fv.Child.(*values.QuantifiedObjectValue)
+			if !ok {
+				return node
+			}
+			leg := strings.ToUpper(qov.Correlation.Name())
+			if _, isOuterLeg := outerLegs[leg]; !isOuterLeg {
+				return node
+			}
+			// Read the qualified "LEG.COL" key off the merged unnest output. The
+			// field already carries a bare column name here (resolved against the
+			// outer table source), so prefix it with the leg alias.
+			return values.NewFieldValue(mergedQOV, leg+"."+strings.ToUpper(fv.Field), fv.Typ)
+		})
+	}
+	return mapPredicateValues(p, rewrite)
+}
+
+// andOf combines predicates into a single QueryPredicate: nil for an empty list,
+// the lone predicate for one, an AndPredicate for several. Used to rebuild a
+// filter's predicate from a filtered subset (e.g. only the EXISTS markers).
+func andOf(preds []predicates.QueryPredicate) predicates.QueryPredicate {
+	switch len(preds) {
+	case 0:
+		return nil
+	case 1:
+		return preds[0]
+	default:
+		return predicates.NewAnd(preds...)
+	}
 }
 
 // buildExistentialSelect builds the SelectExpression for a LogicalFilter that
@@ -866,9 +2146,11 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	rightAlias := sourceAlias(j.Right)
 
 	leftQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+		values.NamedCorrelationIdentifier(leftAlias), leftRef,
+	)
 	rightQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(rightAlias), rightRef)
+		values.NamedCorrelationIdentifier(rightAlias), rightRef,
+	)
 	quantifiers := []expressions.Quantifier{leftQ, rightQ}
 
 	var allPreds []predicates.QueryPredicate
@@ -932,8 +2214,8 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// f.ScalarSubqueries would otherwise be registered — so a scalar subquery in
 	// the WHERE of a projected-EXISTS query (`SELECT id, EXISTS(...) FROM t1 WHERE
 	// price > (SELECT MAX(x) FROM t2)`) would never be pre-evaluated, leaving its
-	// value unbound (NULL) and the comparison silently dropped (RFC-141 R4
-	// round-11, the projected variant). Register them here, exactly as
+	// value unbound (NULL) and the comparison silently dropped (RFC-141 R4,
+	// the projected variant). Register them here, exactly as
 	// translateFilter does, so the executor pre-evaluates and binds them. A
 	// CORRELATED scalar subquery in the WHERE is not collected here (Java's
 	// grammar cannot place one there either); only the uncorrelated list is
@@ -998,7 +2280,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// cannot be carried through the fold: collectExtraSortColumns can only append NAMED
 	// columns, so the sort re-applied above the folded FlatMap would read a record that lacks
 	// the expression's input columns and silently mis-order (e.g. `... ORDER BY col1 + 1`
-	// where `col1 + 1` is not selected — codex). Bail the fold (→ the projected-EXISTS guard
+	// where `col1 + 1` is not selected). Bail the fold (→ the projected-EXISTS guard
 	// rejects the query cleanly with ErrCodeUnsupportedQuery) rather than return wrong rows. A
 	// SELECTED computed expression pulls up to its own output field and remains foldable.
 	for _, op := range chain {
@@ -1073,7 +2355,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 	// Java's final pull-up: when extra ORDER BY columns were appended, re-project
 	// only the original output so the sort columns don't leak into the result.
 	//
-	// RFC-141 round-8 ROOT FIX (P2): the cleanup MUST reuse the ORIGINAL per-column
+	// RFC-141 ROOT FIX (P2): the cleanup MUST reuse the ORIGINAL per-column
 	// alias provenance — leaving an unaliased column UNALIASED — so adding a hidden
 	// sort column does not change any visible column's public label. The earlier
 	// code force-aliased EVERY field to its datum Name (projAliases[i] = name),
@@ -1106,7 +2388,8 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			}
 		}
 		expr = expressions.NewLogicalProjectionExpressionWithAliases(
-			projVals, projAliases, expressions.ForEachQuantifier(expressions.InitialOf(expr)))
+			projVals, projAliases, expressions.ForEachQuantifier(expressions.InitialOf(expr)),
+		)
 	}
 	return expr
 }
@@ -1169,7 +2452,7 @@ func (s sortSource) sortKeyName(k logical.SortKey) string {
 // expression. Unlike sortKeyName it does NOT strip the qualifier, so callers can
 // (a) build the source-column VALUE the key references for value-based output
 // membership, and (b) name an appended hidden field by the qualified provenance
-// (collision-free with an output alias — RFC-141 R4 round-10 P2b).
+// (collision-free with an output alias — RFC-141 R4 P2b).
 func sortKeyFieldRef(k logical.SortKey) string {
 	if fv, ok := k.Value.(*values.FieldValue); ok {
 		if fv.Child == nil {
@@ -1211,7 +2494,7 @@ func sortKeyFieldRef(k logical.SortKey) string {
 // its bare name matches an output field NAME. The bare-name test conflated a
 // qualified source reference (`t1.id`) with an unrelated output alias that shares
 // the bare name (`col1 AS id` → output column named `ID`), so the sort ordered by
-// the wrong column (RFC-141 R4 round-10 P2b). Returns nil for a computed key.
+// the wrong column (RFC-141 R4 P2b). Returns nil for a computed key.
 func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 	field := sortKeyFieldRef(k)
 	if field == "" {
@@ -1223,7 +2506,8 @@ func (s sortSource) sortKeySourceValue(k logical.SortKey) values.Value {
 				if leg != "" && strings.ToUpper(leg) == qual {
 					return values.NewFieldValue(
 						values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qual)),
-						col, values.UnknownType)
+						col, values.UnknownType,
+					)
 				}
 			}
 		}
@@ -1276,7 +2560,7 @@ func (s sortSource) resolveKeyName(field string) string {
 // projection: a collision-free NAME (the qualified field reference) and the
 // source-column VALUE it reads (bare for single-table, qualified leg ref for a
 // JOIN). The qualified name guarantees the hidden column never shadows an output
-// alias that happens to share the bare column name (RFC-141 R4 round-10 P2b).
+// alias that happens to share the bare column name (RFC-141 R4 P2b).
 type extraSortCol struct {
 	name string
 	val  values.Value
@@ -1405,7 +2689,7 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 //     ProjectedValues[X]) — pulls up to the output field whose value it IS (`X`),
 //     NOT to the output column that merely shares the underlying name (`ID`,
 //     which here holds col1). Running this match FIRST for every key shape is the
-//     fix for the round-6 P2a divergence: previously the FieldValue case returned
+//     fix for the P2a divergence: previously the FieldValue case returned
 //     before trying it, so an alias whose value was a simple column read the
 //     wrong output field.
 //
@@ -1421,7 +2705,7 @@ func (t *cascadesTranslator) applySortOverRef(s *logical.LogicalSort, ref *expre
 //     id`) pulls up to its hidden field (named by the QUALIFIED ref, collision-
 //     free), and a SELECTED source column (`SELECT t1.id … ORDER BY t1.id`) pulls
 //     up to that output field. Matching by VALUE — not by stripping the qualifier
-//     to a bare name and searching output NAMES — is the round-10 P2b fix: the
+//     to a bare name and searching output NAMES — is the P2b fix: the
 //     bare-name search resolved a qualified source key to an unrelated output
 //     alias that merely shared the bare name (sorting by the wrong column).
 //
@@ -1823,7 +3107,8 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 		return nil
 	}
 	return expressions.NewLogicalDistinctExpression(
-		t.namedQuantifier(sourceAlias(d.Input), innerRef))
+		t.namedQuantifier(sourceAlias(d.Input), innerRef),
+	)
 }
 
 // Go extension: Java's fdb-relational 4.11.1.0 does not support GROUP BY;
@@ -1987,6 +3272,13 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// semantics. This matches the standard approach — Java's Cascades
 	// doesn't distinguish RIGHT from LEFT either; the planner
 	// normalises RIGHT → LEFT with swapped children.
+	// Lateral array UNNEST (`FROM t, t.arr AS x [AT ord]`): the right child is
+	// a LogicalUnnest. Lower it to a correlated FlatMap-over-Explode rather
+	// than a generic join (RFC-142).
+	if u, ok := j.Right.(*logical.LogicalUnnest); ok {
+		return t.translateUnnestJoin(j, u)
+	}
+
 	left := j.Left
 	right := j.Right
 	kind := j.Kind
@@ -2009,9 +3301,11 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// Use named quantifiers so aliases match the predicate QOV
 	// correlations created by the SQL resolver.
 	leftQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+		values.NamedCorrelationIdentifier(leftAlias), leftRef,
+	)
 	rightQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(rightAlias), rightRef)
+		values.NamedCorrelationIdentifier(rightAlias), rightRef,
+	)
 
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
@@ -2099,9 +3393,11 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	rightAlias := sourceAlias(right)
 
 	leftQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(leftAlias), leftRef)
+		values.NamedCorrelationIdentifier(leftAlias), leftRef,
+	)
 	rightQ := expressions.NamedForEachQuantifier(
-		values.NamedCorrelationIdentifier(rightAlias), rightRef)
+		values.NamedCorrelationIdentifier(rightAlias), rightRef,
+	)
 	quantifiers := []expressions.Quantifier{leftQ, rightQ}
 
 	// Combine join ON predicates + filter WHERE predicates.
@@ -2213,7 +3509,8 @@ func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryP
 func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Reference) expressions.Quantifier {
 	if alias != "" {
 		return expressions.NamedForEachQuantifier(
-			values.NamedCorrelationIdentifier(alias), ref)
+			values.NamedCorrelationIdentifier(alias), ref,
+		)
 	}
 	return expressions.ForEachQuantifier(ref)
 }
@@ -2327,6 +3624,14 @@ func sourceAlias(op logical.LogicalOperator) string {
 				return strings.ToUpper(o.Alias)
 			}
 			return strings.ToUpper(o.Table)
+		case *logical.LogicalUnnest:
+			if o.Alias != "" {
+				return strings.ToUpper(o.Alias)
+			}
+			if o.AtAlias != "" {
+				return strings.ToUpper(o.AtAlias)
+			}
+			return strings.ToUpper(strings.Join(o.Segments, "."))
 		case *logical.LogicalJoin:
 			return sourceAlias(o.Right)
 		case *logical.LogicalCTE:
@@ -2443,7 +3748,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Wrap seed in TempTableInsert.
 	seedRef := expressions.InitialOf(seedExpr)
 	seedInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(seedRef), insertAlias, false)
+		expressions.ForEachQuantifier(seedRef), insertAlias, false,
+	)
 
 	// Translate the recursive leg with the CTE self-reference resolving
 	// to a TempTableScanExpression(scanAlias). The self-reference temp table
@@ -2541,7 +3847,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Wrap recursive leg in TempTableInsert.
 	recursiveRef := expressions.InitialOf(recursiveExpr)
 	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveRef), insertAlias, false)
+		expressions.ForEachQuantifier(recursiveRef), insertAlias, false,
+	)
 
 	// Build RecursiveUnionExpression.
 	seedInsertRef := expressions.InitialOf(seedInsert)
