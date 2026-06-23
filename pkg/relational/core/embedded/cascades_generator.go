@@ -167,12 +167,17 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 		return g.planSelectExplainOnly(sel, q)
 	}
 
-	// INFORMATION_SCHEMA queries go through the connection's execSelect
-	// path which handles catalog-based system table queries.
+	// INFORMATION_SCHEMA queries go through a minimal, executor-free
+	// system-table handler that serves the simple
+	// `SELECT [*|cols] FROM INFORMATION_SCHEMA.X [WHERE] [ORDER BY] [LIMIT]`
+	// shape directly off the catalog (no legacy embedded interpreter).
+	// INFORMATION_SCHEMA is a Go-only extension Java rejects entirely, so this
+	// path has no cross-engine reference; RFC-145 Phase 1 detached it from the
+	// executor island so Phase 2 can delete the island.
 	if referencesInformationSchema(q) {
 		return &query.PlanFunc{
 			ExecFn: func(execCtx context.Context) (query.Result, error) {
-				rows, selErr := c.execSelect(execCtx, sel)
+				rows, selErr := c.execSystemTableQuery(execCtx, sel, q)
 				if selErr != nil {
 					return query.Result{}, selErr
 				}
@@ -212,12 +217,14 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementContext, q antlrgen.IQueryContext) (query.Plan, error) {
 	c := g.c
 	return &query.PlanFunc{
-		ExecFn: func(execCtx context.Context) (query.Result, error) {
-			rows, selErr := c.execSelect(execCtx, sel)
-			if selErr != nil {
-				return query.Result{}, selErr
-			}
-			return query.Result{Rows: rows}, nil
+		// Explain-only mode renders the Cascades logical plan via ExplainFn and
+		// is never executed: the plan-equivalence harness (plandiff) calls only
+		// Plan().Explain(). The ExecFn is therefore dead — it formerly re-entered
+		// the legacy embedded interpreter (execSelect). RFC-145 Phase 1 stubs it
+		// so the executor island can be deleted in Phase 2.
+		ExecFn: func(_ context.Context) (query.Result, error) {
+			return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
+				"explain-only generator does not execute queries")
 		},
 		UpdateFn: func() bool { return false },
 		ExplainFn: func() string {

@@ -109,19 +109,15 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext, allowBareField bool) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
-		}
-		// Push outer-row scope so a correlated inner reference like
-		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
-		// Qualifier taken from the proto descriptor name (single-source
-		// FROM without an explicit AS alias — the common case).
-		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
-		if subErr != nil {
-			return triFalse, subErr
-		}
-		return triFromBool(len(subRows) > 0), nil
+		// EXISTS is not supported in the predicate contexts that route through
+		// this proto-path evaluator (INSERT-VALUES constant folding, system-
+		// table WHERE filters). Severed to detach the legacy embedded
+		// interpreter (RFC-145 Phase 1) — Java's RelationalParser.g4 has no
+		// EXISTS atom in these contexts and INFORMATION_SCHEMA is a Go-only
+		// extension, so this arm is a Go-only divergence with no cross-engine
+		// reference. The real EXISTS query path is Cascades.
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"EXISTS is not supported in this context")
 
 	case *antlrgen.LogicalExpressionContext:
 		// Operands of boolean operators are value-context — Java accepts

@@ -58,17 +58,14 @@ func evalHaving(ctx context.Context, conn *EmbeddedConnection, row map[string]dr
 // evalHavingTri is the Kleene three-valued implementation for HAVING.
 // Supports comparisons, AND/OR/NOT, and aggregate function references.
 func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (triBool, error) {
-	// EXISTS subquery
-	if exists, ok := expr.(*antlrgen.ExistsExpressionAtomContext); ok {
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
-		}
-		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, exists.Query().QueryExpressionBody())
-		if subErr != nil {
-			return triFalse, subErr
-		}
-		return triFromBool(len(subRows) > 0), nil
+	// EXISTS subquery — not supported in the HAVING contexts that route
+	// through this map-path evaluator. Severed to detach the legacy embedded
+	// interpreter (RFC-145 Phase 1); the only non-island caller is the
+	// INFORMATION_SCHEMA WHERE filter (a Go-only extension), which never had a
+	// working cross-engine EXISTS shape. The real EXISTS query path is Cascades.
+	if _, ok := expr.(*antlrgen.ExistsExpressionAtomContext); ok {
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"EXISTS is not supported in this context")
 	}
 	// Handle logical expressions: AND / OR / XOR (+ symbolic forms).
 	if le, ok := expr.(*antlrgen.LogicalExpressionContext); ok {
@@ -225,10 +222,15 @@ func evalHavingTri(ctx context.Context, conn *EmbeddedConnection, row map[string
 			}
 			return functions.ApplyBitOp(left, right, classifyBitOp(a.BitOperator()))
 		case *antlrgen.SubqueryExpressionAtomContext:
-			// HAVING `agg <op> (SELECT ... )` — uncorrelated subquery
-			// pre-evaluated before the outer query started. Look up the
-			// cached scalar.
-			return evalScalarSubquery(ctx, conn, a.Query())
+			// HAVING `agg <op> (SELECT ... )` — scalar subqueries are not
+			// supported in the HAVING contexts that route through this
+			// map-path resolver. Severed to detach the legacy embedded
+			// interpreter (RFC-145 Phase 1); the only non-island caller is the
+			// INFORMATION_SCHEMA WHERE filter (a Go-only extension), which never
+			// had a working cross-engine subquery shape. The real subquery
+			// query path is Cascades.
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"subquery is not supported in this context")
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported HAVING atom %T", atom)
 		}
@@ -495,15 +497,14 @@ func evalPredicateOnMapExpr(ctx context.Context, conn *EmbeddedConnection, row m
 func evalPredicateOnMapExprTri(ctx context.Context, conn *EmbeddedConnection, row map[string]driver.Value, expr antlrgen.IExpressionContext) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
-		}
-		defer conn.pushOuterScope(outerScopeFromMapRow(row))()
-		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
-		if subErr != nil {
-			return triFalse, subErr
-		}
-		return triFromBool(len(subRows) > 0), nil
+		// EXISTS is not supported in the map-path WHERE contexts that route
+		// through this evaluator. Severed to detach the legacy embedded
+		// interpreter (RFC-145 Phase 1); the only non-island caller is the
+		// INFORMATION_SCHEMA WHERE filter (system_tables.go filterSysRows, a
+		// Go-only extension), which never had a working cross-engine EXISTS
+		// shape. The real EXISTS query path is Cascades.
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"EXISTS is not supported in this context")
 	case *antlrgen.LogicalExpressionContext:
 		left, err := evalPredicateOnMapExprTri(ctx, conn, row, e.Expression(0))
 		if err != nil {

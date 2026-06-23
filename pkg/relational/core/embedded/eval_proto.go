@@ -277,7 +277,14 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 		}
 		return false, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported comparison operator %q", op)
 	case *antlrgen.SubqueryExpressionAtomContext:
-		return evalScalarSubquery(ctx, conn, a.Query())
+		// Scalar subqueries are not supported in the constant-expression
+		// contexts that route through this evaluator (INSERT-VALUES folding).
+		// Java's RelationalParser.g4 has no scalar-subquery expression atom, so
+		// `(SELECT …)` does not parse there at all; this arm is a Go-only
+		// divergence severed to detach the legacy embedded interpreter
+		// (RFC-145 Phase 1).
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"subquery is not supported in this context")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom %T", atom)
 	}

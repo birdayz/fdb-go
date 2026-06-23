@@ -218,7 +218,13 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		}
 		return evalExprOnMap(ctx, conn, row, inner)
 	case *antlrgen.SubqueryExpressionAtomContext:
-		return evalScalarSubquery(ctx, conn, a.Query())
+		// Scalar subqueries are not supported in the map-path contexts that
+		// route through this evaluator (system-table WHERE filters). Severed to
+		// detach the legacy embedded interpreter (RFC-145 Phase 1) — these
+		// callers (INFORMATION_SCHEMA, a Go-only extension) never had a working
+		// cross-engine subquery shape. The real subquery query path is Cascades.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"subquery is not supported in this context")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression atom type %T in map eval", atom)
 	}
@@ -273,11 +279,13 @@ func evalExprOnMap(ctx context.Context, conn *EmbeddedConnection, row map[string
 			return nil, nil
 		}
 	case *antlrgen.ExistsExpressionAtomContext:
-		ok, err := evalPredicateOnMapExpr(ctx, conn, row, expr)
-		if err != nil {
-			return nil, err
-		}
-		return ok, nil
+		// EXISTS is not supported in the map-path value contexts that route
+		// through this evaluator (system-table WHERE filters). Severed to
+		// detach the legacy embedded interpreter (RFC-145 Phase 1) — these
+		// callers (INFORMATION_SCHEMA, a Go-only extension) never had a working
+		// cross-engine EXISTS shape. The real EXISTS query path is Cascades.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"EXISTS is not supported in this context")
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported expression type %T in map eval", expr)
 	}
