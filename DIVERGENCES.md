@@ -6,14 +6,8 @@ fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
 candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
 are execution-layer, wire-format, or intentional architectural choices.
 
-> **4.12.11.0 behavioural rebaseline in progress (RFC-135 §4 R8).** The version label above tracks
-> the `MODULE.bazel` pin (now 4.12.11.0). The *behavioural* divergence and Go-only-extension entries
-> below were last validated against the prior Java **4.11** target; 4.12 lifts several limitations (LEFT/RIGHT
-> OUTER JOIN, EXISTS in the projection list, `AT ordinality` array unnest, `CARDINALITY()`), so a
-> handful of entries that today call a feature a "Go extension Java rejects" may reclassify to
-> "Java-now-supported." Each is re-validated against a live 4.12.11.0 conformance run before being
-> treated as authoritative — tracked as RFC-135 §4 items R3–R8. Wire/format divergences are
-> unaffected (the storage format is unchanged at `FormatVersion` 14).
+Validated against a live Java **4.12.11.0** conformance run (the cross-engine corpus runs against
+live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 
 ## Intentional Architectural Decisions (no functional difference)
 
@@ -24,7 +18,7 @@ are execution-layer, wire-format, or intentional architectural choices.
 
 Go needs ~25 extra rewrite rules (Push/Pull/Merge per operator). Same functional behavior. Go's decomposition makes each operator's semantics explicit and simplifies rule correctness verification.
 
-### NormalizePredicatesRule — RESOLVED (swingshift-96)
+### NormalizePredicatesRule — RESOLVED
 
 **Java:** Fires on all SelectExpressions including those with Existential quantifiers.
 **Go:** Now fires on all SelectExpressions (matching Java). Hash-based dedup prevents the infinite normalization loop that previously required an existential guard.
@@ -63,19 +57,19 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 ### FlatMap covers all join types; NLJ is fallback for non-indexed joins
 
 **Java:** `RecordQueryFlatMapPlan` for ALL joins. No separate NLJ plan exists. The `selectExpression.getResultValue()` is passed directly through to the FlatMap plan (translator owns the resultValue).
-**Go (nightshift-97):** Same architecture — translator creates `JoinMergeResultValue`, rule passes `sel.GetResultValue()` through to the FlatMap plan. `RecordQueryFlatMapPlan` fires for ALL join types (INNER, CROSS, LEFT OUTER, EXISTS, NOT EXISTS) when the equi-join predicate matches the inner table's PK or a secondary index. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface + `existsMode`/`notExistsMode` flags. `RecordQueryNestedLoopJoinPlan` remains as fallback for non-indexed joins (no PK/index match for the predicate).
+**Go:** Same architecture — translator creates `JoinMergeResultValue`, rule passes `sel.GetResultValue()` through to the FlatMap plan. `RecordQueryFlatMapPlan` fires for ALL join types (INNER, CROSS, LEFT OUTER, EXISTS, NOT EXISTS) when the equi-join predicate matches the inner table's PK or a secondary index. Uses correlated scan + `JoinMergeResultValue` + `CorrelationBinder` interface + `existsMode`/`notExistsMode` flags. `RecordQueryNestedLoopJoinPlan` remains as fallback for non-indexed joins (no PK/index match for the predicate).
 
-**Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate). **NLJ is guarded against ExplodeExpression quantifiers** (nightshift-97 fix) — IN-list decomposition uses Explode, and NLJ can't handle scalar Explode outer datums with map inner datums. The guard forces IN-list patterns to InJoinRule or filter+scan fallback.
+**Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate). **NLJ is guarded against ExplodeExpression quantifiers** — IN-list decomposition uses Explode, and NLJ can't handle scalar Explode outer datums with map inner datums. The guard forces IN-list patterns to InJoinRule or filter+scan fallback.
 
 **Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
 
 **JoinMergeResultValue vs RecordConstructorValue:** Go uses `JoinMergeResultValue` (spreads both correlation bindings into a flat map at eval time). Java uses `RecordConstructorValue` with per-column `FieldValue` children. Functionally equivalent — both produce a map with qualified keys from both sides. The difference is WHEN columns are enumerated: Java at plan time (has schema metadata in the relational layer), Go at eval time (translator doesn't carry schema metadata). To close: pass `RecordMetaData` to the translator so it can produce field-level RecordConstructorValue.
 
-### Reference: finalMembers partially aligned (dayshift-101)
+### Reference: finalMembers partially aligned
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
 
-**Go (dayshift-101):** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `advancePlannerStage` NOT ported (Go's PLANNING phase relies on EXPLORE-phase physical wrappers in inner References).
+**Go:** Added `finalMembers` to `Reference`. Implementation rules (`InsertFinal`) and data access generation insert into `finalMembers`. `computeRefPlanProperties` and `reoptimizeRecursive` prefer `finalMembers` when non-empty. `advancePlannerStage` NOT ported (Go's PLANNING phase relies on EXPLORE-phase physical wrappers in inner References).
 
 **Impact:** FDB integration tests pass without `promoteInJoinWinners`/`promoteByDataAccessCost` — `finalMembers` + real statistics is sufficient. Promotion hacks remain for unit tests without statistics.
 
@@ -134,7 +128,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
 | 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
 
-Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited dayshift-101: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
+Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
 
 ### Cost Model: RewritingCostModelLess
 
@@ -265,11 +259,20 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 |---|---|---|
 | Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
 | Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
-| PK literal-eq AND join predicate | Applies both predicates correctly | Drops one predicate, over-counts |
-| 3-way join shared driver key | Returns correct rows | Returns cross product |
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
-| `WHERE TRUE AND val > 5` | Succeeds correctly | `VerifyException` |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
+
+4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
+equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
+shared driver key (`three_way_join_shared_driver`), both fixed by 4.12's "planner no longer drops
+ANDed predicates" change; and `WHERE TRUE AND val > 5`, now planned by 4.12 (boolean literals in
+WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FALSE`). The
+boolean-literal WHERE flip also means `bare_bool_where_rejected` is now a Go-side gap, not a Java
+bug: Java 4.12 plans it and Go rejects it (tracked as a Go capability gap in the corpus), so it is
+not listed here. The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
+fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
+4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
+side per the corpus's omit comment.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 

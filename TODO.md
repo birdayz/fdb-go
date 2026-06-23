@@ -660,6 +660,30 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8)
+
+`pkg/relational/core/embedded` still contains a complete hand-rolled SQL interpreter — `execSelect` →
+`execSelectQuery` → `execSelectQueryFull` → `execSelectJoin` / `aggregateMapRows` / `cte_scan` /
+`execUnion` (~3k+ lines across `select_query_full.go`, `join.go`, `aggregate.go`, `cte_scan.go`,
+`union.go`, …) — that duplicates Cascades' WHERE/GROUP BY/HAVING/join/CTE/UNION/aggregate execution. This
+directly violates CLAUDE.md "No parallel pipelines: Go has ONE query path (Cascades)."
+
+**Current reachability (verified):** `connection.QueryContext` routes EVERY real `SELECT` through
+`newCascadesGenerator(c).Plan` → `planSelectCascades` (`cascades_generator.go:206`). The interpreter is
+reached only via two fallbacks in `planSelect`: (a) `referencesInformationSchema(q)` → `execSelect`
+(`:172`) — INFORMATION_SCHEMA is itself a **Go-only extension Java rejects** (`DIVERGENCES.md`), so there
+is no cross-engine reference for that path; and (b) `planSelectExplainOnly` → `execSelect` (`:216`) —
+EXPLAIN rendering with no FDB. So the interpreter is **legacy/dead for real data queries** but still
+compiled, still maintained, and ROTS: e.g. `aggregateMapRows`'s empty-implicit-group-under-HAVING still
+mirrors the OLD Java 4.11 behaviour (returns 0 rows) while the Cascades path was fixed to 4.12
+(agg_empty_count_having_passes). That rot is invisible because no real query exercises it.
+
+**Fix:** route INFORMATION_SCHEMA system-table queries through Cascades (or a thin Cascades-backed
+system-table scan), make explain-only rendering use the Cascades logical plan it already builds, then
+DELETE the interpreter. This removes a large divergence surface + maintenance burden and forces any
+INFORMATION_SCHEMA gap to be fixed in Cascades. Big, separate effort — query-engine-gated (Graefe +
+Torvalds). Do NOT "keep the two aggregate executors in sync" — that is the anti-pattern; remove one.
+
 ### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23)
 
 A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:397`) lifts any non-`BooleanValue`/non-literal boolean expression to a `ValuePredicate(value, EQUALS TRUE)`. So Go's gap is in the single-table-WHERE PLANNER path (the implement/data-access leg), NOT the parser — a top-level `ValuePredicate(FieldValue)` filter isn't getting implemented as a `RecordQueryPredicatesFilterPlan`. Orthogonal to RFC-144's outer-join scope; pre-existing. Fix: make the single-table SELECT implement path (`ImplementSimpleSelectRule` / data-access) implement a top-level non-comparison `ValuePredicate` filter the same way the join ON residual already does. Pin with the `WHERE flag` case currently documented-as-unsupported in `outer_join_parity_fdb_test.go` (`TestFDB_OuterParity_BooleanWhere`).

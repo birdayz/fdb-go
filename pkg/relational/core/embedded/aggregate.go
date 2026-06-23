@@ -352,21 +352,23 @@ func (c *EmbeddedConnection) aggregateMapRows(ctx context.Context, sq *selectQue
 	}
 	// SQL spec: ungrouped aggregate over an empty input still emits one row
 	// (COUNT=0, SUM/MIN/MAX/AVG=NULL). Materialise a synthetic empty group so
-	// the emit loop produces that row.
+	// the emit loop produces that row. The HAVING-present empty case is NOT
+	// handled here on purpose — see the note below.
 	//
-	// Java alignment (nightshift-61): when HAVING is present, fdb-relational
-	// 4.11.1.0 treats the empty input as "no grouping at all" — HAVING never
-	// fires and the query returns 0 rows. CLAUDE.md gotcha:
-	// "`SELECT <agg> FROM t WHERE <none-match> HAVING <agg-pred>` diverges:
-	// Go follows SQL spec (single grouping), Java treats empty as no
-	// grouping at all". Aligned to Java by skipping the synthetic group
-	// when HAVING is set. Result: `SELECT COUNT(*) FROM t WHERE x = 999
-	// HAVING COUNT(*) >= 0` now returns 0 rows in Go (was 1 row [[0]]),
-	// matching Java. The HAVING-absent path (`SELECT COUNT(*) FROM
-	// empty_t` → 1 row [[0]]) still emits the synthetic group, so SQL-
-	// spec aggregate-over-empty semantics survive when HAVING isn't in
-	// play. Per project conformance principle: doesn't work in Java →
-	// doesn't work in Go.
+	// NOTE on the parallel pipeline: this whole map-aggregate executor is part
+	// of the LEGACY embedded SQL interpreter (execSelect → execSelectQueryFull
+	// → execSelectJoin/cte_scan → aggregateMapRows). Real data queries do NOT
+	// reach it: connection.QueryContext routes every SELECT through the Cascades
+	// generator (planSelectCascades). The interpreter survives only as a
+	// fallback for (a) INFORMATION_SCHEMA system-table queries — a Go-only
+	// extension Java rejects entirely, so there is NO cross-engine reference to
+	// conform to — and (b) explain-only plan rendering. So the empty-group +
+	// HAVING behaviour here is moot for conformance: the Cascades path handles
+	// and pins it to Java 4.12 (agg_empty_count_having_passes /
+	// having_count_star_eq_zero_empty). Eliminating this ~3k-line parallel
+	// pipeline (route INFORMATION_SCHEMA through Cascades, delete the
+	// interpreter) is tracked in TODO.md — the right fix is removal, not
+	// keeping two aggregate executors in sync.
 	if !hasGroups && len(groupOrder) == 0 && sq.havingExpr == nil {
 		groups[""] = &mapGroupState{
 			groupVals: nil,

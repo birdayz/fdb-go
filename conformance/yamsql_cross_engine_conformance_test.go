@@ -3,7 +3,7 @@
 package conformance_test
 
 // Track A3 — yamsql semantic equivalence on the cross-engine plandiff
-// harness. dayshift-55: drives hand-picked yamsql scenarios through BOTH
+// harness. Drives hand-picked yamsql scenarios through BOTH
 // the Java fdb-relational executor and the Go embedded engine (via
 // plandiff's runners), asserting that
 //
@@ -381,7 +381,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// Scalar-subquery scenarios are intentionally NOT cross-engine: a
 		// subquery used as a value expression (`(SELECT ...)`) is a Go-only
 		// grammar extension (subqueryExpressionAtom). Java fdb-relational
-		// 4.11.1.0 has no such grammar rule and rejects every form with a
+		// 4.12.11.0 has no such grammar rule and rejects every form with a
 		// 42601 syntax error, so it can never be asserted equivalent. Go-only
 		// coverage lives in pkg/relational/sqldriver/scalar_subquery_cte_test.go
 		// and quality_probes_test.go (TestFDB_QualityProbe_ScalarSubquery), plus
@@ -397,7 +397,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// non-deterministic spec must not gate. Tracked under RFC-042; the
 		// builder stays for the Go-only determinism follow-up.
 		// recursiveCteAdvancedScenario is NOT cross-engine: BOTH its tests hit
-		// genuine fdb-relational 4.11.1.0 limitations, each confirmed
+		// genuine fdb-relational 4.12.11.0 limitations, each confirmed
 		// deterministic when the scenario runs in isolation (no prior query to
 		// prime shared engine-state):
 		//   (1) column-RENAMING recursive CTE referenced through an alias
@@ -438,7 +438,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// Go-only via the dml_with_null_safe yamsql corpus (which runs statefully).
 		insertSelectScenario(),
 		// recursiveCteBaseScenario is NOT cross-engine: it is a showcase of
-		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.11.1.0 cannot
+		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.12.11.0 cannot
 		// plan, so there is no cross-engine equivalence to assert (these are
 		// welcome Go-beyond-Java read-side capabilities, not divergences):
 		//   - the `TRAVERSAL ORDER pre_order|post_order|level_order` clause —
@@ -471,7 +471,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// dml_cascades_fdb_test.go. (Builder kept for that Go-only coverage.)
 		updateDmlCteScenario(),
 		// correlatedExistsAdvancedScenario is NOT cross-engine: BOTH its tests
-		// are Go-only EXTENSIONS that fdb-relational 4.11.1.0 cannot plan
+		// are Go-only EXTENSIONS that fdb-relational 4.12.11.0 cannot plan
 		// (UnableToPlanException: "Cascades planner could not plan query"),
 		// confirmed deterministic per-scenario:
 		//   - `SELECT DISTINCT e.name FROM emp e, task t WHERE … AND EXISTS(…)
@@ -773,7 +773,7 @@ func cteScenario() *yamsql.Scenario {
 }
 
 // unionScenario mirrors testdata/union.yaml. Drops the UNION (distinct)
-// test — fdb-relational 4.11.1.0 raises `only UNION ALL is supported`
+// test — fdb-relational 4.12.11.0 raises `only UNION ALL is supported`
 // (new CLAUDE.md gotcha). UNION ALL works on both engines. Drops NOT
 // NULL on PK.
 func unionScenario() *yamsql.Scenario {
@@ -905,7 +905,7 @@ func orderByEliminationScenario() *yamsql.Scenario {
 // aggregate function calls (post-aggregation evaluation). Drops NOT NULL
 // on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
 // gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
-// forms — fdb-relational 4.11.1.0's planner raises
+// forms — fdb-relational 4.12.11.0's planner raises
 // `IllegalStateException: unable to eval an aggregation function with
 // eval()` because the post-aggregation rewrite for scalar-function-of-
 // aggregate isn't implemented. Aggregate-of-expression
@@ -963,8 +963,8 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 // tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
 // ORDER BY <aggregate> requires the natural-order continuation).
 //
-// `SUM(BIGINT) / COUNT(*)` integer-division parity (resolved
-// nightshift-57): Go's SUM now preserves int64 when every observed
+// `SUM(BIGINT) / COUNT(*)` integer-division parity: Go's SUM now
+// preserves int64 when every observed
 // value is integral (see `pkg/relational/core/embedded/aggregate.go`
 // `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
 // rather than float-dividing.
@@ -997,7 +997,7 @@ func aggregateExprScenario() *yamsql.Scenario {
 			{Query: "SELECT COUNT(CASE WHEN id < 3 THEN 1 END) FROM t", Rows: [][]any{{2}}},
 			{Query: "SELECT MAX(CASE WHEN id < 3 THEN price ELSE 0 END) FROM t", Rows: [][]any{{100}}},
 			{Query: "SELECT AVG(CASE WHEN id < 3 THEN price END) FROM t", Rows: [][]any{{75.0}}},
-			// SUM/COUNT integer-division (re-enabled nightshift-57).
+			// SUM/COUNT integer-division (re-enabled).
 			// SUM(qty)=10 (BIGINT), COUNT(*)=3 (BIGINT), 10/3=3 (integer division).
 			{Query: "SELECT SUM(qty) / COUNT(*) FROM t", Rows: [][]any{{3}}},
 			// Multi-aggregate with arithmetic. SUM-COUNT now preserves
@@ -1015,7 +1015,7 @@ func aggregateExprScenario() *yamsql.Scenario {
 // ordered by any FDB key. Even single-col ORDER BY <expression> needs
 // a sort rule the planner doesn't have. Cross-engine drop.
 //
-// Surfaced swingshift-56. Existing CLAUDE.md `ORDER BY natural-order`
+// Existing CLAUDE.md `ORDER BY natural-order`
 // gotcha covers this; no new gotcha needed.
 
 // inListPushdownScenario mirrors testdata/in_list_pushdown.yaml — the
@@ -1132,7 +1132,7 @@ func isDistinctFromScenario() *yamsql.Scenario {
 
 // coveringIndexPushdownScenario mirrors testdata/covering_index_pushdown.yaml
 // — the SELECT-only covered subset. Renames yamsql's `plan` to
-// `category` (per the swingshift-56 reserved-word gotcha) and `note` to
+// `category` (per the reserved-word gotcha) and `note` to
 // `notes` (defensive). Skips tests using DISTINCT (planner unsupported,
 // existing CLAUDE.md gotcha), LIMIT (unsupported), multi-col ORDER BY
 // (unsupported), and IN subquery (uncertain support; scalar-subquery
@@ -1190,7 +1190,7 @@ func coveringIndexPushdownScenario() *yamsql.Scenario {
 // Drops NOT NULL on PK. Two error_code tests skipped per per-test Skip;
 // three positive tests pin same-type equality + IN-list. Java aligns
 // on `INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE` 22000 for cross-type,
-// which is also Go's behaviour as of nightshift-39.
+// which is also Go's behaviour.
 func mixedTypeEqualityScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "mixed_type_equality",
@@ -1257,7 +1257,7 @@ func inListAdvancedScenario() *yamsql.Scenario {
 
 // compositeSecondaryIndexPrefixPushdownScenario mirrors
 // testdata/composite_secondary_index_prefix_pushdown.yaml. Drops NOT
-// NULL on PK. Renames the `plan` column to `tag` per the swingshift-56
+// NULL on PK. Renames the `plan` column to `tag` per the reserved-word
 // gotcha (`plan` reserved by fdb-relational's lexer); this also frees
 // the original `tier` to stay as the third index col of the 3-col
 // composite index. Skips DML count-checking tests (DML — runWithSetup
@@ -1414,7 +1414,9 @@ func likePrefixPushdownScenario() *yamsql.Scenario {
 //   - Explicit `CROSS JOIN` syntax — fdb-relational 4.11.1.0's parser
 //     visitor unconditionally calls `InnerJoinContext.expression().accept(...)`
 //     and NPEs when the ON clause is null (CROSS JOIN has no ON). Tracked
-//     as new CLAUDE.md gotcha.
+//     as new CLAUDE.md gotcha (observed on 4.11.1.0; not re-verified on
+//     4.12 — 4.12 reworked the JOIN grammar for OUTER JOIN, so re-confirm
+//     before relying on it).
 //   - `INNER JOIN ... ON 1 = 1` — same JOIN-ON gotcha as in CLAUDE.md
 //     (column-resolution path rejects); constant ON likely rides the
 //     same code path.
@@ -1576,7 +1578,7 @@ func pkPushdownScenario() *yamsql.Scenario {
 
 // whereLiteralOnLeftScenario mirrors testdata/where_literal_on_left.yaml.
 // The PK column drops NOT NULL — fdb-relational rejects NOT NULL outside
-// ARRAY column types (CLAUDE.md gotcha, swingshift-52). PK is implicitly
+// ARRAY column types (CLAUDE.md gotcha). PK is implicitly
 // NOT NULL so the constraint isn't lost.
 func whereLiteralOnLeftScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -1756,9 +1758,9 @@ func betweenScenario() *yamsql.Scenario {
 // present).
 //
 // Bare-bool-column-as-operand-in-projection (`SELECT b AND TRUE`,
-// `SELECT NOT b`, `SELECT b OR FALSE`) was deferred swingshift-55/56
+// `SELECT NOT b`, `SELECT b OR FALSE`) was deferred
 // because Go's embedded engine rejected with "expected BooleanValue
-// but got FieldValue". Re-enabled nightshift-57 after threading
+// but got FieldValue". Re-enabled after threading
 // allowBareField=true through evalExprPredicateTri's value-context
 // callers (eval_predicate.go) so operands of AND/OR/NOT/XOR and
 // projection-context expressions accept bare FieldValue and convert
@@ -1783,7 +1785,7 @@ func booleanScenario() *yamsql.Scenario {
 			{Query: "SELECT b = false FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b <> TRUE FROM lb ORDER BY a", Rows: [][]any{{false}, {true}, {nil}}},
 			{Query: "SELECT b IS NULL FROM lb ORDER BY a", Rows: [][]any{{false}, {false}, {true}}},
-			// Bare-bool projection (re-enabled nightshift-57). Kleene 3VL:
+			// Bare-bool projection (re-enabled). Kleene 3VL:
 			// b AND TRUE pinning UNKNOWN→NULL preservation, b AND FALSE
 			// short-circuits to FALSE for every row, b OR TRUE
 			// short-circuits to TRUE, b OR FALSE preserves UNKNOWN, NOT b
@@ -2058,7 +2060,7 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 
 // countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
 // testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
-// (which NPEs in fdb-relational 4.11.1.0 per CLAUDE.md gotcha).
+// (which NPEs in fdb-relational 4.12.11.0 per CLAUDE.md gotcha).
 // Drops NOT NULL on PK + composite PK on the join-side table.
 func countDistinctJoinPositiveScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -2226,8 +2228,8 @@ func nestedDerivedTableScenario() *yamsql.Scenario {
 // operators applied to NULL operands evaluate to UNKNOWN, which is
 // filtered from WHERE and projected as NULL in the SELECT-list. AND/OR
 // Kleene short-circuit (FALSE absorbs UNKNOWN under AND; TRUE absorbs
-// UNKNOWN under OR) is also pinned. Drops NOT NULL on PK. Net-new
-// nightshift-60: existing scenarios cover boolean-column 3VL
+// UNKNOWN under OR) is also pinned. Drops NOT NULL on PK. Net-new:
+// existing scenarios cover boolean-column 3VL
 // (`boolean`), NULL-safe equality (`is_distinct_from`), and a single
 // Kleene case (`bug_hunt_probes`); none drive the comparison-of-non-
 // boolean-column-against-NULL path through both projection AND WHERE
@@ -2270,8 +2272,10 @@ func nullCompareScenario() *yamsql.Scenario {
 // (`WHERE a OR b AND c`) are NOT tested cross-engine: fdb-relational
 // 4.11.1.0 parses `a OR b AND c` as `(a OR b) AND c` — diverging from
 // SQL standard where AND binds tighter than OR (`a OR (b AND c)`). The
-// Go embedded engine follows the SQL standard. New CLAUDE.md gotcha
-// added nightshift-60. The explicit-parens forms below remain valid
+// Go embedded engine follows the SQL standard (observed on 4.11.1.0;
+// this precedence shape is deliberately NOT tested cross-engine, so 4.12
+// behavior is unconfirmed). New CLAUDE.md gotcha
+// added. The explicit-parens forms below remain valid
 // across both engines and pin AND/OR/NOT semantics independently of
 // the divergent precedence question. Drops NOT NULL on PK.
 func booleanPrecedenceScenario() *yamsql.Scenario {
@@ -2301,10 +2305,10 @@ func booleanPrecedenceScenario() *yamsql.Scenario {
 }
 
 // selfJoinScenario probes self-join via comma-join (explicit JOIN ON
-// is broken in fdb-relational 4.11.1.0 per CLAUDE.md). Exercises:
+// is broken in fdb-relational 4.12.11.0 per CLAUDE.md). Exercises:
 // equi-self (recovers each row), strict-less self-join (counts ordered
-// pairs), aliased PK comparison. Drops NOT NULL on PK. Net-new
-// nightshift-60: existing JOIN scenarios all use distinct tables; a
+// pairs), aliased PK comparison. Drops NOT NULL on PK. Net-new:
+// existing JOIN scenarios all use distinct tables; a
 // table joined with itself surfaces aliasing bugs (the Go-side scope
 // resolver and Java's quantifier renaming) that two-table joins miss.
 func selfJoinScenario() *yamsql.Scenario {
@@ -2338,7 +2342,7 @@ func selfJoinScenario() *yamsql.Scenario {
 // the same for BYTES; no scenario today exercises plain string
 // comparison + sort. Drops NOT NULL on PK. Avoids ORDER BY on a
 // NULL-containing column (NULL ordering is dialect-specific and not
-// pinned by either engine's spec). Net-new nightshift-60.
+// pinned by either engine's spec). Net-new.
 func stringCompareScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "string_compare",
@@ -2385,7 +2389,7 @@ func stringCompareScenario() *yamsql.Scenario {
 // (a) NULL absorbs in +, -, *, %, / regardless of operand position;
 // (b) WHERE NULL-arithmetic = X filters everything (UNKNOWN); (c)
 // WHERE NULL-arithmetic IS NULL matches every row.  Drops NOT NULL on
-// PK. Net-new nightshift-60.
+// PK. Net-new.
 func nullArithmeticScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "null_arithmetic",
@@ -2427,7 +2431,7 @@ func nullArithmeticScenario() *yamsql.Scenario {
 // falls through to `tryIndexScanForOrdering` which picks the index
 // for ordering and post-filters by the IN-list. Java's planner does
 // the equivalent with a full-index range scan + filter. Drops NOT
-// NULL on PK. Net-new nightshift-60.
+// NULL on PK. Net-new.
 func indexedInListWithOrderByScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "indexed_in_list_with_order_by",
@@ -2454,7 +2458,7 @@ func indexedInListWithOrderByScenario() *yamsql.Scenario {
 // SELECT — `SELECT 1 FROM t`, `SELECT 'literal' FROM t`, mixed
 // constant + column. fdb-relational rejects FROM-less SELECT (existing
 // CLAUDE.md gotcha) so all queries here have a FROM. Drops NOT NULL
-// on PK. Net-new nightshift-60.
+// on PK. Net-new.
 func constantProjectionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "constant_projection",
@@ -2483,8 +2487,7 @@ func constantProjectionScenario() *yamsql.Scenario {
 
 // stringUnicodeScenario verifies Unicode (UTF-8) string handling
 // cross-engine: storage round-trip, equality, IN-list, IS NULL/NOT
-// NULL, comparison projection. Drops NOT NULL on PK. Net-new
-// nightshift-60.
+// NULL, comparison projection. Drops NOT NULL on PK. Net-new.
 func stringUnicodeScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "string_unicode",
@@ -2514,7 +2517,7 @@ func stringUnicodeScenario() *yamsql.Scenario {
 // likeEscapeScenario probes LIKE with ESCAPE clause — escape char
 // makes `%` and `_` match literally. The existing `like` scenario
 // covers basic LIKE without ESCAPE; this fills the gap. Drops NOT
-// NULL on PK. Net-new nightshift-60.
+// NULL on PK. Net-new.
 func likeEscapeScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "like_escape",
@@ -2541,7 +2544,7 @@ func likeEscapeScenario() *yamsql.Scenario {
 // with more COALESCE shapes: 2-arg, 4-arg, all-NULL chains via
 // `CAST(NULL AS STRING)` (Java rejects bare NULL operands), COALESCE
 // in WHERE, and COALESCE in projection with arithmetic. Drops NOT
-// NULL on PK. Net-new nightshift-60.
+// NULL on PK. Net-new.
 func coalesceExtraScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "coalesce_extra",
@@ -2577,7 +2580,7 @@ func coalesceExtraScenario() *yamsql.Scenario {
 // numericBoundaryScenario probes BIGINT boundary values (MAX/MIN/zero)
 // in INSERT, SELECT, and WHERE comparisons. Both engines should handle
 // the full int64 range (-9223372036854775808 to 9223372036854775807).
-// Net-new nightshift-60.
+// Net-new.
 func numericBoundaryScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "numeric_boundary",
@@ -2612,7 +2615,7 @@ func numericBoundaryScenario() *yamsql.Scenario {
 // col=NULL (constant); within them the natural order is the inner
 // key (PK). ORDER BY col is then effectively a no-op — every
 // matched row has the same col value. Both engines should accept
-// without rejection. Drops NOT NULL on PK. Net-new nightshift-60.
+// without rejection. Drops NOT NULL on PK. Net-new.
 func isNullWithIndexScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "is_null_with_index",
@@ -2647,7 +2650,7 @@ func isNullWithIndexScenario() *yamsql.Scenario {
 // and Go pin this contract; this probe is the cross-engine guard.
 // `TestFDB_OrderByNullOrdering` is the Go-side regression test for the
 // same contract. Drops NOT NULL on PK; adds an index on the nullable
-// col so the ORDER BY is plannable. Net-new nightshift-60.
+// col so the ORDER BY is plannable. Net-new.
 func nullOrderByPositionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "null_order_by_position",
@@ -2674,13 +2677,12 @@ func nullOrderByPositionScenario() *yamsql.Scenario {
 
 // compositeIndexOrderByScenario probes single-column ORDER BY against
 // a composite index. Multi-column ORDER BY is rejected outright by
-// fdb-relational 4.11.1.0's Cascades planner (CLAUDE.md gotcha), so the
+// fdb-relational 4.12.11.0's Cascades planner (CLAUDE.md gotcha), so the
 // only portable forms are: single-col ORDER BY where the col is the
 // leading idx col (or its DESC reverse-scan), and the leading-col-
 // equated form where ORDER BY references a trailing idx col (the
 // equated leading col strips from the natural order, exposing the
-// trailing col as a single-col prefix). Drops NOT NULL on PK. Net-new
-// nightshift-60.
+// trailing col as a single-col prefix). Drops NOT NULL on PK. Net-new.
 func compositeIndexOrderByScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "composite_index_order_by",
@@ -2708,9 +2710,9 @@ func compositeIndexOrderByScenario() *yamsql.Scenario {
 // dmlAdvancedScenario extends `dml_setup` with multi-column UPDATE,
 // computed-expression UPDATE, no-match UPDATE/DELETE, and DELETE with
 // compound predicates. INSERT ... SELECT FROM is intentionally NOT
-// tested — fdb-relational 4.11.1.0 rejects it with a syntax error
+// tested — fdb-relational 4.12.11.0 rejects it with a syntax error
 // (the grammar's `insertStatement` rule only accepts VALUES). Drops
-// NOT NULL on PK. Net-new nightshift-60.
+// NOT NULL on PK. Net-new.
 func dmlAdvancedScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "dml_advanced",
@@ -2751,8 +2753,7 @@ func dmlAdvancedScenario() *yamsql.Scenario {
 // double_literal`, `WHERE double_col = bigint_literal`, etc. The
 // existing `between` scenario covers BETWEEN with mixed-type bounds;
 // this fills in the standard `<`, `<=`, `>`, `>=`, `=`, `<>` operators
-// across BIGINT and DOUBLE. Drops NOT NULL on PK. Net-new
-// nightshift-60.
+// across BIGINT and DOUBLE. Drops NOT NULL on PK. Net-new.
 func numericComparisonScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "numeric_comparison",
@@ -2789,8 +2790,7 @@ func numericComparisonScenario() *yamsql.Scenario {
 // natural order. Existing scenarios mostly skip DESC variants ("Skips
 // DESC (cursors are ASC-only and Java's planner often can't
 // reverse)"); this scenario re-enables DESC where both engines
-// support it cross-engine. Drops NOT NULL on PK. Net-new
-// nightshift-60.
+// support it cross-engine. Drops NOT NULL on PK. Net-new.
 func pkDescScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "pk_desc",
@@ -2821,7 +2821,7 @@ func pkDescScenario() *yamsql.Scenario {
 // site preserves the in-memory fallback (TODO.md tracks the proper fix
 // gated on C2 QueryExecutor). Both engines produce the same final
 // row set when sorted, so cross-engine equivalence holds. Net-new
-// nightshift-60 to document Java's cost-model JOIN-side reordering.
+// to document Java's cost-model JOIN-side reordering.
 func joinOrderByRightPKScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "join_order_by_right_pk",
@@ -2851,7 +2851,7 @@ func joinOrderByRightPKScenario() *yamsql.Scenario {
 // projection. Existing scenarios use aliases incidentally; this pins
 // the cross-engine alignment of `SELECT col AS alias`, `SELECT
 // table.col`, `FROM t AS alias`, and bare-column projection. Drops
-// NOT NULL on PK. Net-new nightshift-60.
+// NOT NULL on PK. Net-new.
 func projectionAliasScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "projection_alias",
@@ -2885,7 +2885,7 @@ func projectionAliasScenario() *yamsql.Scenario {
 // Cross-engine alignment requires Go to match: drop the Go-permissive
 // at-most-1-row exemption when no satisfying scan exists. ORDER BY
 // PK col always works (PK natural order satisfies). Drops NOT NULL on
-// PK. Net-new nightshift-60.
+// PK. Net-new.
 func pkEqualityOrderByScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "pk_equality_order_by",
@@ -2918,7 +2918,7 @@ func pkEqualityOrderByScenario() *yamsql.Scenario {
 // scenarios cover each individual primitive; this exercises the
 // combinations to surface any short-circuit / 3VL drift between the
 // engines under multi-leaf WHERE trees. Drops NOT NULL on PK.
-// Net-new nightshift-60.
+// Net-new.
 func whereComplexScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "where_complex",
@@ -2956,8 +2956,7 @@ func whereComplexScenario() *yamsql.Scenario {
 // sequentially before the final query; INSERT then UPDATE then DELETE
 // then SELECT lets us pin both engines' DML semantics end-to-end. The
 // existing scenarios all confined DML to INSERT-only setup; this fills
-// the UPDATE / DELETE gap. Drops NOT NULL on PK. Net-new
-// nightshift-60.
+// the UPDATE / DELETE gap. Drops NOT NULL on PK. Net-new.
 func dmlSetupScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "dml_setup",
@@ -2981,10 +2980,10 @@ func dmlSetupScenario() *yamsql.Scenario {
 
 // arithmeticCompoundScenario probes compound arithmetic in the SELECT
 // list using only fully-parenthesised forms. Implicit-precedence forms
-// like `a + b * 2` are NOT tested — fdb-relational 4.11.1.0 parses
+// like `a + b * 2` are NOT tested — fdb-relational 4.12.11.0 parses
 // arithmetic operators left-to-right with same precedence, so
 // `a + b * 2` evaluates as `(a + b) * 2`, not the SQL-standard
-// `a + (b * 2)`. New CLAUDE.md gotcha added nightshift-60. The Go
+// `a + (b * 2)`. New CLAUDE.md gotcha added. The Go
 // embedded engine follows standard precedence. The explicit-parens
 // forms below pin operator semantics independently of the precedence
 // divergence. Drops NOT NULL on PK.
@@ -3008,7 +3007,7 @@ func arithmeticCompoundScenario() *yamsql.Scenario {
 			// Float division on DOUBLE operands.
 			{Query: "SELECT c / 2 FROM t WHERE id = 1", Rows: [][]any{{0.75}}},
 			// Negation via `0 - col`. Unary minus on a column reference
-			// is rejected by fdb-relational 4.11.1.0's parser with
+			// is rejected by fdb-relational 4.12.11.0's parser with
 			// `syntax error`. Bare-paren `(expr)` around a single
 			// scalar is parsed as a single-element record/tuple
 			// constructor, returning ImmutableRowStruct (the same
@@ -3024,7 +3023,7 @@ func arithmeticCompoundScenario() *yamsql.Scenario {
 }
 
 // orderByIndexedColScenario pins the "ORDER BY a column with a
-// satisfying secondary index" path. Net-new nightshift-60: with the
+// satisfying secondary index" path. Net-new: with the
 // in-memory sort fallback removed, Go relies on the new
 // `tryIndexScanForOrdering` branch (full secondary-index scan as the
 // last branch before the full-PK fallback) to satisfy this shape.
@@ -3067,8 +3066,7 @@ func orderByIndexedColScenario() *yamsql.Scenario {
 // empty-WHERE result as no grouping at all, HAVING never fires → 0 rows.
 // Tracked in CLAUDE.md and exercised by aggregateEmptyTableScenario's
 // last test (which is omitted from this scenario). All shapes here have
-// non-empty WHERE results so the divergence doesn't apply. Net-new
-// nightshift-61.
+// non-empty WHERE results so the divergence doesn't apply. Net-new.
 func havingPositiveScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "having_positive",
@@ -3105,7 +3103,7 @@ func havingPositiveScenario() *yamsql.Scenario {
 // arithmetic, IN-list, comparison, and ORDER BY. Existing scenarios
 // touch negation via `0 - col` (unary minus on a column ref is rejected
 // by fdb-relational's parser, gotcha) but only briefly cover negative
-// literals as constants. Net-new nightshift-61.
+// literals as constants. Net-new.
 func negativeConstantsScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "negative_constants",
@@ -3141,7 +3139,7 @@ func negativeConstantsScenario() *yamsql.Scenario {
 // emptyStringScenario probes empty-string handling in equality, IN,
 // IS NULL, projection, LIKE, and length-style comparisons. Empty
 // strings are commonly mishandled (NULL vs empty conflation, IN
-// list edge cases). Net-new nightshift-61.
+// list edge cases). Net-new.
 func emptyStringScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "empty_string",
@@ -3177,8 +3175,7 @@ func emptyStringScenario() *yamsql.Scenario {
 // largeInListScenario probes IN-list with many literals to surface any
 // list-size limits or quadratic blowup. fdb-relational has no documented
 // list-size limit; Go's embedded engine builds an in-memory slice scan.
-// 50 elements is well under any sane limit on either side. Net-new
-// nightshift-61.
+// 50 elements is well under any sane limit on either side. Net-new.
 func largeInListScenario() *yamsql.Scenario {
 	// Build an IN-list of 50 elements: (1, 2, ..., 50).
 	// Match every row in a 50-row table (id 1..50, v = id*10).
@@ -3218,7 +3215,7 @@ func largeInListScenario() *yamsql.Scenario {
 // updateNonPKPredicateScenario probes UPDATE / DELETE with WHERE on a
 // non-PK column. Existing dml_setup uses WHERE on the PK col; this
 // probes the secondary-index pushdown (or full-scan-then-filter) path
-// for DML. Net-new nightshift-61.
+// for DML. Net-new.
 func updateNonPKPredicateScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "update_non_pk_predicate",
@@ -3249,7 +3246,7 @@ func updateNonPKPredicateScenario() *yamsql.Scenario {
 // sort key. Likely to interact with the Java Cascades planner's
 // ordering-property analysis (CLAUDE.md: "ORDER BY arithmetic expression
 // raises UnableToPlanException"). If Java rejects, drop the scenario;
-// otherwise pin it. Net-new nightshift-61.
+// otherwise pin it. Net-new.
 func caseInOrderByScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "case_in_order_by",
@@ -3275,7 +3272,7 @@ func caseInOrderByScenario() *yamsql.Scenario {
 // bytesAdvancedScenario probes BYTES column behaviour beyond the basic
 // equality / round-trip in bytesScenario. Adds: IN list with hex
 // literals, IS NULL / IS NOT NULL, NULL projection, multi-row scan
-// with mixed NULL+non-NULL. Net-new nightshift-61.
+// with mixed NULL+non-NULL. Net-new.
 func bytesAdvancedScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bytes_advanced",
@@ -3306,7 +3303,7 @@ func bytesAdvancedScenario() *yamsql.Scenario {
 // operators when both sides have different numeric types. Existing
 // numeric_comparison covers BIGINT-vs-DOUBLE; this scenario also pins
 // equality and arithmetic across INTEGER, FLOAT, BIGINT, DOUBLE
-// columns. Net-new nightshift-61.
+// columns. Net-new.
 func mixedNumericCompareScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "mixed_numeric_compare",
@@ -3336,8 +3333,7 @@ func mixedNumericCompareScenario() *yamsql.Scenario {
 
 // notInListScenario probes NOT IN behaviour, especially with NULL
 // in the IN list (Java rejects entirely per CLAUDE.md gotcha) and
-// across various predicate combinations. We avoid NULL-in-list. Net-new
-// nightshift-61.
+// across various predicate combinations. We avoid NULL-in-list. Net-new.
 func notInListScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "not_in_list",
@@ -3364,8 +3360,7 @@ func notInListScenario() *yamsql.Scenario {
 
 // coalesceTypePromotionScenario pins COALESCE behaviour across mixed
 // numeric arg types (BIGINT vs DOUBLE), the typed-NULL anchor pattern
-// (CAST(NULL AS T)), nested COALESCE, and COALESCE in WHERE. Net-new
-// nightshift-61.
+// (CAST(NULL AS T)), nested COALESCE, and COALESCE in WHERE. Net-new.
 func coalesceTypePromotionScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "coalesce_type_promotion",
@@ -3401,7 +3396,7 @@ func coalesceTypePromotionScenario() *yamsql.Scenario {
 // `ErrCodeNumericValueOutOfRange` via `AddInt64Checked`-family
 // helpers — only the error message text differs). MIN/MAX/COUNT
 // over stored boundary values doesn't trigger overflow either way.
-// Net-new nightshift-61.
+// Net-new.
 func minMaxBigintBoundaryScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "min_max_bigint_boundary",
@@ -3424,7 +3419,7 @@ func minMaxBigintBoundaryScenario() *yamsql.Scenario {
 
 // multiInsertSetupScenario pins multi-statement INSERT setup behaviour
 // — sequential INSERTs in setup must be visible to the SELECT query.
-// Net-new nightshift-61.
+// Net-new.
 func multiInsertSetupScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "multi_insert_setup",
@@ -3448,7 +3443,7 @@ func multiInsertSetupScenario() *yamsql.Scenario {
 }
 
 // orderByCompositeIdxFilterScenario probes ORDER BY composite-index
-// columns with WHERE filter on the leading column. Net-new nightshift-61.
+// columns with WHERE filter on the leading column. Net-new.
 func orderByCompositeIdxFilterScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "order_by_composite_idx_filter",
@@ -3479,7 +3474,7 @@ func orderByCompositeIdxFilterScenario() *yamsql.Scenario {
 }
 
 // updateChainScenario probes a chain of UPDATEs in setup followed by
-// final-state SELECT. Net-new nightshift-61.
+// final-state SELECT. Net-new.
 func updateChainScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "update_chain",
@@ -3504,7 +3499,7 @@ func updateChainScenario() *yamsql.Scenario {
 // betweenEdgeScenario probes BETWEEN with edge cases:
 // inclusive bounds, reversed bounds (where lo > hi → empty result per
 // SQL spec), NULL bounds, equal bounds, and combined with NOT BETWEEN.
-// Net-new nightshift-61.
+// Net-new.
 func betweenEdgeScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "between_edge",
@@ -3534,7 +3529,7 @@ func betweenEdgeScenario() *yamsql.Scenario {
 
 // stringComparisonOpsScenario pins string comparison operators:
 // =, <>, <, <=, >, >=, with empty-string and lexicographic
-// edge cases. Net-new nightshift-61.
+// edge cases. Net-new.
 func stringComparisonOpsScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "string_comparison_ops",
@@ -3562,7 +3557,7 @@ func stringComparisonOpsScenario() *yamsql.Scenario {
 // DOUBLE round-trip preservation, and DOUBLE→BIGINT rounding (Java's
 // `Math.round` semantics — `floor(x + 0.5)` — already implemented in
 // `pkg/relational/core/functions/cast.go`'s `CastValue.DOUBLE_TO_LONG`
-// path; both engines round 1.9 → 2). Net-new nightshift-61.
+// path; both engines round 1.9 → 2). Net-new.
 func castChainScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "cast_chain",
@@ -3592,8 +3587,7 @@ func castChainScenario() *yamsql.Scenario {
 
 // nullInBetweenScenario probes BETWEEN with NULL bounds. Per SQL 3VL:
 // `x BETWEEN NULL AND y` and `x BETWEEN x AND NULL` both yield UNKNOWN
-// (filtered out in WHERE). Both engines should agree. Net-new
-// nightshift-61.
+// (filtered out in WHERE). Both engines should agree. Net-new.
 func nullInBetweenScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "null_in_between",
@@ -3633,7 +3627,7 @@ func nullInBetweenScenario() *yamsql.Scenario {
 // exception class via the assertion message so a future fix can
 // re-strict the check.
 //
-// Wired nightshift-57. Pre-fix the cross-engine harness `Skip`'d every
+// Wired. Pre-fix the cross-engine harness `Skip`'d every
 // `error_code`-tagged test because there was no portable way to
 // extract Java's SQLSTATE.
 func assertCrossEngineErrorCode(javaRes, goRes plandiff.RunResult, expected, prefix string) {
@@ -3923,7 +3917,7 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 // rename resolution and descendant traversal patterns in WITH RECURSIVE.
 //
 // NOT in crossEngineScenarios() — see the exclusion note at the call site:
-// both queries hit genuine fdb-relational 4.11.1.0 limitations (renamed-
+// both queries hit genuine fdb-relational 4.12.11.0 limitations (renamed-
 // column recursion + recursive-CTE-with-outer-ORDER-BY). Builder retained as
 // faithful documentation of the Go-only yamsql twin.
 func recursiveCteAdvancedScenario() *yamsql.Scenario {
@@ -4032,7 +4026,7 @@ func orderByNullsScenario() *yamsql.Scenario {
 			// DESC default: NULLS LAST. Java-supported.
 			{Query: "SELECT v FROM t ORDER BY v DESC", Rows: [][]any{{20}, {10}, {5}, {nil}, {nil}}},
 			// NOT cross-engine: explicit `NULLS LAST` / `NULLS FIRST` is a
-			// Go-only extension (in-memory sort). fdb-relational 4.11.1.0's
+			// Go-only extension (in-memory sort). fdb-relational 4.12.11.0's
 			// grammar has no NULLS FIRST/LAST clause — it rejects these with a
 			// syntax error / UnableToPlanException (confirmed deterministically
 			// on a fresh isolated JVM). A query Java can't parse has no cross-
@@ -4120,7 +4114,7 @@ func compositePKCrossScenario() *yamsql.Scenario {
 func uniqueViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "unique_violation",
-		// NOT NULL dropped from `name`: fdb-relational 4.11.1.0 allows NOT NULL
+		// NOT NULL dropped from `name`: fdb-relational 4.12.11.0 allows NOT NULL
 		// only on ARRAY columns ("NOT NULL is only allowed for ARRAY column
 		// type") — scalar NOT NULL is a Go-only extension Java cannot CREATE, so
 		// keeping it makes the schema un-creatable in Java (fails deterministically
@@ -4158,7 +4152,7 @@ func uniqueViolationScenario() *yamsql.Scenario {
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
-		// NOT NULL dropped: fdb-relational 4.11.1.0 allows NOT NULL only on ARRAY
+		// NOT NULL dropped: fdb-relational 4.12.11.0 allows NOT NULL only on ARRAY
 		// columns, so scalar NOT NULL is a Go-only extension Java cannot CREATE.
 		// The 23502 NOT-NULL-violation tests are error_code (skipped cross-engine,
 		// covered Go-only via the yamsql twin); the cross-engine SELECT below is
@@ -4534,7 +4528,7 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 func insertSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "insert_select",
-		// NOT NULL dropped from dst.v: fdb-relational 4.11.1.0 allows NOT NULL
+		// NOT NULL dropped from dst.v: fdb-relational 4.12.11.0 allows NOT NULL
 		// only on ARRAY columns (scalar NOT NULL is a Go-only extension Java
 		// cannot CREATE). The INSERT…SELECT under test copies non-null values, so
 		// the constraint is immaterial to the cross-engine result.
@@ -4821,7 +4815,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},
 			// Positional ORDER BY (`ORDER BY 2 DESC`, `ORDER BY 1`) is a Go-only
-			// EXTENSION: fdb-relational 4.11.1.0 cannot plan it
+			// EXTENSION: fdb-relational 4.12.11.0 cannot plan it
 			// (UnableToPlanException), even for `ORDER BY 1` over the PK that
 			// `ORDER BY id` by name plans fine — so the positional reference, not
 			// the sort, is what its planner rejects. Go plans both and returns the

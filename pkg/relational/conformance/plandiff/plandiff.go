@@ -3,7 +3,7 @@
 // planner and Java's Cascades planner, capture each side's plan tree,
 // and produce a structural diff plus a plan-cache-key hash diff.
 //
-// First-cut scope (this commit, swingshift-50): Go-side baseline only.
+// First-cut scope: Go-side baseline only.
 // The naive Go generator is exercised against an embedded query corpus;
 // each query's plan tree is captured via `query.Plan.Explain()` and a
 // stable Go-internal hash is computed over the normalised tree text.
@@ -172,8 +172,8 @@ type Engine interface {
 // step is added to `conformance_server.java`. See TODO.md §CRITICAL
 // "Java↔Go SQL conformance harness Phase B".
 //
-// Status (post-swingshift-50): fdb-relational-api / fdb-relational-core
-// are wired into `conformance/BUILD.bazel` at version 4.11.1.0 (matches
+// Status: fdb-relational-api / fdb-relational-core
+// are wired into `conformance/BUILD.bazel` at version 4.12.11.0 (matches
 // fdb-record-layer-core's pin). The remaining work is the Java step
 // itself: take (sql, schema_template), plan via fdb-relational's
 // `EmbeddedRelationalConnection`, return the rendered plan tree.

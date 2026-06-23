@@ -136,7 +136,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	// one engine saves (metadata + records), the other engine LOADS the
 	// metadata and uses it to scan the records.
 	//
-	// Pinned separately because of the swingshift-35 catalog-subspace
+	// Pinned separately because of the catalog-subspace
 	// scar: the byte-level metadata round-trip can be byte-equal at the
 	// proto level while the on-disk subspace LAYOUT is incompatible.
 	// This functional test catches that class of bug — the loaded metadata
@@ -181,7 +181,7 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 	//      metadata via `LoadRecordMetaDataProto` + `RecordMetaDataFromProto`
 	//      and exercises whatever read path you want to pin.
 	//
-	// The harness already covers (as of nightshift-53):
+	// The harness already covers (currently):
 	//   - Records (Go→Java, Java→Go)
 	//   - VALUE index (Go→Java, Java→Go)
 	//   - Multi-record-type type-tag dispatch (Go→Java)

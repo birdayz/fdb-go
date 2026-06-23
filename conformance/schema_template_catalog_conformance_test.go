@@ -74,7 +74,7 @@ var _ = Describe("SchemaTemplateCatalog cross-language round-trip (A2)", func() 
 
 		// Go: open RecordLayerStoreCatalog at the shared subspace
 		// (DefaultCatalogSubspace = (NULL, NULL, int64(0))). Same place
-		// Java's CREATE SCHEMA TEMPLATE wrote to. With dayshift-54's
+		// Java's CREATE SCHEMA TEMPLATE wrote to. With the
 		// version-alignment fix in BuildCatalogMetaData, the
 		// FDBRecordStore opens cleanly past the metadata-version
 		// check (Go=4, Java=4 — both ending at version 4 after

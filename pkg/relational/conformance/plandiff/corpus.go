@@ -222,11 +222,13 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, name FROM T14 WHERE id IN (1, 3) ORDER BY id",
 		},
-		// GROUP BY <col> deferred: fdb-relational 4.11.1.0's Cascades
-		// planner returns UnableToPlanException for "SELECT region,
-		// count(*) FROM T GROUP BY region". The unaggregated count(*)
-		// works (see count_aggregate above). Re-add when the planner
-		// learns the GROUP BY rule.
+		// GROUP BY <col>: 4.11 deferred this — fdb-relational 4.11.1.0's
+		// Cascades planner returned UnableToPlanException for "SELECT
+		// region, count(*) FROM T GROUP BY region". Java 4.12 wires
+		// GroupByExpression through the SQL layer (groupby-tests.yamsql,
+		// supported_version 4.12.1.0), so GROUP BY now runs cross-engine
+		// — exercised by aggregate_group_by_having and the agg/HAVING
+		// shapes below.
 		{
 			Name:           "and_predicate",
 			SchemaTemplate: "CREATE TABLE T16 (id BIGINT, region STRING, val BIGINT, PRIMARY KEY (id))",
@@ -325,14 +327,16 @@ func SeedRunCorpus() []RunQuery {
 		// user-visible regression), DOCUMENT the divergence here, and
 		// PROPOSE upstream when there's bandwidth. TODO #35 (A4
 		// cross-engine byte-equivalence) stays gated on upstream.
-		// LEFT JOIN deferred: fdb-relational 4.11.1.0 returns
-		// `RelationalException: Attempting to query non existing
-		// column CUSTOMERS.CID` — the planner's column resolution
-		// for JOIN ON clauses doesn't see PK columns at the
-		// ON-clause level. Inner join via `FROM A, B WHERE` works
-		// (see inner_join entry above); explicit JOIN ON syntax
-		// has a planner gap. Re-add when the planner ports the
-		// JOIN-ON resolution rule.
+		// LEFT/RIGHT OUTER JOIN: 4.11 deferred this — fdb-relational
+		// 4.11.1.0 returned `RelationalException: Attempting to query
+		// non existing column CUSTOMERS.CID` because its JOIN-ON column
+		// resolution didn't see PK columns. Java 4.12 added LEFT and
+		// RIGHT OUTER JOIN (on the Java side RIGHT is a preserved/null-
+		// supplying role swap on OuterJoinExpression; on the Go side the
+		// translator rewrites RIGHT→LEFT via operand swap); see the
+		// left_outer_join_basic entry, which now runs as plain
+		// cross-engine equivalence. FULL OUTER stays Go-only (Java
+		// rejects it with a SYNTAX_ERROR).
 		{
 			Name:           "null_in_equality",
 			SchemaTemplate: "CREATE TABLE T_NEQ (id BIGINT, x BIGINT, PRIMARY KEY (id))",
@@ -9431,12 +9435,14 @@ func SeedRunCorpus() []RunQuery {
 		// row-order mismatch under the SeedRunCorpus harness.
 		//
 		// Bare-BOOLEAN-literal shapes (e.g. `WHERE TRUE AND p`,
-		// `WHERE FALSE OR p`) are intentionally omitted: Java throws a
-		// `VerifyException` deep in the planner when normalising a bare
-		// boolean literal in a WHERE conjunct, whereas Go succeeds.
-		// Until that planner asymmetry is fixed (companion to TODO #41
-		// for CASE-WHEN bare booleans), these probes can't be pinned
-		// to a shared error message.
+		// `WHERE FALSE OR p`): 4.11 threw a `VerifyException` deep in
+		// the planner when normalising a bare boolean literal in a
+		// WHERE conjunct, whereas Go succeeded. Java 4.12 lifted this
+		// (boolean literals in WHERE/ON — join-tests.yamsql `WHERE
+		// TRUE`/`WHERE FALSE`/`WHERE NULL` at supported_version
+		// 4.12.4.0), so both engines now plan these. No probe is pinned
+		// here yet; the equivalence shapes can be added if a regression
+		// sentinel is wanted.
 		{
 			// Idempotent AND — `p AND p` is equivalent to `p`. Both
 			// engines should fold the duplicate into a single predicate.
@@ -9591,8 +9597,9 @@ func SeedRunCorpus() []RunQuery {
 		// shapes) are intentionally omitted: Java's planner emits a
 		// `RecordCoreException: Missing binding for __corr_<uuid>` when
 		// it tries to bind a column to itself in the WHERE clause,
-		// whereas Go succeeds. Until that planner asymmetry is fixed,
-		// these probes can't be pinned to a shared error message.
+		// whereas Go succeeds. Not confirmed fixed in 4.12.11.0 (release
+		// notes mention no fix for column-to-self comparison), so these
+		// probes stay omitted; re-confirm against a live 4.12 run.
 
 		// ===== Scan strategies — PK / composite / index / scan elimination =====
 		{
@@ -13028,11 +13035,13 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, COALESCE(CASE WHEN val < 25 THEN val END, -1) FROM T_DSN_15 ORDER BY id",
 		},
-		// ===== Aggregate-without-GROUP-BY shapes (TODO #39 blocks GROUP =====
-		// BY entirely in fdb-relational 4.11.1.0 — Cascades has no GROUP
-		// BY rule. These entries exercise aggregate semantics without a
-		// GROUP BY clause, treating the whole result as one implicit
-		// group.
+		// ===== Aggregate-without-GROUP-BY shapes ========================
+		// These entries exercise aggregate semantics without a GROUP BY
+		// clause, treating the whole result as one implicit group. (4.11
+		// could not plan an explicit GROUP BY through its SQL layer at
+		// all; Java 4.12 wires GroupByExpression, so explicit GROUP BY is
+		// now covered separately — these implicit-group shapes remain a
+		// distinct axis worth pinning.)
 		{
 			// HAVING with two DIFFERENT aggregates joined by AND.
 			// Existing having_compound_predicate uses COUNT(*) twice;

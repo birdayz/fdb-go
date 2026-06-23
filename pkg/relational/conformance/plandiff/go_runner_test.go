@@ -123,7 +123,7 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 // running without a Java dependency.
 //
 // Entries that hit feature gaps in the Go engine are classified via
-// isGoFeatureGap and t.Skipf'd with a note. As of swingshift-52 no
+// isGoFeatureGap and t.Skipf'd with a note. Currently no
 // entries hit the gap path — UUID DDL / INSERT / SELECT all landed
 // — but the gate stays in place so future corpus additions surfacing
 // new gaps don't fail the build until the gap is closed.
@@ -160,7 +160,7 @@ func TestGoSQLRunner_SeedRunCorpus(t *testing.T) {
 //     for types whose DDL is accepted but proto-mapping isn't wired.
 //
 // Currently no SeedRunCorpus entries hit this path — UUID end-to-end
-// landed swingshift-52. Kept as a gate so adding a corpus entry that
+// landed. Kept as a gate so adding a corpus entry that
 // exercises a not-yet-supported type produces a clear "feature gap"
 // skip instead of cascading into a noisy strict-equivalence failure.
 func isGoFeatureGap(err error) bool {

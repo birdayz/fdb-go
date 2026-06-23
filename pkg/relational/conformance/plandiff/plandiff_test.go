@@ -345,7 +345,7 @@ func TestJavaEngine_JavaError(t *testing.T) {
 
 // TestJavaError_SQLStateExtraction pins that the JavaError struct
 // carries the SQLSTATE field through from the conformance server's
-// structured error response. Wired nightshift-57 so the cross-engine
+// structured error response. Wired so the cross-engine
 // yamsql harness's `assertCrossEngineErrorCode` can match SQLSTATEs
 // without parsing the message text.
 func TestJavaError_SQLStateExtraction(t *testing.T) {
@@ -496,7 +496,7 @@ func FuzzHashTree(f *testing.F) {
 	})
 }
 
-// TestSeedCorpus_BaselineHash was removed swingshift-52: the
+// TestSeedCorpus_BaselineHash was removed: the
 // hand-pinned hash had to be updated every time the corpus grew, and
 // the per-query goldens (TestSeedCorpus_PerQueryGoldens, when wired)
 // already cover the regression-detection use case at finer
