@@ -133,6 +133,31 @@ func ParseView(sql string) (ctx antlrgen.IQueryContext, err error) {
 	return ctx, nil
 }
 
+// ParseExpression parses a bare boolean/scalar expression fragment and
+// returns its IExpressionContext. Used to synthesize a JOIN ON predicate
+// from a `USING (col, ...)` clause: the column list is lowered to the
+// equivalent ON text (`col = rhs.col AND ...`) and re-parsed here so all
+// downstream ON consumers (map-eval, cascades predicate resolution,
+// explain) treat USING exactly like ON. Any ANTLR-internal panic on
+// adversarial input is converted to a clean ErrCodeSyntaxError.
+func ParseExpression(sql string) (ctx antlrgen.IExpressionContext, err error) {
+	p, listener := newParser(sql, nil)
+	defer func() {
+		if r := recover(); r != nil {
+			ctx = nil
+			err = &api.Error{
+				Code:    api.ErrCodeSyntaxError,
+				Message: fmt.Sprintf("parse expression panic: %v", r),
+			}
+		}
+	}()
+	ctx = p.Expression()
+	if len(listener.errs) > 0 {
+		return nil, buildSyntaxError(listener.errs[0])
+	}
+	return ctx, nil
+}
+
 // ValidateNoPreparedParams walks a parse tree and returns an error
 // if any ? / $N prepared-statement placeholder is present. Mirrors
 // Java's QueryParser.validateNoPreparedParams — certain contexts

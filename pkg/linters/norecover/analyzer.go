@@ -42,7 +42,7 @@ var Allowlist = map[string]int{
 	// libfdbc cgo backend — analyzed only under `cgo && libfdbc`; 1 real recover (backend.go:354).
 	"pkg/fdbgo/libfdbc/backend.go": 1,
 	// SQL engine: parse / connection / executor boundaries
-	"pkg/relational/core/parser/parser.go":               3,
+	"pkg/relational/core/parser/parser.go":               4,
 	"pkg/relational/core/embedded/connection.go":         2,
 	"pkg/relational/core/embedded/cascades_generator.go": 1,
 	// record layer: tuple.Pack on user-derived comparison keys

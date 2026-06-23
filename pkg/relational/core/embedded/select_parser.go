@@ -8,6 +8,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
@@ -94,6 +95,11 @@ type joinClause struct {
 	joinType  joinType
 	alias     string
 	onExpr    antlrgen.IExpressionContext
+	// usingUids is the parsed `USING (col, ...)` column list, set when the
+	// JOIN used USING-syntax instead of ON. The equivalent ON predicate is
+	// synthesized in extractFromSimpleTable (after the left source alias is
+	// known) into onExpr; usingUids is cleared once synthesized.
+	usingUids antlrgen.IUidListContext
 	// segments preserves the un-flattened uid segments of the source's
 	// dotted name (`FullId().AllUid()`, quote-stripped). For a single-name
 	// table source it is `[name]`; for a correlated array source
@@ -1890,10 +1896,18 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
 		}
+		// A derived-table primary source can still be followed by explicit JOIN
+		// clauses (`FROM (SELECT ...) x LEFT JOIN t ON ...`). Parse them here so
+		// they are not silently dropped (no LEFT/RIGHT alias-promotion applies to
+		// a derived primary, hence promotedJoinType = -1).
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		if jErr != nil {
+			return nil, jErr
+		}
 		return &fromSource{
 			tableName:    alias,
 			tableAlias:   alias,
-			joins:        extraCrossJoins,
+			joins:        joins,
 			whereExpr:    fromClause.WhereExpr(),
 			derivedQuery: subItem.Query(),
 		}, nil
@@ -1959,7 +1973,27 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		leftAlias = strings.Join(parts, ".")
 	}
 
-	// Parse JOIN clauses.
+	joins, jErr := parseJoinClauses(srcBase, leftAlias, extraCrossJoins, promotedJoinType)
+	if jErr != nil {
+		return nil, jErr
+	}
+
+	return &fromSource{
+		tableName:  strings.Join(parts, "."),
+		tableAlias: leftAlias,
+		joins:      joins,
+		whereExpr:  fromClause.WhereExpr(),
+	}, nil
+}
+
+// parseJoinClauses parses every explicit JOIN part of a FROM clause into a
+// joinClause slice, promotes a mis-parsed first LEFT/RIGHT join, synthesizes ON
+// predicates for USING-syntax joins (the left USING column qualified by its
+// preceding source alias — leftAlias for the first join, the prior join's right
+// alias otherwise), and appends the implicit comma-FROM cross joins last. It is
+// shared by the atom-table primary path AND the derived-table primary path so a
+// `FROM (SELECT ...) x JOIN t ON ...` does not silently drop its JOINs.
+func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause, promotedJoinType joinType) ([]joinClause, error) {
 	var joins []joinClause
 	for _, jp := range srcBase.AllJoinPart() {
 		jc, jErr := extractJoinClause(jp)
@@ -1972,20 +2006,64 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	if promotedJoinType >= 0 && len(joins) > 0 && joins[0].joinType == joinTypeInner {
 		joins[0].joinType = promotedJoinType
 	}
+	// Synthesize ON predicates for any `USING (col, ...)` joins now that the
+	// left source alias chain is known.
+	for i := range joins {
+		if joins[i].usingUids == nil {
+			continue
+		}
+		leftSrcAlias := leftAlias
+		if i > 0 {
+			leftSrcAlias = joins[i-1].alias
+		}
+		synth, sErr := synthesizeUsingOnExpr(joins[i].usingUids, leftSrcAlias, joins[i].alias)
+		if sErr != nil {
+			return nil, sErr
+		}
+		joins[i].onExpr = synth
+		joins[i].usingUids = nil
+	}
 	// Implicit cross joins from comma-separated FROM sources run last; the
 	// WHERE predicate decides which combinations survive.
 	joins = append(joins, extraCrossJoins...)
+	return joins, nil
+}
 
-	return &fromSource{
-		tableName:  strings.Join(parts, "."),
-		tableAlias: leftAlias,
-		joins:      joins,
-		whereExpr:  fromClause.WhereExpr(),
-	}, nil
+// synthesizeUsingOnExpr lowers a `USING (col, col, ...)` join clause to the
+// equivalent ON expression and parses it back into an IExpressionContext, so
+// every downstream ON consumer (map-eval, cascades predicate resolution,
+// explain) treats USING exactly like ON. Mirrors Java's
+// QueryVisitor.resolveJoinUsingClause: for each column an equality
+// `<leftAlias>.col = <rightAlias>.col` is built and the equalities are
+// AND-conjoined. The left column is qualified by the preceding source so it
+// resolves on the left side (Java resolves it against leftOperators — left
+// here is unambiguous, whereas an unqualified col is ambiguous when both
+// tables share the name, e.g. `id`); the right column is pinned to the joined
+// source. The raw uid text is spliced verbatim so quoting/case-folding match
+// how an explicit ON would resolve the same identifiers. (Go does not
+// implement USING's right-column hiding for SELECT * — the join columns appear
+// on both sides; the equality semantics, which is what USING is for, are
+// faithful.)
+func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAlias string) (antlrgen.IExpressionContext, error) {
+	uids := uidList.AllUid()
+	if len(uids) == 0 {
+		return nil, api.NewErrorf(api.ErrCodeSyntaxError, "JOIN ... USING requires at least one column")
+	}
+	terms := make([]string, len(uids))
+	for i, u := range uids {
+		col := u.GetText()
+		terms[i] = fmt.Sprintf("%s.%s = %s.%s", leftAlias, col, rightAlias, col)
+	}
+	onText := strings.Join(terms, " AND ")
+	onExpr, err := parser.ParseExpression(onText)
+	if err != nil {
+		return nil, err
+	}
+	return onExpr, nil
 }
 
 // extractJoinClause parses a single JOIN part (INNER JOIN, LEFT JOIN, etc.) from
-// the grammar. INNER, LEFT/RIGHT/FULL OUTER joins are supported (ON only).
+// the grammar. INNER, LEFT/RIGHT/FULL OUTER joins are supported (ON or USING).
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
@@ -2001,6 +2079,16 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if j.CROSS() != nil {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products")
+		}
+		// A derived table (subquery) on the right of an explicit JOIN —
+		// `JOIN (SELECT ...) AS x ON ...`. Mirrors the comma-FROM derived path.
+		if subItem, isSub := j.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+			jc, sErr := joinClauseForSubquerySource(subItem, joinTypeInner)
+			if sErr != nil {
+				return joinClause{}, sErr
+			}
+			jc.onExpr, jc.usingUids = joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
+			return jc, nil
 		}
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
 		if !ok {
@@ -2023,13 +2111,26 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if atomItem.GetAlias() != nil {
 			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
-		var onExpr antlrgen.IExpressionContext
-		if j.Expression() != nil {
-			onExpr = j.Expression()
-		}
-		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, segments: parts}, nil
+		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
+		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
 
 	case *antlrgen.OuterJoinContext:
+		jt := joinTypeLeft
+		if j.RIGHT() != nil {
+			jt = joinTypeRight
+		} else if j.FULL() != nil {
+			jt = joinTypeFull
+		}
+		// A derived table (subquery) on the right of an outer JOIN —
+		// `LEFT JOIN (SELECT ...) AS x ON ...`.
+		if subItem, isSub := j.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
+			jc, sErr := joinClauseForSubquerySource(subItem, jt)
+			if sErr != nil {
+				return joinClause{}, sErr
+			}
+			jc.onExpr, jc.usingUids = joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
+			return jc, nil
+		}
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
 		if !ok {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -2046,22 +2147,50 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		if atomItem.GetAlias() != nil {
 			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
-		jt := joinTypeLeft
-		if j.RIGHT() != nil {
-			jt = joinTypeRight
-		} else if j.FULL() != nil {
-			jt = joinTypeFull
-		}
-		var onExpr antlrgen.IExpressionContext
-		if j.Expression() != nil {
-			onExpr = j.Expression()
-		}
-		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr, segments: parts}, nil
+		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
+		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
 
 	default:
 		return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported JOIN type %T; only INNER JOIN and LEFT/RIGHT/FULL OUTER JOIN are supported", jp)
 	}
+}
+
+// joinOnOrUsing extracts a JOIN's join condition: an explicit ON expression
+// (returned as onExpr) or a `USING (col, ...)` column list (returned as
+// usingUids, synthesized into an ON later in extractFromSimpleTable once the
+// left source alias is known). At most one is non-nil; a join with neither is
+// an unconstrained cross-join (onExpr == nil).
+func joinOnOrUsing(onCtx antlrgen.IExpressionContext, using antlr.TerminalNode, uidList antlrgen.IUidListContext) (antlrgen.IExpressionContext, antlrgen.IUidListContext) {
+	if onCtx != nil {
+		return onCtx, nil
+	}
+	if using != nil && uidList != nil {
+		return nil, uidList
+	}
+	return nil, nil
+}
+
+// joinClauseForSubquerySource builds a joinClause for a derived-table (subquery)
+// JOIN source `JOIN (SELECT ...) AS alias`. Mirrors the comma-FROM derived-table
+// path (which sets derivedQuery so the dispatcher materializes the subquery as a
+// CTE keyed by alias before the join executor runs).
+func joinClauseForSubquerySource(subItem *antlrgen.SubqueryTableItemContext, jt joinType) (joinClause, error) {
+	alias := ""
+	if subItem.GetAlias() != nil {
+		alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+	}
+	if alias == "" {
+		return joinClause{}, api.NewError(api.ErrCodeUnsupportedOperation,
+			"derived table in JOIN must have an alias")
+	}
+	return joinClause{
+		tableName:    alias,
+		joinType:     jt,
+		alias:        alias,
+		derivedQuery: subItem.Query(),
+		segments:     []string{alias},
+	}, nil
 }
 
 func containsNestedAggregateInSelectElement(e *antlrgen.SelectExpressionElementContext, argExpr antlrgen.IExpressionContext) bool {

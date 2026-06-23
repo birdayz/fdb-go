@@ -49,7 +49,7 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/fdbgo/fdb/panic.go` | 1 | `panicToError` — a panicking user closure becomes a tx error |
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |
 | `pkg/fdbgo/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
-| `pkg/relational/core/parser/parser.go` | 3 | ANTLR bailout panic → syntax error |
+| `pkg/relational/core/parser/parser.go` | 4 | ANTLR bailout panic → syntax error |
 | `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error |
 | `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |

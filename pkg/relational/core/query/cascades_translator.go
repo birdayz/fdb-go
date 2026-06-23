@@ -3327,7 +3327,18 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		joinType = expressions.JoinInner
 	}
 
-	resultValue := t.buildJoinResultValue(left, right, leftAlias, rightAlias)
+	// The result value (which drives `SELECT *` column order) follows the
+	// ORIGINAL SQL FROM declaration order — j.Left then j.Right — NOT the
+	// execution swap a RIGHT JOIN applies (swapping to drive the originally-right
+	// table as the NLJ outer). Java's RIGHT JOIN normalizes to LEFT with swapped
+	// children too, but its `SELECT *` still lists the columns in declaration
+	// order; building the anchored RC from (left,right) post-swap would emit the
+	// right table's columns first (dept.*, emp.* for `emp RIGHT JOIN dept`), a
+	// column-order divergence. The quantifiers stay in execution (swapped) order;
+	// the RC keys columns by alias, so leg ORDER only affects `SELECT *` layout.
+	rvLeft, rvRight := j.Left, j.Right
+	rvLeftAlias, rvRightAlias := sourceAlias(rvLeft), sourceAlias(rvRight)
+	resultValue := t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.

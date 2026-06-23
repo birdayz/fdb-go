@@ -424,10 +424,36 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			CorrelationName: aliasID.Name(),
 		}) == nil
 	}
-	scopeOK := addTableSource(sq.tableName, sq.tableAlias)
+	// A derived-table JOIN source (`... JOIN (SELECT ...) AS x ON ...`) is NOT a
+	// real table — register its virtual column schema (derived from the
+	// subquery body) so the ON predicate referencing `x.col` resolves. Without
+	// this the scope build aborts, the ON resolver never runs, and the join's
+	// ON predicate is silently DROPPED → the outer join degrades to a cartesian
+	// product that still null-pads (a wrong result). Mirrors the lateral-unnest
+	// leg registration above.
+	addDerivedSource := func(j joinClause) bool {
+		src, ok := buildDerivedTableSource(md, j.alias, j.derivedQuery)
+		if !ok {
+			return false
+		}
+		return scope.AddSource(src) == nil
+	}
+	var scopeOK bool
+	if sq.derivedQuery != nil {
+		// Primary FROM source is a derived table (`FROM (SELECT ...) x JOIN ...`).
+		if src, ok := buildDerivedTableSource(md, sq.tableAlias, sq.derivedQuery); ok {
+			scopeOK = scope.AddSource(src) == nil
+		}
+	} else {
+		scopeOK = addTableSource(sq.tableName, sq.tableAlias)
+	}
 	for i, j := range sq.joins {
 		if !scopeOK {
 			break
+		}
+		if j.derivedQuery != nil {
+			scopeOK = addDerivedSource(j)
+			continue
 		}
 		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
 		if isLateralUnnestJoin(j, visible, resolvesToTable) {

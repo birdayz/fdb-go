@@ -475,7 +475,10 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      (all fixed + revert-proof-tested) + Graefe + Torvalds full-pass ACK; the codex quota hit its limit at
      round 33. Run one final `codex review --base <R4-commit>` on the committed R5 when the quota resets
      (Jun 25 ~09:52) to confirm codex-clean; address anything it finds before the umbrella PR merges.
-   - **[~] R6** — `CARDINALITY()` function + index support (RFC-143). Gate: **Graefe** + Torvalds.
+   - **[x] R6** — `CARDINALITY()` function + index support (RFC-143). Phase 1 (scalar function, `e3adb2a4a`) +
+     Phase 2 (cardinality index — function-key bridge, evaluator, DDL, planner-matching + general IS-NULL
+     value-index ranges, `2c8e5a78d`). Graefe + Torvalds ACK both phases; final codex pass deferred to the
+     Jun 25 quota reset (PR #336 stays draft). Gate: **Graefe** + Torvalds.
      - **[x] Phase 1 — the scalar function (no index).** `CARDINALITY(array) → nullable INT` wired SQL→
        `CardinalityValue` via a BY-NAME built-in dispatch at the `walkFunctionCall` leaf
        (`expr.walkUserDefinedScalarFunction` → `walkCardinality`; CARDINALITY parses as a bare-ID
@@ -543,8 +546,24 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      never reach a working Cascades plan today. Surfaced while wiring CARDINALITY's by-name gate; NOT fixed
      here (the by-name collapse only routed CARDINALITY). The clean fix is to finish collapsing the 3 lists
      onto one by-name table; verify against Java first. Gate: **Graefe** + Torvalds.
-   - **[ ] R7** — LEFT/RIGHT OUTER JOIN reclassification (verify Go-extension vs Java-now-supported) +
-     boolean-simplification/null/outer-join fixes. Gate: **Graefe** + Torvalds.
+   - **[x] R7** — LEFT/RIGHT OUTER JOIN reclassification + 4.12 null/boolean fixes (RFC-144). The parity
+     sweep (53 ported `join-tests-outer.yamsql` cases) found + fixed **6 real outer-join divergences**
+     (JOIN USING → cartesian; chained outer joins + INNER-then-LEFT dropped NULL-padding; derived-table-
+     on-right + derived-primary dropped ON/JOIN; RIGHT JOIN SELECT* col order). Materialized NLJ kept
+     (Graefe ACK). Plus `EliminateNullOnEmptyRule` replacing the buggy `PullUpNullOnEmptyRule` (latent-rule
+     hygiene — no SQL producer) with BC1 faithful `rejectsNull` + BC2 `ImplementSimpleSelectRule` exact-
+     type tightening; null/boolean/folding verify-and-pin (3 documented benign/orthogonal gaps). Reclassify:
+     LEFT/RIGHT OUTER now Java-aligned; FULL stays Go-only (Java rejects). Graefe + Torvalds ACK; final
+     codex pass deferred to Jun 25 (PR #336 draft). Gate: **Graefe** + Torvalds.
+     - **[ ] R7 follow-up (Torvalds) — JOIN USING typed-path lowering.** `synthesizeUsingOnExpr`
+       (`select_parser.go`) builds the equi-join ON by splicing the raw uid text into `"<l>.col = <r>.col"`
+       and re-parsing (works + documented for quoting round-trip, but deviates from Java's typed
+       `resolveJoinUsingClause` → `resolveFunction("=")`). Replace the text-splice with typed Value/expr
+       construction. Non-blocking; pre-existing style deviation.
+     - **[ ] R7 follow-up (Torvalds) — USING `.asHidden()` + `SELECT * USING` test.** Go does not implement
+       Java's right-column hiding for USING, so `SELECT * … USING (id)` emits the join column twice
+       (honestly documented in the code comment, but untested). Implement `.asHidden()` for the USING
+       right column AND add the `SELECT * USING` duplicate-column case to `outer_join_parity_fdb_test.go`.
    - **[~] R8** — conformance rebaseline from a live 4.12.11.0 run. **Partial in the bump PR:** the 7
      RFC-082 annotations 4.12 lifted were reclassified to keep the conformance gate green (4 Java bug-fixes
      → plain equivalence; `left_outer_join_basic` + `where_case_returns_bool_probe` lifted → plain
@@ -640,6 +659,10 @@ each on its own stacked branch.
    so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
+
+### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23)
+
+A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:397`) lifts any non-`BooleanValue`/non-literal boolean expression to a `ValuePredicate(value, EQUALS TRUE)`. So Go's gap is in the single-table-WHERE PLANNER path (the implement/data-access leg), NOT the parser — a top-level `ValuePredicate(FieldValue)` filter isn't getting implemented as a `RecordQueryPredicatesFilterPlan`. Orthogonal to RFC-144's outer-join scope; pre-existing. Fix: make the single-table SELECT implement path (`ImplementSimpleSelectRule` / data-access) implement a top-level non-comparison `ValuePredicate` filter the same way the join ON residual already does. Pin with the `WHERE flag` case currently documented-as-unsupported in `outer_join_parity_fdb_test.go` (`TestFDB_OuterParity_BooleanWhere`).
 
 ### [ ] fdbgo/client: GetAddressesForKey always emits `ip:port`; C++ defaults to ip-only unless `include_port_in_address` is set (surfaced by the RFC-133 option-matrix review, 2026-06-20)
 

@@ -47,7 +47,13 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	resultValue := selectExpr.GetResultValue()
-	isSimpleResult := isQuantifiedObjectValueFor(resultValue, innerQuantifier)
+	// The outer MAP is skipped ONLY when the result value is an EXACT passthrough
+	// of the inner quantifier — a QOV over its alias whose result TYPE equals the
+	// flowed object type. A passthrough that merely WIDENS the nullability keeps
+	// the MAP so the type widening is expressed at runtime (Java's
+	// ImplementSimpleSelectRule isSimpleResultValue, RFC-144 BC2). Keying the skip
+	// on passthrough alone (the prior behaviour) would drop the widening MAP.
+	isSimpleResult := isSimplePassthroughOf(resultValue, innerQuantifier)
 
 	var queryPredicates []predicates.QueryPredicate
 	for _, p := range selectExpr.GetPredicates() {
@@ -129,12 +135,22 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	}
 }
 
-func isQuantifiedObjectValueFor(v values.Value, q expressions.Quantifier) bool {
+// isSimplePassthroughOf reports whether v is an EXACT passthrough of quantifier
+// q: a QuantifiedObjectValue over q's alias whose result TYPE equals q's flowed
+// object type. A passthrough whose type only WIDENS the nullability is NOT
+// simple — the MAP must be kept to express the widening (Java's
+// QuantifiedObjectValue.isSimpleQuantifiedObjectValueOver + the
+// resultType.equals(flowedType) gate; RFC-144 BC2).
+func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 	qov, ok := v.(*values.QuantifiedObjectValue)
 	if !ok {
 		return false
 	}
-	return qov.Correlation == q.GetAlias()
+	if qov.Correlation != q.GetAlias() {
+		return false
+	}
+	flowedType := q.GetFlowedObjectValue().Type()
+	return v.Type().Equals(flowedType)
 }
 
 var _ ImplementationRule = (*ImplementSimpleSelectRule)(nil)
