@@ -41,6 +41,7 @@ go_library(
         "indexing_range_set.go",
         "indexing_throttle.go",
         "key_expression.go",
+        "key_expression_cardinality.go",
         "key_expression_compiled.go",
         "key_expression_proto.go",
         "key_expression_validate.go",
@@ -216,6 +217,7 @@ go_test(
         "indexing_throttle_test.go",
         "intersection_resume_test.go",
         "key_expr_bug_verify_test.go",
+        "key_expression_cardinality_test.go",
         "key_expression_compiled_test.go",
         "key_expression_concatenate_test.go",
         "key_expression_proto_test.go",
@@ -354,6 +356,7 @@ go_test(
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 

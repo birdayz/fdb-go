@@ -1095,7 +1095,15 @@ func TestPlanHarness_IsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "Scan(ORDERS)")
+	// customer_id is a nullable column indexed by IDX_CUSTOMER. `IS NULL` is a
+	// [null] EQUALITY range (Java's ScanComparisons.getComparisonType(IS_NULL)
+	// == EQUALITY), so the index serves the predicate directly — Java emits the
+	// same `COVERING(... [[null],[null]] ...)` (nested-with-nulls.yamsql,
+	// sparse-index-tests.yamsql). Previously Go fell back to a full Scan; the
+	// value-index null-range binding closes that divergence. Execution
+	// correctness of the [null]/(null,+inf) ranges is pinned in the
+	// sqldriver cardinality + IS-NULL index FDB tests.
+	assertPlanContains(t, plan, "IndexScan(IDX_CUSTOMER, [=]")
 }
 
 // --- Multiple aggregates ---

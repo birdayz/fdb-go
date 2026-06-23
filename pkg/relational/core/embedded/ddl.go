@@ -388,6 +388,24 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"aggregate index %q: exactly one aggregate expression required in SELECT", indexName)
 	}
+
+	// CARDINALITY() index: `CREATE INDEX … AS SELECT CARDINALITY(arr) AS c …
+	// ORDER BY c`. This is a VALUE index whose key is a function over the
+	// array column (not a GROUP BY aggregate), so it routes to its own builder
+	// entry. Mirrors Java's MaterializedViewIndexGenerator recognising a
+	// CardinalityValue select element and emitting
+	// function("cardinality", field("arr", …)).
+	if cardColumn, ok := extractCardinalityColumnFromSelectElement(allElems[0]); ok {
+		// GROUP BY is not meaningful for a cardinality value index (Java emits
+		// a plain value index); reject it rather than silently drop it.
+		if gb := st.GroupByClause(); gb != nil {
+			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"cardinality index %q: GROUP BY is not supported", indexName)
+		}
+		b.AddCardinalityIndex(tableName, indexName, cardColumn)
+		return nil
+	}
+
 	aggType, aggColumn, err := extractAggregateFromSelectElement(allElems[0])
 	if err != nil {
 		return api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
@@ -407,6 +425,67 @@ func parseAggregateIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext,
 	}
 
 	b.AddAggregateIndex(tableName, indexName, groupColumns, aggType, aggColumn)
+	return nil
+}
+
+// extractCardinalityColumnFromSelectElement detects a `CARDINALITY(field)`
+// select element and returns the array column name (possibly dotted, e.g.
+// "struct.int_arr"). CARDINALITY has no grammar token, so it parses as a
+// bare-ID UserDefinedScalarFunctionCall — the SAME node walkUserDefinedScalarFunction
+// matches for queries — and we detect it by typed node, never by GetText() on
+// the SQL. Returns (col, true) on a match, ("", false) otherwise (the caller
+// then tries the aggregate path).
+func extractCardinalityColumnFromSelectElement(elem antlrgen.ISelectElementContext) (string, bool) {
+	see, ok := elem.(*antlrgen.SelectExpressionElementContext)
+	if !ok {
+		return "", false
+	}
+	udf := findCardinalityCall(see.Expression())
+	if udf == nil {
+		return "", false
+	}
+	// The single argument is the array field reference; reuse the column-name
+	// extractor (which walks for a FullColumnName), matching how the query
+	// path resolves the CARDINALITY argument.
+	fa := udf.FunctionArgs()
+	if fa == nil {
+		return "", false
+	}
+	fac, ok := fa.(*antlrgen.FunctionArgsContext)
+	if !ok || len(fac.AllFunctionArg()) != 1 {
+		return "", false
+	}
+	argCtx, ok := fac.AllFunctionArg()[0].(*antlrgen.FunctionArgContext)
+	if !ok || argCtx.Expression() == nil {
+		return "", false
+	}
+	fcn := findFullColumnName(argCtx.Expression())
+	if fcn == nil {
+		return "", false
+	}
+	return functions.FullIdToName(fcn.FullId()), true
+}
+
+// findCardinalityCall walks an expression tree for a bare-ID
+// UserDefinedScalarFunctionCall whose name is CARDINALITY (the way the function
+// parses, lacking a grammar token). Detection is by typed node + the resolved
+// name, never by string-matching the SQL text.
+func findCardinalityCall(node antlr.Tree) *antlrgen.UserDefinedScalarFunctionCallContext {
+	if node == nil {
+		return nil
+	}
+	if udf, ok := node.(*antlrgen.UserDefinedScalarFunctionCallContext); ok {
+		if nameCtx, ok := udf.UserDefinedScalarFunctionName().(*antlrgen.UserDefinedScalarFunctionNameContext); ok &&
+			nameCtx.ID() != nil &&
+			strings.EqualFold(nameCtx.ID().GetText(), "CARDINALITY") {
+			return udf
+		}
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if result := findCardinalityCall(node.GetChild(i)); result != nil {
+			return result
+		}
+	}
 	return nil
 }
 

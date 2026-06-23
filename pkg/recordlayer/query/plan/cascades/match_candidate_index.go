@@ -27,6 +27,18 @@ type ValueIndexScanMatchCandidate struct {
 	flowedType      values.Type
 	unique          bool
 
+	// columnFunctions is parallel to columnNames: columnFunctions[i] names
+	// the function wrapping the i-th key column's field, or "" if the column
+	// is a plain field. The only non-empty entry today is
+	// FunctionKindCardinality ("cardinality"), the bridge for a CARDINALITY()
+	// index — the candidate's i-th column Value is then
+	// CardinalityValue(FieldValue(col)) instead of a bare FieldValue. This is
+	// the Go analog of Java's index match candidate carrying the column's
+	// Value (CardinalityFunctionKeyExpression.toValue() on the candidate side),
+	// so predicate and sort matching compare the SAME Value the query side
+	// builds. When nil, every column is a plain field (the common case).
+	columnFunctions []string
+
 	// createsDuplicates is true when the index's root expression can
 	// produce multiple entries per record (fan-out / repeated-field
 	// indexes). Ports Java's index.getRootExpression().createsDuplicates().
@@ -35,6 +47,11 @@ type ValueIndexScanMatchCandidate struct {
 	traversalOnce sync.Once
 	traversal     *Traversal
 }
+
+// FunctionKindCardinality is the columnFunctions entry marking a key column as
+// CARDINALITY(field). Matches the "cardinality" function-key name on the
+// record-layer side so the bridge is name-stable across the two layers.
+const FunctionKindCardinality = "cardinality"
 
 // NewValueIndexScanMatchCandidate constructs a match candidate for a
 // secondary index. columnNames and sargableAliases must be parallel
@@ -50,6 +67,27 @@ func NewValueIndexScanMatchCandidate(
 	unique bool,
 	pkColumnNames []string,
 ) *ValueIndexScanMatchCandidate {
+	return NewValueIndexScanMatchCandidateWithFunctions(
+		indexName, recordTypes, columnNames, nil, sargableAliases,
+		flowedType, unique, pkColumnNames,
+	)
+}
+
+// NewValueIndexScanMatchCandidateWithFunctions is NewValueIndexScanMatchCandidate
+// plus a parallel columnFunctions slice (see the struct field). Pass nil
+// columnFunctions for an all-plain-field index. A non-empty columnFunctions[i]
+// (FunctionKindCardinality) makes the i-th column's match Value
+// CardinalityValue(FieldValue(col)) so a CARDINALITY() predicate/sort binds.
+func NewValueIndexScanMatchCandidateWithFunctions(
+	indexName string,
+	recordTypes []string,
+	columnNames []string,
+	columnFunctions []string,
+	sargableAliases []values.CorrelationIdentifier,
+	flowedType values.Type,
+	unique bool,
+	pkColumnNames []string,
+) *ValueIndexScanMatchCandidate {
 	aliases := make([]values.CorrelationIdentifier, len(sargableAliases))
 	copy(aliases, sargableAliases)
 	types := make([]string, len(recordTypes))
@@ -58,15 +96,36 @@ func NewValueIndexScanMatchCandidate(
 	copy(cols, columnNames)
 	pkCols := make([]string, len(pkColumnNames))
 	copy(pkCols, pkColumnNames)
+	var fns []string
+	if columnFunctions != nil {
+		fns = make([]string, len(columnFunctions))
+		copy(fns, columnFunctions)
+	}
 	return &ValueIndexScanMatchCandidate{
 		indexName:       indexName,
 		recordTypes:     types,
 		columnNames:     cols,
+		columnFunctions: fns,
 		pkColumnNames:   pkCols,
 		sargableAliases: aliases,
 		flowedType:      flowedType,
 		unique:          unique,
 	}
+}
+
+// ColumnValue returns the match Value for the i-th index key column over the
+// given base (the QuantifiedObjectValue of the index's record source). For a
+// plain field this is FieldValue(base, col); for a CARDINALITY()-keyed column
+// it is CardinalityValue(FieldValue(base, col)). This is the single source of
+// truth the predicate-placeholder expansion AND the ordered-index-scan sort
+// matching both consult, so a CARDINALITY() query value binds to the index by
+// Value-tree equality (Java: the match candidate carries the column's Value).
+func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) values.Value {
+	fv := values.NewFieldValue(base, c.columnNames[i], values.UnknownType)
+	if i < len(c.columnFunctions) && c.columnFunctions[i] == FunctionKindCardinality {
+		return values.NewCardinalityValue(fv)
+	}
+	return fv
 }
 
 // CandidateName returns the index name.
@@ -124,10 +183,12 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 
 		cr := bindings[paramID]
-		colValue := &values.FieldValue{
-			Field: c.columnNames[idx],
-			Typ:   values.UnknownType,
-		}
+		// Use the candidate's column Value (FieldValue, or
+		// CardinalityValue(FieldValue) for a function-keyed column) so the
+		// ordering part carries the SAME Value the query's sort key does.
+		// Flat FieldValue (no child) keeps parity with the historical
+		// behaviour for plain columns.
+		colValue := c.ColumnValue(idx, nil)
 
 		sortOrder := MatchedSortOrderAscending
 		if isReverse {

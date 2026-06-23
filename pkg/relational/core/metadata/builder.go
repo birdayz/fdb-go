@@ -46,6 +46,13 @@ type indexSpec struct {
 	aggType   string // "SUM", "COUNT", etc. — empty for VALUE indexes
 	aggColumn string // aggregated column (for SUM/MIN/MAX)
 
+	// cardinalityColumn, when non-empty, makes this a CARDINALITY() value
+	// index: the key is FunctionExpr("cardinality", field(col, Concatenate))
+	// over the named array column (possibly dotted, e.g. "struct.int_arr").
+	// Mutually exclusive with aggType/vector. Mirrors Java's value index whose
+	// root is a CardinalityFunctionKeyExpression.
+	cardinalityColumn string
+
 	// VECTOR (HNSW) index fields — set only when vector is true.
 	vector           bool
 	vectorMethod     string
@@ -181,6 +188,48 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 	}
 	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 		"aggregate index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
+// AddCardinalityIndex registers a CARDINALITY() value index on the named table.
+// cardColumn is the array column whose element count forms the single key
+// column (possibly dotted for an array nested in a struct, e.g.
+// "struct.int_arr"). The index key is built as
+// FunctionExpr("cardinality", field(col, Concatenate)) at materialise time.
+// Must be called after the table is registered via AddTable.
+func (b *Builder) AddCardinalityIndex(tableName, indexName, cardColumn string) *Builder {
+	for i := range b.tables {
+		if b.tables[i].name != tableName {
+			continue
+		}
+		// Validate the top-level column exists. A dotted reference
+		// (struct.field) is validated by its head segment here; deeper
+		// resolution happens when the key expression is built/evaluated.
+		head := cardColumn
+		if dot := strings.IndexByte(head, '.'); dot >= 0 {
+			head = head[:dot]
+		}
+		found := false
+		for _, c := range b.tables[i].columns {
+			if c.name == head {
+				found = true
+				break
+			}
+		}
+		if !found {
+			b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+				"cardinality index %q on table %q: column %q not defined",
+				indexName, tableName, head))
+			return b
+		}
+		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
+			name:              indexName,
+			cardinalityColumn: cardColumn,
+		})
+		return b
+	}
+	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+		"cardinality index %q references unknown table %q", indexName, tableName))
 	return b
 }
 
@@ -327,6 +376,18 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				if idxErr != nil {
 					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
 						"table %q aggregate index %q", tbl.name, idx.name)
+				}
+				mdBuilder.AddIndex(tbl.name, rl)
+				continue
+			}
+			if idx.cardinalityColumn != "" {
+				rl, idxErr := buildCardinalityIndex(idx)
+				if idxErr != nil {
+					return nil, api.WrapErrorf(idxErr, api.ErrCodeInvalidSchemaTemplate,
+						"table %q cardinality index %q", tbl.name, idx.name)
+				}
+				if idx.unique {
+					rl.SetUnique()
 				}
 				mdBuilder.AddIndex(tbl.name, rl)
 				continue
@@ -578,6 +639,34 @@ func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {
 		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"unsupported aggregate index type %q", idx.aggType)
 	}
+}
+
+// buildCardinalityIndex materialises a CARDINALITY() value index. The root is
+// CardinalityExpr over the array column accessed with FanType.Concatenate (so
+// the whole array materialises into one Key.Evaluated whose element count is
+// the key). A dotted column (struct.int_arr) nests through the struct field.
+// Mirrors Java's function("cardinality", field("arr", Concatenate)) /
+// field("struct").nest(field("int_arr", Concatenate)).
+//
+// Go writes plain repeated array fields (no nullable-array wrapper — RFC-143
+// §3a), so the argument is always field(col, Concatenate), never the Java
+// wrapper shape field(col).nest(field("values", Concatenate)). The evaluator
+// (CardinalityFunctionKeyExpression) still descends the wrapper for
+// Java-written records on the read side.
+func buildCardinalityIndex(idx indexSpec) (*recordlayer.Index, error) {
+	segments := strings.Split(idx.cardinalityColumn, ".")
+	if len(segments) == 0 || segments[len(segments)-1] == "" {
+		return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			"cardinality index %q: empty column reference", idx.name)
+	}
+	// Innermost: the array field with Concatenate fan-out.
+	arg := recordlayer.FieldConcatenate(segments[len(segments)-1])
+	// Wrap each preceding segment as a nesting (left-to-right struct descent).
+	for i := len(segments) - 2; i >= 0; i-- {
+		arg = recordlayer.Nest(segments[i], arg)
+	}
+	root := recordlayer.CardinalityExpr(arg)
+	return recordlayer.NewIndex(idx.name, root), nil
 }
 
 func buildPrimaryKeyExpression(tbl tableSpec, intermingle bool) (recordlayer.KeyExpression, error) {

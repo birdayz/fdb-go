@@ -6,6 +6,15 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// columnValueProvider is implemented by match candidates whose key columns are
+// not all bare fields — they supply the per-column match Value (e.g. a
+// CARDINALITY()-keyed column yields CardinalityValue(FieldValue(col))). The
+// base argument is the QuantifiedObjectValue of the index's record source.
+// Candidates that don't implement it default to FieldValue(base, col).
+type columnValueProvider interface {
+	ColumnValue(i int, base values.Value) values.Value
+}
+
 // ExpandValueIndex builds a Traversal from an index definition,
 // producing a candidate expression tree with Placeholder predicates
 // for each index column. The resulting Traversal is used by matching
@@ -39,14 +48,27 @@ func ExpandValueIndex(candidate MatchCandidate) *Traversal {
 	// columnNames and sargableAliases are parallel slices; iterate over
 	// sargableAliases as the authoritative length (callers that pass nil
 	// sargableAliases get zero placeholders).
+	//
+	// The per-column placeholder Value is normally FieldValue(base, col). A
+	// candidate that carries a function-keyed column (e.g. a CARDINALITY()
+	// index) overrides this via columnValueProvider so the placeholder Value
+	// is CardinalityValue(FieldValue(base, col)) — the SAME Value the query
+	// side builds, so the predicate (and, via the same provider, the sort)
+	// binds by Value-tree equality. Mirrors Java's match candidate carrying
+	// the column's Value (CardinalityFunctionKeyExpression.toValue()).
 	baseAlias := baseQuantifier.GetAlias()
+	provider, _ := candidate.(columnValueProvider)
 	for i, alias := range sargableAliases {
-		colName := columnNames[i]
-		fv := values.NewFieldValue(
-			values.NewQuantifiedObjectValue(baseAlias),
-			colName, values.UnknownType,
-		)
-		ph := predicates.NewPlaceholder(alias, fv)
+		var colValue values.Value
+		if provider != nil {
+			colValue = provider.ColumnValue(i, values.NewQuantifiedObjectValue(baseAlias))
+		} else {
+			colValue = values.NewFieldValue(
+				values.NewQuantifiedObjectValue(baseAlias),
+				columnNames[i], values.UnknownType,
+			)
+		}
+		ph := predicates.NewPlaceholder(alias, colValue)
 		builder.AddPredicate(ph)
 		builder.AddPlaceholder(ph)
 	}

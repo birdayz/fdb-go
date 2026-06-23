@@ -1,6 +1,9 @@
 # RFC-143 — CARDINALITY() scalar function + cardinality index support (Java 4.12, RFC-135 §4 R6)
 
-**Status:** Phase 1 implemented (the scalar function); Phase 2 (index) pending
+**Status:** Phase 1 (scalar function) + Phase 2 (index support) implemented. Open follow-ups (separate
+items): the §3a nullable-array-wrapper WRITE side (Go writes plain repeated, so an empty array reads as
+NULL — `CARDINALITY([])` is NULL not 0); nested-struct array indexes (blocked on STRUCT column support in
+the metadata builder). Both tracked in TODO.md R6.
 **Item:** RFC-135 §4 **R6** — port Java's `CARDINALITY(array) → INT` scalar function (Java #4074, 4.11.1.0)
 and its index support (`CardinalityFunctionKeyExpression`, Java #4100, **4.12.3.0** — the strict 4.12
 delta). `CARDINALITY(arr)` returns the array's element count; the index support lets an ordered index be

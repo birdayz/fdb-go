@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "ambiguous_column_star_test.go",
         "array_cardinality_fdb_test.go",
+        "array_cardinality_index_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
         "avg_double_insert_fdb_test.go",
         "cascades_fdb_test.go",

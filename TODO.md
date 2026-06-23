@@ -492,9 +492,45 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
        empty/unset array is wire-indistinguishable from NULL → reads as NULL → `CARDINALITY([])` is NULL,
        not 0 (Java's wrapper distinguishes them). The function is faithful; the empty-vs-NULL distinction
        is the latent §3a nullable-array-wrapper-WRITE gap (below), out of scope for Phase 1.
-     - **[ ] Phase 2 — index support** (the 4.12.3 delta; Graefe-gated planner matching). `"cardinality"`
-       key-expression evaluator, index DDL → `FunctionKeyExpression`, planner index-matching
-       (KeyExpression→Value bridge, ORDER-BY rule rework). See RFC-143 §3 Phase 2.
+     - **[x] Phase 2 — index support** (the 4.12.3 delta; Graefe-gated planner matching). A `CARDINALITY()`
+       index makes `WHERE CARDINALITY(arr) = N` / `IS [NOT] NULL` and `ORDER BY CARDINALITY(arr)` ASC/DESC
+       use INDEX scans (EXPLAIN shows `IndexScan`, not a full `Scan` + `PredicatesFilter`/`InMemorySort`).
+       - **Step 4 — evaluator:** `CardinalityFunctionKeyExpression` (`key_expression_cardinality.go`) embeds
+         the generic `FunctionKeyExpression` (so it serialises to the identical `Function{name:"cardinality"}`
+         proto, field 9, wire-compatible) and overrides `Evaluate` with Java's two protobuf fast paths
+         (plain repeated field; nullable-array WRAPPER descent for Java-written records) plus the
+         materialize-and-count fallback. `createsDuplicates()==false` (Java override), `ColumnSize()==1`.
+         Empty/unset Go array → NULL key (§3a-consistent with the scalar).
+       - **Step 6a — KeyExpression→Value bridge:** `ValueIndexScanMatchCandidate` carries a parallel
+         `columnFunctions []string` + a `ColumnValue(i, base)` producing `CardinalityValue(FieldValue(col))`
+         for a cardinality column (plain `FieldValue` otherwise). `ExpandValueIndex` (via the
+         `columnValueProvider` interface) and `ComputeMatchedOrderingParts` both consult it, so candidate +
+         query sides build the IDENTICAL Value. `metadataIndexDef.IndexColumnFunctions()` derives the tags
+         from the index's `KeyExpression` (the recordlayer→cascades half of the bridge).
+       - **Step 5 — index DDL:** `CREATE INDEX … AS SELECT CARDINALITY(arr) … ORDER BY` recognises the
+         bare-ID CARDINALITY call by typed node and routes to `Builder.AddCardinalityIndex` →
+         `CardinalityExpr(field(arr, Concatenate))` value index (`buildCardinalityIndex`).
+       - **Step 6b — predicate matching:** `WHERE CARDINALITY = N` falls out of `valuesMatchColumn`; added a
+         `*CardinalityValue` alias-invariant arm (mirrors the FieldValue / distance-row-number arms).
+       - **Step 6c — ORDER-BY rework:** `rule_ordered_index_scan.go` now matches the sort key by Value-tree
+         equality against the candidate's `ColumnValue` (the `sortKeyMatchesColumn` helper), not a
+         `FieldValue`-name string — so `CardinalityValue` sort keys bind (incl. REVERSE). Plain-field
+         ORDER BY unchanged.
+       - **Value-index NULL ranges (Java-aligned, surfaced by the `IS [NOT] NULL` cases):** `IS NULL` is now
+         a `[null]` EQUALITY range and `IS NOT NULL` a `(null,+inf)` INEQUALITY range for value-index
+         matching — Java's `ScanComparisons.getComparisonType(IS_NULL)==EQUALITY` / `NOT_NULL==INEQUALITY`.
+         `ComparisonRange.Merge` classifies them; `isSargableComparisonForMatch` admits them (only the
+         index-match gate, not the base `isScanRangeCompatible` the NLJ path uses); the executor builds the
+         `[null]`/(null,+inf) ranges (`IS NOT NULL` was already supported). This closed a general Go
+         divergence (no value index bound `IS [NOT] NULL` before) — `TestPlanHarness_IsNull` updated to the
+         now-correct index plan; full sqldriver suite green.
+       - Tests: `array_cardinality_index_fdb_test.go` (EXPLAIN-asserted: `= N`, `IS [NOT] NULL`, ORDER BY
+         ASC/DESC, covering, plain-field no-regression controls incl. plain `IS [NOT] NULL`),
+         `cardinality_ddl_test.go` (DDL → `CardinalityFunctionKeyExpression` + catalog proto round-trip),
+         `key_expression_cardinality_test.go` (evaluator fast paths + wrapper + wire round-trip). 10×
+         deterministic. **Note:** nested-struct array (`tab2_index` in the yamsql) is blocked on STRUCT
+         column support in the metadata builder (`buildCardinalityIndex` already builds the dotted-column
+         nesting); lands with struct columns.
      - **[ ] §3a follow-up — nullable-array-wrapper WRITE.** Go's metadata builder emits a plain repeated
        field for both nullable and NOT-NULL arrays; it does not write Java's `message{ repeated values }`
        wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets

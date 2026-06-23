@@ -474,6 +474,14 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			break
 		}
 		comp := cr.GetEqualityComparison()
+		// IS NULL is an equality range on the NULL value (Java's
+		// getComparisonType(IS_NULL)==EQUALITY): it has no RHS Operand, and the
+		// sought key element is NULL itself. Append nil to seek the single
+		// [null] index entry, rather than Evaluate'ing a nil Operand.
+		if comp.Type == predicates.ComparisonIsNull {
+			prefix = append(prefix, nil)
+			continue
+		}
 		val, err := comp.Operand.Evaluate(binder)
 		if err != nil {
 			return recordlayer.TupleRange{}, err

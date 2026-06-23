@@ -1756,6 +1756,60 @@ func (d *metadataIndexDef) IndexName() string          { return d.idx.Name }
 func (d *metadataIndexDef) IndexColumnNames() []string { return d.idx.RootExpression.FieldNames() }
 func (d *metadataIndexDef) IndexIsUnique() bool        { return d.idx.IsUnique() }
 
+// IndexColumnFunctions returns the per-column function tags parallel to
+// IndexColumnNames: "" for a plain field, cascades.FunctionKindCardinality for
+// a CARDINALITY()-keyed column. Returns nil when every column is a plain field
+// (the common case, avoiding an allocation). This is the recordlayer→cascades
+// half of the KeyExpression→Value bridge: it tells the match candidate which
+// column's Value is CardinalityValue(FieldValue(col)) rather than a bare field,
+// so a CARDINALITY() predicate/sort binds to the index (Java: the candidate
+// carries CardinalityFunctionKeyExpression.toValue()).
+func (d *metadataIndexDef) IndexColumnFunctions() []string {
+	cols := indexColumnFunctionTags(d.idx.RootExpression)
+	for _, fn := range cols {
+		if fn != "" {
+			return cols
+		}
+	}
+	return nil
+}
+
+// indexColumnFunctionTags flattens a key expression into per-column function
+// tags, parallel to KeyExpression.FieldNames(). A *CardinalityFunctionKeyExpression
+// contributes one cardinality-tagged column (its argument's single field name);
+// every other atomic key contributes a "" (plain) tag per field name it
+// produces. Composite keys concatenate their children's tags, mirroring
+// FieldNames()'s flattening so the two slices stay index-aligned.
+func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
+	switch e := expr.(type) {
+	case *recordlayer.CardinalityFunctionKeyExpression:
+		// One key column; its FieldNames() may yield >1 name only for the
+		// Java wrapper shape (arr.values), which Go never writes — so a single
+		// cardinality tag suffices and stays aligned with FieldNames().
+		n := len(e.FieldNames())
+		if n == 0 {
+			n = 1
+		}
+		tags := make([]string, n)
+		tags[0] = cascades.FunctionKindCardinality
+		return tags
+	case *recordlayer.CompositeKeyExpression:
+		var tags []string
+		for _, child := range e.SubKeyExpressions() {
+			tags = append(tags, indexColumnFunctionTags(child)...)
+		}
+		return tags
+	default:
+		// Plain field / nesting / everything else: one "" tag per produced
+		// field name, keeping the slice aligned with FieldNames().
+		names := expr.FieldNames()
+		if len(names) == 0 {
+			return []string{""}
+		}
+		return make([]string, len(names))
+	}
+}
+
 func (d *metadataIndexDef) IndexRecordTypes() []string {
 	rts := d.md.RecordTypesForIndex(d.idx)
 	names := make([]string, len(rts))
