@@ -172,27 +172,31 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   already routed through `wrapContinuation`. Pinned by a cross-engine conformance regression
   asserting Go's continuation bytes are **byte-identical** to Java's for the same scan position
   (`continuation_conformance_test.go`), plus unit tests for the empty-suffix + round-trip cases.
-- **[ ] `executeLimit` skip/limit state not in the continuation** (`executor.go:816`,
-  query-engine/Graefe-gated). A `RecordQueryLimitPlan` spanning a page boundary would re-skip
-  `offset` (lose rows) + re-apply `limit` (over-return). Latent — currently shielded (top-level
-  LIMIT goes through `paginatingRows`; nested LIMIT only in eager scalar subqueries). Encode
-  skip/limit-remaining in the plan continuation.
-- **[ ] limit-before-first-row → `StartContinuation` read as "exhausted"** (query-engine,
-  Graefe-gated). Bug site located this round: `cascades_generator.go:1129` — `fetchPage` does
-  `if contBytes == nil { r.exhausted = true }`, but `StartContinuation` has `IsEnd()==false`
-  (`cursor.go:100`) and `ToBytes()==nil` (`:95`). So a *non-end* "limit reached, made no progress this
-  page" result is silently mapped to exhausted → result-set TRUNCATION.
-  - **Reachability:** the leaf `keyValueCursor` is SAFE — the time/scan-limit checks guard on
-    `recordsScanned > 0` (the "free initial pass", `key_value_cursor.go:139/149`), guaranteeing ≥1
-    record (hence a non-nil `continuation`) before any limit fires, so its `limitContinuation` returns
-    `BytesContinuation`, never `StartContinuation`. The risk is a plan that consumes many inputs per
-    output — an aggregate / GROUP BY hitting `txPageTimeLimit` before producing its first output row —
-    if that operator returns a `StartContinuation` instead of carrying the inner scan position.
-  - **Fix is NOT naive:** you can't just "resume on nil bytes" — `StartContinuation` resumes from the
-    START, so re-running the page re-scans from the beginning, hits the same limit, and loops forever.
-    Correct fix: cursors must carry a forward-progress scan position in their limit continuation even
-    when no output row was produced (so the next page resumes *after* the consumed input), OR
-    `fetchPage` must distinguish no-progress (error/raise budget) from end. Needs an RFC + Graefe ACK.
+- **[x] `executeLimit` skip/limit state not in the continuation — DONE (RFC-128, PR #326,
+  Graefe + Torvalds ACK + @claude follow-ups).** The audit's literal P1 (executor re-skip on
+  resume) was shielded/latent; RFC-128 went further and removed the post-execution LIMIT hoist,
+  making LIMIT a uniform `RecordQueryLimitPlan` operator with a mandatory continuation envelope.
+  `executeLimit` (now `executor/executor.go:800`) decodes a `LimitContinuation` (`{inner
+  continuation, remaining offset, remaining limit}`) and the `limitEnvelopeCursor` resumes
+  mid-window — never re-skipping `offset`, never resetting `limit`. Pinned by
+  `limit_envelope_test.go` (`TestLimitEnvelope_ResumeAcrossPage_NoReSkip`, `_OffsetSpansPageBreak`,
+  `_ZeroLimit`, round-trip + garbage-rejection). Verified green at HEAD.
+- **[x] limit-before-first-row → `StartContinuation` read as "exhausted" — DONE (RFC-127, PR #325,
+  Graefe + Torvalds ACK + @claude follow-up).** The old `fetchPage` inferred exhaustion from
+  `ToBytes()==nil`, but a non-end `StartContinuation` is byte-identical to an `EndContinuation` →
+  silent result-set truncation. Fixed by `pageContinuationState`
+  (`embedded/cascades_generator.go:1411`): exhaustion is now decided by `IsEnd()`
+  (≡ `SourceExhausted`), **never** by bytes — aligning Go with Java's `SOURCE_EXHAUSTED`-only
+  invariant. The out-of-band+nil-bytes case raises `ScanLimitReachedError` (→ 54F01) instead of
+  truncating; `LIMIT 0` (in-band `ReturnLimitReached`) is clean exhaustion.
+  - **Reachability (per RFC-127's `/code-review` trace):** the data-loss path was **latent, not
+    live** — every Go leaf cursor reports out-of-band only after `scanned>0` (→ `BytesContinuation`,
+    which the old code resumed correctly), so no current cursor emits a no-next out-of-band+START.
+    The fix is a correctness/invariant hardening (exhaustion from `IsEnd`, not bytes) + makes the
+    `LIMIT 0` handling explicit — a latent landmine closed before any future Union/Intersection/
+    MapWhile-style cursor can trip it. Pinned by `cascades_generator_pagination_test.go`
+    (`TestPageContinuationState` decision table, `TestContinuationExhaustionByIsEndNotBytes`).
+    Verified green at HEAD.
 - **[~] `autoContinuingCursor` retry-after-limit-stop — ANALYZED, no duplicate rows (perf-only).**
   Re-read `onNextWithRetry`/`OnNext` (`cursor_combinators.go:780-847`) this round. On a retryable
   error the retry resumes from `lastContinuation()` = `c.lastResult` (the last RETURNED value's
