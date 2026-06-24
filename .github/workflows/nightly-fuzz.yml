@@ -206,3 +206,75 @@ jobs:
             /tmp/fuzz-cache/**
           retention-days: 30
           if-no-files-found: ignore
+
+  engine-fuzz:
+    name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 200
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check Docker (a few targets — e.g. FuzzSQL_QueryContext — need a live FDB)
+        # The vast majority of these fuzz funcs are pure (planner / values / continuations /
+        # serialization), but the e2e ones spin an FDB testcontainer. Require Docker so they
+        # actually fuzz instead of f.Skip-ing — fail loudly rather than silently no-op.
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker not available — engine fuzz cannot run the e2e targets"; exit 1; }
+
+      - name: Fuzz every //pkg/relational + //pkg/recordlayer Fuzz target (Bazel-native, 60s each)
+        # Closes the P2.4 breadth gap: the ~95 SQL-engine + record-layer Fuzz targets
+        # (planner suite, value/predicate simplification, continuations, proto/record
+        # deserialization, SQL front-end + e2e) previously ran SEED CORPORA ONLY (per-PR
+        # replay) with no active fuzz time. This rotates the full set nightly at 60s each
+        # (~95 × ~75s incl. build ≈ 2h, within the 200m timeout). Targets are DISCOVERED,
+        # not hard-listed; an empty discovery fails the job (no-op guard). Same
+        # (target,func)-pair + valid-label validation as client-fuzz so a gazelle rename
+        # fails loudly instead of silently fuzzing nothing.
+        run: |
+          mkdir -p /tmp/fuzz-cache
+          VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/...)' 2>/dev/null)
+          PAIRS=""
+          for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer --include='*_test.go'); do
+            dir=$(dirname "$f")
+            target="//$dir:$(basename "$dir")_test"
+            echo "$VALID" | grep -qxF "$target" || {
+              echo "::error::derived target $target (from $f) is not a real go_test — gazelle naming changed"
+              exit 1
+            }
+            for fn in $(grep -oP '^func \KFuzz\w+' "$f"); do
+              PAIRS="$PAIRS ${target}|${fn}"
+            done
+          done
+          if [ -z "$PAIRS" ]; then
+            echo "::error::no //pkg/relational or //pkg/recordlayer Fuzz targets discovered — engine fuzz gate is a no-op"
+            exit 1
+          fi
+          echo "Discovered $(echo $PAIRS | wc -w) (target,func) fuzz pairs"
+          FAILED=0
+          for pair in $PAIRS; do
+            target="${pair%|*}"; fn="${pair#*|}"
+            echo "=== $target $fn (60s) ==="
+            bazelisk test "$target" \
+              --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
+              --test_arg=-test.fuzztime=60s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+              --sandbox_writable_path=/tmp/fuzz-cache \
+              --test_timeout=300 --nocache_test_results --test_output=errors || {
+                echo "::error::fuzz FAIL: $target $fn"
+                FAILED=1
+              }
+          done
+          exit $FAILED
+
+      - name: Upload failing fuzz logs + cache (crash corpus)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-fuzz-failure
+          path: |
+            bazel-testlogs/pkg/relational/**/test.log
+            bazel-testlogs/pkg/recordlayer/**/test.log
+            /tmp/fuzz-cache/**
+          retention-days: 30
+          if-no-files-found: ignore

@@ -37,8 +37,7 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   per-PR, stress nightly; conformance still nightly-only), **P1.8** CI reproducibility (pinned +
   checksummed artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds
   + codex ACK), **P2.2** libfdb_c escape hatch (RFC-109: full write-path backend + per-PR
-  differential shipped, but prod open paths not yet routed through the seam), **P2.4** fuzz breadth
-  (~44/120 fuzzed nightly; no full rotation / published crash corpus).
+  differential shipped, but prod open paths not yet routed through the seam).
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
   pass.
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
@@ -48,7 +47,7 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`;
   **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`); **P3.4** operator guide
   (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
-  `prod-stack/08`).
+  `prod-stack/08`); **P2.4** full nightly fuzz rotation (`engine-fuzz` job → `prod-stack/10`).
 - **Bug found + fixed by the new fuzz net (`prod-stack/09`):** `FuzzSQLPlan` immediately surfaced a
   real Cascades planner panic — `values.EqualsWithoutChildren` hit its unhandled-type default on
   `*expr.predicateValue` (a predicate-as-value, e.g. `ORDER BY !amount`), which can't be added to the
@@ -676,13 +675,17 @@ tenants, direct `CreateTransaction`/`FDBDatabaseRunner`/locality.
 - **`GetIndexTypeName` MIN/MAX_EVER** (TODO.md ~1042) — `values.go:2653-2656` still hardcodes
   `MIN_EVER_LONG`/`MAX_EVER_LONG`; needs a `_TUPLE` arm.
 
-### [~] P2.4 — Broaden fuzz coverage in CI · S — partially done
-*(Verified 2026-06-24.)* Nightly now actively fuzzes **~44 of 120** targets (up from 8):
-`nightly-fuzz.yml` discovers and runs all 18 `cmd/fdb-diff-oracle` targets (6m each) + all 26
-`//pkg/fdbgo/...` targets (4m each). Per-PR, `ci.yml` deterministically replays every `Fuzz*`
-**seed corpus**. **Remaining:** the ~76 planner/recordlayer/relational/spfresh/cascades targets get
-seed-replay only (no active fuzz time, no rotation across all 120); failing seeds upload as 30-day
-CI artifacts but there is **no published/committed crash corpus**.
+### [x] P2.4 — Broaden fuzz coverage in CI · S — DONE
+*(2026-06-25.)* Added the `engine-fuzz` nightly job (`nightly-fuzz.yml`) which **discovers and
+actively fuzzes all ~95 `//pkg/relational` + `//pkg/recordlayer` Fuzz targets** (planner suite,
+value/predicate simplification, continuations, proto/record deserialization, the new SQL front-end
++ e2e targets) at 60s each — the previously seed-replay-only set. With the existing diff-fuzz (18)
+and client-fuzz (26) jobs, **essentially every Go-native Fuzz target is now actively fuzzed
+nightly** (was 8 at the 2026-06-07 baseline). Same DISCOVERY + valid-label + no-op-guard pattern as
+client-fuzz (a gazelle rename fails loudly, not silently). Crash corpus is **published as 30-day CI
+artifacts** on failure (`engine-fuzz-failure`), matching the established diff-fuzz/client-fuzz
+convention. *(This net immediately earned its keep: `FuzzSQLPlan` found the predicate-as-value
+planner panic fixed in `prod-stack/09`.)*
 
 ### [x] P2.5 — Pin FDB image version in tests · S — DONE
 The test infra was already pinned to a single specific version, never `:latest`:
