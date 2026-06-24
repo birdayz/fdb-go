@@ -41,13 +41,14 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   (~44/120 fuzzed nightly; no full rotation / published crash corpus), **P3.2** examples (one
   compiles in CI; needs SQL + backend-agnostic examples).
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
-  pass, **P3.4** operator guide.
+  pass.
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
   all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
   release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
 - **Closed by the `prod-stack/*` PRs (2026-06-24):** **P1.2** record-layer half (online-indexer
   progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`;
-  **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`).
+  **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`); **P3.4** operator guide
+  (`docs/operations.md` → `prod-stack/07`).
 
 ---
 
@@ -713,12 +714,15 @@ codes) are *correctly* different C++ predicates, each C++-pinned by tests; the c
 duplication is forced by an import cycle (the cgo backend can't import `client`) and documented at
 the call site. Drift risk eliminated by construction + revert-proven tests.
 
-### [ ] P3.4 — Operator guide · M
-*(Verified 2026-06-24: not started.)* No `docs/operations|operator|runbook` file exists — only
-to-do notes (`PRODUCTION_READINESS.md`, `docs/prod-readiness-audit-2026-06-19.md`). Write
-`docs/operations.md` covering: cluster file, retry, tx limits, online index lifecycle, index-state
-transitions, schema-evolution safety, backup/restore, observability hooks (the P1.3/RFC-097
-metrics + slog events now exist to document).
+### [x] P3.4 — Operator guide · M — DONE
+*(2026-06-24.)* `docs/operations.md` written, covering all eight topics with the **real** Go API
+surface (verified against the code, not invented): cluster file + DSN + the `-tags libfdbc` escape
+hatch; retry/ctx (`TransactCtx`, unlimited-retry-bounded-by-ctx, `Database.Options()` knobs); tx
+limits (5s/100KB/10MB/10KB + split records); online-index lifecycle (`OnlineIndexerBuilder` knobs +
+defaults); index-state transitions (Disabled/WriteOnly/Readable/ReadableUniquePending); schema-
+evolution safety (format version 14 + the wire-compat safe/unsafe list); backup/restore (none in the
+layer — use `fdbbackup`/`fdbrestore`); observability (`Database.Metrics()`, `fdbmetrics` Prometheus
+handler, slog, online-index progress events, `PlanGenerationLogger`). Linked from README.
 
 ---
 
