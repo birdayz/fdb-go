@@ -49,6 +49,12 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`); **P3.4** operator guide
   (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
   `prod-stack/08`).
+- **Bug found + fixed by the new fuzz net (`prod-stack/09`):** `FuzzSQLPlan` immediately surfaced a
+  real Cascades planner panic — `values.EqualsWithoutChildren` hit its unhandled-type default on
+  `*expr.predicateValue` (a predicate-as-value, e.g. `ORDER BY !amount`), which can't be added to the
+  switch without an import cycle. Fixed by a `SelfEqualsWithoutChildren` interface (Java-faithful
+  per-type equality); pinned by the fuzz crasher seed + a unit test. *(Query-engine change —
+  Graefe + Torvalds gated.)*
 
 ---
 

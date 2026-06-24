@@ -219,6 +219,18 @@ func typesEqual(a, b Type) bool {
 	return a.Code() == b.Code() && a.IsNullable() == b.IsNullable()
 }
 
+// SelfEqualsWithoutChildren lets a Value implement its own structural
+// node-equality — the analogue of Java's per-type Value.equalsWithoutChildren.
+// EqualsWithoutChildren's type switch can only enumerate Value implementations
+// defined in THIS package; a Value defined elsewhere (e.g. expr.predicateValue,
+// which would create an import cycle if referenced here) MUST implement this so
+// the Cascades matcher can compare it instead of hitting the unhandled-type
+// panic. Children() is still walked by ValuesStructurallyEqual, so a leaf Value
+// (Children() empty) returns its full node identity here.
+type SelfEqualsWithoutChildren interface {
+	EqualsWithoutChildrenValue(other Value) bool
+}
+
 // EqualsWithoutChildren checks whether two Values are the same type
 // with the same non-child attributes, WITHOUT recursing into children.
 // This is the Go equivalent of Java's Value.equalsWithoutChildren().
@@ -467,6 +479,14 @@ func EqualsWithoutChildren(a, b Value) bool {
 		bv, ok := b.(*UnmatchedAggregateValue)
 		return ok && av.UnmatchedID == bv.UnmatchedID
 	default:
+		// A Value implementation defined outside this package carries its own
+		// structural node-equality (see SelfEqualsWithoutChildren) — this is how
+		// e.g. expr.predicateValue is compared without an import cycle. A type
+		// that is neither in the switch nor self-equatable is a genuine bug:
+		// keep the assertion.
+		if eq, ok := a.(SelfEqualsWithoutChildren); ok {
+			return eq.EqualsWithoutChildrenValue(b)
+		}
 		panic(fmt.Sprintf("EqualsWithoutChildren: unhandled Value type %T", a))
 	}
 }
