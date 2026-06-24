@@ -4,6 +4,7 @@ go_library(
     name = "yamsql",
     srcs = [
         "diff.go",
+        "featurematrix.go",
         "runner.go",
         "yamsql.go",
     ],
@@ -18,10 +19,16 @@ go_library(
 go_test(
     name = "yamsql_test",
     srcs = [
+        "featurematrix_test.go",
         "runner_test.go",
         "yamsql_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + [
+        # keep: staged into runfiles so TestFeatureMatrixUpToDate can read the
+        # committed matrix and walk up to the repo root under Bazel.
+        "//:FEATURE_MATRIX.md",
+        "//:MODULE.bazel",
+    ],
     embed = [":yamsql"],
     deps = [
         "//pkg/relational/sqldriver",

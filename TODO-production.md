@@ -46,6 +46,8 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
   all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
   release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
+- **Closed by the `prod-stack/*` PRs (2026-06-24):** **P1.2** record-layer half (online-indexer
+  progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`.
 
 ---
 
@@ -555,7 +557,7 @@ scan: production-clean (only the 2 docker N/A remain, test-only).
 differential tests somewhere (or formally retire them in favour of the `libfdbc` gold gate).
 Caveat (Torvalds): detection, not repair — see the won't-fix note.
 
-### [~] P1.7 — Reconcile contradictory docs · S — README done
+### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
 README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
 against the yamsql corpus + DIVERGENCES.md): LEFT/RIGHT/FULL OUTER JOIN, LIMIT/OFFSET,
 subqueries-in-WHERE (EXISTS / IN (SELECT) / correlated scalar), mixed ASC/DESC, scalar
@@ -571,8 +573,14 @@ contradiction — the client-maturity row (README:19) still claimed "no drop-in 
 client yet" while the build commands document the `-tags libfdbc` escape hatch. RFC-131 fixed that,
 de-staled the hard-coded "accurate as of <date>" SQL-summary date, archived the six stale 2026-03-09
 `reports/*.md` to `docs/archive/`, and added a `docs_consistency_test.go` guard (Java target anchored
-to MODULE.bazel; README contradiction check). The doc-drift portion of this item is now closed; a
-generated `FEATURE_MATRIX.md` remains the only deferred piece.
+to MODULE.bazel; README contradiction check). The doc-drift portion of this item is now closed.
+
+**Update (2026-06-24):** the last deferred piece — a **generated `FEATURE_MATRIX.md`** — is now DONE.
+`FEATURE_MATRIX.md` is generated from the yamsql corpus (one row per scenario: name, #cases, and the
+scenario's own leading-comment description, grouped by feature area) via
+`cmd/gen-feature-matrix` / `just feature-matrix`, and **cannot rot**: `TestFeatureMatrixUpToDate`
+(`pkg/relational/conformance/yamsql`) regenerates and fails the build on drift (red→green proven).
+README links it. **P1.7 is now fully closed.**
 
 ### [~] P1.8 — CI reproducibility / supply chain · M — implementation landed; RFC-108 still DRAFT
 *(Verified 2026-06-24.)* The work is in-tree and verifiable: every downloaded runner artifact is

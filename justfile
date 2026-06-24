@@ -46,6 +46,12 @@ generate-frl: ensure-buf
     rm -rf cmd/frl/gen/
     cd cmd/frl && ../../.tools/buf generate
 
+# Regenerate FEATURE_MATRIX.md from the yamsql conformance corpus. The
+# TestFeatureMatrixUpToDate guard fails the build if this is not run after
+# adding/removing/renaming scenarios.
+feature-matrix:
+    go run ./cmd/gen-feature-matrix
+
 # Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
 # first so removed interfaces / renamed files don't leave stale
 # mocks behind. Same-package output so tests elsewhere write
