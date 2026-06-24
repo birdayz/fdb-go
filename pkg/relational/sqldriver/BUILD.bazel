@@ -80,6 +80,7 @@ go_test(
         "rfc087_swallow_sort_fdb_test.go",
         "scalar_subquery_cte_test.go",
         "sql_integration_test.go",
+        "sql_querycontext_fuzz_test.go",
         "statistics_fdb_test.go",
         "twotable_order_invariant_test.go",
         "union_aggregate_expr_alias_test.go",
