@@ -43,8 +43,9 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
   pass, **P3.4** operator guide, **P0.3-F** the e2e SQL-fuzz target. *(**P1.2** record-layer half —
   online-indexer progress events — closed by `prod-stack/03`.)*
-- **Deferred by owner:** **P2.1** — the stability statement is done, but cutting `v0.1.0` /
-  `CHANGELOG.md` is intentionally on hold. Do not cut a release branch yet.
+- **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
+  all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
+  release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
 
 ---
 
@@ -604,12 +605,19 @@ Torvalds + codex ACK**; mark `[x]` once accepted.
 
 ## P2 — Medium (before stable v1 / external adopters)
 
-### [ ] P2.1 — Releases, semver, CHANGELOG · S — release cut DEFERRED (owner's call)
-*(Verified 2026-06-24.)* The **stability statement** is done — `README.md` carries a pre-1.0
-"not yet declared production-ready" statement pointing to `PRODUCTION_READINESS.md` /
-`TODO-production.md`. Still missing: `git tag` is empty (no releases), no `CHANGELOG.md`, no
-`/vN`. **Cutting `v0.1.0` is intentionally on hold per the owner — do NOT cut a release branch
-yet.** When unheld: add `CHANGELOG.md` and cut the tag.
+### [~] P2.1 — Releases, semver, CHANGELOG · S — docs DONE; only the tag cut is DEFERRED (owner's call)
+*(Verified 2026-06-24 — correcting the first reconciliation pass, which wrongly reported "no
+CHANGELOG".)* Everything except the actual tag is in place (RFC-131/132 era, 2026-06-20):
+- **`CHANGELOG.md`** — Keep-a-Changelog format with an `[Unreleased]` section and a per-entry
+  **Compatibility** block (wire / SQL / client-option / deps); guarded by `pkg/docscheck`.
+- **`RELEASE.md`** — versioning + support policy: `v0.MINOR.PATCH`, Go API unstable pre-1.0, FDB
+  wire format the stable hard line across every tag.
+- **Stability statement** — `README.md` (pre-1.0 maturity row) + `RELEASE.md` per-layer policy +
+  `SECURITY.md`.
+
+**Remaining: only the `git tag` itself** — no `v0.x` cut yet, and **cutting `v0.1.0` is
+intentionally on hold per the owner. Do NOT cut a release branch/tag yet.** When unheld, the cut is
+mechanical (move `[Unreleased]` → `v0.1.0`, tag).
 
 ### [~] P2.2 — libfdb_c escape hatch · L — MECHANISM DONE (RFC-109, PR #295); prod entry points not routed
 *(Verified 2026-06-24.)* A build-tag-selectable libfdb_c backend shipped:
