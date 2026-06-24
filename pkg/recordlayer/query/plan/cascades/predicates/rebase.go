@@ -58,7 +58,7 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 		if newVal == pred.Value {
 			return p
 		}
-		return NewExistentialValuePredicate(newVal, pred.Comparison)
+		return MustNewExistentialValuePredicate(newVal, pred.Comparison)
 	case *Placeholder:
 		newAlias := pred.ParameterAlias
 		if mapped, ok := aliases[newAlias]; ok {

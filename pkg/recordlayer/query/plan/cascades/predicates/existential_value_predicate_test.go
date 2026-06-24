@@ -55,14 +55,14 @@ func TestExistentialValuePredicate_ComparisonIsNotNull(t *testing.T) {
 	}
 }
 
-func TestNewExistentialValuePredicate_RejectsNonQOV(t *testing.T) {
+func TestMustNewExistentialValuePredicate_RejectsNonQOV(t *testing.T) {
 	t.Parallel()
 	defer func() {
 		if recover() == nil {
 			t.Fatal("constructing with a non-QuantifiedObjectValue should panic")
 		}
 	}()
-	_ = NewExistentialValuePredicate(values.NewFieldValue(nil, "f", nil), Comparison{Type: ComparisonIsNotNull})
+	_ = MustNewExistentialValuePredicate(values.NewFieldValue(nil, "f", nil), Comparison{Type: ComparisonIsNotNull})
 }
 
 func TestExistentialValuePredicate_SatisfiesInterface(t *testing.T) {
@@ -82,7 +82,7 @@ func TestIsExistentialPredicate(t *testing.T) {
 	// An ExistentialValuePredicate constructed with a non-NOT_NULL comparison must NOT be
 	// classified as a positive EXISTS (codex): the exported constructor permits any comparison,
 	// and only "IS NOT NULL over the QOV" is the existential semi-join shape.
-	wrongComp := NewExistentialValuePredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNull})
+	wrongComp := MustNewExistentialValuePredicate(values.NewQuantifiedObjectValue(alias), Comparison{Type: ComparisonIsNull})
 	if _, ok := IsExistentialPredicate(wrongComp); ok {
 		t.Fatal("an ExistentialValuePredicate with IS NULL must NOT be classified as existential")
 	}

@@ -207,7 +207,7 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 	case *predicates.ValuePredicate:
 		return predicates.NewValuePredicate(fn(q.Value))
 	case *predicates.ExistentialValuePredicate:
-		return predicates.NewExistentialValuePredicate(fn(q.Value), q.Comparison)
+		return predicates.MustNewExistentialValuePredicate(fn(q.Value), q.Comparison)
 	case *predicates.AndPredicate:
 		subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
 		for i, sp := range q.SubPredicates {
@@ -223,13 +223,23 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 	case *predicates.NotPredicate:
 		return &predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}
 	default:
+		// Conservative passthrough: a predicate type not enumerated above is
+		// returned unmapped. This is correct for the leaf/atom predicates that
+		// carry no mappable Value children. WHEN ADDING A NEW PREDICATE TYPE
+		// THAT CARRIES Value CHILDREN (a new compound or a value-bearing leaf),
+		// add a case here so the null-substitution reaches it — otherwise the
+		// rebase/null-substitution silently skips it.
 		return p
 	}
 }
 
 // isNullStrictValue reports whether v is one of the strictly-null-propagating
 // Value classes (yields NULL if any child is NULL). Mirrors Java's
-// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES.
+// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES — KEEP IN SYNC: when a
+// new null-strict Value type is ported (Java adds one to that allowlist), add it
+// here too, else this rule's null-folding silently under-approximates. As of
+// Java 4.12 the set is ArithmeticValue, CastValue, FieldValue, NotValue,
+// PromoteValue, SubscriptValue (enumerated below).
 func isNullStrictValue(v values.Value) bool {
 	switch v.(type) {
 	case *values.ArithmeticValue, *values.CastValue, *values.FieldValue,

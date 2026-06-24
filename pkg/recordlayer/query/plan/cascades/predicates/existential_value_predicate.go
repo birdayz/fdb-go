@@ -41,12 +41,18 @@ type ExistentialValuePredicate struct {
 	Comparison Comparison
 }
 
-// NewExistentialValuePredicate constructs the predicate. The value MUST
-// be a *QuantifiedObjectValue (Java: Verify.verify(value instanceof
-// QuantifiedObjectValue)); a non-QOV operand is a construction error.
-func NewExistentialValuePredicate(value values.Value, comparison Comparison) *ExistentialValuePredicate {
+// MustNewExistentialValuePredicate constructs the predicate. The value MUST
+// be a *QuantifiedObjectValue; the `Must` prefix is the documented panic
+// contract (Go's regexp.MustCompile convention, mapping to Java's
+// Verify.verify(value instanceof QuantifiedObjectValue)) — a non-QOV operand
+// is a programming error, not a runtime condition. Every call site holds a
+// QOV by construction (a rebased / mapped / decorrelated QOV stays a QOV, and
+// ExistsValueToQueryPredicate passes the ExistsValue's QOV child), so the
+// precondition is a caller-guaranteed structural invariant, not input
+// validation — which is why this asserts rather than returns an error.
+func MustNewExistentialValuePredicate(value values.Value, comparison Comparison) *ExistentialValuePredicate {
 	if _, ok := value.(*values.QuantifiedObjectValue); !ok {
-		panic("NewExistentialValuePredicate: value must be a *QuantifiedObjectValue")
+		panic("MustNewExistentialValuePredicate: value must be a *QuantifiedObjectValue")
 	}
 	return &ExistentialValuePredicate{Value: value, Comparison: comparison}
 }
@@ -111,7 +117,7 @@ var _ QueryPredicate = (*ExistentialValuePredicate)(nil)
 // the values package cannot import predicates (import cycle: predicates
 // imports values). The child must be a *QuantifiedObjectValue.
 func ExistsValueToQueryPredicate(ev *values.ExistsValue) QueryPredicate {
-	return NewExistentialValuePredicate(ev.GetChild(), Comparison{Type: ComparisonIsNotNull})
+	return MustNewExistentialValuePredicate(ev.GetChild(), Comparison{Type: ComparisonIsNotNull})
 }
 
 // IsExistentialPredicate reports whether p is the existential semi-join

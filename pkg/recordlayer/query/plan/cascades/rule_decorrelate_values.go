@@ -503,7 +503,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		if newVal == pred.Value {
 			return p
 		}
-		return predicates.NewExistentialValuePredicate(newVal, pred.Comparison)
+		return predicates.MustNewExistentialValuePredicate(newVal, pred.Comparison)
 	case *predicates.Placeholder:
 		newVal := translateValueCorrelations(pred.Value, tm)
 		newAlias := pred.ParameterAlias
