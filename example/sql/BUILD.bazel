@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "sql_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/example/sql",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/relational/sqldriver"],
+)
+
+go_binary(
+    name = "sql",
+    embed = [":sql_lib"],
+    visibility = ["//visibility:public"],
+)

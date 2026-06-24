@@ -301,6 +301,12 @@ func main() {
 }
 ```
 
+Runnable, CI-compiled examples live under `example/`:
+- [`example/sql`](example/sql/main.go) — the SQL path above, fleshed out (DDL, parameterized
+  INSERT, point query, `GROUP BY` aggregate over an index). `go run ./example/sql`.
+- [`example/getting_started.go`](example/getting_started.go) — the lower-level record-store API
+  (metadata, typed `SaveRecord`/`loadRecord`, index scans).
+
 ## Building
 
 Requires Bazel 9+ (via bazelisk) and Docker (for testcontainers).
