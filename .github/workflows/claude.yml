@@ -17,7 +17,14 @@ jobs:
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
-    runs-on: [self-hosted, linux, x64, hetzner]
+    # GitHub-hosted, NOT the self-hosted Hetzner runner. The @claude review job
+    # is lightweight (checkout + the claude-code-action, authed by a secret — it
+    # reads the diff/CI and comments via the API; no FDB/Docker/`just test`).
+    # The single self-hosted runner is shared with the multi-hour Nightly Stress
+    # job, so running @claude there made interactive reviews queue for ~30+ min
+    # behind a batch job. Hosted decouples them: reviews start immediately and
+    # the Hetzner box stays dedicated to the FDB-heavy suites (CI/stress/conformance).
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
