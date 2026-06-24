@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -228,6 +230,23 @@ type OnlineIndexer struct {
 	// index data while leaving it WRITE_ONLY with its build stamp/progress intact
 	// (e.g. to inspect or resume the build).
 	markReadableEnabled bool
+
+	// progressLogIntervalMillis throttles the per-range "Indexer: Built Range"
+	// progress log (see maybeLogBuildProgress). Matches Java
+	// OnlineIndexOperationConfig.progressLogIntervalMillis:
+	//   <0  → never log (DEFAULT_PROGRESS_LOG_INTERVAL = -1, disabled);
+	//    0  → log after every range;
+	//   >0  → log at most once per this many milliseconds.
+	progressLogIntervalMillis int64
+	// timeOfLastProgressLogMillis is the throttle clock for the progress log
+	// (Java IndexingBase.timeOfLastProgressLogMillis). Mutated only by
+	// shouldLogBuildProgress, which runs single-threaded in the build loop.
+	timeOfLastProgressLogMillis int64
+	// logger receives the operational progress events. nil → slog.Default() at
+	// log time, mirroring the client's WithLogger convention (RFC-097) so a
+	// zero-config app keeps the standard slog integration and tests never mutate
+	// process globals.
+	logger *slog.Logger
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -253,6 +272,9 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 			limit:               100,
 			recordsPerSecond:    10000, // matches Java DEFAULT_RECORDS_PER_SECOND
 			markReadableEnabled: true,  // Java buildIndex() defaults markReadable=true
+			// Java DEFAULT_PROGRESS_LOG_INTERVAL = -1 → progress logging is OFF by
+			// default; opt in via SetProgressLogIntervalMillis.
+			progressLogIntervalMillis: -1,
 		},
 	}
 }
@@ -269,6 +291,27 @@ func (b *OnlineIndexerBuilder) SetDatabase(db *FDBDatabase) *OnlineIndexerBuilde
 // OnlineIndexer.buildIndex(boolean markReadable).
 func (b *OnlineIndexerBuilder) SetMarkReadable(v bool) *OnlineIndexerBuilder {
 	b.indexer.markReadableEnabled = v
+	return b
+}
+
+// SetProgressLogIntervalMillis sets the throttle for the per-range
+// "Indexer: Built Range" progress log. Matches Java
+// OnlineIndexer.Builder.setProgressLogIntervalMillis():
+//   - a negative value (the default, -1) disables progress logging;
+//   - 0 logs after every range;
+//   - a positive value logs at most once per that many milliseconds.
+//
+// Events go to the logger set via SetLogger (or slog.Default()) at INFO.
+func (b *OnlineIndexerBuilder) SetProgressLogIntervalMillis(ms int64) *OnlineIndexerBuilder {
+	b.indexer.progressLogIntervalMillis = ms
+	return b
+}
+
+// SetLogger sets the slog.Logger that receives the indexer's operational
+// progress events. A nil logger (the default) falls back to slog.Default() at
+// log time, mirroring the client's WithLogger convention (RFC-097).
+func (b *OnlineIndexerBuilder) SetLogger(logger *slog.Logger) *OnlineIndexerBuilder {
+	b.indexer.logger = logger
 	return b
 }
 
@@ -718,8 +761,8 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 			break
 		}
 
-		// Time-limit check + enforced post-transaction delay between ranges.
-		if err := oi.throttleBetweenRanges(ctx, startTime); err != nil {
+		// Time-limit check + enforced post-transaction delay + progress log between ranges.
+		if err := oi.throttleBetweenRanges(ctx, startTime, totalRecords, n); err != nil {
 			return totalRecords, err
 		}
 	}
@@ -772,8 +815,8 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 			break
 		}
 
-		// Time-limit check + enforced post-transaction delay between ranges.
-		if err := oi.throttleBetweenRanges(ctx, startTime); err != nil {
+		// Time-limit check + enforced post-transaction delay + progress log between ranges.
+		if err := oi.throttleBetweenRanges(ctx, startTime, totalRecords, n); err != nil {
 			return totalRecords, err
 		}
 	}
@@ -869,13 +912,16 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 // where the time check precedes the wait and includes the wait duration. It is called only
 // when more ranges remain, so the final range pays no delay (Java returns READY_FALSE when
 // done). With no enforced delay configured it reduces to the prior plain time-limit check.
-func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime time.Time) error {
+func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime time.Time, totalRecords, rangeRecords int64) error {
 	// Clamp a non-positive delay to 0 so a negative value behaves exactly like "disabled":
 	// it must not be subtracted from elapsed and loosen the time-limit check.
 	delayMs := oi.enforcedPostTransactionDelay
 	if delayMs < 0 {
 		delayMs = 0
 	}
+	// Java emits the progress log (with DELAY=toWait) BEFORE validateTimeLimit + the
+	// delay, so the final range that trips the time limit still reports progress.
+	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, delayMs)
 	if oi.timeLimit > 0 {
 		if elapsed := time.Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
 			return &TimeLimitExceededError{TimeLimit: oi.timeLimit, Elapsed: elapsed}
@@ -885,6 +931,67 @@ func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime ti
 		oi.throttle.applyEnforcedPostTransactionDelay(ctx)
 	}
 	return nil
+}
+
+// shouldLogBuildProgress is the progress-log throttle, ported 1:1 from Java
+// IndexingBase.shouldLogBuildProgress(): interval<0 never logs; interval==0 logs
+// every range; interval>0 logs at most once per interval ms. It advances the
+// throttle clock only when it returns true. Single-threaded in the build loop.
+func (oi *OnlineIndexer) shouldLogBuildProgress() bool {
+	interval := oi.progressLogIntervalMillis
+	now := time.Now().UnixMilli()
+	if interval < 0 || (interval != 0 && interval > now-oi.timeOfLastProgressLogMillis) {
+		return false
+	}
+	oi.timeOfLastProgressLogMillis = now
+	return true
+}
+
+// maybeLogBuildProgress emits the per-range "Indexer: Built Range" INFO event,
+// throttled by shouldLogBuildProgress. Ports Java
+// IndexingBase.doneOrThrottleDelayAndMaybeLogProgress's logging arm. The
+// Enabled(INFO) guard runs FIRST so a disabled INFO level skips both the log AND
+// the throttle-clock advance — matching Java's `LOGGER.isInfoEnabled() &&
+// shouldLogBuildProgress()` short-circuit (otherwise a disabled logger would
+// still consume the throttle interval).
+func (oi *OnlineIndexer) maybeLogBuildProgress(ctx context.Context, totalRecords, rangeRecords int64, delayMs int) {
+	logger := oi.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if !logger.Enabled(ctx, slog.LevelInfo) {
+		return
+	}
+	if !oi.shouldLogBuildProgress() {
+		return
+	}
+	logger.LogAttrs(ctx, slog.LevelInfo, "Indexer: Built Range",
+		slog.String("index", oi.targetIndexNamesForLog()),
+		slog.Int64("records_scanned", totalRecords),
+		slog.Int64("range_records", rangeRecords),
+		slog.Int("limit", oi.currentLimitForLog()),
+		slog.Int("delay_ms", delayMs),
+	)
+}
+
+// targetIndexNamesForLog joins the target index names for the progress log
+// (Java logs LogMessageKeys.INDEX_NAME = common.getTargetIndexesNames()).
+func (oi *OnlineIndexer) targetIndexNamesForLog() string {
+	names := make([]string, len(oi.targetIndexes))
+	for i, idx := range oi.targetIndexes {
+		names[i] = idx.Name
+	}
+	return strings.Join(names, ",")
+}
+
+// currentLimitForLog reports the throttle's live per-transaction record limit
+// (Java throttle.logMessageKeyValues() includes LIMIT), falling back to the
+// configured limit before the throttle is created.
+func (oi *OnlineIndexer) currentLimitForLog() int {
+	if oi.throttle != nil {
+		return oi.throttle.getLimit()
+	}
+	return oi.limit
 }
 
 // markWriteOnly transitions all target indexes to WRITE_ONLY state.

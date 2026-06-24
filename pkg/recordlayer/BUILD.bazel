@@ -250,6 +250,7 @@ go_test(
         "online_indexer_bug_verify_test.go",
         "online_indexer_idempotent_test.go",
         "online_indexer_preset_test.go",
+        "online_indexer_progress_log_test.go",
         "online_indexer_test.go",
         "order_predicate_integration_test.go",
         "permuted_min_max_index_test.go",
