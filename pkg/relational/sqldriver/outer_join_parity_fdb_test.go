@@ -827,6 +827,19 @@ func TestFDB_OuterParity_BooleanOn(t *testing.T) {
 			row(ojInt(2), ojNull()),
 			row(ojInt(3), ojNull()),
 		})
+
+	// ON <non-boolean column> — `ON a.id` (BIGINT) is a type error (42804,
+	// RFC-146), surfaced rather than silently degrading the join to a cross
+	// join (the bug codex caught: the ON-upgrade path used to swallow it).
+	rows, err := db.QueryContext(context.Background(), "SELECT a.id FROM a JOIN b ON a.id")
+	if err == nil {
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
 }
 
 // ====================== TASK E: NULL constant-folding (observable) ===========

@@ -491,6 +491,15 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"no FROM source aliased as %s", srcNotFound.Alias.Name())
 				}
+				// A structured api.Error (e.g. DATATYPE_MISMATCH from a
+				// non-boolean bare ON predicate like `ON a.amount`, RFC-146) is a
+				// real user error — surface it rather than dropping the ON
+				// condition, which the translator would silently degrade to a
+				// cross join (it ignores OnText once OnPredicate is nil).
+				var apiErr *api.Error
+				if errors.As(walkErr, &apiErr) {
+					return apiErr
+				}
 				continue
 			}
 			j.OnPredicate = predicates.SimplifyPredicateValues(pred)
