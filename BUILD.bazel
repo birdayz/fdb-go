@@ -14,6 +14,9 @@ exports_files([
     "DIVERGENCES.md",
     "CHANGELOG.md",
     "RELEASE.md",
+    # Generated SQL feature inventory; staged for the TestFeatureMatrixUpToDate
+    # drift guard in //pkg/relational/conformance/yamsql:yamsql_test.
+    "FEATURE_MATRIX.md",
 ])
 
 # gazelle:prefix github.com/birdayz/fdb-record-layer-go
