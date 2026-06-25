@@ -25,15 +25,24 @@ package fdb
 // Apple's binding, exactly like the pure-Go ones, so the caller manages no extra
 // lifecycle.)
 //
-// It deliberately still does NOT include Locality / tenant ops: those return
-// concrete pure-Go handles a cgo backend cannot build and remain pure-Go-only in
-// v1 (the same scope boundary the RFC draws around tenants).
+// It also exposes LocalityGetBoundaryKeys (FDB shard boundaries), which the
+// online MUTUAL indexer uses to partition the keyspace into fragments for
+// concurrent building. Like a transaction creation, libfdb_c can do this — it's
+// a read of the \xff/keyServers system range, identical bytes on either client —
+// so exposing it here makes mutual indexing parallel on libfdb_c instead of
+// degrading to a single fragment.
+//
+// It deliberately still does NOT include tenant ops: those return concrete
+// pure-Go handles a cgo backend cannot build and remain pure-Go-only in v1.
 type BackendDatabase interface {
 	Transactor
 	// CreateWritableTransaction creates a standalone, non-retry transaction. The
 	// caller owns its lifecycle (commit / cancel); the underlying handle is
 	// GC-finalized on both backends.
 	CreateWritableTransaction() (WritableTransaction, error)
+	// LocalityGetBoundaryKeys returns the shard boundary keys within r (a read of
+	// the \xff/keyServers system range). readVersion 0 = use the latest.
+	LocalityGetBoundaryKeys(r ExactRange, limit int, readVersion int64) ([]Key, error)
 	Close()
 }
 

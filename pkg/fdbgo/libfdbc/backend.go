@@ -144,6 +144,24 @@ func (d *database) CreateWritableTransaction() (fdb.WritableTransaction, error) 
 	return &txn{reader: reader{rt: tr, opts: tr.Options()}, tr: tr}, nil
 }
 
+// LocalityGetBoundaryKeys satisfies fdb.BackendDatabase via Apple's binding
+// (cgofdb.Database.LocalityGetBoundaryKeys → the C locality API over
+// \xff/keyServers). Both clients read the SAME system range against the SAME
+// cluster, so the boundary keys are byte-identical — the online MUTUAL indexer
+// partitions the keyspace the same way on either backend. Each cgofdb.Key is a
+// newtype cast to fdb.Key (both []byte) into a fresh result slice.
+func (d *database) LocalityGetBoundaryKeys(r fdb.ExactRange, limit int, readVersion int64) ([]fdb.Key, error) {
+	cgoKeys, err := d.db.LocalityGetBoundaryKeys(cgoExactRange(r), limit, readVersion)
+	if err != nil {
+		return nil, convErr(err)
+	}
+	keys := make([]fdb.Key, len(cgoKeys))
+	for i, k := range cgoKeys {
+		keys[i] = fdb.Key(k)
+	}
+	return keys, nil
+}
+
 // runLoop drives the cgofdb retry loop OURSELVES instead of delegating to
 // cgofdb.Database.Transact/ReadTransact. We still delegate the per-error retry decision
 // and backoff COMPUTATION to libfdb_c (tr.OnError computes and sleeps the backoff inside

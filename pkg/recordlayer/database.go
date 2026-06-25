@@ -425,6 +425,27 @@ func (d *FDBDatabase) CreateWritableTransaction() (fdb.WritableTransaction, erro
 	return nil, &BackendCapabilityError{Op: "CreateWritableTransaction"}
 }
 
+// LocalityGetBoundaryKeys returns the FDB shard boundary keys within r, working on
+// ANY backend (the online MUTUAL indexer uses them to partition the keyspace into
+// fragments for concurrent building). It's a read of the \xff/keyServers system
+// range — byte-identical on the pure-Go and libfdb_c clients against the same
+// cluster — so mutual indexing parallelizes on either backend. A backend that
+// can't provide it (e.g. a custom transactor) returns BackendCapabilityError;
+// callers that want graceful degradation (1 fragment) treat an error as "no
+// boundaries".
+//
+// Unlike CreateWritableTransaction there is no tenant branch: shard boundaries
+// are a cluster-wide property of the keyServers map, independent of any tenant.
+func (d *FDBDatabase) LocalityGetBoundaryKeys(r fdb.ExactRange, limit int, readVersion int64) ([]fdb.Key, error) {
+	if d.db.IsValid() {
+		return d.db.LocalityGetBoundaryKeys(r, limit, readVersion)
+	}
+	if be, ok := d.transactor.(fdb.BackendDatabase); ok {
+		return be.LocalityGetBoundaryKeys(r, limit, readVersion)
+	}
+	return nil, &BackendCapabilityError{Op: "LocalityGetBoundaryKeys"}
+}
+
 // TransactionPriority controls the priority of FDB transactions.
 // Matches Java's FDBTransactionPriority.
 type TransactionPriority int
