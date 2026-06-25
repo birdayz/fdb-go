@@ -15,15 +15,15 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
-| Aggregates & GROUP BY | 50 | 319 |
+| Aggregates & GROUP BY | 49 | 298 |
 | Joins | 60 | 264 |
 | Subqueries (EXISTS / IN / scalar) | 42 | 281 |
-| CTEs | 16 | 105 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 7 | 45 |
-| DML (INSERT / UPDATE / DELETE) | 24 | 187 |
+| CTEs | 12 | 85 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 8 | 47 |
+| DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
-| Scalar functions & expressions | 35 | 371 |
-| Predicates & WHERE | 9 | 76 |
+| Scalar functions & expressions | 32 | 346 |
+| Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 6 | 55 |
 | NULL handling | 5 | 26 |
 | NULL handling & boolean logic | 2 | 48 |
@@ -32,7 +32,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Keys & primary keys | 5 | 132 |
 | Error codes & validation | 4 | 37 |
 | End-to-end scenarios | 3 | 20 |
-| Other | 17 | 126 |
+| Other | 20 | 155 |
 
 ## Aggregates & GROUP BY
 
@@ -58,11 +58,11 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `aggregate_nulls` | 7 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
 | `aggregate_order_by_java` | 6 | Aggregate queries with ORDER BY. |
 | `aggregate_sum_large` | 2 | SUM with large values |
+| `aggregate_with_null_groups` | 2 | Aggregates with NULL in group keys |
 | `avg` | 3 | AVG over BIGINT returns DOUBLE (float) — matches Java's |
 | `count_distinct` | 3 | COUNT(DISTINCT) is rejected by both engines. |
 | `count_star_vs_col` | 5 | COUNT(*) vs COUNT(col) semantics |
 | `distinct_aggregates` | 9 | All DISTINCT-aggregate forms (COUNT/SUM/MIN/MAX/AVG with DISTINCT) |
-| `distinct_from_java` | 11 | IS [NOT] DISTINCT FROM patterns from |
 | `distinct_order_by` | 3 | DISTINCT with ORDER BY |
 | `distinct_patterns_java` | 8 | SELECT DISTINCT patterns. |
 | `dml_rowcount_java` | 12 | INSERT/UPDATE/DELETE row count semantics. |
@@ -80,7 +80,6 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `group_by_validation` | 24 | Java's groupby-tests.yamsql validates that SELECT columns must |
 | `having` | 23 | HAVING filters grouped results (post-aggregate). |
 | `having_avg` | 2 | HAVING with AVG aggregate |
-| `is_distinct_from` | 12 | IS DISTINCT FROM / IS NOT DISTINCT FROM — NULL-safe equality |
 | `limit_aggregate` | 3 | LIMIT with GROUP BY aggregates |
 | `nested_aggregate_rejection` | 4 | Java's SemanticAnalyzer.validateGroupByAggregates rejects nested |
 | `order_by_aggregate` | 3 | ORDER BY aggregate expressions |
@@ -205,8 +204,6 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
-| `aggregate_with_null_groups` | 2 | Aggregates with NULL in group keys |
-| `bare_col_with_agg` | 9 | SQL §7.10 GR1: when a SELECT list contains an aggregate function, |
 | `cte` | 21 | WITH ... |
 | `cte_aggregate` | 4 | CTE materialization + GROUP BY aggregation. |
 | `cte_error_codes` | 6 | Java's cte.yamsql error tests: CTE-specific validation errors. |
@@ -214,12 +211,10 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `cte_multi_reference` | 2 | CTE referenced multiple times |
 | `cte_recursive_tree` | 3 | Recursive CTE tree traversal |
 | `cte_with_insert` | 2 | CTE used in INSERT ... |
-| `dml_with_null_safe` | 7 | DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the |
 | `recursive_cte` | 26 | WITH RECURSIVE CTEs — semi-naive (level-order) evaluation. |
 | `recursive_cte_advanced` | 2 | Advanced recursive CTE edge cases — regression guards for column alias |
 | `recursive_cte_aggregate` | 3 | Recursive CTE combined with aggregation — exercises the interaction |
 | `recursive_cte_tree_java` | 4 | Recursive CTE for tree traversal. |
-| `union_with_aggregate` | 2 | UNION combined with aggregates |
 | `update_dml_cte` | 4 | UPDATE with WITH clause and UPDATE/DELETE using CTE in WHERE. |
 
 ## Set operations (UNION / INTERSECT / EXCEPT)
@@ -233,6 +228,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `union_comprehensive` | 4 | Comprehensive UNION tests |
 | `union_empty_tables_java` | 9 | UNION ALL behavior on empty tables |
 | `union_star` | 5 | Java's union.yamsql tests UNION ALL with SELECT * on either side. |
+| `union_with_aggregate` | 2 | UNION combined with aggregates |
 
 ## DML (INSERT / UPDATE / DELETE)
 
@@ -244,6 +240,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `dml_conditional` | 6 | Conditional DML operations |
 | `dml_error_codes` | 9 | Error codes for DML operations aligned with Java behavior. |
 | `dml_returning_probes` | 5 | Probes for DML RETURNING clause (Postgres / Java fdb-relational |
+| `dml_with_null_safe` | 7 | DML (UPDATE / DELETE) with IS NOT DISTINCT FROM in WHERE — the |
 | `insert_arity` | 7 | INSERT column count mismatches (Java's inserts-updates-deletes.yamsql): |
 | `insert_default_values` | 4 | INSERT with NULL for optional columns |
 | `insert_multi_row` | 7 | Multi-row INSERT variations |
@@ -286,7 +283,6 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Scenario | Cases | What it pins |
 |---|--:|---|
 | `arithmetic` | 22 | swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp |
-| `between_edge_cases` | 5 | BETWEEN edge cases |
 | `bitwise` | 7 | Bitwise operators: &, \|, ^, <<, >>. |
 | `case_insensitive_keywords` | 9 | SQL standard says keywords are case-insensitive. |
 | `case_when` | 10 | CASE WHEN ... |
@@ -294,9 +290,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `cast` | 16 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
 | `cast_scalar_java` | 11 | Scalar CAST patterns from Java's cast-tests.yamsql. |
 | `coalesce_nullif` | 3 | COALESCE(v1, v2, ...) returns the first non-NULL argument, or NULL |
-| `comparison_edge_cases` | 9 | Edge cases in comparison operators |
 | `datetime_functions` | 27 | Two groups: |
-| `empty_result_edge_cases_java` | 11 | Empty result handling in various |
 | `function_in_predicate` | 5 | Functions used in WHERE predicates |
 | `greatest_least` | 11 | swingshift-35 commit 97e0c731: GREATEST / LEAST propagate NULL |
 | `in_expression_types` | 6 | IN predicate with various expression types |
@@ -326,8 +320,11 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Scenario | Cases | What it pins |
 |---|--:|---|
 | `between` | 17 | swingshift-35 commit 8ee5e98d: BETWEEN / NOT BETWEEN Kleene short-circuit. |
+| `between_edge_cases` | 5 | BETWEEN edge cases |
 | `between_java` | 16 | BETWEEN patterns from Java's between.yamsql. |
 | `complex_where_java` | 10 | Complex WHERE clause combinations. |
+| `distinct_from_java` | 11 | IS [NOT] DISTINCT FROM patterns from |
+| `is_distinct_from` | 12 | IS DISTINCT FROM / IS NOT DISTINCT FROM — NULL-safe equality |
 | `map_path_predicate_kleene` | 7 | Pins the map-path (JOIN / CTE / HAVING) predicate evaluator's |
 | `multi_predicate_push` | 3 | Multiple predicates with push-down |
 | `multiple_where_predicates` | 4 | Multiple WHERE predicates |
@@ -425,9 +422,12 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 
 | Scenario | Cases | What it pins |
 |---|--:|---|
+| `bare_col_with_agg` | 9 | SQL §7.10 GR1: when a SELECT list contains an aggregate function, |
 | `bug_hunt_probes` | 13 | Throwaway probes targeting features likely to surface bugs: |
 | `cascades_plan_shapes` | 9 | Tests that verify the Cascades planner produces correct results for |
+| `comparison_edge_cases` | 9 | Edge cases in comparison operators |
 | `computed_column_names` | 6 | Verifies that unnamed computed expressions in SELECT projections |
+| `empty_result_edge_cases_java` | 11 | Empty result handling in various |
 | `empty_table_operations` | 9 | Operations on empty tables |
 | `float_column` | 10 | FLOAT (32-bit) column type. |
 | `information_schema` | 5 | INFORMATION_SCHEMA.* system-table queries. |

@@ -10,6 +10,28 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc"
 )
 
+// TestLibFDBC_LocalityNegativeLimit pins the codex finding: a negative limit must
+// be treated as "unlimited" (like the pure-Go backend), not panic. Apple's binding
+// uses a `limit != 0` form that drives make([]Key, size) negative and panics on a
+// negative limit; the backend normalizes limit<0 → 0 before delegating. Pre-fix
+// this call panicked; post-fix it returns cleanly.
+func TestLibFDBC_LocalityNegativeLimit(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+
+	be, err := libfdbc.Open(clusterFile)
+	if err != nil {
+		t.Fatalf("open libfdb_c backend: %v", err)
+	}
+	defer be.Close()
+
+	// limit=-1 must not panic and must behave like unlimited (0).
+	if _, err := be.LocalityGetBoundaryKeys(
+		fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, -1, 0); err != nil {
+		t.Fatalf("negative limit should be accepted (unlimited), got: %v", err)
+	}
+}
+
 // TestLibFDBC_LocalityGetBoundaryKeys proves the libfdb_c backend exposes the FDB
 // locality API (shard boundary keys) — the capability the online MUTUAL indexer
 // uses to partition the keyspace for concurrent building. Before
