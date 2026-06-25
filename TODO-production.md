@@ -38,8 +38,7 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   checksummed artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds
   + codex ACK), **P2.2** libfdb_c escape hatch (RFC-109: full write-path backend + per-PR
   differential shipped, but prod open paths not yet routed through the seam), **P2.4** fuzz breadth
-  (~44/120 fuzzed nightly; no full rotation / published crash corpus), **P3.2** examples (one
-  compiles in CI; needs SQL + backend-agnostic examples).
+  (~44/120 fuzzed nightly; no full rotation / published crash corpus).
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
   pass.
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
@@ -48,7 +47,8 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
 - **Closed by the `prod-stack/*` PRs (2026-06-24):** **P1.2** record-layer half (online-indexer
   progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`;
   **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`); **P3.4** operator guide
-  (`docs/operations.md` → `prod-stack/07`).
+  (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
+  `prod-stack/08`).
 
 ---
 
@@ -697,13 +697,13 @@ reconcile on 7.3.75.
 scoped plan. Constraint: wire/serialization accessors are load-bearing, so any rename pass must be
 behavior-preserving. Low priority. Make `go doc` read like a Go library.
 
-### [~] P3.2 — Quickstart + realistic examples that compile in CI · S — partial
-*(Verified 2026-06-24.)* One runnable example exists — `example/getting_started.go` (`//example:example`)
-— and it **does compile in CI** (transitively via `bazelisk test //...` in `ci.yml`); README has a
-"Getting started" section. **Remaining:** it is a single **record-layer (non-SQL)** example using the
-legacy `fdb.MustOpenDefault` / `NewFDBDatabase` API. Add realistic examples for the `database/sql`
-SQL path and the backend-agnostic `fdbclient.Open` / `NewFDBDatabaseWithBackend` open, and refresh
-`getting_started.go` off the legacy API.
+### [x] P3.2 — Quickstart + realistic examples that compile in CI · S — DONE
+*(2026-06-24.)* Added `example/sql/main.go` (`//example/sql:sql`) — a realistic **`database/sql`**
+quickstart: `fdbsql` DSN open, DDL (database/template/schema + a secondary index), parameterized
+`INSERT` (`?` placeholders), a point query, and a `GROUP BY` aggregate over the index. It documents
+the `-tags libfdbc` C-client switch in its header. Both `example/sql` and the existing record-layer
+`example/getting_started.go` **compile in CI** (picked up by `bazelisk build //...`); README's
+"Getting started" now links both runnable examples.
 
 ### [x] P3.3 — De-duplicate the two retry predicates · S — DONE (RFC-105)
 *(Verified 2026-06-24.)* Investigation found the "two" were in fact **three intentionally
