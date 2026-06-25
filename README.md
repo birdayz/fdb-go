@@ -21,6 +21,8 @@ before relying on it.** Maturity varies by layer:
 Before production use: pin a commit, run the conformance + differential + stress
 suites against your workload, and review `PRODUCTION_READINESS.md` /
 `TODO-production.md` for the current gap list. Report issues per `SECURITY.md`.
+For running it — connecting, transactions, online index builds, schema evolution,
+backup, and observability — see the [operator guide](docs/operations.md).
 
 ## Target versions
 
