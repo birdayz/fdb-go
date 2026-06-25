@@ -262,6 +262,16 @@ func (db Database) CreateTransaction() (Transaction, error) {
 	return Transaction{t: t}, nil
 }
 
+// CreateWritableTransaction satisfies fdb.BackendDatabase: the standalone-
+// transaction creator returning the WritableTransaction interface. On the pure-Go
+// client it is exactly CreateTransaction (the concrete Transaction already
+// implements WritableTransaction); it exists so the record layer can create a
+// standalone transaction on ANY backend (the libfdb_c backend implements the same
+// method over cgofdb).
+func (db Database) CreateWritableTransaction() (WritableTransaction, error) {
+	return db.CreateTransaction()
+}
+
 // Transact runs a transactional function with automatic retry. This no-ctx form
 // is drop-in compatible with the Apple Go binding: it has no Go-context
 // cancellation and, by default, retries indefinitely on retryable errors. Bound

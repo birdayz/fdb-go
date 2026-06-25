@@ -128,6 +128,22 @@ func (d *database) TransactCtx(ctx context.Context, f func(fdb.WritableTransacti
 	})
 }
 
+// CreateWritableTransaction satisfies fdb.BackendDatabase: a standalone,
+// non-retry transaction as the WritableTransaction interface, for the record
+// layer's database/sql explicit-transaction path (BeginTx). It is the cgo analog
+// of the pure-Go Database.CreateWritableTransaction — same fdb_database_create_-
+// transaction the retry loop uses (runLoop), just handed to the caller instead of
+// a closure. The caller owns commit/cancel; the underlying cgofdb.Transaction is
+// GC-finalized by Apple's binding (fdb_transaction_destroy), so no explicit
+// teardown is required, exactly as for the pure-Go handle.
+func (d *database) CreateWritableTransaction() (fdb.WritableTransaction, error) {
+	tr, err := d.db.CreateTransaction()
+	if err != nil {
+		return nil, convErr(err) // CreateTransaction failure is non-retryable (cgofdb)
+	}
+	return &txn{reader: reader{rt: tr, opts: tr.Options()}, tr: tr}, nil
+}
+
 // runLoop drives the cgofdb retry loop OURSELVES instead of delegating to
 // cgofdb.Database.Transact/ReadTransact. We still delegate the per-error retry decision
 // and backoff COMPUTATION to libfdb_c (tr.OnError computes and sleeps the backoff inside

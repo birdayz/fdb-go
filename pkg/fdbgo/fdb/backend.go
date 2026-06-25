@@ -12,13 +12,28 @@ package fdb
 // reality: libfdb_c's network thread is initialized once per process and is
 // unrecoverable, so there is no live switch between backends anyway.
 //
-// It deliberately does NOT include CreateTransaction / Locality / tenant ops:
-// those return concrete pure-Go handles a cgo backend cannot build and are not
-// on the Transactor-driven gold path, so they remain pure-Go-only in v1 (the
-// libfdb_c escape hatch covers the non-tenant record-store Run/RunRead path —
-// the same scope boundary the RFC already draws around tenants).
+// It also exposes CreateWritableTransaction, which returns a standalone
+// (non-retry) transaction as the WritableTransaction INTERFACE — the
+// backend-agnostic analog of the pure-Go Database.CreateTransaction (which
+// returns the concrete pure-Go type). The record layer needs a long-lived
+// transaction handle for database/sql explicit transactions (BeginTx / COMMIT),
+// which span multiple driver calls and so cannot use the closure-based
+// Transactor gold path. libfdb_c can create transactions just as well as the
+// pure-Go client (it does so internally for its own Transact loop) — exposing it
+// here is what makes BeginTx work on either backend, rather than the SQL engine
+// being silently pure-Go-only. (CGo-allocated transactions are GC-finalized by
+// Apple's binding, exactly like the pure-Go ones, so the caller manages no extra
+// lifecycle.)
+//
+// It deliberately still does NOT include Locality / tenant ops: those return
+// concrete pure-Go handles a cgo backend cannot build and remain pure-Go-only in
+// v1 (the same scope boundary the RFC draws around tenants).
 type BackendDatabase interface {
 	Transactor
+	// CreateWritableTransaction creates a standalone, non-retry transaction. The
+	// caller owns its lifecycle (commit / cancel); the underlying handle is
+	// GC-finalized on both backends.
+	CreateWritableTransaction() (WritableTransaction, error)
 	Close()
 }
 
