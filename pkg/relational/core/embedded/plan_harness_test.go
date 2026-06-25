@@ -1405,12 +1405,13 @@ func TestPlanHarness_BareNonBooleanWhereRejected(t *testing.T) {
 	}
 }
 
-// TestPlanHarness_BareUnknownTypedWhereRejected — DOUBLE/FLOAT/BYTES columns map
-// to Cascades TypeUnknown (a seed-type gap), but they are definitively
-// non-boolean: a bare `WHERE d` must raise 42804, NOT silently lift to
-// `d = TRUE` and filter to nothing (codex catch on #357). Only a genuinely
-// un-typeable value (a non-FieldValue) keeps the permissive UNKNOWN path.
-func TestPlanHarness_BareUnknownTypedWhereRejected(t *testing.T) {
+// TestPlanHarness_BareDoubleWhereRejected — a bare `WHERE <double_col>` must
+// raise 42804, NOT silently lift to `d = TRUE` and filter to nothing (codex
+// catch on #357). sqlTypeToCascadesType now carries the real TypeCodeDouble for
+// FLOAT/DOUBLE (and TypeCodeBytes for BYTES), so the predicate-lift type gate
+// rejects them as non-boolean — while genuinely un-typeable values (params,
+// CTE/derived columns whose projected type isn't propagated) stay permissive.
+func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 	t.Parallel()
 	const sch = `CREATE TABLE A (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))`
 	_, err := PlanQueryForTest("SELECT id FROM A WHERE d", sch, nil)

@@ -555,11 +555,18 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.TypeString
 	case "BOOL":
 		return values.TypeBool
-	case "FLOAT", "BYTES", "RECORD":
-		// Fall through to Unknown rather than silently lie about
-		// INT / STRING representation — a mistyped column at the
-		// resolver boundary would cascade into wrong comparator
-		// picks downstream.
+	case "FLOAT", "DOUBLE":
+		// FLOAT and DOUBLE both map to the seed's double type
+		// (values.TypeFloat == NullableDouble). Carrying the real
+		// TypeCodeDouble — rather than Unknown — lets the predicate-lift
+		// type gate reject a bare `WHERE <double_col>` as non-boolean
+		// (42804) instead of silently lifting it to `col = TRUE` (RFC-146).
+		return values.NullableDouble
+	case "BYTES":
+		// Real TypeCodeBytes, same reason as FLOAT/DOUBLE.
+		return values.NullableBytes
+	case "RECORD":
+		// No struct/record Type in the seed enum yet — stays Unknown.
 		return values.TypeUnknown
 	}
 	return values.TypeUnknown

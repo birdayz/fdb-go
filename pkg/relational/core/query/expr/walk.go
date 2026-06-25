@@ -1343,36 +1343,35 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if _, isNull := v.(*values.NullValue); isNull {
 		return predicates.NewConstantPredicate(predicates.TriUnknown), nil
 	}
-	// 3+4. A boolean value → `value = TRUE` (Java :399). This is byte-for-byte
-	//      the ComparisonPredicate that `value = TRUE` builds (ResolveComparison,
-	//      expr.go:314), so a bare `WHERE flag` and `WHERE flag = TRUE` unify —
-	//      same plan, same EXPLAIN, same semantic hash, and the SAME index match
-	//      (Go's index matcher binds only *ComparisonPredicate; a bare
-	//      ValuePredicate would never use a boolean index). A definitively-typed
-	//      non-boolean → DATATYPE_MISMATCH (Java :389, clause-agnostic since the
-	//      lift is shared by WHERE and ON).
-	code := v.Type().Code()
-	treatAsBoolean := code == values.TypeCodeBoolean
-	if code == values.TypeCodeUnknown {
-		// UNKNOWN is permitted permissively (divergence from Java's strict
-		// BOOLEAN assert) ONLY for a genuinely un-typeable value — a parameter or
-		// an expression Go's pre-plan resolution can't type. A *FieldValue of
-		// Unknown type is NOT un-typeable: it is a resolved COLUMN whose SQL type
-		// Go's Cascades mapping doesn't carry yet (DOUBLE/FLOAT/BYTES/RECORD →
-		// TypeUnknown). Such a column is definitively non-boolean, so reject it
-		// rather than silently lift to `col = TRUE` and filter to nothing.
-		if _, isField := v.(*values.FieldValue); !isField {
-			treatAsBoolean = true
-		}
-	}
-	if treatAsBoolean {
+	switch v.Type().Code() {
+	case values.TypeCodeBoolean, values.TypeCodeUnknown:
+		// 4. A boolean value (column / expression) → `value = TRUE` (Java
+		//    :399). This is byte-for-byte the ComparisonPredicate that
+		//    `value = TRUE` builds (ResolveComparison, expr.go:314), so a bare
+		//    `WHERE flag` and `WHERE flag = TRUE` unify — same plan, same
+		//    EXPLAIN, same semantic hash, and the SAME index match (Go's index
+		//    matcher binds only *ComparisonPredicate; a bare ValuePredicate
+		//    would never use a boolean index).
+		//
+		//    UNKNOWN is permitted (permissive-only divergence from Java's strict
+		//    BOOLEAN assert): a value Go's pre-plan resolution can't type — a
+		//    parameter, an expression, or a CTE/derived column whose projected
+		//    type isn't propagated to the outer scope (it may legitimately be
+		//    boolean, e.g. `WITH c AS (SELECT NOT flag AS x ...) ... WHERE x`).
+		//    Definitively-typed columns (DOUBLE/FLOAT/BYTES) are typed by
+		//    sqlTypeToCascadesType and hit the non-boolean branch below — they
+		//    are NOT Unknown, so this never silently accepts a known non-boolean.
 		return predicates.NewComparisonPredicate(v, predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: values.NewBooleanValue(true),
 		}), nil
+	default:
+		// 3. A definitively-typed non-boolean bare value is a type error
+		//    (Java :389 asserts getTypeCode() == BOOLEAN → DATATYPE_MISMATCH).
+		//    Clause-agnostic wording: this lift is shared by WHERE and ON.
+		return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+			"expected boolean expression, got type %s", v.Type())
 	}
-	return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
-		"expected boolean expression, got type %s", v.Type())
 }
 
 // unwrapParenPredicate recurses WalkPredicate on a single-element

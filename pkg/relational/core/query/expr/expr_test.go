@@ -115,9 +115,9 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 		"s":     values.TypeString,
 		"e":     values.TypeString,
 		"b":     values.TypeBool,
-		"f":     values.TypeUnknown, // no TypeFloat yet
-		"by":    values.TypeUnknown, // no TypeBytes yet — prior code lied and said TypeInt
-		"rec":   values.TypeUnknown, // no struct/record type yet
+		"f":     values.NullableDouble, // FLOAT/DOUBLE → seed double type (RFC-146: so a bare WHERE rejects 42804)
+		"by":    values.NullableBytes,  // BYTES → seed bytes type
+		"rec":   values.TypeUnknown,    // no struct/record type yet
 	}
 	for col, want := range cases {
 		v, err := r.ResolveIdentifier(semantic.Identifier{}, semantic.NewUnquoted(col))

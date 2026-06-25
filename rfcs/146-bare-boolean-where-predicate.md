@@ -164,14 +164,17 @@ subtleties: (a) hard-error propagation (§3) — without it `WHERE <nonbool>` st
 the bare `ValuePredicate` that `ValuePredicateConstantFoldRule` matched.
 
 **UNKNOWN-leniency divergence (documented; refined per codex on #357):** Java strictly asserts
-`== BOOLEAN`. The gate permits BOOLEAN and NULL, and UNKNOWN **only for a non-`FieldValue`** — a genuinely
-un-typeable value (a parameter or an expression Go's pre-plan resolution can't type). A `*FieldValue` of
-UNKNOWN type is NOT un-typeable: it is a resolved column whose SQL type Go's Cascades mapping doesn't carry
-yet (`sqlTypeToCascadesType` maps DOUBLE/FLOAT/BYTES/RECORD → `TypeUnknown`), so it is *definitively*
-non-boolean and is **rejected 42804** — otherwise `WHERE <double_col>` would silently lift to `col = TRUE`
-and filter to nothing (codex's catch). Real BOOLEAN columns type as `TypeCodeBoolean` in the record-layer
-pipeline, so they are unaffected. Permissive-only still holds: Go may *accept* an un-typeable non-column
-value, but never *rejects* a real boolean.
+`== BOOLEAN`. The gate permits BOOLEAN and NULL, and UNKNOWN permissively — a genuinely un-typeable value:
+a parameter, an expression, or a **CTE/derived column** whose projected type isn't propagated to the outer
+scope (it may legitimately be boolean, e.g. `WITH c AS (SELECT NOT flag AS x ...) ... WHERE x`). Codex's
+catch was that DOUBLE/FLOAT/BYTES columns *also* mapped to `TypeUnknown` (`sqlTypeToCascadesType` left them
+unmapped) and so were silently lifted to `col = TRUE` and filtered to nothing. The fix is at the **type
+mapping**, not the gate: `sqlTypeToCascadesType` now carries the real `TypeCodeDouble` (FLOAT/DOUBLE) and
+`TypeCodeBytes` (BYTES), so a bare `WHERE <double_col>` hits the non-boolean branch → 42804, while
+genuinely-un-typeable Unknown values (params, CTE columns) keep the permissive path. This is strictly
+better — it does NOT reject `*FieldValue`-of-Unknown wholesale (that would wrongly 42804 a boolean CTE
+column, which is also Unknown-typed). RECORD stays Unknown (no seed type yet). Permissive-only still holds:
+Go may *accept* an un-typeable value, but never *rejects* a real boolean.
 
 ## 7. Scope
 
