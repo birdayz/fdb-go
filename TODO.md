@@ -723,7 +723,20 @@ DELETE the interpreter. This removes a large divergence surface + maintenance bu
 INFORMATION_SCHEMA gap to be fixed in Cascades. Big, separate effort — query-engine-gated (Graefe +
 Torvalds). Do NOT "keep the two aggregate executors in sync" — that is the anti-pattern; remove one.
 
-### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23) — RFC-146
+### [x] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) — DONE (RFC-146)
+
+**DONE (RFC-146):** `walk.go` now lifts a bare boolean value to the COMPARISON form `value = TRUE` — the
+byte-identical `ComparisonPredicate` that `flag = TRUE` produces — so `WHERE flag` and `WHERE flag = TRUE`
+unify (same plan, semantic hash, and **index match** — Graefe's v1 NAK caught that a bare `ValuePredicate`
+would never use a boolean index). NULL → `ConstantPredicate(TriUnknown)` (value-type detection, Java
+`instanceof NullValue`); non-boolean → 42804 (clause-agnostic, shared WHERE/ON). The `isBareFieldPredicate`
+translator guard is deleted (now dead). Pinned: `TestWalkPredicate_BareBooleanColumn` (structural
+PredicateEquals + SemanticHashCode unify), `TestPlanHarness_BareBooleanWhere` (sargable IndexScan),
+`TestPlanHarness_BareNonBooleanWhereRejected` (42804), `TestFDB_OuterParity_BooleanWhere` (e2e:
+flag→[1], NOT flag→[2], id→42804), `TestWalkPredicate_BareNull`; corpus `bare_bool_where_rejected`→parity
+`bare_bool_where`. Graefe ACK (RFC v2 + impl) + Torvalds. Original analysis below.
+
+### (history) relational/planner: bare boolean column WHERE — surfaced by RFC-144 §3d, 2026-06-23
 
 A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:371-399`) lifts a bare boolean value to `ValuePredicate(value, EQUALS TRUE)` and rejects a non-boolean bare value with `DATATYPE_MISMATCH` (42804).
 

@@ -764,14 +764,27 @@ func TestFDB_OuterParity_BooleanWhere(t *testing.T) {
 	assertRowsUnordered(t, g, db, "SELECT id FROM a WHERE flag IS TRUE", "i",
 		[][]ojCell{row(ojInt(1))})
 
-	// NOTE (documented divergence, TODO): a BARE boolean column as a top-level
-	// single-table WHERE predicate (`WHERE flag`) does NOT plan in Go today
-	// ("Cascades planner could not plan query"), although the parser/resolver
-	// correctly lifts it to ValuePredicate(flag) and the SAME shape works in a
-	// join ON clause (see TestFDB_OuterParity_BooleanOn `ON a.flag`). Java 4.12
-	// supports it (Expression.Utils.toUnderlyingPredicate lifts a bare boolean
-	// expression to `value = TRUE`). This is a single-table-WHERE planner gap
-	// orthogonal to RFC-144's outer-join scope; tracked in TODO.md.
+	// A BARE boolean column as a top-level single-table WHERE predicate
+	// (`WHERE flag`) now plans (RFC-146): it lifts to `flag = TRUE`, so only the
+	// flag=TRUE row survives — identical to `WHERE flag = TRUE` above. The same
+	// shape already worked in a join ON clause (TestFDB_OuterParity_BooleanOn).
+	assertRowsUnordered(t, g, db, "SELECT id FROM a WHERE flag", "i",
+		[][]ojCell{row(ojInt(1))})
+	// `WHERE NOT flag`: NOT TRUE→drop, NOT FALSE→keep(2), NOT NULL→drop.
+	assertRowsUnordered(t, g, db, "SELECT id FROM a WHERE NOT flag", "i",
+		[][]ojCell{row(ojInt(2))})
+
+	// A bare NON-boolean column as a WHERE predicate is a type error (42804,
+	// Java DATATYPE_MISMATCH), not a silent 0-row plan.
+	rows, err := db.QueryContext(context.Background(), "SELECT id FROM a WHERE id")
+	if err == nil {
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
 }
 
 // TestFDB_OuterParity_BooleanOn verifies boolean-literal / boolean-expr ON

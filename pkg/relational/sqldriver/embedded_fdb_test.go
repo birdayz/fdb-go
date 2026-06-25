@@ -2878,9 +2878,8 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 // behaviour in SELECT projection. `SELECT b AND TRUE`, `SELECT NOT b`,
 // `SELECT b OR FALSE` over a BOOLEAN column evaluate the column as a
 // value (via IsTruthy) rather than rejecting with "expected
-// BooleanValue but got FieldValue". Top-level WHERE `WHERE flag` still
-// rejects to match Java's planner — Java's WHERE-bare-bool rejection
-// is a separate, intentional gap.
+// BooleanValue but got FieldValue". Top-level `WHERE b` now plans too
+// (RFC-146): it lifts to `b = TRUE`, matching Java 4.12.
 func TestFDB_BareBoolProjection(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -2964,9 +2963,18 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 			"row %d: AND FALSE always FALSE", i)
 	}
 
-	// Top-level WHERE bare bool still rejects (matches Java strictness).
-	_, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b")
-	g.Expect(err).To(gomega.HaveOccurred(), "WHERE flag still rejects per Java planner alignment")
+	// Top-level bare boolean WHERE now plans (RFC-146): `WHERE b` lifts to
+	// `b = TRUE`, so only the b=TRUE row (id 1) survives.
+	rows, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
 }
 
 func TestFDB_SelectScalarExpression(t *testing.T) {

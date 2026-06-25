@@ -245,15 +245,74 @@ func TestWalkPredicate_BareBooleanColumn(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
-	ctx := parseFirstWhereExpr(t, "SELECT * FROM users WHERE active")
 
-	pred, err := r.WalkPredicate(ctx)
+	// A bare boolean column lifts to `active = TRUE` (RFC-146 / Java
+	// Expression.Utils.toUnderlyingPredicate :399), the SAME
+	// ComparisonPredicate `active = TRUE` produces.
+	bare, err := r.WalkPredicate(parseFirstWhereExpr(t, "SELECT * FROM users WHERE active"))
+	if err != nil {
+		t.Fatalf("walk bare: %v", err)
+	}
+	cp, ok := bare.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected *ComparisonPredicate, got %T", bare)
+	}
+	if cp.Comparison.Type != predicates.ComparisonEquals {
+		t.Fatalf("Type: got %v, want Equals", cp.Comparison.Type)
+	}
+	if lit, ok := values.EvaluateConstant(cp.Comparison.Operand); !ok || lit != true {
+		t.Fatalf("Operand: got %v, want true", cp.Comparison.Operand)
+	}
+
+	// Structural unification with the explicit comparison (Graefe's gate):
+	// `active` and `active = TRUE` must produce structurally-equal predicates
+	// with the same semantic hash, so they unify for index matching / plan
+	// shape rather than just rendering the same EXPLAIN string.
+	cmp, err := r.WalkPredicate(parseFirstWhereExpr(t, "SELECT * FROM users WHERE active = TRUE"))
+	if err != nil {
+		t.Fatalf("walk cmp: %v", err)
+	}
+	if !predicates.PredicateEquals(bare, cmp) {
+		t.Fatalf("`active` and `active = TRUE` must unify:\n  bare: %v\n  cmp:  %v", bare, cmp)
+	}
+	if predicates.SemanticHashCode(bare) != predicates.SemanticHashCode(cmp) {
+		t.Fatalf("semantic hashes differ: bare=%d cmp=%d",
+			predicates.SemanticHashCode(bare), predicates.SemanticHashCode(cmp))
+	}
+
+	// Truthiness eval: active=true keeps the row.
+	got, evErr := bare.Eval(map[string]any{"ACTIVE": true})
+	if evErr != nil {
+		t.Fatalf("eval: %v", evErr)
+	}
+	if got != predicates.TriTrue {
+		t.Fatalf("active=true: got %v, want TriTrue", got)
+	}
+}
+
+// TestWalkPredicate_BareNull pins `WHERE NULL` → ConstantPredicate(TriUnknown)
+// (the row is dropped). The comparison-form lift bypasses the constant-fold
+// rule the bare ValuePredicate used to ride, so NULL is folded explicitly at
+// the lift site (RFC-146 §3 step 2); without that fold NULL would route to the
+// type gate and wrongly 42804.
+func TestWalkPredicate_BareNull(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	pred, err := r.WalkPredicate(parseFirstWhereExpr(t, "SELECT * FROM users WHERE NULL"))
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	// Bare column predicate → ValuePredicate.
-	if _, ok := pred.(*predicates.ValuePredicate); !ok {
-		t.Fatalf("expected *ValuePredicate, got %T", pred)
+	cp, ok := pred.(*predicates.ConstantPredicate)
+	if !ok {
+		t.Fatalf("expected *ConstantPredicate, got %T", pred)
+	}
+	got, evErr := cp.Eval(map[string]any{})
+	if evErr != nil {
+		t.Fatalf("eval: %v", evErr)
+	}
+	if got != predicates.TriUnknown {
+		t.Fatalf("WHERE NULL: got %v, want TriUnknown (drop the row)", got)
 	}
 }
 
@@ -324,8 +383,10 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 	}
 	// Pin the Explain output so Simplify / Explain-format regressions
 	// surface here. The desugared form is canonical for XOR — if a
-	// future XorPredicate type lands, update this.
-	const wantExplain = "((ACTIVE OR ADMIN) AND NOT (ACTIVE AND ADMIN))"
+	// future XorPredicate type lands, update this. Bare boolean operands
+	// lift to `col = TRUE` (RFC-146), as Java's toUnderlyingPredicate does
+	// in every predicate position.
+	const wantExplain = "((ACTIVE = TRUE OR ADMIN = TRUE) AND NOT (ACTIVE = TRUE AND ADMIN = TRUE))"
 	if got := pred.Explain(); got != wantExplain {
 		t.Fatalf("Explain:\n  got:  %q\n  want: %q", got, wantExplain)
 	}
