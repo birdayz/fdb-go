@@ -51,7 +51,6 @@ var categoryRules = []categoryRule{
 	{"in_list", "Subqueries (EXISTS / IN / scalar)"},
 	{"derived_table", "Subqueries (EXISTS / IN / scalar)"},
 	{"cte", "CTEs"},
-	{"with_", "CTEs"},
 	{"union", "Set operations (UNION / INTERSECT / EXCEPT)"},
 	{"intersect", "Set operations (UNION / INTERSECT / EXCEPT)"},
 	{"except", "Set operations (UNION / INTERSECT / EXCEPT)"},
@@ -62,6 +61,9 @@ var categoryRules = []categoryRule{
 	{"avg", "Aggregates & GROUP BY"},
 	{"_sum", "Aggregates & GROUP BY"},
 	{"count", "Aggregates & GROUP BY"},
+	// "distinct_from" (IS [NOT] DISTINCT FROM) is a comparison predicate, NOT an
+	// aggregate — must precede the broad "distinct" (COUNT(DISTINCT)) rule.
+	{"distinct_from", "Predicates & WHERE"},
 	{"distinct", "Aggregates & GROUP BY"},
 	{"insert", "DML (INSERT / UPDATE / DELETE)"},
 	{"update", "DML (INSERT / UPDATE / DELETE)"},
@@ -75,7 +77,7 @@ var categoryRules = []categoryRule{
 	{"pagination", "Ordering & pagination"},
 	{"continuation", "Ordering & pagination"},
 	{"like", "Scalar functions & expressions"},
-	{"case", "Scalar functions & expressions"},
+	{"case_", "Scalar functions & expressions"}, // CASE expressions; "case_" not "case" so it won't catch "..._edge_cases"
 	{"coalesce", "Scalar functions & expressions"},
 	{"nullif", "Scalar functions & expressions"},
 	{"cast", "Scalar functions & expressions"},
@@ -143,6 +145,11 @@ var categoryOrder = []string{
 
 func categoryFor(name string) string {
 	lower := strings.ToLower(name)
+	// Substring match, first rule wins. Rules are written to avoid the cross-feature
+	// false matches a codex review found: the over-broad "with_" rule is gone (CTEs
+	// match on "cte"), "distinct_from" (a comparison predicate) precedes "distinct"
+	// (the COUNT(DISTINCT) aggregate), and "case_" (with the trailing underscore)
+	// matches CASE-expression scenarios without catching "..._edge_cases".
 	for _, r := range categoryRules {
 		if strings.Contains(lower, r.substr) {
 			return r.category

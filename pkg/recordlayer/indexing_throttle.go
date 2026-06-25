@@ -27,6 +27,13 @@ type indexingThrottle struct {
 	// Rate limiter state (matches Java's Booker.waitTimeMilliseconds)
 	forcedDelayTimestamp           time.Time // next allowed transaction start
 	recordsScannedSinceForcedDelay int       // records since last delay reset
+
+	// lastWaitMillis is the most recent records-per-second wait actually slept by
+	// waitForRateLimit (0 when no wait occurred). The build loop's progress log
+	// reports it as the inter-range DELAY for rps-throttled builds, where the
+	// enforced post-transaction delay is 0 — otherwise the log would always show
+	// delay=0 even while rps-throttling (Java logs throttle.waitTimeMilliseconds()).
+	lastWaitMillis int
 }
 
 // newIndexingThrottle creates a throttle with the given initial parameters.
@@ -150,6 +157,7 @@ func (t *indexingThrottle) increaseLimit() {
 // Returns immediately if recordsPerSecond is 0 (unlimited).
 // Matches Java's IndexingThrottle.Booker.waitTimeMilliseconds().
 func (t *indexingThrottle) waitForRateLimit() {
+	t.lastWaitMillis = 0
 	if t.recordsPerSecond <= 0 || t.recordsScannedSinceForcedDelay == 0 {
 		return
 	}
@@ -183,6 +191,7 @@ func (t *indexingThrottle) waitForRateLimit() {
 	}
 
 	time.Sleep(time.Duration(waitMs) * time.Millisecond)
+	t.lastWaitMillis = int(waitMs)
 	t.forcedDelayTimestamp = time.Now()
 	t.recordsScannedSinceForcedDelay = 0
 }

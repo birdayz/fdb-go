@@ -477,7 +477,7 @@ func IsOnErrorRetryable(code int) bool {
 		1037, // process_behind
 		1038, // database_locked
 		1039, // cluster_version_changed (MAYBE_COMMITTED; retried via the MVC layer)
-		1042, // proxy_memory_limit_exceeded
+		1042, // commit_proxy_memory_limit_exceeded
 		1051, // batch_transaction_throttled
 		1078, // grv_proxy_memory_limit_exceeded
 		1079, // blob_granule_request_failed (retried by Transaction::onError; NOT in IsRetryable)

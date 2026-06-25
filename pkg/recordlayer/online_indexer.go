@@ -921,7 +921,20 @@ func (oi *OnlineIndexer) throttleBetweenRanges(ctx context.Context, startTime ti
 	}
 	// Java emits the progress log (with DELAY=toWait) BEFORE validateTimeLimit + the
 	// delay, so the final range that trips the time limit still reports progress.
-	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, delayMs)
+	// Report the ACTUAL inter-range throttle wait: the enforced delay if set,
+	// otherwise the records-per-second wait the throttle last slept (rps builds
+	// have enforcedPostTransactionDelay==0 and spend their time there — logging
+	// delayMs alone would always show 0). Mirrors Java DELAY=throttle.waitTimeMilliseconds().
+	logDelayMs := delayMs
+	if logDelayMs == 0 && oi.throttle != nil {
+		// lastWaitMillis is the rps wait slept at the TOP of the next range's build
+		// (waitForRateLimit), so for rps builds this logs the wait applied BEFORE
+		// this range, lagging Java by one range (Java computes toWait once and both
+		// logs + sleeps it for the same range). Cosmetic only — logging, no
+		// correctness/wire impact — and the values converge on a steady-state build.
+		logDelayMs = oi.throttle.lastWaitMillis
+	}
+	oi.maybeLogBuildProgress(ctx, totalRecords, rangeRecords, logDelayMs)
 	if oi.timeLimit > 0 {
 		if elapsed := time.Since(startTime); elapsed+time.Duration(delayMs)*time.Millisecond >= oi.timeLimit {
 			return &TimeLimitExceededError{TimeLimit: oi.timeLimit, Elapsed: elapsed}

@@ -34,7 +34,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithAPIVersion(730),
 	)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -58,7 +58,13 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	Expect(err).NotTo(HaveOccurred())
 
 	clusterTmpFilePath = tmpFile.Name()
-	fdb.MustAPIVersion(720)
+	// 730 (NOT 720): this package's FDBDatabaseFactory specs route through
+	// fdbclient.Open, which under -tags libfdbc selects facade API 730
+	// unconditionally. A 720 pin here would then fail those specs with
+	// api_version_already_set (2201). 730 is also the 7.3.75 server's native
+	// version and the testcontainer default. Keep this in sync with the container
+	// WithAPIVersion above.
+	fdb.MustAPIVersion(730)
 	db, err := fdb.OpenDatabase(clusterTmpFilePath)
 	Expect(err).NotTo(HaveOccurred())
 	sharedDB = NewFDBDatabase(db)

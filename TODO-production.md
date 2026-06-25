@@ -36,7 +36,8 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
 - **Done (corrected — first pass was too pessimistic):** **P2.2** libfdb_c escape hatch (RFC-109
   full write-path backend + per-PR differential; **+ entry-point routing in `prod-stack/11`** so
   `-tags libfdbc` now flips the SQL driver + record-layer factory too); **P1.6** own-your-fork gates
-  (gates exist; owner decided to keep conformance + 1M stress nightly, not per-PR).
+  conformance + the bench differential already run per-PR via `bazelisk test //...`; only the 1M
+  stress is nightly by design).
 - **`[~]` (code landed, process remainder):** **P1.8** CI reproducibility — pinned + checksummed
   artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds + codex ACK.
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps (query-engine, Graefe-gated,
@@ -50,6 +51,15 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
   `prod-stack/08`); **P2.4** full nightly fuzz rotation (`engine-fuzz` job → `prod-stack/10`);
   **P2.2** escape-hatch entry-point routing + **P1.6** gate-placement decision → `prod-stack/11`.
+- **Per-PR codex sweep → consolidated fixes (`prod-stack/15`):** codex reviewed each PR against its
+  own stacked base. 5 came back clean (#338/#341/#343/#346/#349); the rest surfaced real findings,
+  fixed in `prod-stack/15`: libfdb_c `LocalityGetBoundaryKeys` negative-limit panic (#350); the
+  online-indexer progress `delay_ms` reporting 0 for rps-throttled builds (#340); FEATURE_MATRIX
+  substring miscategorization (#342); 5 operator-guide API inaccuracies / uncompilable snippets
+  (#344); the SQL example not being re-runnable (#345); `pkg/rabitq` left out of the fuzz rotation
+  (#347); and these TODO inaccuracies (P1.6 conformance/bench-are-per-PR, the statement-timeout knob,
+  fuzz counts) (#339). codex also independently re-derived the `BeginTx`-under-libfdbc issue (#348)
+  already fixed by #349 — validating that fix.
 - **Bug found + fixed by codex review (`prod-stack/14`):** the full-stack codex pass caught a
   cross-module break the per-package reviewers couldn't see — `prod-stack/11` dropped the SQL driver's
   720 API-version pin (→ `fdbclient.Open` default 730), but `cmd/frl`'s catalog path still hard-pinned
@@ -565,19 +575,20 @@ MODULE.bazel.lock drift), and 2 in `github.com/docker/docker` (test-infra only, 
 N/A** upstream) — excluded from the production scan + documented in SECURITY.md. Post-bump
 scan: production-clean (only the 2 docker N/A remain, test-only).
 
-### [x] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M — DONE (gate placement decided by owner)
-*(Resolved 2026-06-25.)* The gates exist; their placement was the only open question and the owner
-decided: **keep conformance + 1M stress NIGHTLY, do not gate every PR** (fast PR-CI; regressions
-caught within ~24h).
-- **libfdb_c differential** — per-PR gate (`nightly-libfdbc.yml` on `push`+`pull_request`), the
-  RFC-109 gold gate over `pkg/fdbgo/libfdbc` + `fdbclient` (byte-identical cross-client differential).
-- **1M stress** — nightly (`nightly-stress.yml`), correctness-asserting; off-PR **by owner decision**
-  (RFC-107: too heavy for every PR).
-- **Conformance** (`//conformance`) — nightly (race + coverage jobs); **not** a per-PR gate, **by
-  owner decision**.
-Tiny optional cleanup (non-blocking): run the `pkg/fdbgo/bench` non-fuzz `differential_*_test.go`
-somewhere, or formally retire them in favour of the `libfdbc` gold gate. Caveat (Torvalds):
-detection, not repair — see the won't-fix note.
+### [x] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M — DONE
+*(Corrected 2026-06-25 per codex per-PR review — the gates are MORE complete than the first pass
+recorded.)* The required gates already run per-PR; only the heaviest is nightly by design:
+- **Conformance + the bench differential are per-PR** — `ci.yml`'s test job runs
+  `bazelisk test //... --test_tag_filters=-stress`, and `tests(//...)` includes
+  `//conformance:conformance_test` **and** `//pkg/fdbgo/bench:bench_test` (which owns the non-fuzz
+  `differential_*_test.go`). So both are required on every PR (and conformance ALSO runs in the
+  nightly race + coverage jobs — additive). The earlier "conformance nightly-only / bench in no
+  workflow" claim was wrong.
+- **libfdb_c gold differential** — additionally a dedicated per-PR gate (`nightly-libfdbc.yml` on
+  `push`+`pull_request`) over `pkg/fdbgo/libfdbc` + `fdbclient` (byte-identical cross-client).
+- **1M stress** — nightly (`nightly-stress.yml`), correctness-asserting; off-PR **by design**
+  (RFC-107: too heavy for every PR) — the one gate the owner keeps nightly.
+Caveat (Torvalds): detection, not repair — see the won't-fix note.
 
 ### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
 README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
@@ -619,9 +630,12 @@ Torvalds + codex ACK**; mark `[x]` once accepted.
 ### [x] P1.9 — Resource limits / backpressure (multi-tenant noisy-neighbor) · M — DONE (RFC-106a + RFC-130 + RFC-028)
 *(Verified 2026-06-24.)* All four query resource bounds exist and surface as errors (54F01 /
 `StatementMemoryBudgetExceededError`), never crashes:
-- **Statement timeout** — `EXECUTION_TIME_LIMIT` + a 4s per-page `txPageTimeLimit`
-  (`cascades_generator.go`, `context.WithTimeoutCause` tagged `errStatementTimeout`); leaf
-  enforcement in `key_value_cursor.go`.
+- **Statement timeout** — the whole-statement wall-clock deadline is `SetStatementTimeout` /
+  `EmbeddedConnection.statementTimeout`, applied in `cascades_generator.go` via
+  `context.WithTimeoutCause(ctx, statementTimeout, errStatementTimeout)`. (Distinct from
+  `EXECUTION_TIME_LIMIT` / `OptExecutionTimeLimit`, which sets only the per-PAGE
+  `ExecuteProperties.TimeLimit`, clamped to the 4s `txPageTimeLimit`.) Leaf enforcement in
+  `key_value_cursor.go`. *(codex per-PR review corrected the earlier conflation of the two knobs.)*
 - **Max-rows / result-size cap** — JDBC `MAX_ROWS` total cap (`paginatingRows.maxRows`),
   `pageRowBudget` → `WithReturnedRowLimit`; `OptMaxRows`.
 - **Query memory budget** — RFC-130 extended RFC-028's row-only `MaterializationLimit` to a
@@ -714,16 +728,16 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
   `MIN_EVER_LONG`/`MAX_EVER_LONG`; needs a `_TUPLE` arm.
 
 ### [x] P2.4 — Broaden fuzz coverage in CI · S — DONE
-*(2026-06-25.)* Added the `engine-fuzz` nightly job (`nightly-fuzz.yml`) which **discovers and
-actively fuzzes all ~95 `//pkg/relational` + `//pkg/recordlayer` Fuzz targets** (planner suite,
-value/predicate simplification, continuations, proto/record deserialization, the new SQL front-end
-+ e2e targets) at 60s each — the previously seed-replay-only set. With the existing diff-fuzz (18)
-and client-fuzz (26) jobs, **essentially every Go-native Fuzz target is now actively fuzzed
-nightly** (was 8 at the 2026-06-07 baseline). Same DISCOVERY + valid-label + no-op-guard pattern as
-client-fuzz (a gazelle rename fails loudly, not silently). Crash corpus is **published as 30-day CI
-artifacts** on failure (`engine-fuzz-failure`), matching the established diff-fuzz/client-fuzz
-convention. *(This net immediately earned its keep: `FuzzSQLPlan` found the predicate-as-value
-planner panic fixed in `prod-stack/09`.)*
+*(2026-06-25; counts corrected per codex per-PR review.)* The tree has **140** `func Fuzz` targets.
+Nightly active-fuzz coverage: diff-fuzz (18, `cmd/fdb-diff-oracle`) + client-fuzz (26, `//pkg/fdbgo`)
++ the new **`engine-fuzz`** job (`nightly-fuzz.yml`), which discovers and fuzzes the
+`//pkg/relational` + `//pkg/recordlayer` **+ `//pkg/rabitq`** targets at 60s each — the previously
+seed-replay-only set (was 8 actively-fuzzed at the 2026-06-07 baseline). With rabitq added (the lone
+target codex caught outside the original scope), **every Go-native Fuzz target is now actively fuzzed
+nightly.** Same DISCOVERY + valid-label + no-op-guard pattern as client-fuzz (a gazelle rename fails
+loudly). Per-PR, `ci.yml` replays every `Fuzz*` seed corpus. Crash corpus **published as 30-day CI
+artifacts** on failure. *(This net immediately earned its keep: `FuzzSQLPlan` found the
+predicate-as-value planner panic fixed in `prod-stack/09`.)*
 
 ### [x] P2.5 — Pin FDB image version in tests · S — DONE
 The test infra was already pinned to a single specific version, never `:latest`:

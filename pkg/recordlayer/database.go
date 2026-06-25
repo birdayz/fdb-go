@@ -136,13 +136,14 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 // the Transactor interface.
 //
 // The concrete-db slot is left empty for a non-pure-Go backend. Standalone
-// transactions go through CreateWritableTransaction (which delegates to the
-// backend's own interface-returning creator), so explicit transactions and the
-// FDBDatabaseRunner work on libfdb_c. The remaining concrete-only paths — the
-// pure-Go-typed CreateTransaction and LocalityGetBoundaryKeys (online MUTUAL
-// indexing) — hand back concrete pure-Go handles a non-pure-Go backend cannot
-// build, so they stay pure-Go-only in v1 and fail-fast with BackendCapabilityError
-// (not a nil panic) — the same scope boundary the RFC draws around tenants.
+// transactions go through CreateWritableTransaction and locality through
+// LocalityGetBoundaryKeys — both delegate to the backend's own
+// interface-returning methods, so explicit transactions, the FDBDatabaseRunner,
+// AND online MUTUAL indexing all work on libfdb_c. The one remaining
+// concrete-only path is the pure-Go-typed CreateTransaction (it returns the
+// concrete fdb.Transaction a non-pure-Go backend cannot build), which stays
+// pure-Go-only in v1 and fails fast with BackendCapabilityError (not a nil panic)
+// — the same scope boundary the RFC draws around tenants.
 func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
 	d := &FDBDatabase{
 		transactor:      backend,
@@ -373,10 +374,12 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 
 // BackendCapabilityError is returned when an operation is not supported on the
 // configured fdb backend. The libfdb_c escape hatch (RFC-109) drives the
-// Run / RunRead gold path through the Transactor interface, but the direct
-// (non-retry) CreateTransaction path, the manual FDBDatabaseRunner, and
-// LocalityGetBoundaryKeys hand back concrete pure-Go handles a non-pure-Go
-// backend cannot build — those are pure-Go-only in v1.
+// Run / RunRead gold path, standalone transactions (CreateWritableTransaction —
+// used by the FDBDatabaseRunner and SQL BeginTx), and LocalityGetBoundaryKeys
+// (online MUTUAL indexing) all through backend interfaces, so those work on
+// libfdb_c. Only the pure-Go-typed CreateTransaction (which returns the concrete
+// fdb.Transaction) is pure-Go-only in v1; it — and any operation a custom
+// transactor genuinely can't provide — fail fast with this error.
 type BackendCapabilityError struct {
 	Op string // the unavailable operation, e.g. "CreateTransaction"
 }
@@ -426,13 +429,13 @@ func (d *FDBDatabase) CreateWritableTransaction() (fdb.WritableTransaction, erro
 }
 
 // LocalityGetBoundaryKeys returns the FDB shard boundary keys within r, working on
-// ANY backend (the online MUTUAL indexer uses them to partition the keyspace into
-// fragments for concurrent building). It's a read of the \xff/keyServers system
-// range — byte-identical on the pure-Go and libfdb_c clients against the same
-// cluster — so mutual indexing parallelizes on either backend. A backend that
-// can't provide it (e.g. a custom transactor) returns BackendCapabilityError;
-// callers that want graceful degradation (1 fragment) treat an error as "no
-// boundaries".
+// both the pure-Go and libfdb_c backends (the online MUTUAL indexer uses them to
+// partition the keyspace into fragments for concurrent building). It's a read of
+// the \xff/keyServers system range — byte-identical on the pure-Go and libfdb_c
+// clients against the same cluster — so mutual indexing parallelizes on either
+// backend. A handle that can't provide it (a tenant-backed FDBDatabase, or a
+// custom transactor) returns BackendCapabilityError; callers that want graceful
+// degradation (1 fragment) treat an error as "no boundaries".
 //
 // Unlike CreateWritableTransaction there is no tenant branch: shard boundaries
 // are a cluster-wide property of the keyServers map, independent of any tenant.

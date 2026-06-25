@@ -42,15 +42,17 @@ func main() {
 	}
 	defer setup.Close()
 
-	mustExec(ctx, setup, "CREATE DATABASE "+dbPath)
-	mustExec(ctx, setup, "CREATE SCHEMA TEMPLATE quickstart_tmpl "+
+	// Idempotent setup so the quickstart is re-runnable: a second run hits
+	// "already exists" on these CREATEs, which setupExec logs and skips.
+	setupExec(ctx, setup, "CREATE DATABASE "+dbPath)
+	setupExec(ctx, setup, "CREATE SCHEMA TEMPLATE quickstart_tmpl "+
 		"CREATE TABLE orders ("+
 		"  id BIGINT NOT NULL,"+
 		"  customer STRING,"+
 		"  amount BIGINT,"+
 		"  PRIMARY KEY (id))"+
 		"CREATE INDEX orders_by_customer ON orders (customer)")
-	mustExec(ctx, setup, "CREATE SCHEMA "+dbPath+"/app WITH TEMPLATE quickstart_tmpl")
+	setupExec(ctx, setup, "CREATE SCHEMA "+dbPath+"/app WITH TEMPLATE quickstart_tmpl")
 
 	// The application handle, bound to the "app" schema.
 	db, err := sql.Open("fdbsql", dsn(dbPath, clusterFile, "app"))
@@ -58,6 +60,10 @@ func main() {
 		log.Fatalf("open app connection: %v", err)
 	}
 	defer db.Close()
+
+	// Clear any rows from a previous run so the seed below doesn't hit a
+	// primary-key conflict (keeps the quickstart re-runnable).
+	setupExec(ctx, db, "DELETE FROM orders")
 
 	// Insert some rows. Parameter placeholders use ? (positional).
 	for _, o := range []struct {
@@ -122,8 +128,11 @@ func dsn(dbPath, clusterFile, schema string) string {
 	return d
 }
 
-func mustExec(ctx context.Context, db *sql.DB, stmt string) {
+// setupExec runs idempotent setup/cleanup DDL: it logs and CONTINUES on error so
+// the quickstart is re-runnable. A second run hits "already exists" on the
+// CREATEs (and DELETE on an empty table is a no-op) — neither should abort.
+func setupExec(ctx context.Context, db *sql.DB, stmt string) {
 	if _, err := db.ExecContext(ctx, stmt); err != nil {
-		log.Fatalf("exec %q: %v", stmt, err)
+		log.Printf("setup (continuing): %v", err)
 	}
 }

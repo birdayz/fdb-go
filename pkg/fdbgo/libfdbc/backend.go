@@ -151,6 +151,19 @@ func (d *database) CreateWritableTransaction() (fdb.WritableTransaction, error) 
 // partitions the keyspace the same way on either backend. Each cgofdb.Key is a
 // newtype cast to fdb.Key (both []byte) into a fresh result slice.
 func (d *database) LocalityGetBoundaryKeys(r fdb.ExactRange, limit int, readVersion int64) ([]fdb.Key, error) {
+	// Match the pure-Go backend's limit validation exactly (it routes through
+	// RangeOptions): only -1 (ROW_LIMIT_UNLIMITED), 0, and positive are valid; a
+	// limit < -1 is range_limits_invalid. Without this the two backends would
+	// diverge — and Apple's binding uses a `limit != 0` form that drives
+	// make([]Key, size) negative and PANICS on any negative limit, so we must
+	// handle both cases before delegating. The record layer passes 0; this keeps
+	// the backend-agnostic API consistent for any caller.
+	if limit < -1 {
+		return nil, fdb.Error{Code: 2012} // range_limits_invalid (matches pure-Go)
+	}
+	if limit < 0 { // limit == -1: unlimited; pass 0 so the binding doesn't panic.
+		limit = 0
+	}
 	cgoKeys, err := d.db.LocalityGetBoundaryKeys(cgoExactRange(r), limit, readVersion)
 	if err != nil {
 		return nil, convErr(err)

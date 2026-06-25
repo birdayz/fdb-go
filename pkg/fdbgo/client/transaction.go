@@ -37,7 +37,7 @@ const (
 	ErrTimedOut                  = 1004 // timed_out — the SS occasionally times out a watch; re-arm
 	ErrDatabaseLocked            = 1038 // database_locked
 	ErrClusterVersionChanged     = 1039 // cluster_version_changed (MAYBE_COMMITTED)
-	ErrProxyMemoryLimitExceeded  = 1042 // proxy_memory_limit_exceeded
+	ErrProxyMemoryLimitExceeded  = 1042 // commit_proxy_memory_limit_exceeded
 	ErrBatchTransactionThrottled = 1051 // batch_transaction_throttled
 	ErrGrvProxyMemoryLimit       = 1078 // grv_proxy_memory_limit_exceeded
 	ErrBlobGranuleRequestFailed  = 1079 // blob_granule_request_failed (retryable, C++ NativeAPI.actor.cpp)

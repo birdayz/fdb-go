@@ -29,7 +29,7 @@ func ensureBenchDB(b *testing.B) {
 		}
 		ctx := context.Background()
 		container, err := foundationdbtc.Run(ctx, "",
-			foundationdbtc.WithAPIVersion(720),
+			foundationdbtc.WithAPIVersion(730),
 		)
 		if err != nil {
 			b.Fatalf("failed to start FDB container: %v", err)
@@ -44,7 +44,7 @@ func ensureBenchDB(b *testing.B) {
 		}
 		tmpFile.WriteString(clusterFile)
 		tmpFile.Close()
-		fdb.MustAPIVersion(720)
+		fdb.MustAPIVersion(730)
 		dbConn, err := fdb.OpenDatabase(tmpFile.Name())
 		if err != nil {
 			b.Fatalf("failed to open FDB: %v", err)

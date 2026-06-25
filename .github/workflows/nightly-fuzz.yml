@@ -208,7 +208,7 @@ jobs:
           if-no-files-found: ignore
 
   engine-fuzz:
-    name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer)
+    name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
     runs-on: [self-hosted, linux, x64, hetzner]
     timeout-minutes: 200
 
@@ -234,9 +234,9 @@ jobs:
         # fails loudly instead of silently fuzzing nothing.
         run: |
           mkdir -p /tmp/fuzz-cache
-          VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/...)' 2>/dev/null)
+          VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
-          for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer --include='*_test.go'); do
+          for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
             dir=$(dirname "$f")
             target="//$dir:$(basename "$dir")_test"
             echo "$VALID" | grep -qxF "$target" || {
@@ -275,6 +275,7 @@ jobs:
           path: |
             bazel-testlogs/pkg/relational/**/test.log
             bazel-testlogs/pkg/recordlayer/**/test.log
+            bazel-testlogs/pkg/rabitq/**/test.log
             /tmp/fuzz-cache/**
           retention-days: 30
           if-no-files-found: ignore

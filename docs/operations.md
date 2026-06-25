@@ -35,37 +35,54 @@ per cluster-file path for the process lifetime.
 
 ### Record-store API
 
+Pure-Go client (the default). `fdb.OpenDatabase` is always the pure-Go client and needs the API
+version selected first:
+
 ```go
-fdb, _ := fdb.OpenDatabase("/etc/foundationdb/fdb.cluster")   // or fdb.OpenDefault()
-rdb := recordlayer.NewFDBDatabase(fdb)
+fdb.APIVersion(730)                                          // required before any open
+db, _ := fdb.OpenDatabase("/etc/foundationdb/fdb.cluster")   // or fdb.OpenDefault()
+rdb := recordlayer.NewFDBDatabase(db)
 ```
 
 `recordlayer.NewFDBDatabaseFactory().GetDatabase(clusterFile)` caches by cluster file (mirrors Java
-`FDBDatabaseFactory`).
+`FDBDatabaseFactory`) and routes through the backend seam below.
 
 ### The C-client escape hatch
 
-The client is **pure Go by default** (no cgo). To run against Apple's `libfdb_c` instead — e.g. if
-you want the battle-tested C client on a bet-the-company write path — build with the tag:
+The client is **pure Go by default** (no cgo). To run against Apple's `libfdb_c` instead — e.g. the
+battle-tested C client on a bet-the-company write path — open through the **backend seam**
+(`fdbclient.Open` picks the backend by build tag) and build with the tag:
 
-```sh
-CGO_ENABLED=1 go build -tags libfdbc ./...
+```go
+backend, _ := fdbclient.Open(clusterFile)            // pure-Go OR libfdb_c, per build tag
+rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
 ```
 
-This is a **build-time** choice (the libfdb_c network thread is once-per-process), not a runtime
-switch. Both backends are wire-compatible; a cross-client byte-identical differential gates every
-PR (`nightly-libfdbc.yml`).
+```sh
+go build ./...                       # default → pure-Go
+CGO_ENABLED=1 go build -tags libfdbc ./...   # → libfdb_c
+```
+
+The plain `fdb.OpenDatabase` form above is *not* backend-selected; the switch lives in
+`fdbclient.Open`. This is a **build-time** choice (the libfdb_c network thread is once-per-process),
+not a runtime switch. Both backends are wire-compatible; a cross-client byte-identical differential
+gates every PR (`nightly-libfdbc.yml`). The SQL driver and `FDBDatabaseFactory` route through this
+seam too, so `-tags libfdbc` switches them as well.
 
 ---
 
 ## 2. Transactions: retries, timeouts, cancellation
 
-Run work in a transaction via the database's `Transact` / `ReadTransact` (Apple-binding-compatible)
-or the ctx-bounded `TransactCtx` / `ReadTransactCtx`:
+Run record-store work via `rdb.Run` / `rdb.RunRead` (the record layer's retrying transaction
+methods; the closure gets an `*FDBRecordContext`):
 
 ```go
-_, err := rdb.TransactCtx(ctx, func(tx ...) (any, error) { ... })
+_, err := rdb.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) { ... })
+// read-only: rdb.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) { ... })
 ```
+
+(`Run`/`RunRead` dispatch to the lower-level `fdb.Database` methods `Transact`/`ReadTransact` and the
+ctx-bounded `TransactCtx`/`ReadTransactCtx`, which live on the `fdb.Database` handle, not on `rdb`.)
 
 - **The `ctx` deadline bounds the retry loop and backoff.** A cancelled/expired ctx aborts retries
   promptly — this is the cancellation mechanism.
@@ -74,7 +91,8 @@ _, err := rdb.TransactCtx(ctx, func(tx ...) (any, error) { ... })
 - The commit RPC itself runs detached from late ctx cancellation, so a cancel mid-commit can't tear
   a write in half (ambiguous-write safety, RFC-090).
 
-Tune defaults on the handle (`db.Options()`), applied to every transaction:
+Tune transaction defaults on the underlying `fdb.Database` handle (`db.Options()`), applied to every
+transaction it runs:
 
 | Option | Effect |
 |---|---|
@@ -115,7 +133,8 @@ idxer, _ := recordlayer.NewOnlineIndexerBuilder().
     SetIndex(myIndex).
     SetSubspace(ss).
     SetLimit(100).                       // records per transaction (default 100)
-    SetRecordsPerSecond(10000).          // inter-tx rate limit (default 10000; 0 = unlimited)
+    SetMaxRetries(3).                     // REQUIRED for SetRecordsPerSecond to take effect (see below)
+    SetRecordsPerSecond(10000).          // inter-tx rate limit (only applied when maxRetries > 0)
     SetProgressLogIntervalMillis(10000). // log "Indexer: Built Range" at most every 10s (default -1 = off)
     SetLogger(slog.Default()).
     Build()
@@ -128,10 +147,10 @@ Key knobs (defaults in parentheses):
 | Setter | Effect |
 |---|---|
 | `SetLimit(n)` (100) | records per build transaction; auto-lowered on transient `too_large`/`too_old` errors |
-| `SetRecordsPerSecond(n)` (10000) | inter-transaction rate limit; `0` = unlimited |
-| `SetEnforcedPostTransactionDelay(ms)` (0) | fixed delay between ranges, **instead of** the rate limit |
+| `SetRecordsPerSecond(n)` (10000) | inter-transaction rate limit; `0` = unlimited. **Only takes effect when `SetMaxRetries(n>0)` is also set** — the rps wait lives on the retry/throttle path (default `maxRetries=0` ⇒ no throttling). Use `SetEnforcedPostTransactionDelay` for an unconditional delay. |
+| `SetEnforcedPostTransactionDelay(ms)` (0) | fixed delay between ranges, **instead of** the rate limit; applied unconditionally (no retries needed) |
 | `SetTimeLimit(d)` (unlimited) | abort with `TimeLimitExceededError` after the wall-clock budget |
-| `SetMaxRetries(n)` | retries per range on transient errors |
+| `SetMaxRetries(n)` (0) | retries per range on transient errors; also gates `SetRecordsPerSecond` throttling |
 | `SetProgressLogIntervalMillis(n)` (-1) | `<0` off · `0` every range · `>0` throttle the progress log |
 | `SetLogger(l)` (`slog.Default()`) | where progress events go (INFO) |
 | `SetMarkReadable(bool)` (true) | mark the index readable when the build completes |
@@ -157,8 +176,12 @@ The build path drives `Disabled`/new → `ClearAndMarkIndexWriteOnly` → (build
 `RecordIndexUniquenessViolationError`). Querying a non-scannable index returns
 `IndexNotReadableError`. Inspect state with `store.GetIndexState(name)` / `IsIndexReadable(name)`.
 
-A freshly-added index in metadata is detected on store open and transitioned to `WriteOnly` (so
-writes maintain it) until an online build marks it `Readable`.
+A freshly-added index in metadata is detected on store open. Under the **default** rebuild policy
+(`DefaultIndexRebuildPolicy`): a small store (≤ ~200 records) rebuilds the index inline to
+`Readable`; a larger store leaves it **`Disabled`** — writes do **not** maintain it until an
+`OnlineIndexer` build runs (`Disabled` → `ClearAndMarkIndexWriteOnly` → build → `Readable`). To have
+writes maintain a new index *during* backfill instead, opt into `WriteOnlyIfTooLargePolicy` via
+`SetIndexRebuildPolicy` so the large-store case lands `WriteOnly`.
 
 ---
 
@@ -171,7 +194,8 @@ manual format-version setter — it tracks the code.
 Governed by the wire-compat hard line:
 
 - **Safe:** adding a protobuf field (unknown fields round-trip, so older readers preserve them);
-  adding an index (lands `WriteOnly`, build, then `Readable`); adding a record type.
+  adding an index (default policy: `Disabled` until an online build → `Readable`, or `WriteOnly`
+  during backfill with `WriteOnlyIfTooLargePolicy` — see §5); adding a record type.
 - **Unsafe (breaks shared-cluster compat):** anything that changes key encoding, the record/index/
   version/continuation **format**, primary-key structure, or the split layout. Don't.
 
@@ -197,17 +221,20 @@ cluster-level backup captures it consistently.
 
 ## 8. Observability hooks
 
-**Metrics.** Every `Database` handle carries `ClientMetrics` (the `libfdb_c` `DatabaseContext`
-transaction-metrics subset, RFC-097): commits started/completed, per-code retry counters
-(conflicts 1020, maybe-committed 1021, too-old 1007, future-version 1009, throttled, …), GRV cache
-hits, and latency sketches. Snapshot with `db.Metrics()`.
-
-For Prometheus, the zero-dependency `pkg/fdbgo/fdbmetrics` package exposes an `http.Handler` that
-renders the snapshot in text-exposition format:
+**Metrics.** The low-level pure-Go client (`*client.Database`) carries `ClientMetrics` (the `libfdb_c`
+`DatabaseContext` transaction-metrics subset, RFC-097): commits started/completed, per-code retry
+counters (conflicts 1020, maybe-committed 1021, too-old 1007, future-version 1009, throttled, …),
+GRV cache hits, and latency sketches. `Metrics()` lives on `*client.Database` (a `MetricsSource`),
+**not** on `fdb.Database` or `*recordlayer.FDBDatabase`. So keep the `*client.Database` handle when
+you want metrics:
 
 ```go
-http.Handle("/metrics", fdbmetrics.Handler(db))
+cdb, _ := client.OpenDatabase(ctx, clusterFile)        // *client.Database — has Metrics()
+http.Handle("/metrics", fdbmetrics.Handler(cdb))       // zero-dep Prometheus text exposition
+rdb := recordlayer.NewFDBDatabase(fdb.WrapDatabase(cdb))
 ```
+
+`fdbmetrics.Handler` accepts any `MetricsSource` (`interface{ Metrics() client.ClientMetricsSnapshot }`).
 
 **Logs.** Diagnostics route through the standard `log/slog`. Apps set their own handler with
 `slog.SetDefault(...)` (no record-layer logging API to learn), or pass a per-handle logger with the
