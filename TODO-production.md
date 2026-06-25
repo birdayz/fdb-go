@@ -50,6 +50,12 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
   `prod-stack/08`); **P2.4** full nightly fuzz rotation (`engine-fuzz` job → `prod-stack/10`);
   **P2.2** escape-hatch entry-point routing + **P1.6** gate-placement decision → `prod-stack/11`.
+- **Bug found + fixed by codex review (`prod-stack/14`):** the full-stack codex pass caught a
+  cross-module break the per-package reviewers couldn't see — `prod-stack/11` dropped the SQL driver's
+  720 API-version pin (→ `fdbclient.Open` default 730), but `cmd/frl`'s catalog path still hard-pinned
+  720, so in the `frl sql` REPL a SQL statement (→730) then `\d` (→720) hit FDB's "can't change the
+  process-wide API version" error. Fixed by lifting `cmd/frl`'s `fdbAPIVersion` to 730 (completing the
+  in-code "lift both to 730 together" TODO; the frl integration TestMain already pinned 730).
 - **Bug found + fixed by the new fuzz net (`prod-stack/09`):** `FuzzSQLPlan` immediately surfaced a
   real Cascades planner panic — `values.EqualsWithoutChildren` hit its unhandled-type default on
   `*expr.predicateValue` (a predicate-as-value, e.g. `ORDER BY !amount`), which can't be added to the
