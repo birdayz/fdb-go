@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -90,6 +91,64 @@ var _ = Describe("OnlineIndexer", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("emits Indexer: Built Range progress events across a multi-range build", func() {
+			ks := specSubspace()
+
+			// Insert 10 records without index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// A capturing logger + progress interval 0 (log every range) + a small
+			// limit so the build spans several ranges → throttleBetweenRanges (hence
+			// the progress log) fires between them.
+			h := &captureHandler{level: slog.LevelInfo}
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				SetLimit(3).
+				SetLogger(slog.New(h)).
+				SetProgressLogIntervalMillis(0).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			recs := h.snapshot()
+			var built int
+			for _, r := range recs {
+				if r.Message == "Indexer: Built Range" {
+					built++
+					m := attrMap(r)
+					Expect(m["index"]).To(Equal("Order$price"))
+					Expect(m["limit"]).To(Equal(int64(3)))
+					Expect(m["records_scanned"]).To(BeNumerically(">", int64(0)))
+				}
+			}
+			Expect(built).To(BeNumerically(">=", 1), "expected at least one progress event across a multi-range build")
 		})
 
 		It("builds a composite index with PK dedup", func() {

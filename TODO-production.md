@@ -40,9 +40,9 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   differential shipped, but prod open paths not yet routed through the seam), **P2.4** fuzz breadth
   (~44/120 fuzzed nightly; no full rotation / published crash corpus), **P3.2** examples (one
   compiles in CI; needs SQL + backend-agnostic examples).
-- **Still genuinely OPEN:** **P1.2** record-layer half (online-indexer emits no progress events —
-  Java `IndexingBase` logging not ported), **P2.3** the six SQL-engine correctness gaps,
-  **P3.1** idiomatic-API pass, **P3.4** operator guide, **P0.3-F** the e2e SQL-fuzz target.
+- **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
+  pass, **P3.4** operator guide, **P0.3-F** the e2e SQL-fuzz target. *(**P1.2** record-layer half —
+  online-indexer progress events — closed by `prod-stack/03`.)*
 - **Deferred by owner:** **P2.1** — the stability statement is done, but cutting `v0.1.0` /
   `CHANGELOG.md` is intentionally on hold. Do not cut a release branch yet.
 
@@ -491,7 +491,7 @@ Confirmed green across the FULL layer post-`hadRead`-fix (18/18, 0 races).
 surface under `-race` (tests set it only in `TestMain`/serially), but it's still a process-global
 func pointer read on the eval hot path — convert to `atomic.Pointer`/set-once when convenient.
 
-### [~] P1.2 — Observability: pluggable logger · M — foundation done; event emission pairs with P1.3
+### [x] P1.2 — Observability: pluggable logger · M — DONE (both halves)
 **Decision resolved: interfaces-only, no new core deps** (per the project's "simple code / no
 heavy deps" principles; an OTel/Prometheus adapter ships as a separate optional package — see P1.3).
 - [x] **Pluggable diagnostics via `log/slog`.** The SERIOUS panic-recovery logs (db/sql boundary
@@ -499,16 +499,20 @@ heavy deps" principles; an OTel/Prometheus adapter ships as a separate optional 
   of bare `log.Printf`. This makes the library's diagnostics pluggable via the *standard* Go
   mechanism — apps call `slog.SetDefault` with their own handler (JSON, levels, collector) — with
   zero record-layer-specific logging API to learn. (`seriousLogf` stays a test-capture seam.)
-- [~] **Emit operational events** — CLIENT half DONE (RFC-097, with P1.3): retry events
-  (per-code, incl. 1020) at Debug + `commit_unknown_result` at Warn flow through a per-handle
-  logger (`client.WithLogger`, nil → `slog.Default()` — tests never mutate process globals),
-  `Enabled`-guarded so the disabled-level hot path is one branch; same source as the counters.
-  REMAINING (OPEN — *verified untouched 2026-06-24*): the **record-layer half**. The Go
-  `OnlineIndexer` (`pkg/recordlayer/online_indexer.go`) emits **zero** progress/operational events —
-  it ports Java's time-limit/throttle logic but drops every `IndexingBase.maybeLogProgress` log
-  call ("Indexer: Built Range", `progressLogIntervalMillis` throttle, `shouldLogBuildProgress`).
-  No logger field/config exists; nothing analogous to the planner's `PlanGenerationLogger` (RFC-034)
-  is wired into the indexer. Port the Java progress logging onto a slog hook.
+- [x] **Emit operational events** — DONE.
+  - CLIENT half (RFC-097, with P1.3): retry events (per-code, incl. 1020) at Debug +
+    `commit_unknown_result` at Warn flow through a per-handle logger (`client.WithLogger`, nil →
+    `slog.Default()` — tests never mutate process globals), `Enabled`-guarded so the disabled-level
+    hot path is one branch; same source as the counters.
+  - RECORD-LAYER half (online-indexer progress events): the Go `OnlineIndexer`
+    (`pkg/recordlayer/online_indexer.go`) now emits Java's per-range **"Indexer: Built Range"** INFO
+    event, throttled by a 1:1 port of `IndexingBase.shouldLogBuildProgress` /
+    `progressLogIntervalMillis` (default `-1` = off, matching Java `DEFAULT_PROGRESS_LOG_INTERVAL`),
+    via a per-indexer `slog.Logger` (`SetLogger`, nil → `slog.Default()`). The `Enabled(INFO)` guard
+    runs before the throttle so a disabled level advances no clock (Java's `isInfoEnabled() &&
+    shouldLogBuildProgress()` short-circuit). Pinned by `online_indexer_progress_log_test.go`
+    (throttle semantics, emission, disabled-level short-circuit) + an FDB Ginkgo test
+    (`online_indexer_test.go` — events fire across a real multi-range build).
 
 ### [x] P1.3 — Observability: conflict/retry metrics + export hook · M — DONE (RFC-097)
 `ClientMetrics` on every `Database` handle: the C++ `DatabaseContext` TransactionMetrics

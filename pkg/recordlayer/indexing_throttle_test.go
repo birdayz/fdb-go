@@ -578,9 +578,10 @@ func TestThrottleBetweenRanges(t *testing.T) {
 		oi := &OnlineIndexer{
 			enforcedPostTransactionDelay: -5000,
 			timeLimit:                    10 * time.Millisecond,
+			progressLogIntervalMillis:    -1, // disable progress logging; this test is about the time limit
 		}
 		start := time.Now().Add(-20 * time.Millisecond)
-		err := oi.throttleBetweenRanges(context.Background(), start)
+		err := oi.throttleBetweenRanges(context.Background(), start, 0, 0)
 		var tle *TimeLimitExceededError
 		if !errors.As(err, &tle) {
 			t.Errorf("expected TimeLimitExceededError, got %v (negative delay must not loosen the time-limit check)", err)
@@ -589,8 +590,8 @@ func TestThrottleBetweenRanges(t *testing.T) {
 
 	t.Run("returns nil with no time limit and no delay", func(t *testing.T) {
 		t.Parallel()
-		oi := &OnlineIndexer{} // timeLimit 0, delay 0, throttle nil
-		if err := oi.throttleBetweenRanges(context.Background(), time.Now()); err != nil {
+		oi := &OnlineIndexer{progressLogIntervalMillis: -1} // timeLimit 0, delay 0, throttle nil, logging off
+		if err := oi.throttleBetweenRanges(context.Background(), time.Now(), 0, 0); err != nil {
 			t.Errorf("expected nil, got %v", err)
 		}
 	})
