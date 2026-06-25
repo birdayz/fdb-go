@@ -41,13 +41,13 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   (~44/120 fuzzed nightly; no full rotation / published crash corpus), **P3.2** examples (one
   compiles in CI; needs SQL + backend-agnostic examples).
 - **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
-  pass, **P3.4** operator guide, **P0.3-F** the e2e SQL-fuzz target. *(**P1.2** record-layer half —
-  online-indexer progress events — closed by `prod-stack/03`.)*
+  pass, **P3.4** operator guide.
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
   all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
   release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
 - **Closed by the `prod-stack/*` PRs (2026-06-24):** **P1.2** record-layer half (online-indexer
-  progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`.
+  progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`;
+  **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`).
 
 ---
 
@@ -266,14 +266,14 @@ NOT in the caller-visible message) + `conn_recover_test.go`
 (`TestRecoverLoop_ContainsPanicAndFailsConnection`: containment proven, ctx cancelled, pending
 replies carry the failure error, logged SERIOUS with loop + cause).
 
-### [~] P0.3 — Panic/error discipline: errors on the data path, assert internally, recover at every goroutine boundary
-**Status (2026-06-07): policy fully realized; all sub-items closed except one acknowledged-shallow gap.**
+### [x] P0.3 — Panic/error discipline: errors on the data path, assert internally, recover at every goroutine boundary
+**Status: policy fully realized; all sub-items closed (F closed 2026-06-24, `prod-stack/06`).**
 CLASSIFY ✓ · A1 (eval→error) ✓ · GATE ✓ · A2 (delete 6 recovers) ✓ · B (metadata typed error) ✓ ·
 C (network-goroutine recovers) ✓ · D (parser FFI recovers + fuzz) ✓ · E (resolver `.Get()`) ✓ ·
-G (intersection int32 coercion, RFC-092, Graefe+Torvalds ACK) ✓. **Only F remains** (the e2e
-SQL→QueryContext fuzz target) and is container-gated / shallow-by-nature — the boundary recover is
-the real backstop, so this is hardening, not a blocker. The library never panics to a caller; the
-data path returns errors; remaining panics are documented internal invariants / `Must*`-API boundary.
+F (SQL fuzz net — `FuzzSQLPlan` front-end + `FuzzSQL_QueryContext` e2e) ✓ ·
+G (intersection int32 coercion, RFC-092, Graefe+Torvalds ACK) ✓. The library never panics to a
+caller; the data path returns errors; remaining panics are documented internal invariants /
+`Must*`-API boundary.
 **Governing policy (bradfitz — Go's "don't *leak* panics" convention, à la `encoding/json`):**
 a library must never let a panic cross its API boundary; it need not, and should not, avoid
 panic *internally*.
@@ -370,14 +370,22 @@ accumulator / sumtype alternatives.
     + Transact-level recovery throughout (`node.go:63` is even a `bool` method — converting it
     would change the ported signature). Switching here would *diverge* from the Apple Go binding
     (a client-spec violation), so parity wins. `panicToError` is the documented boundary.
-- [~] **P0.3-F — fuzz net** (`M`) — substantially DONE; one acknowledged-shallow gap. The
-  eval/value layer (where panics actually hide) is well-fuzzed: `embedded_test.go` has
-  `FuzzApplyMathOp`, `FuzzApplyBitOp`, `FuzzCompareValues`, `FuzzCastValue`, `FuzzLikePrefixStrinc`,
-  `FuzzLikePatternToPrefix`; `values/` has `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`,
-  `FuzzAndOrValue_Kleene3VL`, `FuzzCaseExpression_FirstMatchWins`, etc. **Gap:** no e2e
-  *SQL-string + seed-rows → `QueryContext` → no-panic* target. Honest caveat (kept): e2e fuzz
-  needs a container → shallow — which is exactly why the boundary recover stays the real backstop.
-  Not "proven by fuzz"; fuzz reduces, the recover backstops.
+- [x] **P0.3-F — fuzz net** (`M`) — DONE. The eval/value layer (where panics actually hide) was
+  already well-fuzzed: `embedded_test.go` has `FuzzApplyMathOp`, `FuzzApplyBitOp`,
+  `FuzzCompareValues`, `FuzzCastValue`, `FuzzLikePrefixStrinc`, `FuzzLikePatternToPrefix`; `values/`
+  has `FuzzSimplifyValue_ArithmeticTree`/`_CastChain`, `FuzzAndOrValue_Kleene3VL`,
+  `FuzzCaseExpression_FirstMatchWins`, etc. The remaining **SQL-string → no-panic** gap is now
+  closed by a complementary pair (2026-06-24):
+  - **`FuzzSQLPlan`** (`pkg/relational/core/embedded`) — SQL string → parse → semantic analysis →
+    Cascades SELECT planning, calling `planSelectCascades` **directly** (NOT through the boundary
+    recover), so a planner/semantic panic is surfaced to the fuzzer, not swallowed. Container-free
+    and fast (runs in CI fuzz rotation). **760k execs, 0 panics** on the first run.
+  - **`FuzzSQL_QueryContext`** (`pkg/relational/sqldriver`) — the literal item: SQL string +
+    seed rows → real `database/sql` → planner → executor → FDB, asserting **no panic escapes the
+    db/sql boundary** (the never-panic-to-caller guarantee). Container-gated + shallow by nature
+    (each input is a real transaction), so the seed corpus runs in CI and active fuzzing is opt-in.
+  The boundary recover remains the production backstop; the front-end fuzz now finds the panics the
+  recover would otherwise only mask.
 - [x] **P0.3-G — comparison-key type coercion: make the 3 sibling builders consistent**
   (`M`, query-engine) — **DONE (RFC-092, Graefe ACK + Torvalds ACK).** Both intersection
   builders now widen `int32→int64` via a shared `widenInt32` helper; regression

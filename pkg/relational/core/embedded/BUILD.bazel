@@ -89,6 +89,7 @@ go_test(
         "resource_limits_test.go",
         "scope_test.go",
         "select_helpers_test.go",
+        "sql_plan_fuzz_test.go",
         "system_rows_test.go",
         "tri_bool_test.go",
         "utilities_test.go",
