@@ -9,8 +9,8 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdbclient",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",
