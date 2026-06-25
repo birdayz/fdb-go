@@ -1,6 +1,7 @@
 package query
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
@@ -993,5 +995,117 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	}
 	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
 		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)
+	}
+}
+
+// TestPullUpToOutputField_PointerIdentityPreferred pins that pullUpToOutputField
+// prefers an EXACT POINTER-identity output field over an earlier
+// semantically-equal one. When two SELECT-list aliases share a
+// semantically-equal value (`id AS a, id AS b ORDER BY b`),
+// upgradeSortKeyValues copies the EXACT projected Value pointer into the sort
+// key, so the key actually names the pointer-identical field (`b`). A single
+// semantic-equality pass would return the first equal field (`a`) and pull up to
+// the WRONG output column name. The two-pass design (Torvalds round-6 review)
+// keeps the pulled-up name faithful to the aliased column.
+func TestPullUpToOutputField_PointerIdentityPreferred(t *testing.T) {
+	t.Parallel()
+
+	// Two distinct FieldValue pointers that are SEMANTICALLY EQUAL (same field).
+	valA := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	valB := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if !values.SemanticEqualsUnderAliasMap(valA, valB, values.AliasMap{}) {
+		t.Fatalf("test setup: valA and valB must be semantically equal")
+	}
+	if valA == valB {
+		t.Fatalf("test setup: valA and valB must be distinct pointers")
+	}
+
+	fields := []values.RecordConstructorField{
+		{Name: "A", Value: valA},
+		{Name: "B", Value: valB},
+	}
+
+	// Sort key Value is the EXACT pointer of output field B. The pull-up must
+	// resolve to B (pointer identity), NOT A (earlier semantic match).
+	got, ok := pullUpToOutputField(valB, fields)
+	if !ok {
+		t.Fatalf("pullUpToOutputField returned no match for a pointer-identical key")
+	}
+	fv, isField := got.(*values.FieldValue)
+	if !isField {
+		t.Fatalf("pull-up returned %T, want *FieldValue", got)
+	}
+	if fv.Field != "B" {
+		t.Errorf("pull-up resolved to output field %q, want %q — pointer-identical field must win over an earlier semantic match", fv.Field, "B")
+	}
+
+	// Symmetric: keying on valA must resolve to A.
+	if got, ok := pullUpToOutputField(valA, fields); ok {
+		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
+			t.Errorf("pull-up on valA resolved to %q, want %q", fv.Field, "A")
+		}
+	} else {
+		t.Errorf("pullUpToOutputField returned no match for valA")
+	}
+
+	// A key that is only SEMANTICALLY equal (a third distinct pointer) falls to
+	// pass 2 and resolves to the FIRST semantically-equal field (A) — the
+	// documented fallback for rebuilt (non-pointer-copied) keys.
+	valC := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
+	if got, ok := pullUpToOutputField(valC, fields); ok {
+		if fv, isField := got.(*values.FieldValue); isField && fv.Field != "A" {
+			t.Errorf("semantic-only pull-up resolved to %q, want first equal field %q", fv.Field, "A")
+		}
+	} else {
+		t.Errorf("pullUpToOutputField returned no match for a semantically-equal key")
+	}
+}
+
+// TestTranslateUnnest_NilMetadataIsCleanError pins codex P2b: the
+// metadata-less translation path (TranslateToCascades / the nil-md
+// TranslateToCascadesWithSubqueries, used by scalar-subquery / DML translation
+// and unit tests) must NOT panic when handed a LogicalJoin whose Right is a
+// LogicalUnnest. Classifying a lateral array unnest requires the outer source's
+// proto descriptor (resolveRecordType → t.md); with t.md == nil the translator
+// declines CLEANLY with ErrCodeUnsupportedQuery rather than dereferencing nil
+// metadata. RFC-142.
+func TestTranslateUnnest_NilMetadataIsCleanError(t *testing.T) {
+	// FROM T1, T1.ARR1 AS V — a lateral unnest whose array field lives on T1.
+	unnest := &logical.LogicalUnnest{Segments: []string{"T1", "ARR1"}, Alias: "V"}
+	join := logical.NewJoin(logical.NewScan("T1", ""), unnest, logical.JoinInner, "")
+
+	// 1. TranslateToCascades (the bare nil-md entry) must not panic.
+	if ref := TranslateToCascades(join); ref != nil {
+		t.Fatalf("nil-md unnest: expected untranslatable (nil ref), got %v", ref)
+	}
+
+	// 2. TranslateToCascadesWithError surfaces the specific clean code.
+	ref, _, err := TranslateToCascadesWithError(join, nil)
+	if ref != nil {
+		t.Fatalf("nil-md unnest: expected nil ref, got %v", ref)
+	}
+	if err == nil {
+		t.Fatalf("nil-md unnest: expected a clean error, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("nil-md unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
+	}
+}
+
+// TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError is the AT-ordinality
+// variant of P2b: the AT-only form (no AS) also reaches translateUnnestJoin and
+// must decline cleanly on the nil-md path, never panic. RFC-142.
+func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
+	unnest := &logical.LogicalUnnest{Segments: []string{"T1", "ARR1"}, AtAlias: "ORD"}
+	join := logical.NewJoin(logical.NewScan("T1", ""), unnest, logical.JoinInner, "")
+
+	ref, _, err := TranslateToCascadesWithError(join, nil)
+	if ref != nil {
+		t.Fatalf("nil-md AT unnest: expected nil ref, got %v", ref)
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("nil-md AT unnest: err = %v (%T), want code %v", err, err, api.ErrCodeUnsupportedQuery)
 	}
 }

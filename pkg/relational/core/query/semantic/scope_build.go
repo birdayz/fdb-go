@@ -38,6 +38,12 @@ func (a *Analyzer) BuildScopeFromFromClause(parent *Scope, fromCtx antlrgen.IFro
 			// Subquery in FROM / other shapes — not wired yet.
 			return nil, &UnsupportedFromShapeError{Shape: fmt.Sprintf("%T", srcBase.TableSourceItem())}
 		}
+		// RFC-140 / R3: the `AT atAlias` unnest-with-ordinality clause parses (Java 4.12
+		// #4112) but is not bound until R5; reject it rather than ignore the alias, which
+		// could otherwise mis-resolve a reference to a same-named real column.
+		if atom.GetAtAlias() != nil {
+			return nil, &UnsupportedFromShapeError{Shape: "AT ordinality"}
+		}
 		if len(srcBase.AllJoinPart()) > 0 {
 			return nil, &UnsupportedFromShapeError{Shape: "JOIN"}
 		}

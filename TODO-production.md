@@ -25,6 +25,29 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done.
 
 ---
 
+## Verification pass — 2026-06-24
+
+This doc was written 2026-06-07; a lot landed since. Every then-open item was re-checked against
+the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to reality. Headline:
+
+- **Closed since the doc (now `[x]`):** the two continuation/pagination items (RFC-127 #325,
+  RFC-128 #326); **P1.9** resource limits / backpressure (RFC-106a + RFC-130 + RFC-028);
+  **P3.3** retry-predicate dedup (RFC-105).
+- **Advanced to `[~]` (mechanism/code landed, scoped remainder):** **P1.6** CI gates (differential
+  per-PR, stress nightly; conformance still nightly-only), **P1.8** CI reproducibility (pinned +
+  checksummed artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds
+  + codex ACK), **P2.2** libfdb_c escape hatch (RFC-109: full write-path backend + per-PR
+  differential shipped, but prod open paths not yet routed through the seam), **P2.4** fuzz breadth
+  (~44/120 fuzzed nightly; no full rotation / published crash corpus), **P3.2** examples (one
+  compiles in CI; needs SQL + backend-agnostic examples).
+- **Still genuinely OPEN:** **P1.2** record-layer half (online-indexer emits no progress events —
+  Java `IndexingBase` logging not ported), **P2.3** the six SQL-engine correctness gaps,
+  **P3.1** idiomatic-API pass, **P3.4** operator guide, **P0.3-F** the e2e SQL-fuzz target.
+- **Deferred by owner:** **P2.1** — the stability statement is done, but cutting `v0.1.0` /
+  `CHANGELOG.md` is intentionally on hold. Do not cut a release branch yet.
+
+---
+
 ## ✅ Known deadlock — ROOT-CAUSED + FIXED (was TOP open bug)
 
 **[x] Load-dependent connection deadlock — FIXED.** Originally seen once: under the full
@@ -172,27 +195,31 @@ against Java — wire-compat is the hard line, so nothing was changed on unverif
   already routed through `wrapContinuation`. Pinned by a cross-engine conformance regression
   asserting Go's continuation bytes are **byte-identical** to Java's for the same scan position
   (`continuation_conformance_test.go`), plus unit tests for the empty-suffix + round-trip cases.
-- **[ ] `executeLimit` skip/limit state not in the continuation** (`executor.go:816`,
-  query-engine/Graefe-gated). A `RecordQueryLimitPlan` spanning a page boundary would re-skip
-  `offset` (lose rows) + re-apply `limit` (over-return). Latent — currently shielded (top-level
-  LIMIT goes through `paginatingRows`; nested LIMIT only in eager scalar subqueries). Encode
-  skip/limit-remaining in the plan continuation.
-- **[ ] limit-before-first-row → `StartContinuation` read as "exhausted"** (query-engine,
-  Graefe-gated). Bug site located this round: `cascades_generator.go:1129` — `fetchPage` does
-  `if contBytes == nil { r.exhausted = true }`, but `StartContinuation` has `IsEnd()==false`
-  (`cursor.go:100`) and `ToBytes()==nil` (`:95`). So a *non-end* "limit reached, made no progress this
-  page" result is silently mapped to exhausted → result-set TRUNCATION.
-  - **Reachability:** the leaf `keyValueCursor` is SAFE — the time/scan-limit checks guard on
-    `recordsScanned > 0` (the "free initial pass", `key_value_cursor.go:139/149`), guaranteeing ≥1
-    record (hence a non-nil `continuation`) before any limit fires, so its `limitContinuation` returns
-    `BytesContinuation`, never `StartContinuation`. The risk is a plan that consumes many inputs per
-    output — an aggregate / GROUP BY hitting `txPageTimeLimit` before producing its first output row —
-    if that operator returns a `StartContinuation` instead of carrying the inner scan position.
-  - **Fix is NOT naive:** you can't just "resume on nil bytes" — `StartContinuation` resumes from the
-    START, so re-running the page re-scans from the beginning, hits the same limit, and loops forever.
-    Correct fix: cursors must carry a forward-progress scan position in their limit continuation even
-    when no output row was produced (so the next page resumes *after* the consumed input), OR
-    `fetchPage` must distinguish no-progress (error/raise budget) from end. Needs an RFC + Graefe ACK.
+- **[x] `executeLimit` skip/limit state not in the continuation — DONE (RFC-128, PR #326,
+  Graefe + Torvalds ACK + @claude follow-ups).** The audit's literal P1 (executor re-skip on
+  resume) was shielded/latent; RFC-128 went further and removed the post-execution LIMIT hoist,
+  making LIMIT a uniform `RecordQueryLimitPlan` operator with a mandatory continuation envelope.
+  `executeLimit` (now `executor/executor.go:800`) decodes a `LimitContinuation` (`{inner
+  continuation, remaining offset, remaining limit}`) and the `limitEnvelopeCursor` resumes
+  mid-window — never re-skipping `offset`, never resetting `limit`. Pinned by
+  `limit_envelope_test.go` (`TestLimitEnvelope_ResumeAcrossPage_NoReSkip`, `_OffsetSpansPageBreak`,
+  `_ZeroLimit`, round-trip + garbage-rejection). Verified green at HEAD.
+- **[x] limit-before-first-row → `StartContinuation` read as "exhausted" — DONE (RFC-127, PR #325,
+  Graefe + Torvalds ACK + @claude follow-up).** The old `fetchPage` inferred exhaustion from
+  `ToBytes()==nil`, but a non-end `StartContinuation` is byte-identical to an `EndContinuation` →
+  silent result-set truncation. Fixed by `pageContinuationState`
+  (`embedded/cascades_generator.go:1411`): exhaustion is now decided by `IsEnd()`
+  (≡ `SourceExhausted`), **never** by bytes — aligning Go with Java's `SOURCE_EXHAUSTED`-only
+  invariant. The out-of-band+nil-bytes case raises `ScanLimitReachedError` (→ 54F01) instead of
+  truncating; `LIMIT 0` (in-band `ReturnLimitReached`) is clean exhaustion.
+  - **Reachability (per RFC-127's `/code-review` trace):** the data-loss path was **latent, not
+    live** — every Go leaf cursor reports out-of-band only after `scanned>0` (→ `BytesContinuation`,
+    which the old code resumed correctly), so no current cursor emits a no-next out-of-band+START.
+    The fix is a correctness/invariant hardening (exhaustion from `IsEnd`, not bytes) + makes the
+    `LIMIT 0` handling explicit — a latent landmine closed before any future Union/Intersection/
+    MapWhile-style cursor can trip it. Pinned by `cascades_generator_pagination_test.go`
+    (`TestPageContinuationState` decision table, `TestContinuationExhaustionByIsEndNotBytes`).
+    Verified green at HEAD.
 - **[~] `autoContinuingCursor` retry-after-limit-stop — ANALYZED, no duplicate rows (perf-only).**
   Re-read `onNextWithRetry`/`OnNext` (`cursor_combinators.go:780-847`) this round. On a retryable
   error the retry resumes from `lastContinuation()` = `c.lastResult` (the last RETURNED value's
@@ -476,8 +503,12 @@ heavy deps" principles; an OTel/Prometheus adapter ships as a separate optional 
   (per-code, incl. 1020) at Debug + `commit_unknown_result` at Warn flow through a per-handle
   logger (`client.WithLogger`, nil → `slog.Default()` — tests never mutate process globals),
   `Enabled`-guarded so the disabled-level hot path is one branch; same source as the counters.
-  REMAINING: the record-layer half (online-indexer progress events; builds on the
-  `PlanGenerationLogger` hook, RFC-034).
+  REMAINING (OPEN — *verified untouched 2026-06-24*): the **record-layer half**. The Go
+  `OnlineIndexer` (`pkg/recordlayer/online_indexer.go`) emits **zero** progress/operational events —
+  it ports Java's time-limit/throttle logic but drops every `IndexingBase.maybeLogProgress` log
+  call ("Indexer: Built Range", `progressLogIntervalMillis` throttle, `shouldLogBuildProgress`).
+  No logger field/config exists; nothing analogous to the planner's `PlanGenerationLogger` (RFC-034)
+  is wired into the indexer. Port the Java progress logging onto a slog hook.
 
 ### [x] P1.3 — Observability: conflict/retry metrics + export hook · M — DONE (RFC-097)
 `ClientMetrics` on every `Database` handle: the C++ `DatabaseContext` TransactionMetrics
@@ -505,11 +536,19 @@ MODULE.bazel.lock drift), and 2 in `github.com/docker/docker` (test-infra only, 
 N/A** upstream) — excluded from the production scan + documented in SECURITY.md. Post-bump
 scan: production-clean (only the 2 docker N/A remain, test-only).
 
-### [ ] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M
-Pin/vendor a commit; run conformance (`//conformance`), the libfdb_c differential suite
-(`pkg/fdbgo/bench`), and the 1M stress test (`//pkg/relational/sqldriver/stress`) as *your*
-required gates (today: stress is in no workflow; differential is nightly-only on 8 of 109 fuzz
-targets). Caveat (Torvalds): this gives *detection*, not *repair* — see the won't-fix note.
+### [~] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M — mostly done
+*(Verified 2026-06-24.)* Much of this landed since the doc date:
+- **libfdb_c differential** — PROMOTED to a **per-PR** gate (`nightly-libfdbc.yml` on
+  `push`+`pull_request`), but as the RFC-109 gold gate over `pkg/fdbgo/libfdbc` + `fdbclient`
+  (byte-identical cross-client differential), **not** the `pkg/fdbgo/bench` package the item named
+  (whose non-fuzz `differential_*_test.go` still run in no workflow; only its 5 `FuzzDifferential*`
+  run nightly).
+- **1M stress** — now gated **nightly** (`nightly-stress.yml`), correctness-asserting; kept
+  off-PR by design (RFC-107 — too heavy for every PR).
+- **Conformance** (`//conformance`) — still **nightly-only**, not a required PR gate.
+**Remaining:** decide whether conformance should be a required PR gate; run the `pkg/fdbgo/bench`
+differential tests somewhere (or formally retire them in favour of the `libfdbc` gold gate).
+Caveat (Torvalds): detection, not repair — see the won't-fix note.
 
 ### [~] P1.7 — Reconcile contradictory docs · S — README done
 README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
@@ -530,46 +569,85 @@ de-staled the hard-coded "accurate as of <date>" SQL-summary date, archived the 
 to MODULE.bazel; README contradiction check). The doc-drift portion of this item is now closed; a
 generated `FEATURE_MATRIX.md` remains the only deferred piece.
 
-### [ ] P1.8 — CI reproducibility / supply chain · M
-CI runs on a **self-hosted personal Hetzner box** (`runs-on: [self-hosted, linux, x64,
-hetzner]`) — for any external adopter the green signal is unreproducible and depends on one
-person's hardware (bus-factor + supply-chain). Provide a reproducible runner (ephemeral/cloud)
-or document the requirement; pin tool/image versions with checksums.
+### [~] P1.8 — CI reproducibility / supply chain · M — implementation landed; RFC-108 still DRAFT
+*(Verified 2026-06-24.)* The work is in-tree and verifiable: every downloaded runner artifact is
+pinned **and SHA-256-verified** via `fetch_verified` (`infra/cloud-init.yaml`; `infra/main.tf`
+`locals.versions` — `runner_sha256`, `bazelisk_sha256`, `just_sha256`, `mc_sha256`,
+`fdb_clients_sha256`). FDB skew fixed to `7.3.75` (matches `MODULE.bazel`); GitHub runner pinned
+(was `releases/latest`); ephemeral-runner opt-in (`runner_ephemeral`); stand-up documented
+(`infra/README.md`). A GitHub-hosted reproducibility floor (`hosted-smoke.yml` on `ubuntu-latest`
+— build+vet+pure unit tests) gives external adopters a Docker-free green signal. The self-hosted
+box is retained for the heavy gates; bus-factor-of-one remains the acknowledged won't-fix.
+**Remaining (process, not code):** `rfcs/108-ci-reproducibility.md` is still **DRAFT — awaiting
+Torvalds + codex ACK**; mark `[x]` once accepted.
 
-### [ ] P1.9 — Resource limits / backpressure (multi-tenant noisy-neighbor) · M
-**Why (Torvalds — missed by the review):** nothing caps a single query's intermediate
-materialization, row count, or wall-clock. One tenant can OOM or wedge a shared host. P0.4
-covers retry/ctx but not query resource bounds.
-**Do:** statement timeout, max-rows / result-size cap, query memory budget (the
-`MaterializationLimitExceededError` from RFC-028 is a start — extend to streaming intermediates
-+ a per-query budget). Surface as errors, not crashes.
+### [x] P1.9 — Resource limits / backpressure (multi-tenant noisy-neighbor) · M — DONE (RFC-106a + RFC-130 + RFC-028)
+*(Verified 2026-06-24.)* All four query resource bounds exist and surface as errors (54F01 /
+`StatementMemoryBudgetExceededError`), never crashes:
+- **Statement timeout** — `EXECUTION_TIME_LIMIT` + a 4s per-page `txPageTimeLimit`
+  (`cascades_generator.go`, `context.WithTimeoutCause` tagged `errStatementTimeout`); leaf
+  enforcement in `key_value_cursor.go`.
+- **Max-rows / result-size cap** — JDBC `MAX_ROWS` total cap (`paginatingRows.maxRows`),
+  `pageRowBudget` → `WithReturnedRowLimit`; `OptMaxRows`.
+- **Query memory budget** — RFC-130 extended RFC-028's row-only `MaterializationLimit` to a
+  statement-wide **byte** budget over **streaming AND eager** intermediates
+  (`ExecuteState.ChargeMemory` → `StatementMemoryBudgetExceededError`; streaming cursors carry
+  `st` and charge per-row).
+- **Scan / byte limits** — `ScannedRecordsLimit` / `ScannedBytesLimit` →
+  `ScanLimitReachedError` (`FailOnScanLimitReached` → 54F01).
 
 ---
 
 ## P2 — Medium (before stable v1 / external adopters)
 
-### [ ] P2.1 — Releases, semver, CHANGELOG · S
-`git tag` empty; no releases/CHANGELOG/`/vN`. Add `CHANGELOG.md`; cut `v0.1.0`; publish a
-stability statement (record layer vs SQL engine vs pure-Go client vs vector).
+### [ ] P2.1 — Releases, semver, CHANGELOG · S — release cut DEFERRED (owner's call)
+*(Verified 2026-06-24.)* The **stability statement** is done — `README.md` carries a pre-1.0
+"not yet declared production-ready" statement pointing to `PRODUCTION_READINESS.md` /
+`TODO-production.md`. Still missing: `git tag` is empty (no releases), no `CHANGELOG.md`, no
+`/vN`. **Cutting `v0.1.0` is intentionally on hold per the owner — do NOT cut a release branch
+yet.** When unheld: add `CHANGELOG.md` and cut the tag.
 
-### [ ] P2.2 — libfdb_c escape hatch · L
-**86 non-test files** (corrected from 53) import `pkg/fdbgo/fdb`; the Apple CGo binding is
-test-only. No fallback if the young, recently-churning pure-Go client diverges in prod (it once
-crashed the FDB server — fixed, `CRASH_BUG.md`). Define a `Database`/`Transaction` interface; a
-libfdb_c-backed impl; switch via config. **Torvalds: mandatory for any bet-the-company *write*
-path**, not "defer unless needed."
+### [~] P2.2 — libfdb_c escape hatch · L — MECHANISM DONE (RFC-109, PR #295); prod entry points not routed
+*(Verified 2026-06-24.)* A build-tag-selectable libfdb_c backend shipped:
+- **Seam:** `fdbclient.Open` chooses at build time — `pkg/fdbgo/fdbclient/open_purego.go`
+  (`//go:build !libfdbc`, default) vs `open_libfdbc.go` (`//go:build libfdbc`); the default build
+  never imports/links cgo.
+- **Backend:** `pkg/fdbgo/libfdbc/backend.go` (`//go:build cgo && libfdbc`) is a full
+  `WritableTransaction` — the **write path IS covered** (`Set`/`Clear`/`Add`/`SetVersionstamped*`/
+  conflict ranges/`Commit`), ctx-bounded retry, compile-time conformance assertions, `backend_stub.go`
+  for `!cgo`. Wired into the record layer via `recordlayer.NewFDBDatabaseWithBackend`.
+- **Gate:** `nightly-libfdbc.yml` runs a per-PR + nightly byte-identical cross-client differential.
+- Build-tag selection (not runtime config) is deliberate — the libfdb_c network thread is
+  once-per-process.
+
+**REMAINING:** the two real production open paths still hardcode the pure-Go client and bypass the
+seam — `recordlayer/database.go` `FDBDatabaseFactory.GetDatabase` (→ `fdb.OpenDatabase`) and
+`relational/sqldriver/driver.go` (→ `purefdb.OpenDatabase`). Route both through `fdbclient.Open`
+so `-tags libfdbc` actually flips them without a source edit. Out of scope for v1 (declared):
+tenants, direct `CreateTransaction`/`FDBDatabaseRunner`/locality.
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
-Open items in TODO.md. **The row-count nondeterminism (TODO.md:54) is PROMOTED — see P1.x note;
-treat as P0/P1 correctness** (a datastore returning different row counts across runs, shelved by
-excluding the scenario instead of root-causing it, against the project's own no-skips rule —
-Torvalds). Others: INSERT…SELECT qualified-agg NULL (70), 0-row coercion (73), bare GROUP BY
-INSERT…SELECT (74), divergent-named aggregate union NULL (79), `GetIndexTypeName` MIN/MAX_EVER
-(75).
+*(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*
+- **Row-count nondeterminism** — the 3-way arithmetic-join probe scenario is still **excluded
+  cross-engine** (`yamsql_cross_engine_conformance_test.go`, tracked under RFC-042); not yet proven
+  deterministic. **Treat as P0/P1 correctness** (a datastore returning different row counts across
+  runs, shelved by excluding the scenario instead of root-causing it — against the no-skips rule).
+  Note: not currently flagged P0/P1 in TODO.md itself — it sits under the RFC-042 follow-up.
+- **INSERT…SELECT qualified-agg NULL** (TODO.md ~1037) — `wrapBareAggregateInsertSource` still
+  skips qualified-operand sources.
+- **0-row coercion** (TODO.md ~1040, RFC-083 follow-up) — residual cases rely on the runtime converter.
+- **bare GROUP BY INSERT…SELECT** (TODO.md ~1041, RFC-083 follow-up) — `LogicalAggregate` source guard defers.
+- **divergent-named aggregate union NULL** (TODO.md ~1046) — gated via `aggregateNamesStableForUnion`.
+- **`GetIndexTypeName` MIN/MAX_EVER** (TODO.md ~1042) — `values.go:2653-2656` still hardcodes
+  `MIN_EVER_LONG`/`MAX_EVER_LONG`; needs a `_TUPLE` arm.
 
-### [ ] P2.4 — Broaden fuzz coverage in CI · S
-~101 of 109 fuzz targets run in no workflow; nightly fuzzes 8. Rotate the full corpus nightly;
-publish crash corpus.
+### [~] P2.4 — Broaden fuzz coverage in CI · S — partially done
+*(Verified 2026-06-24.)* Nightly now actively fuzzes **~44 of 120** targets (up from 8):
+`nightly-fuzz.yml` discovers and runs all 18 `cmd/fdb-diff-oracle` targets (6m each) + all 26
+`//pkg/fdbgo/...` targets (4m each). Per-PR, `ci.yml` deterministically replays every `Fuzz*`
+**seed corpus**. **Remaining:** the ~76 planner/recordlayer/relational/spfresh/cascades targets get
+seed-replay only (no active fuzz time, no rotation across all 120); failing seeds upload as 30-day
+CI artifacts but there is **no published/committed crash corpus**.
 
 ### [x] P2.5 — Pin FDB image version in tests · S — DONE
 The test infra was already pinned to a single specific version, never `:latest`:
@@ -585,17 +663,34 @@ reconcile on 7.3.75.
 ## P3 — Low (polish before v1 promise)
 
 ### [ ] P3.1 — Idiomatic Go API pass · M
-Java-style accessors, mutable internal maps from getters, builder chains. Make `go doc` read
-like a Go library.
+*(Verified 2026-06-24: untouched.)* Still pervasive — ~810 `GetX()` accessors in `pkg/recordlayer`,
+54 in `pkg/fdbgo`; `WithX`/`SetX`/`AddX` builder chains throughout. Broad subjective polish, no
+scoped plan. Constraint: wire/serialization accessors are load-bearing, so any rename pass must be
+behavior-preserving. Low priority. Make `go doc` read like a Go library.
 
-### [ ] P3.2 — Quickstart + realistic examples that compile in CI · S
+### [~] P3.2 — Quickstart + realistic examples that compile in CI · S — partial
+*(Verified 2026-06-24.)* One runnable example exists — `example/getting_started.go` (`//example:example`)
+— and it **does compile in CI** (transitively via `bazelisk test //...` in `ci.yml`); README has a
+"Getting started" section. **Remaining:** it is a single **record-layer (non-SQL)** example using the
+legacy `fdb.MustOpenDefault` / `NewFDBDatabase` API. Add realistic examples for the `database/sql`
+SQL path and the backend-agnostic `fdbclient.Open` / `NewFDBDatabaseWithBackend` open, and refresh
+`getting_started.go` off the legacy API.
 
-### [ ] P3.3 — De-duplicate the two retry predicates · S
-`fdb/error.go:IsRetryable` vs `client/commitpath.go:200 isRetryable` — drift risk; single source.
+### [x] P3.3 — De-duplicate the two retry predicates · S — DONE (RFC-105)
+*(Verified 2026-06-24.)* Investigation found the "two" were in fact **three intentionally
+distinct C++ predicates**, not drift. `onErrorRetryable` (`client/commitpath.go`) is now the
+single source for the `onError` set — both `Transaction.OnError` and `commitDummyTransaction`
+call it. `fdb.IsRetryable` (12 `fdb_error_predicate` codes) and `fdb.IsOnErrorRetryable` (16
+codes) are *correctly* different C++ predicates, each C++-pinned by tests; the cross-package
+duplication is forced by an import cycle (the cgo backend can't import `client`) and documented at
+the call site. Drift risk eliminated by construction + revert-proven tests.
 
 ### [ ] P3.4 — Operator guide · M
-Cluster file, retry, tx limits, online index lifecycle, index-state transitions, schema-evolution
-safety, backup/restore, observability hooks.
+*(Verified 2026-06-24: not started.)* No `docs/operations|operator|runbook` file exists — only
+to-do notes (`PRODUCTION_READINESS.md`, `docs/prod-readiness-audit-2026-06-19.md`). Write
+`docs/operations.md` covering: cluster file, retry, tx limits, online index lifecycle, index-state
+transitions, schema-evolution safety, backup/restore, observability hooks (the P1.3/RFC-097
+metrics + slog events now exist to document).
 
 ---
 

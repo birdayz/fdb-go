@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -45,7 +47,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("first failure with 100 records", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.decreaseLimit(100)
 		// factor=9 (first failure), newLimit = 100*9/10 = 90
 		if th.recordsLimit != 90 {
@@ -64,7 +66,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("second consecutive failure", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.decreaseLimit(100) // first: factor=9, limit=90
 		th.decreaseLimit(90)  // second: factor=8, limit=90*8/10=72
 		if th.recordsLimit != 72 {
@@ -77,7 +79,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("third consecutive failure", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 10, 0)
+		th := newIndexingThrottle(200, 10, 0, 0)
 		th.decreaseLimit(100) // 1st: factor=9, limit=90
 		th.decreaseLimit(90)  // 2nd: factor=8, limit=72
 		th.decreaseLimit(72)  // 3rd: factor=7, limit=72*7/10=50
@@ -88,7 +90,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("panic mode after 8 failures", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 20, 0)
+		th := newIndexingThrottle(200, 20, 0, 0)
 		// Simulate 8 consecutive failures at 100 records each
 		for i := 0; i < 8; i++ {
 			th.decreaseLimit(100)
@@ -101,7 +103,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("lower bound is 1", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 20, 0)
+		th := newIndexingThrottle(200, 20, 0, 0)
 		// With 1 record scanned and panic mode: 1*1/10=0, clamped to 1
 		th.consecutiveFailureCount = 7 // next will be 8th → factor=1
 		th.decreaseLimit(1)
@@ -112,7 +114,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("limit never exceeds recordsScanned minus 1", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		// With 2 records scanned, factor=9: 2*9/10=1, and recordsScanned-1=1
 		// So limit should be 1 (capped by recordsScanned-1)
 		th.decreaseLimit(2)
@@ -123,7 +125,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("resets consecutiveSuccessCount", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.consecutiveSuccessCount = 10
 		th.decreaseLimit(100)
 		if th.consecutiveSuccessCount != 0 {
@@ -133,7 +135,7 @@ func TestDecreaseLimit(t *testing.T) {
 
 	t.Run("recordsScanned 0 gives limit 1", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.decreaseLimit(0)
 		// 0*9/10=0, max(0, 0-1)=-1 → clamped to 1
 		if th.recordsLimit != 1 {
@@ -155,7 +157,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("returns false when attempt >= maxRetries", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		err := fdb.Error{Code: 1007}
 		if th.mayRetryAfterHandlingException(err, 3, 50) {
 			t.Error("should return false when attempt == maxRetries")
@@ -167,7 +169,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("returns false for non-retryable errors", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 
 		// Plain error (not fdb.Error)
 		if th.mayRetryAfterHandlingException(fmt.Errorf("some error"), 0, 50) {
@@ -185,7 +187,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 		for _, code := range retryableCodes {
 			t.Run(fmt.Sprintf("code=%d", code), func(t *testing.T) {
 				t.Parallel()
-				th := newIndexingThrottle(100, 3, 0)
+				th := newIndexingThrottle(100, 3, 0, 0)
 				err := fdb.Error{Code: code}
 				if !th.mayRetryAfterHandlingException(err, 0, 50) {
 					t.Errorf("should return true for fdb error code %d", code)
@@ -200,7 +202,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 			code := code
 			t.Run(fmt.Sprintf("code=%d", code), func(t *testing.T) {
 				t.Parallel()
-				th := newIndexingThrottle(100, 3, 0)
+				th := newIndexingThrottle(100, 3, 0, 0)
 				if th.mayRetryAfterHandlingException(fdb.Error{Code: code}, 0, 50) {
 					t.Errorf("code %d must NOT lessen work (not in Java lessenWorkCodes)", code)
 				}
@@ -210,7 +212,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("decreases limit when returning true", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		err := fdb.Error{Code: 1007}
 		before := th.getLimit()
 		th.mayRetryAfterHandlingException(err, 0, 50)
@@ -226,7 +228,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("does not decrease limit when returning false", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		before := th.getLimit()
 		th.mayRetryAfterHandlingException(fmt.Errorf("non-retryable"), 0, 50)
 		if th.getLimit() != before {
@@ -236,7 +238,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("returns false when maxRetries is 0", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 0, 0)
+		th := newIndexingThrottle(100, 0, 0, 0)
 		err := fdb.Error{Code: 1007}
 		if th.mayRetryAfterHandlingException(err, 0, 50) {
 			t.Error("should return false when maxRetries is 0 (attempt 0 >= 0)")
@@ -245,7 +247,7 @@ func TestMayRetryAfterHandlingException(t *testing.T) {
 
 	t.Run("wrapped fdb error is retryable", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		wrapped := fmt.Errorf("build failed: %w", fdb.Error{Code: 1020})
 		if !th.mayRetryAfterHandlingException(wrapped, 0, 50) {
 			t.Error("should return true for wrapped fdb error")
@@ -258,7 +260,7 @@ func TestHandleSuccess(t *testing.T) {
 
 	t.Run("resets failure count and increments success count", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		th.consecutiveFailureCount = 5
 		th.consecutiveSuccessCount = 0
 		th.handleSuccess(50)
@@ -272,7 +274,7 @@ func TestHandleSuccess(t *testing.T) {
 
 	t.Run("increments consecutiveSuccessCount on repeated calls", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		th.handleSuccess(10)
 		th.handleSuccess(20)
 		th.handleSuccess(30)
@@ -283,7 +285,7 @@ func TestHandleSuccess(t *testing.T) {
 
 	t.Run("accumulates records scanned since forced delay", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		th.handleSuccess(10)
 		th.handleSuccess(20)
 		if th.recordsScannedSinceForcedDelay != 30 {
@@ -297,7 +299,7 @@ func TestGetLimit(t *testing.T) {
 
 	t.Run("returns initial limit", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		if th.getLimit() != 200 {
 			t.Errorf("getLimit() = %d, want 200", th.getLimit())
 		}
@@ -305,7 +307,7 @@ func TestGetLimit(t *testing.T) {
 
 	t.Run("reflects changes after decreaseLimit", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.decreaseLimit(100) // factor=9: 100*9/10=90
 		if th.getLimit() != 90 {
 			t.Errorf("getLimit() = %d, want 90", th.getLimit())
@@ -318,7 +320,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	t.Run("increases after 10 consecutive successes", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		// Decrease to force a low limit
 		th.decreaseLimit(100) // limit = 90
 		th.decreaseLimit(90)  // limit = 72
@@ -343,7 +345,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	t.Run("caps at initialLimit", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 5, 0)
+		th := newIndexingThrottle(100, 5, 0, 0)
 		th.decreaseLimit(100) // limit = 90
 
 		// 10 successes — 90 < 100, doubles to 180, but capped at 100
@@ -357,7 +359,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	t.Run("small limit adds 5", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0)
+		th := newIndexingThrottle(200, 5, 0, 0)
 		th.recordsLimit = 3 // force tiny limit
 
 		for i := 0; i < 10; i++ {
@@ -371,7 +373,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	t.Run("large limit uses 4/3 multiplier", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(10000, 5, 0)
+		th := newIndexingThrottle(10000, 5, 0, 0)
 		th.recordsLimit = 150
 
 		for i := 0; i < 10; i++ {
@@ -385,7 +387,7 @@ func TestIncreaseLimit(t *testing.T) {
 
 	t.Run("no increase when already at initialLimit", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 5, 0)
+		th := newIndexingThrottle(100, 5, 0, 0)
 		// Already at initialLimit — should not change
 		for i := 0; i < 20; i++ {
 			th.handleSuccess(100)
@@ -401,7 +403,7 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("returns immediately when recordsPerSecond is 0", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0)
+		th := newIndexingThrottle(100, 3, 0, 0)
 		th.recordsScannedSinceForcedDelay = 1000 // should be ignored
 		start := time.Now()
 		th.waitForRateLimit()
@@ -413,7 +415,7 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("returns immediately when no records scanned since last delay", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 100) // 100 records/sec
+		th := newIndexingThrottle(100, 3, 100, 0) // 100 records/sec
 		th.recordsScannedSinceForcedDelay = 0
 		start := time.Now()
 		th.waitForRateLimit()
@@ -423,9 +425,47 @@ func TestWaitForRateLimit(t *testing.T) {
 		}
 	})
 
+	t.Run("applyEnforcedPostTransactionDelay sleeps for the configured delay", func(t *testing.T) {
+		t.Parallel()
+		// The enforced delay is unconditional and independent of the records-per-second
+		// path — it does not look at recordsScannedSinceForcedDelay at all.
+		th := newIndexingThrottle(100, 3, 100, 50) // 50ms enforced delay, rps also set
+		start := time.Now()
+		th.applyEnforcedPostTransactionDelay(context.Background())
+		if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+			t.Errorf("enforced delay should wait ~50ms, took only %v", elapsed)
+		}
+		// It does not touch the records-per-second bookkeeping.
+		if !th.forcedDelayTimestamp.IsZero() {
+			t.Errorf("enforced delay must not set forcedDelayTimestamp")
+		}
+	})
+
+	t.Run("applyEnforcedPostTransactionDelay is a no-op when delay is 0", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(100, 3, 100, 0) // enforced=0
+		start := time.Now()
+		th.applyEnforcedPostTransactionDelay(context.Background())
+		if elapsed := time.Since(start); elapsed > 30*time.Millisecond {
+			t.Errorf("enforced=0 should be a no-op, took %v", elapsed)
+		}
+	})
+
+	t.Run("applyEnforcedPostTransactionDelay returns early when the context is cancelled", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(100, 3, 0, 5000) // 5s delay — must NOT block a cancelled build
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already cancelled
+		start := time.Now()
+		th.applyEnforcedPostTransactionDelay(ctx)
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("cancelled context should interrupt the delay, took %v", elapsed)
+		}
+	})
+
 	t.Run("returns immediately when negative recordsPerSecond", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, -1)
+		th := newIndexingThrottle(100, 3, -1, 0)
 		th.recordsScannedSinceForcedDelay = 1000
 		start := time.Now()
 		th.waitForRateLimit()
@@ -437,7 +477,7 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("resets state when enough time already elapsed", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 100) // 100 records/sec
+		th := newIndexingThrottle(100, 3, 100, 0) // 100 records/sec
 		th.recordsScannedSinceForcedDelay = 10
 		// Set forced delay far in the past so elapsed > expected
 		th.forcedDelayTimestamp = time.Now().Add(-5 * time.Second)
@@ -455,7 +495,7 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("sleeps when rate limit exceeded", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 10) // 10 records/sec
+		th := newIndexingThrottle(100, 3, 10, 0) // 10 records/sec
 		th.recordsScannedSinceForcedDelay = 10
 		th.forcedDelayTimestamp = time.Now() // just now, 0ms elapsed
 		// 10 records at 10/sec = 1000ms expected, but capped at 999ms
@@ -477,7 +517,7 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("wait is capped at 999ms", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 1) // 1 record/sec
+		th := newIndexingThrottle(100, 3, 1, 0) // 1 record/sec
 		th.recordsScannedSinceForcedDelay = 100
 		th.forcedDelayTimestamp = time.Now()
 		// 100 records at 1/sec = 100,000ms expected, but capped at 999ms
@@ -491,8 +531,8 @@ func TestWaitForRateLimit(t *testing.T) {
 
 	t.Run("first call with no prior timestamp does not sleep when expected zero", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 1000000) // very high rate
-		th.recordsScannedSinceForcedDelay = 1      // 1 record at 1M/sec = ~0ms
+		th := newIndexingThrottle(100, 3, 1000000, 0) // very high rate
+		th.recordsScannedSinceForcedDelay = 1         // 1 record at 1M/sec = ~0ms
 		start := time.Now()
 		th.waitForRateLimit()
 		elapsed := time.Since(start)
@@ -505,7 +545,7 @@ func TestWaitForRateLimit(t *testing.T) {
 func TestNewIndexingThrottle(t *testing.T) {
 	t.Parallel()
 
-	th := newIndexingThrottle(150, 7, 500)
+	th := newIndexingThrottle(150, 7, 500, 0)
 	if th.initialLimit != 150 {
 		t.Errorf("initialLimit = %d, want 150", th.initialLimit)
 	}
@@ -524,4 +564,34 @@ func TestNewIndexingThrottle(t *testing.T) {
 	if th.consecutiveSuccessCount != 0 {
 		t.Errorf("consecutiveSuccessCount = %d, want 0", th.consecutiveSuccessCount)
 	}
+}
+
+func TestThrottleBetweenRanges(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative enforced delay does not loosen the time limit", func(t *testing.T) {
+		t.Parallel()
+		// A negative delay must behave exactly like "disabled" (0): it must NOT be
+		// subtracted from elapsed in the time-limit check. With elapsed (20ms) already past
+		// the 10ms limit, throttleBetweenRanges must report TimeLimitExceededError; an
+		// unclamped -5s would make elapsed+delay negative and wrongly continue.
+		oi := &OnlineIndexer{
+			enforcedPostTransactionDelay: -5000,
+			timeLimit:                    10 * time.Millisecond,
+		}
+		start := time.Now().Add(-20 * time.Millisecond)
+		err := oi.throttleBetweenRanges(context.Background(), start)
+		var tle *TimeLimitExceededError
+		if !errors.As(err, &tle) {
+			t.Errorf("expected TimeLimitExceededError, got %v (negative delay must not loosen the time-limit check)", err)
+		}
+	})
+
+	t.Run("returns nil with no time limit and no delay", func(t *testing.T) {
+		t.Parallel()
+		oi := &OnlineIndexer{} // timeLimit 0, delay 0, throttle nil
+		if err := oi.throttleBetweenRanges(context.Background(), time.Now()); err != nil {
+			t.Errorf("expected nil, got %v", err)
+		}
+	})
 }

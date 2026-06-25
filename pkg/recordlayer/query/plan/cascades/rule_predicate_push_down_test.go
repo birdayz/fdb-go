@@ -1518,7 +1518,7 @@ func TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling(t *tes
 	existsQun := existentialOf(existsInner)
 
 	// Top: SELECT a FROM (SELECT ... FROM T) WHERE EXISTS(...) AND b > 'hello'
-	existsPred := predicates.NewExistsPredicate(existsQun.GetAlias())
+	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
 	bPred := ppdFieldPred(innerQun, "b", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello"))
 
 	topSel := expressions.NewSelectExpression(
@@ -1684,7 +1684,7 @@ func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	existsQun := existentialOf(existsInner)
 
 	pred1 := ppdFieldPred(lowerQun, "a", predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
-	existsPred := predicates.NewExistsPredicate(existsQun.GetAlias())
+	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
 
 	sel := expressions.NewSelectExpression(
 		lowerQun.GetFlowedObjectValue(),

@@ -548,7 +548,7 @@ func TestSelectMergeRule_DoNotMergeExistentials(t *testing.T) {
 	existsQun := existentialOf(filteredF)
 
 	// Upper select: SELECT a, b FROM t WHERE EXISTS (...)
-	existsPred := predicates.NewExistsPredicate(existsQun.GetAlias())
+	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
 	upper := expressions.NewSelectExpression(
 		baseQun.GetFlowedObjectValue(),
 		[]expressions.Quantifier{baseQun, existsQun},
@@ -725,7 +725,7 @@ func TestSelectMergeRule_DoNotMergeExistentialOnNested(t *testing.T) {
 	existsQun := existentialOf(innerSel)
 
 	// Upper select
-	existsPred := predicates.NewExistsPredicate(existsQun.GetAlias())
+	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
 	upper := expressions.NewSelectExpression(
 		baseQun.GetFlowedObjectValue(),
 		[]expressions.Quantifier{baseQun, existsQun},

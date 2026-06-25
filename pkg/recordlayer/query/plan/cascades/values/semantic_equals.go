@@ -35,9 +35,10 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	case *ConstantObjectValue:
 		bv, ok := b.(*ConstantObjectValue)
 		return ok && mapAlias(aliases, av.Alias) == bv.Alias && av.ConstantID == bv.ConstantID
-	case *ExistsValue:
-		bv, ok := b.(*ExistsValue)
-		return ok && mapAlias(aliases, av.Alias) == bv.Alias
+	// ExistsValue is a transparent composite (RFC-141): the structural
+	// path below compares EqualsWithoutChildren (both *ExistsValue) and
+	// recurses into the child QuantifiedObjectValue, whose own case maps
+	// the alias. No dedicated alias case here.
 	case *ScalarSubqueryValue:
 		bv, ok := b.(*ScalarSubqueryValue)
 		return ok && mapAlias(aliases, av.Alias) == bv.Alias

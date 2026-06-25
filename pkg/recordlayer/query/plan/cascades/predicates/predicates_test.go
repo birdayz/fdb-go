@@ -661,7 +661,7 @@ func TestOrPredicate_GetCorrelatedTo_Union(t *testing.T) {
 func TestNotPredicate_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("q_sub")
-	pred := NewNot(NewExistsPredicate(alias))
+	pred := NewNot(NewExistentialAlias(alias))
 	corr := pred.GetCorrelatedTo()
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("NOT(EXISTS) should contain the existential alias")
@@ -680,13 +680,13 @@ func TestNotPredicate_GetCorrelatedTo_NilChild(t *testing.T) {
 	}
 }
 
-func TestExistsPredicate_GetCorrelatedTo(t *testing.T) {
+func TestExistentialValuePredicate_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("exists_q")
-	pred := NewExistsPredicate(alias)
+	pred := NewExistentialAlias(alias)
 	corr := pred.GetCorrelatedTo()
 	if _, ok := corr[alias]; !ok {
-		t.Fatal("ExistsPredicate should contain its alias")
+		t.Fatal("ExistentialValuePredicate should contain its alias")
 	}
 	if len(corr) != 1 {
 		t.Fatalf("GetCorrelatedTo() len = %d, want 1", len(corr))
@@ -745,7 +745,7 @@ func TestGetCorrelatedTo_MatchesGetCorrelatedToOfPredicate(t *testing.T) {
 			values.NewQuantifiedObjectValue(alias1),
 			NewLiteralComparison(ComparisonEquals, int64(42)),
 		),
-		NewExistsPredicate(alias2),
+		NewExistentialAlias(alias2),
 		NewConstantPredicate(TriTrue),
 	)
 

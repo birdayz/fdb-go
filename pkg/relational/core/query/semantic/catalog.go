@@ -75,6 +75,13 @@ type Column struct {
 	// Nullable reports whether the column allows NULL values.
 	// Matters for NOT-NULL-gated simplifications (x = x → TRUE).
 	Nullable bool
+
+	// IsArray reports whether the column is an ARRAY (a repeated proto
+	// field). The placeholder Type string carries only the scalar/element
+	// kind, so this is the array signal callers need to type the resolved
+	// column Value as an ArrayType — e.g. CARDINALITY()'s isArray() check.
+	// When true, Type is the ELEMENT type string.
+	IsArray bool
 }
 
 // InMemoryCatalog is a test-friendly Catalog built from a fixed list

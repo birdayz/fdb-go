@@ -334,6 +334,18 @@ func NewFlatFieldValue(field string, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ}
 }
 
+// NewOrdinalFieldValue accesses a record field by ORDINAL position,
+// mirroring Java's `FieldValue.ofOrdinalNumber(child, ordinal)`. Go's
+// runtime Datum is a name-keyed map, and anonymous record fields (the
+// element/ordinal of a WITH ORDINALITY Explode) are keyed by their
+// ordinal name `_0`/`_1` (see OrdinalFieldName) — so ordinal access is
+// name access on the `_<ordinal>` key. Used by the lateral-unnest lowering
+// to bind the AS alias to field 0 (element) and the AT alias to field 1
+// (the INT NOT NULL ordinal).
+func NewOrdinalFieldValue(child Value, ordinal int, typ Type) *FieldValue {
+	return &FieldValue{Field: OrdinalFieldName(ordinal), Typ: typ, Child: child}
+}
+
 // WalkValue applies visit to every node in v's subtree, pre-order.
 // If visit returns false, descent into that node's children is
 // skipped (siblings + ancestors continue). Rule authors use this
@@ -545,6 +557,10 @@ func ExplainValue(v Value) string {
 			conds[i] = ExplainValue(c)
 		}
 		return "WHEN(" + strings.Join(conds, ", ") + ")"
+	case *CardinalityValue:
+		// Java: ExplainTokens.addFunctionCall(FunctionNames.CARDINALITY, ...).
+		// Renders `cardinality(<child>)`, e.g. `cardinality(_.int_arr)`.
+		return "cardinality(" + ExplainValue(cv.Child) + ")"
 	case *ScalarSubqueryValue:
 		return "(SCALAR_SUBQUERY " + cv.Alias.Name() + ")"
 	case *UnmatchedAggregateValue:
@@ -2396,6 +2412,23 @@ func NewQuantifiedObjectValue(corr CorrelationIdentifier) *QuantifiedObjectValue
 		panic("NewQuantifiedObjectValue: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
 	}
 	return &QuantifiedObjectValue{Correlation: corr, Typ: UnknownType}
+}
+
+// NewQuantifiedObjectValueOfType constructs a QuantifiedObjectValue whose
+// flowed value carries a known type. Used where the quantifier flows a SCALAR
+// of a known type — e.g. a lateral array unnest's element quantifier, whose
+// flowed value is one array element (the array's elementType), not an
+// UnknownType row. Carrying the real type lets result-set column metadata
+// report it (a STRING array's element is STRING, not the UnknownType→BIGINT
+// fallback). A nil typ degrades to UnknownType, matching NewQuantifiedObjectValue.
+func NewQuantifiedObjectValueOfType(corr CorrelationIdentifier, typ Type) *QuantifiedObjectValue {
+	if corr.IsZero() {
+		panic("NewQuantifiedObjectValueOfType: correlation is zero-value; use NamedCorrelationIdentifier or UniqueCorrelationIdentifier")
+	}
+	if typ == nil {
+		typ = UnknownType
+	}
+	return &QuantifiedObjectValue{Correlation: corr, Typ: typ}
 }
 
 // Children returns an empty slice — the quantifier is a leaf in

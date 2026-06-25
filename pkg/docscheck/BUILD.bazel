@@ -12,6 +12,7 @@ go_test(
     srcs = [
         "docs_consistency_test.go",
         "panic_boundary_test.go",
+        "plan_proto_schema_test.go",
     ],
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
@@ -39,5 +40,9 @@ go_test(
         "//pkg/relational/core/query:cascades_translator_test.go",
     ],
     embed = [":docscheck"],
-    deps = ["//pkg/linters/norecover"],
+    deps = [
+        "//gen",
+        "//pkg/linters/norecover",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
 )

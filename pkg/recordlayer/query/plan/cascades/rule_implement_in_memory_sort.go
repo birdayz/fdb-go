@@ -66,9 +66,20 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	for i, sk := range sortKeys {
 		field := ""
 		var valExpr values.Value
-		if fv, ok := sk.Value.(*values.FieldValue); ok {
+		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {
+			// A BARE field reference — the fast path: the executor reads the row's
+			// `Field` key directly (compareByField).
 			field = strings.ToUpper(fv.Field)
 		} else {
+			// A CORRELATED/qualified reference (FieldValue with a Child QOV, e.g. a
+			// lateral-unnest `v.v` or a JOIN leg `T2.SK`) — or any non-FieldValue
+			// computed key — must be EVALUATED per row so it resolves the QUALIFIED
+			// merged-row key (`V.V`), not the last-leg-wins BARE key a Field lookup
+			// would read. Collapsing a qualified FieldValue to its bare `Field` here
+			// dropped the leg correlation and sorted by the wrong column when a later
+			// FROM item shadowed the bare name (RFC-142 P2a). Field is
+			// still set (to the rendered `LEG.COL`) for Explain; ValueExpr drives the
+			// executor.
 			field = values.ExplainValue(sk.Value)
 			valExpr = sk.Value
 		}

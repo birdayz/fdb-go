@@ -1,6 +1,6 @@
 # TODOs
 
-FoundationDB Record Layer — Go Port. Java version: **4.11.1.0**. FDB wire protocol: **7.3.75**.
+FoundationDB Record Layer — Go Port. Java version: **4.12.11.0**. FDB wire protocol: **7.3.75**.
 
 Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 508 cross-engine specs, 105 fuzz targets, ~65 Cascades rules, 41 plan types (36 executor-wired), 48 value types, 9 predicate types. Unified Cascades task stack (REWRITING + PLANNING). Winner-based plan selection with per-ordering properties.
 
@@ -65,6 +65,511 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    exploratory-yield re-optimization. Blocked on Go compensation re-optimization handling
    IN-explode/correlated/index-only shapes. Detail: §7.7.
 6. **[ ] Parallelize `//conformance` off Ginkgo** [LOW PRIO]. Detail: "Test infra (low priority)".
+7. **[~] Java target bump to 4.12.11.0 (from the 4.11 series; RFC-135).** Mechanical bump landed (pins + proto
+   sync + regen + version-target docs; `record_query_plan.proto` removed `PVersionValue`/reserved tag
+   38, `PExistsPredicate`→`PExistentialValuePredicate`, added `PExistsValue.value` +
+   `PRecordQueryExplodePlan.with_ordinality` — all `gen/`-only on the Go side, schema pinned by
+   `docscheck.TestPlanProtoSchemaMatches412`). **Behavioural parity = the R-items below, each its own
+   RFC, landed one at a time. Verify Java 4.12 actually supports each before treating as parity vs
+   allowed Go-extension.**
+   - **[ ] R1** — metadata-evolution field renames (`allow{Field,DeprecatedFieldRenames,Undeprecating}` +
+     `RenameFieldsVisitor`) vs Java `MetaDataEvolutionValidator`. Gate: Torvalds + codex + @claude.
+   - **[x] R2 — DONE** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
+     `markReadable` now erases scanned-records(1)/type-stamp(2)/heartbeat(7) per Java
+     `eraseAllIndexingDataButTheLockAndRangeSet`; added `SetMarkReadable(bool)` (Java `buildIndex(markReadable)`
+     parity) so build-state can be inspected pre-readable. Torvalds+codex ACK. **(b) DONE (RFC-138):**
+     `SetEnforcedPostTransactionDelay(ms)` — fixed per-transaction delay replacing records-per-second
+     when >0 (Java `setEnforcedPostTransactionDelay` #4229). **(c) DONE (RFC-139):** typed-record build-range
+     preset (#4244) — `computeRecordsRange` (over the indexed types; null if any lacks a record-type PK
+     prefix or is synthetic) + `maybePresetRecordsRange` marks the out-of-range gaps `[nil,begin)`+`[end,nil)`
+     built before multi-target/mutual builds, with byte-exact `begin=low.Pack()` / `end=high.Pack()+0xff`
+     bounds (Torvalds NAK caught strinc-vs-`0xff`; codex P1 caught the build loop couldn't unpack the
+     `+0xff` end — fixed via `unpackRangeEndBoundary`/raw-boundary mark; codex P2 caught non-integer
+     record-type keys — preset now gives up for them); added `RecordType.PrimaryKeyHasRecordTypePrefix()` +
+     `IsSynthetic()`. **Follow-up (pre-existing, out of scope):** Go's `RecordTypeKeyExpression` only
+     encodes integer record-type keys (`int/int32/int64`) and silently falls back to the message type
+     NAME for string/bytes explicit `SetRecordTypeKey` — a wire divergence from Java (which encodes every
+     key type); the R2c preset already guards against it but the encoding itself should be fixed.
+     **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
+     instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
+     (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
+   - **[x] R3 — DONE (RFC-140)** — parser grammar: `(AT atAlias=uid)?` on `atomTableItem` (#4112) +
+     `functionNameKeyword: LEFT|RIGHT` moved out of `functionNameBase` into `scalarFunctionName` (#4272).
+     Parser regenerated. LEFT/RIGHT remain function names but are rejected as identifiers/aliases; AT
+     parses + `atAlias` captured but is **rejected** at every consumer (planner FROM/JOIN, aggregate-index
+     DDL incl. its silently-dropped JOINs, semantic scope) with `ErrCodeUnsupportedQuery` until R5 binds
+     it — codex caught 3 silent-drop holes (column collision, DDL, DDL-JOIN). Graefe + Torvalds + codex ACK.
+   - **[x] R4** — EXISTS in the projection list (`PExistsValue.value`), RFC-141. Phase 1 (ExistsValue→ValueWithChild + ExistentialValuePredicate, WHERE-EXISTS) + Phase 2 (FirstOrDefault re-architecture + projected `SELECT EXISTS(...)` + structural reject-the-rest backstop). Graefe + Torvalds + codex (14 rounds) ACK; full `just test` green; pushed (PR #336).
+     **Phase 1 DONE:** representation collapse to Java 4.12's single mechanism — `ExistsValue` is now an
+     evaluable `ValueWithChild` over a `QuantifiedObjectValue` child (`eval = child != nil`);
+     `ExistentialValuePredicate` replaces the deleted leaf-alias `ExistsPredicate`; 8 value-walk sites
+     delegate to the child; the 4 join-rule detection sites use `IsExistentialPredicate`. WHERE-EXISTS +
+     NOT-EXISTS suite green after the swap, 10× deterministic. codex caught 3 eval/detection subtleties
+     (QOV outer-row fallback, non-NOT_NULL misclassification, typed-nil binding). Graefe+Torvalds+codex ACK.
+     **Phase 2 DONE (single existential):** re-architected the existential join to Java's emergent shape —
+     `ImplementNestedLoopJoinRule` wraps the existential inner in `FirstOrDefault(inner, NULL)` and uses it
+     as the FlatMap inner; the FlatMap/NLJ cursors are now PURE MAPS (the `existsMode`/`notExistsMode` +
+     `JoinExists`/`JoinNotExists` cursor short-circuits and the FlatMap plan's exists flags are deleted);
+     WHERE-EXISTS is a residual `QOV IS NOT NULL` (NOT-EXISTS: `IS NULL`) filter above the FOD — Java's
+     `toResidualPredicate`. walk.go produces the same `ExistsValue` for both positions (projection uses it
+     directly, predicate bridges via `ExistsValueToQueryPredicate`); the translator registers projected-EXISTS
+     subqueries (even with no WHERE) and FOLDS the projection into the existential `SelectExpression`'s result
+     value so the boolean is computed by the FlatMap with the inner binding live (Java's `RETURN (q0.ID,
+     exists(q1))`). Projected EXISTS / NOT-EXISTS / non-correlated / empty-subquery / join-subquery all green
+     (`projected_exists_fdb_test.go`); WHERE-EXISTS + NOT-EXISTS suite green + 10× deterministic;
+     `TestFDB_PlanShapeExistsFlatMap` rebaselined to the FlatMap(FirstOrDefault) shape.
+     **Phase 2 DONE (ORDER BY / LIMIT + scalar subquery alongside the EXISTS):** the fold now sees THROUGH
+     intervening `Sort`/`Limit` (`findExistsFilterUnderUnaryChain`) — the builder emits `Project(Sort(Filter))`,
+     so the existential filter is not the project's direct input — folds the projection into the existential
+     `SelectExpression`, then re-applies the sort/limit ON TOP (Java's `generateSort(generateSimpleSelect(
+     output...), orderBys)`). ORDER BY on a column NOT in the SELECT output ports Java's
+     `remainingOrderByExpressions` branch: append the missing sort column(s) to the folded projection, sort,
+     re-project to drop them. And scalar-subquery collection (`t.scalarSubqueries`) was hoisted ABOVE the fold's
+     early return so `SELECT id, EXISTS(...), (SELECT MAX(id) FROM t2) FROM t1` binds the scalar (was NULL).
+     Pinned: `projected_exists_orderby_scalar_fdb_test.go` (ASC/DESC/LIMIT/NOT-EXISTS, non-selected ORDER BY col
+     no-leak, scalar in both column positions) — each revert-proof (all-false / NULL without the fix). Full
+     sqldriver + conformance green, EXISTS suite 10× deterministic. Graefe+Torvalds ACK.
+     **Phase 2 FOLLOW-UP (computed ORDER BY over projected EXISTS — Graefe):** `sortSource.sortKeyName` only
+     classifies a bare/qualified column reference; a *computed* ORDER BY expression (`ORDER BY a+b` where
+     `a`,`b` aren't in the SELECT) is skipped rather than appended, so it silently mis-sorts. Java's
+     `Expressions.difference` uses a semantic `canBeDerivedFrom` check that appends the non-derivable computed
+     expression and sorts correctly. Port that: build the sort key's Value (the walker already can) and append
+     the computed expression as an extra projection field, matching Java. Strictly narrower than the
+     bare-column bug just fixed, zero wire impact, exotic shape — next item, not buried.
+     **Phase 2 ROUND-3 (safety guard + 3 fold shapes — codex r3):** the fold pattern-matched plan shapes and
+     SILENTLY fell through to a plan evaluating the projected ExistsValue ABOVE the FlatMap (dead binding →
+     constant-false) for any unrecognized shape. Added a two-layer **safety guard** that bounds the long tail:
+     (a) post-translation `query.CheckProjectedExistsFolded` requires every ExistsValue to be emitted by the
+     SelectExpression that OWNS its existential quantifier (else clean `ErrCodeUnsupportedQuery`); (b)
+     logical-level `findUnfoldableProjectedExists` + `validateGroupByProjection` EXISTS check reject shapes that
+     drop the ExistsValue before translation (GROUP-BY-on-EXISTS, aggregate/distinct/union intervening). Plus the
+     3 round-3 fixes: **(1)** projected EXISTS + JOIN in FROM no WHERE — `attachOrSynthesizeExistsFilter` now puts
+     the synthesized filter UNDER the projection, `buildExistentialJoinSelect` flattens the join's 2 ForEach + the
+     existential into one SelectExpression with the projection as result value, and `implementJoinWithExistential`
+     uses the rebased projection as the FlatMap result (leg refs→merged-outer qualified keys, existential
+     QOV→inner FOD) for a projected EXISTS over a join; **(2)** ORDER BY on the EXISTS alias — `pullUpSortKeyValue`
+     pulls the sort key up to the folded output column (Java `OrderByExpression.pullUp`) so it sorts by the
+     materialized boolean, not the raw ExistsValue re-applied above the FlatMap; **(3)** parenthesized
+     `NOT (EXISTS(...))` — `existsAtomOf`/`existsAtomInExpressionAtom` unwrap the paren-wrap RecordConstructor to
+     find the EXISTS atom (was NULL column). Revert-proof pins: `projected_exists_round3_fdb_test.go` (join-from
+     no-leak + correct booleans, ORDER BY ASC/DESC ordering, paren + double-paren NOT, GROUP-BY-EXISTS clean
+     reject, multi-existential clean reject). Full sqldriver + `pkg/recordlayer/query/...` + `pkg/relational/core/
+     ...` green; EXISTS suite 10× deterministic. **Supported:** projected EXISTS/NOT-EXISTS (corr/non-corr/empty/
+     join-subquery), + ORDER BY (incl. EXISTS-alias and non-selected col) / LIMIT / scalar subquery, + INNER JOIN
+     in FROM, + paren/nested NOT, + PK/index fast-path. **Cleanly rejected:** multi-existential (>1 projected
+     EXISTS or EXISTS in WHERE+SELECT), GROUP-BY/aggregate/DISTINCT/UNION intervening, GROUP-BY-on-EXISTS,
+     outer-join FROM with projected EXISTS. Graefe+Torvalds review pending.
+     **Round-4 (two more codex-found fold-bypass silent-wrong bugs, fixed):** the fold's early return in
+     `translateProject` skips the downstream projection-processing branches; each skipped branch is a latent
+     silent-wrong. Audited all bypasses; the two that were silently-wrong on SUPPORTED shapes are now fixed.
+     **(1) projected EXISTS + CORRELATED scalar subquery** (`SELECT id, EXISTS(...), (SELECT v FROM t2 WHERE
+     t2.fk = t1.id) FROM t1`): the early return bypassed the `translateProjectWithCorrelatedScalar` dispatch,
+     leaving the correlated `ScalarSubqueryValue` unbound → that column read NULL every row. The existential
+     SelectExpression and the correlated-scalar LEFT-OUTER-join select are incompatible structures (composing
+     them is the multi-quantifier boundary the port rejects), so this shape is now CLEANLY REJECTED — both at
+     the logical guard (`findUnfoldableProjectedExists`: a projected-EXISTS `LogicalProject` carrying
+     `CorrelatedScalarSubqueries` → `ErrCodeUnsupportedQuery`) and defense-in-depth in `translateProject`
+     (`len(CorrelatedScalarSubqueries) > 0` before the fold → nil). UNCORRELATED scalar + projected EXISTS
+     still works (pre-evaluated, collected before the early return). **(2) QUALIFIED ORDER BY key**
+     (`ORDER BY t1.col1 DESC`): the appended/pulled-up sort key was a flat `FieldValue "T1.COL1"` but the
+     folded record carries the bare output column → key NULL every row → DESC silently fell to scan order.
+     `sortKeyColumnName` + new `stripSortQualifier` now strip the single table qualifier so the appended
+     remainingOrderBy column is bare and resolves against the outer scan row; `pullUpSortKeyValue` rebases a
+     qualified `FieldValue` key onto the bare output column (only when a bare output field matches — a JOIN-FROM
+     qualified output keeps its qualified key). Revert-proof pins: `projected_exists_round4_fdb_test.go`
+     (qualified ORDER BY non-selected/selected DESC real ordering + ASC control; correlated-scalar clean-reject
+     guard sentinel; uncorrelated-scalar still-works control). Full sqldriver + `pkg/recordlayer/query/...` +
+     `pkg/relational/core/...` green; projected-EXISTS suite 10× deterministic. **Rejected (added R4):**
+     projected EXISTS + correlated scalar subquery in the same SELECT.
+     **Round-5 (two more codex-found silent-wrong regressions, fixed):** **(P1) `SELECT * … WHERE EXISTS(…)`
+     reported the inner subquery's columns.** A plain WHERE-EXISTS is planned as an IDENTITY FlatMap (result
+     value = the outer-row QOV, with a PredicatesFilter on top); `deriveColumnsFromFlatMap` only special-cased
+     the PROJECTED-EXISTS RecordConstructor, then fell through to merging outer+inner columns → the driver
+     advertised t1's AND t2's columns even though the cursor emits only the outer row. Fix: detect the
+     identity-over-outer FlatMap (result value is a `QuantifiedObjectValue` whose correlation == `GetOuterAlias`)
+     and return ONLY the outer plan's columns. **(P2) qualified ORDER BY over a JOIN sorted by the WRONG leg.**
+     The round-4 fix stripped `t2.id`→bare `ID` for non-selected qualified keys; for a JOIN source the FlatMap
+     merged outer row carries columns under BOTH bare (last-leg-wins) AND authoritative qualified `LEG.COL` keys
+     (`mergeRows`), so the bare key picks the wrong leg. Fix: classify the fold's FROM source (`classifySortSource`);
+     strip-to-bare ONLY for single-table sources; for a JOIN source keep the QUALIFIED key (`T2.SK`) — the
+     appended remainingOrderBy field carries a qualified leg reference (`FieldValue{Field:COL, Child:QOV(LEG)}`)
+     that the NLJ rule's `rebaseOuterLegValue` rewrites to the merged row's qualified key, and `pullUpSortKeyValue`
+     keeps the qualified key so it resolves the correct leg. Single-table qualified/unqualified, join SELECTED
+     and NOT-selected qualified ORDER BY all work; an unqualified ORDER BY of a column that collides across legs
+     is rejected cleanly by the semantic analyzer (`42702: column reference is ambiguous`), never silently wrong.
+     Revert-proof pins: `projected_exists_round5_fdb_test.go` — P1 `SELECT *`/`SELECT * NOT EXISTS` column-metadata
+     tests; the full ORDER BY matrix {single-table, 2-table INNER JOIN}×{selected, NOT selected}×{qualified,
+     unqualified}×DESC/ASC with colliding `sk`/`id` columns whose inverse leg orderings make a wrong-leg or no-op
+     sort visibly fail. Full sqldriver + `pkg/recordlayer/query/...` + `pkg/relational/core/...` green; EXISTS suite
+     10× deterministic.
+     **Round-6 (two more codex-found silent-wrong regressions, fixed via the consistency root-cause):** both bugs
+     came from the projected-EXISTS fold RECONSTRUCTING column-metadata and sort-key derivation piecemeal instead
+     of REUSING the normal (non-EXISTS) projection path's logic. Root fix: unify both derivations with the normal
+     path so they cannot diverge. **(P2a) ORDER BY a SELECT-list alias whose value is a simple column**
+     (`SELECT col1 AS id, id AS x, EXISTS(...) FROM t1 ORDER BY x`): `upgradeSortKeyValues` resolves the alias `x`
+     to the projected Value (`FieldValue{ID}`); the fold re-applies the sort ON TOP of the folded projection, but
+     `pullUpSortKeyValue`'s FieldValue case returned BEFORE the output-field-value match the non-FieldValue case
+     had, so the key resolved by NAME against the output record — reading field `ID` (= `col1 AS id`), the WRONG
+     column. Fix: `pullUpSortKeyValue` now runs the output-field-value match (`pullUpToOutputField`, extracted as
+     the shared helper) FIRST for EVERY key shape — the same key↔output-field correspondence the normal ORDER BY
+     alias path uses — so an alias key pulls up to the output field it IS (`X`), not a same-named column; the
+     name-based resolution is the fallback for keys appended via remainingOrderBy. **(P2b) column LABEL regression
+     for qualified projections** (`SELECT t1.id, EXISTS(...) FROM t1 …`): `deriveColumnsFromFlatMap`'s folded
+     branch set `Name = upper(f.Name)` and left `Label` empty, so the ResultSet exposed the qualified `T1.ID`,
+     whereas the normal path keeps the qualified Name for lookup but sets the DISPLAY label to bare `ID`. Fix:
+     extracted the normal path's per-column derivation into a shared `deriveProjectionColumnDef(value, alias,
+     idx, descs)` helper (Name+Label+type+nullable) reused by BOTH `deriveColumnsFromProjection` AND the folded
+     branch; `foldedFieldAlias` recovers the SELECT-list alias from the fold's RecordConstructor field (comparing
+     BARE LEAVES so an unaliased qualified column `T1.ID` over value bare `ID` is correctly recognized as
+     unaliased → label = bare leaf). A projected EXISTS now produces IDENTICAL label/type/nullability to a
+     non-EXISTS control query. Revert-proof pins: `projected_exists_round6_fdb_test.go` — P2a ORDER BY by
+     {column alias, expression alias, qualified col, bare col} with distinct values so a wrong-field sort fails
+     loudly; P2b label/type/nullability parity with a non-EXISTS control for {bare, aliased, qualified,
+     qualified-over-JOIN} columns asserted via `Columns()`/`ColumnTypes()`, plus a qualified-datum value-scan.
+     Full sqldriver bazel suite + `pkg/recordlayer/query/...` + `pkg/relational/core/...` green; EXISTS suite 10×
+     deterministic; all round-1..5 tests still green.
+     **Round-7 (computed non-selected ORDER BY over projected EXISTS — codex):** `ORDER BY col1 + 1` where
+     `col1 + 1` is NOT a SELECT output. `collectExtraSortColumns` can only append NAMED columns, so the sort
+     re-applied above the folded FlatMap evaluated the expression against a record lacking its inputs → NULL
+     every row → no-op sort (wrong order). Fix: `translateProjectOverExistsFilter` now BAILS the fold for any
+     computed ORDER BY key absent from the projection (→ §8 guard cleanly rejects with `ErrCodeUnsupportedQuery`)
+     instead of returning wrong rows. A SELECTED computed expression (ordered by its alias or matching an output
+     field) still folds. Revert-proof pin: `projected_exists_round7_fdb_test.go`.
+     **Round-8 (two more codex-found metadata/alias divergences, fixed via the alias-provenance root-cause):**
+     both bugs came from the fold RE-DERIVING a projected column's alias/Name/Label from the FOLDED record instead
+     of carrying the ORIGINAL `LogicalProject.Aliases` provenance. **(P1, SILENT-WRONG) explicit-alias==bare-leaf
+     and unaliased-qualified over a JOIN.** `deriveColumnsFromFlatMap` used `foldedFieldAlias` to INFER alias-ness
+     by bare-name equality, then `deriveProjectionColumnDef` re-derived the datum `Name` from the field VALUE
+     (`ExplainValue`). For `t1.id AS id` the inferred-unaliased datum Name became `T1.ID` while the record is keyed
+     by the alias `ID` → a Scan read NULL; for an unaliased `t2.id` over a JOIN the NLJ-rebased composite value
+     (`FieldValue{Field:ID, Child:QOV}`) skipped the `Child==nil` bare-compare so the qualified `f.Name` leaked as
+     a fake alias → label `T2.ID` not bare `ID`. Root fix: `foldedColumnDef` derives the column metadata DIRECTLY
+     from the `RecordConstructorField.Name` — the SAME name the fold set and that `RecordConstructorValue.Evaluate`
+     keys the executed row by (`out[f.Name]`): datum `Name = f.Name` (cannot diverge from the record key → never
+     NULL), display `Label = bare leaf of f.Name` (Java's post-`clearQualifier` SELECT-list Identifier rule), type
+     from the value. `foldedFieldAlias` deleted (no more inference). **(P2, label/type regression) hidden ORDER BY
+     re-aliased every visible column.** When a non-selected sort column is appended, the cleanup re-projection that
+     drops it force-aliased EVERY field to its datum Name (`projAliases[i] = name`), turning `SELECT t1.id` into an
+     explicit alias `T1.ID` (qualified label leaked) and dropping the EXISTS column's BOOLEAN type. Fix: the cleanup
+     now reuses the ORIGINAL `p.Aliases[i]` (""==unaliased, leaving unaliased fields unaliased) and preserves each
+     value's type; `deriveColumnsFromProjection` additionally inherits a renamed pass-through column's type from its
+     inner plan's same-named derived column (the alias is not a proto field, so the descriptor lookup couldn't type
+     it). Revert-proof pins: `projected_exists_round8_fdb_test.go` — P1 explicit-alias-over-JOIN + unaliased-qualified
+     value scan (reads NULL without the fix) and named-scan; a comprehensive `{bare, aliased, qualified, t1.id AS id
+     over JOIN, t1.id unaliased over JOIN}` Name+Label+type+nullability parity matrix vs non-EXISTS controls + a
+     non-NULL value scan each; P2 hidden-ORDER-BY label/type parity for {qualified, aliased, bare} columns vs TRUE
+     non-EXISTS controls with the same hidden-sort shape. Full sqldriver bazel suite + `pkg/recordlayer/query/...`
+     + `pkg/relational/core/...` green; EXISTS suite 10× deterministic; all round-1..7 tests still green.
+     **Round-9 (a WHERE-EXISTS correctness REGRESSION + a metadata divergence — codex):** **(P1, SILENT-WRONG,
+     regression of plain WHERE-EXISTS) the existential inner correlation collided with the outer source alias.**
+     An alias-shadowing self-subquery (`SELECT id FROM t WHERE id > 1 AND EXISTS (SELECT 1 FROM t WHERE id = 1)`)
+     gives the outer source alias and the existential inner correlation the SAME name (`T`), because the
+     post-FlatMap re-architecture derived the inner correlation from `GetSourceAliases()[1]` = the subquery's
+     SOURCE TABLE name. The FlatMap then bound BOTH the outer row and the FirstOrDefault inner under that one
+     correlation (the inner CLOBBERED the outer → the pass-through row was NULL: `converting NULL to int64`),
+     and an outer-only predicate (`id > 1`, correlated to the shared name) was MISCLASSIFIED as an inner join
+     predicate and pushed below the FOD. The old semi-join cursor returned the outer row directly, so it worked
+     before. Root fix (Java: every existential quantifier has its OWN unique correlation identity, never the
+     source table's name): `existsInnerCorrelation` (cascades_translator.go) registers the existential inner
+     under the UNIQUE existential quantifier alias (`esq.Alias`, from `UniqueCorrelationIdentifier()`) and
+     rebases the join predicate onto it via `RebasePredicate`, so outer and inner correlations are distinct
+     by construction and predicate classification stays correct. Guarded to a SINGLE-TABLE-scan inner
+     (`existsInnerSafeToRename`): a JOIN inner or a nested-EXISTS inner (a `LogicalFilter` carrying its own
+     `ExistsSubqueries`) produces MERGED rows keyed by the real leg aliases / carries internal source-alias
+     references the rename can't reach, so those keep the source-alias (leg) routing — the alias-shadow clobber
+     only arises for the single-alias-bound scan. Applied at all 3 build sites (`buildExistentialSelect`,
+     `buildExistentialJoinSelect`, `translateJoinWithExists`). **(P2, metadata) unaliased computed select item
+     named by expression text.** `SELECT id + 1, EXISTS(...) AS e FROM t` — the fold named the folded computed
+     field with the expression TEXT (`ID + 1`), so `Rows.Columns()` reported `ID + 1` where the normal
+     projection path exposes an unaliased non-field (computed) expression under the GENERATED positional name
+     (`_0`); adding the EXISTS thus changed the public column name and broke positional references. Fix:
+     `translateProjectOverExistsFilter` names an unaliased non-`FieldValue` (computed) column with the SAME
+     positional `_i` the normal path uses (`deriveProjectionColumnDef`/`executeProjection`), so the folded
+     column's record key + Name + Label are identical to the non-EXISTS control on every axis. Revert-proof pins:
+     `exists_alias_shadow_fdb_test.go` (P1: WHERE-EXISTS, NOT-EXISTS, correlated, and projected alias-shadow self-
+     subqueries — all returned NULL/wrong before the fix) and `exists_computed_column_fdb_test.go` (P2: column-name
+     parity with a `SELECT id + 1` control read dynamically, + correct values). Full sqldriver bazel suite +
+     `pkg/recordlayer/query/...` + `pkg/relational/core/...` green; EXISTS suite 10× deterministic; all
+     round-1..8 + WHERE/NOT-EXISTS tests still green.
+     **ROUND-10 (codex; two MORE silent-wrong bugs, both fixed at root, NO shape rejected):**
+     **(P2a, silent-wrong) MULTI-TABLE EXISTS inner correlating to a NON-rightmost leg.**
+     `EXISTS (SELECT 1 FROM t2, t3 WHERE t2.t1_id = t1.id)` — the existential inner is a multi-table (comma/JOIN)
+     source; `existsInnerCorrelation` reports only the RIGHTMOST leg (t3), and the NLJ rule classified the
+     correlation predicate by that single inner correlation. A predicate referencing t2 (non-rightmost) matched
+     neither the inner-correlation test NOR "outer-only" correctly → it was evaluated with NO inner binding and
+     DROPPED EVERY OUTER ROW (WHERE returned 0 rows; projected returned `false`/empty). Root fix
+     (`rule_implement_nested_loop_join.go`): a predicate goes BELOW the FirstOrDefault iff it references ANY
+     correlation OTHER than the FlatMap's outer leg(s) — i.e. it touches the inner subquery (`predicateTouchesInner`,
+     variadic over the outer correlations). The FlatMap binds the outer row(s) under exactly the outer
+     correlation(s); every other correlation is an inner leg (the existential source, or a multi-table FROM leg).
+     Applied in BOTH existential-join methods: `implementExistentialSelect` (single outer) and the JOIN-in-FROM
+     `implementJoinWithExistential` (two outer legs). Audit confirmed correct for 2-leg/3-leg, leftmost/rightmost
+     correlation, inner-only join predicates, explicit `JOIN…ON` inner, NOT-EXISTS, non-correlated, outer-predicate
+     combos, projected, and JOIN-in-FROM variants — NO shape needs rejection; the merged inner row resolves leg
+     columns by qualified key and the live outer binding resolves the correlated column.
+     **(P2b, silent-wrong ORDER) qualified ORDER BY key whose bare name collides with a SELECT alias.**
+     `SELECT col1 AS id, EXISTS(...) FROM t1 ORDER BY t1.id` — the fold stripped `t1.id`→bare `ID`, which equals the
+     SELECT-list alias `id` (= col1); the "already in output" check then matched the output ALIAS by name and the
+     sort ordered by col1 instead of t1.id. Root fix (`cascades_translator.go`): output membership for a sort key is
+     now VALUE-based (`sortKeyInOutput` / `sortKeySourceValue` — an output field must genuinely PROJECT the source
+     column the key references, never merely share a bare name with an output alias); a non-projected qualified source
+     key is appended as a hidden `remainingOrderBy` field NAMED BY ITS QUALIFIED PROVENANCE (`T1.ID`, collision-free
+     with the output alias) carrying the source-column value, and `pullUpSortKeyValue` resolves the key by VALUE
+     match (raw key first — SELECT-list aliases incl. the computed EXISTS boolean — then the source-column value).
+     The bare-alias ORDER BY path (`upgradeSortKeyValues` sets `k.Value` to the projected value) is UNCHANGED.
+     Revert-proof pins: `projected_exists_round10_fdb_test.go` — P2a {2-leg non-rightmost/rightmost, 3-leg,
+     inner-join-pred, explicit JOIN…ON, NOT-EXISTS, outer-pred, projected, projected-JOIN-from, WHERE-JOIN-from}
+     all asserting correct rows + single-table control; P2b qualified-`t1.id` ASC/DESC ordering (col1 sequence), the
+     bare-alias-is-output-column control, and the selected-qualified pull-up control. Both reverts verified to fail
+     the exact dimension. Full sqldriver bazel suite + `pkg/recordlayer/query/...` + `pkg/relational/core/...` green;
+     EXISTS suite 10× deterministic; all round-1..9 + WHERE/NOT-EXISTS tests still green.
+     **ROUND-11 (codex; the round-10 routing fix REGRESSED a scalar-subquery shape — two silent-wrong bugs, both
+     fixed at root, NO shape rejected; §8h):** **(P1, silent-wrong) route by the KNOWN inner-leg set, not "any
+     non-outer".** Round-10's `predicateTouchesInner` routed a predicate BELOW the FirstOrDefault iff it
+     referenced ANY correlation other than the outer leg(s) — an ABSENCE test. An UNCORRELATED SCALAR SUBQUERY in
+     a predicate (`price > (SELECT MAX(x) FROM t2)`) has its OWN `ScalarSubqueryValue` alias — non-outer yet NOT
+     an inner table leg (a pre-evaluated EXTERNAL binding) — so the absence test pushed the scalar predicate below
+     the FOD; alongside an empty NOT-EXISTS the FOD yields NULL, its IS-NULL residual admits every outer row, and
+     the below-FOD scalar comparison never ran → the scalar predicate was SILENTLY DROPPED (`price > MAX(x) AND
+     NOT EXISTS(empty)` returned every NOT-EXISTS-true row incl. those failing `price > MAX(x)`). Root fix
+     (`rule_implement_nested_loop_join.go`): `collectInnerLegAliases(innerRef, innerCorr)` computes the existential
+     inner's FROM-source-alias set (innerCorr ∪ all legs the subplan DECLARES — every `SelectExpression.GetSource
+     Aliases()` + ForEach/Physical quantifier alias, never a value-tree binding), distinguishing multi-table (innerCorr
+     IS a declared leg → return ALL legs, keeping round-10) from renamed single-table (innerCorr NOT declared → return
+     {innerCorr} only, re-avoiding the round-9 alias-shadow leak by construction); `predicateReferencesInnerLeg`
+     routes below the FOD iff the predicate's correlation set INTERSECTS that set — scalar-subquery / parameter /
+     other external bindings stay OUTER and actually filter. Applied at both methods (`implementExistentialSelect`,
+     `implementJoinWithExistential`). **(P2, silent-wrong) the projected-EXISTS fold dropped a WHERE-clause scalar
+     subquery.** `SELECT id, EXISTS(...) FROM t1 WHERE price > (SELECT MAX(x) FROM t2)` — the fold's early return in
+     `translateProject` bypasses `translateFilter`, the only place `f.ScalarSubqueries` is registered for
+     pre-evaluation, so the WHERE scalar stayed unbound (NULL) → `price > NULL` → 0 rows. Fix:
+     `translateProjectOverExistsFilter` now collects `f.ScalarSubqueries` (same fold-bypass class as round-4).
+     Predicate-routing audit (outer-only, inner-leg single/multi-table, scalar-in-pred, NOT-EXISTS, projected,
+     parameter-marker, projected+WHERE-scalar, correlated-scalar-rejected): each correct or cleanly-rejected, no
+     silent-wrong. Revert-proof pins: `projected_exists_round11_fdb_test.go` — scalar+NOT-EXISTS (empty inner),
+     scalar+EXISTS, scalar+multi-table-NOT-EXISTS, projected-EXISTS+WHERE-scalar, parameter-marker control, audit
+     controls; dataset built so the scalar EXCLUDES a NOT-EXISTS-true row (id 0, price ≤ MAX) so a dropped scalar
+     loudly INCLUDES it. Routing revert → scalar+NOT-EXISTS returns `[0 1 2 3 4]` (want `[2 4]`), scalar+EXISTS `[]`
+     (want `[3]`); fold-collection revert → projected+WHERE-scalar `[]`. NLJ-rule change → **Graefe ACK needed**.
+     Full sqldriver bazel suite + `pkg/recordlayer/query/...` + `pkg/relational/core/...` green; EXISTS suite 10×
+     deterministic; all round-1..10 + WHERE/NOT-EXISTS tests still green.
+     **Round-12 (the CONVERGENCE BACKSTOP — codex r12 found EXISTS in WRAPPED/NESTED positions silently wrong):**
+     EXISTS can appear ANYWHERE in an expression tree, so point-handling each shape never converges. The fix is a
+     comprehensive structural backstop: any EXISTS NOT in a directly-handled position is detected (typed predicate/
+     parse tree, never `GetText`) and REJECTED cleanly with `ErrCodeUnsupportedQuery` — never silently mis-evaluated.
+     Directly-handled = (WHERE) a direct existential / NOT-existential (`IsExistentialPredicate` /
+     `IsNotExistentialPredicate`, top-level or single-NOT, incl. each AND conjunct); (SELECT) a top-level projected
+     `EXISTS`/`NOT EXISTS` or its single paren/NOT wrapper. **(P1a wrapped WHERE EXISTS):** an existential buried
+     under any other wrapper (`WHERE NOT (NOT EXISTS(...))`, `EXISTS(...) OR p`, deeper AND/OR/NOT) fell into the
+     regular-predicate bucket where the empty FirstOrDefault's NULL default is never removed → every outer row
+     silently passed. New `query.CheckBuriedExistentialPredicate` (post-translation, alongside
+     `CheckProjectedExistsFolded`, run on BOTH the SELECT and DML planning paths — `DELETE/UPDATE … WHERE NOT (NOT
+     EXISTS)` reuses the existential NLJ rule and was equally silent-wrong, matching every targeted row) walks every
+     predicate-bearing expression; a top-level predicate that is not a direct existential but CONTAINS an
+     `ExistentialValuePredicate` at any depth (`predicates.ContainsExistentialPredicate`) → reject. **(P1b nested projected EXISTS):** `CASE WHEN EXISTS(...) THEN ... ELSE ... END`, `EXISTS(...) AND x`,
+     `(EXISTS(...) OR x)`, `NOT (EXISTS(...) AND x)` took the predicate path → the ExistsValue evaluated ABOVE the
+     FlatMap with the binding dead → constant false / NULL. New `expr.NestedExistsProjectionError` (raised in
+     `walkExpressionInner` in projection position when the SELECT item CONTAINS an EXISTS atom via
+     `ContainsExistsAtom` but is not one of the 3 directly-foldable shapes via `isDirectlyFoldableProjectedExists`)
+     — a DISTINCT error from `UnsupportedExpressionShapeError` (which callers swallow to the silent-wrong text
+     path); the two projection callers convert it to `ErrCodeUnsupportedQuery`. Also corrected a fake-checkbox test
+     (`TestFDB_SubqueryInCase`) that asserted `CASE WHEN EXISTS(...)` "works" while only checking `err==nil` and
+     never validating the (all-ELSE, silent-wrong) rows → now pins the clean rejection. Revert-proof pins:
+     `projected_exists_round12_fdb_test.go` — P1a {double-NOT, OR, buried-in-AND, NOT-of-AND} + P1b {CASE-WHEN, AND,
+     NOT-of-AND, OR} guard sentinels (each FAILS if rows return) + controls (every directly-handled WHERE/SELECT
+     shape still works, incl. a direct nested EXISTS in a subquery WHERE) + a DML sentinel/controls
+     (`TestFDB_ProjectedExistsRound12_DML`) + JOIN-ON / ORDER-BY / WHERE-scalar sentinels+controls
+     (`TestFDB_ProjectedExistsRound12_OtherPositions`) + DML/INSERT-SELECT WHERE-scalar sentinels+controls
+     (`TestFDB_ProjectedExistsRound12_DMLScalar`) + an `expr.WhereExistsInScalarPosition` unit test
+     (`where_exists_position_test.go`); `predicates.ContainsExistentialPredicate`
+     unit-tested across wrapper depths. **Adversarial audit (other tree positions):** three more silent-wrong
+     positions, all where the EXISTS is not a top-level boolean term: (a) JOIN ON (`ON EXISTS(...)`) — ON resolver
+     has no SubqueryPlanner, EXISTS dropped, every joined row passed; (b) ORDER BY key (`ORDER BY EXISTS`, `ORDER BY
+     CASE WHEN EXISTS`) — sort resolver has no SubqueryPlanner, key kept raw text, never evaluated → wrong ordering;
+     (c) WHERE EXISTS BURIED in a scalar (`WHERE CASE WHEN EXISTS THEN 1 ELSE 0 END = 1`, `WHERE (EXISTS) = true`) —
+     lowered into a CASE/comparison operand, folded to constant false → every row dropped. (a)+(b) via
+     `expr.ContainsExistsAtom` (in `upgradeJoinOnPredicates` + the ORDER-BY validation, plan_visitor.go +
+     logical_predicate.go); (c) via a new structural parse-tree walk `expr.WhereExistsInScalarPosition` (an EXISTS is
+     directly-handled iff reached through ONLY boolean nodes AND/OR/NOT/paren; buried via any scalar node) — run on
+     the SELECT WHERE (plan_visitor.go), the DML WHERE (`DELETE/UPDATE … WHERE <buried EXISTS>`, at the DML dispatch),
+     and across an `INSERT … SELECT` subtree (`expr.AnyWhereExistsInScalarPosition`; the INSERT-SELECT body is rebuilt
+     through a path that bypasses the per-statement guard). All rejected cleanly. HAVING-EXISTS already surfaced a
+     clean "could not plan query"; EXISTS in an UPDATE SET value surfaces a clean type-mismatch. `ORDER BY
+     <EXISTS-alias>`, a top-level WHERE EXISTS/NOT-EXISTS/AND-conjunct/paren, and a direct DELETE/INSERT…SELECT WHERE
+     EXISTS are NOT rejected (preserved).
+     Both backstops verified revert-proof (disabling them returns the
+     silent-wrong rows). NLJ-rule reasoning change → **Graefe ACK** + **Torvalds ACK** (got both). Full sqldriver bazel suite +
+     `pkg/recordlayer/query/...` + `pkg/relational/core/...` green; EXISTS suite 10× deterministic; all round-1..11
+     + WHERE/NOT-EXISTS tests still green. **Final supported = exactly the directly-handled positions; cleanly
+     rejected = ANY EXISTS elsewhere** — codex round-13 bar: NO silent-wrong EXISTS case.
+     **Round-13 (convergence fix — boundary stop; the round-12 detectors must NOT descend into nested subqueries):**
+     codex round-13 found the FINAL convergence issue — an OVER-rejection (not silent-wrong, so that surface stays
+     closed). The round-12 structural detectors recursed into nested subqueries, so an EXISTS in a nested scalar / IN /
+     derived-table subquery's OWN clause was mis-attributed to the outer expression and falsely rejected —
+     `SELECT id, (SELECT MAX(id) FROM t2 WHERE EXISTS (SELECT 1 FROM t3)) FROM t1` failed with "projected EXISTS in this
+     query shape is not yet supported". Fix: each subquery is classified in its OWN translation context; a shared
+     `expr.introducesNestedQueryScope` helper (`SubqueryExpressionAtomContext` + `InListContext`) makes
+     `ContainsExistsAtom` / `WhereExistsInScalarPosition` / `AnyWhereExistsInScalarPosition` /
+     `isDirectlyFoldableProjectedExists` STOP at subquery boundaries (still match an `ExistsExpressionAtomContext` at the
+     current level). The logical-/value-tree detectors were already boundary-safe (`ScalarSubqueryValue.Children()` is
+     `nil`). Pinning the variants EXPOSED a real silent-wrong bug: the subquery-build path
+     (`buildLogicalPlanForSelectWithCTECatalog_postBuild`) lacked the `WhereExistsInScalarPosition` guard the PlanVisitor
+     path has, so a buried-scalar EXISTS in a nested subquery's own WHERE silently folded to constant-false (inconsistent
+     with the standalone subquery, which rejects) — guard added there; and the WHERE-walk error handlers swallowed a
+     nested `*api.Error` into text-fallback (generic "could not plan") — now propagated verbatim. Tests:
+     `projected_exists_round13_fdb_test.go` (round-13 query + variants plan & return correct rows; buried-CASE-EXISTS
+     subquery rejects in its own context matching standalone, for scalar/derived-table/EXISTS-subquery forms; controls
+     for the genuine round-12 outer-level rejections) + detector unit pins in `where_exists_position_test.go`. Full
+     sqldriver + yamsql + plandiff + query/core green; EXISTS suite 10× deterministic; round-1..12 still green.
+     **Phase 2 FOLLOW-UP (computed ORDER BY over projected EXISTS — Graefe):** `sortSource.sortKeyName` only
+     classifies a bare/qualified column reference; a *computed* ORDER BY expression (`ORDER BY a+b` where
+     `a`,`b` aren't in the SELECT) is skipped rather than appended, so it silently mis-sorts. Java's
+     `Expressions.difference` uses a semantic `canBeDerivedFrom` check that appends the non-derivable computed
+     expression and sorts correctly. Port that: build the sort key's Value (the walker already can) and append
+     the computed expression as an extra projection field, matching Java. Strictly narrower than the
+     bare-column bug just fixed, zero wire impact, exotic shape — next item, not buried.
+     **Phase 2 FOLLOW-UP (multi-existential, separate larger extension):** >1 existential quantifier in one
+     query — multiple projected EXISTS, and EXISTS in WHERE *and* SELECT together (Java exists-in-select.yamsql
+     lines 85, 94) — needs nested FlatMaps with intermediate record-bundling (`RETURN (..., exists(q5._0),
+     exists(q5._1))`) and projection-QOV→bundled-field rewriting. This was NEVER supported in Go — multiple
+     WHERE-EXISTS (`WHERE EXISTS(...) AND EXISTS(...)`) already "could not plan query" on master;
+     `implementExistentialSelect` handles a single existential (2 quantifiers) only. Now CLEANLY REJECTED by the
+     round-3 guard (was silently-wrong); out of scope for Phase 2 as a feature.
+   - **[x] R5** — correlated array UNNEST in FROM (`FROM t, t.arr AS x`) + `AT ordinality`
+     (`PRecordQueryExplodePlan.with_ordinality`, 1-based INT). Implemented in RFC-142: parser preserves
+     uid segments + AT alias on comma sources (`select_parser.go`); a `LogicalUnnest` operator carries
+     them to the translator, which classifies a comma source against the in-scope record types and lowers
+     a correlated `FlatMap(outer, Explode(FieldValue{arr} over QOV(outer)), …, resultValue, false)` —
+     reusing the existing NLJ-rule FlatMap path (the Explode guard now only fires on the uncorrelated
+     IN-list shape). `ExplodeExpression`/`RecordQueryExplodePlan` gained `WithOrdinality` (folded into
+     equals/hash/result-type; `executeExplode` emits a 2-field `{_0:element,_1:i+1}` record, 1-based,
+     resetting per outer row); a name-based ordinal `FieldValue` (`ofOrdinalNumber` analog) binds AS→`_0`,
+     AT→`_1`. AT on a non-array source converges on `ErrCodeWrongObjectType` (42809). Works: base unnest,
+     ordinality, AT-only, NOT-NULL/nullable/empty/single arrays, string arrays, filter-on-element (ordinal
+     preserved), filter-on-ordinal, alias name-collision (unnest shadows via a `Shadowing` ScopeSource).
+     **Follow-ups (clean-rejected, never silently wrong):** multiple/chained unnests in one FROM (nested
+     FlatMap merged-row threading), struct-array element field access, computed SELECT projection over the
+     ordinal (driver-level column projection). Gate: **Graefe** + Torvalds.
+     **Refactor follow-ups (acknowledged-not-blocking by Graefe/Torvalds in the R5 full-pass review):**
+     - **Dedup the group-key-output-name helper.** The aggregate group-key output name is computed three
+       times under three names — `aggKeyName` (executor), `aggregateGroupKeyOutputName` (embedded), and the
+       `havingPredicatePushesBelowAggregate` mirror. Fold into ONE shared helper at the values/executor
+       boundary. This is a pre-existing aggregate-naming wart the unnest shadowing merely exposed; the same
+       pre/post-aggregate name mismatch was rediscovered three separate times during R5. (Graefe)
+     - **Refactor the NLJ rule's `rebaseOuterLegRefsToMerged`** to call the translator's generic
+       `mapPredicateValues` walk instead of carrying its own predicate-tree recursion — the same recursion
+       lives on both sides of a package boundary. (Torvalds)
+     - **Collapse `outerSourceIsCTE` + `outerSourceIsDerivedTable`** into one helper: they are always invoked
+       together as a single `||` (the CTE/derived-output rejection), so the two-arm split is redundant. (Torvalds)
+     - **Unify the two SELECT-build paths behind one driver.** There are two SELECT builders — `PlanVisitor`
+       (top-level) and the catalog builder `buildLogicalPlanForSelectWithCTECatalog` (subquery/DML/derived) —
+       which today share the identical unnest-aware helpers but are still two drivers. Rounds 25/28/30 each
+       found the catalog path missing a step the top-level path had; the round-26 audit confirmed parity, but
+       a single driver would make it *structurally impossible* to add an unnest-aware step to one and miss the
+       other. (Graefe, R5 full-pass round-32)
+     - **Reject general duplicate FROM range-variable aliases.** `FROM A AS X, B AS X` (two real tables, same
+       alias) plans cleanly in Go but Java rejects it (`SemanticAnalyzer` forbids duplicate range-variable
+       names); R5 added the unnest-specific `rejectDuplicateUnnestAlias` but the general case is a separate
+       pre-existing divergence. (surfaced during R5 round-29)
+   - **R5 final codex pass — DEFERRED to Jun 25 (codex quota exhausted).** R5 went through 32 codex rounds
+     (all fixed + revert-proof-tested) + Graefe + Torvalds full-pass ACK; the codex quota hit its limit at
+     round 33. Run one final `codex review --base <R4-commit>` on the committed R5 when the quota resets
+     (Jun 25 ~09:52) to confirm codex-clean; address anything it finds before the umbrella PR merges.
+   - **[x] R6** — `CARDINALITY()` function + index support (RFC-143). Phase 1 (scalar function, `e3adb2a4a`) +
+     Phase 2 (cardinality index — function-key bridge, evaluator, DDL, planner-matching + general IS-NULL
+     value-index ranges, `2c8e5a78d`). Graefe + Torvalds ACK both phases; final codex pass deferred to the
+     Jun 25 quota reset (PR #336 stays draft). Gate: **Graefe** + Torvalds.
+     - **[x] Phase 1 — the scalar function (no index).** `CARDINALITY(array) → nullable INT` wired SQL→
+       `CardinalityValue` via a BY-NAME built-in dispatch at the `walkFunctionCall` leaf
+       (`expr.walkUserDefinedScalarFunction` → `walkCardinality`; CARDINALITY parses as a bare-ID
+       `UserDefinedScalarFunctionCall`). Fixed the 3 divergences in the orphaned `CardinalityValue`:
+       `Type()` → `NullableInt` (Java `primitiveType(INT)`, nullable → metadata INTEGER, was NotNullLong);
+       array-type validation at the walk site (non-array arg → `CANNOT_CONVERT_TYPE`/22000, matching the
+       yamsql); `ExplainValue` renders `cardinality(<child>)`. Satellite gate `isAllowedFunction`
+       (cascades_generator) accepts CARDINALITY by name (NOT added to the generic
+       `IsCascadesSafeScalarFunction`/`evalScalarFunction` lists — it's a dedicated Value). Resolved array
+       columns now carry an `ArrayType` (new `semantic.Column.IsArray` populated from the repeated-field
+       descriptor; `expr.columnCascadesType`), so `isArray()` passes and metadata is correct. FDB tests in
+       `array_cardinality_fdb_test.go` (count, WHERE `= N` / `IS [NOT] NULL`, ORDER BY, error, metadata,
+       EXPLAIN). **§3a note:** Go writes plain-repeated arrays (no nullable-array wrapper), so an
+       empty/unset array is wire-indistinguishable from NULL → reads as NULL → `CARDINALITY([])` is NULL,
+       not 0 (Java's wrapper distinguishes them). The function is faithful; the empty-vs-NULL distinction
+       is the latent §3a nullable-array-wrapper-WRITE gap (below), out of scope for Phase 1.
+     - **[x] Phase 2 — index support** (the 4.12.3 delta; Graefe-gated planner matching). A `CARDINALITY()`
+       index makes `WHERE CARDINALITY(arr) = N` / `IS [NOT] NULL` and `ORDER BY CARDINALITY(arr)` ASC/DESC
+       use INDEX scans (EXPLAIN shows `IndexScan`, not a full `Scan` + `PredicatesFilter`/`InMemorySort`).
+       - **Step 4 — evaluator:** `CardinalityFunctionKeyExpression` (`key_expression_cardinality.go`) embeds
+         the generic `FunctionKeyExpression` (so it serialises to the identical `Function{name:"cardinality"}`
+         proto, field 9, wire-compatible) and overrides `Evaluate` with Java's two protobuf fast paths
+         (plain repeated field; nullable-array WRAPPER descent for Java-written records) plus the
+         materialize-and-count fallback. `createsDuplicates()==false` (Java override), `ColumnSize()==1`.
+         Empty/unset Go array → NULL key (§3a-consistent with the scalar).
+       - **Step 6a — KeyExpression→Value bridge:** `ValueIndexScanMatchCandidate` carries a parallel
+         `columnFunctions []string` + a `ColumnValue(i, base)` producing `CardinalityValue(FieldValue(col))`
+         for a cardinality column (plain `FieldValue` otherwise). `ExpandValueIndex` (via the
+         `columnValueProvider` interface) and `ComputeMatchedOrderingParts` both consult it, so candidate +
+         query sides build the IDENTICAL Value. `metadataIndexDef.IndexColumnFunctions()` derives the tags
+         from the index's `KeyExpression` (the recordlayer→cascades half of the bridge).
+       - **Step 5 — index DDL:** `CREATE INDEX … AS SELECT CARDINALITY(arr) … ORDER BY` recognises the
+         bare-ID CARDINALITY call by typed node and routes to `Builder.AddCardinalityIndex` →
+         `CardinalityExpr(field(arr, Concatenate))` value index (`buildCardinalityIndex`).
+       - **Step 6b — predicate matching:** `WHERE CARDINALITY = N` falls out of `valuesMatchColumn`; added a
+         `*CardinalityValue` alias-invariant arm (mirrors the FieldValue / distance-row-number arms).
+       - **Step 6c — ORDER-BY rework:** `rule_ordered_index_scan.go` now matches the sort key by Value-tree
+         equality against the candidate's `ColumnValue` (the `sortKeyMatchesColumn` helper), not a
+         `FieldValue`-name string — so `CardinalityValue` sort keys bind (incl. REVERSE). Plain-field
+         ORDER BY unchanged.
+       - **Value-index NULL ranges (Java-aligned, surfaced by the `IS [NOT] NULL` cases):** `IS NULL` is now
+         a `[null]` EQUALITY range and `IS NOT NULL` a `(null,+inf)` INEQUALITY range for value-index
+         matching — Java's `ScanComparisons.getComparisonType(IS_NULL)==EQUALITY` / `NOT_NULL==INEQUALITY`.
+         `ComparisonRange.Merge` classifies them; `isSargableComparisonForMatch` admits them (only the
+         index-match gate, not the base `isScanRangeCompatible` the NLJ path uses); the executor builds the
+         `[null]`/(null,+inf) ranges (`IS NOT NULL` was already supported). This closed a general Go
+         divergence (no value index bound `IS [NOT] NULL` before) — `TestPlanHarness_IsNull` updated to the
+         now-correct index plan; full sqldriver suite green.
+       - Tests: `array_cardinality_index_fdb_test.go` (EXPLAIN-asserted: `= N`, `IS [NOT] NULL`, ORDER BY
+         ASC/DESC, covering, plain-field no-regression controls incl. plain `IS [NOT] NULL`),
+         `cardinality_ddl_test.go` (DDL → `CardinalityFunctionKeyExpression` + catalog proto round-trip),
+         `key_expression_cardinality_test.go` (evaluator fast paths + wrapper + wire round-trip). 10×
+         deterministic. **Note:** nested-struct array (`tab2_index` in the yamsql) is blocked on STRUCT
+         column support in the metadata builder (`buildCardinalityIndex` already builds the dotted-column
+         nesting); lands with struct columns.
+     - **[ ] §3a follow-up — nullable-array-wrapper WRITE.** Go's metadata builder emits a plain repeated
+       field for both nullable and NOT-NULL arrays; it does not write Java's `message{ repeated values }`
+       wrapper, so a Go-written NULL array can't be distinguished from an empty one. Closing this lets
+       `CARDINALITY([])` be 0 (not NULL) for a non-null empty array, matching Java. Latent divergence
+       (read path already unwraps Java-written wrappers via `unwrapWrappedArray`); separate from R6.
+   - **[ ] R6 follow-up — BITAND/BITOR/BITXOR unreachable through the walker (pre-existing drift).** The 3
+     scalar-function keyword lists drift: `BITAND/BITOR/BITXOR` are in `IsCascadesSafeScalarFunction` (so
+     the satellite gate admits them) but the `expr` walker's `walkBitExpression` builds a
+     `ScalarFunctionValue("BITAND"/...)` that is then rejected by `isCascadesSafeValue`/the catalog — they
+     never reach a working Cascades plan today. Surfaced while wiring CARDINALITY's by-name gate; NOT fixed
+     here (the by-name collapse only routed CARDINALITY). The clean fix is to finish collapsing the 3 lists
+     onto one by-name table; verify against Java first. Gate: **Graefe** + Torvalds.
+   - **[x] R7** — LEFT/RIGHT OUTER JOIN reclassification + 4.12 null/boolean fixes (RFC-144). The parity
+     sweep (53 ported `join-tests-outer.yamsql` cases) found + fixed **6 real outer-join divergences**
+     (JOIN USING → cartesian; chained outer joins + INNER-then-LEFT dropped NULL-padding; derived-table-
+     on-right + derived-primary dropped ON/JOIN; RIGHT JOIN SELECT* col order). Materialized NLJ kept
+     (Graefe ACK). Plus `EliminateNullOnEmptyRule` replacing the buggy `PullUpNullOnEmptyRule` (latent-rule
+     hygiene — no SQL producer) with BC1 faithful `rejectsNull` + BC2 `ImplementSimpleSelectRule` exact-
+     type tightening; null/boolean/folding verify-and-pin (3 documented benign/orthogonal gaps). Reclassify:
+     LEFT/RIGHT OUTER now Java-aligned; FULL stays Go-only (Java rejects). Graefe + Torvalds ACK; final
+     codex pass deferred to Jun 25 (PR #336 draft). Gate: **Graefe** + Torvalds.
+     - **[ ] R7 follow-up (Torvalds) — JOIN USING typed-path lowering.** `synthesizeUsingOnExpr`
+       (`select_parser.go`) builds the equi-join ON by splicing the raw uid text into `"<l>.col = <r>.col"`
+       and re-parsing (works + documented for quoting round-trip, but deviates from Java's typed
+       `resolveJoinUsingClause` → `resolveFunction("=")`). Replace the text-splice with typed Value/expr
+       construction. Non-blocking; pre-existing style deviation.
+     - **[ ] R7 follow-up (Torvalds) — USING `.asHidden()` + `SELECT * USING` test.** Go does not implement
+       Java's right-column hiding for USING, so `SELECT * … USING (id)` emits the join column twice
+       (honestly documented in the code comment, but untested). Implement `.asHidden()` for the USING
+       right column AND add the `SELECT * USING` duplicate-column case to `outer_join_parity_fdb_test.go`.
+   - **[~] R8** — conformance rebaseline from a live 4.12.11.0 run. **Partial in the bump PR:** the 7
+     RFC-082 annotations 4.12 lifted were reclassified to keep the conformance gate green (4 Java bug-fixes
+     → plain equivalence; `left_outer_join_basic` + `where_case_returns_bool_probe` lifted → plain
+     equivalence; `bare_bool_where_rejected` → JavaSucceedsGoRejects). **Remaining:** full corpus re-sweep,
+     reclassify cross-engine specs/comments encoding lifted 4.11 limits, flip `SQL_CONFORMANCE.md` /
+     `CASCADES_DIVERGENCE.md`, clear the `DIVERGENCES.md` rebaseline banner. Gate: Torvalds + codex + @claude.
 
 > **Prior wave closed:** D1 (RFC-118 SimTransport), B2 (RFC-109 escape hatch), the RFC-056 lazy GetKey
 > iterator (RFC-057), the GRV-cache divergence (RFC-104), and B1/CI-off-the-box (untracked, owner
@@ -154,6 +659,49 @@ each on its own stacked branch.
    so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
+
+### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
+
+DONE via RFC-145: Phase 1 (`a966835c5`) detached the executor (severed 7 eval back-edges, re-routed
+INFORMATION_SCHEMA to an executor-free system-table handler, stubbed the dead explain ExecFn; exit gate
+`git grep execQueryBodyRows == 0` clean); Phase 2 deleted the island (~11.1k LOC, 39 files; the
+compiler-as-oracle restored 3 functions the static audit wrongly classed island — genuinely shared with
+the Cascades planner). Go now has ONE query path (Cascades). Graefe + Torvalds ACK both phases; codex +
+@claude deferred to Jun 25 (PR #336). **Phase-3 follow-up (Torvalds, non-blocking):** residual vestigial
+connection state the trim left — `EmbeddedConnection.validQualifiers` + `outerScopes` are now
+read-but-never-written (their writers were island-only); `validQualifiers` is read by the kept
+`eval_map.go:57` qualifier check (always-nil → branch never fires) and `outerScopes` by `scope.go:85`.
+Removing them touches the kept map-path eval logic (behavior-preserving since both are always nil for the
+kept consumers — single-source system-table WHERE + constant INSERT-VALUES never set them). Small,
+separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.)
+
+Original writeup (kept for context):
+
+`pkg/relational/core/embedded` still contains a complete hand-rolled SQL interpreter — `execSelect` →
+`execSelectQuery` → `execSelectQueryFull` → `execSelectJoin` / `aggregateMapRows` / `cte_scan` /
+`execUnion` (~3k+ lines across `select_query_full.go`, `join.go`, `aggregate.go`, `cte_scan.go`,
+`union.go`, …) — that duplicates Cascades' WHERE/GROUP BY/HAVING/join/CTE/UNION/aggregate execution. This
+directly violates CLAUDE.md "No parallel pipelines: Go has ONE query path (Cascades)."
+
+**Current reachability (verified):** `connection.QueryContext` routes EVERY real `SELECT` through
+`newCascadesGenerator(c).Plan` → `planSelectCascades` (`cascades_generator.go:206`). The interpreter is
+reached only via two fallbacks in `planSelect`: (a) `referencesInformationSchema(q)` → `execSelect`
+(`:172`) — INFORMATION_SCHEMA is itself a **Go-only extension Java rejects** (`DIVERGENCES.md`), so there
+is no cross-engine reference for that path; and (b) `planSelectExplainOnly` → `execSelect` (`:216`) —
+EXPLAIN rendering with no FDB. So the interpreter is **legacy/dead for real data queries** but still
+compiled, still maintained, and ROTS: e.g. `aggregateMapRows`'s empty-implicit-group-under-HAVING still
+mirrors the OLD Java 4.11 behaviour (returns 0 rows) while the Cascades path was fixed to 4.12
+(agg_empty_count_having_passes). That rot is invisible because no real query exercises it.
+
+**Fix:** route INFORMATION_SCHEMA system-table queries through Cascades (or a thin Cascades-backed
+system-table scan), make explain-only rendering use the Cascades logical plan it already builds, then
+DELETE the interpreter. This removes a large divergence surface + maintenance burden and forces any
+INFORMATION_SCHEMA gap to be fixed in Cascades. Big, separate effort — query-engine-gated (Graefe +
+Torvalds). Do NOT "keep the two aggregate executors in sync" — that is the anti-pattern; remove one.
+
+### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23)
+
+A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:397`) lifts any non-`BooleanValue`/non-literal boolean expression to a `ValuePredicate(value, EQUALS TRUE)`. So Go's gap is in the single-table-WHERE PLANNER path (the implement/data-access leg), NOT the parser — a top-level `ValuePredicate(FieldValue)` filter isn't getting implemented as a `RecordQueryPredicatesFilterPlan`. Orthogonal to RFC-144's outer-join scope; pre-existing. Fix: make the single-table SELECT implement path (`ImplementSimpleSelectRule` / data-access) implement a top-level non-comparison `ValuePredicate` filter the same way the join ON residual already does. Pin with the `WHERE flag` case currently documented-as-unsupported in `outer_join_parity_fdb_test.go` (`TestFDB_OuterParity_BooleanWhere`).
 
 ### [ ] fdbgo/client: GetAddressesForKey always emits `ip:port`; C++ defaults to ip-only unless `include_port_in_address` is set (surfaced by the RFC-133 option-matrix review, 2026-06-20)
 
@@ -821,7 +1369,7 @@ partitioned) — fails to plan rather than returning wrong results; revisit if n
 Constraints to mirror from Java's `VectorIndexScanMatchCandidate`: exactly one distance-rank per query;
 the index MUST be partitioned and the query MUST supply partition keys; the SQL distance fn MUST match the
 index `metric`; ORDER BY must be ascending; `ROW_NUMBER()` is INDEX-ONLY (refuse without a matching index).
-`@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026, just before the 4.11.1.0 tag.
+`@API(EXPERIMENTAL)` in Java — landed Jan–Mar 2026 (Java's 4.11 series).
 
 - [x] **9.5 Multi-partition vector scan (partial partition prefix).** Done in RFC-046 — `vectorMultiPartitionCursor` ports Java's `flatMapPipelined(prefixSkipScan, scanSinglePartition)`: `findNextPartition` skip-scans the distinct partition prefixes, `searchOnePartition` runs one HNSW search per partition, per-partition top-K concatenated, full cross-partition `FlatMapContinuation` resume. Planner: `ComputeBoundParameterPrefixMap` keeps the equality prefix + always the DistanceRank binding (no nil-query-vector on a partial prefix); `parametersRequiredForBinding={distanceAlias}` (the full-prefix guard dropped, matching Java's `VectorIndexExpansionVisitor`). Partition inequality left unconsumed → residual (documented; endpoint-into-skip-scan is a perf follow-up). Graefe+Torvalds ACK. Pinned by `TestVectorPlan_PartialPrefixPlansMultiPartition`, `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`, FDB E2E `TestFDB_VectorSearch_MultiPartition_{Fanout,InequalityResidual,Pagination}`. DIVERGENCES.md "Vector scan multi-partition" closed.
 

@@ -96,13 +96,17 @@ var _ = Describe("Index Build State Conformance", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Go OnlineIndexer builds the index → writes BY_RECORDS stamp
+			// Go OnlineIndexer builds the index → writes BY_RECORDS stamp. Build with
+			// markReadable=false: Java 4.12 (and now Go, RFC-137) erases the build stamp
+			// once the index is readable, so to check cross-engine stamp-FORMAT compatibility
+			// we inspect it while the index is still WRITE_ONLY (stamp intact).
 			mdIdx, priceIndex := buildGoIndexedMetaData()
 			indexer, err := recordlayer.NewOnlineIndexerBuilder().
 				SetDatabase(env.RecordDB).
 				SetMetaData(mdIdx).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetMarkReadable(false).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 			_, err = indexer.BuildIndex(ctx)
@@ -201,9 +205,9 @@ var _ = Describe("Index Build State Conformance", func() {
 		})
 	})
 
-	Describe("Stamp survives after build completes", func() {
-		It("stamp persists even after index becomes READABLE", func() {
-			tenantName := fmt.Sprintf("bst_persist_%s", uuid.New().String())
+	Describe("Stamp erased after build completes (Java 4.12)", func() {
+		It("stamp is erased once the index becomes READABLE, cross-engine", func() {
+			tenantName := fmt.Sprintf("bst_erased_%s", uuid.New().String())
 			var err error
 			env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 			Expect(err).NotTo(HaveOccurred())
@@ -246,22 +250,22 @@ var _ = Describe("Index Build State Conformance", func() {
 				}
 				Expect(st.IsIndexReadable(priceIndex.Name)).To(BeTrue())
 
-				// Stamp still present (matching Java: clearReadableIndexBuildData does NOT clear stamp)
+				// Stamp erased once readable — Java 4.12 IndexingBase erases the build
+				// bookkeeping after marking readable, and Go now matches (RFC-137).
 				stamp, err := st.LoadIndexingTypeStamp(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(stamp).NotTo(BeNil(), "stamp should persist after build")
-				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				Expect(stamp).To(BeNil(), "stamp should be erased after the index is readable")
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Java also sees the stamp
+			// Java reads the same FDB state and also sees no stamp — the erase is
+			// cross-engine consistent.
 			params := buildJavaParams()
 			var result map[string]any
 			err = java.InvokeAs(ctx, "loadIndexingTypeStamp", params, &result)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result["exists"]).To(BeTrue())
-			Expect(result["method"]).To(Equal("BY_RECORDS"))
+			Expect(result["exists"]).To(BeFalse(), "Java should also see no stamp after readable")
 		})
 	})
 
@@ -289,13 +293,16 @@ var _ = Describe("Index Build State Conformance", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Build index
+			// Build index with markReadable=false so the build stamp survives (Java 4.12
+			// erases it once readable, RFC-137); this test exercises
+			// clearAndMarkIndexWriteOnly clearing a still-present stamp.
 			mdIdx, priceIndex := buildGoIndexedMetaData()
 			indexer, err := recordlayer.NewOnlineIndexerBuilder().
 				SetDatabase(env.RecordDB).
 				SetMetaData(mdIdx).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetMarkReadable(false).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 			_, err = indexer.BuildIndex(ctx)

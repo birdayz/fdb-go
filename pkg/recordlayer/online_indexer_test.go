@@ -348,6 +348,289 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(Equal(int64(5)))
 		})
 
+		It("applies the enforced post-transaction delay under the default config (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 6 records without index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 6; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// limit=2 → ~3 chunks, 40ms enforced delay each. Crucially NO SetMaxRetries
+			// (default 0): proves the enforced delay applies in the DEFAULT config and only
+			// AFTER each committed range. Without the wiring fix the throttle was gated
+			// behind retries and the delay never fired — this build would finish in ~ms.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetLimit(2).SetEnforcedPostTransactionDelay(40).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			total, err := indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", int64(6)))
+			Expect(elapsed).To(BeNumerically(">=", 60*time.Millisecond), "enforced delay must fire per transaction by default")
+		})
+
+		It("does not apply the enforced delay after the final range (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 2 records — with the default limit they index in a SINGLE range whose
+			// build returns hasMore=false. The enforced delay is a between-transactions
+			// delay, so a single/final range must NOT pay it (Java skips it when done).
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 2; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Large enforced delay (500ms): if the final range wrongly paid it, the build
+			// would take ≥500ms. With the skip, a single-chunk build finishes in ~ms.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetEnforcedPostTransactionDelay(500).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			_, err = indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(elapsed).To(BeNumerically("<", 300*time.Millisecond), "no enforced delay after the final range")
+		})
+
+		It("returns a time-limit error without paying the enforced delay (RFC-138)", func() {
+			ks := specSubspace()
+
+			// Insert 6 records → multiple chunks at limit=2.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 6; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Tiny time limit + a large (1s) enforced delay. After the first range the
+			// between-ranges time check — which accounts for the upcoming 1s delay — trips
+			// and the build returns TimeLimitExceededError WITHOUT sleeping the delay. The
+			// old (sleep-then-check) wiring would have stalled ~1s past the deadline.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).
+				SetSubspace(ks).SetLimit(2).SetTimeLimit(time.Millisecond).SetEnforcedPostTransactionDelay(1000).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			start := time.Now()
+			_, buildErr := indexer.BuildIndex(ctx)
+			elapsed := time.Since(start)
+			var tle *TimeLimitExceededError
+			Expect(errors.As(buildErr, &tle)).To(BeTrue(), "expected a time-limit error")
+			Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond), "must not pay the enforced delay when over the time limit")
+		})
+
+		It("presets the out-of-range gaps as built for a typed multi-target build (RFC-139)", func() {
+			ks := specSubspace()
+
+			// Record-type-prefix PKs so each type's records live in a contiguous
+			// record-type-keyed sub-range. Two Order indexes → a multi-target build (the
+			// preset fires only for multi-target/mutual).
+			typedBuilder := func() *RecordMetaDataBuilder {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+				return b
+			}
+			mdNoIdx, err := typedBuilder().Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIdx := NewIndex("order_price_idx", Field("price"))
+			qtyIdx := NewIndex("order_qty_idx", Field("quantity"))
+			b2 := typedBuilder()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(ks).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only Order is indexed → range = [pack(OrderKey), pack(OrderKey)+0xff).
+			begin, end, ok := indexer.computeRecordsRange()
+			Expect(ok).To(BeTrue())
+			orderKey := mdWithIdx.GetRecordType("Order").GetRecordTypeKey()
+			Expect(begin).To(Equal(tuple.Tuple{orderKey}.Pack()))
+			Expect(end).To(Equal(append(tuple.Tuple{orderKey}.Pack(), 0xff)))
+
+			// markWriteOnly + preset, then verify the out-of-range gaps are marked built:
+			// only [begin, end) (Order's records range) remains missing. Without the preset,
+			// the whole space would be missing (revert-proof).
+			Expect(indexer.markWriteOnly(ctx)).To(Succeed())
+			Expect(indexer.maybePresetRecordsRange(ctx)).To(Succeed())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for _, idx := range []*Index{priceIdx, qtyIdx} {
+					rangeSet := NewIndexingRangeSet(store.subspace, idx)
+					missing, err := rangeSet.ListMissingRanges(rtx.Transaction())
+					Expect(err).NotTo(HaveOccurred())
+					Expect(missing).To(HaveLen(1), "only Order's records range should remain missing")
+					Expect(missing[0].Begin).To(Equal(begin))
+					Expect(missing[0].End).To(Equal(end))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("completes a typed multi-target build over the preset (+0xff) range (RFC-139)", func() {
+			ks := specSubspace()
+
+			typedBuilder := func() *RecordMetaDataBuilder {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+				b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+				return b
+			}
+			mdNoIdx, err := typedBuilder().Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 4; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("x")})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			priceIdx := NewIndex("order_price_idx", Field("price"))
+			qtyIdx := NewIndex("order_qty_idx", Field("quantity"))
+			b2 := typedBuilder()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Multi-target build presets the gaps then scans the [low, high]+0xff range. A
+			// small limit forces multiple chunks. Without buildRange handling the +0xff end
+			// boundary, this fails with "unpack range end" (revert-proof for the codex P1).
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(ks).SetLimit(2).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred(), "typed multi-target build must complete (no unpack-range-end failure)")
+			Expect(total).To(BeNumerically(">=", int64(4)))
+
+			// Both indexes contain ALL 4 Order records (incl. the highest, which the +0xff
+			// inclusive-high bound must cover); Customer is not in these Order indexes.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("order_price_idx")).To(BeTrue())
+				Expect(store.IsIndexReadable("order_qty_idx")).To(BeTrue())
+				priceEntries, err := AsList(ctx, store.ScanIndex(priceIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(priceEntries).To(HaveLen(4))
+				qtyEntries, err := AsList(ctx, store.ScanIndex(qtyIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(qtyEntries).To(HaveLen(4))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("an all-types build does not preset (computeRecordsRange not-ok) (RFC-139)", func() {
+			// With no record-type-prefix PKs (the default demo types use Field-only PKs),
+			// computeRecordsRange gives up → no preset → behaviour unchanged.
+			priceIdx := NewIndex("Order$price", Field("price"))
+			qtyIdx := NewIndex("Order$qty", Field("quantity"))
+			_, b2 := baseMetaData()
+			b2.AddIndex("Order", priceIdx)
+			b2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := b2.Build()
+			Expect(err).NotTo(HaveOccurred())
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).AddTargetIndex(qtyIdx).
+				SetSubspace(specSubspace()).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, _, ok := indexer.computeRecordsRange()
+			Expect(ok).To(BeFalse(), "Field-only PKs lack a record-type prefix → no preset")
+		})
+
 		It("filters to correct record type", func() {
 			ks := specSubspace()
 
@@ -855,6 +1138,7 @@ var _ = Describe("OnlineIndexer", func() {
 				SetIndex(qtyIndex).
 				SetSourceIndex(priceIndex).
 				SetSubspace(ks).
+				SetMarkReadable(false). // keep WRITE_ONLY so the indexing type-stamp survives for inspection.
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1190,12 +1474,16 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Phase 2: BY_RECORDS with ForceStampOverwrite → clears and restarts.
+			// SetMarkReadable(false) keeps the index WRITE_ONLY so the rewritten
+			// BY_RECORDS type-stamp survives for inspection; we mark it readable
+			// directly below after reading the stamp.
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
 				SetPolicy(&IndexingPolicy{ForceStampOverwrite: true}).
+				SetMarkReadable(false).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1208,12 +1496,21 @@ var _ = Describe("OnlineIndexer", func() {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
+
+				// The build completed fully but was left WRITE_ONLY (SetMarkReadable(false)).
+				// Mark it readable directly: this clears the range set + heartbeats but
+				// deliberately leaves the type-stamp intact, so the BY_RECORDS stamp
+				// remains inspectable below.
+				_, err = store.MarkIndexReadableOrUniquePending("Order$price")
+				Expect(err).NotTo(HaveOccurred())
 				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
 
 				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(entries).To(HaveLen(5))
 
+				// The old BY_INDEX stamp was cleared and replaced with BY_RECORDS by
+				// ForceStampOverwrite; the direct mark-readable preserved it.
 				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(stamp).NotTo(BeNil())
@@ -1346,11 +1643,14 @@ var _ = Describe("OnlineIndexer", func() {
 
 			// Phase 2: Run OnlineIndexer. No stamp + empty range set → save stamp
 			// and proceed with build (no ClearAndMarkIndexWriteOnly).
+			// SetMarkReadable(false) leaves the index WRITE_ONLY so the type-stamp
+			// survives for inspection; we mark it readable directly below.
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetMarkReadable(false).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1362,6 +1662,13 @@ var _ = Describe("OnlineIndexer", func() {
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// The build completed fully but was left WRITE_ONLY (SetMarkReadable(false)).
+				// Mark it readable directly: this clears the range set + heartbeats but
+				// deliberately leaves the type-stamp intact, so the BY_RECORDS stamp
+				// remains inspectable below.
+				_, err = store.MarkIndexReadableOrUniquePending("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
 
@@ -1771,6 +2078,7 @@ var _ = Describe("OnlineIndexer", func() {
 				AddTargetIndex(qtyIdx).   // Added second, but "Order$price" < "Order$qty" alphabetically.
 				AddTargetIndex(priceIdx). // Added first in the target list.
 				SetSubspace(ks).
+				SetMarkReadable(false). // keep WRITE_ONLY so the indexing type-stamps survive for inspection.
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2097,22 +2405,13 @@ var _ = Describe("OnlineIndexer", func() {
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = indexer.BuildIndex(ctx)
+			// BuildIndex returns the scanned-records count. The persisted counter at
+			// [9, idx, 1] is erased once the index becomes readable (Java 4.12, RFC-137),
+			// so scanned-count is verified via the return value, not LoadBuildProgress.
+			total, err := indexer.BuildIndex(ctx)
 			Expect(err).NotTo(HaveOccurred())
-
-			// Phase 3: Verify progress counter.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
-				Expect(err).NotTo(HaveOccurred())
-
-				progress, err := store.LoadBuildProgress(priceIndex)
-				Expect(err).NotTo(HaveOccurred())
-				// At least 10 records scanned (may be more due to boundary re-scans).
-				Expect(progress).To(BeNumerically(">=", int64(10)))
-				return nil, nil
-			})
-			Expect(err).NotTo(HaveOccurred())
+			// At least 10 records scanned (may be more due to boundary re-scans).
+			Expect(total).To(BeNumerically(">=", int64(10)))
 		})
 
 		It("tracks records scanned during chunked build", func() {
@@ -2152,21 +2451,12 @@ var _ = Describe("OnlineIndexer", func() {
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = indexer.BuildIndex(ctx)
+			// Each chunk atomically ADDs to the scanned counter; BuildIndex returns the
+			// total. The persisted counter is erased on readable (RFC-137), so assert the
+			// return value.
+			total, err := indexer.BuildIndex(ctx)
 			Expect(err).NotTo(HaveOccurred())
-
-			// Each chunk atomically ADD's its count. Total should be >= 15.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
-				Expect(err).NotTo(HaveOccurred())
-
-				progress, err := store.LoadBuildProgress(priceIndex)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(progress).To(BeNumerically(">=", int64(15)))
-				return nil, nil
-			})
-			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", int64(15)))
 		})
 
 		It("tracks records scanned per index during multi-target build", func() {
@@ -2212,22 +2502,134 @@ var _ = Describe("OnlineIndexer", func() {
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = indexer.BuildIndex(ctx)
+			total, err := indexer.BuildIndex(ctx)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", int64(8)))
 
-			// Both indexes should have progress tracked independently.
+			// Both indexes built independently and are readable. Their per-index build
+			// bookkeeping (scanned counter [9, idx, 1]) is erased once readable (RFC-137),
+			// so we verify both built via readable+scannable rather than the now-erased
+			// per-index counters.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 
-				priceProgress, err := store.LoadBuildProgress(priceIdx)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(priceProgress).To(BeNumerically(">=", int64(8)))
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+				Expect(store.IsIndexReadable("Order$qty")).To(BeTrue())
+				Expect(store.LoadBuildProgress(priceIdx)).To(Equal(int64(0)))
+				Expect(store.LoadBuildProgress(qtyIdx)).To(Equal(int64(0)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 
-				qtyProgress, err := store.LoadBuildProgress(qtyIdx)
+		It("erases per-build bookkeeping once the index is readable (RFC-137)", func() {
+			ks := specSubspace()
+
+			// Insert records without the index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(qtyProgress).To(BeNumerically(">=", int64(8)))
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build the index online — completing the build marks it readable, which
+			// triggers the post-readable erase (Java 4.12 IndexingBase).
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(priceIndex).SetSubspace(ks).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", int64(10))) // counter WAS written during the build
+
+			// Post-readable: the scanned-records counter (subkey 1) and the type-stamp
+			// (subkey 2) are erased, while the index is readable and scannable. Without
+			// the erase in markReadable, LoadBuildProgress would be >0 here — this test
+			// is revert-proof on exactly the leak RFC-137 closes.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+				Expect(store.LoadBuildProgress(priceIndex)).To(Equal(int64(0))) // scanned counter erased
+				Expect(store.LoadIndexingTypeStamp(priceIndex)).To(BeNil())     // type-stamp erased
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(10))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("erases scanned/type-stamp but KEEPS the range set on READABLE_UNIQUE_PENDING (RFC-137)", func() {
+			ks := specSubspace()
+
+			// Insert records with a duplicate price → a uniqueness violation that drives
+			// the build to READABLE_UNIQUE_PENDING rather than READABLE.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for _, r := range []struct{ id, price int64 }{{1, 100}, {2, 100}, {3, 200}} { // 1 & 2 collide on price
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(r.id), Price: proto.Int32(int32(r.price))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			uniqueIndex := NewIndex("Order$price_unique", Field("price")).SetUnique()
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", uniqueIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(mdWithIndex).SetIndex(uniqueIndex).SetSubspace(ks).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Duplicate → unique-pending, NOT readable.
+				Expect(store.GetIndexState("Order$price_unique")).To(Equal(IndexStateReadableUniquePending))
+
+				// The erase runs for unique-pending too: scanned counter + type-stamp gone...
+				Expect(store.LoadBuildProgress(uniqueIndex)).To(Equal(int64(0)))
+				Expect(store.LoadIndexingTypeStamp(uniqueIndex)).To(BeNil())
+
+				// ...but the range set is KEPT (clearReadableIndexBuildData runs only on
+				// READABLE), so the completed build still shows as complete. A naive erase
+				// that wiped the range set would make IsComplete false here.
+				rangeSet := NewIndexingRangeSet(store.subspace, uniqueIndex)
+				Expect(rangeSet.IsComplete(rtx.Transaction())).To(BeTrue())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2516,11 +2918,14 @@ var _ = Describe("OnlineIndexer", func() {
 
 			// Build with BY_RECORDS (no block fields) -> areSimilarStamps fires,
 			// overwrites stamp, and build succeeds.
+			// SetMarkReadable(false) keeps the index WRITE_ONLY so the overwritten
+			// type-stamp survives for inspection.
 			indexer, err := NewOnlineIndexerBuilder().
 				SetDatabase(sharedDB).
 				SetMetaData(md).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
+				SetMarkReadable(false).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -3788,6 +4193,7 @@ var _ = Describe("OnlineIndexer", func() {
 					SetIndex(priceIndex).
 					SetSubspace(ks).
 					SetMutualIndexing().
+					SetMarkReadable(false). // keep WRITE_ONLY so the indexing type-stamp survives for inspection.
 					Build()
 				Expect(err).NotTo(HaveOccurred())
 

@@ -741,20 +741,37 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Non-PK correlated EXISTS → NLJ(EXISTS) fallback.
+	// RFC-141: WHERE-EXISTS is a PURE-MAP FlatMap whose existential inner is
+	// FirstOrDefault(inner, NULL) topped by a residual existential filter
+	// (QOV IS NOT NULL). There is no fused EXISTS join mode any more — the
+	// semi-join is emergent (matches Java's
+	// "... MAP | DEFAULT NULL | FILTER _ NOT_NULL ..." shape).
+	//
+	// Non-PK correlated EXISTS: the inner correlation can't push to a scan
+	// range, so the inner is Scan(child)+filter | FirstOrDefault | filter.
 	plan := planExplainVia(t, ctx, db,
 		"SELECT id FROM parent WHERE EXISTS (SELECT 1 FROM child WHERE child.parent_id = parent.id)")
 	t.Logf("Non-PK EXISTS plan:\n%s", plan)
-	if !strings.Contains(plan, "EXISTS") {
-		t.Errorf("expected EXISTS in plan, got:\n%s", plan)
+	if !strings.Contains(plan, "FlatMap") {
+		t.Errorf("expected FlatMap in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "FirstOrDefault") {
+		t.Errorf("expected FirstOrDefault (existential one-row inner) in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "PredicatesFilter") {
+		t.Errorf("expected PredicatesFilter (residual existential filter) in plan, got:\n%s", plan)
 	}
 
-	// PK-matching correlated EXISTS → FlatMap(EXISTS).
+	// PK-matching correlated EXISTS: the inner correlation pushes into a
+	// parameterized PK scan (Scan(parent, [=])) below the FirstOrDefault.
 	plan = planExplainVia(t, ctx, db,
 		"SELECT id FROM child WHERE EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id)")
 	t.Logf("PK EXISTS plan:\n%s", plan)
-	if !strings.Contains(plan, "FlatMap") && !strings.Contains(plan, "EXISTS") {
-		t.Errorf("expected FlatMap or EXISTS in plan, got:\n%s", plan)
+	if !strings.Contains(plan, "FlatMap") {
+		t.Errorf("expected FlatMap in plan, got:\n%s", plan)
+	}
+	if !strings.Contains(plan, "FirstOrDefault") {
+		t.Errorf("expected FirstOrDefault (existential one-row inner) in plan, got:\n%s", plan)
 	}
 }
 
@@ -8696,17 +8713,29 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 		}
 	})
 
-	t.Run("join_with_derived_subquery_unsupported", func(t *testing.T) {
-		_, err := db.QueryContext(ctx, `
+	t.Run("join_with_derived_subquery", func(t *testing.T) {
+		// RFC-144 TASK A: a derived table (subquery) on the right of an explicit
+		// JOIN is now supported (Java-aligned). Each customer matches its
+		// per-customer SUM(amount): alice=300, bob=400, charlie=300.
+		rows := collectRows(t, db, `
 			SELECT c.name, c.region, o.total
 			FROM customers c
 			JOIN (SELECT customer, SUM(amount) AS total FROM orders GROUP BY customer) AS o
 			ON c.name = o.customer
+			ORDER BY o.total DESC, c.name
 		`)
-		if err == nil {
-			t.Errorf("expected error for JOIN with subquery table source, got nil")
-		} else {
-			t.Logf("expected error: %v", err)
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		// bob=400 first, then alice=300, charlie=300 (name tie-break).
+		if rows[0][0] != "bob" || toInt64(rows[0][2]) != 400 {
+			t.Errorf("row0 want [bob,*,400], got %v", rows[0])
+		}
+		if rows[1][0] != "alice" || toInt64(rows[1][2]) != 300 {
+			t.Errorf("row1 want [alice,*,300], got %v", rows[1])
+		}
+		if rows[2][0] != "charlie" || toInt64(rows[2][2]) != 300 {
+			t.Errorf("row2 want [charlie,*,300], got %v", rows[2])
 		}
 	})
 
@@ -18166,15 +18195,27 @@ func TestFDB_DerivedTableWithJoin(t *testing.T) {
 		t.Fatalf("INSERT orders: %v", err)
 	}
 
-	t.Run("derived_as_join_source_unsupported", func(t *testing.T) {
-		_, err := db.QueryContext(ctx, `
+	t.Run("derived_as_join_source", func(t *testing.T) {
+		// RFC-144 TASK A: a derived table on the right of an explicit JOIN is now
+		// supported (Java-aligned). Per-customer SUM(total): alice=300, bob=150,
+		// carol=50. ORDER BY c.name → alice, bob, carol.
+		rows := collectRows(t, db, `
 			SELECT c.name, d.order_total FROM dtwj_cust c
 			JOIN (SELECT cust_id, SUM(total) AS order_total FROM dtwj_orders GROUP BY cust_id) d
 			ON c.id = d.cust_id
 			ORDER BY c.name
 		`)
-		if err == nil {
-			t.Errorf("expected error for derived table as JOIN source")
+		if len(rows) != 3 {
+			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
+		}
+		want := []struct {
+			name  string
+			total int64
+		}{{"alice", 300}, {"bob", 150}, {"carol", 50}}
+		for i, w := range want {
+			if rows[i][0] != w.name || toInt64(rows[i][1]) != w.total {
+				t.Errorf("row%d want [%s,%d], got %v", i, w.name, w.total, rows[i])
+			}
 		}
 	})
 }

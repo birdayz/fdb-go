@@ -4382,40 +4382,13 @@ func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
 	}
 }
 
-func TestNLJCursor_EmptyInner_NotExists(t *testing.T) {
-	t.Parallel()
-
-	outerRows := []QueryResult{
-		qr("id", int64(10)),
-		qr("id", int64(20)),
-	}
-	outer := recordlayer.FromList(outerRows)
-
-	c := newNLJCursor(outer, nil, plans.JoinNotExists, "O", "", nil, EmptyEvaluationContext(), nil)
-	defer c.Close()
-
-	results := collectCursor(t, c)
-	if len(results) != 2 {
-		t.Fatalf("NOT EXISTS with empty inner: got %d results, want 2", len(results))
-	}
-}
-
-func TestNLJCursor_EmptyInner_Exists(t *testing.T) {
-	t.Parallel()
-
-	outer := recordlayer.FromList([]QueryResult{
-		qr("id", int64(1)),
-		qr("id", int64(2)),
-	})
-
-	c := newNLJCursor(outer, nil, plans.JoinExists, "O", "", nil, EmptyEvaluationContext(), nil)
-	defer c.Close()
-
-	results := collectCursor(t, c)
-	if len(results) != 0 {
-		t.Fatalf("EXISTS with empty inner: got %d results, want 0", len(results))
-	}
-}
+// NOTE: cursor-level EXISTS/NOT-EXISTS semi-join modes were removed (RFC-141).
+// The FlatMap/NLJ cursors are now pure maps; the existential semantics are
+// emergent from FirstOrDefault-on-inner + a residual existential filter built
+// by ImplementNestedLoopJoinRule. The WHERE-EXISTS / NOT-EXISTS behaviour is
+// pinned end-to-end by the FDB suite (noncorrelated_exists_fdb_test.go,
+// correlated_exists_crossjoin_test.go, cascades_fdb_test.go) at the plan level,
+// not by direct cursor construction.
 
 // ===========================================================================
 // nljCursor — empty outer
@@ -4463,36 +4436,6 @@ func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
 	results := collectCursor(t, c)
 	if len(results) != 0 {
 		t.Fatalf("CROSS join with empty outer: got %d results, want 0", len(results))
-	}
-}
-
-func TestNLJCursor_EmptyOuter_Exists(t *testing.T) {
-	t.Parallel()
-
-	outer := recordlayer.FromList([]QueryResult{})
-	inner := []QueryResult{qr("val", int64(1))}
-
-	c := newNLJCursor(outer, inner, plans.JoinExists, "", "", nil, EmptyEvaluationContext(), nil)
-	defer c.Close()
-
-	results := collectCursor(t, c)
-	if len(results) != 0 {
-		t.Fatalf("EXISTS with empty outer: got %d results, want 0", len(results))
-	}
-}
-
-func TestNLJCursor_EmptyOuter_NotExists(t *testing.T) {
-	t.Parallel()
-
-	outer := recordlayer.FromList([]QueryResult{})
-	inner := []QueryResult{qr("val", int64(1))}
-
-	c := newNLJCursor(outer, inner, plans.JoinNotExists, "", "", nil, EmptyEvaluationContext(), nil)
-	defer c.Close()
-
-	results := collectCursor(t, c)
-	if len(results) != 0 {
-		t.Fatalf("NOT EXISTS with empty outer: got %d results, want 0", len(results))
 	}
 }
 

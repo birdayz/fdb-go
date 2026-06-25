@@ -13,11 +13,12 @@ import (
 
 // Proto-path predicate evaluators.
 //
-// evalPredicate is the WHERE-clause entry point: returns true iff
-// msg satisfies whereExpr (NULL whereExpr = always true). The
-// downstream tri-state evaluator (evalExprPredicateTri) handles the
-// SQL Kleene 3-valued logic so NOT / AND / OR preserve UNKNOWN
-// instead of collapsing it to FALSE.
+// evalExprPredicateTri is the tri-state predicate entry point used by the
+// shared evalExpr (eval_proto.go) for INSERT-VALUES constant folding and by
+// scalar_functions.go. It implements SQL Kleene 3-valued logic so NOT / AND /
+// OR preserve UNKNOWN instead of collapsing it to FALSE. After RFC-145 removed
+// the legacy embedded interpreter, the WHERE-row-loop wrappers it once backed
+// are gone — only the value-context evaluators remain.
 //
 // Per-shape predicate handlers:
 //   evalComparisonPredicateTri  `=` / `<>` / `<` / `<=` / `>` / `>=`
@@ -26,73 +27,6 @@ import (
 //   evalIsNullPredicate         `IS NULL` / `IS NOT NULL` (2-valued)
 //   evalLikePredicateTri        `LIKE pattern [ESCAPE c]`
 //   evalBetweenPredicateTri     `BETWEEN lo AND hi`
-//
-// The map-path mirror lives in connection.go (evalPredicateOnMap*) —
-// RFC-021 Phase 1c plans to merge the two paths behind a uniform
-// Row interface.
-
-// evalPredicate returns true if msg satisfies whereExpr.
-// Only col = constant comparisons are supported. If whereExpr is nil, returns true.
-//
-// Callers MUST invoke rejectTopLevelParenthesizedWhere on the WHERE
-// expression once before the row-loop — this function runs per row
-// and the structural check is row-independent. See
-// select_query_full.go's scan loops for the hoisted call sites.
-func evalPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, whereExpr antlrgen.IWhereExprContext) (bool, error) {
-	if whereExpr == nil {
-		return true, nil
-	}
-	return evalExprPredicate(ctx, conn, msg, whereExpr.Expression())
-}
-
-// rejectTopLevelParenthesizedWhere mirrors fdb-relational 4.11.1.0's
-// type check on the WHERE expression's underlying value. Java parses
-// `WHERE (boolean_expr)` as a recordConstructor (single-element
-// tuple); Expression.toUnderlyingPredicate's
-// `Assert.castUnchecked(..., BooleanValue.class)` then fails with
-// the verbatim "expected BooleanValue but got RecordConstructorValue".
-// The check applies only to the TOP-LEVEL expression — Java accepts
-// `(a) AND (b)` because the LogicalExpression's underlying value is
-// a BooleanValue at the surface, even though the leaves are
-// RecordConstructorValues. Match that surface check here.
-//
-// Hoist this once per statement, before the row-scan loop — the check
-// is purely structural over the parse tree (no row dependency), so
-// invoking it inside the per-row evalPredicate would re-walk the same
-// AST N times for an N-row scan.
-func rejectTopLevelParenthesizedWhere(expr antlrgen.IExpressionContext) error {
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
-	if !ok || pred.Predicate() != nil {
-		return nil
-	}
-	if _, isRC := pred.ExpressionAtom().(*antlrgen.RecordConstructorExpressionAtomContext); isRC {
-		return api.NewError(api.ErrCodeInvalidParameter,
-			"expected BooleanValue but got RecordConstructorValue")
-	}
-	// Java alignment (TODO #41b): WHERE on a CASE expression that
-	// returns a boolean (`WHERE CASE WHEN cond THEN TRUE … END`)
-	// is rejected by fdb-relational with `expected BooleanValue but
-	// got PickValue` — the planner's top-level Assert.castUnchecked
-	// to BooleanValue rejects PickValue (the IR node for CASE) the
-	// same way it rejects RecordConstructorValue. Match byte-equal.
-	if fc, isFC := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext); isFC {
-		if sf, isSpec := fc.FunctionCall().(*antlrgen.SpecificFunctionCallContext); isSpec {
-			if _, isCase := sf.SpecificFunction().(*antlrgen.CaseFunctionCallContext); isCase {
-				return api.NewError(api.ErrCodeInvalidParameter,
-					"expected BooleanValue but got PickValue")
-			}
-		}
-	}
-	return nil
-}
-
-// evalExprPredicate evaluates an IExpressionContext as a boolean predicate.
-// Supports: col = constant, col != constant, col < constant, col > constant,
-// col <= constant, col >= constant, AND, OR, NOT.
-func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext) (bool, error) {
-	t, err := evalExprPredicateTri(ctx, conn, msg, expr, false /* allowBareField */)
-	return t.IsTrue(), err
-}
 
 // evalExprPredicateTri is the Kleene three-valued implementation: UNKNOWN
 // propagates through AND/OR/NOT so `NOT (x = NULL)` correctly stays UNKNOWN
@@ -109,19 +43,15 @@ func evalExprPredicate(ctx context.Context, conn *EmbeddedConnection, msg proto.
 func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, expr antlrgen.IExpressionContext, allowBareField bool) (triBool, error) {
 	switch e := expr.(type) {
 	case *antlrgen.ExistsExpressionAtomContext:
-		if conn == nil {
-			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation, "EXISTS subquery not supported in this context")
-		}
-		// Push outer-row scope so a correlated inner reference like
-		// `outer_tbl.col` resolves against this msg via resolveOuterColumn.
-		// Qualifier taken from the proto descriptor name (single-source
-		// FROM without an explicit AS alias — the common case).
-		defer conn.pushOuterScope(outerScopeFromMsg(conn, msg))()
-		_, _, subRows, subErr := conn.execQueryBodyRows(ctx, e.Query().QueryExpressionBody())
-		if subErr != nil {
-			return triFalse, subErr
-		}
-		return triFromBool(len(subRows) > 0), nil
+		// EXISTS is not supported in the predicate contexts that route through
+		// this proto-path evaluator (INSERT-VALUES constant folding, system-
+		// table WHERE filters). Severed to detach the legacy embedded
+		// interpreter (RFC-145 Phase 1) — Java's RelationalParser.g4 has no
+		// EXISTS atom in these contexts and INFORMATION_SCHEMA is a Go-only
+		// extension, so this arm is a Go-only divergence with no cross-engine
+		// reference. The real EXISTS query path is Cascades.
+		return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"EXISTS is not supported in this context")
 
 	case *antlrgen.LogicalExpressionContext:
 		// Operands of boolean operators are value-context — Java accepts

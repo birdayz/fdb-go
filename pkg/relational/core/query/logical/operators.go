@@ -63,6 +63,40 @@ func (s *LogicalScan) Explain(indent string) string {
 	return fmt.Sprintf("%sScan(%s)", indent, s.Table)
 }
 
+// LogicalUnnest is a lateral array UNNEST source in the FROM list
+// (`FROM t, t.arr AS x [AT ord]`). It is the RIGHT child of a lateral
+// LogicalJoin whose LEFT child is the source `t` it correlates to. The
+// translator lowers it to an Explode of the correlated array field under a
+// FlatMap of the outer source. Mirrors Java's
+// `LogicalOperator.generateCorrelatedFieldAccess`. RFC-142 R5.
+type LogicalUnnest struct {
+	// Segments is the un-flattened dotted name of the array source
+	// (`["T1","ARR1"]` for `T1.arr1`). Segment 0 names the in-scope outer
+	// source; the remaining segments name the array field on it. Kept
+	// un-flattened (no re-split of a joined string) so the translator
+	// resolves segment-by-segment against the scope.
+	Segments []string
+	// Alias is the AS alias (`x` in `... AS x`) bound to each unnested
+	// element. Empty when the AS alias is omitted (AT-only form).
+	Alias string
+	// AtAlias is the AT ordinal alias (`ord` in `... AT ord`), empty when
+	// absent. Its presence makes the Explode WITH ORDINALITY.
+	AtAlias string
+}
+
+func (*LogicalUnnest) Children() []LogicalOperator { return []LogicalOperator{} }
+func (u *LogicalUnnest) Explain(indent string) string {
+	src := strings.Join(u.Segments, ".")
+	suffix := ""
+	if u.Alias != "" {
+		suffix += " AS " + u.Alias
+	}
+	if u.AtAlias != "" {
+		suffix += " AT " + u.AtAlias
+	}
+	return fmt.Sprintf("%sUnnest(%s%s)", indent, src, suffix)
+}
+
 // --- Unary operators (single child) --------------------------------
 
 // LogicalFilter applies a WHERE/HAVING predicate to its child.
@@ -213,6 +247,26 @@ type LogicalLimit struct {
 
 func NewLimit(input LogicalOperator, limit, offset int64) *LogicalLimit {
 	return &LogicalLimit{Input: input, Limit: limit, Offset: offset}
+}
+
+// FoldTransparentUnaryInput returns (input, true) when op is a fold-transparent
+// unary operator — one the RFC-141 projected-EXISTS fold descends THROUGH to
+// reach the existential filter without changing the row shape. Only Sort and
+// Limit qualify (a Project/Join/Aggregate/Distinct/Union reshapes the rows and is
+// NOT fold-transparent). This is the SINGLE source of truth for the transparency
+// set: both the translator's `findExistsFilterUnderUnaryChain` (which folds the
+// projection through the chain) and the generator's `existsFilterReachableForFold`
+// (which rejects a projected EXISTS the fold cannot reach) consult it, so the two
+// can never silently diverge. Returns (nil, false) for any non-transparent op.
+func FoldTransparentUnaryInput(op LogicalOperator) (LogicalOperator, bool) {
+	switch o := op.(type) {
+	case *LogicalSort:
+		return o.Input, true
+	case *LogicalLimit:
+		return o.Input, true
+	default:
+		return nil, false
+	}
 }
 
 func (l *LogicalLimit) Children() []LogicalOperator { return []LogicalOperator{l.Input} }
@@ -583,4 +637,103 @@ func NewDDL(kind, text string) *LogicalDDL {
 func (*LogicalDDL) Children() []LogicalOperator { return []LogicalOperator{} }
 func (d *LogicalDDL) Explain(indent string) string {
 	return fmt.Sprintf("%sDDL(%s: %s)", indent, d.Kind, d.Text)
+}
+
+// --- Lateral array UNNEST source resolution (RFC-142) ---------------------
+
+// FindOuterScanTable resolves a lateral unnest's outer source alias to the
+// scanned table name by matching a LogicalScan whose source alias is `alias`
+// (case-insensitive) among the VISIBLE FROM-scope sources of the outer leg
+// `op`. It is used to resolve the outer source of a lateral unnest
+// (`FROM t, t.arr AS x` → the scan of `t`) so its proto descriptor can be
+// inspected for the array field.
+//
+// The walk MUST NOT descend into a CTE / derived-table BODY. A derived table
+// `(SELECT … FROM T1) AS d` lowers to a `LogicalCTE{Body: <…scan of T1…>,
+// Main: Scan(d)}`; only `d` is a visible source — `T1` is hidden inside the
+// body and out of scope. Descending into `Body` would match the hidden `T1`
+// scan and explode a correlated array against a source the query can't see (a
+// silent-wrong / mis-classification). So at a `LogicalCTE` we resolve ONLY
+// against its `Main` (the visible alias projection), never its `Body`. This
+// mirrors Java's `resolveCorrelatedIdentifier` resolving against
+// `getLogicalOperatorsIncludingOuter()` — the in-scope quantifiers, not nested
+// query bodies.
+//
+// Returns "" when no VISIBLE matching scan is found (a non-scan outer, or a
+// name hidden behind a derived-table boundary), so the caller falls back to
+// the table path.
+func FindOuterScanTable(op LogicalOperator, alias string) string {
+	want := strings.ToUpper(alias)
+	var walk func(LogicalOperator) string
+	walk = func(o LogicalOperator) string {
+		switch n := o.(type) {
+		case *LogicalScan:
+			a := n.Alias
+			if a == "" {
+				a = n.Table
+			}
+			if strings.EqualFold(a, want) {
+				return n.Table
+			}
+			return ""
+		case *LogicalUnnest:
+			return ""
+		case *LogicalCTE:
+			// A derived table / CTE exposes ONLY its outer alias (its Main leg).
+			// Do NOT descend into Body — the body's scans are out of scope.
+			return walk(n.Main)
+		default:
+			for _, c := range o.Children() {
+				if r := walk(c); r != "" {
+					return r
+				}
+			}
+			return ""
+		}
+	}
+	return walk(op)
+}
+
+// OuterSourceIsDerivedTable reports whether `alias` (a lateral unnest's
+// segment-0 outer source name) is bound, in the outer sub-plan `op`, to a
+// DERIVED-TABLE / CTE leg — i.e. a `LogicalCTE` whose Name equals `alias`. It
+// reads the logical tree STRUCTURALLY (not a translator-internal cteScope
+// map), so it fires independent of cteScope population order and regardless of
+// whether the alias also names a real same-named base table.
+//
+// A derived table `(SELECT …) AS D` lowers to a `LogicalCTE{Name:D,
+// Main:Scan(D)}` inside the outer leg. When such a leg shadows a real
+// same-named table, validating the unnest's array field against the base-table
+// descriptor would explode the WRONG column (a derived-output silent-wrong).
+// Detecting the derived/CTE leg here — by the in-scope quantifier alias,
+// exactly as Java's generateCorrelatedFieldAccess resolves the in-scope source
+// rather than the catalog table — lets the caller reject (or skip a base-table
+// check for) the derived-output unnest in ALL cases.
+//
+// Like FindOuterScanTable, it does NOT descend into a CTE's Body (only its
+// Main): a derived table is its own FROM scope; a same-named CTE nested inside
+// another derived body is out of the current scope.
+func OuterSourceIsDerivedTable(op LogicalOperator, alias string) bool {
+	want := strings.ToUpper(alias)
+	var walk func(LogicalOperator) bool
+	walk = func(o LogicalOperator) bool {
+		switch n := o.(type) {
+		case *LogicalCTE:
+			if strings.EqualFold(n.Name, want) {
+				return true
+			}
+			// Only the visible Main leg is in scope; never the Body.
+			return walk(n.Main)
+		case *LogicalUnnest:
+			return false
+		default:
+			for _, c := range o.Children() {
+				if walk(c) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return walk(op)
 }

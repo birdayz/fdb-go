@@ -163,6 +163,50 @@ func TestFDB_GroupByOverJoin_SumHavingMultiKey(t *testing.T) {
 	}
 }
 
+// TestFDB_AggOverJoin_EmptyGroupHaving pins the Java 4.12 empty-implicit-group
+// behaviour on the CASCADES path for an ungrouped COUNT(*) over an EMPTY join:
+// the implicit single group (COUNT=0) is formed and HAVING then filters it —
+// `HAVING COUNT(*) >= 0` keeps the [0] row, `HAVING COUNT(*) > 5` filters it
+// out. Java 4.11 had a bug (it treated empty input as "no grouping at all" so
+// HAVING never fired and returned 0 rows); 4.12 fixed it. The corpus pins the
+// single-table shape (agg_empty_count_having_passes /
+// having_count_star_eq_zero_empty); this is the join variant, end-to-end through
+// the driver. Every SELECT now goes through the Cascades generator — the legacy
+// embedded aggregate executor was removed in RFC-145 (there is no second path).
+func TestFDB_AggOverJoin_EmptyGroupHaving(t *testing.T) {
+	t.Parallel()
+	db, ctx := gojDB(t, "emptyhaving")
+
+	// Empty join result (no emp has salary > 99999) → implicit group COUNT=0.
+	// HAVING COUNT(*) >= 0 passes → exactly one row [0]. Revert-proof: the old
+	// 4.11-aligned guard skipped the synthetic group, so Scan would get
+	// sql.ErrNoRows here.
+	var n int64
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.salary > 99999 HAVING COUNT(*) >= 0").
+		Scan(&n); err != nil {
+		t.Fatalf("empty-group HAVING >=0 over join: want one [0] row (Java 4.12), got error %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("empty-group HAVING >=0 over join: COUNT(*) = %d, want 0", n)
+	}
+
+	// HAVING COUNT(*) > 5 filters the [0] implicit group back out → 0 rows.
+	// Proves the fix EMITS the group and lets evalHaving filter it (not an
+	// unconditional emit).
+	rows, err := db.QueryContext(ctx,
+		"SELECT COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.salary > 99999 HAVING COUNT(*) > 5")
+	if err != nil {
+		t.Fatalf("empty-group HAVING >5 over join: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var got int64
+		_ = rows.Scan(&got)
+		t.Fatalf("empty-group HAVING >5 over join: want 0 rows (the [0] group fails HAVING), got a row COUNT=%d", got)
+	}
+}
+
 // TestFDB_GroupByOverJoin_FirstTableKey guards the converse: grouping by a
 // FIRST-table column over a join still works (no regression from widening the
 // validated field set).

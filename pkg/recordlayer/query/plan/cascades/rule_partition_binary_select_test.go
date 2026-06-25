@@ -359,7 +359,7 @@ func TestPartitionBinarySelectRule_SkipsExistentialQuantifiers(t *testing.T) {
 		tQ.GetFlowedObjectValue(),
 		[]expressions.Quantifier{tQ, tauQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistsPredicate(tauQ.GetAlias()),
+			predicates.NewExistentialAlias(tauQ.GetAlias()),
 			pbFieldPred(tQ, "c", predicates.Comparison{Type: predicates.ComparisonIsNotNull}),
 		},
 	)

@@ -138,20 +138,20 @@ func TestRebasePredicate_Exists(t *testing.T) {
 	t.Parallel()
 	oldAlias := values.NamedCorrelationIdentifier("old")
 	newAlias := values.NamedCorrelationIdentifier("new")
-	p := NewExistsPredicate(oldAlias)
+	p := NewExistentialAlias(oldAlias)
 	result := RebasePredicate(p, values.AliasMap{oldAlias: newAlias})
-	ep, ok := result.(*ExistsPredicate)
+	ep, ok := result.(*ExistentialValuePredicate)
 	if !ok {
-		t.Fatalf("expected *ExistsPredicate, got %T", result)
+		t.Fatalf("expected *ExistentialValuePredicate, got %T", result)
 	}
-	if ep.ExistentialAlias != newAlias {
-		t.Fatalf("expected rebased alias %v, got %v", newAlias, ep.ExistentialAlias)
+	if ep.GetExistentialAlias() != newAlias {
+		t.Fatalf("expected rebased alias %v, got %v", newAlias, ep.GetExistentialAlias())
 	}
 }
 
 func TestRebasePredicate_ExistsNoChange(t *testing.T) {
 	t.Parallel()
-	p := NewExistsPredicate(values.NamedCorrelationIdentifier("other"))
+	p := NewExistentialAlias(values.NamedCorrelationIdentifier("other"))
 	result := RebasePredicate(p, values.AliasMap{
 		values.NamedCorrelationIdentifier("x"): values.NamedCorrelationIdentifier("y"),
 	})

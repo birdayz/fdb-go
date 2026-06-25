@@ -66,6 +66,22 @@ func (r *SelectMergeRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+
+	// An OUTER-join SelectExpression is a binary box: exactly two quantifiers,
+	// the preserved (left) leg and the null-supplying (right) leg, with a fixed
+	// JoinType. Merging ANY child into a leg would dissolve that binary
+	// structure into a flat N-quantifier select that re-enumerates as a
+	// reorderable cross-cluster — dropping the NULL-padded rows the outer join
+	// must produce (e.g. `(a JOIN b) LEFT JOIN c` would lose c's unmatched
+	// padding). Java only flattens inner-join-equivalent boxes; an outer-join
+	// box is a hard optimization barrier on BOTH sides. Leave it intact.
+	// Key on ChildrenAsSet() (the inner-equivalence property — INNER or CROSS,
+	// the commutative/mergeable boxes) rather than `== JoinInner`, so a CROSS
+	// box stays mergeable; this matches the same axis ChildrenAsSet/EqualsWithoutChildren guard.
+	if !sel.ChildrenAsSet() {
+		return
+	}
+
 	quantifiers := sel.GetQuantifiers()
 
 	// Identify which ForEach quantifiers have a mergeable child.
@@ -86,6 +102,19 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		for _, member := range childRef.AllMembers() {
+			// An OUTER-join child SelectExpression is OPAQUE to merging: pulling
+			// its legs up into the parent would discard the child's outer-join
+			// edge (only the PARENT's JoinType is preserved on the merged
+			// SelectExpression), collapsing e.g. `(a LEFT JOIN b) LEFT JOIN c`
+			// into a flat reorderable cross-cluster — which drops the
+			// NULL-padded rows the inner LEFT JOIN must produce. Java's
+			// associativity rules only flatten inner-join-equivalent boxes; an
+			// outer-join box is a hard optimization barrier. Leave it nested.
+			// ChildrenAsSet() = inner-equivalent (INNER or CROSS); a non-set
+			// (outer-join) child box is opaque.
+			if childSel, ok := member.(*expressions.SelectExpression); ok && !childSel.ChildrenAsSet() {
+				continue
+			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
 				targets = append(targets, mergeTarget{
 					idx:       i,

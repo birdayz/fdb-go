@@ -361,11 +361,19 @@ func (f *FunctionKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	}
 }
 
-// functionFromProto reconstructs a FunctionKeyExpression from a proto Function.
-func functionFromProto(fn *gen.Function, depth int) (*FunctionKeyExpression, error) {
+// functionFromProto reconstructs a function key expression from a proto
+// Function. A "cardinality" function deserialises to the dedicated
+// CardinalityFunctionKeyExpression so its fast paths and createsDuplicates==false
+// survive a catalog round-trip (the proto bytes are identical either way —
+// Function{name:"cardinality", arguments}). Mirrors Java's
+// FunctionKeyExpression.Registry dispatching the named builder.
+func functionFromProto(fn *gen.Function, depth int) (KeyExpression, error) {
 	args, err := keyExpressionFromProtoDepth(fn.Arguments, depth)
 	if err != nil {
 		return nil, fmt.Errorf("function arguments: %w", err)
+	}
+	if fn.GetName() == FunctionNameCardinality {
+		return CardinalityExpr(args), nil
 	}
 	return FunctionExpr(fn.GetName(), args), nil
 }

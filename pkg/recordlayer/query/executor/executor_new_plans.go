@@ -367,6 +367,22 @@ func executePredicatesFilter(
 				} else {
 					rowCtx = ec.RowContext(m)
 				}
+			} else if _, isMap := qr.Datum.(map[string]any); !isMap && bindAlias {
+				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
+				// Explode flows int64(101), not a map — RFC-142). A WHERE on the
+				// element references the whole QuantifiedObjectValue(innerAlias)
+				// (Java binds the primitive flowed value directly, not a
+				// FieldValue — see generateCorrelatedFieldAccess), so bind the
+				// scalar under innerAlias and evaluate through a RowEvalContext
+				// whose Correlations resolves QOV(innerAlias) to it. Without this
+				// binding QOV(innerAlias).eval returns NULL and the predicate
+				// filters every element out.
+				ec := evalCtx
+				if ec == nil {
+					ec = EmptyEvaluationContext()
+				}
+				ec = ec.WithBinding(innerAlias, qr.Datum)
+				rowCtx = ec.RowContext(nil)
 			}
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)

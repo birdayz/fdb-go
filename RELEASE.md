@@ -13,7 +13,7 @@ Tags are `v0.MINOR.PATCH`. Two axes, deliberately decoupled:
   additive only. Pin a version and read `CHANGELOG.md` before upgrading.
 - **FDB wire format (the hard line — stable across every tag).** Records, indexes, record versions,
   continuations, and split records stay **byte-compatible with Java `fdb-record-layer-core`
-  4.11.1.0** in *every* release, pre-1.0 included. Go, C, and Java apps share one cluster and read
+  4.12.11.0** in *every* release, pre-1.0 included. Go, C, and Java apps share one cluster and read
   each other's data; a release that broke that would be a bug, not a minor bump. Any change that
   *did* touch persisted bytes would be called out explicitly in the `CHANGELOG.md` **Compatibility**
   block and gated on conformance + cross-engine differential + binding-stress proof.

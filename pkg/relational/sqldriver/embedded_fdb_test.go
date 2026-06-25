@@ -3401,8 +3401,14 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// WHERE filter: only 'alpha' schema.
-	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE SCHEMA_NAME = 'alpha'`)
+	// WHERE filter: only 'alpha' schema. INFORMATION_SCHEMA.SCHEMATA is
+	// cross-database (lists every catalog's schemas), so scope to THIS db's
+	// CATALOG_NAME — otherwise a parallel test that also creates an `alpha`
+	// schema in its own db would leak into a `SCHEMA_NAME = 'alpha'`-only
+	// filter (the established parallel-safety convention for system-table
+	// tests; the SCHEMA_NAME-only form was a latent race independent of the
+	// WHERE-filter behaviour this test pins).
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '/testdb_is_schemata_where' AND SCHEMA_NAME = 'alpha'`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4890,17 +4896,22 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Discount (product_id) VALUES (1)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Correlated EXISTS in CASE expression — now works.
-	rows, err := db.QueryContext(ctx, `
+	// A NESTED projected EXISTS — `CASE WHEN EXISTS(...) THEN ... ELSE ... END` —
+	// is NOT a directly-foldable projected-EXISTS shape (RFC-141 R4 round-12 P1b).
+	// The EXISTS would be evaluated ABOVE the FlatMap with the existential binding
+	// dead, so the CASE condition reads a constant false and EVERY row takes the
+	// ELSE branch — a silent wrong result. The round-12 convergence backstop
+	// detects the nested EXISTS structurally and rejects the query cleanly with
+	// ErrCodeUnsupportedQuery, rather than returning the wrong rows.
+	//
+	// (This test previously only asserted err==nil and logged the rows without
+	// validating them — a fake checkbox: the shape was silently-wrong the whole
+	// time. Now it pins the clean rejection.)
+	_, err = db.QueryContext(ctx, `
 		SELECT name, CASE WHEN EXISTS (SELECT 1 FROM Discount WHERE Discount.product_id = Product.id) THEN 'discounted' ELSE 'full price' END
 		FROM Product ORDER BY id ASC`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	for rows.Next() {
-		var name, status string
-		g.Expect(rows.Scan(&name, &status)).To(gomega.Succeed())
-		t.Logf("%s: %s", name, status)
-	}
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("projected EXISTS in this query shape is not yet supported"))
 }
 
 func TestFDB_AggregateOnCTE(t *testing.T) {
@@ -8806,4 +8817,337 @@ func TestFDB_BytesINList(t *testing.T) {
 	}
 	rows.Close()
 	g.Expect(inResults).To(gomega.Equal([]int64{1, 2}), "IN on BYTES should find rows 1 and 2")
+}
+
+// ---------------------------------------------------------------------------
+// RFC-145 Phase 1 — detach the legacy embedded SQL interpreter.
+//
+// The INFORMATION_SCHEMA route no longer goes through the executor island
+// (execSelect → execSelectQuery → …); it is served by the executor-free
+// system-table handler (execSystemTableQuery). The shared eval clusters
+// (INSERT-VALUES constant folding, system-table WHERE) had their
+// subquery / EXISTS back-edges into the executor severed — those arms now
+// return a clean "not supported in this context" error instead of
+// re-entering execQueryBodyRows.
+//
+// These tests pin (a) the severed-arm negative behaviour so subquery/EXISTS
+// can't silently regrow, and (b) the INFORMATION_SCHEMA positive parity for
+// every system table × {SELECT *, projected cols, WHERE, ORDER BY, LIMIT}.
+// ---------------------------------------------------------------------------
+
+// expectUnsupportedInThisContext asserts err is a clean *api.Error whose
+// message marks the severed subquery/EXISTS arm — not a panic, not a silent
+// wrong-row result.
+func expectUnsupportedInThisContext(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("want a clean 'not supported in this context' error, got nil (silent success)")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("want *api.Error, got %T (%v)", err, err)
+	}
+	if !strings.Contains(apiErr.Message, "is not supported in this context") {
+		t.Fatalf("unexpected error message: %q (want it to contain 'is not supported in this context')", apiErr.Message)
+	}
+}
+
+// TestFDB_RFC145_SeveredArms_InfoSchemaWhere pins that EXISTS and a scalar
+// subquery in an INFORMATION_SCHEMA WHERE filter return the clean severed-arm
+// error (they route through the kept system-table WHERE evaluator, whose
+// subquery/EXISTS arms were severed in RFC-145 Phase 1).
+func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_rfc145_is_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_is_where")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145w_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_is_where/alpha WITH TEMPLATE rfc145w_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc145_is_where?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// EXISTS in a system-table WHERE — severed.
+	_, err = db.QueryContext(ctx,
+		`SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE EXISTS (SELECT 1 FROM "INFORMATION_SCHEMA"."TABLES")`)
+	expectUnsupportedInThisContext(t, err)
+
+	// Scalar subquery in a system-table WHERE — severed.
+	_, err = db.QueryContext(ctx,
+		`SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE SCHEMA_NAME = (SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA")`)
+	expectUnsupportedInThisContext(t, err)
+}
+
+// TestFDB_RFC145_SeveredArms_InsertValues pins that EXISTS and a scalar
+// subquery in an INSERT-VALUES expression return the clean severed-arm error.
+// INSERT-VALUES constant folding routes through evalExpr, whose subquery/EXISTS
+// arms were severed in RFC-145 Phase 1. (Java's grammar has no scalar-subquery
+// expression atom, so this never had a cross-engine reference.)
+func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_rfc145_insert")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_insert")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE rfc145i_tmpl CREATE TABLE T (id BIGINT NOT NULL, val BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_insert/data WITH TEMPLATE rfc145i_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc145_insert?cluster_file=%s&schema=data", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	// Scalar subquery in a VALUES expression — severed (Go-only grammar atom).
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (1, (SELECT 1 FROM T))`)
+	expectUnsupportedInThisContext(t, err)
+
+	// EXISTS in a VALUES expression — severed.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, EXISTS (SELECT 1 FROM T))`)
+	expectUnsupportedInThisContext(t, err)
+
+	// Sanity: a constant VALUES insert (literals + arithmetic) still works —
+	// the severing must not have broken the kept non-subquery evalExpr path.
+	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (10, 2 + 3), (11, NULL)`)
+	if err != nil {
+		t.Fatalf("constant INSERT-VALUES must still work after severing: %v", err)
+	}
+	row := db.QueryRowContext(ctx, `SELECT val FROM T WHERE id = 10`)
+	var got int64
+	if err := row.Scan(&got); err != nil {
+		t.Fatalf("scan id=10: %v", err)
+	}
+	if got != 5 {
+		t.Fatalf("constant VALUES (2+3) = %d, want 5", got)
+	}
+}
+
+// TestFDB_RFC145_InfoSchemaUnsupportedShapes pins that the executor-free
+// system-table handler rejects every shape it can't serve (JOIN / aggregate /
+// GROUP BY / DISTINCT / WITH) with a clean *api.Error — none are used today,
+// and the handler must not silently route them through the (now detached)
+// interpreter.
+func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_rfc145_is_shapes")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_is_shapes")
+	if err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE rfc145s_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
+	}
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_is_shapes/alpha WITH TEMPLATE rfc145s_tmpl")
+	if err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc145_is_shapes?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	mustCleanError := func(query string) {
+		t.Helper()
+		_, qErr := db.QueryContext(ctx, query)
+		if qErr == nil {
+			t.Fatalf("want a clean error for unsupported INFORMATION_SCHEMA shape, got nil: %s", query)
+		}
+		var apiErr *api.Error
+		if !errors.As(qErr, &apiErr) {
+			t.Fatalf("want *api.Error for %q, got %T (%v)", query, qErr, qErr)
+		}
+	}
+
+	// Aggregate / COUNT(*) against a system table.
+	mustCleanError(`SELECT COUNT(*) FROM "INFORMATION_SCHEMA"."SCHEMATA"`)
+	// GROUP BY against a system table.
+	mustCleanError(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" GROUP BY SCHEMA_NAME`)
+	// SELECT DISTINCT against a system table.
+	mustCleanError(`SELECT DISTINCT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA"`)
+	// JOIN against a system table.
+	mustCleanError(`SELECT a.SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" AS a, "INFORMATION_SCHEMA"."TABLES" AS b`)
+	// WITH against a system table.
+	mustCleanError(`WITH x AS (SELECT 1) SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA"`)
+}
+
+// queryToStringRows runs an INFORMATION_SCHEMA query and returns every row as a
+// []string (each cell stringified), preserving row order. Used by the parity
+// sweep so the same helper compares SELECT *, projected, WHERE, ORDER BY and
+// LIMIT results uniformly.
+func queryToStringRows(t *testing.T, db *sql.DB, ctx context.Context, query string) [][]string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("query %q: %v", query, err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns %q: %v", query, err)
+	}
+	var out [][]string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan %q: %v", query, err)
+		}
+		rec := make([]string, len(cols))
+		for i, v := range vals {
+			rec[i] = fmt.Sprintf("%v", v)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err %q: %v", query, err)
+	}
+	return out
+}
+
+// TestFDB_RFC145_InfoSchemaParitySweep exercises every INFORMATION_SCHEMA
+// system table through the executor-free handler across the shapes the handler
+// supports — SELECT *, projected columns, WHERE filter, ORDER BY, LIMIT — and
+// pins the rows. The handler primitives (execSystemTable / filterSysRows /
+// projectSystemRows) are unchanged from the pre-RFC-145 executor route, so
+// these are the same rows the old path produced; this test is the parity
+// sentinel for the re-route.
+//
+// INFORMATION_SCHEMA views span the whole cluster, so every query scopes to
+// this test's database via a CATALOG/TABLE_CATALOG = '/testdb_rfc145_sweep'
+// predicate IN THE WHERE clause (not a post-filter) — that way ORDER BY and
+// LIMIT compose over exactly this DB's rows and the LIMIT assertions stay
+// deterministic under parallel test execution.
+//
+// Identifier case: schema names preserve the DDL case ("sch1"); table/column/
+// index names are normalised to UPPERCASE by the metadata layer ("ALPHA",
+// "ID", "ALPHA_BY_NAME"), exactly as the existing TestFDB_InfoSchema_* tests.
+func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	g := gomega.NewWithT(t)
+
+	const dbID = "/testdb_rfc145_sweep"
+	setup := openTestDB(t, dbID)
+	mustExec := func(sqlText string) {
+		t.Helper()
+		if _, err := setup.ExecContext(ctx, sqlText); err != nil {
+			t.Fatalf("setup %q: %v", sqlText, err)
+		}
+	}
+	mustExec("CREATE DATABASE " + dbID)
+	// Two tables, one with a secondary index, so COLUMNS / INDEXES have
+	// deterministic, distinguishable content across two schemas.
+	mustExec("CREATE SCHEMA TEMPLATE rfc145sweep_tmpl " +
+		"CREATE TABLE Alpha (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id)) " +
+		"CREATE INDEX alpha_by_name ON Alpha (name) " +
+		"CREATE TABLE Beta (bid BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (bid))")
+	mustExec("CREATE SCHEMA " + dbID + "/sch1 WITH TEMPLATE rfc145sweep_tmpl")
+	mustExec("CREATE SCHEMA " + dbID + "/sch2 WITH TEMPLATE rfc145sweep_tmpl")
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbID, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	q := func(query string) [][]string { return queryToStringRows(t, db, ctx, query) }
+
+	// --- SCHEMATA ---  CATALOG_NAME(0), SCHEMA_NAME(1).
+	// SELECT * (scoped via WHERE) → 5 columns, 2 rows.
+	starSchemata := q(`SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '` + dbID + `'`)
+	g.Expect(starSchemata).To(gomega.HaveLen(2), "SCHEMATA SELECT * row count")
+	for _, r := range starSchemata {
+		g.Expect(r).To(gomega.HaveLen(5), "SCHEMATA has 5 columns")
+	}
+	// Projected column + WHERE + ORDER BY.
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME`)).
+		To(gomega.Equal([][]string{{"sch1"}, {"sch2"}}), "SCHEMATA projected + ORDER BY")
+	// WHERE on a second column.
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' AND SCHEMA_NAME = 'sch2'`)).
+		To(gomega.Equal([][]string{{"sch2"}}), "SCHEMATA WHERE")
+	// ORDER BY + LIMIT.
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME LIMIT 1`)).
+		To(gomega.Equal([][]string{{"sch1"}}), "SCHEMATA LIMIT")
+	// ORDER BY DESC.
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME DESC`)).
+		To(gomega.Equal([][]string{{"sch2"}, {"sch1"}}), "SCHEMATA ORDER BY DESC")
+	// OFFSET + LIMIT.
+	g.Expect(q(`SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '`+dbID+`' ORDER BY SCHEMA_NAME LIMIT 1 OFFSET 1`)).
+		To(gomega.Equal([][]string{{"sch2"}}), "SCHEMATA LIMIT OFFSET")
+
+	// --- TABLES ---  TABLE_CATALOG(0), TABLE_SCHEMA(1), TABLE_NAME(2).
+	starTables := q(`SELECT * FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '` + dbID + `'`)
+	g.Expect(starTables).To(gomega.HaveLen(4), "TABLES SELECT * row count (2 tables x 2 schemas)")
+	for _, r := range starTables {
+		g.Expect(r).To(gomega.HaveLen(10), "TABLES has 10 columns")
+	}
+	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' ORDER BY TABLE_NAME`)).
+		To(gomega.Equal([][]string{{"ALPHA"}, {"BETA"}}), "TABLES projected + WHERE + ORDER BY")
+	g.Expect(q(`SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' ORDER BY TABLE_NAME LIMIT 1`)).
+		To(gomega.Equal([][]string{{"ALPHA"}}), "TABLES LIMIT")
+
+	// --- COLUMNS ---  TABLE_CATALOG(0), …, COLUMN_NAME(3), ORDINAL_POSITION(4).
+	starCols := q(`SELECT * FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '` + dbID + `'`)
+	g.Expect(len(starCols)).To(gomega.BeNumerically(">", 0), "COLUMNS SELECT * non-empty")
+	for _, r := range starCols {
+		g.Expect(r).To(gomega.HaveLen(11), "COLUMNS has 11 columns")
+	}
+	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION`)).
+		To(gomega.Equal([][]string{{"ID"}, {"NAME"}}), "COLUMNS Alpha projected + WHERE + ORDER BY")
+	g.Expect(q(`SELECT COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY ORDINAL_POSITION LIMIT 1`)).
+		To(gomega.Equal([][]string{{"ID"}}), "COLUMNS LIMIT")
+
+	// --- INDEXES ---  TABLE_CATALOG(0), …, TABLE_NAME(2), INDEX_NAME(3).
+	starIdx := q(`SELECT * FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '` + dbID + `'`)
+	g.Expect(len(starIdx)).To(gomega.BeNumerically(">", 0), "INDEXES SELECT * non-empty")
+	for _, r := range starIdx {
+		g.Expect(r).To(gomega.HaveLen(7), "INDEXES has 7 columns")
+	}
+	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'sch1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
+		To(gomega.ContainElement([]string{"ALPHA_BY_NAME"}), "INDEXES Alpha contains ALPHA_BY_NAME")
 }

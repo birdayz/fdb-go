@@ -25,15 +25,27 @@ import (
 // is an ArrayType before constructing).
 type ExplodeExpression struct {
 	collectionValue values.Value
+	// withOrdinality, when true, makes the Explode produce a 2-field
+	// anonymous record (element, 1-based ordinal) per element instead of
+	// the bare element. Mirrors Java's `ExplodeExpression.withOrdinality`
+	// (the `WITH ORDINALITY` / `AT atAlias` companion, Java #4112).
+	withOrdinality bool
 }
 
-// NewExplodeExpression builds an Explode over the given collection
-// Value. Caller is responsible for ensuring the CollectionValue's
-// Type is an ArrayType (Java's constructor uses Verify.verify; the
-// Go seed defers the check to caller — invalid construction
-// surfaces as a degenerate result type).
+// NewExplodeExpression builds a non-ordinal Explode over the given
+// collection Value. Caller is responsible for ensuring the
+// CollectionValue's Type is an ArrayType (Java's constructor uses
+// Verify.verify; the Go seed defers the check to caller — invalid
+// construction surfaces as a degenerate result type).
 func NewExplodeExpression(collection values.Value) *ExplodeExpression {
 	return &ExplodeExpression{collectionValue: collection}
+}
+
+// NewExplodeExpressionWithOrdinality builds an Explode that also emits a
+// 1-based ordinal alongside each element (the `WITH ORDINALITY` variant).
+// Mirrors Java's `new ExplodeExpression(collectionValue, withOrdinality)`.
+func NewExplodeExpressionWithOrdinality(collection values.Value, withOrdinality bool) *ExplodeExpression {
+	return &ExplodeExpression{collectionValue: collection, withOrdinality: withOrdinality}
 }
 
 // GetCollectionValue returns the underlying collection Value (the
@@ -42,21 +54,44 @@ func (e *ExplodeExpression) GetCollectionValue() values.Value {
 	return e.collectionValue
 }
 
-// GetResultValue returns a QueriedValue typed at the array's
-// element type. Java does the same: `new QueriedValue(elementType)`.
-//
-// If the collection's Type isn't an ArrayType, returns a
-// QueriedValue typed at UnknownType (matches Java's invariant
-// failure but doesn't panic).
-func (e *ExplodeExpression) GetResultValue() values.Value {
+// GetWithOrdinality reports whether this Explode produces 1-based
+// ordinals alongside the elements.
+func (e *ExplodeExpression) GetWithOrdinality() bool { return e.withOrdinality }
+
+// GetElementType returns the element type of the collection value, or
+// UnknownType when the collection is not array-typed.
+func (e *ExplodeExpression) GetElementType() values.Type {
 	if e.collectionValue == nil {
-		return values.NewQueriedValue(nil, values.UnknownType)
+		return values.UnknownType
 	}
-	t := e.collectionValue.Type()
-	if at, ok := t.(*values.ArrayType); ok && at.ElementType != nil {
-		return values.NewQueriedValue(nil, at.ElementType)
+	if at, ok := e.collectionValue.Type().(*values.ArrayType); ok && at.ElementType != nil {
+		return at.ElementType
 	}
-	return values.NewQueriedValue(nil, values.UnknownType)
+	return values.UnknownType
+}
+
+// GetResultValue returns a QueriedValue typed at the explode result
+// type. For the bare (non-ordinal) variant this is the array's element
+// type — Java's `new QueriedValue(elementType)`. For the WITH ORDINALITY
+// variant it is the anonymous 2-field record (element, INT NOT NULL).
+//
+// If the collection's Type isn't an ArrayType, returns a QueriedValue
+// typed at UnknownType (matches Java's invariant failure but doesn't
+// panic).
+func (e *ExplodeExpression) GetResultValue() values.Value {
+	return values.NewQueriedValue(nil, e.GetExplodeResultType())
+}
+
+// GetExplodeResultType returns the type a single explode row carries:
+// the bare element type, or — under WITH ORDINALITY — the anonymous
+// 2-field record (element, INT NOT NULL). Mirrors Java's
+// `ExplodeExpression.getExplodeResultType()`.
+func (e *ExplodeExpression) GetExplodeResultType() values.Type {
+	elem := e.GetElementType()
+	if e.withOrdinality {
+		return values.ExplodeOrdinalityResultType(elem)
+	}
+	return elem
 }
 
 // GetQuantifiers returns the empty slice — Explode is a leaf-shaped
@@ -99,25 +134,35 @@ func (e *ExplodeExpression) GetCorrelatedToWithoutChildren() map[values.Correlat
 // would compare equal and `Reference.Insert` would silently drop
 // one. Reverted to pointer equality only — strictly conservative,
 // produces no false positives.
+//
+// withOrdinality is folded into the comparison: an ordinal and a
+// non-ordinal Explode over the SAME array are distinct expressions
+// (different result shape), so the memo must not conflate them. Java
+// hashes/equals `(collectionValue, withOrdinality)` for the same reason.
 func (e *ExplodeExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*ExplodeExpression)
 	if !ok {
 		return false
 	}
-	return e.collectionValue == o.collectionValue
+	return e.collectionValue == o.collectionValue && e.withOrdinality == o.withOrdinality
 }
 
 // HashCodeWithoutChildren mixes the class discriminator + the
-// collection Value's name. Mirrors Java's `Objects.hash(collectionValue)`.
+// collection Value's name + the ordinality flag. Mirrors Java's
+// `Objects.hash(collectionValue, withOrdinality)` (Java preserves the
+// pre-ordinality hash for the withOrdinality=false case; the Go hash is
+// not wire-stable so we simply fold the flag in unconditionally).
 func (e *ExplodeExpression) HashCodeWithoutChildren() uint64 {
 	const classDisc uint64 = 0xE1730DE
-	if e.collectionValue == nil {
-		return classDisc
-	}
-	// Cheap mix — the collection Value's Name() string hashed.
 	var h uint64 = classDisc
-	for _, b := range []byte(e.collectionValue.Name()) {
-		h = h*31 + uint64(b)
+	if e.collectionValue != nil {
+		// Cheap mix — the collection Value's Name() string hashed.
+		for _, b := range []byte(e.collectionValue.Name()) {
+			h = h*31 + uint64(b)
+		}
+	}
+	if e.withOrdinality {
+		h = h*31 + 1
 	}
 	return h
 }

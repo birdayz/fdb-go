@@ -44,7 +44,7 @@ func classifyRun(res plandiff.RunResult) string {
 // both cold and after warm-up. `SELECT COUNT(*)` always succeeds; a multi-column
 // ORDER BY always throws the same UnableToPlan; the NOT-NULL/unique-index schema
 // always errors the same way. There is NO query-level, cold-start, or planner
-// nondeterminism in fdb-relational 4.11.1.0. (The probe LOGS the cold-outcome
+// nondeterminism in fdb-relational 4.12.11.0. (The probe LOGS the cold-outcome
 // distribution so a regression to >1 distinct cold outcome would show, and
 // asserts the warm distribution is a single outcome as a sanity check.)
 //

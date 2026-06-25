@@ -76,9 +76,23 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 
 	sortKeys := make([]plans.SortKey, len(groupingKeys))
 	for i, gk := range groupingKeys {
-		if fv, ok := gk.(*values.FieldValue); ok {
+		if fv, ok := gk.(*values.FieldValue); ok && fv.Child == nil {
+			// A BARE field reference — the fast path: the InMemorySort executor reads
+			// the row's `Field` key directly (compareByField).
 			sortKeys[i] = plans.SortKey{Field: fv.Field}
 		} else {
+			// A CORRELATED/qualified group key (a FieldValue carrying a Child QOV,
+			// e.g. a lateral-unnest `v.v`, or any non-FieldValue computed key) MUST be
+			// EVALUATED per row, exactly like ImplementInMemorySortRule's ValueExpr
+			// path. The aggregateCursor groups by `gk.Evaluate(row)` — the QUALIFIED
+			// merged-row key (`V.V`) — so the REQUIRED pre-aggregate sort must order by
+			// the SAME key. Collapsing a qualified FieldValue to its bare `Field` here
+			// sorts by the last-leg-wins BARE `V` key (`mergeRows` keys it as a later
+			// same-named column, e.g. `U.V`), which DISAGREES with the group key — so
+			// contiguous unnest elements split into multiple non-contiguous groups with
+			// wrong counts (RFC-142, the streaming-aggregate twin of the
+			// in-memory ORDER BY P2a). Field is still set (to the rendered
+			// `LEG.COL`) for Explain; ValueExpr drives the sort.
 			sortKeys[i] = plans.SortKey{
 				Field:     values.ExplainValue(gk),
 				ValueExpr: gk,

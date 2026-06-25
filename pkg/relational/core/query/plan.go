@@ -11,15 +11,12 @@
 //	result, err := plan.Execute(ctx)  // run against the bound session
 //
 // No frontend code touches the execution engine directly. All backend
-// shapes (naive planner today, Cascades later) live behind Generator
-// + Plan and swap without changing callers.
+// shapes live behind Generator + Plan and swap without changing callers.
 //
-// This is Phase 1a of RFC 021. In this phase interfaces only are
-// introduced; the naive Generator is a thin wrapper over the existing
-// execStatement / execSelect / execInsert / etc. methods on
-// EmbeddedConnection. Phase 1b extracts Session from
-// EmbeddedConnection, Phase 1c moves exec* logic into per-shape Plan
-// implementations, Phase 2 introduces Cascades as a second Generator.
+// Introduced in RFC 021 to let a Cascades Generator be swapped in behind
+// this boundary. That migration is complete: Cascades is the sole
+// Generator for queries and DML, and the original naive per-shape
+// executor was removed in RFC-145 (only `execStatement`, for DDL, remains).
 package query
 
 import (
@@ -128,11 +125,10 @@ func (m *MultiPlan) Explain() string {
 	return b.String()
 }
 
-// PlanFunc is a convenience adapter for the naive Generator: a Plan
-// whose Execute delegates to a closure. Used by naive_generator.go
-// to wrap today's execSelect / execInsert / execUpdate / execDelete
-// / execDDL code paths as Plan implementations without duplicating
-// logic during Phase 1a.
+// PlanFunc is a convenience adapter: a Plan whose Execute delegates to a
+// closure. Used to wrap non-Cascades code paths (e.g. the executor-free
+// INFORMATION_SCHEMA system-table handler and the explain-only renderer)
+// as Plan implementations without duplicating logic.
 //
 // Post-Phase-1c this adapter becomes obsolete — physical operator
 // types implement Plan directly. Kept here during the transition so

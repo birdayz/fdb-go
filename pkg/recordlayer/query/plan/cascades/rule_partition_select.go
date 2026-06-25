@@ -123,6 +123,36 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 
+		// Reject a partitioning where a LOWER quantifier has a hard QUANTIFIER-LEVEL
+		// dependency on an UPPER quantifier. The lower partition is planned FIRST
+		// (it becomes the inner sub-Select / FlatMap outer), so an upper alias is
+		// NOT yet bound when the lower runs — a lower that genuinely DEPENDS on an
+		// upper would read an unbound correlation. This direction is the
+		// quantifier-correlation analog of the predicate cycle check below; it
+		// matters for a multi-source lateral UNNEST whose Explode (a lower) reads
+		// its array from a BURIED merge leg (an upper) — separating them
+		// materializes the Explode against a row where the array key is unbound
+		// (zero rows). The buried-leg dependency is supplied by
+		// quantifierMergeSeedLegDeps via fullCorrelationOrder. Plain table
+		// quantifiers carry no quantifier-level correlations, so this never rejects
+		// an ordinary join's predicate-pushable bipartition. RFC-142.
+		lowerDependsOnUpper := false
+		for lowerAlias := range lowerAliases {
+			deps := fullCorrelationOrder[lowerAlias]
+			for upperAlias := range upperAliases {
+				if _, ok := deps[upperAlias]; ok {
+					lowerDependsOnUpper = true
+					break
+				}
+			}
+			if lowerDependsOnUpper {
+				break
+			}
+		}
+		if lowerDependsOnUpper {
+			continue
+		}
+
 		// Reject partitioning if it would cause a dependency cycle.
 		// Collect upper aliases that depend on lower aliases.
 		uppersDependingOnLowers := make(map[values.CorrelationIdentifier]struct{})
@@ -615,6 +645,18 @@ func computeTransitiveCorrelationOrder(
 				deps[dep] = struct{}{}
 			}
 		}
+		// Partition-time RE-EXPOSURE of a quantifier's BURIED merge-leg deps: a
+		// quantifier reading a NON-flow leg's column through a merged row (a
+		// multi-source lateral UNNEST's Explode reading `QOV(flowLeg)["SRC.COL"]`)
+		// genuinely depends on SRC, but GetCorrelatedTo reports only the flow leg.
+		// Add the buried legs so a bipartition cannot separate the Explode from the
+		// source its array lives in (which would explode a bare flow-leg row where
+		// the array key is unbound — zero rows). RFC-142.
+		for leg := range quantifierMergeSeedLegDeps(q) {
+			if _, ok := owned[leg]; ok {
+				deps[leg] = struct{}{}
+			}
+		}
 		directDeps[q.GetAlias()] = deps
 	}
 
@@ -670,6 +712,31 @@ func computeTransitiveCorrelationOrder(
 	}
 
 	return result
+}
+
+// quantifierMergeSeedLegDeps returns the BURIED merge-leg source aliases a
+// quantifier's range value trees depend on — the partition-time re-exposure of a
+// quantifier reading a non-flow leg's column through a merged row (a multi-source
+// lateral UNNEST's Explode collection value `QOV(flowLeg)["SRC.COL"]`, where SRC
+// is a leg merged into flowLeg's row). GetCorrelatedTo reports only the flow leg,
+// so these buried deps are otherwise invisible to the bipartition-validity check;
+// adding them prevents separating the Explode from the source its array lives in.
+//
+// It inspects the Explode collection value (the only correlated leaf shape a
+// lateral-unnest quantifier ranges over). Returns a non-nil (possibly empty) map.
+// RFC-142, the quantifier-level twin of predicates.AddMergeSeedAliases.
+func quantifierMergeSeedLegDeps(q expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return out
+	}
+	if explode := getExplodeExpression(ref); explode != nil {
+		for leg := range values.MergeSeedLegsOfValue(explode.GetCollectionValue()) {
+			out[leg] = struct{}{}
+		}
+	}
+	return out
 }
 
 // computeIndependentQuantifiersPartitioning computes the partitioning

@@ -5,7 +5,7 @@ All notable changes to `fdb-record-layer-go` are recorded here. Format:
 (pre-1.0 `v0.MINOR.PATCH`).
 
 **This project is pre-1.0.** The **Go API may change across minor versions**; the **FDB wire
-format stays compatible with Java `fdb-record-layer-core` 4.11.1.0 across every release** (the
+format stays compatible with Java `fdb-record-layer-core` 4.12.11.0 across every release** (the
 shared-cluster hard line — see `RELEASE.md`). Every entry's **Compatibility** block answers the four
 questions a user upgrading between two refs needs: wire format, SQL behaviour, FDB client option
 semantics, and required dependency versions.
@@ -66,7 +66,7 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 
 ### Compatibility
 - **Wire format:** unchanged for modern stores — records, indexes, versions, continuations, and split
-  records remain byte-identical to Java `fdb-record-layer-core` 4.11.1.0. **Newly closed gap:** Go now
+  records remain byte-identical to Java `fdb-record-layer-core` 4.12.11.0. **Newly closed gap:** Go now
   reads *and* writes legacy Java store layouts (`FormatVersion` < 6 record versions in the
   `RecordVersionKey(8)` subspace, and `omit_unsplit_record_suffix` bare-key unsplit records) and
   performs Java's on-open format upgrade — previously a silent read gap (see Fixed). A Go client can
@@ -80,5 +80,5 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   transaction — a caller that set them and relied on them being ignored will now see them applied
   (this is the faithful `libfdb_c` behaviour). The unsafe access/auth/quota family still fails loud
   with `UnsupportedOptionError`; no option's *wire* behaviour changed (RFC-133).
-- **Required versions:** Java `fdb-record-layer-core` **4.11.1.0**, FDB C++ client **7.3.75**, Go
+- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.75**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).

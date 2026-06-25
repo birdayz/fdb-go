@@ -31,15 +31,17 @@ var rfc082KnownRed = map[string]bool{
 	"derived_aggregate":                     true, // derived-table aggregate column type -> UNKNOWN
 	"derived_projection_count_star":         true,
 	"nested_derived_aggregate_outer_select": true,
-	"nested_derived_col_rename":             true,
-	"greatest_all_nonnull":                  true, // integer literal -> BIGINT vs Java INTEGER
-	"greatest_null_propagates":              true,
-	"least_all_nonnull":                     true,
-	"least_null_propagates":                 true,
-	"proj_literal_column":                   true,
-	"select_count_alias":                    true, // COUNT(*) AS cnt drops the alias
-	"mixed_six_type_families_star":          true,
-	"recursive_cte_depth_counter":           true,
+	// nested_derived_col_rename removed: the RFC-141 R4 projected-EXISTS fold's
+	// column metadata/alias-provenance unification fixed the derived-column
+	// rename so Go now matches Java cross-engine (RFC-082 lock shrinks).
+	"greatest_all_nonnull":         true, // integer literal -> BIGINT vs Java INTEGER
+	"greatest_null_propagates":     true,
+	"least_all_nonnull":            true,
+	"least_null_propagates":        true,
+	"proj_literal_column":          true,
+	"select_count_alias":           true, // COUNT(*) AS cnt drops the alias
+	"mixed_six_type_families_star": true,
+	"recursive_cte_depth_counter":  true,
 	// Pre-existing inline annotations that drifted (now re-classified red):
 	"distinct_count":                               true,
 	"group_by_null_bucket":                         true,

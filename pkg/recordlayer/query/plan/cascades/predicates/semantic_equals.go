@@ -49,16 +49,15 @@ func SemanticEqualsUnderAliasMap(a, b QueryPredicate, aliases values.AliasMap) b
 			return true
 		}
 		return values.SemanticEqualsUnderAliasMap(ap.Comparison.Operand, bp.Comparison.Operand, aliases)
-	case *ExistsPredicate:
-		bp, ok := b.(*ExistsPredicate)
+	case *ExistentialValuePredicate:
+		bp, ok := b.(*ExistentialValuePredicate)
 		if !ok {
 			return false
 		}
-		mapped := ap.ExistentialAlias
-		if y, found := aliases[ap.ExistentialAlias]; found {
-			mapped = y
+		if ap.Comparison.Type != bp.Comparison.Type {
+			return false
 		}
-		return mapped == bp.ExistentialAlias
+		return values.SemanticEqualsUnderAliasMap(ap.Value, bp.Value, aliases)
 	}
 	return false
 }

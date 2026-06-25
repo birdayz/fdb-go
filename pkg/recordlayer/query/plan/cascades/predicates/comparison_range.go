@@ -121,7 +121,11 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 	}
 	switch r.rangeType {
 	case ComparisonRangeEmpty:
-		if c.Type == ComparisonEquals {
+		if c.Type == ComparisonEquals || c.Type == ComparisonIsNull {
+			// IS NULL is an EQUALITY range on the NULL value, matching Java's
+			// ScanComparisons.getComparisonType(IS_NULL) == EQUALITY: the index
+			// scan seeks the single [null] key. (IS NOT NULL stays an
+			// inequality — the (null, +inf) range — handled below.)
 			return MergeResult{
 				Range: &ComparisonRange{
 					rangeType: ComparisonRangeEquality,
@@ -130,7 +134,7 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 				Ok: true,
 			}
 		}
-		// All non-equals (including IsNull / Not) are inequalities
+		// All non-equals (including IsNotNull / Not) are inequalities
 		// for range purposes — they restrict the universe.
 		return MergeResult{
 			Range: &ComparisonRange{

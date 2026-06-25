@@ -1118,3 +1118,7 @@ func (v *BaseRelationalParserVisitor) VisitKeywordsCanBeId(ctx *KeywordsCanBeIdC
 func (v *BaseRelationalParserVisitor) VisitFunctionNameBase(ctx *FunctionNameBaseContext) interface{} {
 	return v.VisitChildren(ctx)
 }
+
+func (v *BaseRelationalParserVisitor) VisitFunctionNameKeyword(ctx *FunctionNameKeywordContext) interface{} {
+	return v.VisitChildren(ctx)
+}

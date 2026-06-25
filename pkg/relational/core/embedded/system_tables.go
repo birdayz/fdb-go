@@ -19,6 +19,73 @@ import (
 // rows via evalPredicateOnMap, so standard SQL predicates work over
 // INFORMATION_SCHEMA / SHOW rows the same as over table rows.
 
+// execSystemTableQuery is the executor-free entry point for an
+// INFORMATION_SCHEMA.* SELECT. It serves the simple shape
+// `SELECT [*|cols] FROM INFORMATION_SCHEMA.X [WHERE …] [ORDER BY …]
+// [LIMIT … OFFSET …]` directly off the catalog-synthesized rows. RFC-145
+// detached this from the legacy embedded interpreter (Phase 1) before that
+// interpreter island was deleted (Phase 2); it never routes through an
+// executor.
+//
+// INFORMATION_SCHEMA is a Go-only extension Java rejects entirely, so no
+// cross-engine reference exists for any shape here. The simple-SELECT subset
+// is the only shape ever used; any join / aggregate / GROUP BY / HAVING /
+// DISTINCT / QUALIFY / CTE / derived-table / set-query (UNION) against a
+// system table is rejected with a clean error (verified none are used today).
+// Subqueries / EXISTS embedded in the WHERE filter surface the severed-arm
+// error from filterSysRows → evalPredicateOnMapExpr (RFC-145 Phase 1).
+func (c *EmbeddedConnection) execSystemTableQuery(ctx context.Context, sel antlrgen.ISelectStatementContext, q antlrgen.IQueryContext) (driver.Rows, error) {
+	// WITH / WITH RECURSIVE against a system table is not supported.
+	if q.Ctes() != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"WITH clause is not supported against INFORMATION_SCHEMA")
+	}
+	// UNION / set-query and any non-simple query term are rejected by
+	// extractSelectParts (it only accepts a QueryTermDefaultContext over a
+	// SimpleTableContext), with a clean ErrCodeUnsupportedOperation error.
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reject every shape the simple system-table handler can't serve. These
+	// are mutually exclusive with the plain `SELECT … FROM INFORMATION_SCHEMA.X`
+	// projection that projectSystemRows applies.
+	switch {
+	case len(sq.joins) > 0:
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"JOIN is not supported against INFORMATION_SCHEMA")
+	case sq.derivedQuery != nil:
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"derived table is not supported against INFORMATION_SCHEMA")
+	case sq.countStar || len(sq.aggCols) > 0 || len(sq.groupBy) > 0 || sq.havingExpr != nil:
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"aggregate / GROUP BY / HAVING is not supported against INFORMATION_SCHEMA")
+	case sq.distinct:
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"SELECT DISTINCT is not supported against INFORMATION_SCHEMA")
+	case sq.qualifyExpr != nil:
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"QUALIFY is not supported against INFORMATION_SCHEMA")
+	}
+
+	upper := strings.ToUpper(sq.tableName)
+	const prefix = "INFORMATION_SCHEMA."
+	if !strings.HasPrefix(upper, prefix) {
+		// referencesInformationSchema matched somewhere in the parse tree, but
+		// the FROM target is not a plain INFORMATION_SCHEMA.X reference (e.g.
+		// the only mention was inside a subquery the handler doesn't support).
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"unsupported INFORMATION_SCHEMA query shape: FROM %q", sq.tableName)
+	}
+	sysTable := upper[len(prefix):]
+	sysRows, sysErr := c.execSystemTable(ctx, sysTable, sq.whereExpr)
+	if sysErr != nil {
+		return nil, sysErr
+	}
+	return projectSystemRows(sysRows, sq)
+}
+
 // execSystemTable dispatches INFORMATION_SCHEMA.* queries.
 func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, whereExpr antlrgen.IWhereExprContext) (driver.Rows, error) {
 	switch name {

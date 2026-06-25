@@ -43,6 +43,15 @@ type ScopeSource struct {
 	// the CTE body uses `SELECT col AS alias` — the resolver sees
 	// `alias` but the scan produces `col`. nil when no aliasing.
 	ColumnAliasMap map[string]string
+	// Shadowing marks a source whose columns SHADOW same-named columns of
+	// non-shadowing sources at this scope level (instead of colliding into
+	// an ambiguity error). A lateral array unnest (`FROM t, t.arr AS x`)
+	// uses this: its AS/AT binding shadows a same-named real column of `t`
+	// — Java's generateCorrelatedFieldAccess binding wins over the outer
+	// (RFC-142). When ≥1 shadowing source matches a bare column, the
+	// shadowing match is taken and the non-shadowing matches are ignored;
+	// two shadowing matches are still ambiguous.
+	Shadowing bool
 }
 
 // NewScope constructs a Scope inheriting from parent. parent may be
@@ -113,6 +122,24 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 				col Column
 				src ScopeSource
 			}{c, src})
+		}
+	}
+	// A SHADOWING source (a lateral array unnest binding, RFC-142) wins over
+	// non-shadowing sources at this level: when ≥1 shadowing source matches,
+	// keep only the shadowing matches (Java's unnest binding shadows the outer
+	// table's same-named column). Two shadowing matches are still ambiguous.
+	if len(matches) > 1 {
+		var shadow []struct {
+			col Column
+			src ScopeSource
+		}
+		for _, m := range matches {
+			if m.src.Shadowing {
+				shadow = append(shadow, m)
+			}
+		}
+		if len(shadow) > 0 {
+			matches = shadow
 		}
 	}
 	switch len(matches) {

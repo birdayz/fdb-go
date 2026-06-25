@@ -113,13 +113,13 @@ bazel_dep(name = "rules_android", version = "0.7.1")  # Override transitive dep 
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
-        "org.foundationdb:fdb-record-layer-core:4.11.1.0",
+        "org.foundationdb:fdb-record-layer-core:4.12.11.0",
         # fdb-relational-* artifacts power the Java side of the
         # plan-equivalence harness (RFC-022 §4.-1 Phase 2). Lowest
         # published version on Maven Central is 4.10.18.0; we run
-        # 4.11.1.0 to match fdb-record-layer-core.
-        "org.foundationdb:fdb-relational-api:4.11.1.0",
-        "org.foundationdb:fdb-relational-core:4.11.1.0",
+        # 4.12.11.0 to match fdb-record-layer-core.
+        "org.foundationdb:fdb-relational-api:4.12.11.0",
+        "org.foundationdb:fdb-relational-core:4.12.11.0",
         "com.google.code.gson:gson:2.10.1",
         "com.google.protobuf:protobuf-java-util:4.29.3",
     ],

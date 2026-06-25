@@ -7,8 +7,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
 )
@@ -56,6 +59,21 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkExpression: nil context")
 	}
+	// RFC-141 R4 convergence backstop (P1b). In a projection position
+	// (allowComparisons), only a top-level projected EXISTS / NOT-EXISTS — the
+	// whole SELECT item, or its single paren/NOT wrapper of a bare EXISTS — folds
+	// correctly (the switch arms below place the ExistsValue in the result value
+	// where the FlatMap evaluates it with the existential binding live). An EXISTS
+	// NESTED inside another expression (`CASE WHEN EXISTS(...) THEN ...`,
+	// `EXISTS(...) AND x`, a comparison, arithmetic, ...) would fall through to the
+	// predicate path → a predicateValue whose ExistsValue is evaluated ABOVE the
+	// FlatMap with the binding dead — constant false / NULL, a silent wrong result.
+	// EXISTS can be nested arbitrarily deep, so rather than point-handle each shape
+	// (which never converges), structurally DETECT any contained EXISTS that is not
+	// the directly-foldable top-level shape and reject the query cleanly.
+	if allowComparisons && ContainsExistsAtom(ctx) && !isDirectlyFoldableProjectedExists(ctx) {
+		return nil, &NestedExistsProjectionError{}
+	}
 	switch c := ctx.(type) {
 	case *antlrgen.PredicatedExpressionContext:
 		if c.Predicate() != nil {
@@ -73,6 +91,16 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 				}
 				return &predicateValue{pred: pred}, nil
 			}
+			// RFC-141: a parenthesized EXISTS in a projection — `SELECT (EXISTS(
+			// ...))` — surfaces here as a PredicatedExpression over a paren-wrap
+			// RecordConstructor. walkAtom's recursion would re-enter via
+			// WalkExpression (predicate context, allowComparisons=false) and lose
+			// the projection position, yielding a predicateValue → NULL column.
+			// Detect the wrapped EXISTS atom and fold it as a Value directly, the
+			// same as the bare `SELECT EXISTS(...)` case.
+			if existsAtom := existsAtomInExpressionAtom(c.ExpressionAtom()); existsAtom != nil {
+				return r.walkExistsValue(existsAtom)
+			}
 		}
 		return r.walkAtom(c.ExpressionAtom())
 	case *antlrgen.LogicalExpressionContext:
@@ -82,12 +110,38 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, allowCom
 		}
 		return &predicateValue{pred: pred}, nil
 	case *antlrgen.NotExpressionContext:
+		// RFC-141: `NOT EXISTS (...)` in a projection is the boolean negation of
+		// the projected ExistsValue — a NotValue over the ExistsValue, so the
+		// column carries true/false (ExistsValue.eval reads the existential
+		// binding). Only EXISTS surfaces an evaluable Value through the NOT here;
+		// other NOT operands stay on the predicate path (their per-row eval is
+		// the 3VL predicate, not a column value). Detect the EXISTS atom
+		// structurally (no double-walk of non-EXISTS operands).
+		if allowComparisons {
+			if existsAtom := existsAtomOf(c.Expression()); existsAtom != nil {
+				childVal, err := r.walkExistsValue(existsAtom)
+				if err != nil {
+					return nil, err
+				}
+				return values.NewNotValue(childVal), nil
+			}
+		}
 		child, err := r.WalkPredicate(c.Expression())
 		if err != nil {
 			return nil, err
 		}
 		return &predicateValue{pred: r.ResolveNot(child)}, nil
 	case *antlrgen.ExistsExpressionAtomContext:
+		// RFC-141: the SAME ExistsValue is produced for EXISTS regardless of
+		// position; the consumer decides. A SELECT-element/projection position
+		// (WalkExpressionForProjection → allowComparisons) uses the ExistsValue
+		// directly as the column value; a predicate position wraps it via
+		// ExistsValueToQueryPredicate. The split is structural (which walk is
+		// invoked), not a flag on the value — mirroring Java's single-visitor /
+		// two-consumer design.
+		if allowComparisons {
+			return r.walkExistsValue(c)
+		}
 		pred, err := r.walkExistsPredicate(c)
 		if err != nil {
 			return nil, err
@@ -219,6 +273,15 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 	}
 	if scalar, ok := fc.(*antlrgen.ScalarFunctionCallContext); ok {
 		return r.walkScalarFunction(scalar)
+	}
+	if udf, ok := fc.(*antlrgen.UserDefinedScalarFunctionCallContext); ok {
+		// `CARDINALITY(arr)` and other bare-ID function calls parse as a
+		// UserDefinedScalarFunctionCall (the grammar's `ID '(' args ')'`
+		// fallthrough). Route recognised by-name built-ins here through the
+		// dedicated dispatch; everything else declines so the caller falls
+		// back. This is the SINGLE by-name gate Torvalds blessed — not a
+		// fourth hand-maintained keyword list.
+		return r.walkUserDefinedScalarFunction(udf)
 	}
 	if nonAgg, ok := fc.(*antlrgen.NonAggregateFunctionCallContext); ok {
 		return r.walkNonAggregateWindowedFunction(nonAgg)
@@ -446,7 +509,7 @@ func commonBranchType(branches []values.Value) values.Type {
 		if t.Code() == values.TypeCodeUnknown {
 			// A non-NULL branch of genuinely unknown type (scalar subquery,
 			// parameter) could yield any type, so we cannot let the concrete
-			// branches dictate the result — keep it unknown (codex P2).
+			// branches dictate the result — keep it unknown (P2).
 			return values.UnknownType
 		}
 		types = append(types, t)
@@ -660,6 +723,97 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	return values.NewScalarFunctionValue(name, typ, args...), nil
 }
 
+// walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
+// name is a bare ID (the grammar's UserDefinedScalarFunctionCall). The
+// only such call wired today is the CARDINALITY built-in: it parses here
+// rather than as a ScalarFunctionCall because CARDINALITY has no grammar
+// token (it is not in the `scalarFunctionName` keyword set). This is the
+// single by-name built-in dispatch gate (Torvalds' option (b)) — a
+// recognised name builds its dedicated Value; everything else declines so
+// the caller falls back. A quoted name (`"cardinality"`) is a deliberate
+// user-defined reference, not the built-in, so only the unquoted ID form
+// is matched.
+func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalarFunctionCallContext) (values.Value, error) {
+	if udf == nil {
+		return nil, fmt.Errorf("expr.walkUserDefinedScalarFunction: nil")
+	}
+	nameCtx := udf.UserDefinedScalarFunctionName()
+	if nameCtx == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "UserDefinedScalarFunctionCall without name"}
+	}
+	nameNode, ok := nameCtx.(*antlrgen.UserDefinedScalarFunctionNameContext)
+	if !ok || nameNode.ID() == nil {
+		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
+	}
+	name := strings.ToUpper(nameNode.ID().GetText())
+	switch name {
+	case "CARDINALITY":
+		return r.walkCardinality(udf.FunctionArgs())
+	}
+	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
+}
+
+// walkCardinality builds the dedicated CardinalityValue for
+// `CARDINALITY(arr)`. Mirrors Java's CardinalityFn.encapsulateInternal:
+// arity exactly 1, and the argument must be array-typed (Java's ctor
+// asserts childValue.getResultType().isArray() → INCOMPATIBLE_TYPE). The
+// array-type check lives here — the earliest point with the resolved
+// argument Type and access to the SQLSTATE error codes — and raises
+// CANNOT_CONVERT_TYPE (22000) for a non-array argument, matching the
+// arrays-cardinality.yamsql expectation (SELECT CARDINALITY("id") /
+// CARDINALITY(1) → CANNOT_CONVERT_TYPE). The result is a dedicated
+// CardinalityValue, NOT a generic ScalarFunctionValue: CARDINALITY needs
+// its own nullable-INT typing and array validation.
+func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
+	args, err := r.walkFunctionArgs(fa)
+	if err != nil {
+		return nil, err
+	}
+	if len(args) != 1 {
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"CARDINALITY takes exactly one argument, got %d", len(args))
+	}
+	arg := args[0]
+	if arg == nil || !values.IsArray(arg.Type()) {
+		// Java: SemanticException.check(isArray(), INCOMPATIBLE_TYPE,
+		// "The argument of CARDINALITY() must be an array expression.").
+		// The SQL layer surfaces that as CANNOT_CONVERT_TYPE (22000).
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
+			"the argument of CARDINALITY() must be an array expression")
+	}
+	return values.NewCardinalityValue(arg), nil
+}
+
+// walkFunctionArgs walks a FunctionArgs context into the resolved
+// argument Value list, recursing each arg through WalkExpression so
+// nested expressions compose. Shared by the by-name built-in dispatch.
+func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.Value, error) {
+	args := []values.Value{}
+	if fa == nil {
+		return args, nil
+	}
+	fac, ok := fa.(*antlrgen.FunctionArgsContext)
+	if !ok {
+		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
+	}
+	for _, arg := range fac.AllFunctionArg() {
+		argCtx, ok := arg.(*antlrgen.FunctionArgContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}
+		}
+		if argCtx.Expression() == nil {
+			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
+		}
+		v, err := r.WalkExpression(argCtx.Expression())
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, v)
+	}
+	return args, nil
+}
+
 // polymorphicResultType infers the result type of a value-preserving
 // polymorphic scalar function from its argument types, mirroring Java. Returns
 // nil (keep UnknownType) when the type can't be determined from concrete args.
@@ -688,7 +842,7 @@ func polymorphicResultType(name string, args []values.Value) values.Type {
 		}
 	case "MOD":
 		// MOD(a, b) promotes both operands (MOD(id, 2.5) yields a DOUBLE at
-		// runtime), same as arithmetic — codex P2.
+		// runtime), same as arithmetic — P2.
 		return concrete(commonBranchType(args))
 	case "ABS", "FLOOR", "CEIL", "CEILING", "ROUND", "SIGN":
 		// Numeric, type-preserving in the first operand.
@@ -1631,6 +1785,26 @@ func (e *UnsupportedExpressionShapeError) Error() string {
 	return fmt.Sprintf("expr.WalkExpression: unsupported shape: %s", e.Shape)
 }
 
+// NestedExistsProjectionError signals a SELECT-list item that CONTAINS an EXISTS
+// subquery atom but is NOT a directly-foldable projected EXISTS — i.e. the EXISTS
+// is nested inside another expression (`CASE WHEN EXISTS(...) THEN ...`,
+// `EXISTS(...) AND x`, a comparison, an arithmetic, ...) rather than being the
+// whole SELECT item or its single (paren/NOT) wrapper.
+//
+// Unlike UnsupportedExpressionShapeError (which the projection callers SWALLOW
+// to fall back to the logical-builder text path), this error MUST reject the
+// query: the text-fallback path would route the nested EXISTS through the
+// predicate walk, registering the existential subquery but evaluating the
+// ExistsValue ABOVE the FlatMap with the binding dead — constant false / NULL,
+// a silent wrong result. The callers (logical_predicate.go, plan_visitor.go)
+// convert it to ErrCodeUnsupportedQuery (RFC-141 R4 convergence
+// backstop, P1b).
+type NestedExistsProjectionError struct{}
+
+func (e *NestedExistsProjectionError) Error() string {
+	return "projected EXISTS in this query shape is not yet supported"
+}
+
 // walkBytesConstant handles hex (`x'CAFE'`) and base64 (`b64'yv4='`)
 // byte literals. Matches Java's ExpressionVisitor.visitBytesLiteral
 // + ParseHelpers.parseBytes: strips the prefix/suffix, decodes the
@@ -1715,8 +1889,10 @@ func (r *Resolver) walkScalarSubquery(ctx *antlrgen.SubqueryExpressionAtomContex
 
 // walkExistsPredicate handles `EXISTS (SELECT ...)`. Delegates to the
 // Resolver's SubqueryPlanner to build the inner query's logical plan
-// and allocate a fresh existential alias. Returns an ExistsPredicate
-// wrapping the alias. Declines with UnsupportedExpressionShapeError
+// and allocate a fresh existential alias. Returns an
+// ExistentialValuePredicate over a QuantifiedObjectValue of the alias
+// (RFC-141: the single EXISTS representation, built via the ExistsValue
+// → toQueryPredicate bridge). Declines with UnsupportedExpressionShapeError
 // when no SubqueryPlanner is installed.
 func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext) (predicates.QueryPredicate, error) {
 	if r.subqueryPlanner == nil {
@@ -1730,7 +1906,306 @@ func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext
 	if err != nil {
 		return nil, err
 	}
-	return predicates.NewExistsPredicate(alias), nil
+	return predicates.ExistsValueToQueryPredicate(values.NewExistsValue(alias)), nil
+}
+
+// walkExistsValue handles `EXISTS (SELECT ...)` in a SELECT-element /
+// projection position (RFC-141 Phase 2). It builds the SAME ExistsValue as
+// walkExistsPredicate, but returns it directly as a column Value rather than
+// bridging to an ExistentialValuePredicate — the consumer (projection) places
+// the boolean in the result record; ExistsValue.eval reads the existential
+// binding the FlatMap establishes (bound non-null ⇒ true, NULL ⇒ false). The
+// existential subquery is registered via the SAME BuildExists call, so the
+// translator attaches the existential quantifier identically to the WHERE case
+// (the projected-alias registration step collects it into the subquery list).
+func (r *Resolver) walkExistsValue(ctx *antlrgen.ExistsExpressionAtomContext) (values.Value, error) {
+	if r.subqueryPlanner == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS (no SubqueryPlanner)"}
+	}
+	q := ctx.Query()
+	if q == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
+	}
+	alias, err := r.subqueryPlanner.BuildExists(q)
+	if err != nil {
+		return nil, err
+	}
+	return values.NewExistsValue(alias), nil
+}
+
+// existsAtomOf returns the ExistsExpressionAtomContext if ctx is (or wraps) an
+// EXISTS atom, else nil. Used to detect `NOT EXISTS (...)` structurally in a
+// projection so it lowers to NotValue(ExistsValue) without speculatively walking
+// non-EXISTS operands.
+//
+// Three parse shapes carry an EXISTS atom (verified against the grammar):
+//
+//	NOT EXISTS(q)       NotExpression -> ExistsExpressionAtom            (direct)
+//	NOT (EXISTS(q))     NotExpression -> PredicatedExpression
+//	                      -> RecordConstructorExpressionAtom            (paren-wrap)
+//	                        -> RecordConstructor -> ExpressionWithOptionalName
+//	                          -> ExistsExpressionAtom
+//	NOT ((EXISTS(q)))   same, nested one more paren-wrap (handled by recursion)
+//
+// The parenthesized form surfaced as a PredicatedExpression
+// over a single-element unnamed RecordConstructor — the same paren-wrap shape
+// walkRecordConstructor unwraps — so existsAtomOf must descend through it to
+// find the ExistsExpressionAtom; otherwise NOT (EXISTS(...)) falls to the
+// predicate path and projects NULL.
+func existsAtomOf(ctx antlrgen.IExpressionContext) *antlrgen.ExistsExpressionAtomContext {
+	switch c := ctx.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		return c
+	case *antlrgen.PredicatedExpressionContext:
+		// A grammar Predicate (IS NULL, BETWEEN, ...) attached makes this a real
+		// predicate, not a transparent paren-wrap — not an EXISTS atom.
+		if c.Predicate() != nil {
+			return nil
+		}
+		return existsAtomInExpressionAtom(c.ExpressionAtom())
+	}
+	return nil
+}
+
+// existsAtomInExpressionAtom finds an ExistsExpressionAtom wrapped in a
+// single-element unnamed parenthesized RecordConstructor (`(EXISTS(...))`).
+// Returns nil for any other atom shape. Note: EXISTS is an alternative of the
+// `expression` rule (not `expressionAtom`), so a bare EXISTS never arrives as an
+// IExpressionAtomContext — only the paren-wrap RecordConstructor does, whose
+// inner Expression() is the IExpressionContext routed back through existsAtomOf.
+func existsAtomInExpressionAtom(atom antlrgen.IExpressionAtomContext) *antlrgen.ExistsExpressionAtomContext {
+	rc, ok := atom.(*antlrgen.RecordConstructorExpressionAtomContext)
+	if !ok {
+		return nil
+	}
+	rcc, ok := rc.RecordConstructor().(*antlrgen.RecordConstructorContext)
+	if !ok || rcc.OfTypeClause() != nil {
+		return nil
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	if len(exprs) != 1 {
+		return nil
+	}
+	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
+	if !ok || ewon.Uid() != nil {
+		// A named field is a real record constructor, not a paren-wrap.
+		return nil
+	}
+	// Recurse: handles nested parens `((EXISTS(...)))` and the inner
+	// PredicatedExpression wrapper around the EXISTS atom.
+	return existsAtomOf(ewon.Expression())
+}
+
+// isDirectlyFoldableProjectedExists reports whether a SELECT-list expression is
+// one of the directly-foldable projected-EXISTS shapes — the cases the
+// walkExpressionInner switch lowers to an evaluable ExistsValue (or its NOT)
+// placed in the projection's result value, where the FlatMap evaluates it with
+// the existential binding live. Exactly three shapes (mirroring the switch arms):
+//
+//   - a bare top-level `EXISTS(...)` — an *ExistsExpressionAtomContext;
+//   - a top-level `NOT EXISTS(...)` / `NOT (EXISTS(...))` — a *NotExpressionContext
+//     whose operand resolves to an EXISTS atom (existsAtomOf);
+//   - a parenthesized `(EXISTS(...))` — a *PredicatedExpressionContext (no grammar
+//     Predicate attached) whose ExpressionAtom wraps an EXISTS atom
+//     (existsAtomInExpressionAtom).
+//
+// Any OTHER expression that merely CONTAINS an EXISTS somewhere (a CASE, an
+// AND/OR, a comparison, an arithmetic) is NOT directly foldable; the
+// backstop rejects it. Used only in projection position.
+func isDirectlyFoldableProjectedExists(ctx antlrgen.IExpressionContext) bool {
+	switch c := ctx.(type) {
+	case *antlrgen.ExistsExpressionAtomContext:
+		return true
+	case *antlrgen.NotExpressionContext:
+		return existsAtomOf(c.Expression()) != nil
+	case *antlrgen.PredicatedExpressionContext:
+		if c.Predicate() != nil {
+			return false
+		}
+		return existsAtomInExpressionAtom(c.ExpressionAtom()) != nil
+	}
+	return false
+}
+
+// introducesNestedQueryScope reports whether tree is a parse-tree node that opens
+// a NEW query scope nested inside an expression — a SCALAR subquery `(subquery)`
+// used as a value (SubqueryExpressionAtomContext) or an `x IN (subquery)` body
+// (InListContext with a QueryExpressionBody). Each such subquery is translated in
+// its OWN context, so its WHERE / projection / ORDER BY EXISTS atoms belong to
+// that subquery, not the enclosing expression. The structural EXISTS detectors
+// below treat these as BOUNDARIES and do not descend into them — otherwise an
+// EXISTS that is the nested subquery's own concern would be mis-attributed to the
+// outer expression and falsely rejected (RFC-141 R4).
+//
+// An ExistsExpressionAtomContext (`EXISTS (subquery)`) ALSO opens a query scope,
+// but it is the thing the detectors WANT to match at the current level — so it is
+// NOT a boundary here. Callers match it explicitly before descent; matching it
+// returns true without recursing, so its own subquery is likewise not descended.
+func introducesNestedQueryScope(tree antlr.Tree) bool {
+	switch tree.(type) {
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return true
+	case *antlrgen.InListContext:
+		// `x IN (SELECT ...)`: the InList wraps a QueryExpressionBody. (An
+		// `x IN (a, b, c)` value list has no QueryExpressionBody and carries no
+		// nested query scope — but it also carries no EXISTS atom, so treating it
+		// as a boundary is harmless. We only need the IN-subquery form stopped.)
+		return true
+	}
+	return false
+}
+
+// ContainsExistsAtom reports whether the parse tree rooted at ctx contains an
+// EXISTS subquery atom at the CURRENT query level — a structural (typed-node)
+// walk, no GetText / text matching. Used by the logical builder to reject query
+// shapes (e.g. GROUP BY on an EXISTS expression) where the projected/grouped
+// EXISTS cannot be folded and would otherwise be silently dropped (RFC-141 §8
+// safety guard).
+//
+// The walk STOPS at nested-subquery boundaries (introducesNestedQueryScope): an
+// EXISTS belonging to a nested scalar / IN subquery's OWN clause is that
+// subquery's concern (classified in its own translation context), not the outer
+// expression's — descending into it would mis-attribute the inner EXISTS to the
+// outer level and falsely reject a query the outer level handles fine (RFC-141 R4
+// RFC-141 R4). The EXISTS atom itself is matched before descent, so its own
+// subquery is correctly never descended either.
+func ContainsExistsAtom(ctx antlr.Tree) bool {
+	if ctx == nil {
+		return false
+	}
+	// Match an EXISTS atom at the current level (before any boundary check) — this
+	// is the node we want; do not descend into its own subquery.
+	if _, ok := ctx.(*antlrgen.ExistsExpressionAtomContext); ok {
+		return true
+	}
+	// A nested subquery boundary: its EXISTS atoms are classified in its own
+	// translation context — do not descend.
+	if introducesNestedQueryScope(ctx) {
+		return false
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if ContainsExistsAtom(ctx.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// WhereExistsInScalarPosition reports whether the WHERE expression rooted at ctx
+// contains an EXISTS atom that is NOT in a directly-handled top-level boolean
+// position — i.e. it is buried inside a SCALAR expression (a CASE, a comparison
+// operand, an arithmetic, a function-call argument). Such an EXISTS lowers to a
+// scalar Value with no existential quantifier driving it, so it evaluates to a
+// constant false → a silent wrong result. The WHERE companion to
+// isDirectlyFoldableProjectedExists (RFC-141 R4).
+//
+// An EXISTS is directly-handled in WHERE iff the path from the WHERE root to the
+// atom traverses ONLY boolean-combinator nodes: AND/OR (LogicalExpression), NOT
+// (NotExpression), and a transparent paren-wrap (a PredicatedExpression with no
+// grammar Predicate over a single-element RecordConstructor, or its
+// ExpressionAtom). The descent below mirrors that whitelist: it recurses through
+// those nodes, treating a reached EXISTS atom (directly, or via existsAtomOf for
+// the NOT/paren shapes) as handled. The moment a node that is NOT a boolean
+// combinator still CONTAINS an EXISTS atom beneath it, that EXISTS is buried in
+// scalar position → return true.
+func WhereExistsInScalarPosition(ctx antlrgen.IExpressionContext) bool {
+	if ctx == nil {
+		return false
+	}
+	// A directly-handled top-level EXISTS / NOT-EXISTS / paren-(NOT-)EXISTS: the
+	// whole node IS the existential boolean term — nothing buried here.
+	if existsAtomOf(ctx) != nil {
+		return false
+	}
+	switch c := ctx.(type) {
+	case *antlrgen.LogicalExpressionContext:
+		// AND / OR: each operand is itself a boolean term — recurse.
+		for _, e := range c.AllExpression() {
+			if WhereExistsInScalarPosition(e) {
+				return true
+			}
+		}
+		return false
+	case *antlrgen.NotExpressionContext:
+		// NOT(<expr>): the operand is a boolean term — recurse. (existsAtomOf
+		// above already handled NOT directly over a bare/paren EXISTS.)
+		return WhereExistsInScalarPosition(c.Expression())
+	case *antlrgen.PredicatedExpressionContext:
+		// A transparent paren-wrap (no grammar Predicate) over a single-element
+		// RecordConstructor is a boolean pass-through — recurse into the wrapped
+		// expression. Any other PredicatedExpression (a real grammar Predicate:
+		// comparison, IN, BETWEEN, IS — i.e. a SCALAR/relational context) that
+		// nonetheless contains an EXISTS atom is buried.
+		if c.Predicate() == nil {
+			if inner := unwrapParenExpression(c.ExpressionAtom()); inner != nil {
+				return WhereExistsInScalarPosition(inner)
+			}
+		}
+		return ContainsExistsAtom(ctx)
+	}
+	// Any other expression node (comparison, arithmetic, CASE, function call, …)
+	// is a scalar context — if it contains an EXISTS atom, that EXISTS is buried.
+	return ContainsExistsAtom(ctx)
+}
+
+// AnyWhereExistsInScalarPosition reports whether the parse subtree rooted at tree
+// contains ANY WHERE clause whose expression has an EXISTS atom buried in a scalar
+// position (per WhereExistsInScalarPosition). Used to guard statement forms whose
+// WHERE is nested and not directly accessible — notably `INSERT … SELECT … WHERE
+// CASE WHEN EXISTS(...) …`, whose SELECT-body WHERE is rebuilt through a path that
+// bypasses the per-statement WHERE guard. A structural typed-node walk
+// (WhereExprContext), no GetText. (RFC-141 R4.)
+func AnyWhereExistsInScalarPosition(tree antlr.Tree) bool {
+	if tree == nil {
+		return false
+	}
+	if we, ok := tree.(*antlrgen.WhereExprContext); ok {
+		if WhereExistsInScalarPosition(we.Expression()) {
+			return true
+		}
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		child := tree.GetChild(i)
+		// Stop at nested-subquery boundaries: a scalar / IN subquery nested in an
+		// expression has its OWN WHERE, classified in its own translation context.
+		// Descending into it would mis-attribute that subquery's buried-scalar
+		// EXISTS to the INSERT's SELECT body and falsely reject (RFC-141 R4).
+		// The nested subquery's WHERE is guarded when it plans in its
+		// own context. (The INSERT's own SELECT-body WHERE — a WhereExprContext
+		// child of the SELECT, not nested under a SubqueryExpressionAtom — is still
+		// reached, since the SELECT body itself is not a nested-query-scope node.)
+		if introducesNestedQueryScope(child) {
+			continue
+		}
+		if AnyWhereExistsInScalarPosition(child) {
+			return true
+		}
+	}
+	return false
+}
+
+// unwrapParenExpression returns the inner IExpressionContext of a single-element
+// unnamed parenthesized RecordConstructor `(<expr>)`, or nil for any other atom
+// shape. The boolean-context analog of existsAtomInExpressionAtom's unwrap,
+// reused by WhereExistsInScalarPosition to descend through `( ... )` wrappers.
+func unwrapParenExpression(atom antlrgen.IExpressionAtomContext) antlrgen.IExpressionContext {
+	rc, ok := atom.(*antlrgen.RecordConstructorExpressionAtomContext)
+	if !ok {
+		return nil
+	}
+	rcc, ok := rc.RecordConstructor().(*antlrgen.RecordConstructorContext)
+	if !ok || rcc.OfTypeClause() != nil {
+		return nil
+	}
+	exprs := rcc.AllExpressionWithOptionalName()
+	if len(exprs) != 1 {
+		return nil
+	}
+	ewon, ok := exprs[0].(*antlrgen.ExpressionWithOptionalNameContext)
+	if !ok || ewon.Uid() != nil {
+		return nil
+	}
+	return ewon.Expression()
 }
 
 // NumericOverflowLiteralError signals that a numeric literal overflows

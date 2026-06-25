@@ -841,6 +841,9 @@ type RelationalParserListener interface {
 	// EnterFunctionNameBase is called when entering the functionNameBase production.
 	EnterFunctionNameBase(c *FunctionNameBaseContext)
 
+	// EnterFunctionNameKeyword is called when entering the functionNameKeyword production.
+	EnterFunctionNameKeyword(c *FunctionNameKeywordContext)
+
 	// ExitRoot is called when exiting the root production.
 	ExitRoot(c *RootContext)
 
@@ -1674,4 +1677,7 @@ type RelationalParserListener interface {
 
 	// ExitFunctionNameBase is called when exiting the functionNameBase production.
 	ExitFunctionNameBase(c *FunctionNameBaseContext)
+
+	// ExitFunctionNameKeyword is called when exiting the functionNameKeyword production.
+	ExitFunctionNameKeyword(c *FunctionNameKeywordContext)
 }

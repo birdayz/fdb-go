@@ -23,17 +23,15 @@ import (
 // PK bytes; on resume, verifies the outer row hasn't changed between
 // transactions (concurrent-modification detection).
 type flatMapCursor struct {
-	outerCursor   recordlayer.RecordCursor[QueryResult]
-	innerPlan     plans.RecordQueryPlan
-	store         *recordlayer.FDBRecordStore
-	evalCtx       *EvaluationContext
-	outerAlias    values.CorrelationIdentifier
-	innerAlias    values.CorrelationIdentifier
-	resultValue   values.Value
-	leftOuter     bool
-	existsMode    bool
-	notExistsMode bool
-	props         recordlayer.ExecuteProperties
+	outerCursor recordlayer.RecordCursor[QueryResult]
+	innerPlan   plans.RecordQueryPlan
+	store       *recordlayer.FDBRecordStore
+	evalCtx     *EvaluationContext
+	outerAlias  values.CorrelationIdentifier
+	innerAlias  values.CorrelationIdentifier
+	resultValue values.Value
+	leftOuter   bool
+	props       recordlayer.ExecuteProperties
 
 	innerCursor    recordlayer.RecordCursor[QueryResult]
 	currentOuter   *QueryResult
@@ -57,22 +55,18 @@ func newFlatMapCursor(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	leftOuter bool,
-	existsMode bool,
-	notExistsMode bool,
 	props recordlayer.ExecuteProperties,
 ) *flatMapCursor {
 	return &flatMapCursor{
-		outerCursor:   outerCursor,
-		innerPlan:     innerPlan,
-		store:         store,
-		evalCtx:       evalCtx,
-		outerAlias:    outerAlias,
-		innerAlias:    innerAlias,
-		resultValue:   resultValue,
-		leftOuter:     leftOuter,
-		existsMode:    existsMode,
-		notExistsMode: notExistsMode,
-		props:         props,
+		outerCursor: outerCursor,
+		innerPlan:   innerPlan,
+		store:       store,
+		evalCtx:     evalCtx,
+		outerAlias:  outerAlias,
+		innerAlias:  innerAlias,
+		resultValue: resultValue,
+		leftOuter:   leftOuter,
+		props:       props,
 	}
 }
 
@@ -95,23 +89,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				c.innerHadMatch = true
 				innerRow := result.GetValue()
 
-				// EXISTS: inner has a match → emit outer row, skip rest.
-				if c.existsMode {
-					c.innerCursor.Close()
-					c.innerCursor = nil
-					cont := c.buildContinuation(result.GetContinuation(), false)
-					row := qualifyOuterRow(*c.currentOuter, c.outerAlias.Name())
-					return recordlayer.NewResultWithValue(row, cont), nil
-				}
-
-				// NOT EXISTS: inner has a match → outer row excluded.
-				// Close inner and move to next outer.
-				if c.notExistsMode {
-					c.innerCursor.Close()
-					c.innerCursor = nil
-					continue
-				}
-
 				outputRow, err := c.computeResult(*c.currentOuter, innerRow)
 				if err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
@@ -131,13 +108,6 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont, true)
 				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
-			}
-
-			// NOT EXISTS: inner exhausted with no match → emit outer row.
-			if c.notExistsMode && !c.innerHadMatch {
-				cont := c.buildContinuation(innerCont, false)
-				row := qualifyOuterRow(*c.currentOuter, c.outerAlias.Name())
-				return recordlayer.NewResultWithValue(row, cont), nil
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
@@ -211,14 +181,37 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResult, error) {
 	// Build evaluation context with both correlations bound.
 	outerDatum, _ := outerRow.Datum.(map[string]any)
-	innerDatum, _ := innerRow.Datum.(map[string]any)
+	// The inner binding is the RAW inner Datum, not a forced map cast. A
+	// correlated array UNNEST (RFC-142) flows a BARE SCALAR element (e.g.
+	// int64(101)) as the inner row; binding QOV(inner) to it lets the AS
+	// alias read the whole element. A row-shaped inner (a scan/EXISTS
+	// subquery) binds its map[string]any unchanged — FieldValue.evaluateCorrelated
+	// reads the map by key, QOV(inner) reads the whole map.
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerDatum).
-		WithBinding(c.innerAlias, innerDatum)
+		WithBinding(c.innerAlias, innerRow.Datum)
 
-	computed, err := c.resultValue.Evaluate(nestedCtx)
+	// Evaluate against a RowEvalContext whose Datum is the outer row, so a BARE
+	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
+	// projected EXISTS folds the SELECT list into the result value) resolves
+	// against the outer row, while QOV references to the outer/inner aliases
+	// resolve through the correlation bindings (Correlations).
+	rowCtx := nestedCtx.RowContext(outerDatum)
+	computed, err := c.resultValue.Evaluate(rowCtx)
 	if err != nil {
 		return QueryResult{}, err
+	}
+	// Identity-over-outer FlatMap (the result value is exactly the outer
+	// quantifier's object — the WHERE-EXISTS pass-through, RFC-141): the output
+	// IS the outer record flowed under the outer quantifier, so qualify its keys
+	// under the outer alias. Downstream projections reference the outer columns
+	// as `ALIAS.COL` (a FieldValue over QOV(outer)); a bare-keyed map would not
+	// resolve them. Mirrors the prior semi-join cursor's qualifyOuterRow and
+	// Java's outer-record-under-outer-quantifier flow.
+	if qov, ok := c.resultValue.(*values.QuantifiedObjectValue); ok && qov.Correlation == c.outerAlias {
+		if m, ok := computed.(map[string]any); ok {
+			return qualifyOuterRow(QueryResult{Datum: m, Record: outerRow.Record, PrimaryKey: outerRow.PrimaryKey}, c.outerAlias.Name()), nil
+		}
 	}
 	return QueryResult{Datum: computed}, nil
 }

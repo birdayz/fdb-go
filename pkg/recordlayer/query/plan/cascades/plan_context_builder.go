@@ -17,6 +17,17 @@ type IndexDef interface {
 	IndexPrimaryKeyColumns() []string
 }
 
+// IndexDefWithColumnFunctions is an optional extension of IndexDef for indexes
+// whose key columns are not all bare fields. IndexColumnFunctions returns a
+// slice parallel to IndexColumnNames: entry i is the function wrapping the i-th
+// column ("" for a plain field, FunctionKindCardinality for a CARDINALITY()
+// column). A nil/empty return means every column is a plain field. Defs that
+// don't implement this interface are treated as all-plain-field.
+type IndexDefWithColumnFunctions interface {
+	IndexDef
+	IndexColumnFunctions() []string
+}
+
 // NewPlanContextFromIndexDefs builds a PlanContext with one
 // ValueIndexScanMatchCandidate per index definition. Column names
 // are upper-cased for SQL-convention case-insensitive matching
@@ -43,10 +54,18 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 				upperPK[i] = strings.ToUpper(c)
 			}
 		}
-		candidates = append(candidates, NewValueIndexScanMatchCandidate(
+		// Carry per-column function tags (e.g. CARDINALITY) when the def
+		// provides them, so a function-keyed column matches by its Value, not
+		// a bare field name.
+		var columnFns []string
+		if withFns, ok := def.(IndexDefWithColumnFunctions); ok {
+			columnFns = withFns.IndexColumnFunctions()
+		}
+		candidates = append(candidates, NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
 			upperCols,
+			columnFns,
 			aliases,
 			values.UnknownType,
 			def.IndexIsUnique(),

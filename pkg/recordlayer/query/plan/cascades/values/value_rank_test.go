@@ -264,7 +264,7 @@ func TestGetCorrelatedToOfValue_BooleanValue(t *testing.T) {
 func TestGetCorrelatedToOfValue_ExistsValue(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("exists_q")
-	v := &ExistsValue{Alias: alias}
+	v := NewExistsValue(alias)
 	got := GetCorrelatedToOfValue(v)
 	if _, ok := got[alias]; !ok {
 		t.Fatal("ExistsValue alias not in correlation set")

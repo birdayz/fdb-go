@@ -27,11 +27,11 @@ func TestPredicateSemanticHashCode_AliasInvariant(t *testing.T) {
 	if predicates.SemanticHashCode(a) == predicates.SemanticHashCode(mkCmp(values.NamedCorrelationIdentifier("q_a"), 2)) {
 		t.Fatal("different RHS constant must hash differently")
 	}
-	// ExistsPredicate: alias excluded.
-	ea := predicates.NewExistsPredicate(values.NamedCorrelationIdentifier("e_a"))
-	eb := predicates.NewExistsPredicate(values.NamedCorrelationIdentifier("e_b"))
+	// ExistentialValuePredicate: alias excluded.
+	ea := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("e_a"))
+	eb := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("e_b"))
 	if predicates.SemanticHashCode(ea) != predicates.SemanticHashCode(eb) {
-		t.Fatal("ExistsPredicate must hash alias-invariantly")
+		t.Fatal("ExistentialValuePredicate must hash alias-invariantly")
 	}
 	// And of two alias-variant comparisons hashes equal.
 	andA := predicates.NewAnd(mkCmp(values.NamedCorrelationIdentifier("q_a"), 1), ea)

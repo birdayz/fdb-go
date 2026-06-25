@@ -55,6 +55,17 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 // UPPER-case keys. Only set fields are included; unset fields are
 // omitted (NULL semantics — FieldValue.Evaluate returns nil for
 // missing keys).
+//
+// An EMPTY repeated field is omitted too (protoreflect's Has()
+// reports false for an empty list) and so reads back as SQL NULL.
+// Go writes a plain repeated field with no nullable-array wrapper,
+// so a NULL array and an empty array are wire-indistinguishable;
+// both materialize as NULL here. CARDINALITY of such a column is
+// therefore NULL, not 0, for an empty/unset array — an instance of
+// the RFC-143 §3a nullable-array-wrapper divergence (Java's wrapper
+// distinguishes the two), out of scope for the Phase 1 function. The
+// function itself is correct: nil array → nil, populated array →
+// len.
 func protoToMap(msg proto.Message) map[string]any {
 	if msg == nil {
 		return nil

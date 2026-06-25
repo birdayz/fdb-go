@@ -112,7 +112,7 @@ func NewJavaInvoker() *JavaInvoker {
 // were dropped, etc.) compound into Java-side hangs at >30s
 // per-request latency. The investigation in shifts/ uncovered the
 // trigger: ~11 setup-time INSERT errors compound state in
-// fdb-relational 4.11.1.0's error-path teardown.
+// fdb-relational 4.12.11.0's error-path teardown.
 //
 // Caller is responsible for Close()-ing the returned invoker.
 func NewIsolatedJavaInvoker() (*JavaInvoker, error) {

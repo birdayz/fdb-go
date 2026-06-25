@@ -827,13 +827,16 @@ func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) v
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
+		// Copy the whole Comparison and replace ONLY the new RHS operand,
+		// preserving Escape AND every other Comparison subclass field
+		// (ParameterName, the Text* fields, the DistanceRank vector fields).
+		// A partial {Type, Operand, Escape} reconstruction would drop the rest
+		// and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
 		return &predicates.ComparisonPredicate{
-			Operand: newOperand,
-			Comparison: predicates.Comparison{
-				Type:    pred.Comparison.Type,
-				Operand: newCompOperand,
-				Escape:  pred.Comparison.Escape,
-			},
+			Operand:    newOperand,
+			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
 		newVal := values.Replace(pred.Value, fn)

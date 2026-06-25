@@ -70,15 +70,19 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
+		// Match each sort key against the candidate's i-th column Value by
+		// Value-tree equality (alias-invariant), mirroring the predicate path
+		// (valuesMatchColumn). A candidate that supplies per-column Values
+		// (columnValueProvider) lets a function-keyed column — e.g.
+		// CardinalityValue(FieldValue(arr)) for an `ORDER BY CARDINALITY(arr)`
+		// over a CARDINALITY() index — bind to the index order, not just a
+		// bare FieldValue. Candidates without a provider (primary scan) keep
+		// the historical FieldValue-name string comparison.
+		provider, _ := cand.(columnValueProvider)
 		matches := true
 		reverse := false
 		for i, sk := range sortKeys {
-			fv, ok := sk.Value.(*values.FieldValue)
-			if !ok {
-				matches = false
-				break
-			}
-			if !eqFold(fv.Field, colNames[i]) {
+			if !sortKeyMatchesColumn(sk.Value, provider, i, colNames[i]) {
 				matches = false
 				break
 			}
@@ -114,6 +118,24 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		call.Yield(wrapper)
 	}
+}
+
+// sortKeyMatchesColumn reports whether a sort key's Value binds to the i-th
+// index key column. When the candidate supplies per-column Values, it compares
+// the sort key against ColumnValue(i, base) by alias-invariant Value-tree
+// equality (valuesMatchColumn) — this is how a CardinalityValue sort key binds
+// to a CARDINALITY()-keyed column, and how a plain FieldValue sort key binds to
+// a plain column. Without a provider it falls back to the historical
+// FieldValue-name string comparison (primary scan, which has no provider).
+func sortKeyMatchesColumn(skValue values.Value, provider columnValueProvider, i int, colName string) bool {
+	if provider != nil {
+		// The base alias is irrelevant: valuesMatchColumn compares
+		// FieldValue/CardinalityValue alias-invariantly by (inner) field name.
+		colValue := provider.ColumnValue(i, values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()))
+		return valuesMatchColumn(skValue, colValue)
+	}
+	fv, ok := skValue.(*values.FieldValue)
+	return ok && eqFold(fv.Field, colName)
 }
 
 var _ ExpressionRule = (*OrderedIndexScanRule)(nil)

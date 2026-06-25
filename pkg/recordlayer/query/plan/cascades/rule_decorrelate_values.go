@@ -412,8 +412,9 @@ func translateValueCorrelations(v values.Value, tm TranslationMap) values.Value 
 			alias = n.Correlation
 		case *values.QuantifiedRecordValue:
 			alias = n.Alias
-		case *values.ExistsValue:
-			alias = n.Alias
+		// ExistsValue is a transparent composite (RFC-141), not a leaf —
+		// its child QuantifiedObjectValue is the leaf that gets translated
+		// by the *QuantifiedObjectValue case above.
 		case *values.ScalarSubqueryValue:
 			alias = n.Alias
 		case *values.ObjectValue:
@@ -445,13 +446,16 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
+		// Copy the whole Comparison and replace ONLY the translated RHS operand,
+		// preserving Escape AND every other Comparison subclass field
+		// (ParameterName, the Text* fields, the DistanceRank vector fields).
+		// A partial {Type, Operand, Escape} reconstruction would drop the rest
+		// and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
 		return &predicates.ComparisonPredicate{
-			Operand: newOperand,
-			Comparison: predicates.Comparison{
-				Type:    pred.Comparison.Type,
-				Operand: newCompOperand,
-				Escape:  pred.Comparison.Escape,
-			},
+			Operand:    newOperand,
+			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
 		newVal := translateValueCorrelations(pred.Value, tm)
@@ -491,15 +495,15 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 			return p
 		}
 		return predicates.NewNot(newChild)
-	case *predicates.ExistsPredicate:
-		if !tm.ContainsSourceAlias(pred.ExistentialAlias) {
+	case *predicates.ExistentialValuePredicate:
+		// RFC-141: translate the QuantifiedObjectValue operand's correlation
+		// via the shared value path (which remaps the QOV alias). The
+		// comparison (NOT_NULL) is carried unchanged.
+		newVal := translateValueCorrelations(pred.Value, tm)
+		if newVal == pred.Value {
 			return p
 		}
-		targetAlias, ok := tm.GetTargetAlias(pred.ExistentialAlias)
-		if !ok {
-			return p
-		}
-		return predicates.NewExistsPredicate(targetAlias)
+		return predicates.MustNewExistentialValuePredicate(newVal, pred.Comparison)
 	case *predicates.Placeholder:
 		newVal := translateValueCorrelations(pred.Value, tm)
 		newAlias := pred.ParameterAlias

@@ -12,7 +12,7 @@ This product is a Go port of the FoundationDB Record Layer
 the FoundationDB project authors, licensed under the Apache License, Version
 2.0. Wire-format behavior, key encoding, record/index/version layout,
 continuation tokens, and the Cascades query planner are ported to match that
-implementation (tag 4.11.1.0).
+implementation (tag 4.12.11.0).
 
 The Protocol Buffer definitions under proto/apple/ are copied from the
 FoundationDB Record Layer and remain under the Apache License, Version 2.0.

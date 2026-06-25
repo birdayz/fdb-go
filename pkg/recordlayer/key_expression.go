@@ -111,6 +111,15 @@ func FanOut(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name, fanType: FanTypeFanOut}
 }
 
+// FieldConcatenate creates a key expression for a repeated field that collects all
+// repeated values into a single tuple element. Matches Java's
+// Key.Expressions.field("name", FanType.Concatenate). This is the argument shape a
+// CARDINALITY() index uses: the whole array is materialised into one Key.Evaluated
+// so its element count can be taken.
+func FieldConcatenate(name string) KeyExpression {
+	return &FieldKeyExpression{fieldName: name, fanType: FanTypeConcatenate}
+}
+
 // Evaluate extracts the field value(s) from the message.
 // For non-repeated fields, returns one tuple with the single value.
 // For repeated fields with FanOut, returns one tuple per value.
@@ -687,6 +696,14 @@ func (c *CompositeKeyExpression) FieldNames() []string {
 	return names
 }
 
+// SubKeyExpressions returns the child key expressions in key order. Mirrors
+// Java's ThenKeyExpression.getChildren(); used by callers that need to inspect
+// the composite's structure (e.g. tagging which columns are function-keyed).
+// The returned slice is the live backing slice — callers must not mutate it.
+func (c *CompositeKeyExpression) SubKeyExpressions() []KeyExpression {
+	return c.expressions
+}
+
 // ColumnSize returns the sum of all child column sizes.
 func (c *CompositeKeyExpression) ColumnSize() int {
 	total := 0
@@ -821,6 +838,11 @@ func createsDuplicates(expr KeyExpression) bool {
 		return createsDuplicates(e.innerKey)
 	case *VersionKeyExpression:
 		return false
+	case *CardinalityFunctionKeyExpression:
+		// Matches Java's CardinalityFunctionKeyExpression.createsDuplicates(),
+		// which overrides FunctionKeyExpression's default to false — a count is
+		// single-valued (getColumnSize()==1, one entry per record).
+		return false
 	case *FunctionKeyExpression:
 		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.
 		// Functions can potentially produce multiple values.
@@ -878,6 +900,8 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 		// getEntryPrimaryKey reads from the FDB key which only has splitPoint columns.
 		return normalizeKeyForPositions(e.innerKey)
 	case *VersionKeyExpression:
+		return []KeyExpression{expr}
+	case *CardinalityFunctionKeyExpression:
 		return []KeyExpression{expr}
 	case *FunctionKeyExpression:
 		return []KeyExpression{expr}

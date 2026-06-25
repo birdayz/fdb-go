@@ -23,8 +23,6 @@ type RecordQueryFlatMapPlan struct {
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
 	leftOuter                    bool
-	existsMode                   bool
-	notExistsMode                bool
 }
 
 func NewRecordQueryFlatMapPlan(
@@ -59,10 +57,6 @@ func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 }
 func (p *RecordQueryFlatMapPlan) IsLeftOuter() bool   { return p.leftOuter }
 func (p *RecordQueryFlatMapPlan) SetLeftOuter(v bool) { p.leftOuter = v }
-func (p *RecordQueryFlatMapPlan) IsExists() bool      { return p.existsMode }
-func (p *RecordQueryFlatMapPlan) SetExists(v bool)    { p.existsMode = v }
-func (p *RecordQueryFlatMapPlan) IsNotExists() bool   { return p.notExistsMode }
-func (p *RecordQueryFlatMapPlan) SetNotExists(v bool) { p.notExistsMode = v }
 
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
@@ -70,7 +64,7 @@ func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other RecordQueryPlan) bo
 		return false
 	}
 	return p.outerAlias == o.outerAlias && p.innerAlias == o.innerAlias &&
-		p.leftOuter == o.leftOuter && p.existsMode == o.existsMode && p.notExistsMode == o.notExistsMode
+		p.leftOuter == o.leftOuter
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
@@ -82,12 +76,6 @@ func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	var flags byte
 	if p.leftOuter {
 		flags |= 1
-	}
-	if p.existsMode {
-		flags |= 2
-	}
-	if p.notExistsMode {
-		flags |= 4
 	}
 	h.Write([]byte{0, flags})
 	return h.Sum64()

@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -324,40 +322,6 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	}
 }
 
-// TestGroupByKey pins the collision-free invariant for GROUP BY keys.
-// Encodings must:
-//   - keep NULL distinct from the literal string "<nil>" (pre-fix collision)
-//   - keep int 5 distinct from string "5" (same type-tag rule as rowKey)
-//   - treat two NULLs in the same column as equal (SQL spec)
-//   - keep (NULL, 'x') distinct from ('x', NULL) across columns
-func TestGroupByKey(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name  string
-		a, b  []driver.Value
-		equal bool
-	}{
-		{"identical non-null", []driver.Value{int64(1), "x"}, []driver.Value{int64(1), "x"}, true},
-		{"both NULL same cols", []driver.Value{nil, nil}, []driver.Value{nil, nil}, true},
-		{"NULL vs nil-string", []driver.Value{nil}, []driver.Value{"<nil>"}, false},
-		{"int 5 vs string '5'", []driver.Value{int64(5)}, []driver.Value{"5"}, false},
-		{"(NULL,x) vs (x,NULL)", []driver.Value{nil, "x"}, []driver.Value{"x", nil}, false},
-		{"same NULL/non-null pattern", []driver.Value{nil, int64(1)}, []driver.Value{nil, int64(1)}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ka := groupByKey(tc.a)
-			kb := groupByKey(tc.b)
-			got := ka == kb
-			if got != tc.equal {
-				t.Errorf("groupByKey %s: got %v (ka=%q kb=%q), want equal=%v",
-					tc.name, got, ka, kb, tc.equal)
-			}
-		})
-	}
-}
-
 // TestTriBool pins the Kleene three-valued truth table so any future tweak
 // of triAnd/triOr/Not doesn't silently violate SQL §8.12. Exhaustively
 // enumerates all 3×3 combinations — 9 AND, 9 OR, 3 NOT.
@@ -464,7 +428,7 @@ func TestEmbeddedConnection_ResetSession(t *testing.T) {
 
 // TestEmbeddedConnection_ResetSessionClearsPerRequestState pins the
 // pooled-connection hygiene invariants that were missing before:
-// activeTx, ctes, and SchemaCache must not leak across checkouts.
+// activeTx and SchemaCache must not leak across checkouts.
 func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{
@@ -475,21 +439,15 @@ func TestEmbeddedConnection_ResetSessionClearsPerRequestState(t *testing.T) {
 				"stale": nil,
 			},
 		},
-		ctes: map[string]*cteData{
-			"LEAKED": {cols: []string{"x"}, rows: [][]driver.Value{{int64(1)}}},
-		},
 		// activeTx left nil — rolling back a nil tx must not panic, but the
-		// reset must still run to completion (the schema-cache / ctes cleanup
-		// would be skipped if we early-returned on activeTx presence).
+		// reset must still run to completion (the schema-cache cleanup would
+		// be skipped if we early-returned on activeTx presence).
 	}
 	if err := conn.ResetSession(context.TODO()); err != nil {
 		t.Fatalf("ResetSession: unexpected error: %v", err)
 	}
 	if conn.sess.Schema != "main" {
 		t.Errorf("schema not restored to defaultSchema: got %q want %q", conn.sess.Schema, "main")
-	}
-	if conn.ctes != nil {
-		t.Errorf("ctes not cleared: %v", conn.ctes)
 	}
 	if len(conn.sess.SchemaCache) != 0 {
 		t.Errorf("SchemaCache not cleared: %v", conn.sess.SchemaCache)
@@ -947,117 +905,6 @@ func FuzzCastValue(f *testing.F) {
 				t.Fatalf("CAST(%v AS %q) = (%v, %v): non-nil value alongside error",
 					v, typeName, r, err)
 			}
-		}
-	})
-}
-
-// FuzzLikePrefixStrinc pins the LIKE-prefix strinc helper — must never
-// panic, and when it returns ok=true the result must be strictly
-// greater than any string starting with the prefix (in byte order).
-// The all-0xFF case must return ok=false, never a wrong bound.
-func FuzzLikePrefixStrinc(f *testing.F) {
-	f.Add("a")
-	f.Add("foo")
-	f.Add("")
-	f.Add("\xff")
-	f.Add("\xff\xff")
-	f.Add("a\xff")
-	f.Add("\xff\xffa")
-	f.Add("Hello, 世界")
-	f.Add("0")
-	f.Add("~")
-	f.Fuzz(func(t *testing.T, prefix string) {
-		high, ok := likePrefixStrinc(prefix)
-		if !ok {
-			// Unreachable for any prefix with a byte < 0xFF.
-			for _, b := range []byte(prefix) {
-				if b < 0xFF {
-					t.Fatalf("likePrefixStrinc(%q) = _, false but prefix has byte < 0xFF", prefix)
-				}
-			}
-			return
-		}
-		// high must be strictly greater than prefix, and greater than
-		// every extension `prefix || anything`. The latter is implied
-		// by high being the byte-level successor of some prefix of
-		// `prefix` — so any string S with S >= prefix AND S < high
-		// must start with `prefix` (which is what the range scan
-		// semantics rely on).
-		if high <= prefix {
-			t.Fatalf("likePrefixStrinc(%q) = %q, not > prefix", prefix, high)
-		}
-		// Known worst-case extension: `prefix || \xff` must sort
-		// before `high` (otherwise we'd miss rows).
-		ext := prefix + "\xff"
-		if ext >= high {
-			t.Fatalf("likePrefixStrinc(%q) = %q, but %q >= high — extension misses range",
-				prefix, high, ext)
-		}
-	})
-}
-
-// FuzzLikePatternToPrefix pins the LIKE-pattern prefix extractor.
-// Must never panic on arbitrary inputs, and every returned prefix
-// must be non-empty.
-//
-// The stronger invariant — "every string matching the pattern starts
-// with the extracted prefix" — is the correctness condition for the
-// pushdown: if some matching row `s` does NOT have `prefix` as a
-// byte-level prefix, the scan range `[prefix, strinc(prefix))` would
-// exclude it (false-negative pruning → silently wrong query results).
-//
-// Scope: valid-UTF-8 only. likePatternToPrefix uses []rune decoding,
-// which folds invalid UTF-8 bytes (0x80-0xFF not forming a legal
-// sequence) into U+FFFD — likeMatch compares the same folded runes
-// and returns true for distinct invalid-byte inputs, but
-// strings.HasPrefix is byte-level and sees them as different. For
-// protobuf STRING columns this is moot: protobuf rejects invalid
-// UTF-8 at (de)serialization time, so the fuzz skips such inputs.
-//
-// The corpus drives `s` explicitly so the fuzzer can find counter-
-// examples rather than only random patterns that no input happens
-// to match. When likeMatch(pattern, s, escape) is true and ok is
-// true, strings.HasPrefix(s, prefix) must hold. Any divergence is
-// a pushdown bug.
-func FuzzLikePatternToPrefix(f *testing.F) {
-	// (pattern, escape, candidate string) seeds. Candidates are chosen
-	// so at least some satisfy likeMatch on the paired pattern.
-	f.Add("foo%", rune(-1), "foobar")
-	f.Add("foo\\_%", rune('\\'), "foo_bar")
-	f.Add("foo", rune(-1), "foo")
-	f.Add("%", rune(-1), "anything")
-	f.Add("", rune(-1), "")
-	f.Add("_", rune(-1), "x")
-	f.Add("f%o", rune(-1), "foo")
-	f.Add("f_o", rune(-1), "fxo")
-	f.Add("foo%bar", rune(-1), "foobar")
-	f.Add("foo%bar", rune(-1), "fooxbar")
-	f.Add("\\%", rune('\\'), "%")
-	f.Add("\\", rune('\\'), "")
-	f.Add("%%", rune(-1), "abc")
-	f.Add("a_b%c", rune(-1), "axbxc")
-	f.Fuzz(func(t *testing.T, pattern string, escape rune, s string) {
-		// Protobuf STRING columns reject invalid UTF-8 on
-		// (de)serialization; replicate that contract here so the
-		// byte-vs-rune mismatch on invalid sequences (both fold to
-		// U+FFFD in likeMatch but remain byte-distinct in HasPrefix)
-		// doesn't produce spurious failures.
-		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
-			return
-		}
-		prefix, ok := likePatternToPrefix(pattern, escape)
-		if !ok {
-			return
-		}
-		if prefix == "" {
-			t.Fatalf("likePatternToPrefix(%q, %q) returned empty prefix with ok=true", pattern, escape)
-		}
-		// Correctness invariant: if `s` matches `pattern`, it MUST
-		// start with `prefix`. Otherwise the pushdown's scan bound
-		// excludes a matching row.
-		if functions.LikeMatch(pattern, s, escape) && !strings.HasPrefix(s, prefix) {
-			t.Fatalf("likePatternToPrefix false-negative: pattern=%q escape=%q s=%q matches but prefix=%q is not a prefix of s",
-				pattern, escape, s, prefix)
 		}
 	})
 }

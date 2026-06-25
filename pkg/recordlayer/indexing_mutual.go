@@ -333,18 +333,23 @@ func (m *mutualIndexBuilder) findRangeInFragment(tx fdb.WritableTransaction, ran
 // but scoped to a fragment. Reuses the indexer's existing buildRange logic.
 func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBRecordStore, primaryRangeSet *IndexingRangeSet, r *RangeSetRange) (int64, error) {
 	var rangeStart, rangeEnd tuple.Tuple
+	lowEp := EndpointTypeRangeInclusive
+	highEp := EndpointTypeRangeExclusive
 
-	if !bytes.Equal(r.Begin, rangeSetFirstKey) {
+	if bytes.Equal(r.Begin, rangeSetFirstKey) {
+		lowEp = EndpointTypeTreeStart
+	} else {
 		var err error
-		rangeStart, err = fastUnpack(r.Begin)
-		if err != nil {
+		if rangeStart, err = fastUnpack(r.Begin); err != nil {
 			return 0, fmt.Errorf("mutual indexer: unpack range begin: %w", err)
 		}
 	}
-	if !bytes.Equal(r.End, rangeSetFinalKey) {
+	// The end may be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset.
+	if bytes.Equal(r.End, rangeSetFinalKey) {
+		highEp = EndpointTypeTreeEnd
+	} else {
 		var err error
-		rangeEnd, err = fastUnpack(r.End)
-		if err != nil {
+		if rangeEnd, highEp, err = unpackRangeEndBoundary(r.End); err != nil {
 			return 0, fmt.Errorf("mutual indexer: unpack range end: %w", err)
 		}
 	}
@@ -353,15 +358,6 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 	scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(m.indexer.limit, 1)
 	if m.indexer.allTargetIndexesIdempotent() {
 		scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
-	}
-
-	lowEp := EndpointTypeRangeInclusive
-	highEp := EndpointTypeRangeExclusive
-	if rangeStart == nil {
-		lowEp = EndpointTypeTreeStart
-	}
-	if rangeEnd == nil {
-		highEp = EndpointTypeTreeEnd
 	}
 
 	cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
@@ -395,12 +391,14 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 		recordsProcessed++
 	}
 
-	// Mark the built range.
+	// Mark the built range. Use the ORIGINAL byte boundary r.End (not rangeEnd.Pack()):
+	// it may be a tuple+0xff (RANGE_INCLUSIVE high) from the typed-records preset, and the
+	// stripped pack would drop the 0xff and invert the range.
 	var endKey []byte
 	if extraPK != nil {
 		endKey = extraPK.Pack()
-	} else if rangeEnd != nil {
-		endKey = rangeEnd.Pack()
+	} else if !bytes.Equal(r.End, rangeSetFinalKey) {
+		endKey = r.End
 	} else {
 		endKey = rangeSetFinalKey
 	}

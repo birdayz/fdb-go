@@ -6,6 +6,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -1501,6 +1502,210 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("proto syntax changed"))
+		})
+
+		// --- Field renames (Java 4.12: #4034 / #4119) -------------------------------
+
+		// deprecatedField builds an OPTIONAL string field carrying the `deprecated` option.
+		deprecatedField := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+			f := makeField(name, number, descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)
+			dep := true
+			f.Options = &descriptorpb.FieldOptions{Deprecated: &dep}
+			return f
+		}
+		idField := func() *descriptorpb.FieldDescriptorProto {
+			return makeField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)
+		}
+		strField := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+			return makeField(name, number, descriptorpb.FieldDescriptorProto_TYPE_STRING, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)
+		}
+
+		It("accepts a non-PK field rename when allowFieldRenames is set", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("label", 2)}), // name -> label
+			}, nil)
+			v := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()
+			Expect(v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))).To(Succeed())
+		})
+
+		It("rejects a non-deprecated rename when only allowDeprecatedFieldRenames is set", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("label", 2)}),
+			}, nil)
+			v := NewMetaDataEvolutionValidator().SetAllowDeprecatedFieldRenames(true).Build()
+			err := v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("renamed"))
+		})
+
+		It("accepts a deprecated field rename when allowDeprecatedFieldRenames is set", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), deprecatedField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), deprecatedField("label", 2)}),
+			}, nil)
+			v := NewMetaDataEvolutionValidator().SetAllowDeprecatedFieldRenames(true).Build()
+			Expect(v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))).To(Succeed())
+		})
+
+		It("rejects un-deprecating a field by default", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), deprecatedField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("name", 2)}), // same name, no longer deprecated
+			}, nil)
+			err := ValidateEvolution(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("no longer deprecated"))
+		})
+
+		It("accepts un-deprecating a field when allowUndeprecatingFields is set", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), deprecatedField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("name", 2)}),
+			}, nil)
+			v := NewMetaDataEvolutionValidator().SetAllowUndeprecatingFields(true).Build()
+			Expect(v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))).To(Succeed())
+		})
+
+		It("rewrites the primary key across an allowed rename of the PK field", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField()}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
+					makeField("identifier", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL), // id -> identifier
+				}),
+			}, nil)
+			old := buildSyntheticMD(1, oldFD)
+			new := buildSyntheticMD(2, newFD)
+			new.recordTypes["TestMsg"].PrimaryKey = Field("identifier") // new PK references the renamed field
+			v := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()
+			Expect(v.Validate(old, new)).To(Succeed())
+		})
+
+		It("rejects a primary key that does not match the rename-rewritten expectation", func() {
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField()}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
+					makeField("identifier", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
+				}),
+			}, nil)
+			old := buildSyntheticMD(1, oldFD)
+			new := buildSyntheticMD(2, newFD) // PK left as the stale Field("id")
+			v := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()
+			err := v.Validate(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("does not match required"))
+		})
+
+		It("still rejects a disallowed type change across an allowed rename", func() {
+			// Allowing renames must not relax the independent field-type check: renaming
+			// name(string) -> label(int64) is still an unsafe type change.
+			oldFD := buildSyntheticFile("old.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{idField(), strField("name", 2)}),
+			}, nil)
+			newFD := buildSyntheticFile("new.proto", "test", []*descriptorpb.DescriptorProto{
+				makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
+					idField(),
+					makeField("label", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
+				}),
+			}, nil)
+			v := NewMetaDataEvolutionValidator().SetAllowFieldRenames(true).Build()
+			err := v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("type changed in message"))
+		})
+	})
+
+	Describe("renameFields (RenameFieldsVisitor port)", func() {
+		// messageField builds an OPTIONAL message-typed field referencing typeName.
+		messageField := func(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto {
+			t := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+			l := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+			return &descriptorpb.FieldDescriptorProto{Name: &name, Number: &number, Type: &t, Label: &l, TypeName: &typeName}
+		}
+		strField := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+			t := descriptorpb.FieldDescriptorProto_TYPE_STRING
+			l := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+			return &descriptorpb.FieldDescriptorProto{Name: &name, Number: &number, Type: &t, Label: &l}
+		}
+		buildFile := func(fileName string, msgs ...*descriptorpb.DescriptorProto) protoreflect.FileDescriptor {
+			syntax := "proto2"
+			pkg := "test"
+			fdp := &descriptorpb.FileDescriptorProto{Name: &fileName, Package: &pkg, Syntax: &syntax, MessageType: msgs}
+			fd, err := protodesc.NewFile(fdp, nil)
+			Expect(err).NotTo(HaveOccurred())
+			return fd
+		}
+		msg := func(name string, fields ...*descriptorpb.FieldDescriptorProto) *descriptorpb.DescriptorProto {
+			return &descriptorpb.DescriptorProto{Name: &name, Field: fields}
+		}
+
+		It("renames a top-level field by number", func() {
+			oldDesc := buildFile("o.proto", msg("M", strField("a", 1))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("M", strField("renamed_a", 1))).Messages().Get(0)
+			got, err := renameFields(Field("a"), oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Field("renamed_a").ToKeyExpression())).To(BeTrue())
+		})
+
+		It("returns the input unchanged when source and target are identical", func() {
+			desc := buildFile("o.proto", msg("M", strField("a", 1))).Messages().Get(0)
+			input := Field("a")
+			got, err := renameFields(input, desc, desc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeIdenticalTo(input)) // source==target short-circuits to the same object
+		})
+
+		It("renames a field inside a nested message", func() {
+			oldDesc := buildFile("o.proto", msg("Outer", messageField("inner", 1, ".test.Inner")), msg("Inner", strField("x", 1))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("Outer", messageField("inner", 1, ".test.Inner")), msg("Inner", strField("y", 1))).Messages().Get(0)
+			got, err := renameFields(Nest("inner", Field("x")), oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Nest("inner", Field("y")).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("renames an outer parent while the inner descriptor is unchanged (multi-level)", func() {
+			// Outer.inner (renamed to wrapper) -> Inner.x ; Inner is unchanged.
+			oldDesc := buildFile("o.proto", msg("Outer", messageField("inner", 1, ".test.Inner")), msg("Inner", strField("x", 1))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("Outer", messageField("wrapper", 1, ".test.Inner")), msg("Inner", strField("x", 1))).Messages().Get(0)
+			got, err := renameFields(Nest("inner", Field("x")), oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Nest("wrapper", Field("x")).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("rewrites the children of a composite (Then) expression", func() {
+			oldDesc := buildFile("o.proto", msg("M", strField("a", 1), strField("b", 2))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("M", strField("a", 1), strField("bee", 2))).Messages().Get(0)
+			got, err := renameFields(Concat(Field("a"), Field("b")), oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Concat(Field("a"), Field("bee")).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("errors when the target descriptor lacks the field number", func() {
+			oldDesc := buildFile("o.proto", msg("M", strField("a", 1))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("M", strField("a", 2))).Messages().Get(0) // number changed 1 -> 2
+			_, err := renameFields(Field("a"), oldDesc, newDesc)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("not found in target descriptor"))
 		})
 	})
 

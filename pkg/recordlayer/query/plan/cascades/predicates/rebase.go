@@ -5,7 +5,7 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascad
 // RebasePredicate replaces correlation references in a predicate tree
 // according to the alias map. Returns the original predicate if no
 // references match. Handles ComparisonPredicate, AndPredicate,
-// OrPredicate, NotPredicate, ValuePredicate, ExistsPredicate,
+// OrPredicate, NotPredicate, ValuePredicate, ExistentialValuePredicate,
 // ConstantPredicate.
 //
 // Ports Java's QueryPredicate.rebase(AliasMap).
@@ -20,13 +20,16 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
+		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
+		// preserving Escape (the LIKE escape rune) AND every other Comparison
+		// subclass field (ParameterName, the Text* fields, the DistanceRank
+		// vector fields). A partial {Type, Operand, Escape} reconstruction would
+		// silently drop the rest and change the comparison's semantics.
+		cmp := pred.Comparison
+		cmp.Operand = newCompOperand
 		return &ComparisonPredicate{
-			Operand: newOperand,
-			Comparison: Comparison{
-				Type:    pred.Comparison.Type,
-				Operand: newCompOperand,
-				Escape:  pred.Comparison.Escape,
-			},
+			Operand:    newOperand,
+			Comparison: cmp,
 		}
 	case *ValuePredicate:
 		newVal := values.RebaseValue(pred.Value, aliases)
@@ -48,11 +51,14 @@ func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 			return p
 		}
 		return NewNot(newChild)
-	case *ExistsPredicate:
-		if newAlias, ok := aliases[pred.ExistentialAlias]; ok {
-			return NewExistsPredicate(newAlias)
+	case *ExistentialValuePredicate:
+		// RFC-141: rebase the QuantifiedObjectValue operand's alias via the
+		// shared value path; the comparison (NOT_NULL) carries unchanged.
+		newVal := values.RebaseValue(pred.Value, aliases)
+		if newVal == pred.Value {
+			return p
 		}
-		return p
+		return MustNewExistentialValuePredicate(newVal, pred.Comparison)
 	case *Placeholder:
 		newAlias := pred.ParameterAlias
 		if mapped, ok := aliases[newAlias]; ok {

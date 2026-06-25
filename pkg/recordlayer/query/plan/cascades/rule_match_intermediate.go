@@ -637,6 +637,19 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if qOk && pOk {
 		return strings.EqualFold(qFV.Field, pFV.Field)
 	}
+	// CARDINALITY() index: the query's predicate LHS for
+	// `WHERE CARDINALITY(arr) = N` / `IS [NOT] NULL` is a
+	// CardinalityValue(FieldValue(arr)); the candidate's placeholder is the same
+	// value over the index column (built by ColumnValue). The QOV aliases differ
+	// at this point (the alias map is built only after binding), so — like the
+	// FieldValue and distance-row-number cases — match alias-invariantly by the
+	// wrapped field name.
+	if qCard, ok := queryValue.(*values.CardinalityValue); ok {
+		if pCard, ok := placeholderValue.(*values.CardinalityValue); ok {
+			return valuesMatchColumn(qCard.Child, pCard.Child)
+		}
+		return false
+	}
 	// Vector K-NN: the query's DistanceRank predicate LHS is a metric-specific
 	// DistanceRowNumberValue; the candidate's distance placeholder is the same
 	// value over the index columns. Match alias-invariantly by metric class +

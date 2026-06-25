@@ -10,10 +10,11 @@ type AliasMap map[CorrelationIdentifier]CorrelationIdentifier
 // references match.
 //
 // Leaf values with correlation aliases (QuantifiedObjectValue,
-// QuantifiedRecordValue, ExistsValue, ScalarSubqueryValue,
-// ObjectValue) have their alias remapped directly. All other
-// non-leaf values recursively rebase children and reconstruct
-// via WithChildren — no per-type wiring needed.
+// QuantifiedRecordValue, ScalarSubqueryValue, ObjectValue) have their
+// alias remapped directly. All other non-leaf values (including
+// ExistsValue, a transparent composite over a QuantifiedObjectValue)
+// recursively rebase children and reconstruct via WithChildren — no
+// per-type wiring needed.
 //
 // Ports Java's Value.rebase(AliasMap): leaf values override
 // rebaseLeaf(); non-leaf values use the default rebase() which
@@ -39,11 +40,6 @@ func RebaseValue(v Value, aliases AliasMap) Value {
 				Alias:      newAlias,
 				ResultType: val.ResultType,
 			}
-		}
-		return v
-	case *ExistsValue:
-		if newAlias, ok := aliases[val.Alias]; ok {
-			return &ExistsValue{Alias: newAlias}
 		}
 		return v
 	case *ScalarSubqueryValue:

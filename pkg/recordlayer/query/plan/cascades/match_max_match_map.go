@@ -51,15 +51,27 @@ func buildMatchMaxMatchMap(
 // isSargableComparisonForMatch reports whether a comparison type can bind
 // to an index candidate's placeholder as a scan constraint. It is the
 // value-index range set (ImplementIndexScanRule's isScanRangeCompatible:
-// =, <, <=, >, >=, STARTS_WITH) PLUS the vector DISTANCE_RANK bounds (for
-// a vector candidate's distance placeholder). Everything else (IN, IS
-// NULL, NOT EQUALS, LIKE, full-text, …) is non-sargable and stays a
-// residual filter.
+// =, <, <=, >, >=, STARTS_WITH) PLUS the NULL comparisons (IS NULL is a
+// [null] EQUALITY range, IS NOT NULL is the (null, +inf) INEQUALITY range —
+// Java's ScanComparisons.getComparisonType maps them to EQUALITY/INEQUALITY)
+// PLUS the vector DISTANCE_RANK bounds (for a vector candidate's distance
+// placeholder). Everything else (IN, NOT EQUALS, LIKE, full-text, …) is
+// non-sargable and stays a residual filter.
+//
+// Only this index-match gate admits the NULL comparisons (not the base
+// isScanRangeCompatible, which the NLJ path also consults): the index-match
+// path runs them through ComparisonRange.Merge (which classifies IS NULL as
+// equality, IS NOT NULL as inequality) and the executor's
+// scanComparisonsToTupleRange (which builds the [null]/(null,+inf) ranges),
+// both of which handle the null cases correctly.
 func isSargableComparisonForMatch(t predicates.ComparisonType) bool {
 	if isScanRangeCompatible(t) {
 		return true
 	}
 	switch t {
+	case predicates.ComparisonIsNull,
+		predicates.ComparisonIsNotNull:
+		return true
 	case predicates.ComparisonDistanceRankEquals,
 		predicates.ComparisonDistanceRankLessThan,
 		predicates.ComparisonDistanceRankLessThanOrEq:

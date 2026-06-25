@@ -46,6 +46,9 @@ func writeSemanticHash(h io.Writer, v Value) {
 		// alias excluded; ConstantID IS a discriminator (equality compares it).
 		_, _ = io.WriteString(h, "cov:"+t.ConstantID)
 	case *ExistsValue:
+		// Transparent composite (RFC-141): type tag here, the child
+		// QuantifiedObjectValue is folded by the Children() loop in the
+		// common tail (alias-excluded, so the hash stays alias-invariant).
 		_, _ = io.WriteString(h, "exists")
 	case *ScalarSubqueryValue:
 		_, _ = io.WriteString(h, "scalarsubquery")

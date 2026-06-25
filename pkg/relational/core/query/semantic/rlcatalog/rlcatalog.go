@@ -127,6 +127,11 @@ func (t *recordTypeTable) ensureColumnIndex() {
 				Id:       id,
 				Type:     protoKindToSQL(f.Kind()),
 				Nullable: isNullable(f),
+				// A repeated field is a SQL ARRAY. The Type string carries
+				// the element kind (protoKindToSQL maps the scalar Kind);
+				// IsArray is the signal that the column itself is an array,
+				// needed to type the resolved Value as an ArrayType.
+				IsArray: isRepeated(f),
 			}
 			t.colIndex[id.Name()] = col
 			t.colOrdered = append(t.colOrdered, col)
@@ -179,9 +184,12 @@ func (t *recordTypeTable) Indexes() []string {
 	return out
 }
 
-// isRepeated reports whether the descriptor is a list-typed field.
+// isRepeated reports whether the descriptor is a list-typed (array) field.
+// A proto map<k,v> field is also Cardinality()==Repeated, so it must be
+// excluded — otherwise a map column would be mistyped as an array. Matches
+// the IsMap() guard already used at metadata/proto_types.go.
 func isRepeated(f protoreflect.FieldDescriptor) bool {
-	return f.Cardinality() == protoreflect.Repeated
+	return f.Cardinality() == protoreflect.Repeated && !f.IsMap()
 }
 
 // isNullable reports whether a proto field can be absent (and thus
