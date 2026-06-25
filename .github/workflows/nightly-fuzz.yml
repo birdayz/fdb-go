@@ -275,6 +275,7 @@ jobs:
           path: |
             bazel-testlogs/pkg/relational/**/test.log
             bazel-testlogs/pkg/recordlayer/**/test.log
+            bazel-testlogs/pkg/rabitq/**/test.log
             /tmp/fuzz-cache/**
           retention-days: 30
           if-no-files-found: ignore

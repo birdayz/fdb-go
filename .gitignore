@@ -63,3 +63,6 @@ REVIEW.md
 
 # transient code-review scratch (codex / reviewer agents)
 .review_*.txt
+
+# stray build artifact from `go build ./example/sql`
+/sql
