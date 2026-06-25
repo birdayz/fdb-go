@@ -56,14 +56,27 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
    encoding). RFC-059→067 closed. Detail: conformance section, "Fresh differential axes".
+   **Atomic-op axis hunted (2026-06-25): one concrete divergence found → RFC-149.** The Min→MinV2 /
+   And→AndV2 op-code upgrade lives only in the `fdb` facade, so `client.Transaction.Atomic` (and thus the
+   `cmd/fdb-stacktester` binding tester) ships legacy `Min(13)`/`And(6)` where libfdb_c ships
+   `MinV2(18)`/`AndV2(19)` — diverges on absent-key fold. Fix: move the upgrade into `client.Atomic` (the
+   `RYW::atomicOp` analog), 1:1 with `ReadYourWrites.actor.cpp:2243-2248`. All other fold functions verified
+   byte-identical to `Atomic.h`. Gate: FDB-C-dev + Torvalds + codex. Next axes: option `defaultFor` matrix,
+   versionstamp-offset edges (RFC-063 still Draft).
 3. **[ ] C2-followup — confirm RFC-057's lazy iterator closed the go-vs-cgo 1007-rate** near the 5s
    MVCC edge (profiling, not a fix). Detail: conformance section, "C2-followup".
 4. **[ ] Query-engine "one query path" unification.** Route `buildSelectShell`/SimpleTable builder +
    INSERT…SELECT through `visitSelectGroupBy`, delete the legacy builder (CLAUDE.md "no parallel
    pipelines" endgame). Graefe-gated. Detail: "vs Java" follow-ups (RFC-079b + RFC-084) + §7.6 history.
-5. **[ ] 7.7 follow-up — BLOCKED.** Replace the `isSimpleResidualCompensation` allowlist with Java's
-   exploratory-yield re-optimization. Blocked on Go compensation re-optimization handling
-   IN-explode/correlated/index-only shapes. Detail: §7.7.
+5. **[ ] 7.7 follow-up — RFC-148 (re-scoped: NOT architecturally blocked).** Replace the
+   `isSimpleResidualCompensation` allowlist with Java's exploratory-yield re-optimization
+   (`yieldUnknownExpression`). Research (2026-06-25) found the primitives already exist in Go — the
+   two-set memo (`Insert`/`InsertFinal`), the exploratory re-explore loop, and the PLANNING-phase
+   explode/join/filter rules (`InComparisonToExplodeRule` is already in `PlanningExplorationRules`). The
+   residual work is a `yieldUnknown` router (trivial) + a `pushDataAccessTasks` re-entry/termination guard
+   (the real engineering) + per-shape red→green grinding (IN/correlated/index-only/join-leg/vector-inner,
+   each already has a sentinel). Reclassified from "BLOCKED" to "open — grind one shape at a time."
+   Graefe-gated. Detail: §7.7 + RFC-148.
 6. **[ ] Parallelize `//conformance` off Ginkgo** [LOW PRIO]. Detail: "Test infra (low priority)".
 7. **[~] Java target bump to 4.12.11.0 (from the 4.11 series; RFC-135).** Mechanical bump landed (pins + proto
    sync + regen + version-target docs; `record_query_plan.proto` removed `PVersionValue`/reserved tag
@@ -72,8 +85,14 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    `docscheck.TestPlanProtoSchemaMatches412`). **Behavioural parity = the R-items below, each its own
    RFC, landed one at a time. Verify Java 4.12 actually supports each before treating as parity vs
    allowed Go-extension.**
-   - **[ ] R1** — metadata-evolution field renames (`allow{Field,DeprecatedFieldRenames,Undeprecating}` +
-     `RenameFieldsVisitor`) vs Java `MetaDataEvolutionValidator`. Gate: Torvalds + codex + @claude.
+   - **[x] R1 — DONE (RFC-136, merged in PR #336 `2095a4a7b`).** metadata-evolution field renames
+     (`allow{Field,DeprecatedFieldRenames,Undeprecating}` + `RenameFieldsVisitor`) vs Java
+     `MetaDataEvolutionValidator`. Landed in the same change as the RFC-135 4.12 upgrade —
+     `rename_fields_visitor.go` + all three flags + the `validateField`/`comparePrimaryKeys`/index rewrite.
+     RFC-136 was just never flipped from Draft (now corrected). **Small residual follow-up:** port the
+     missing `RenameFieldsVisitorTest` shapes (Grouping/Function/Split/Dimensions/KeyWithValue/List/nested
+     RecordType + the two source-side error paths) — ~150-250 LOC unit tests, no FDB. See RFC-136 §8. Gate:
+     Torvalds + codex + @claude.
    - **[x] R2 — DONE** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
      `markReadable` now erases scanned-records(1)/type-stamp(2)/heartbeat(7) per Java
      `eraseAllIndexingDataButTheLockAndRangeSet`; added `SetMarkReadable(bool)` (Java `buildIndex(markReadable)`
@@ -673,7 +692,10 @@ read-but-never-written (their writers were island-only); `validQualifiers` is re
 `eval_map.go:57` qualifier check (always-nil → branch never fires) and `outerScopes` by `scope.go:85`.
 Removing them touches the kept map-path eval logic (behavior-preserving since both are always nil for the
 kept consumers — single-source system-table WHERE + constant INSERT-VALUES never set them). Small,
-separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.)
+separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.) **→ RFC-147**
+(2026-06-25 research confirmed: zero non-nil production writers; the only non-nil writer is `scope_test.go`;
+the whole of `scope.go` becomes dead. Net-negative ~5-file deletion + one pin for the kept qualified
+fallback. Gate: Torvalds + codex + @claude — not Graefe surface.)
 
 Original writeup (kept for context):
 
@@ -699,13 +721,19 @@ DELETE the interpreter. This removes a large divergence surface + maintenance bu
 INFORMATION_SCHEMA gap to be fixed in Cascades. Big, separate effort — query-engine-gated (Graefe +
 Torvalds). Do NOT "keep the two aggregate executors in sync" — that is the anti-pattern; remove one.
 
-### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23)
+### [ ] relational/planner: bare boolean column as a single-table top-level WHERE predicate (`WHERE flag`) does not plan (surfaced by RFC-144 §3d, 2026-06-23) — RFC-146
 
-A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:397`) lifts any non-`BooleanValue`/non-literal boolean expression to a `ValuePredicate(value, EQUALS TRUE)`. So Go's gap is in the single-table-WHERE PLANNER path (the implement/data-access leg), NOT the parser — a top-level `ValuePredicate(FieldValue)` filter isn't getting implemented as a `RecordQueryPredicatesFilterPlan`. Orthogonal to RFC-144's outer-join scope; pre-existing. Fix: make the single-table SELECT implement path (`ImplementSimpleSelectRule` / data-access) implement a top-level non-comparison `ValuePredicate` filter the same way the join ON residual already does. Pin with the `WHERE flag` case currently documented-as-unsupported in `outer_join_parity_fdb_test.go` (`TestFDB_OuterParity_BooleanWhere`).
+A bare boolean column as a single-table top-level WHERE predicate — `SELECT id FROM a WHERE flag` — fails with `0AF00: Cascades planner could not plan query`, even though: (a) the parser/resolver correctly lift it to `ValuePredicate(flag)` (`expr/walk.go` walkPredicatedExpression; `TestWalkPredicate_BareBooleanColumn` passes), (b) explicit comparisons work (`WHERE flag = TRUE`, `WHERE flag IS TRUE`), and (c) the SAME `ValuePredicate(flag)` shape plans fine inside a join ON clause (`SELECT a.id, b.name FROM a LEFT JOIN b ON a.flag` — pinned green in `TestFDB_OuterParity_BooleanOn`). Java 4.12 supports it: `Expression.Utils.toUnderlyingPredicate` (`fdb-relational-core/.../query/Expression.java:371-399`) lifts a bare boolean value to `ValuePredicate(value, EQUALS TRUE)` and rejects a non-boolean bare value with `DATATYPE_MISMATCH` (42804).
 
-### [ ] fdbgo/client: GetAddressesForKey always emits `ip:port`; C++ defaults to ip-only unless `include_port_in_address` is set (surfaced by the RFC-133 option-matrix review, 2026-06-20)
+**Root cause corrected (RFC-146 research, 2026-06-25):** the gap is NOT the implement leg (the TODO's original hypothesis). `ImplementSimpleSelectRule` already builds a `RecordQueryPredicatesFilterPlan` from a top-level bare `ValuePredicate` — proven by deleting the guard. The actual bail-out is a conservative guard in the **translator**: `translateFilter` short-circuits to `nil` via `isBareFieldPredicate` (`cascades_translator.go:1687-1689` + helper `:2867`, added commit `85d0dd9f2`). Fix = mirror Java's single lift point: add the boolean type-assertion at `expr/walk.go:1334` (non-boolean → 42804, covers BOTH WHERE and ON), remove the guard, and propagate the type error hard (don't let `buildWherePredicateForTable` swallow it to `0AF00`). Do NOT just delete the guard — that makes `WHERE <non-boolean>` plan and silently return 0 rows instead of raising 42804. Graefe-gated. Pin: flip `TestFDB_OuterParity_BooleanWhere` + the `bare_bool_where_rejected` plandiff corpus entry. Detail: RFC-146.
 
-`Transaction.GetAddressesForKey` (`transaction.go:2167-2176`) unconditionally returns `endpointAddress` = `ip:port` (`endpoint.go:36`). libfdb_c defaults the address format to **ip-only**, appending `:port` only when `FDB_TR_OPTION_INCLUDE_PORT_IN_ADDRESS` is set (`NativeAPI.actor.cpp:5747`). So a Go client's `GetAddressesForKey` returns port-suffixed addresses where a C client returns bare IPs by default — an output-format divergence on a rarely-used locality call. `include_port_in_address` is a **tx-only** option (no DB-default form), independent of the RFC-133 DB-default work; pre-existing. Fix is its own small wire-compat change (honor the option, default to ip-only) — flag, not gating.
+### [~] fdbgo/client: GetAddressesForKey `ip:port` vs ip-only — MISFRAMED, NOT a real gap at API 730 (re-verified 2026-06-25)
+
+**Original claim was wrong.** It said libfdb_c "defaults the address format to ip-only" and that `include_port_in_address` is "tx-only (no DB-default form)". Both are false against release-7.3:
+- C++'s default is **API-version-gated**: `TransactionOptions::reset` sets `includePort = true` for any API version ≥ 630 (`NativeAPI.actor.cpp:6158-6164`); the format decision is `trState->options.includePort ? address.toString() : address.ip.toString()` (`:5747`). This project pins API version **730** everywhere (`libfdbc/backend.go:52`, `fdbclient/open_purego.go:12`), so libfdb_c returns `ip:port` **by default** — exactly what Go returns (`transaction.go:2167-2176`). **Go matches libfdb_c for the version it actually runs.**
+- A DB-default form DOES exist: `transaction_include_port_in_address` (code 505, `defaultFor=23`).
+
+The only residual divergence is at API 510–629 (option unset → C emits bare `ip`, Go emits `ip:port`; plus Go wrongly appends `:tls`/IPv6-brackets in the would-be ip-only branch). But Go's `fdb.APIVersion` explicitly **does not emulate version-gated behavior** (`database.go:29-30`), so faithfully emulating API < 630 here would contradict the client's stated design — and would *introduce* a regression at 730 if "default ip-only" were implemented literally. **Resolution: no RFC. Closed as not-a-gap at the pinned API.** If full API<630 parity is ever wanted, it's a small opt-in (honor the API-gated `includePort` + the 505 DB-default), scoped as "emulate API<630," not "Go returns the wrong default." Gate (if pursued): FDB-C-dev + Torvalds + codex.
 
 ### [x] recordlayer: legacy format-version-<6 record versions / unsplit records — DONE (2026-06-20)
 

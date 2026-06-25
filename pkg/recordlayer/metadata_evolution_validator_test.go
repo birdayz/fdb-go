@@ -1707,6 +1707,120 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("not found in target descriptor"))
 		})
+
+		// --- Per-node-type coverage (ports Java RenameFieldsVisitorTest shapes) -----
+		// Each builds an old descriptor {a:1, b:2} and a new one renaming a->a1, b->b1
+		// by field NUMBER, then asserts the visitor recurses into the container node
+		// and rewrites the leaf field references.
+		abDesc := func() (protoreflect.MessageDescriptor, protoreflect.MessageDescriptor) {
+			oldDesc := buildFile("o.proto", msg("M", strField("a", 1), strField("b", 2))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("M", strField("a1", 1), strField("b1", 2))).Messages().Get(0)
+			return oldDesc, newDesc
+		}
+		expectRenamed := func(input, expected KeyExpression) {
+			oldDesc, newDesc := abDesc()
+			got, err := renameFields(input, oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), expected.ToKeyExpression())).To(BeTrue())
+		}
+
+		It("rewrites the children of a list expression", func() {
+			expectRenamed(ListExpr(Field("a"), Field("b")), ListExpr(Field("a1"), Field("b1")))
+		})
+
+		It("rewrites the argument of a function expression", func() {
+			expectRenamed(FunctionExpr("nada", Field("a")), FunctionExpr("nada", Field("a1")))
+		})
+
+		It("rewrites the joined expression of a split expression", func() {
+			expectRenamed(Split(Field("a"), 2), Split(Field("a1"), 2))
+		})
+
+		It("rewrites the whole key of a grouping expression", func() {
+			expectRenamed(GroupBy(Field("a"), Field("b")), GroupBy(Field("a1"), Field("b1")))
+		})
+
+		It("rewrites the inner key of a key-with-value expression", func() {
+			expectRenamed(KeyWithValue(Concat(Field("a"), Field("b")), 1), KeyWithValue(Concat(Field("a1"), Field("b1")), 1))
+		})
+
+		It("rewrites the whole key of a dimensions expression", func() {
+			expectRenamed(Dimensions(Concat(Field("a"), Field("b")), 0, 2), Dimensions(Concat(Field("a1"), Field("b1")), 0, 2))
+		})
+
+		It("rewrites the nested expression after a record-type prefix", func() {
+			expectRenamed(RecordTypeKey().Nest(Field("a")), RecordTypeKey().Nest(Field("a1")))
+		})
+
+		It("returns a bare record-type-key prefix unchanged", func() {
+			// nested == nil → the record-type prefix is rename-invariant.
+			oldDesc, newDesc := abDesc()
+			input := RecordTypeKey()
+			got, err := renameFields(input, oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeIdenticalTo(KeyExpression(input)))
+		})
+
+		It("preserves the fan type of a renamed field", func() {
+			// A FanType-carrying field must keep its fan type across the rename
+			// (Java asserts getFanType()/getNullStandin() equality; Go has no
+			// nullStandin, so fan type is the surviving axis).
+			expectRenamed(FieldConcatenate("a"), FieldConcatenate("a1"))
+		})
+
+		// Invariant leaves: returned as the SAME object (Java returns them as-is).
+		It("returns a version expression unchanged", func() {
+			oldDesc, newDesc := abDesc()
+			input := VersionKey()
+			got, err := renameFields(input, oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeIdenticalTo(KeyExpression(input)))
+		})
+
+		It("returns a literal expression unchanged", func() {
+			oldDesc, newDesc := abDesc()
+			input := Literal(int64(42))
+			got, err := renameFields(input, oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeIdenticalTo(KeyExpression(input)))
+		})
+
+		It("returns an empty expression unchanged", func() {
+			oldDesc, newDesc := abDesc()
+			input := EmptyKey()
+			got, err := renameFields(input, oldDesc, newDesc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeIdenticalTo(input))
+		})
+
+		// Error paths.
+		It("errors when the referenced field is missing in the source", func() {
+			oldDesc, newDesc := abDesc()
+			_, err := renameFields(Field("not_in_source"), oldDesc, newDesc)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("not found in source descriptor"))
+		})
+
+		It("errors when nesting into a non-message (scalar) parent field", func() {
+			// "a" is a string scalar in both old and new (different files, so the
+			// source==target short-circuit does not fire); nesting into it must fail.
+			oldDesc := buildFile("o.proto", msg("M", strField("a", 1))).Messages().Get(0)
+			newDesc := buildFile("n.proto", msg("M", strField("a", 1))).Messages().Get(0)
+			_, err := renameFields(Nest("a", Field("x")), oldDesc, newDesc)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("is not of message type"))
+		})
+
+		It("errors on an unsupported key-expression type", func() {
+			// Any KeyExpression type the switch does not handle hits the default arm.
+			oldDesc, newDesc := abDesc()
+			_, err := renameFields(unsupportedKeyExpr{}, oldDesc, newDesc)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("not supported"))
+		})
 	})
 
 	Describe("index record type scope validation (RFC 019)", func() {
@@ -2291,3 +2405,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 	})
 })
+
+// unsupportedKeyExpr is a KeyExpression type that renameFields' type switch does
+// not handle, used to exercise its default ("field renaming not supported") arm.
+type unsupportedKeyExpr struct{}
+
+func (unsupportedKeyExpr) Evaluate(*FDBStoredRecord[proto.Message], proto.Message) ([][]any, error) {
+	return nil, nil
+}
+func (unsupportedKeyExpr) FieldNames() []string                { return nil }
+func (unsupportedKeyExpr) ColumnSize() int                     { return 0 }
+func (unsupportedKeyExpr) ToKeyExpression() *gen.KeyExpression { return nil }
