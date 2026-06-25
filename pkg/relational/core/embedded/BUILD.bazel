@@ -97,6 +97,7 @@ go_test(
         "vector_ddl_test.go",
         "vector_plan_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":embedded"],
     deps = [
         "//gen",

@@ -640,6 +640,21 @@ func (pv *predicateValue) Type() values.Type                        { return val
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
 func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
+// EqualsWithoutChildrenValue implements values.SelfEqualsWithoutChildren so the
+// Cascades matcher (values.EqualsWithoutChildren) can structurally compare a
+// predicate-as-value without the values package importing expr (which would
+// cycle). predicateValue is a leaf Value — Children() is empty — so its node
+// equality is the full structural equality of the wrapped predicate.
+// Non-alias-aware, matching EqualsWithoutChildren's structural (not semantic)
+// contract.
+func (pv *predicateValue) EqualsWithoutChildrenValue(other values.Value) bool {
+	o, ok := other.(*predicateValue)
+	if !ok {
+		return false
+	}
+	return predicates.StructurallyEqual(pv.pred, o.pred)
+}
+
 func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	if pv.pred == nil {
 		return nil, nil
