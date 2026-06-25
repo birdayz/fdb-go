@@ -29,6 +29,16 @@ func SemanticHashCode(v Value) uint64 {
 	return h.Sum64()
 }
 
+// SelfSemanticHash lets a Value implemented outside this package contribute its
+// own discriminator to the semantic hash — the hash analog of
+// SelfEqualsWithoutChildren (a type the writeSemanticHash switch can't reach
+// would otherwise collide into the bare Name() bucket). The returned value MUST be
+// derived from the same non-child attributes EqualsWithoutChildrenValue compares
+// (and be alias-free), so the equal⟹same-hash memo invariant holds.
+type SelfSemanticHash interface {
+	SemanticHashDiscriminator() uint64
+}
+
 func writeSemanticHash(h io.Writer, v Value) {
 	if v == nil {
 		_, _ = io.WriteString(h, "<nil>")
@@ -111,7 +121,17 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *NullValue:
 		_, _ = io.WriteString(h, "null")
 	default:
-		_, _ = io.WriteString(h, "v:"+v.Name())
+		// A Value defined outside this package (the type switch can't reach it)
+		// can fold its own discriminator via SelfSemanticHash — the hash analog of
+		// SelfEqualsWithoutChildren. Without it every such instance shares the bare
+		// Name() bucket (e.g. all predicateValues → "v:predicate"), degrading memo
+		// lookup. equal⟹same-hash holds iff the discriminator is consistent with
+		// EqualsWithoutChildrenValue (the implementer's contract).
+		if sh, ok := v.(SelfSemanticHash); ok {
+			_, _ = fmt.Fprintf(h, "v:%s:%x", v.Name(), sh.SemanticHashDiscriminator())
+		} else {
+			_, _ = io.WriteString(h, "v:"+v.Name())
+		}
 	}
 	children := v.Children()
 	_, _ = io.WriteString(h, "(")

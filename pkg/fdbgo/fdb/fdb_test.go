@@ -1170,6 +1170,19 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	if len(neg) != len(unlimited) {
 		t.Fatalf("negative limit (%d boundaries) should equal limit=0 unlimited (%d)", len(neg), len(unlimited))
 	}
+
+	// limit < -1 is range_limits_invalid (2012): only -1/0/positive are valid
+	// (C++ GetRangeLimits::isValid, FDBTypes.h). Pinned here in the always-run
+	// pure-Go test so the wrapper's rejection is gated per-PR, not only in the
+	// cgo-tagged libfdb_c differential (codex/FDB-C-dev).
+	if _, err := db.LocalityGetBoundaryKeys(full, -5, 0); err == nil {
+		t.Fatal("LocalityGetBoundaryKeys(limit=-5) should be range_limits_invalid (2012), got nil")
+	} else {
+		var fe fdb.Error
+		if !errors.As(err, &fe) || fe.Code != 2012 {
+			t.Fatalf("LocalityGetBoundaryKeys(limit=-5) should be 2012, got: %v", err)
+		}
+	}
 }
 
 func TestGetClientStatus(t *testing.T) {

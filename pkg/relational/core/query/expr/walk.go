@@ -647,12 +647,30 @@ func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = 
 // equality is the full structural equality of the wrapped predicate.
 // Non-alias-aware, matching EqualsWithoutChildren's structural (not semantic)
 // contract.
+//
+// NOTE: the SelfEqualsWithoutChildren interface carries no alias map, so this
+// comparison is alias-blind inside the opaque leaf. That is safe today because the
+// memo interns non-merge selects under the identity alias map (so raw correlation
+// equality is exactly the alias-aware result). If alias-aware interning is ever
+// widened to selects whose result trees carry predicateValues, this interface (and
+// SelfSemanticHash below) will need an alias-map parameter to avoid a false memo
+// collapse — see DIVERGENCES / the value-layer alias-threading work.
 func (pv *predicateValue) EqualsWithoutChildrenValue(other values.Value) bool {
 	o, ok := other.(*predicateValue)
 	if !ok {
 		return false
 	}
 	return predicates.StructurallyEqual(pv.pred, o.pred)
+}
+
+// SemanticHashDiscriminator implements values.SelfSemanticHash so the memo hash
+// folds the wrapped predicate — otherwise every predicateValue shares the bare
+// "v:predicate" bucket and predicate-in-projection / CASE-heavy SQL degrades memo
+// lookup. predicates.StructuralHash is the hash analog of the StructurallyEqual
+// used by EqualsWithoutChildrenValue above, so equal predicateValues hash equal
+// (the equal⟹same-hash invariant the memo requires).
+func (pv *predicateValue) SemanticHashDiscriminator() uint64 {
+	return predicates.StructuralHash(pv.pred)
 }
 
 func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {

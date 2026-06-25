@@ -128,12 +128,6 @@ func dsn(dbPath, clusterFile, schema string) string {
 	return d
 }
 
-func mustExec(ctx context.Context, db *sql.DB, stmt string) {
-	if _, err := db.ExecContext(ctx, stmt); err != nil {
-		log.Fatalf("exec %q: %v", stmt, err)
-	}
-}
-
 // setupExec runs idempotent setup/cleanup DDL: it logs and CONTINUES on error so
 // the quickstart is re-runnable. A second run hits "already exists" on the
 // CREATEs (and DELETE on an empty table is a no-op) — neither should abort.

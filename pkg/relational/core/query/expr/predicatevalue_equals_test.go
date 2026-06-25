@@ -44,3 +44,32 @@ func TestPredicateValue_EqualsWithoutChildren(t *testing.T) {
 		t.Error("ValuesStructurallyEqual must distinguish different predicate values")
 	}
 }
+
+// TestPredicateValue_SemanticHash pins the memo-hash folding (Graefe full-stack
+// review): without values.SelfSemanticHash, every predicateValue collided into the
+// bare "v:predicate" bucket, degrading memo lookup for predicate-in-projection /
+// CASE-heavy SQL. The hash must (a) distinguish predicateValues wrapping different
+// predicates, and (b) keep equal⟹same-hash — equal predicateValues hash
+// identically (the memo invariant; predicates.StructuralHash mirrors the
+// StructurallyEqual that EqualsWithoutChildrenValue uses).
+func TestPredicateValue_SemanticHash(t *testing.T) {
+	t.Parallel()
+
+	pTrueA := &predicateValue{pred: &predicates.ConstantPredicate{Value: predicates.TriTrue}}
+	pTrueB := &predicateValue{pred: &predicates.ConstantPredicate{Value: predicates.TriTrue}}
+	pFalse := &predicateValue{pred: &predicates.ConstantPredicate{Value: predicates.TriFalse}}
+
+	// (a) Distinct predicates → distinct hashes. Pre-fix both hashed to
+	// "v:predicate" and shared a bucket.
+	if values.SemanticHashCode(pTrueA) == values.SemanticHashCode(pFalse) {
+		t.Error("predicate values wrapping different predicates should not share a memo hash bucket")
+	}
+
+	// (b) equal⟹same-hash: structurally-equal predicate values hash identically.
+	if !values.EqualsWithoutChildren(pTrueA, pTrueB) {
+		t.Fatal("precondition: pTrueA and pTrueB must compare equal")
+	}
+	if values.SemanticHashCode(pTrueA) != values.SemanticHashCode(pTrueB) {
+		t.Error("equal predicate values must hash equal (equal⟹same-hash memo invariant)")
+	}
+}
