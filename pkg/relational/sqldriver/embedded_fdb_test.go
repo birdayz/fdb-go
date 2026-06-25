@@ -3027,6 +3027,49 @@ func TestFDB_DoubleColumnComparison(t *testing.T) {
 	g.Expect(collect("WITH c AS (SELECT d, id FROM D) SELECT id FROM c WHERE d > 1.5")).To(gomega.ConsistOf(int64(3)))
 }
 
+// TestFDB_DMLBareNonBooleanWhereRejected pins that a bare non-boolean DML WHERE
+// predicate (`DELETE/UPDATE ... WHERE amount`) raises 42804 — the SAME SQLSTATE
+// the SELECT/JOIN-ON paths give — instead of swallowing it into a generic DML
+// translation error (codex consistency catch on #357). The row must survive
+// (both error before executing).
+func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dml_nonbool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dml_nonbool_tmpl "+
+			"CREATE TABLE A (id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dml_nonbool?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO A VALUES (1, 10)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	_, err = db.ExecContext(ctx, "DELETE FROM A WHERE amount")
+	g.Expect(err).To(gomega.HaveOccurred(), "DELETE WHERE <non-boolean> must error")
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
+
+	_, err = db.ExecContext(ctx, "UPDATE A SET amount = 2 WHERE amount")
+	g.Expect(err).To(gomega.HaveOccurred(), "UPDATE WHERE <non-boolean> must error")
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
+
+	// The row survived (both statements errored before executing).
+	var id, amount int64
+	row := db.QueryRowContext(ctx, "SELECT id, amount FROM A WHERE id = 1")
+	g.Expect(row.Scan(&id, &amount)).To(gomega.Succeed())
+	g.Expect(amount).To(gomega.Equal(int64(10)))
+}
+
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
