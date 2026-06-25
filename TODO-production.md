@@ -663,14 +663,25 @@ paths now routed through it:
 - Build-tag selection (not runtime config) is deliberate — the libfdb_c network thread is
   once-per-process.
 
-**Known asymmetry (NOT a C limitation — a deliberately-narrow Go abstraction):** under `-tags libfdbc`
-the direct-handle paths — `FDBDatabase.CreateTransaction()`, the manual `FDBDatabaseRunner`, and
-`LocalityGetBoundaryKeys` (online MUTUAL indexer) — fail-fast with `BackendCapabilityError` because
-they return the **concrete** pure-Go `fdb.Transaction`/handle types, not interfaces (the Transactor
-gold path is interface-based, so it works on both). The C client is fully capable; closing the gap =
-widen those signatures to the `WritableTransaction`/locality *interfaces* + implement them in the
-libfdbc backend (caller ripple → separate FDB-C-dev item). The SQL driver uses NONE of these, so SQL
-is fully libfdb_c-capable. Tenants remain the declared v1 non-goal.
+**Standalone transactions — now backend-agnostic (`prod-stack/12`).** The SQL engine's `database/sql`
+**explicit transactions** (`BeginTx`/`COMMIT`, which span multiple driver calls and so can't use the
+closure-based `Run` gold path) need a long-lived transaction handle. That used to be pure-Go-only
+(`FDBDatabase.CreateTransaction()` returned the **concrete** `fdb.Transaction` and fail-fasted on a
+non-pure-Go backend) — a self-inflicted narrow Go interface, NOT a C limitation (the C client creates
+transactions just as well; the cgo backend already does so internally). Fixed per rule #2 (Go
+divergence from C is a Go bug) by widening the abstraction: `BackendDatabase` gains
+`CreateWritableTransaction() (WritableTransaction, error)` (the interface, not the concrete type),
+implemented on both the pure-Go client and the libfdb_c backend (cgo handle is GC-finalized, so no
+extra lifecycle). `FDBDatabase.CreateWritableTransaction` is backend-agnostic; the SQL engine
+(`connection.go` `BeginTx`) and the `FDBDatabaseRunner` now use it, so **explicit transactions work on
+libfdb_c too**. Pinned: `TestLibFDBC_CreateWritableTransaction` (real-FDB standalone tx on the C
+backend, nightly-libfdbc CI) + the existing `TestFDB_BeginCommit`/`_BeginRollback`/`_SQLCommitRollback`
+prove the pure-Go path through the new method.
+
+**Remaining asymmetry (single, narrow):** only `LocalityGetBoundaryKeys` — the online **MUTUAL**
+indexer's keyspace auto-partitioning — is still pure-Go-only (it returns concrete locality handles;
+closing it needs the cgo boundary-key/locality binding). Regular (non-mutual) index builds use the
+`Run` gold path and work on libfdb_c. Tenants remain the declared v1 non-goal.
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
 *(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*

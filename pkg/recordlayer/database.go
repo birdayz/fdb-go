@@ -135,11 +135,14 @@ func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *F
 // the Run / RunRead gold path (record save/load, query, index maintenance) through
 // the Transactor interface.
 //
-// The concrete-db slot is left empty on purpose: CreateTransaction, the manual
-// FDBDatabaseRunner, and LocalityGetBoundaryKeys (online mutual indexing) return
-// concrete pure-Go handles a non-pure-Go backend cannot build, so they are
-// pure-Go-only in v1 and return errBackendNoDirectTx here (fail-fast, not a nil
-// panic) — the same scope boundary the RFC draws around tenants.
+// The concrete-db slot is left empty for a non-pure-Go backend. Standalone
+// transactions go through CreateWritableTransaction (which delegates to the
+// backend's own interface-returning creator), so explicit transactions and the
+// FDBDatabaseRunner work on libfdb_c. The remaining concrete-only paths — the
+// pure-Go-typed CreateTransaction and LocalityGetBoundaryKeys (online MUTUAL
+// indexing) — hand back concrete pure-Go handles a non-pure-Go backend cannot
+// build, so they stay pure-Go-only in v1 and fail-fast with BackendCapabilityError
+// (not a nil panic) — the same scope boundary the RFC draws around tenants.
 func NewFDBDatabaseWithBackend(backend fdb.BackendDatabase) *FDBDatabase {
 	d := &FDBDatabase{
 		transactor:      backend,
@@ -395,6 +398,31 @@ func (d *FDBDatabase) CreateTransaction() (fdb.Transaction, error) {
 		return fdb.Transaction{}, &BackendCapabilityError{Op: "CreateTransaction"}
 	}
 	return d.db.CreateTransaction()
+}
+
+// CreateWritableTransaction creates a standalone, non-retry transaction as the
+// backend-agnostic WritableTransaction interface. Unlike CreateTransaction (which
+// returns the concrete pure-Go fdb.Transaction and is therefore pure-Go-only), this
+// works on ANY backend — including the libfdb_c escape hatch — so the SQL engine's
+// database/sql explicit transactions (BeginTx / COMMIT, which span multiple driver
+// calls and so can't use the closure-based Run gold path) are not silently
+// pure-Go-only. Prefer this over CreateTransaction wherever a concrete pure-Go
+// handle isn't specifically required.
+func (d *FDBDatabase) CreateWritableTransaction() (fdb.WritableTransaction, error) {
+	if d.tenant != (fdb.Tenant{}) {
+		return d.tenant.CreateTransaction()
+	}
+	// Pure-Go concrete handle present (default open, chaos transactor, or a pure-Go
+	// fdbclient backend): use it directly — identical to CreateTransaction.
+	if d.db.IsValid() {
+		return d.db.CreateTransaction()
+	}
+	// No concrete handle ⇒ a non-pure-Go backend (libfdb_c). Delegate to the
+	// backend's own standalone-transaction creator.
+	if be, ok := d.transactor.(fdb.BackendDatabase); ok {
+		return be.CreateWritableTransaction()
+	}
+	return nil, &BackendCapabilityError{Op: "CreateWritableTransaction"}
 }
 
 // TransactionPriority controls the priority of FDB transactions.

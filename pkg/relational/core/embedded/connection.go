@@ -522,7 +522,12 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (
 }
 
 func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
-	fdbTx, err := c.sess.DB.CreateTransaction()
+	// CreateWritableTransaction (not CreateTransaction) so explicit SQL transactions
+	// (database/sql BeginTx → COMMIT) work on ANY backend, including the libfdb_c
+	// escape hatch. BeginTx spans multiple driver calls, so it needs a long-lived
+	// handle and cannot use the closure-based Run gold path; the backend-agnostic
+	// interface form is what keeps it from being silently pure-Go-only.
+	fdbTx, err := c.sess.DB.CreateWritableTransaction()
 	if err != nil {
 		return nil, err
 	}
