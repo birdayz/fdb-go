@@ -33,8 +33,8 @@ import (
 	"os"
 	"sync"
 
-	purefdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
@@ -48,6 +48,11 @@ const DriverName = "fdbsql"
 
 // defaultClusterFileEnv is the environment variable FDB checks for cluster file path.
 const defaultClusterFileEnv = "FDB_CLUSTER_FILE"
+
+// defaultClusterFilePath is FDB's conventional cluster-file location, used when
+// neither the DSN nor FDB_CLUSTER_FILE specifies one. It mirrors the path the
+// pure-Go client's OpenDefault uses, and is the standard default for libfdb_c too.
+const defaultClusterFilePath = "/etc/foundationdb/fdb.cluster"
 
 // fdbDBCache caches FDB database handles by cluster-file path so repeated
 // sql.Open calls against the same cluster don't leak FDB connections.
@@ -138,14 +143,13 @@ func (c *Connector) initialize(_ context.Context) error {
 		clusterFile = os.Getenv(defaultClusterFileEnv)
 	}
 
-	// FDB API version is process-global; setting it twice with
-	// different values panics. Tolerate the case where another
-	// component (test infrastructure, embedding application) already
-	// initialised the client — accept whatever version was selected.
-	if _, err := purefdb.GetAPIVersion(); err != nil {
-		// Unset → set to our default.
-		purefdb.MustAPIVersion(720)
-	}
+	// API-version selection is owned by fdbclient.Open (it selects the default
+	// only if the app hasn't already), so we must NOT pre-pin it here. Pre-pinning
+	// the pure-Go facade to a different version than the active backend wants is a
+	// hard error: under -tags libfdbc, libfdbc.Open sets the facade to 730 (the
+	// record layer reads it for versionstamps), so a stale 720 pin would make every
+	// open fail with a version mismatch. An app that legitimately selected its own
+	// version still wins — fdbclient.Open never overrides a set version.
 
 	// Reuse a previously-opened FDB database for this cluster file.
 	// See fdbDBCache docstring above for why this is necessary.
@@ -153,17 +157,20 @@ func (c *Connector) initialize(_ context.Context) error {
 	if cached, ok := fdbDBCache.Load(cacheKey); ok {
 		c.fdbDB = cached.(*recordlayer.FDBDatabase)
 	} else {
-		var rawDB purefdb.Database
-		var err error
-		if clusterFile == "" {
-			rawDB, err = purefdb.OpenDefault()
-		} else {
-			rawDB, err = purefdb.OpenDatabase(clusterFile)
+		// Open through the build-tag-selectable seam (RFC-109): the default build
+		// uses the pure-Go client; -tags libfdbc swaps in Apple's libfdb_c with no
+		// source change here. fdbclient.Open needs an explicit path, so an empty
+		// cluster file falls back to FDB's default location — matching the prior
+		// OpenDefault() branch — and works the same for both backends.
+		openPath := clusterFile
+		if openPath == "" {
+			openPath = defaultClusterFilePath
 		}
+		rawDB, err := fdbclient.Open(openPath)
 		if err != nil {
 			return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
 		}
-		newDB := recordlayer.NewFDBDatabase(rawDB)
+		newDB := recordlayer.NewFDBDatabaseWithBackend(rawDB)
 		newDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 		// LoadOrStore returns the previously-stored entry if a concurrent
 		// caller raced ahead. In that case, the FDB database we just

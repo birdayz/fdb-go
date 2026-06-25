@@ -33,13 +33,14 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
 - **Closed since the doc (now `[x]`):** the two continuation/pagination items (RFC-127 #325,
   RFC-128 #326); **P1.9** resource limits / backpressure (RFC-106a + RFC-130 + RFC-028);
   **P3.3** retry-predicate dedup (RFC-105).
-- **Advanced to `[~]` (mechanism/code landed, scoped remainder):** **P1.6** CI gates (differential
-  per-PR, stress nightly; conformance still nightly-only), **P1.8** CI reproducibility (pinned +
-  checksummed artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds
-  + codex ACK), **P2.2** libfdb_c escape hatch (RFC-109: full write-path backend + per-PR
-  differential shipped, but prod open paths not yet routed through the seam).
-- **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps, **P3.1** idiomatic-API
-  pass.
+- **Done (corrected — first pass was too pessimistic):** **P2.2** libfdb_c escape hatch (RFC-109
+  full write-path backend + per-PR differential; **+ entry-point routing in `prod-stack/11`** so
+  `-tags libfdbc` now flips the SQL driver + record-layer factory too); **P1.6** own-your-fork gates
+  (gates exist; owner decided to keep conformance + 1M stress nightly, not per-PR).
+- **`[~]` (code landed, process remainder):** **P1.8** CI reproducibility — pinned + checksummed
+  artifacts + hosted floor are in-tree, but RFC-108 is still **DRAFT** awaiting Torvalds + codex ACK.
+- **Still genuinely OPEN:** **P2.3** the six SQL-engine correctness gaps (query-engine, Graefe-gated,
+  several wire-sensitive), **P3.1** idiomatic-API pass (broad, low priority).
 - **Deferred by owner:** **P2.1** — `CHANGELOG.md`, `RELEASE.md`, and the stability statement are
   all done (RFC-131/132); **only the `v0.1.0` git tag** is intentionally on hold. Do not cut a
   release tag yet. *(Corrects the first pass, which mis-reported the CHANGELOG as missing.)*
@@ -47,7 +48,8 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   progress events → `prod-stack/03`); **P1.7** generated `FEATURE_MATRIX.md` → `prod-stack/05`;
   **P0.3-F** SQL fuzz net (front-end + e2e targets → `prod-stack/06`); **P3.4** operator guide
   (`docs/operations.md` → `prod-stack/07`); **P3.2** `database/sql` example (`example/sql` →
-  `prod-stack/08`); **P2.4** full nightly fuzz rotation (`engine-fuzz` job → `prod-stack/10`).
+  `prod-stack/08`); **P2.4** full nightly fuzz rotation (`engine-fuzz` job → `prod-stack/10`);
+  **P2.2** escape-hatch entry-point routing + **P1.6** gate-placement decision → `prod-stack/11`.
 - **Bug found + fixed by the new fuzz net (`prod-stack/09`):** `FuzzSQLPlan` immediately surfaced a
   real Cascades planner panic — `values.EqualsWithoutChildren` hit its unhandled-type default on
   `*expr.predicateValue` (a predicate-as-value, e.g. `ORDER BY !amount`), which can't be added to the
@@ -557,19 +559,19 @@ MODULE.bazel.lock drift), and 2 in `github.com/docker/docker` (test-infra only, 
 N/A** upstream) — excluded from the production scan + documented in SECURITY.md. Post-bump
 scan: production-clean (only the 2 docker N/A remain, test-only).
 
-### [~] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M — mostly done
-*(Verified 2026-06-24.)* Much of this landed since the doc date:
-- **libfdb_c differential** — PROMOTED to a **per-PR** gate (`nightly-libfdbc.yml` on
-  `push`+`pull_request`), but as the RFC-109 gold gate over `pkg/fdbgo/libfdbc` + `fdbclient`
-  (byte-identical cross-client differential), **not** the `pkg/fdbgo/bench` package the item named
-  (whose non-fuzz `differential_*_test.go` still run in no workflow; only its 5 `FuzzDifferential*`
-  run nightly).
-- **1M stress** — now gated **nightly** (`nightly-stress.yml`), correctness-asserting; kept
-  off-PR by design (RFC-107 — too heavy for every PR).
-- **Conformance** (`//conformance`) — still **nightly-only**, not a required PR gate.
-**Remaining:** decide whether conformance should be a required PR gate; run the `pkg/fdbgo/bench`
-differential tests somewhere (or formally retire them in favour of the `libfdbc` gold gate).
-Caveat (Torvalds): detection, not repair — see the won't-fix note.
+### [x] P1.6 — Own-your-fork CI gates (bus-factor mitigation) · M — DONE (gate placement decided by owner)
+*(Resolved 2026-06-25.)* The gates exist; their placement was the only open question and the owner
+decided: **keep conformance + 1M stress NIGHTLY, do not gate every PR** (fast PR-CI; regressions
+caught within ~24h).
+- **libfdb_c differential** — per-PR gate (`nightly-libfdbc.yml` on `push`+`pull_request`), the
+  RFC-109 gold gate over `pkg/fdbgo/libfdbc` + `fdbclient` (byte-identical cross-client differential).
+- **1M stress** — nightly (`nightly-stress.yml`), correctness-asserting; off-PR **by owner decision**
+  (RFC-107: too heavy for every PR).
+- **Conformance** (`//conformance`) — nightly (race + coverage jobs); **not** a per-PR gate, **by
+  owner decision**.
+Tiny optional cleanup (non-blocking): run the `pkg/fdbgo/bench` non-fuzz `differential_*_test.go`
+somewhere, or formally retire them in favour of the `libfdbc` gold gate. Caveat (Torvalds):
+detection, not repair — see the won't-fix note.
 
 ### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
 README's "Not yet supported" listed **6 features; 5 were already implemented** (verified
@@ -641,24 +643,34 @@ CHANGELOG".)* Everything except the actual tag is in place (RFC-131/132 era, 202
 intentionally on hold per the owner. Do NOT cut a release branch/tag yet.** When unheld, the cut is
 mechanical (move `[Unreleased]` → `v0.1.0`, tag).
 
-### [~] P2.2 — libfdb_c escape hatch · L — MECHANISM DONE (RFC-109, PR #295); prod entry points not routed
-*(Verified 2026-06-24.)* A build-tag-selectable libfdb_c backend shipped:
+### [x] P2.2 — libfdb_c escape hatch · L — DONE (RFC-109 + entry-point routing, `prod-stack/11`)
+*(Completed 2026-06-25.)* A build-tag-selectable libfdb_c backend, with the two real production open
+paths now routed through it:
 - **Seam:** `fdbclient.Open` chooses at build time — `pkg/fdbgo/fdbclient/open_purego.go`
   (`//go:build !libfdbc`, default) vs `open_libfdbc.go` (`//go:build libfdbc`); the default build
   never imports/links cgo.
 - **Backend:** `pkg/fdbgo/libfdbc/backend.go` (`//go:build cgo && libfdbc`) is a full
   `WritableTransaction` — the **write path IS covered** (`Set`/`Clear`/`Add`/`SetVersionstamped*`/
   conflict ranges/`Commit`), ctx-bounded retry, compile-time conformance assertions, `backend_stub.go`
-  for `!cgo`. Wired into the record layer via `recordlayer.NewFDBDatabaseWithBackend`.
+  for `!cgo`. Wired via `recordlayer.NewFDBDatabaseWithBackend`.
+- **Routing (this shift):** `FDBDatabaseFactory.GetDatabase` and `sqldriver/driver.go` now open via
+  `fdbclient.Open` + `NewFDBDatabaseWithBackend`, so **`-tags libfdbc` flips the SQL driver and the
+  record-layer factory too** — no source edit. Verified: default bazel build green; `go build -tags
+  libfdbc` of `recordlayer` + `sqldriver` + `fdbclient` compiles. Default build is behavior-preserving
+  — `NewFDBDatabaseWithBackend` keeps the pure-Go concrete handle, so CreateTransaction/locality are
+  unaffected.
 - **Gate:** `nightly-libfdbc.yml` runs a per-PR + nightly byte-identical cross-client differential.
 - Build-tag selection (not runtime config) is deliberate — the libfdb_c network thread is
   once-per-process.
 
-**REMAINING:** the two real production open paths still hardcode the pure-Go client and bypass the
-seam — `recordlayer/database.go` `FDBDatabaseFactory.GetDatabase` (→ `fdb.OpenDatabase`) and
-`relational/sqldriver/driver.go` (→ `purefdb.OpenDatabase`). Route both through `fdbclient.Open`
-so `-tags libfdbc` actually flips them without a source edit. Out of scope for v1 (declared):
-tenants, direct `CreateTransaction`/`FDBDatabaseRunner`/locality.
+**Known asymmetry (NOT a C limitation — a deliberately-narrow Go abstraction):** under `-tags libfdbc`
+the direct-handle paths — `FDBDatabase.CreateTransaction()`, the manual `FDBDatabaseRunner`, and
+`LocalityGetBoundaryKeys` (online MUTUAL indexer) — fail-fast with `BackendCapabilityError` because
+they return the **concrete** pure-Go `fdb.Transaction`/handle types, not interfaces (the Transactor
+gold path is interface-based, so it works on both). The C client is fully capable; closing the gap =
+widen those signatures to the `WritableTransaction`/locality *interfaces* + implement them in the
+libfdbc backend (caller ripple → separate FDB-C-dev item). The SQL driver uses NONE of these, so SQL
+is fully libfdb_c-capable. Tenants remain the declared v1 non-goal.
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
 *(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*

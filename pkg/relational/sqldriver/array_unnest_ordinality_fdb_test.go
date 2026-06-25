@@ -39,7 +39,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	fdb.MustAPIVersion(720)
+	fdb.MustAPIVersion(730)
 	rawDB, err := fdb.OpenDatabase(clusterFilePath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

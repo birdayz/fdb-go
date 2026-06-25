@@ -33,7 +33,7 @@ import (
 // For query vector (1,0,0) the per-partition nearest are: (z1,r1)->11, (z1,r2)->22.
 func multiPartitionVectorSetup(t *testing.T, ctx context.Context) (*recordlayer.FDBDatabase, *recordlayer.RecordMetaData, subspace.Subspace) {
 	t.Helper()
-	fdb.MustAPIVersion(720)
+	fdb.MustAPIVersion(730)
 	rawDB, err := fdb.OpenDatabase(clusterFilePath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

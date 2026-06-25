@@ -11,6 +11,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
 )
 
 // WeakReadSemantics configures relaxed read consistency for a transaction.
@@ -86,12 +87,17 @@ func (f *FDBDatabaseFactory) GetDatabase(clusterFile string) (*FDBDatabase, erro
 		return db, nil
 	}
 
-	rawDB, err := fdb.OpenDatabase(clusterFile)
+	// Open through the build-tag-selectable seam (RFC-109): the default build is
+	// the pure-Go client; -tags libfdbc swaps in Apple's libfdb_c, with no source
+	// change here. NewFDBDatabaseWithBackend keeps the pure-Go concrete handle when
+	// the backend IS pure-Go (so CreateTransaction/locality are unaffected in the
+	// default build) and fail-fasts those direct paths only under libfdb_c.
+	rawDB, err := fdbclient.Open(clusterFile)
 	if err != nil {
 		return nil, fmt.Errorf("open database %q: %w", clusterFile, err)
 	}
 
-	db := NewFDBDatabase(rawDB)
+	db := NewFDBDatabaseWithBackend(rawDB)
 	if f.StoreStateCacheFactory != nil {
 		db.SetStoreStateCache(f.StoreStateCacheFactory())
 	}
