@@ -678,10 +678,19 @@ libfdb_c too**. Pinned: `TestLibFDBC_CreateWritableTransaction` (real-FDB standa
 backend, nightly-libfdbc CI) + the existing `TestFDB_BeginCommit`/`_BeginRollback`/`_SQLCommitRollback`
 prove the pure-Go path through the new method.
 
-**Remaining asymmetry (single, narrow):** only `LocalityGetBoundaryKeys` — the online **MUTUAL**
-indexer's keyspace auto-partitioning — is still pure-Go-only (it returns concrete locality handles;
-closing it needs the cgo boundary-key/locality binding). Regular (non-mutual) index builds use the
-`Run` gold path and work on libfdb_c. Tenants remain the declared v1 non-goal.
+**Locality / mutual indexing — now backend-agnostic (`prod-stack/13`).** `LocalityGetBoundaryKeys`
+(the shard-boundary read the online MUTUAL indexer uses to partition the keyspace for concurrent
+building) was the last pure-Go-only path. Closed the same way: `BackendDatabase` gains
+`LocalityGetBoundaryKeys(...) ([]Key, error)`, implemented on the libfdb_c backend via Apple's
+binding (a read of `\xff/keyServers`, byte-identical to the pure-Go client);
+`FDBDatabase.LocalityGetBoundaryKeys` is backend-agnostic and the mutual indexer uses it, so mutual
+indexing **parallelizes on libfdb_c** instead of degrading to a single fragment. Pinned by
+`TestLibFDBC_LocalityGetBoundaryKeys` (a cross-client differential — both clients return byte-equal
+boundaries).
+
+**Net: nothing in `pkg/recordlayer` or `pkg/relational` is pure-Go-only anymore** — SQL (auto-commit
++ explicit transactions), record CRUD, regular + mutual index builds all work on either backend.
+Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope boundary).
 
 ### [ ] P2.3 — Close known SQL-engine correctness gaps · L (query-engine, Graefe-gated)
 *(Verified 2026-06-24: all six still OPEN in TODO.md; no RFC ≤145 and no commit closes any.)*
