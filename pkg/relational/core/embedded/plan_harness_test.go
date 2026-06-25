@@ -1423,3 +1423,22 @@ func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
 		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeDatatypeMismatch}", err, err)
 	}
 }
+
+// TestPlanHarness_BareCTEBooleanColumnWhere — the inverse of the DOUBLE
+// rejection: a CTE/derived column holding a boolean expression (`NOT flag`) is
+// UNKNOWN-typed in the outer scope (its projected type isn't propagated), so it
+// MUST stay on the permissive UNKNOWN path and PLAN as a bare WHERE predicate,
+// NOT be rejected 42804. This pins the exact shape the codex #2 rework was
+// reverted to protect — a *FieldValue of UNKNOWN type is not always non-boolean.
+// Without this pin, a future "be stricter about UNKNOWN" change re-breaks
+// boolean CTE columns with green CI (the dimensional-gap trap).
+func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
+	t.Parallel()
+	const sch = `CREATE TABLE A (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))`
+	plan, err := PlanQueryForTest(
+		"WITH c AS (SELECT NOT flag AS x, id FROM A) SELECT id FROM c WHERE x", sch, nil)
+	if err != nil {
+		t.Fatalf("bare CTE boolean column WHERE must plan, got: %v", err)
+	}
+	assertPlanContains(t, plan, "PredicatesFilter")
+}

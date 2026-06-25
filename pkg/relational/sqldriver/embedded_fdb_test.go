@@ -2977,6 +2977,56 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 	g.Expect(ids).To(gomega.Equal([]int64{1}))
 }
 
+// TestFDB_DoubleColumnComparison pins row-level DOUBLE comparison correctness
+// after RFC-146 typed FLOAT/DOUBLE as TypeCodeDouble (the type-mapping change
+// touched the whole DOUBLE resolver path, and there was previously zero
+// row-level coverage of a DOUBLE column in a WHERE comparison). Covers
+// double-vs-double, int-literal → double promotion, and a CTE-derived double.
+func TestFDB_DoubleColumnComparison(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_double_cmp")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE double_cmp_tmpl "+
+			"CREATE TABLE D (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_double_cmp?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO D VALUES (1, 0.5), (2, 1.5), (3, 2.5)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	collect := func(q string) []int64 {
+		rows, qerr := db.QueryContext(ctx, q)
+		g.Expect(qerr).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+			ids = append(ids, id)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		return ids
+	}
+
+	// double-vs-double: only d=2.5 (id 3) exceeds 1.5.
+	g.Expect(collect("SELECT id FROM D WHERE d > 1.5")).To(gomega.ConsistOf(int64(3)))
+	// int-literal → double promotion: d=1.5 (id 2) and d=2.5 (id 3) exceed 1.
+	g.Expect(collect("SELECT id FROM D WHERE d > 1")).To(gomega.ConsistOf(int64(2), int64(3)))
+	// CTE-derived double column compares identically.
+	g.Expect(collect("WITH c AS (SELECT d, id FROM D) SELECT id FROM c WHERE d > 1.5")).To(gomega.ConsistOf(int64(3)))
+}
+
 func TestFDB_SelectScalarExpression(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
