@@ -1404,3 +1404,21 @@ func TestPlanHarness_BareNonBooleanWhereRejected(t *testing.T) {
 		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeDatatypeMismatch}", err, err)
 	}
 }
+
+// TestPlanHarness_BareUnknownTypedWhereRejected — DOUBLE/FLOAT/BYTES columns map
+// to Cascades TypeUnknown (a seed-type gap), but they are definitively
+// non-boolean: a bare `WHERE d` must raise 42804, NOT silently lift to
+// `d = TRUE` and filter to nothing (codex catch on #357). Only a genuinely
+// un-typeable value (a non-FieldValue) keeps the permissive UNKNOWN path.
+func TestPlanHarness_BareUnknownTypedWhereRejected(t *testing.T) {
+	t.Parallel()
+	const sch = `CREATE TABLE A (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))`
+	_, err := PlanQueryForTest("SELECT id FROM A WHERE d", sch, nil)
+	if err == nil {
+		t.Fatal("expected DATATYPE_MISMATCH for a bare DOUBLE WHERE, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatatypeMismatch {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeDatatypeMismatch}", err, err)
+	}
+}

@@ -163,10 +163,15 @@ subtleties: (a) hard-error propagation (§3) — without it `WHERE <nonbool>` st
 `42804`; (b) the explicit NULL fold (§3 step 2) — without it `WHERE NULL` regresses once the lift moves off
 the bare `ValuePredicate` that `ValuePredicateConstantFoldRule` matched.
 
-**UNKNOWN-leniency divergence (documented):** Java strictly asserts `== BOOLEAN`; the gate here permits
-BOOLEAN **and** NULL/UNKNOWN. This is a deliberate permissive-only divergence — Go's pre-plan type
-resolution is less complete than Java's post-semantic-analysis, so Go may *accept* an un-typeable value it
-can't prove non-boolean, but it never *rejects* anything Java accepts. Document at the call site.
+**UNKNOWN-leniency divergence (documented; refined per codex on #357):** Java strictly asserts
+`== BOOLEAN`. The gate permits BOOLEAN and NULL, and UNKNOWN **only for a non-`FieldValue`** — a genuinely
+un-typeable value (a parameter or an expression Go's pre-plan resolution can't type). A `*FieldValue` of
+UNKNOWN type is NOT un-typeable: it is a resolved column whose SQL type Go's Cascades mapping doesn't carry
+yet (`sqlTypeToCascadesType` maps DOUBLE/FLOAT/BYTES/RECORD → `TypeUnknown`), so it is *definitively*
+non-boolean and is **rejected 42804** — otherwise `WHERE <double_col>` would silently lift to `col = TRUE`
+and filter to nothing (codex's catch). Real BOOLEAN columns type as `TypeCodeBoolean` in the record-layer
+pipeline, so they are unaffected. Permissive-only still holds: Go may *accept* an un-typeable non-column
+value, but never *rejects* a real boolean.
 
 ## 7. Scope
 
