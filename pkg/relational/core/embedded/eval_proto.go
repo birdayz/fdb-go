@@ -142,17 +142,6 @@ func evalExprAtom(ctx context.Context, conn *EmbeddedConnection, msg proto.Messa
 				}
 			}
 		}
-		// Correlated subquery fallback: walk outer-row stack when inner
-		// lookup failed (qualifier mismatch or missing field).
-		if conn != nil && len(conn.outerScopes) > 0 {
-			v, found, oerr := conn.resolveOuterColumn(colName)
-			if oerr != nil {
-				return nil, oerr
-			}
-			if found {
-				return v, nil
-			}
-		}
 		if msg == nil {
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "column reference %q not allowed in this context", colName)
 		}

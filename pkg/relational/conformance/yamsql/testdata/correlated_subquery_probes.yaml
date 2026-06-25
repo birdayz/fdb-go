@@ -1,9 +1,8 @@
 # correlated_subquery_probes.yaml
 #
 # Correlated subqueries reference outer-row columns. Supported for EXISTS
-# and IN in both the proto-path (single-source outer) and map-path (JOIN /
-# CTE outer) WHERE evaluator, via the outer-scope stack on
-# EmbeddedConnection. See `pushOuterScope` + `resolveOuterColumn`.
+# and IN, resolved through the Cascades planner (the legacy executor's
+# outer-scope stack on EmbeddedConnection was removed in RFC-145/RFC-147).
 #
 # Scalar subquery correlation (`SELECT (SELECT COUNT(*) FROM p WHERE
 # p.x = outer.id) FROM outer`) is NOT supported: scalar subqueries are

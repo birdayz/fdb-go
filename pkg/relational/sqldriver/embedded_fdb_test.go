@@ -3432,6 +3432,62 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
 }
 
+// TestFDB_InfoSchema_SchemataWhere_QualifiedRef pins the map-path evaluator's
+// qualified→bare column fallback that RFC-147 kept while deleting the dead
+// validQualifiers/outerScopes scope machinery. A qualified reference to a
+// system-table column ("SCHEMATA".SCHEMA_NAME) is not present in the row map
+// under its qualified key, so resolution MUST fall back to the bare key
+// (SCHEMA_NAME). If the collapse had dropped that fallback the query would
+// fail with an undefined-column error instead of returning the alpha row.
+func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_is_schemata_qref")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_qref")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE isqr_tmpl CREATE TABLE T (id BIGINT NOT NULL, PRIMARY KEY (id))")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_qref/alpha WITH TEMPLATE isqr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_qref/beta WITH TEMPLATE isqr_tmpl")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_is_schemata_qref?cluster_file=%s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	// Qualified refs ("SCHEMATA".COL) — only resolvable via the kept bare
+	// fallback (the row map carries bare keys). Scoped to this db's catalog
+	// for parallel safety, as in TestFDB_InfoSchema_SchemataWhere.
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE "SCHEMATA".CATALOG_NAME = '/testdb_is_schemata_qref' AND "SCHEMATA".SCHEMA_NAME = 'alpha'`)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	var schemas []string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
+		if s, ok := vals[1].(string); ok {
+			schemas = append(schemas, s)
+		}
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(schemas).To(gomega.ConsistOf("alpha"))
+}
+
 func TestFDB_InsertSelect(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
