@@ -220,7 +220,28 @@ func spfreshRebalanceOnce(ctx context.Context, db *FDBDatabase, s *spfreshStorag
 				}
 				continue // zombie cleaned or foreign lease
 			}
+			if spfreshSealSplitGapHook != nil {
+				spfreshSealSplitGapHook(ref.cellID, ref.id)
+			}
 			if serr := spfreshSplitFine(ctx, db, s, config, owner, ref.cellID, ref.id, seed+ref.id); serr != nil {
+				if errors.Is(serr, errSPFreshLeaseHeld) {
+					// Short leases let another executor take the SPLIT task over in
+					// the window between SEAL (which claimed + proceeded) and SPLIT's
+					// own re-claim. The new owner completes the split; the lease loss
+					// is benign here because spfreshSplitFine claims BEFORE any
+					// mutation, so nothing is half-written or orphaned. Skip, don't
+					// fail — mirrors the SEAL phase above and the merge/npa/csplit
+					// lease-skip handling.
+					//
+					// Unlike those sibling sites we absorb ONLY errSPFreshLeaseHeld,
+					// not errSPFreshNotFound: spfreshSplitFine re-claims only after
+					// proving the centroid SEALED, and a centroid already split away
+					// is caught earlier by its FORWARD no-op — so a missing task row
+					// at this point is a genuine SEALED-without-task anomaly that must
+					// fail loudly, not be skipped.
+					timer.Increment(CountSPFreshLeaseSkips)
+					continue
+				}
 				fail(fmt.Errorf("split fine %d (cell %d): %w", ref.id, ref.cellID, serr))
 				continue
 			}
