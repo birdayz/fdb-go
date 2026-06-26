@@ -702,6 +702,22 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	}
 	if f, ok := expr.(*expressions.LogicalFilterExpression); ok {
 		for _, pred := range f.GetPredicates() {
+			// SHAPE gate — DEFERRED rot-fix, not safety. A non-simple residual (a
+			// compound/OR predicate, or an IN) is held on the OLD InsertFinal path for
+			// now because materializing it via yieldUnknown is unsafe on a partition
+			// SUBSEL that is consumed by an enclosing join: such a leg is NOT flagged by
+			// refIsJoinLeg (the join correlation lives in a SIBLING predicate, not this
+			// ref's bound prefix or residual), so the materialized leg filter wins and
+			// severs the join feed → Fetch(<nil>) / 0 rows (codex's 3-way-join repro).
+			// Distinguishing "standalone single-table" from "partition-SUBSEL join leg"
+			// requires the parent context — RFC-150's winner-selection invariant. Until
+			// that lands, keep Phase-1 byte-identical by yielding only the SIMPLE shapes
+			// the old isSimpleResidualCompensation accepted. (RFC-150 retires this gate
+			// together with the join-leg coupling + tryFlatMapPlan.)
+			cp, isCmp := pred.(*predicates.ComparisonPredicate)
+			if !isCmp || cp.Comparison.Type == predicates.ComparisonIn {
+				return false
+			}
 			if predicateContainsUncompensatableValues(pred) {
 				return false
 			}

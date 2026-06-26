@@ -1443,28 +1443,28 @@ func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 	assertPlanContains(t, plan, "PredicatesFilter")
 }
 
-// TestPlanHarness_CompoundResidualUsesIndex pins the RFC-148 Phase-1 rot-fix: a
-// single-table query with an indexed equality plus a NON-simple residual (an OR)
-// now rides on top of the index scan. The retired isSimpleResidualCompensation
-// allowlist admitted only simple non-IN ComparisonPredicate residuals, so this
-// OR-residual compensation lost to a full scan — `PredicatesFilter(Scan(T), …)`
-// (proven: this exact query full-scanned with the allowlist). yieldUnknown
-// re-optimizes the compensation through the full rule set, so the index is used:
-// `PredicatesFilter(Fetch(IndexScan(IDX_K, [=])), …)`. This is the rot the allowlist
-// was a landmine for — a future predicate shape with no allowlist arm silently
-// degrading to a full scan.
-func TestPlanHarness_CompoundResidualUsesIndex(t *testing.T) {
+// TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized pins that Phase-1's
+// yieldUnknown does NOT materialize a NON-simple (OR) residual on a partition-SUBSEL
+// join leg. The leg's join correlation lives in a SIBLING predicate (t.fk = o.id), so
+// refIsJoinLeg does not flag this ref (it inspects only the bound prefix); materializing
+// the OR residual as a standalone leg filter would win and sever the join feed →
+// FlatMap(... inner=Fetch(<nil>)) → 0 rows (codex's 3-way-join repro). The SHAPE gate in
+// compensationSafeForYield keeps the OR residual on the OLD InsertFinal path → byte-
+// identical to pre-yieldUnknown behavior → the join is driven correctly. (Materializing
+// such residuals SAFELY — the rot-fix — is RFC-150, gated on the winner-selection
+// invariant; a pre-existing variant with a simple-AND residual is the RFC-150 sentinel.)
+func TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized(t *testing.T) {
 	t.Parallel()
-	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, PRIMARY KEY (id))
+	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
+		CREATE TABLE t (id bigint, fk bigint, k bigint, a bigint, b bigint, x bigint, PRIMARY KEY (id))
+		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON t(k)`
-	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)", schema, nil)
+	plan, err := PlanQueryForTest("SELECT t.k FROM o, t, u WHERE t.k = 5 AND (t.a > 1 OR t.b < 2) AND t.fk = o.id AND u.x = t.x", schema, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	// Index used (a full-scan fallback would be `PredicatesFilter(Scan(T), …)`,
-	// which does NOT contain IndexScan(IDX_K — the non-vacuity hinge).
-	assertPlanContains(t, plan, "IndexScan(IDX_K, [=]")
+	assertPlanNotContains(t, plan, "<nil>") // no degenerate nil-inner leg (the join feed is intact)
 }
 
 // TestPlanHarness_CorrelatedResidualNotStandaloneLeg pins the M2 0-row guard RFC-148
@@ -1490,31 +1490,16 @@ func TestPlanHarness_CorrelatedResidualNotStandaloneLeg(t *testing.T) {
 	assertPlanContains(t, plan, "FlatMap")  // correlated join, not a standalone leg filter
 }
 
-// TestPlanHarness_StandaloneInResidualUsesIndex pins that a standalone IN residual —
-// rejected by the retired allowlist's non-IN ComparisonPredicate restriction — now
-// realizes through yieldUnknown's exploratory re-optimization instead of degrading.
-func TestPlanHarness_StandaloneInResidualUsesIndex(t *testing.T) {
-	t.Parallel()
-	schema := `CREATE TABLE t (id bigint, k bigint, m bigint, PRIMARY KEY (id))
-		CREATE INDEX idx_k ON t(k)`
-	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k = 5 AND m IN (1, 2, 3)", schema, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "IDX_K") // index used, not a full scan
-}
-
-// TestPlanHarness_ResidualCompensationPreservesOrdering pins RFC-148 §3d: a residual
-// compensation re-optimized through yieldUnknown still receives the requested-ordering
-// push, so the index scan's matched order eliminates the in-memory sort (Go has no
-// physical sort operator — a missed push would be a wrong/extra-sort shape). The OR
-// residual rides on the IDX_K range scan, and ORDER BY k is served by the scan order.
+// TestPlanHarness_ResidualCompensationPreservesOrdering pins RFC-148 §3d: a SIMPLE
+// residual re-optimized through yieldUnknown still receives the requested-ordering push,
+// so the index scan's matched order eliminates the in-memory sort (a missed push would
+// add a physical InMemorySort over the filter). `a > 1` rides the IDX_K range scan;
+// ORDER BY k is served by the scan order.
 func TestPlanHarness_ResidualCompensationPreservesOrdering(t *testing.T) {
 	t.Parallel()
-	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, PRIMARY KEY (id))
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON t(k)`
-	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k > 5 AND (a > 1 OR b < 2) ORDER BY k", schema, nil)
+	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k > 5 AND a > 1 ORDER BY k", schema, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1530,9 +1515,9 @@ func TestPlanHarness_ResidualCompensationPreservesOrdering(t *testing.T) {
 // 10-round cap — a degraded/missing plan — or flap nondeterministically).
 func TestPlanHarness_YieldUnknownReentryConverges(t *testing.T) {
 	t.Parallel()
-	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, PRIMARY KEY (id))
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON t(k)`
-	sql := "SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)"
+	sql := "SELECT * FROM t WHERE k = 5 AND a > 1"
 	first, err := PlanQueryForTest(sql, schema, nil)
 	if err != nil {
 		t.Fatal(err)
