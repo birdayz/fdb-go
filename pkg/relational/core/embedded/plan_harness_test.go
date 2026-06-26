@@ -1573,3 +1573,27 @@ func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
 	assertPlanNotContains(t, orPlan, "<nil>")
 	assertPlanContains(t, orPlan, "FlatMap")
 }
+
+// TestPlanHarness_RotFix_CompoundResidualUsesIndex pins the RFC-150 rot-fix (post-B1a):
+// a single-table query with an indexed equality + a NON-simple residual (OR / IN) now
+// rides the index scan instead of degrading to a full scan. The retired
+// isSimpleResidualCompensation allowlist admitted only simple non-IN ComparisonPredicate
+// residuals, so these lost to `PredicatesFilter(Scan(T))`; yieldUnknown now re-optimizes
+// them to `PredicatesFilter(Fetch(IndexScan(IDX_K)))`. Safe only with B1a's nil-safe
+// join-child selection in place (Phase-1 shipped these on the InsertFinal path).
+func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, m bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	for _, sql := range []string{
+		"SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)",
+		"SELECT * FROM t WHERE k = 5 AND m IN (1, 2, 3)",
+	} {
+		plan, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		t.Logf("%s -> %s", sql, plan)
+		assertPlanContains(t, plan, "IndexScan(IDX_K") // not a full Scan(T)
+	}
+}
