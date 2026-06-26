@@ -5,7 +5,6 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // UnplannableIndexOnlyResidualError reports that the only physical plan the
@@ -29,60 +28,47 @@ func (e *UnplannableIndexOnlyResidualError) Error() string {
 		"evaluated as a residual filter and no index serves it", e.Predicate)
 }
 
-// validateNoIndexOnlyResidual rejects a final physical plan that carries an
-// index-only predicate as a residual filter.
+// findIndexOnlyLogicalResidual walks the logical expression DAG rooted at `ref`
+// and returns the first LogicalFilterExpression predicate that contains an
+// index-only (uncompensatable) value, or nil.
 //
-// Go reaches a physical filter via more rules than Java does — notably
-// ImplementFilterRule, which synthesizes a RecordQueryPredicatesFilterPlan over
-// a base scan without routing through Compensation. When an index DOES serve the
-// index-only predicate (the common path) a vector/aggregate scan wins and no
-// residual survives; this guard then never fires. It only triggers when the
-// leaking filter is the sole survivor — i.e. nothing could bind the index-only
-// value — and converts what would be an execution-time panic into a clean
-// planning error. The structural fix (route filter implementation through
-// Compensation so the bad plan is never built) is tracked as TODO 7.7 /
-// DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path".
-func validateNoIndexOnlyResidual(expr expressions.RelationalExpression) error {
-	ph, ok := expr.(interface {
-		GetRecordQueryPlan() plans.RecordQueryPlan
-	})
-	if !ok {
-		return nil // Not a physical plan; the caller surfaces that separately.
-	}
-	plan := ph.GetRecordQueryPlan()
-	if plan == nil {
+// With the Java !isIndexOnly() ImplementFilterRule gate in place, an index-only
+// predicate (a vector DistanceRank / UnmatchedAggregateValue) that NO index can
+// serve is never realized to a physical residual filter — the gate keeps such a
+// LogicalFilterExpression unimplemented, so ExtractBestPlanFromSelector fails
+// with a generic "not a physical plan". This walk runs only on that extraction
+// failure to recover the precise cause and surface the clean
+// UnplannableIndexOnlyResidualError (matching Java leaving the match impossible),
+// rather than leaking the internal expression type. It replaces the old
+// physical-plan-side validateNoIndexOnlyResidual net, which is dead behind the
+// gate (the bad plan is never built — exactly the structural fix TODO 7.7 asked
+// for).
+func findIndexOnlyLogicalResidual(ref *expressions.Reference) predicates.QueryPredicate {
+	if ref == nil {
 		return nil
 	}
-	if bad := findIndexOnlyResidual(plan); bad != nil {
-		return &UnplannableIndexOnlyResidualError{Predicate: bad.Explain()}
-	}
-	return nil
-}
-
-// findIndexOnlyResidual walks a physical plan tree and returns the first filter
-// predicate that contains an index-only (uncompensatable) value, or nil.
-func findIndexOnlyResidual(plan plans.RecordQueryPlan) predicates.QueryPredicate {
+	visited := make(map[*expressions.Reference]bool)
 	var found predicates.QueryPredicate
-	var walk func(p plans.RecordQueryPlan)
-	walk = func(p plans.RecordQueryPlan) {
-		if found != nil || p == nil {
+	var walk func(r *expressions.Reference)
+	walk = func(r *expressions.Reference) {
+		if r == nil || found != nil || visited[r] {
 			return
 		}
-		type predicateCarrier interface {
-			GetPredicates() []predicates.QueryPredicate
-		}
-		if pc, ok := p.(predicateCarrier); ok {
-			for _, pr := range pc.GetPredicates() {
-				if predicateContainsUncompensatableValues(pr) {
-					found = pr
-					return
+		visited[r] = true
+		for _, m := range r.AllMembers() {
+			if lf, ok := m.(*expressions.LogicalFilterExpression); ok {
+				for _, pr := range lf.GetPredicates() {
+					if predicateContainsUncompensatableValues(pr) {
+						found = pr
+						return
+					}
 				}
 			}
-		}
-		for _, c := range p.GetChildren() {
-			walk(c)
+			for _, q := range m.GetQuantifiers() {
+				walk(q.GetRangesOver())
+			}
 		}
 	}
-	walk(plan)
+	walk(ref)
 	return found
 }
