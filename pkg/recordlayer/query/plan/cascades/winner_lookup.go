@@ -12,7 +12,7 @@ import (
 // to scanning all physical members when winners aren't yet available.
 //
 // For PRESERVE / nil ordering, returns the globally cheapest physical
-// plan (NoProperties winner or findBestPhysicalExpr fallback).
+// plan (NoProperties winner or findBestValidPhysicalExpr fallback).
 // less is the cost comparator used for the un-stamped fallback scans; pass a
 // stats-aware comparator (call.CostModel()) so join sub-product winners are
 // chosen by real cardinality rather than the default-stats tie (RFC-041).

@@ -1,8 +1,40 @@
-# RFC-150 — Retire the Go-only `tryFlatMapPlan`; unify correlated-join access on the data-access path (Phase 2 of RFC-148)
+# RFC-150 — Correlated-join winner-selection correctness (B1) + retire the Go-only `tryFlatMapPlan` (Phase 2 of RFC-148)
 
-**Status:** Draft — Phase 2 of the RFC-148 split (Graefe direction-ACK'd the 148/150 split; this is the
-deep, PR-#201-class half). **Do not start impl until RFC-148 (Phase 1) has landed** and this RFC has its
-own Graefe ACK.
+**Status:** Draft. Split into **Phase 2a (B1a — the nil-inner-Fetch winner-selection guard)** and **Phase 2b
+(retire `tryFlatMapPlan` + B1b + B2)** after a root-cause investigation corrected the diagnosis (see §0).
+
+## 0. Root cause of the pre-existing 0-row bug (corrected diagnosis)
+
+The headline bug `SELECT t.k FROM o,t,u WHERE t.k=5 AND t.a>1 AND t.fk=o.id AND u.x=t.x` →
+`FlatMap(... inner=Fetch(<nil>))` → 0 rows (on **master** and every prior HEAD) is NOT the "correlated
+SUBSEL scan stamped standalone" mechanism originally feared. The consumed leg ref is **non-correlated** to
+the outer. The real defect: a **nil-inner `Fetch` SHELL** (the RFC-070 extraction template
+`NewRecordQueryFetchFromPartialRecordPlan(nil, …)`, `rule_push_filter_through_fetch.go:101-106`; its real
+inner lives in the wrapper quantifier, resolved only via `WithChildren`) is selected as a join child by
+**`findBestPhysicalExpr` (`physical_wrapper.go`) — the ONE of three winner-selectors that omits the
+`isNilInnerFetch` guard** its siblings `getWinnerForOrdering` and `findBestValidPhysicalExpr` both apply (the
+wrapper's own contract doc mandates it). `ImplementNestedLoopJoinRule.OnMatch` (`:92-93`) picks the cheap
+nil shell and embeds its plan **directly** (`GetRecordQueryPlan`, never `WithChildren`) → `Fetch(<nil>)`.
+
+**Phase 2a fix (B1a) — minimal, Java-faithful:** select join children through the nil-safe
+`findBestValidPhysicalExpr`; delete the unguarded `findBestPhysicalExpr` (2 callers, both the NLJ). Java has
+no nil-inner-template concept (a Go RFC-022 plan/wrapper-split artifact); the faithful invariant is "a join
+consumes its child through the single nil-safe winner path, never a bespoke pick-cheapest-member path."
+plandiff byte-identical (the nil shells were only ever wrongly-selected invalid children) + the pre-existing
+bug fixed. Pinned by `TestPlanHarness_JoinLegResidualNoNilFetch`.
+
+**Ordering for the rot-fix (RFC-148's deferred predicate-shape retirement):** B1a FIRST, then retire the
+`compensationSafeForYield` shape gate (compound/IN residuals materialize via `yieldUnknown`). Confirmed
+empirically: retiring the shape gate WITHOUT B1a re-opens the bug for the OR variant; WITH B1a it plans
+correctly.
+
+**Phase 2b (the original scope below)** retires `tryFlatMapPlan` + the `!refIsJoinLeg` muzzle (B1b: a
+correlated INDEX scan referencing an unbound outer stamped standalone — a SECOND mode not exercised by the
+nil-fetch repro) + B2 (LEFT/FULL OUTER residual placement). Still the deep, PR-#201-class half.
+
+**Item:** TODO.md §7.7 (the join-leg half) — full Java alignment of correlated-join access.
+**Reviewers:** **Graefe** (data-access / winner-selection / join-leg consumption — REQUIRED, this is the
+0-row surface) + Torvalds + codex + @claude.
 **Item:** TODO.md §7.7 (the join-leg half) — full Java alignment of correlated-join access.
 **Reviewers:** **Graefe** (data-access / winner-selection / join-leg consumption — REQUIRED, this is the
 0-row surface) + Torvalds + codex + @claude.

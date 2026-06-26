@@ -232,25 +232,6 @@ func findPhysicalExpr(ref *expressions.Reference) expressions.RelationalExpressi
 	return nil
 }
 
-// findBestPhysicalExpr returns the cheapest physical member of ref
-// under the given cost comparator. Returns nil if no physical member
-// exists.
-func findBestPhysicalExpr(ref *expressions.Reference, less func(a, b expressions.RelationalExpression) bool) expressions.RelationalExpression {
-	if ref == nil {
-		return nil
-	}
-	var best expressions.RelationalExpression
-	for _, m := range ref.AllMembers() {
-		if _, ok := m.(physicalPlanExpression); !ok {
-			continue
-		}
-		if best == nil || less(m, best) {
-			best = m
-		}
-	}
-	return best
-}
-
 // isLeafReplaceable reports whether a plan is safe to substitute as the
 // inner of a projection without altering the output schema or predicate
 // semantics. Only leaf-adjacent plans (scans, filters over scans, index

@@ -1535,3 +1535,34 @@ func TestPlanHarness_YieldUnknownReentryConverges(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanHarness_JoinLegResidualNoNilFetch is RFC-150 B1a's headline regression —
+// a PRE-EXISTING 0-row bug fixed here. A partition-SUBSEL join leg (t, joined by
+// sibling predicates t.fk=o.id and u.x=t.x on unindexed columns) materializes its
+// local residual (t.a>1) over IDX_K. The leg ref then holds a nil-inner Fetch SHELL
+// (the RFC-070 extraction template, real inner in the wrapper quantifier). The NLJ
+// rule selected join children via findBestPhysicalExpr — the one winner-selector
+// missing the isNilInnerFetch guard — picked the cheap nil shell and embedded its
+// plan directly (never WithChildren) → FlatMap(... inner=Fetch(<nil>)) → 0 rows, on
+// master AND every prior HEAD. Fix: the NLJ selects through the nil-safe
+// findBestValidPhysicalExpr (the guard its two sibling selectors already apply).
+func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
+		CREATE TABLE t (id bigint, fk bigint, k bigint, a bigint, b bigint, x bigint, PRIMARY KEY (id))
+		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	// AND-residual (the pre-existing bug) and OR-residual (the shape-gated variant)
+	// must both plan with no nil inner leg.
+	for _, sql := range []string{
+		"SELECT t.k FROM o, t, u WHERE t.k = 5 AND t.a > 1 AND t.fk = o.id AND u.x = t.x",
+		"SELECT t.k FROM o, t, u WHERE t.k = 5 AND (t.a > 1 OR t.b < 2) AND t.fk = o.id AND u.x = t.x",
+	} {
+		plan, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		assertPlanNotContains(t, plan, "<nil>")
+		assertPlanContains(t, plan, "FlatMap")
+	}
+}
