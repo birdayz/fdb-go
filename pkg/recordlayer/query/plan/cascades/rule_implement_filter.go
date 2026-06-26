@@ -56,8 +56,10 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// the partial-match re-trigger in TransformExprTask, is consumed without relying on
 	// this rule's incidental yield); when nothing can serve it the rule's non-firing
 	// leaves the query correctly unplannable. This is the structural Java gate that
-	// retires the Go-only validateNoIndexOnlyResidual late net + compensationSafeForYield
-	// index-only branch.
+	// retires the compensationSafeForYield index-only branch (B4). Note:
+	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
+	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
+	// that this gate does not cover — do not remove it until every such builder is gated.
 	for _, pred := range f.GetPredicates() {
 		if predicateContainsUncompensatableValues(pred) {
 			return
