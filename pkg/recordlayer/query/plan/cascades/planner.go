@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -503,10 +504,19 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 	// dedup. Run the standalone consumption ONLY when the partial-match set has GROWN
 	// since the last consumption — NOT a "consumed-ever" gate, which would drop
 	// matches seeded mid-exploration (AdjustPartialMatchesForRef seeds across rounds).
-	// The join-leg path is exempt (Graefe invariant: M2 stays byte-identical), and the
-	// cross-candidate intersection below keeps its own hasIntersectionFinal guard.
+	//
+	// The guard applies ONLY when there is NO requested ordering. A requested ordering
+	// can be propagated into this ref AFTER a first consumption at unchanged match
+	// count, and DataAccessForMatchPartition (which takes requestedOrderings) would
+	// then mint a sort-eliminating ordered scan that a count-only guard would wrongly
+	// suppress — and Go has no physical sort, so a missed ordered scan is a wrong /
+	// extra-sort plan shape, not merely slower. With an ordering present we re-consume
+	// every round (matching OLD, which had no guard at all); convergence there is
+	// bounded by Insert dedup + the 10-round cap. The join-leg path is exempt (Graefe
+	// invariant: M2 stays byte-identical); the cross-candidate intersection below keeps
+	// its own hasIntersectionFinal guard.
 	runConsumption := true
-	if !refIsJoinLeg {
+	if !refIsJoinLeg && len(requestedOrderings) == 0 {
 		totalMatches := 0
 		for _, c := range candidates {
 			totalMatches += len(GetPartialMatchesForCandidate(ref, c))
@@ -674,6 +684,10 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // still plan) + TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must
 // stay unplannable).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
+	local := make(map[values.CorrelationIdentifier]struct{}, len(expr.GetQuantifiers()))
+	for _, q := range expr.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
 	for _, q := range expr.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
@@ -691,9 +705,55 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			if predicateContainsUncompensatableValues(pred) {
 				return false
 			}
+			// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
+			// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
+			// standalone leg filter. refHasCorrelatedMatch only inspects the bound
+			// PREFIX, so a leg whose correlation lives in the RESIDUAL — e.g. an
+			// unindexed `t.fk = o.id` alongside an indexed `t.k = 5` — is NOT flagged as
+			// a join leg; realizing such a compensation as a physical leg filter severs
+			// the join's correlation feed → Fetch(<nil>) / 0 rows (the PR-#201 shape).
+			// This was the *other* half of the retired isSimpleResidualCompensation —
+			// safety, not rot. Query-parameter ConstantObjectValue aliases are execution
+			// constants (not row correlations), so subtract them first.
+			corr := predicates.GetCorrelatedToOfPredicate(pred)
+			deletePredicateConstantObjectAliases(pred, corr)
+			for alias := range corr {
+				if _, isLocal := local[alias]; !isLocal {
+					return false
+				}
+			}
 		}
 	}
 	return true
+}
+
+// deletePredicateConstantObjectAliases removes ConstantObjectValue (query-parameter)
+// aliases from corr — they appear in a predicate's correlation set but are execution
+// constants bound at run time, not join/row correlations. Generalizes the old
+// deleteConstantObjectAliases (which handled only ComparisonPredicate) to any
+// predicate shape, since OR / compound residuals now reach compensationSafeForYield.
+func deletePredicateConstantObjectAliases(pred predicates.QueryPredicate, corr map[values.CorrelationIdentifier]struct{}) {
+	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
+		var vs []values.Value
+		switch p := node.(type) {
+		case *predicates.ComparisonPredicate:
+			vs = []values.Value{p.Operand, p.Comparison.Operand}
+		case *predicates.ValuePredicate:
+			vs = []values.Value{p.Value}
+		}
+		for _, v := range vs {
+			if v == nil {
+				continue
+			}
+			values.WalkValue(v, func(node values.Value) bool {
+				if cov, ok := node.(*values.ConstantObjectValue); ok {
+					delete(corr, cov.Alias)
+				}
+				return true
+			})
+		}
+		return true
+	})
 }
 
 func hasIntersectionFinal(ref *expressions.Reference) bool {
