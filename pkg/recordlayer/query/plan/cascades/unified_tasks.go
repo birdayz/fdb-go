@@ -362,6 +362,14 @@ func (t *TransformImplTask) Run(p *Planner) {
 						// the swapped path is join-commutativity over already-explored
 						// members, not the correlated-SUBSEL yield path codex's P1 named —
 						// so the three gated sites are the complete set for the invariant.
+						// A correlated INNER leg CAN reach this swap (ChildrenAsSet is true
+						// for JoinInner, no correlation gate on the swap), but that is
+						// HARMLESS: residual 0-row safety for any correlated leg is held
+						// DOWNSTREAM and independently of which site drives the optimize —
+						// by compensationSafeForYield's outer-correlation guard + B1a's
+						// isNilInnerFetch winner selection (defense-in-depth) — not by B1's
+						// gating. B1 only removes a premature standalone prune (codex's
+						// :248 path); it was never the sole 0-row guarantee (Torvalds).
 						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 						p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 					}
