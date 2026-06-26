@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -17,35 +18,41 @@ import (
 // — matching libfdb_c — rather than the legacy Min(13)/And(6).
 func TestAtomic_MinAndV2UpgradeGate(t *testing.T) {
 	t.Parallel()
-	mk := func(apiVersion int) *Transaction {
-		return &Transaction{db: &database{apiVersion: apiVersion}, rywDisabled: true}
-	}
 	lastOp := func(tx *Transaction) MutationType { return tx.mutations[len(tx.mutations)-1].Type }
 
-	// >= 510: Min/And upgrade to V2; other ops untouched.
-	tx := mk(730)
-	tx.Atomic(MutMin, []byte("k"), []byte{0x0a})
-	if got := lastOp(tx); got != MutMinV2 {
-		t.Fatalf("Min @730: got op %d, want MutMinV2(%d)", got, MutMinV2)
-	}
-	tx.Atomic(MutAnd, []byte("k"), []byte{0xff})
-	if got := lastOp(tx); got != MutAndV2 {
-		t.Fatalf("And @730: got op %d, want MutAndV2(%d)", got, MutAndV2)
-	}
-	tx.Atomic(MutAddValue, []byte("k"), []byte{0x01})
-	if got := lastOp(tx); got != MutAddValue {
-		t.Fatalf("Add @730 must NOT upgrade: got op %d, want MutAddValue(%d)", got, MutAddValue)
-	}
+	// The gate is apiVersionAtLeast(510) — STRICTLY >= 510, exactly as C++. Pin
+	// the BOUNDARY (509 no-upgrade, 510 upgrade), not just far-apart values: a
+	// wrong gate of e.g. 600 would silently ship legacy Min(13)/And(6) to apps at
+	// API 510-599 — the exact wire divergence this RFC closes.
+	for _, tc := range []struct {
+		apiVersion  int
+		wantUpgrade bool
+	}{
+		{500, false}, {509, false}, {510, true}, {730, true},
+	} {
+		tc := tc
+		t.Run(fmt.Sprintf("api%d", tc.apiVersion), func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{db: &database{apiVersion: tc.apiVersion}, rywDisabled: true}
 
-	// < 510: no upgrade (the C++ gate is apiVersionAtLeast(510) exactly).
-	old := mk(500)
-	old.Atomic(MutMin, []byte("k"), []byte{0x0a})
-	if got := lastOp(old); got != MutMin {
-		t.Fatalf("Min @500 must NOT upgrade: got op %d, want MutMin(%d)", got, MutMin)
-	}
-	old.Atomic(MutAnd, []byte("k"), []byte{0xff})
-	if got := lastOp(old); got != MutAnd {
-		t.Fatalf("And @500 must NOT upgrade: got op %d, want MutAnd(%d)", got, MutAnd)
+			wantMin, wantAnd := MutMin, MutAnd
+			if tc.wantUpgrade {
+				wantMin, wantAnd = MutMinV2, MutAndV2
+			}
+			tx.Atomic(MutMin, []byte("k"), []byte{0x0a})
+			if got := lastOp(tx); got != wantMin {
+				t.Fatalf("Min @%d: got op %d, want %d", tc.apiVersion, got, wantMin)
+			}
+			tx.Atomic(MutAnd, []byte("k"), []byte{0xff})
+			if got := lastOp(tx); got != wantAnd {
+				t.Fatalf("And @%d: got op %d, want %d", tc.apiVersion, got, wantAnd)
+			}
+			// Only Min/And are upgraded — Add never is, at any version.
+			tx.Atomic(MutAddValue, []byte("k"), []byte{0x01})
+			if got := lastOp(tx); got != MutAddValue {
+				t.Fatalf("Add @%d must NOT upgrade: got op %d, want MutAddValue(%d)", tc.apiVersion, got, MutAddValue)
+			}
+		})
 	}
 }
 

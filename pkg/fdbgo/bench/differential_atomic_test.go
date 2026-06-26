@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
@@ -333,4 +335,71 @@ func TestDifferential_AppendIfFitsFold(t *testing.T) {
 		{"append_wide", fzAppendIfFits, bytesOf(50000, 0x61), bytesOf(40000, 0x62)}, // 90KB total, still < 100KB
 	}
 	runAtomicFoldCases(t, cases)
+}
+
+// goRawLowLevelFold runs client.Atomic(op) on an absent key in ONE txn and reads
+// the key WITHIN that txn (exercising Go's RYW fold via the low-level
+// client.Transaction — the path cmd/fdb-stacktester uses, NOT the fdb facade),
+// then commits and reads back (server fold). RYW is enabled (no rywDisabled), so
+// this reaches the in-txn RYW-read dimension the unit gate test cannot.
+func goRawLowLevelFold(t *testing.T, k []byte, op client.MutationType, operand []byte) (inTxn, committed string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := goRawClient.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		tx.Atomic(op, k, operand)
+		v, e := tx.Get(ctx, k) // IN-TXN read → Go RYW fold (doMinV2/doAndV2 after the upgrade)
+		if e != nil {
+			return nil, e
+		}
+		inTxn = hexOrAbsent(v)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("goraw txn: %v", err)
+	}
+	cv, err := goRawClient.Transact(ctx, func(tx *client.Transaction) (any, error) { return tx.Get(ctx, k) })
+	if err != nil {
+		t.Fatalf("goraw read-back: %v", err)
+	}
+	b, _ := cv.([]byte)
+	return inTxn, hexOrAbsent(b)
+}
+
+// TestDifferential_AtomicMinAndV2LowLevel pins that the LOW-LEVEL client.Atomic
+// path (the one cmd/fdb-stacktester uses, NOT the facade) folds an absent-key
+// MIN/AND identically to libfdb_c (RFC-149). Before the fix client.Atomic shipped
+// legacy Min(13)/And(6): in-txn AND committed both zero-fold on an absent key,
+// while cgo tr.Min/BitAnd ship V2 → the operand. After: both V2 → operand. This
+// is the red→green differential §5 specified, covering the in-txn RYW-read
+// dimension the rywDisabled unit gate test structurally skips.
+func TestDifferential_AtomicMinAndV2LowLevel(t *testing.T) {
+	ns := strings.ReplaceAll(t.Name(), "/", "_")
+	cases := []struct {
+		name    string
+		goOp    client.MutationType
+		cgoOp   int
+		operand []byte
+	}{
+		{"min_absent", client.MutMin, fzMin, []byte{0x0a, 0, 0, 0, 0, 0, 0, 0}}, // le64(10)
+		{"and_absent", client.MutAnd, fzAnd, bytesOf(2, 0xff)},                  // {0xff,0xff}
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			pfx := "\x02difr149_" + ns + "_" + c.name + "_"
+			goIn, goCommit := goRawLowLevelFold(t, []byte(pfx+"go"), c.goOp, c.operand)
+			cgoIn, cgoCommit := cgoFold(t, pfx, atomicFoldCase{name: c.name, op: c.cgoOp, base: nil, operand: c.operand})
+			if goIn != cgoIn {
+				t.Fatalf("%s in-txn fold: go=%s cgo=%s (want equal)", c.name, goIn, cgoIn)
+			}
+			if goCommit != cgoCommit {
+				t.Fatalf("%s committed fold: go=%s cgo=%s (want equal)", c.name, goCommit, cgoCommit)
+			}
+			// The V2 fold on an absent key is the OPERAND (legacy would zero-fold),
+			// proving the upgrade actually changed the result, not just that both
+			// engines happen to agree on zero.
+			if want := hexOrAbsent(c.operand); goCommit != want {
+				t.Fatalf("%s: V2 absent-key fold should be the operand %s, got %s", c.name, want, goCommit)
+			}
+		})
+	}
 }
