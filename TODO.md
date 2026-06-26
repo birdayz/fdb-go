@@ -142,20 +142,33 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
            the leg's PK. Fix: add `ComparisonType.Commute()` (=↔=, <↔>, <=↔>=) + a `bindOrientedComparison` that
            tries as-written then commuted (Java's Value matching is commutative). Verified: generates the
            `Scan(CUSTOMERS,[=corr])` PK probe that didn't exist.
-         - **Layer 2b (THE BLOCKER — deep, not solved, PR-#201 0-row surface, NEEDS GRAEFE-GATED DESIGN).** The
-           generated PK probe lands as a LOGICAL `LogicalFilterExpression(residual, Scan(C,[=corr]))` whose residual
-           is the *outer-correlated* join pred — which `compensationSafeForYield` (`planner.go:717`) CORRECTLY
-           rejects (the outer-correlation 0-row guard, the PR-#201 shape) → stuck logical → never a physical leg
-           member. The *clean* single-join-pred correlated leg (which would SARG residual-free) isn't reached by
-           `matchSingleSourceAgainstSelect` cleanly (structural-match-path + And-flattening interaction in
-           `MatchIntermediateRule`). And `ImplementNestedLoopJoinRule` captures leg plans via
-           `findBestValidPhysicalExpr` at fire-time (physical members only), so even a SARGed probe wouldn't
-           surface — it needs to consume fully-optimized child PlanPartitions (Java's `planPartitions`). Closing
-           this reworks correlated-leg matching + materialization across 4 subsystems on the exact 0-row surface;
-           do it as a Graefe-ACK'd design (don't weaken the outer-correlation guard), not an autonomous hammer.
-         Then delete `tryFlatMapPlan` + call + (cleanup) the `leftOuter` flag on `RecordQueryFlatMapPlan`. Keep
-         `tryExistsFlatMap`/`buildExistsFlatMap` (still reachable via EXISTS). FULL OUTER stays on the materialized
-         NLJ. Detail: RFC-150 §3 (B1 solved) + §4.
+         - **Layer 2b SOLVED + DESIGN-ACK'd (Graefe) — SARG the correlation as a sargable BOUND, not a residual.**
+           The PK probe must be captured INSIDE the scan's ScanComparisons (residual-free) so it's a PHYSICAL leg
+           member that bypasses `compensationSafeForYield` entirely (which only gates LOGICAL compensations). Java's
+           bound-vs-residual line: `PredicateWithValueAndRanges.java:423-432` (`containsKey(alias) →
+           noCompensationNeeded`). The 0-row guard is UNCHANGED — it still rejects the genuine residual-correlation
+           PR-#201 shape; a sargable-bound correlation is the safe shape Java itself distinguishes. **D.1**
+           (commutative SARG in `matchSingleSourceAgainstSelect` + mark the bound pred matched so no residual) +
+           **D.2** (physical scan/index wrappers must surface ScanComparisons correlations — Go returns empty,
+           a latent bug vs `RecordQueryScanPlan.java:299-302`) are VALIDATED: the unfiltered 2-way correlated join
+           produces the bare physical PK probe `FlatMap(Scan(ORDERS), Scan(CUSTOMERS,[=corr]))`. Graefe ACK'd the design.
+         - **Layer 2c (THE ACTUAL GATE — a COST-MODEL change, distinct RFC, Graefe-gated, PR-#201 perf surface).**
+           Round 4 proof: with D.1 enabling correlated PK probes everywhere, the multiway chain gains an all-PK-probe
+           candidate driving off the *largest* table (full scan, zero Fetches, all card-1). The cost model PREFERS
+           it over the RFC-042 secondary-index chain driving from the small table, because the fetch-count /
+           max-cardinality tiebreaks (`planning_cost_model.go:205/246/272`, criterion #2 + fetch heuristic) fire
+           BEFORE `compareJoinOrdering`. Rows correct, but multiway tests fail the index-probe SHAPE (full-scan
+           driver = perf regression). **D.1 cannot land standalone** — it makes multiway WORSE without the cost-model
+           fix. Fix: make join-order costing prefer driving from the smallest/most-selective table — run
+           `compareJoinOrdering` (total recursive join cost) BEFORE the structural fetch/card tiebreaks for
+           join-wrapper pairs (or stop criterion #2 rewarding an all-PK chain whose outer is a full scan of the
+           larger table). HIGH blast radius (every join plan) → its own RFC + Graefe ACK + full plandiff/row-count/
+           1M-stress. Also: the JoinSelPred FILTERED leg (`o.id<10` sibling) doesn't reach
+           `matchSingleSourceAgainstSelect` cleanly — a separate match-firing fix.
+         Sequence to finish: cost-model RFC (Layer 2c) → re-apply Gap#1 + D.1 + D.2 → filtered-leg match-firing →
+         delete `tryFlatMapPlan` (+ cleanup `leftOuter` flag). Keep `tryExistsFlatMap` (EXISTS). FULL OUTER stays
+         on the materialized NLJ. All validated round-3/4 fixes were REVERTED (pay off only together with 2c).
+         Detail: RFC-150 §3/§4.
    - **[ ] PROCESS HAZARD (found this shift) — the codex-review CLI can leave the repo on a detached HEAD,
      orphaning the branch tip.** Commit a567acb68 (a Torvalds F1 fix) was silently dropped this way — its content
      was not in HEAD's history afterward and had to be re-applied. After running `codex-review`, verify
