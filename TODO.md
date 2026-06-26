@@ -83,11 +83,17 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      incidental physical-filter yield to re-trigger. Fix: `TransformExprTask` re-runs data-access when a rule
      grows the ref's partial-match set (Java `getNewPartialMatches()` reaction, `CascadesPlanner.java:1058`),
      so Java's `ImplementFilterRule` `!isIndexOnly()` gate (`ImplementFilterRule.java:62`) goes in cleanly;
-     `validateNoIndexOnlyResidual` (physical net) + `compensationSafeForYield`'s index-only branch both retired
-     (the no-index case now surfaces `UnplannableIndexOnlyResidualError` from a logical-side `Plan()` check).
-     **Sentinels (green):** `TestVectorPlan_QualifyPlansToVectorScan` (plans) + `MetricMismatch` (clean error) +
+     `compensationSafeForYield`'s index-only branch retired (redundant behind the gate). `validateNoIndexOnlyResidual`
+     is **RETAINED as the catch-all backstop** — Graefe + Torvalds both reproduced a JOIN leak (the distance is a
+     `Select` predicate → physical residual via `ImplementSimpleSelectRule`/NLJ, which the `ImplementFilterRule`
+     gate doesn't see); a logical-side `Plan()` check handles the complementary non-physical case.
+     **Sentinels (green):** `TestVectorPlan_QualifyPlansToVectorScan` (plans) + `MetricMismatch` (single-table clean
+     error) + `MetricMismatchInJoinDoesNotLeak` (join clean error — the regression pin) +
      `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (unplannable via the kept inner-scan guard).
-     Remaining smaller follow-up: gate `ImplementIndexScanRule`'s residual-skip loop the same way (distinct rule).
+   - **[ ] Follow-up — gate the remaining physical-filter builders to fully retire the net.** Gate
+     `ImplementSimpleSelectRule` + the NLJ residual builder on `!isIndexOnly()` (mirror `ImplementFilterRule`),
+     and retire `ImplementIndexScanRule`'s residual-skip loop, so NO builder can emit an index-only physical
+     residual — only then is `validateNoIndexOnlyResidual` genuinely dead and removable (Graefe's design-#10 path).
    - **[ ] Phase 2 (RFC-150):** remove `!refIsJoinLeg` + retire the Go-only `tryFlatMapPlan` + the B1 structural
      no-correlated-standalone-leg-winner invariant + LEFT/FULL OUTER residual-placement reconciliation, one
      shape at a time (EXPLAIN + row-count + 1M stress). The PR-#201 surface. Gated: 148 lands → Graefe re-ACK

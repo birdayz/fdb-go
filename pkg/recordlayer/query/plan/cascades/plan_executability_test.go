@@ -6,6 +6,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 func newDistanceRankResidual() predicates.QueryPredicate {
@@ -20,6 +21,50 @@ func newDistanceRankResidual() predicates.QueryPredicate {
 
 func newScanExpr() expressions.RelationalExpression {
 	return expressions.NewFullUnorderedScanExpression([]string{"DOCS"}, values.UnknownType)
+}
+
+func newScanPlan() plans.RecordQueryPlan {
+	return plans.NewRecordQueryScanPlan([]string{"DOCS"}, values.UnknownType, false)
+}
+
+// TestFindIndexOnlyResidual_NestedUnderUnionArm pins that the PHYSICAL catch-all
+// backstop recurses past the root (Graefe: "leaks at depth > 0"): an index-only
+// DistanceRank residual nested inside a union arm — not at the root — must still be
+// found, so validateNoIndexOnlyResidual rejects a plan that hides the unevaluable
+// filter beneath a UNION/INTERSECTION. This is the path the ImplementFilterRule
+// gate does NOT cover (a physical filter built by another producer).
+func TestFindIndexOnlyResidual_NestedUnderUnionArm(t *testing.T) {
+	t.Parallel()
+
+	badFilter := plans.NewRecordQueryPredicatesFilterPlan(
+		newScanPlan(), []predicates.QueryPredicate{newDistanceRankResidual()})
+	union := plans.NewRecordQueryUnorderedUnionPlan(
+		[]plans.RecordQueryPlan{newScanPlan(), badFilter})
+
+	if got := findIndexOnlyResidual(union); got == nil {
+		t.Fatal("did not find the index-only residual nested one level under a union arm")
+	}
+}
+
+// TestFindIndexOnlyResidual_CleanTree pins the no-false-positive direction for the
+// physical backstop.
+func TestFindIndexOnlyResidual_CleanTree(t *testing.T) {
+	t.Parallel()
+
+	cleanFilter := plans.NewRecordQueryPredicatesFilterPlan(
+		newScanPlan(),
+		[]predicates.QueryPredicate{
+			predicates.NewComparisonPredicate(
+				&values.FieldValue{Field: "ZONE", Typ: values.TypeString},
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, "z1"),
+			),
+		})
+	union := plans.NewRecordQueryUnorderedUnionPlan(
+		[]plans.RecordQueryPlan{newScanPlan(), cleanFilter})
+
+	if got := findIndexOnlyResidual(union); got != nil {
+		t.Fatalf("false positive on a clean tree: %v", got.Explain())
+	}
 }
 
 // TestFindIndexOnlyLogicalResidual_NestedUnderQuantifier pins that the logical
