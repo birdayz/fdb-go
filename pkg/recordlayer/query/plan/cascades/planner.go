@@ -684,11 +684,23 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // still plan) + TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must
 // stay unplannable).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
-	local := make(map[values.CorrelationIdentifier]struct{}, len(expr.GetQuantifiers()))
-	for _, q := range expr.GetQuantifiers() {
+	// Only a plain residual FILTER is a yield candidate — byte-identical to the OLD
+	// isSimpleResidualCompensation's leading `f, ok := expr.(*LogicalFilterExpression);
+	// if !ok { return false }`. A non-filter compensation (a SelectExpression with
+	// result compensation / pulled-up quantifiers from ForMatchCompensation.ApplyAllNeeded,
+	// a projection over a vector scan, …) stays on the OLD InsertFinal path. Without this
+	// top-level reject, such shapes would skip every guard below and fall through to
+	// "safe" → yieldUnknown, re-optimizing an unsafe residual the allowlist refused
+	// (codex P2).
+	f, ok := expr.(*expressions.LogicalFilterExpression)
+	if !ok {
+		return false
+	}
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
 	}
-	for _, q := range expr.GetQuantifiers() {
+	for _, q := range f.GetQuantifiers() {
 		cref := q.GetRangesOver()
 		if cref == nil {
 			continue
@@ -700,43 +712,41 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			}
 		}
 	}
-	if f, ok := expr.(*expressions.LogicalFilterExpression); ok {
-		for _, pred := range f.GetPredicates() {
-			// SHAPE gate — DEFERRED rot-fix, not safety. A non-simple residual (a
-			// compound/OR predicate, or an IN) is held on the OLD InsertFinal path for
-			// now because materializing it via yieldUnknown is unsafe on a partition
-			// SUBSEL that is consumed by an enclosing join: such a leg is NOT flagged by
-			// refIsJoinLeg (the join correlation lives in a SIBLING predicate, not this
-			// ref's bound prefix or residual), so the materialized leg filter wins and
-			// severs the join feed → Fetch(<nil>) / 0 rows (codex's 3-way-join repro).
-			// Distinguishing "standalone single-table" from "partition-SUBSEL join leg"
-			// requires the parent context — RFC-150's winner-selection invariant. Until
-			// that lands, keep Phase-1 byte-identical by yielding only the SIMPLE shapes
-			// the old isSimpleResidualCompensation accepted. (RFC-150 retires this gate
-			// together with the join-leg coupling + tryFlatMapPlan.)
-			cp, isCmp := pred.(*predicates.ComparisonPredicate)
-			if !isCmp || cp.Comparison.Type == predicates.ComparisonIn {
+	for _, pred := range f.GetPredicates() {
+		// SHAPE gate — DEFERRED rot-fix, not safety. A non-simple residual (a
+		// compound/OR predicate, or an IN) is held on the OLD InsertFinal path for
+		// now because materializing it via yieldUnknown is unsafe on a partition
+		// SUBSEL that is consumed by an enclosing join: such a leg is NOT flagged by
+		// refIsJoinLeg (the join correlation lives in a SIBLING predicate, not this
+		// ref's bound prefix or residual), so the materialized leg filter wins and
+		// severs the join feed → Fetch(<nil>) / 0 rows (codex's 3-way-join repro).
+		// Distinguishing "standalone single-table" from "partition-SUBSEL join leg"
+		// requires the parent context — RFC-150's winner-selection invariant. Until
+		// that lands, keep Phase-1 byte-identical by yielding only the SIMPLE shapes
+		// the old isSimpleResidualCompensation accepted. (RFC-150 retires this gate
+		// together with the join-leg coupling + tryFlatMapPlan.)
+		cp, isCmp := pred.(*predicates.ComparisonPredicate)
+		if !isCmp || cp.Comparison.Type == predicates.ComparisonIn {
+			return false
+		}
+		if predicateContainsUncompensatableValues(pred) {
+			return false
+		}
+		// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
+		// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
+		// standalone leg filter. refHasCorrelatedMatch only inspects the bound
+		// PREFIX, so a leg whose correlation lives in the RESIDUAL — e.g. an
+		// unindexed `t.fk = o.id` alongside an indexed `t.k = 5` — is NOT flagged as
+		// a join leg; realizing such a compensation as a physical leg filter severs
+		// the join's correlation feed → Fetch(<nil>) / 0 rows (the PR-#201 shape).
+		// This was the *other* half of the retired isSimpleResidualCompensation —
+		// safety, not rot. Query-parameter ConstantObjectValue aliases are execution
+		// constants (not row correlations), so subtract them first.
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		deletePredicateConstantObjectAliases(pred, corr)
+		for alias := range corr {
+			if _, isLocal := local[alias]; !isLocal {
 				return false
-			}
-			if predicateContainsUncompensatableValues(pred) {
-				return false
-			}
-			// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
-			// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
-			// standalone leg filter. refHasCorrelatedMatch only inspects the bound
-			// PREFIX, so a leg whose correlation lives in the RESIDUAL — e.g. an
-			// unindexed `t.fk = o.id` alongside an indexed `t.k = 5` — is NOT flagged as
-			// a join leg; realizing such a compensation as a physical leg filter severs
-			// the join's correlation feed → Fetch(<nil>) / 0 rows (the PR-#201 shape).
-			// This was the *other* half of the retired isSimpleResidualCompensation —
-			// safety, not rot. Query-parameter ConstantObjectValue aliases are execution
-			// constants (not row correlations), so subtract them first.
-			corr := predicates.GetCorrelatedToOfPredicate(pred)
-			deletePredicateConstantObjectAliases(pred, corr)
-			for alias := range corr {
-				if _, isLocal := local[alias]; !isLocal {
-					return false
-				}
 			}
 		}
 	}

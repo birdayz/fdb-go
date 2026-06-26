@@ -88,23 +88,34 @@ this (it only routes `!refIsJoinLeg` refs through `yieldUnknown`).
 
 ## 3. Design (Phase 1)
 
-**3a. Retire the PREDICATE-SHAPE allowlist via yieldUnknown; KEEP the inner-scan + index-only SAFETY guards.**
-Add `yieldUnknown(ref, expr)`: `isPhysical(expr) ? ref.InsertFinal(expr) : ref.Insert(expr)` — Go's
-`CascadesRuleCall.yieldUnknownExpression` analog. In the `planner.go:484-552` block, for a `!refIsJoinLeg`
-ref: a **safe** logical compensation routes through `yieldUnknown` (→ exploratory set, re-optimized by the
-existing `ExploreGroupTask`/`ExploreExprTask` loop), replacing the surgical `implementDataAccessCompensation`
-+ the `isSimpleResidualCompensation` **predicate-shape** restriction (`ComparisonPredicate`-only, non-IN) —
-the actual *rot* (a non-allowlisted shape, e.g. an OR / multi-predicate residual, silently fell to a full
-scan; pinned green→ now `IndexScan` by `TestPlanHarness_CompoundResidualUsesIndex`). An **unsafe** logical
-compensation keeps the OLD `InsertFinal` path.
+**3a. Replace the surgical arm with `yieldUnknown` — BYTE-IDENTICAL (the predicate-shape retirement, the
+"rot-fix", moved to RFC-150).** Add `yieldUnknown(ref, expr)`: `isPhysical(expr) ? ref.InsertFinal(expr) :
+ref.Insert(expr)` — Go's `CascadesRuleCall.yieldUnknownExpression` analog. In the `planner.go:484-552` block,
+for a `!refIsJoinLeg` ref a **safe** logical compensation routes through `yieldUnknown` (→ exploratory set,
+re-optimized by the existing `ExploreGroupTask`/`ExploreExprTask` loop) instead of the Go-only surgical
+`implementDataAccessCompensation`. An **unsafe** compensation keeps the OLD `InsertFinal` path.
 
-`compensationSafeForYield(expr)` is the SAFETY half of the retired allowlist, kept verbatim: unsafe ⇔ the
-inner scan is a vector top-K / aggregate scan, or any predicate carries an index-only value. Such a
-compensation is not narrowable by a post-filter, so it must stay logical and the query correctly fails to
-plan if unconsumable — **never** be re-optimized into a wrong plan. This guard is a documented **stand-in**
-(§3b). **Retain the entire `!refIsJoinLeg` / `refHasCorrelatedMatch` path unchanged** (M2 — RFC-150's
-surface). Net: behavior-preserving (plandiff byte-identical) except safe standalone compensations now
-re-optimize through the full rule set instead of the surgical arm, and the predicate-shape rot is closed.
+`compensationSafeForYield(expr)` is the **full** OLD `isSimpleResidualCompensation` predicate set, kept:
+unsafe ⇔ inner scan is a vector top-K / aggregate scan, OR any predicate carries an index-only value, OR any
+predicate is non-simple (compound/OR or IN), OR any residual is correlated to an OUTER quantifier. So
+`yieldUnknown` fires for EXACTLY the shapes the allowlist accepted → **Phase 1 is byte-identical** (plandiff
+confirms), a pure Java-aligned mechanism swap (the surgical arm is a Go-only divergence).
+
+**Why the shape gate is RETAINED (not retired) in Phase 1 — the rot-fix is unsafe without RFC-150.**
+Implementation proved (codex) that retiring the predicate-shape restriction ships a 0-row plan: a NON-simple
+residual on a partition-SUBSEL **join leg** whose join correlation lives in a SIBLING predicate
+(`t.fk = o.id`) is NOT flagged by `refIsJoinLeg` (bound-prefix only) nor by the residual-correlation guard
+(the residual is local). Materializing it via `yieldUnknown` wins and severs the join feed →
+`FlatMap(... inner=Fetch(<nil>))`. Distinguishing "standalone single-table" from "partition-SUBSEL join
+leg" needs the PARENT context — RFC-150's winner-selection invariant. (A simple-AND variant of the same
+query produces the same `Fetch(<nil>)` on **base** too — a PRE-EXISTING join-leg 0-row bug, the headline
+RFC-150 sentinel.) So the rot-fix (compound/IN residuals realizing) lands in RFC-150, after B1.
+
+The vector/aggregate inner-scan + index-only branches of `compensationSafeForYield` are a documented
+**stand-in** (§3b). **Retain the entire `!refIsJoinLeg` / `refHasCorrelatedMatch` path unchanged** (M2 —
+RFC-150's surface). Net: **fully** behavior-preserving (plandiff byte-identical) — safe standalone
+compensations re-optimize through the full rule set instead of the surgical arm, with identical plans. The
+predicate-shape rot is NOT closed here (it is RFC-150's, after B1).
 
 **3b. B3 (`ImplementFilterRule` `!isIndexOnly()` gate) — DEFERRED; it is the wrong layer without match-level
 consumption.** v2 §3b proposed porting Java's `ImplementFilterRule.java:62` `all(anyCompensatablePredicate())`
@@ -154,18 +165,23 @@ untouched (M2 retained).
   protocol: point lookups <5ms, full scans ~3s/1M, index equality <10ms). Mandatory even for "low-risk"
   Phase 1 — `yieldUnknown→Insert→re-explore` fires the full rule set and can mint members that move the
   winner; this is the safety net (Graefe condition 1).
-- **Per-shape red→green** for each *standalone* shape the allowlist admits (simple residual, IN-explode
-  standalone, etc.): prove `yieldUnknown` realizes the same plan the allowlist arm did (EXPLAIN shape).
-- **B3 regression** (its own): a query with an index-only residual predicate — the rule must **not fire**
-  (the whole filter, not a dropped conjunct); a vector/metric-mismatch query that today hits
-  `validateNoIndexOnlyResidual` still fails-to-plan because the rule never fires; `validateNoIndexOnlyResidual`
-  retained for the original-query path.
-- **B4 termination**: a task-count gate that trips the 10-round cap on a re-entry regression (not just 5×
-  determinism); the late-seeded-match case still plans.
-- **New regression for the masked failure mode**: a *standalone* compensation shape with no old allowlist
-  arm now plans (instead of silent no-plan).
+- **Simple-residual yieldUnknown realizes correctly**: `TestPlanHarness_ResidualCompensationPreservesOrdering`
+  (a simple residual re-optimized via yieldUnknown keeps the IDX_K order — no physical Sort, §3d) +
+  `TestPlanHarness_YieldUnknownReentryConverges` (the exploratory re-entry converges to a stable plan, §3c).
+- **M2 0-row guard** (the residual-correlation half of the retired allowlist):
+  `TestPlanHarness_CorrelatedResidualNotStandaloneLeg` — an unindexed `t.fk=o.id` residual alongside an
+  indexed `t.k=5` plans the valid correlated FlatMap, no `Fetch(<nil>)`.
+- **codex regression** (the shape gate keeps a non-simple residual on a hidden join leg off yieldUnknown):
+  `TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized` — the 3-way-join OR-residual query has no
+  nil inner.
 - **Join-leg untouched**: the correlated-join sentinels (`TestFDB_CascadesFlatMapCorrelatedJoin`,
   `zz_join_selpred_repro_test`, `plan_shape_conformance_test`) stay byte-identical.
+- **Deferred to RFC-150** (gated on B1, the winner-selection invariant): the rot-fix (compound/IN residuals
+  realizing via the index instead of a full scan), with the pre-existing simple-AND-on-hidden-join-leg
+  0-row bug as the headline red→green sentinel. **Deferred to the match-consumption follow-up** (§3b): the
+  `ImplementFilterRule` `!isIndexOnly()` gate + retiring `compensationSafeForYield`'s index-only branch +
+  `validateNoIndexOnlyResidual`, sentinels `TestVectorPlan_QualifyPlansToVectorScan` (plans) +
+  `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (unplannable).
 
 ## 6. Gate & risk
 
