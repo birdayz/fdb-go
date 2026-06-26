@@ -8,6 +8,17 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 # NEXT
 
+> **[ ] BUG (query-engine, wrong results, Graefe-gated) — local residual silently DROPPED on GROUP-BY over a
+> correlated join.** `SELECT o.id, COUNT(*) FROM o, t WHERE t.fk = o.id AND t.k = 5 GROUP BY o.id` plans
+> IDENTICALLY with and without `AND t.k = 5` → `StreamingAgg(keys=[O.ID], InMemorySort(…, FlatMap(outer=Scan(T),
+> inner=PredicatesFilter(Scan(O),[t.fk=o.id]))))`. The local `t.k=5` residual on the driving leg vanishes →
+> COUNT over ALL matching `t`, not the `t.k=5` subset → **over-counts**. PRE-EXISTING (verified byte-identical on
+> base 33b7307ce + HEAD — NOT the muzzle/Piece-1; found by Graefe's adversarial battery). Non-aggregate is fine
+> (`FROM o,t WHERE t.fk=o.id AND t.k=5 AND …` correctly applies the residual on `Scan(T)`); the aggregate/GROUP-BY
+> orientation drops it. Repro is the red→green sentinel. Suspected root: the residual-placement/orientation logic
+> the GROUP-BY-over-FlatMap path shares with Phase-2b's `RewriteOuterJoinRule` work — confirm before assuming;
+> may sequence alongside Piece 2. Graefe gates the fix.
+
 Post RFC-115/116/117/118. The pure-Go client (`pkg/fdbgo`) is launch-ready on correctness + wire
 compatibility; everything here is polish/parity/infra — **none gates adoption**. Priority order below;
 details live in the phase/section the pointer names. Client items are fresh `fdb-client-engineer` RFC
