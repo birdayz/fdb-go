@@ -233,13 +233,17 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		expected int // pinned post-change baseline
 	}{
 		// Bumped for RFC-150 Phase-2b Piece-1: the B1 task-graph invariant gates
-		// OptimizeInputs to PHYSICAL members at every scheduling site (matching Java's
-		// executeRuleCall, which schedules OptimizeInputs only for new FINAL/plan yields,
-		// CascadesPlanner.java:1064-1070). The old counts reflected a Go-only "early
-		// optimize" — driving child OptimizeGroupTask from LOGICAL parent yields — which
-		// pruned children sooner. Deferring optimization to the physical parent (the
-		// faithful timing) costs a few more re-exploration rounds: +1.1% (3-table) /
-		// +2.0% (4-table). Plans are byte-identical (plandiff); only task count moved.
+		// OptimizeInputs to PHYSICAL members at the three rule-yield scheduling sites
+		// (ExploreGroupTask + the two non-swapped Transform yields), matching Java, which
+		// schedules OptimizeInputs only for new FINAL/plan expressions (ExploreGroup
+		// CascadesPlanner.java:744-748 + executeRuleCall :1064-1070). The old counts
+		// reflected a Go-only "early optimize" — driving child OptimizeGroupTask from
+		// LOGICAL parent yields — which pruned children sooner. Deferring to the physical
+		// parent (the faithful Java timing) costs a few re-exploration rounds: 8999→9095
+		// (3-table, +1.1%) / 30593→31210 (4-table, +2.0%), bounded. Plans byte-identical
+		// (plandiff); only task count moved. (The 4th site — the swapped-quantifier impl
+		// yield — is intentionally left ungated: it is load-bearing, not redundant —
+		// gating it breaks TestFDB_ArrayUnnestOrdinality.)
 		{3, 9095},
 		{4, 31210},
 	}

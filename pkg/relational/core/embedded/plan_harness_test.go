@@ -1446,7 +1446,8 @@ func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 // TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized pins that Phase-1's
 // yieldUnknown does NOT materialize a NON-simple (OR) residual on a partition-SUBSEL
 // join leg. The leg's join correlation lives in a SIBLING predicate (t.fk = o.id), so
-// refIsJoinLeg does not flag this ref (it inspects only the bound prefix); materializing
+// the bound-prefix correlation signal (matchBoundPrefixIsCorrelated) does not flag this
+// ref (it inspects only the bound prefix); materializing
 // the OR residual as a standalone leg filter would win and sever the join feed →
 // FlatMap(... inner=Fetch(<nil>)) → 0 rows (codex's 3-way-join repro). The SHAPE gate in
 // compensationSafeForYield keeps the OR residual on the OLD InsertFinal path → byte-
@@ -1470,10 +1471,12 @@ func TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized(t *testing.T)
 // TestPlanHarness_CorrelatedResidualNotStandaloneLeg pins the M2 0-row guard RFC-148
 // Phase 1 restored in compensationSafeForYield. A join leg whose correlation lives
 // in the RESIDUAL (an unindexed `t.fk = o.id`) alongside an indexed local predicate
-// (`t.k = 5`) is NOT flagged by refHasCorrelatedMatch (which inspects only the bound
-// prefix). The retired isSimpleResidualCompensation rejected such a compensation via
-// its predicate-correlation check — safety, not shape rot. Without the restored
-// guard, yieldUnknown realizes a physical correlated leg filter that severs the
+// (`t.k = 5`) is NOT visible to the bound-prefix correlation signal
+// (matchBoundPrefixIsCorrelated, which inspects only the bound prefix). The retired
+// isSimpleResidualCompensation rejected such a compensation via its predicate-correlation
+// check — safety, not shape rot. Without the restored guard (now compensationSafeForYield's
+// outer-correlation check, backed structurally by B1's task-graph invariant — RFC-150
+// Phase 2b), yieldUnknown realizes a physical correlated leg filter that severs the
 // join's correlation feed → FlatMap(outer=Scan(O), inner=Fetch(<nil>)) → 0 rows (the
 // PR-#201 shape, reproduced by Graefe). The valid plan drives the inner from the outer.
 func TestPlanHarness_CorrelatedResidualNotStandaloneLeg(t *testing.T) {

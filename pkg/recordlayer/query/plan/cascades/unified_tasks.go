@@ -308,11 +308,13 @@ func (t *TransformImplTask) Run(p *Planner) {
 		for _, y := range call.yielded {
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
-				// OptimizeInputs only for PHYSICAL yields (uniform with the other two
-				// sites — the complete B1 invariant). ImplementationRule yields are
-				// physical wrappers, so this is a no-op in practice, but it makes the
-				// "OptimizeInputs only for plan expressions" property explicit at every
-				// scheduling site rather than relying on the rule kind (codex P1).
+				// OptimizeInputs only for PHYSICAL yields — third of the three gated
+				// rule-yield sites (with ExploreGroupTask + the TransformExprTask yield).
+				// ImplementationRule yields are physical wrappers, so this is a no-op in
+				// practice, but it makes the "OptimizeInputs only for plan expressions"
+				// property explicit at this site rather than relying on the rule kind
+				// (codex P1). The 4th site (the swapped-quantifier impl yield below) is
+				// intentionally NOT gated — it is load-bearing, not redundant.
 				if isPhysical(y) {
 					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 				}
@@ -351,6 +353,15 @@ func (t *TransformImplTask) Run(p *Planner) {
 				for _, y := range call.yielded {
 					t.Ref.InsertFinal(y)
 					if !isAlreadyExploratoryMember(t.Ref, y) {
+						// NOTE (Torvalds F2): this 4th OptimizeInputs site — the
+						// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
+						// isPhysical. Unlike the other three, it is load-bearing, not a
+						// no-op: gating it defers finalization in a way that breaks
+						// TestFDB_ArrayUnnestOrdinality (HAVING on a shadowed grouped
+						// unnest key). The B1 correlated-leg invariant doesn't need it —
+						// the swapped path is join-commutativity over already-explored
+						// members, not the correlated-SUBSEL yield path codex's P1 named —
+						// so the three gated sites are the complete set for the invariant.
 						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 						p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 					}
