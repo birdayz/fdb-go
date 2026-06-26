@@ -1304,6 +1304,19 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 
 // Atomic performs an atomic mutation.
 func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
+	// Min→MinV2 / And→AndV2 op-code upgrade (C++ RYW::atomicOp,
+	// ReadYourWrites.actor.cpp:2243-2248): apiVersionAtLeast(510) upgrades the
+	// legacy codes to their V2 variants, which fold correctly on an absent key.
+	// Done here (the RYW::atomicOp analog) not in the fdb facade, so every caller
+	// — including cmd/fdb-stacktester — gets it, matching libfdb_c.
+	if tx.db != nil && tx.db.apiVersionAtLeast(510) {
+		switch op {
+		case MutMin:
+			op = MutMinV2
+		case MutAnd:
+			op = MutAndV2
+		}
+	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  op,

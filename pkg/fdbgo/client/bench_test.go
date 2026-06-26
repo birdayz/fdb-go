@@ -143,7 +143,7 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 		Coordinators: cf.Coordinators,
 	}
 
-	db, err := OpenDatabaseFromConfig(ctx, connectCF)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF, WithAPIVersion(730))
 	if err != nil {
 		b.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
