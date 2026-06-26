@@ -233,7 +233,18 @@ func (t *TransformExprTask) Run(p *Planner) {
 			}
 
 			for _, newExpr := range call.Yielded() {
-				if t.Phase == PhasePlanning {
+				// OptimizeInputs only for PHYSICAL yields — the other half of the B1
+				// task-graph invariant (the executeRuleCall analog). Java's
+				// CascadesPlanner.executeRuleCall (:1064-1070) splits ruleCall yields:
+				// new FINAL expressions → OptimizeInputs, new EXPLORATORY → explore-only.
+				// An ExpressionRule that yields a LOGICAL expression here (e.g.
+				// PartitionBinarySelectRule's correlated SUBSEL SelectExpression) must NOT
+				// drive child OptimizeGroupTask — otherwise a correlated leg could still be
+				// pruned to a standalone winner from a logical parent, re-opening the
+				// 0-row gap the muzzle covered (codex P1). Gating this together with the
+				// ExploreGroupTask site makes Go's OptimizeInputs scheduling match Java's
+				// BOTH construction sites (ExploreGroup :744-748 + executeRuleCall :1064).
+				if t.Phase == PhasePlanning && isPhysical(newExpr) {
 					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
 				}
 				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
@@ -297,7 +308,14 @@ func (t *TransformImplTask) Run(p *Planner) {
 		for _, y := range call.yielded {
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
-				p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+				// OptimizeInputs only for PHYSICAL yields (uniform with the other two
+				// sites — the complete B1 invariant). ImplementationRule yields are
+				// physical wrappers, so this is a no-op in practice, but it makes the
+				// "OptimizeInputs only for plan expressions" property explicit at every
+				// scheduling site rather than relying on the rule kind (codex P1).
+				if isPhysical(y) {
+					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+				}
 				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 			}
 		}
