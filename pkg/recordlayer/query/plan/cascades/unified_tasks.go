@@ -84,7 +84,22 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	members := t.Ref.Members()
 	for i := startIdx; i < len(members); i++ {
 		expr := members[i]
-		if t.Phase == PhasePlanning {
+		// OptimizeInputs only for PHYSICAL (plan) members — the 1:1 port of Java's
+		// CascadesPlanner. Java constructs OptimizeInputs in exactly one place
+		// (CascadesPlanner.java:524), and its only callers push it ONLY for final/plan
+		// expressions: ExploreGroup splits getFinalExpressions()→…AndOptimizeInputs vs
+		// getExploratoryExpressions()→exploreExpression (:744-748), and executeRuleCall
+		// makes the same new-final vs new-exploratory split (:1064-1070). Since
+		// OptimizeInputsTask.Run pushes OptimizeGroupTask per child, gating it to
+		// physical members means a child reference is pruned to a winner ONLY as the
+		// inner of an IMPLEMENTED parent — so a CORRELATED leg is optimized only as the
+		// inner child of the binding physical FlatMap, with the outer alias live, never
+		// as a free-standing group with the correlation unbound. That structural
+		// property (not a `refIsJoinLeg` flag) is why a correlated SUBSEL scan is never
+		// stamped as a standalone winner → no 0-row. Child EXPLORATION is unaffected —
+		// it is driven independently by ExploreExprTask step 4 (children's ExploreGroup),
+		// not by OptimizeInputsTask — so this removes only premature standalone pruning.
+		if t.Phase == PhasePlanning && isPhysical(expr) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})

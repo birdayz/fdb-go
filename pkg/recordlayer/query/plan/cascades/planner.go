@@ -499,13 +499,18 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 	}
 
-	// A ref with any correlated match is a JOIN LEG (the surrounding join binds a
-	// parameter into its scan, e.g. `customer_id = ac.id`). Its data-access
-	// compensations are meant to be consumed by the join, not stand alone — realizing
-	// one as a final leg winner severs the join's correlation feed (the filter wins at
-	// the leg but the join no longer drives it) → 0 rows. So never materialize a
-	// compensation on a join-leg ref; only on a standalone single-source ref.
-	refIsJoinLeg := refHasCorrelatedMatch(ref)
+	// NOTE (RFC-150 Phase 2b — muzzle retired): a join-leg ref (one whose data-access
+	// match binds a parameter correlated to an outer quantifier) used to be muzzled here
+	// — its compensations were force-InsertFinal'd so a re-optimized standalone leg
+	// filter could not win and sever the join's correlation feed → 0 rows. That muzzle
+	// (`!refIsJoinLeg`) was a band-aid for a missing STRUCTURAL property. It is now
+	// replaced by the task-graph invariant (B1, unified_tasks.go): OptimizeInputsTask is
+	// pushed only for PHYSICAL parent members (Java CascadesPlanner.java:524), so a
+	// correlated leg's group is pruned to a winner ONLY as the inner child of the
+	// binding physical FlatMap (outer alias live) — never as a free-standing group. A
+	// correlated SUBSEL scan therefore cannot be stamped a standalone winner, so the
+	// leg compensation goes through the same standalone path as any ref. The
+	// compensationSafeForYield outer-correlation guard below stays as defense-in-depth.
 
 	// B4 re-entry / termination guard (RFC-148 §3c). yieldUnknown routes a logical
 	// compensation into the EXPLORATORY set, so the enclosing ExploreGroupTask
@@ -523,11 +528,11 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 	// suppress — and Go has no physical sort, so a missed ordered scan is a wrong /
 	// extra-sort plan shape, not merely slower. With an ordering present we re-consume
 	// every round (matching OLD, which had no guard at all); convergence there is
-	// bounded by Insert dedup + the 10-round cap. The join-leg path is exempt (Graefe
-	// invariant: M2 stays byte-identical); the cross-candidate intersection below keeps
-	// its own hasIntersectionFinal guard.
+	// bounded by Insert dedup + the 10-round cap. (Join legs are no longer exempt — the
+	// muzzle is retired, B1 above — so they take the same growth-keyed guard; the
+	// cross-candidate intersection below keeps its own hasIntersectionFinal guard.)
 	runConsumption := true
-	if !refIsJoinLeg && len(requestedOrderings) == 0 {
+	if len(requestedOrderings) == 0 {
 		totalMatches := 0
 		for _, c := range candidates {
 			totalMatches += len(GetPartialMatchesForCandidate(ref, c))
@@ -549,16 +554,10 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		}
 		exprs := DataAccessForMatchPartition(requestedOrderings, matches, p.ctx, nil)
 		for _, expr := range exprs {
-			// JOIN-LEG (M2) path — byte-identical to before. `!refIsJoinLeg` muzzled
-			// the surgical arm anyway, so a join-leg compensation was only ever
-			// InsertFinal'd; the bare correlated scan still competes. Removing the
-			// leg coupling + retiring the Go-only tryFlatMapPlan is RFC-150's surface
-			// (the PR-#201 correlated-leg-winner risk lives there, not here).
-			if refIsJoinLeg {
-				ref.InsertFinal(expr)
-				continue
-			}
-			// STANDALONE ref. An UNSAFE logical compensation — one whose inner scan is a
+			// Every ref — including a join leg — takes the same path now (the muzzle is
+			// retired; B1's task-graph invariant prevents a correlated leg from being
+			// stamped a standalone winner). An UNSAFE logical compensation — one whose
+			// inner scan is a
 			// vector top-K / aggregate — is NOT narrowable by a post-filter (a residual
 			// applied after the top-K / grouping changes the result). It keeps the OLD
 			// InsertFinal path: it stays logical and the query correctly fails to plan if
@@ -634,21 +633,6 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 			}
 		}
 	}
-}
-
-// refHasCorrelatedMatch reports whether any partial match on the reference binds a scan
-// parameter that is correlated to an outer quantifier — the signature of a JOIN LEG (the
-// surrounding join drives a value into this scan). Such a ref's data-access compensations
-// must be consumed by the join, never materialized as a standalone leg winner.
-func refHasCorrelatedMatch(ref *expressions.Reference) bool {
-	for _, cand := range GetPartialMatchCandidatesTyped(ref) {
-		for _, m := range GetPartialMatchesForCandidate(ref, cand) {
-			if matchBoundPrefixIsCorrelated(m) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // yieldUnknown routes a data-access result by physicality, mirroring Java's
@@ -734,7 +718,7 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		// RETIRED. A compound/OR or IN residual now yields through yieldUnknown and
 		// re-optimizes to an index plan instead of silently degrading to a full scan.
 		// This was unsafe in Phase 1 only because materializing such a residual on a
-		// partition-SUBSEL join leg (not flagged by refIsJoinLeg) produced a nil-inner
+		// partition-SUBSEL join leg produced a nil-inner
 		// Fetch shell that the NLJ embedded → Fetch(<nil>) / 0 rows. B1a (nil-safe
 		// join-child selection, RFC-150 Phase 2a) closed that, so the materialized leg
 		// filter is no longer a degenerate winner. The outer-correlation +
@@ -749,14 +733,15 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		//
 		// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
 		// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
-		// standalone leg filter. refHasCorrelatedMatch only inspects the bound
-		// PREFIX, so a leg whose correlation lives in the RESIDUAL — e.g. an
-		// unindexed `t.fk = o.id` alongside an indexed `t.k = 5` — is NOT flagged as
-		// a join leg; realizing such a compensation as a physical leg filter severs
-		// the join's correlation feed → Fetch(<nil>) / 0 rows (the PR-#201 shape).
-		// This was the *other* half of the retired isSimpleResidualCompensation —
-		// safety, not rot. Query-parameter ConstantObjectValue aliases are execution
-		// constants (not row correlations), so subtract them first.
+		// standalone leg filter. The bound-prefix correlation signal
+		// (matchBoundPrefixIsCorrelated) only inspects the PREFIX, so a leg whose
+		// correlation lives in the RESIDUAL — e.g. an unindexed `t.fk = o.id` alongside
+		// an indexed `t.k = 5` — is invisible to it; realizing such a compensation as a
+		// physical leg filter severs the join's correlation feed → Fetch(<nil>) / 0 rows
+		// (the PR-#201 shape). This guard remains as defense-in-depth even with B1's
+		// task-graph invariant in place (Graefe Piece-1 condition). Query-parameter
+		// ConstantObjectValue aliases are execution constants (not row correlations), so
+		// subtract them first.
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
 		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
