@@ -38,7 +38,25 @@ Same timing and inputs. Go creates physical plans directly (single intersection 
 
 There is a THIRD Go-only filter producer: `ImplementFilterRule` synthesizes a `RecordQueryPredicatesFilterPlan` over the inner physical winner, again without routing through `Compensation`. When an index DOES serve the index-only predicate (the common path) a vector/aggregate scan wins and no residual survives. But when nothing can bind it — e.g. `QUALIFY ... ORDER BY cosine_distance(...)` against a EUCLIDEAN-metric index, or a distance query on a column with no vector index — `ImplementFilterRule` is the only producer and yields a filter with the index-only predicate as a residual (which would panic in `Comparison.EvalAgainst`). Guarding `ImplementFilterRule` directly is not viable: removing its member collapses the filter `Reference`'s member population and the data-access intersection is never built (an entangled memo dependency). So this leak is caught at the planner boundary by `validateNoIndexOnlyResidual` (`plan_executability.go`), which rejects a *final* plan carrying an index-only residual with `UnplannableIndexOnlyResidualError` — converting an execution-time panic into a clean planning error. Pinned by `TestVectorPlan_MetricMismatchDoesNotMatchVector`.
 
-**End-state:** retire `ImplementIndexScanRule` (and route `ImplementFilterRule`'s filter implementation) through a single data-access rule backed by `Compensation`, at which point both the implement-layer guard and the final-plan validation delete themselves and the property is enforced once (as in Java). Until then the layered guards + final validation are the correct defensive choice — the alternative is a latent panic. Tracked in TODO.md (Phase 7.7).
+**Phase-1 (RFC-148, Option A) update:** the data-access compensation path no longer uses the
+`isSimpleResidualCompensation` predicate-shape allowlist. A standalone (non-join-leg) logical compensation
+now routes through `yieldUnknown` → exploratory re-optimization (Java's `yieldUnknownExpression`), EXCEPT
+when `compensationSafeForYield` is false. `compensationSafeForYield` is the **safety** half of the retired
+allowlist (vector/aggregate inner-scan + index-only-predicate guards) — a documented **stand-in**: it exists
+only because Go's vector/aggregate match leaves the index-only value (vector `DistanceRank`,
+`vector_index_match_candidate.go:220-234`; aggregate `UnmatchedAggregateValue`) as a RESIDUAL where Java
+marks it CONSUMED. An unsafe compensation keeps the old `InsertFinal` path so it stays correctly unplannable
+rather than being re-optimized into a wrong plan (design-principle #10 — the gate is a downstream proxy; the
+real property is match-level consumption).
+
+**End-state:** the NAMED follow-up (TODO.md §7.7) ports Java's match-level index-only **consumption**, after
+which the proper `ImplementFilterRule` `!isIndexOnly()` matcher gate (Java `ImplementFilterRule.java:62`) goes
+in and `compensationSafeForYield`, the `ImplementIndexScanRule` residual-skip guard, AND
+`validateNoIndexOnlyResidual` all become redundant — the property is enforced once (as in Java). Red→green
+sentinels for that fix: `TestVectorPlan_QualifyPlansToVectorScan` (must still plan) +
+`TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (must stay unplannable). Until it lands, the
+layered guards + final validation are the correct defensive choice — the alternative is a latent panic /
+wrong plan. RFC-150 separately retires `tryFlatMapPlan` + the join-leg coupling.
 
 ### Type mismatch detection: eval-time vs compile-time
 

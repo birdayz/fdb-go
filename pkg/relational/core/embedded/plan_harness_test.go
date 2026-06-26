@@ -1442,3 +1442,27 @@ func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 	}
 	assertPlanContains(t, plan, "PredicatesFilter")
 }
+
+// TestPlanHarness_CompoundResidualUsesIndex pins the RFC-148 Phase-1 rot-fix: a
+// single-table query with an indexed equality plus a NON-simple residual (an OR)
+// now rides on top of the index scan. The retired isSimpleResidualCompensation
+// allowlist admitted only simple non-IN ComparisonPredicate residuals, so this
+// OR-residual compensation lost to a full scan — `PredicatesFilter(Scan(T), …)`
+// (proven: this exact query full-scanned with the allowlist). yieldUnknown
+// re-optimizes the compensation through the full rule set, so the index is used:
+// `PredicatesFilter(Fetch(IndexScan(IDX_K, [=])), …)`. This is the rot the allowlist
+// was a landmine for — a future predicate shape with no allowlist arm silently
+// degrading to a full scan.
+func TestPlanHarness_CompoundResidualUsesIndex(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)", schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	// Index used (a full-scan fallback would be `PredicatesFilter(Scan(T), …)`,
+	// which does NOT contain IndexScan(IDX_K — the non-vacuity hinge).
+	assertPlanContains(t, plan, "IndexScan(IDX_K, [=]")
+}
