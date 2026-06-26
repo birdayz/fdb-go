@@ -116,15 +116,24 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
        `refHasCorrelatedMatch` removed; `matchBoundPrefixIsCorrelated` kept (RFC-069 intersection). plandiff
        byte-identical; +1.1%/+2.0% interning baseline (faithful deferred-optimization timing). Graefe re-ACK +
        Torvalds + codex + @claude.
-     - **[ ] Piece 2 — retire `tryFlatMapPlan` (PATH A) via porting `RewriteOuterJoinRule`.** Dropping PATH A
-       breaks ONLY LEFT OUTER (`TestPlanHarness_LeftJoin` → materialized NLJ) because Go lacks Java's
-       `RewriteOuterJoinRule` (pushes ON-predicates BELOW the null-extension boundary → correlated null-supplying
-       SUBSEL so PATH B's `yieldGeneralFlatMap` fires). Go already has `DefaultOnEmptyPlan` + null-on-empty
-       quantifiers; needs: a named null-on-empty ctor, the `RewriteOuterJoinRule` (REWRITING), wire `DefaultOnEmpty`
-       into `yieldGeneralFlatMap`, delete `tryFlatMapPlan`. FULL OUTER stays on the materialized NLJ (Java has no
-       Cascades FULL). The PR-#201 surface — Graefe-gated: RFC + impl ACK, full INNER/LEFT/FULL × (covering/residual)
-       × (PK/secondary) **row-count** matrix, PATH-A branch deleted only after each PATH-B replacement is
-       row-count-proven, `Fetch(<nil>)` shapes pinned throughout. Detail: RFC-150 §3 (B1 solved) + §4.
+     - **[~] Piece 2 — retire `tryFlatMapPlan` (PATH A). Step 1-3 DONE (commit b8b3b6ad7); deletion blocked on
+       INNER-multiway PATH-B coverage.**
+       - **[x] RewriteOuterJoinRule + DefaultOnEmpty null-extension (the LEFT-OUTER enabler — the one shape PATH B
+         genuinely couldn't do).** `NamedForEachNullOnEmptyQuantifier` ctor; `RewriteOuterJoinRule` (REWRITING +
+         PLANNING) rewrites a CORRELATED LEFT OUTER into Java's nested form (ON-preds below the null-extension
+         boundary in a correlated null-supplying SUBSEL, outer made INNER); `yieldGeneralFlatMap` wraps a
+         null-on-empty inner in `DefaultOnEmptyPlan` (FlatMap stays a pure map, like Java). Guard: only rewrite
+         when an ON-pred references the preserved leg (uncorrelated LEFT — ON FALSE/NULL — stays on the
+         materialized NLJ). Row-count-proven: `TestFDB_LeftJoinCountSumPerDept`, `JoinWithLeftAndInnerCompare`,
+         `OuterParity_Left` (3-way), `OuterParity_BooleanOn`; plandiff byte-identical (PATH A still competes).
+       - **[ ] Make PATH B cover INNER multiway joins, THEN delete `tryFlatMapPlan`.** Empirically, disabling
+         PATH A now breaks ONLY INNER multiway shapes — `TestFDB_MultiwayJoinIndexProbe`,
+         `MultiwayJoinOrder_Probe`, `MultiwayJoinOrder_Nway`, `JoinSelPred_Repro` — i.e. PATH B (data-access)
+         doesn't yet produce the correlated index-probe inner for ≥3-table join-order enumeration that PATH A
+         hand-rolls. Grind those shapes onto PATH B (per Graefe's INNER × covering/residual × PK/secondary
+         row-count matrix), prove each, then delete `tryFlatMapPlan` + its call + (cleanup) the `leftOuter` flag
+         on `RecordQueryFlatMapPlan`. FULL OUTER stays on the materialized NLJ (Java has no Cascades FULL).
+         PR-#201 surface — Graefe-gated. Detail: RFC-150 §3 (B1 solved) + §4.
    - **[ ] PROCESS HAZARD (found this shift) — the codex-review CLI can leave the repo on a detached HEAD,
      orphaning the branch tip.** Commit a567acb68 (a Torvalds F1 fix) was silently dropped this way — its content
      was not in HEAD's history afterward and had to be re-applied. After running `codex-review`, verify
