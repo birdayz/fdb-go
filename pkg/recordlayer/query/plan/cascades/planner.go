@@ -679,15 +679,17 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // are gone, so those shapes now yield and realize.
 //
 // An index-only predicate (a vector DistanceRank that no index serves) is NOT
-// guarded here anymore: Go now adopts Java's `ImplementFilterRule`
-// `!isIndexOnly()` matcher gate (rule_implement_filter.go), which structurally
-// prevents such a residual from ever being realized to a physical filter — so it
-// stays logical and the planner surfaces the clean UnplannableIndexOnlyResidualError
-// (Plan()). The match-level consumption that makes the LEGITIMATE vector scan win
-// is driven by the partial-match re-trigger in TransformExprTask (the Java
-// getNewPartialMatches() reaction), not by a downstream proxy. This retired the
-// Go-only validateNoIndexOnlyResidual net (design-principle #10: the bad plan is now
-// never built, rather than caught after the fact).
+// guarded here anymore: that property is handled outside this function. Java's
+// `ImplementFilterRule` `!isIndexOnly()` matcher gate (rule_implement_filter.go)
+// stops THAT producer from building such a physical filter, and the legitimate
+// vector scan is consumed by the partial-match re-trigger in TransformExprTask
+// (the Java getNewPartialMatches() reaction). But Go has OTHER physical-filter
+// builders the gate does not cover (ImplementSimpleSelectRule, the NLJ residual
+// builder, ImplementIndexScanRule), so the catch-all validateNoIndexOnlyResidual
+// backstop in Plan() is RETAINED — it, not this function, is the authority that
+// rejects an index-only physical residual (pinned by
+// TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT remove that net until
+// every such builder is gated/retired (TODO follow-up).
 // Sentinels: TestVectorPlan_QualifyPlansToVectorScan (must still plan) +
 // TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
 // unplannable, via the inner-scan guard).
