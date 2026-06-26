@@ -35,9 +35,6 @@ nil-fetch repro) + B2 (LEFT/FULL OUTER residual placement). Still the deep, PR-#
 **Item:** TODO.md §7.7 (the join-leg half) — full Java alignment of correlated-join access.
 **Reviewers:** **Graefe** (data-access / winner-selection / join-leg consumption — REQUIRED, this is the
 0-row surface) + Torvalds + codex + @claude.
-**Item:** TODO.md §7.7 (the join-leg half) — full Java alignment of correlated-join access.
-**Reviewers:** **Graefe** (data-access / winner-selection / join-leg consumption — REQUIRED, this is the
-0-row surface) + Torvalds + codex + @claude.
 **Classification:** query-engine **parity + correctness**. No wire impact, but **plan-shape AND row-level**
 sensitive (LEFT/FULL OUTER residual placement changes NULL-extension → wrong rows if mishandled). Per-shape
 EXPLAIN + **row-count** proofs + 1M stress mandatory.

@@ -1552,17 +1552,24 @@ func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
 		CREATE TABLE t (id bigint, fk bigint, k bigint, a bigint, b bigint, x bigint, PRIMARY KEY (id))
 		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON t(k)`
-	// AND-residual (the pre-existing bug) and OR-residual (the shape-gated variant)
-	// must both plan with no nil inner leg.
-	for _, sql := range []string{
-		"SELECT t.k FROM o, t, u WHERE t.k = 5 AND t.a > 1 AND t.fk = o.id AND u.x = t.x",
-		"SELECT t.k FROM o, t, u WHERE t.k = 5 AND (t.a > 1 OR t.b < 2) AND t.fk = o.id AND u.x = t.x",
-	} {
-		plan, err := PlanQueryForTest(sql, schema, nil)
-		if err != nil {
-			t.Fatalf("%s: %v", sql, err)
-		}
-		assertPlanNotContains(t, plan, "<nil>")
-		assertPlanContains(t, plan, "FlatMap")
+	// AND-residual is the pre-existing bug: the materialized residual creates the
+	// nil-inner Fetch shell, and the FIXED plan drives t via idx_k —
+	// `Fetch(IndexScan(IDX_K,…))`. Asserting that exact shape pins the shell-producing
+	// path (a future refactor that fell back to a full Scan(T) would no longer
+	// exercise the bug → the sentinel would go silently green).
+	andPlan, err := PlanQueryForTest("SELECT t.k FROM o, t, u WHERE t.k = 5 AND t.a > 1 AND t.fk = o.id AND u.x = t.x", schema, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertPlanNotContains(t, andPlan, "<nil>")
+	assertPlanContains(t, andPlan, "Fetch(IndexScan(IDX_K")
+
+	// OR-residual is the shape-gated variant (no materialization → no shell → Scan(T));
+	// a distinct path, so assert only the absence of the nil leg + a driven join.
+	orPlan, err := PlanQueryForTest("SELECT t.k FROM o, t, u WHERE t.k = 5 AND (t.a > 1 OR t.b < 2) AND t.fk = o.id AND u.x = t.x", schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanNotContains(t, orPlan, "<nil>")
+	assertPlanContains(t, orPlan, "FlatMap")
 }
