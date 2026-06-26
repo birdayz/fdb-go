@@ -372,6 +372,7 @@ func goRawLowLevelFold(t *testing.T, k []byte, op client.MutationType, operand [
 // is the red→green differential §5 specified, covering the in-txn RYW-read
 // dimension the rywDisabled unit gate test structurally skips.
 func TestDifferential_AtomicMinAndV2LowLevel(t *testing.T) {
+	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
 	cases := []struct {
 		name    string
@@ -385,6 +386,7 @@ func TestDifferential_AtomicMinAndV2LowLevel(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			pfx := "\x02difr149_" + ns + "_" + c.name + "_"
 			goIn, goCommit := goRawLowLevelFold(t, []byte(pfx+"go"), c.goOp, c.operand)
 			cgoIn, cgoCommit := cgoFold(t, pfx, atomicFoldCase{name: c.name, op: c.cgoOp, base: nil, operand: c.operand})
