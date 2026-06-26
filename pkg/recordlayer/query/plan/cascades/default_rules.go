@@ -156,6 +156,10 @@ func PlanningExplorationRules() []ExpressionRule {
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewEliminateNullOnEmptyRule(),
+		// Re-fire the LEFT-OUTER canonicalizer in PLANNING (like the other rewrite
+		// rules below) so a LEFT OUTER that only surfaces here is still rewritten to
+		// the correlated null-supplying form the FlatMap path consumes.
+		NewRewriteOuterJoinRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
 		// Match candidates (index selection) in PLANNING as well as REWRITING.
@@ -329,6 +333,11 @@ func RewritingRules() []ExpressionRule {
 		NewQueryPredicateSimplificationRule(),
 		NewPredicatePushDownRule(),
 		NewDecorrelateValuesRule(),
+		// Canonicalize LEFT OUTER joins away before planning (Java's
+		// RewritingRuleSet runs RewriteOuterJoinRule): push ON-predicates below the
+		// null-extension boundary into a correlated null-supplying SUBSEL so the
+		// data-access FlatMap path can plan a correlated LEFT-OUTER join.
+		NewRewriteOuterJoinRule(),
 	}
 }
 

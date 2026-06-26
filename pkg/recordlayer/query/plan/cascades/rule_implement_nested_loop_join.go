@@ -191,22 +191,38 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		call.Yield(newPhysicalNestedLoopJoinWrapper(joinPlan, leftQ, rightQ))
 	}
 
-	// Correlated FlatMap: for PartitionBinarySelectRule output where
-	// predicates are absorbed into sub-Selects creating correlation.
+	// Correlated FlatMap: for PartitionBinarySelectRule / RewriteOuterJoinRule output
+	// where predicates are absorbed into sub-Selects creating correlation. The inner's
+	// null-on-empty flag (set by RewriteOuterJoinRule for LEFT OUTER) drives the
+	// DefaultOnEmpty null-extension inside yieldGeneralFlatMap.
 	if leftDepsRight && !rightDepsLeft && canSwap {
 		r.yieldGeneralFlatMap(call, sel,
 			rightPlan, leftPlan, rightCorr, leftCorr,
-			rightExpr, leftExpr, joinType)
+			rightExpr, leftExpr, joinType,
+			selQuantifierIsNullOnEmpty(sel, leftCorr))
 	} else if rightDepsLeft && !leftDepsRight {
 		r.yieldGeneralFlatMap(call, sel,
 			leftPlan, rightPlan, leftCorr, rightCorr,
-			leftExpr, rightExpr, joinType)
+			leftExpr, rightExpr, joinType,
+			selQuantifierIsNullOnEmpty(sel, rightCorr))
 	}
 }
 
 func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
 	_, ok := ref.GetCorrelatedTo()[targetAlias]
 	return ok
+}
+
+// selQuantifierIsNullOnEmpty reports whether sel's quantifier with the given alias is
+// a NULL-on-empty ForEach (RewriteOuterJoinRule marks the LEFT-OUTER null-supplying
+// leg this way). Drives the DefaultOnEmpty null-extension in yieldGeneralFlatMap.
+func selQuantifierIsNullOnEmpty(sel *expressions.SelectExpression, alias values.CorrelationIdentifier) bool {
+	for _, q := range sel.GetQuantifiers() {
+		if q.GetAlias() == alias {
+			return q.IsNullOnEmpty()
+		}
+	}
+	return false
 }
 
 func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
@@ -216,6 +232,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	outerCorr, innerCorr values.CorrelationIdentifier,
 	outerExpr, innerExpr expressions.RelationalExpression,
 	joinType plans.JoinType,
+	innerNullOnEmpty bool,
 ) {
 	preds := flattenAndPredicates(sel.GetPredicates())
 
@@ -233,6 +250,18 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	if len(joinPreds) > 0 {
 		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
 			innerPlan, joinPreds, innerCorr)
+	}
+	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:317-322
+	// / ImplementSimpleSelectRule:100-109): when the inner quantifier is null-on-empty
+	// (produced by RewriteOuterJoinRule for a LEFT OUTER), wrap the inner in
+	// DefaultOnEmpty so a non-matching outer row yields one all-NULL inner row instead
+	// of being dropped. The FlatMap stays a PURE map (leftOuter flag NOT set) — the
+	// outer-join semantics are emergent from this wrapper, exactly like Java's FlatMap.
+	// The ON-predicates already sit BELOW this boundary (inside the rewritten inner
+	// SUBSEL), so they filter before the null-fill — correct LEFT-OUTER semantics.
+	if innerNullOnEmpty {
+		innerWrapped = plans.NewRecordQueryDefaultOnEmptyPlan(
+			innerWrapped, values.NewNullValue(values.UnknownType))
 	}
 
 	var outerWrapped plans.RecordQueryPlan = outerPlan

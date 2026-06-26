@@ -177,6 +177,7 @@ go_library(
         "rule_registry.go",
         "rule_remove_projection.go",
         "rule_remove_range_one.go",
+        "rule_rewrite_outer_join.go",
         "rule_select_merge.go",
         "rule_set_op_singleton.go",
         "rule_simplify.go",
