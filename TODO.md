@@ -126,14 +126,36 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
          when an ON-pred references the preserved leg (uncorrelated LEFT — ON FALSE/NULL — stays on the
          materialized NLJ). Row-count-proven: `TestFDB_LeftJoinCountSumPerDept`, `JoinWithLeftAndInnerCompare`,
          `OuterParity_Left` (3-way), `OuterParity_BooleanOn`; plandiff byte-identical (PATH A still competes).
-       - **[ ] Make PATH B cover INNER multiway joins, THEN delete `tryFlatMapPlan`.** Empirically, disabling
-         PATH A now breaks ONLY INNER multiway shapes — `TestFDB_MultiwayJoinIndexProbe`,
-         `MultiwayJoinOrder_Probe`, `MultiwayJoinOrder_Nway`, `JoinSelPred_Repro` — i.e. PATH B (data-access)
-         doesn't yet produce the correlated index-probe inner for ≥3-table join-order enumeration that PATH A
-         hand-rolls. Grind those shapes onto PATH B (per Graefe's INNER × covering/residual × PK/secondary
-         row-count matrix), prove each, then delete `tryFlatMapPlan` + its call + (cleanup) the `leftOuter` flag
-         on `RecordQueryFlatMapPlan`. FULL OUTER stays on the materialized NLJ (Java has no Cascades FULL).
-         PR-#201 surface — Graefe-gated. Detail: RFC-150 §3 (B1 solved) + §4.
+       - **[ ] Make PATH B cover INNER join legs (multiway chain + PK probe), THEN delete `tryFlatMapPlan`.**
+         Three layers root-caused over 3 DFS rounds (all validated fixes REVERTED — they only pay off together
+         with the deepest layer + the deletion; re-apply as one Graefe-gated change). Disabling PATH A breaks
+         `MultiwayJoinIndexProbe`, `MultiwayJoinOrder_Probe/Nway`, `JoinSelPred_Repro`.
+         - **Layer 1 (multiway chain) — VALIDATED FIX.** `PartitionBinarySelectRule`'s idempotency guard
+           (`rule_partition_binary_select.go:88-93`) blocks on *any* predicate-free 2-quant select in the group,
+           so sibling bipartitions of an N-way join never partition → no chained index-probe. Narrow it to the
+           SAME quantifier-alias-set as `sel` (Java has no such guard; relies on memo interning). Verified: 3-/4-way
+           chain to byte-identical index-probe FlatMaps. Bumps `ChainInterningBaseline` (3-way 9095→11122, 4-way
+           31210→46483, < 100k).
+         - **Layer 2a (PK probe never generated) — VALIDATED FIX.** `matchSingleSourceAgainstSelect`
+           (`rule_match_intermediate.go:350+`) only tries the predicate LHS (`cp.Operand`) as the candidate column,
+           so a join pred with the leg's key on the RHS (`O.CUSTOMER_ID = C.ID` → customers PK on RHS) never SARGs
+           the leg's PK. Fix: add `ComparisonType.Commute()` (=↔=, <↔>, <=↔>=) + a `bindOrientedComparison` that
+           tries as-written then commuted (Java's Value matching is commutative). Verified: generates the
+           `Scan(CUSTOMERS,[=corr])` PK probe that didn't exist.
+         - **Layer 2b (THE BLOCKER — deep, not solved, PR-#201 0-row surface, NEEDS GRAEFE-GATED DESIGN).** The
+           generated PK probe lands as a LOGICAL `LogicalFilterExpression(residual, Scan(C,[=corr]))` whose residual
+           is the *outer-correlated* join pred — which `compensationSafeForYield` (`planner.go:717`) CORRECTLY
+           rejects (the outer-correlation 0-row guard, the PR-#201 shape) → stuck logical → never a physical leg
+           member. The *clean* single-join-pred correlated leg (which would SARG residual-free) isn't reached by
+           `matchSingleSourceAgainstSelect` cleanly (structural-match-path + And-flattening interaction in
+           `MatchIntermediateRule`). And `ImplementNestedLoopJoinRule` captures leg plans via
+           `findBestValidPhysicalExpr` at fire-time (physical members only), so even a SARGed probe wouldn't
+           surface — it needs to consume fully-optimized child PlanPartitions (Java's `planPartitions`). Closing
+           this reworks correlated-leg matching + materialization across 4 subsystems on the exact 0-row surface;
+           do it as a Graefe-ACK'd design (don't weaken the outer-correlation guard), not an autonomous hammer.
+         Then delete `tryFlatMapPlan` + call + (cleanup) the `leftOuter` flag on `RecordQueryFlatMapPlan`. Keep
+         `tryExistsFlatMap`/`buildExistsFlatMap` (still reachable via EXISTS). FULL OUTER stays on the materialized
+         NLJ. Detail: RFC-150 §3 (B1 solved) + §4.
    - **[ ] PROCESS HAZARD (found this shift) — the codex-review CLI can leave the repo on a detached HEAD,
      orphaning the branch tip.** Commit a567acb68 (a Torvalds F1 fix) was silently dropped this way — its content
      was not in HEAD's history afterward and had to be re-applied. After running `codex-review`, verify
