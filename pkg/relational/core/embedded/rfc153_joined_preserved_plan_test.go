@@ -161,3 +161,72 @@ func TestRFC153_PreservedOnly_StillMaterializes(t *testing.T) {
 		t.Errorf("preserved-only LEFT JOIN: must NOT index-probe C_BX_REF (RFC-152 invariant) (plan: %s)", plan.Explain())
 	}
 }
+
+// hasLeftOuterNLJ reports whether the tree contains a materialized
+// RecordQueryNestedLoopJoinPlan whose join type is LEFT OUTER — i.e. the LEFT OUTER
+// was DECLINED into the materialized fallback rather than planned as a correlated
+// FlatMap probe.
+func hasLeftOuterNLJ(plan plans.RecordQueryPlan) bool {
+	found := false
+	plans.Walk(plan, func(n plans.RecordQueryPlan) bool {
+		if nlj, ok := n.(*plans.RecordQueryNestedLoopJoinPlan); ok && nlj.GetJoinType() == plans.JoinLeftOuter {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// TestRFC153_AggregateInner_DeclinesToMaterializedNLJ — the fail-closed axis (the
+// dimension the 3-reviewer NAK flagged). The null-supplying side is an AGGREGATE whose
+// grouping correlates to the buried preserved alias A. Its inner carries a node
+// (StreamingAgg) the buried-merge rebaser does NOT rewrite, so the verifier fail-CLOSES
+// → the LEFT OUTER DECLINES the probe → materialized NestedLoopJoin (LEFT OUTER), NOT a
+// correlated probe on the aggregate. (Confirmed via instrumentation that this exercises
+// the decline; the unit test pins the verifier logic.)
+func TestRFC153_AggregateInner_DeclinesToMaterializedNLJ(t *testing.T) {
+	t.Parallel()
+	plan := planRFC153mx(t, "SELECT a.id FROM a JOIN b ON b.a_id = a.id LEFT JOIN (SELECT a_id, COUNT(*) cnt FROM c GROUP BY a_id) g ON g.a_id = a.id")
+	if !hasLeftOuterNLJ(plan) {
+		t.Errorf("aggregate-inner LEFT OUTER must DECLINE to a materialized NLJ (fail-closed on the StreamingAgg inner), got: %s", plan.Explain())
+	}
+	if indexProbes(plan, "c_a_id") {
+		t.Errorf("aggregate-inner LEFT OUTER must NOT correlated-probe the aggregate side via c_a_id — it declined: %s", plan.Explain())
+	}
+}
+
+const rfc153corrInSchema = `
+CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id))
+CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE c (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id))
+CREATE TABLE s (id BIGINT NOT NULL, cv BIGINT, ak BIGINT, PRIMARY KEY (id))
+CREATE INDEX b_a_id ON b(a_id)
+CREATE INDEX c_x ON c(x)
+CREATE INDEX s_ak ON s(ak)
+`
+
+// TestRFC153_CorrelatedInInner_DeclinesToMaterializedNLJ — Graefe's correlated-IN shape:
+// the null-supplying ON predicate is `c.x IN (SELECT … WHERE s.ak = a.id)`, correlating
+// to the buried preserved alias A through an IN-subquery (an InJoin/correlated node the
+// rebaser does not rewrite). Asserts ONLY the DECLINE (materialized NLJ, no correlated
+// probe on c) — the row correctness of IN-in-ON is governed by a SEPARATE pre-existing
+// materialized-NLJ bug (TODO.md), independent of RFC-153, so rows are not asserted here.
+func TestRFC153_CorrelatedInInner_DeclinesToMaterializedNLJ(t *testing.T) {
+	t.Parallel()
+	tmpl, err := buildSchemaTemplateFromDDL(rfc153corrInSchema)
+	if err != nil {
+		t.Fatalf("schema DDL: %v", err)
+	}
+	plan, err := PlanRecordQueryWithMetadata(
+		"SELECT a.id FROM a JOIN b ON b.a_id = a.id LEFT JOIN c ON c.x IN (SELECT s.cv FROM s WHERE s.ak = a.id)",
+		tmpl.Underlying(), properties.FixedStatistics{Cardinality: 1_000_000})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if !hasLeftOuterNLJ(plan) {
+		t.Errorf("correlated-IN LEFT OUTER must be a materialized NLJ (never a wrong-rows correlated probe), got: %s", plan.Explain())
+	}
+	if indexProbes(plan, "c_x") {
+		t.Errorf("correlated-IN LEFT OUTER must NOT correlated-probe c via c_x: %s", plan.Explain())
+	}
+}

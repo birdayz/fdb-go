@@ -158,3 +158,61 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// TestFDB_RFC153_AggregateInnerNullExtension pins ROW correctness for the fail-closed
+// axis (the 3-reviewer NAK dimension): the null-supplying side is an AGGREGATE whose
+// grouping correlates to the buried preserved alias A. Its inner carries a StreamingAgg
+// node the buried-merge rebaser does not rewrite, so the verifier fail-CLOSES → the LEFT
+// OUTER declines the probe → materialized NLJ, which must null-extend correctly. A=3 has
+// no C rows → no aggregate group → its row null-extends; A=1/2 carry their COUNT(*).
+func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc153agg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc153agg")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc153agg "+
+			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX b_a_id ON b (a_id) "+
+			"CREATE INDEX c_a_id ON c (a_id)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc153agg?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2), (12, 3)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (50, 1), (51, 1), (52, 2)") // a_id=3 absent
+
+	rows, err := db.QueryContext(ctx,
+		"SELECT a.id, g.cnt FROM a JOIN b ON b.a_id = a.id "+
+			"LEFT JOIN (SELECT a_id, COUNT(*) cnt FROM c GROUP BY a_id) g ON g.a_id = a.id")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var a, cnt sql.NullInt64
+		if err := rows.Scan(&a, &cnt); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, rfc153Canon(a, cnt))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{"1|2", "2|1", "3|NULL"} // A=3 null-extended; A=1 cnt 2, A=2 cnt 1
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("aggregate-inner null-extension rows = %v, want %v (cross-product / dropped rows ⇒ wrong)", got, want)
+	}
+}

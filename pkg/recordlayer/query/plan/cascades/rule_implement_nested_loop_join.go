@@ -413,14 +413,34 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// (the authoritative qualified key the merged outer row carries) makes the comparand
 	// a field of the BOUND merge row → it resolves AND SARGs Scan(C,[a_id=<$m.A_id>]).
 	//
-	// CRITICAL (Graefe): the broadened RewriteOuterJoinRule guard and this rewire are ONE
-	// unit. After rebasing, VERIFY no buried reference survives anywhere in the inner; if
-	// one does (an alias mismatch, or an inner shape the rebaser does not cover), DECLINE
-	// the probe — the materialized NLJ (which resolves the buried predicate via the merged
-	// row's qualified keys) is the correct fallback. A path that fires the broadened guard
-	// but cannot guarantee the rewire MUST NOT yield the probe (the §2 wrong-rows trap).
+	// CRITICAL (Graefe + Torvalds): the broadened RewriteOuterJoinRule guard and this
+	// rewire are ONE unit. After rebasing, VERIFY no buried reference survives anywhere in
+	// the inner via planReferencesAnyBuriedAlias, which is CONSERVATIVE — it fail-CLOSES on
+	// any node type it does not fully understand (only Scan/Index SARGs, PredicatesFilter/
+	// Filter preds, and Map result values are per-field inspected; Fetch/TypeFilter/
+	// DefaultOnEmpty/FirstOrDefault are known correlation-free pass-throughs; EVERYTHING
+	// else is treated as MIGHT-reference-buried and declines). The broadened guard's
+	// correctness rests on this over-declining: a path that fires the guard but lands on an
+	// inner the rebaser cannot fully rewrite DECLINES the probe → the materialized NLJ
+	// (which resolves the buried predicate via the merged row's qualified keys) ships the
+	// correct null-extended rows. It never under-catches a buried reference (the §2
+	// wrong-rows trap); it may over-decline an unrecognized-but-buried-free inner into
+	// correct-but-slow. So the unit is closed by the verifier's conservatism, not by
+	// enumerating every inner shape.
+	//
+	// SCOPE — null-on-empty inners ONLY (innerNullOnEmpty). This buried-merge hazard is
+	// SPECIFIC to RewriteOuterJoinRule's rewritten LEFT-OUTER inner: that rewrite pushes
+	// the ON-predicate into a SEPARATELY-memoized inner SUBSEL whose buried-preserved
+	// correlation the merge machinery (rebaseBuriedLowerReferences) never rebases. A
+	// regular INNER multiway join's inner is built by the normal data-access path, where
+	// the merge collapse already rebases buried references onto $m, so its correlation
+	// targets $m (not a buried sub-alias) and needs neither the rebase NOR the
+	// conservative verifier. Gating on innerNullOnEmpty keeps the fail-closed
+	// over-declining from defeating the RFC-069 multiway index-probe (which has nested,
+	// unrecognized FlatMap inners but NO buried reference) — without it the chain-interning
+	// task count drops ~17% as valid INNER multiway probes are spuriously declined.
 	buriedLegAliases := buriedPreservedAliases(outerExpr, outerCorr)
-	if len(buriedLegAliases) > 0 {
+	if innerNullOnEmpty && len(buriedLegAliases) > 0 {
 		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr)
 		for i, p := range joinPreds {
 			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr)
@@ -1069,6 +1089,10 @@ func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) 
 			return false
 		}
 		switch sp := n.(type) {
+		// INSPECTED types — rebasePlanBuriedRefs rewrites these nodes' OWN
+		// correlation-bearing fields (SARG comparands / residual preds / map result
+		// value), so we do the real per-field check: a buried reference that survives
+		// here means the rebase was incomplete (an alias mismatch).
 		case *plans.RecordQueryScanPlan:
 			if comparisonRangesReferenceAlias(sp.GetScanComparisons(), upper) {
 				found = true
@@ -1089,6 +1113,31 @@ func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) 
 			if valueReferencesAlias(sp.GetResultValue(), upper) {
 				found = true
 			}
+		// KNOWN correlation-free pass-throughs — these carry no buried correlation in
+		// their OWN fields (default value / record types / fetch translation), so skip
+		// them; the plans.Walk recursion still examines their children.
+		case *plans.RecordQueryFetchFromPartialRecordPlan,
+			*plans.RecordQueryTypeFilterPlan,
+			*plans.RecordQueryDefaultOnEmptyPlan,
+			*plans.RecordQueryFirstOrDefaultPlan:
+			// skip — children examined by recursion
+		default:
+			// FAIL-CLOSED (Torvalds): any node whose OWN correlation-bearing fields the
+			// rebaser's walker does NOT rewrite — a nested FlatMap/NLJ (preds + result
+			// value), an InJoin/InUnion (the IN comparand), an Aggregate/GroupBy/Union/
+			// Sort/Distinct (group/sort key values), or any future plan node — MIGHT carry
+			// an unrewired buried-preserved correlation this verifier does not inspect.
+			// Flag the node itself regardless of its children → DECLINE the probe → the
+			// correct materialized NLJ fallback (which null-extends via the merged row's
+			// qualified keys). This OVER-declines an unrecognized-but-buried-free inner into
+			// correct-but-slow, but NEVER under-catches a buried reference (the §2
+			// wrong-rows trap). The broadened RewriteOuterJoinRule guard's correctness rests
+			// on this verifier being CONSERVATIVE — fail-closed on any node it does not
+			// fully understand — which the default arm now enforces. E.g.
+			// `LEFT JOIN C ON c.x IN (SELECT … WHERE z = a.id)`: the InJoin comparand
+			// correlates to the buried A, the walker leaves it unrewired, and this arm
+			// declines so the materialized NLJ ships correct null-extended rows.
+			found = true
 		}
 		return !found
 	})

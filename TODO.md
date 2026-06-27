@@ -775,6 +775,21 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] executor: materialized NestedLoopJoin DROPS an `IN`-subquery conjunct in a compound LEFT-OUTER ON clause → CROSS PRODUCT (pre-existing, surfaced by RFC-153 attribution 2026-06-27)
+
+`SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
+returns the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of the correctly-null-extended
+`(1,NULL)(2,NULL)`. **Pre-existing, NOT an RFC-153 regression** — verified by attribution: the base commit
+`15d2ab340` (no RFC-153 changes at all) returns the IDENTICAL cross-product. Both base and HEAD route this
+shape to the materialized `RecordQueryNestedLoopJoinPlan` (base: RewriteOuterJoinRule's guard doesn't fire;
+HEAD: RFC-153's fail-closed verifier declines the probe), and the NLJ's per-pair predicate evaluation
+mishandles the compound ON clause when one conjunct is an `IN`-subquery — it drops the conjunct (and
+apparently the `c.a_id=a.id` conjunct too) → emits the full cross product. Scope: the materialized NLJ
+executor's compound-ON / IN-in-ON handling (`executeNestedLoopJoin` → `passesJoinPredicates`), likely the
+correlated IN-subquery comparand inside an ON-applied (not WHERE) predicate. Pin: an FDB test asserting the
+above query null-extends correctly. Independent of RFC-153 (which only governs the joined-preserved *probe*
+path; the decline correctly falls back to this NLJ, exposing the pre-existing NLJ bug).
+
 ### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
 
 DONE via RFC-145: Phase 1 (`a966835c5`) detached the executor (severed 7 eval back-edges, re-routed
