@@ -2736,10 +2736,11 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 		tx.proxyTagThrottledDuration += proxyMaxTagThrottleDuration.Seconds()
 	}
 
-	// C++ getBackoff(): proxy memory errors use RESOURCE_CONSTRAINED_MAX_BACKOFF
-	// exclusively (user's maxRetryDelay is IGNORED). All other errors use
-	// user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two branches are
-	// mutually exclusive — no min/max combining.
+	// C++ getBackoff(): the resource-constrained bucket (the four codes below) uses
+	// RESOURCE_CONSTRAINED_MAX_BACKOFF exclusively (user's maxRetryDelay is IGNORED);
+	// all other errors use the user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two
+	// branches are mutually exclusive — no min/max combining. (Code list + values are
+	// in the function doc-comment, the single authoritative description.)
 	var cap time.Duration
 	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit ||
 		errCode == ErrThrottledHotShard || errCode == ErrRangeLocked {
