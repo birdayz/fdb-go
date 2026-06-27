@@ -250,8 +250,8 @@ func TestRewritingRules_ContainsExpectedRules(t *testing.T) {
 	t.Parallel()
 
 	rules := RewritingRules()
-	if len(rules) != 3 {
-		t.Fatalf("expected 3 rewriting rules, got %d", len(rules))
+	if len(rules) != 4 {
+		t.Fatalf("expected 4 rewriting rules, got %d", len(rules))
 	}
 
 	// Check types.
@@ -263,5 +263,8 @@ func TestRewritingRules_ContainsExpectedRules(t *testing.T) {
 	}
 	if _, ok := rules[2].(*DecorrelateValuesRule); !ok {
 		t.Errorf("rules[2]: expected DecorrelateValuesRule, got %T", rules[2])
+	}
+	if _, ok := rules[3].(*RewriteOuterJoinRule); !ok {
+		t.Errorf("rules[3]: expected RewriteOuterJoinRule, got %T", rules[3])
 	}
 }

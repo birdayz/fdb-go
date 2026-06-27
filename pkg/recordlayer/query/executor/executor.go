@@ -1916,16 +1916,37 @@ func qualifyOuterRow(outer QueryResult, outerAlias string) QueryResult {
 	if outerQual == "" {
 		outerQual = outerType
 	}
+	// Pass 1 — copy ALL keys verbatim (bare columns AND already-qualified
+	// "LEG.COL" keys). A MERGED row (NLJ / EXISTS-over-join output) already
+	// carries the authoritative per-leg "A.ID"/"B.ID" keys here.
 	for k, v := range outerMap {
 		qualified[k] = v
+	}
+	// Pass 2 — add alias/type-qualified keys for each BARE column, but NEVER
+	// overwrite a qualified key already present. Re-qualifying a merged row's
+	// BARE column (which is last-leg-wins on a cross-leg name collision, e.g.
+	// bare "ID" == the inner leg's id) under a SINGLE leg's alias/type would
+	// otherwise clobber that leg's correct "A.ID" with the other leg's value —
+	// and since Pass-1's verbatim copy and this re-qualification race on Go map
+	// iteration order, the clobber was nondeterministic (a.id/b.id collapsing to
+	// one leg on some process seeds; the EXISTS-over-join misroute, RFC-077).
+	// The two-pass "copy first, fill-if-absent second" makes the authoritative
+	// qualified keys always win.
+	for k, v := range outerMap {
 		if strings.Contains(k, ".") {
 			continue
 		}
 		if outerQual != "" {
-			qualified[outerQual+"."+strings.ToUpper(k)] = v
+			qk := outerQual + "." + strings.ToUpper(k)
+			if _, exists := qualified[qk]; !exists {
+				qualified[qk] = v
+			}
 		}
 		if outerAlias != "" && outerType != "" && outerAlias != outerType {
-			qualified[outerType+"."+strings.ToUpper(k)] = v
+			qk := outerType + "." + strings.ToUpper(k)
+			if _, exists := qualified[qk]; !exists {
+				qualified[qk] = v
+			}
 		}
 	}
 	return QueryResult{Datum: qualified, Record: outer.Record, PrimaryKey: outer.PrimaryKey}

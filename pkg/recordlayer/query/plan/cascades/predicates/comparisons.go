@@ -141,6 +141,29 @@ func (c ComparisonType) Negate() (ComparisonType, bool) {
 	return c, false
 }
 
+// Commute returns the operator that holds when the two operands are swapped:
+// `a OP b` is equivalent to `b Commute(OP) a`. Equality and not-equals are
+// symmetric (unchanged); the binary inequalities flip direction. Unary
+// operators (IS NULL / IS NOT NULL) and non-commutable operators (IN,
+// STARTS_WITH, LIKE, the DISTINCT variants) return (c, false). Used by index/PK
+// matching, which is commutative: a join predicate `outer.fk = inner.pk`
+// constrains inner.pk exactly as `inner.pk = outer.fk` does.
+func (c ComparisonType) Commute() (ComparisonType, bool) {
+	switch c {
+	case ComparisonEquals, ComparisonNotEquals:
+		return c, true
+	case ComparisonLessThan:
+		return ComparisonGreaterThan, true
+	case ComparisonLessThanOrEq:
+		return ComparisonGreaterThanEq, true
+	case ComparisonGreaterThan:
+		return ComparisonLessThan, true
+	case ComparisonGreaterThanEq:
+		return ComparisonLessThanOrEq, true
+	}
+	return c, false
+}
+
 // Symbol returns the SQL-text form of the operator.
 func (c ComparisonType) Symbol() string {
 	switch c {

@@ -441,8 +441,17 @@ func (s *scanPlanExpression) HashCodeWithoutChildren() uint64 {
 	return s.plan.HashCodeWithoutChildren()
 }
 
+// GetCorrelatedToWithoutChildren reports the outer correlations the wrapped plan
+// carries. A bare PK RecordQueryScanPlan SARGed with a join predicate (`pk =
+// QOV(outer).fk`) is a CORRELATED probe — returning nil here (the prior behaviour) let
+// join-leg detection / winner-stamping treat it as self-contained and materialize/stamp
+// it without tracking the outer alias (codex P2 on 05c742100; a pre-existing gap in the
+// RFC-150 data-access correlation wiring, which reached physicalScanWrapper/
+// physicalIndexScanWrapper but not this plan-backed leaf). dataAccessExprCorrelations
+// reports the full set (SARG comparands + residual preds + map values, params excluded),
+// the same source the physical scan wrappers use.
 func (s *scanPlanExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return nil
+	return dataAccessExprCorrelations(s.plan)
 }
 
 func (s *scanPlanExpression) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {

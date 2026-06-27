@@ -86,6 +86,8 @@ go_test(
         "plan_logging_test.go",
         "query_hash_test.go",
         "resource_limits_test.go",
+        "rfc152_outer_join_materialization_test.go",
+        "rfc153_joined_preserved_plan_test.go",
         "select_helpers_test.go",
         "sql_plan_fuzz_test.go",
         "system_rows_test.go",

@@ -20,6 +20,17 @@ import (
 // inputs to the same recursion, documented at each site.
 
 // flatMapCost: a correlated dependent join re-runs the inner once per outer row.
+//
+// The CPU has two per-outer-row terms: outerCard*innerCPU (the inner's own work,
+// re-paid each iteration) PLUS outerCard*IterationOverhead — a fixed per-iteration
+// re-execution overhead (open the inner cursor, init the range read, bind the
+// correlation). The overhead term is what makes driving the nested loop from the
+// SMALLER side cheaper when criterion #2 abstains (two full-scan drivers, e.g. a
+// 20-row vs a 200-row outer in a re-enumerated multi-way sub-join): the 200-row
+// driver pays 10x the per-iteration setup. It is a Go-only read-side cost
+// extension that lives ONLY here (the compareJoinOrdering concrete-cost path),
+// sized as a tie-breaker so it never flips a clear cardinality/total-cost winner
+// (Graefe, RFC-041/042).
 func flatMapCost(outer, inner properties.Cost) properties.Cost {
 	outerCard := outer.Cardinality
 	if outerCard == 0 {
@@ -31,11 +42,26 @@ func flatMapCost(outer, inner properties.Cost) properties.Cost {
 	}
 	return properties.Cost{
 		Cardinality: outerCard * properties.FilterSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (outer.CPU + outerCard*innerCPU) * physicalWrapperCostMultiplier,
+		CPU:         (outer.CPU + outerCard*(innerCPU+properties.IterationOverhead)) * physicalWrapperCostMultiplier,
 	}
 }
 
-// nestedLoopJoinCost: materialized nested-loop join, outer × inner with per-pair filter.
+// nestedLoopJoinCost: MATERIALIZED nested-loop join, outer × inner with per-pair filter.
+//
+// The inner subtree is executed ONCE: the executor (executor.go executeNestedLoopJoin)
+// materializes the inner into a buffer via CollectAllBounded, then iterates the buffered
+// rows per outer row. So the inner's own work (inner.CPU) is paid ONCE — NOT outerCard
+// times. The per-pair term outerCard*innerCard*FilterCPU models iterating the buffer and
+// evaluating the join predicate for every (outer,inner) pair (the in-memory work that DOES
+// scale with the product).
+//
+// This materialization is what distinguishes the NLJ from a correlated FlatMap: flatMapCost
+// charges outerCard*innerCPU because the FlatMap RE-EXECUTES (re-scans from FDB) its inner
+// once per outer row, whereas the materialized NLJ scans the inner once and re-iterates the
+// buffer. Charging the NLJ outerCard*inner.CPU (as if it re-scanned) erased that distinction
+// and let a re-scan FlatMap tie/beat the materialized NLJ for a NON-PROBE inner — the
+// RFC-152 preserved-only LEFT-OUTER regression. A card-1 PROBE inner keeps the FlatMap
+// cheapest regardless (its outerCard*~1 work beats materialize+iterate). Graefe ACK.
 func nestedLoopJoinCost(outer, inner properties.Cost) properties.Cost {
 	outerCard, innerCard := outer.Cardinality, inner.Cardinality
 	if outerCard == 0 {
@@ -46,7 +72,7 @@ func nestedLoopJoinCost(outer, inner properties.Cost) properties.Cost {
 	}
 	return properties.Cost{
 		Cardinality: outerCard * innerCard * properties.FilterSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (outer.CPU + outerCard*inner.CPU + outerCard*innerCard*properties.FilterCPU) * physicalWrapperCostMultiplier,
+		CPU:         (outer.CPU + inner.CPU + outerCard*innerCard*properties.FilterCPU) * physicalWrapperCostMultiplier,
 	}
 }
 

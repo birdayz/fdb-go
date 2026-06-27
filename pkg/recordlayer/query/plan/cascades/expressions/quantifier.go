@@ -89,6 +89,21 @@ func NamedForEachQuantifier(alias values.CorrelationIdentifier, rangesOver *Refe
 	}
 }
 
+// NamedForEachNullOnEmptyQuantifier builds a ForEach quantifier with an explicit
+// alias AND nullOnEmpty=true. This is Java's `Quantifier.forEachWithNullOnEmpty(ref,
+// alias)`: it reuses the null-supplying side's alias so the outer SelectExpression's
+// existing result value (which references that alias) stays correlated correctly, while
+// emitting one all-NULL row when the inner is empty. RewriteOuterJoinRule uses it to
+// carry LEFT-OUTER null-extension semantics on the rewritten correlated SUBSEL.
+func NamedForEachNullOnEmptyQuantifier(alias values.CorrelationIdentifier, rangesOver *Reference) Quantifier {
+	return Quantifier{
+		kind:        QuantifierForEach,
+		alias:       alias,
+		rangesOver:  rangesOver,
+		nullOnEmpty: true,
+	}
+}
+
 // ExistentialQuantifier builds an Existential quantifier — the inner
 // expression is consulted only to determine whether at least one row
 // exists. Used by EXISTS / NOT EXISTS subqueries.

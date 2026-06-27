@@ -89,6 +89,21 @@ const (
 	FetchCPU        = 1.5  // per-row base-record fetch via PK lookup (random I/O)
 	StreamingAggCPU = 1.2  // cheaper than DistinctCPU (no hash table, pre-sorted input)
 	ScanCPU         = 0.05 // per-row sequential I/O cost for full table/index scans (kept < FilterCPU so a bare scan is never costed as a filtered scan)
+
+	// IterationOverhead is the fixed per-outer-row cost a dependent (FlatMap)
+	// join pays to RE-EXECUTE its inner once per outer row: open the inner
+	// cursor, initialize the range read, and bind the correlation. A 200-row
+	// driver pays 10x the per-iteration overhead of a 20-row driver, so this term
+	// expresses the genuine "drive the nested loop from the SMALLER side"
+	// preference among two full-scan drivers — the case where Java's
+	// CardinalitiesProperty (Go's criterion #2) ABSTAINS because both roots are
+	// unbounded/unknown. It is a Go-only STATS read-side extension (RFC-041/042),
+	// NOT a Java port: it lives only inside the Go-only compareJoinOrdering cost
+	// path (flatMapCost), never in criterion #2. Sized as a TIE-BREAKER — small
+	// enough never to flip a clear cardinality/total-cost winner, large enough to
+	// tip a genuinely-close join-order tie toward fewer inner re-executions
+	// (Graefe). 0.1 == FilterCPU: one extra row-equivalent of setup per iteration.
+	IterationOverhead = 0.1
 )
 
 // IndexColumnSelectivity returns the selectivity for a single index

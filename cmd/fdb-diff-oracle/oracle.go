@@ -1,9 +1,14 @@
-// Package main implements the differential serialization fuzzer.
+// Package difforacle implements the differential serialization fuzzer.
 //
 // The oracle subprocess (C++ binary) serializes FDB messages using the
 // real C++ ObjectWriter. We compare its output byte-for-byte against
 // Go's MarshalFDB to catch wire-format divergences.
-package main
+//
+// This package is built as a Go library + fuzz test only — the runnable
+// binary is the C++ diff-oracle (the //cmd/fdb-diff-oracle:diff_oracle_bin
+// genrule), so there is intentionally no func main here. It lives under
+// cmd/ for proximity to its cpp/ sibling, not because it is a Go binary.
+package difforacle
 
 import (
 	"encoding/binary"
