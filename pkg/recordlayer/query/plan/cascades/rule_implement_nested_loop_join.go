@@ -440,13 +440,27 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// unrecognized FlatMap inners but NO buried reference) — without it the chain-interning
 	// task count drops ~17% as valid INNER multiway probes are spuriously declined.
 	buriedLegAliases := buriedPreservedAliases(outerExpr, outerCorr)
+	innerExprForMemo := innerExpr
 	if innerNullOnEmpty && len(buriedLegAliases) > 0 {
+		origInnerPlan := innerPlan
 		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr)
 		for i, p := range joinPreds {
 			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr)
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
 			return
+		}
+		if innerPlan != origInnerPlan {
+			// The rebase rewrote the inner's buried-preserved correlation onto outerCorr
+			// ($m) in the EXECUTABLE plan (innerPlan). The memoized inner EXPRESSION must
+			// report the SAME rebased correlations — otherwise the original innerExpr still
+			// reports the buried alias, the FlatMap wrapper aggregates a correlation to an
+			// UNBOUND alias, and upper join/root/winner bookkeeping mis-routes (codex P2 on
+			// 05c742100: the wrapper's logical correlations and the executable plan diverged).
+			// Memoize a plan-backed expression over the rebased inner so its
+			// GetCorrelatedTo reports outerCorr — which THIS FlatMap binds, so the
+			// aggregation correctly subtracts it to nothing (not a dangling buried alias).
+			innerExprForMemo = &scanPlanExpression{plan: innerPlan}
 		}
 	}
 
@@ -501,7 +515,7 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// wrapper quantifiers the same way: outer via the named outer alias, inner via
 	// NamedPhysicalQuantifier(inner alias) over the FOD wrapper.)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
-	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExpr))
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExprForMemo))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
 }
 
