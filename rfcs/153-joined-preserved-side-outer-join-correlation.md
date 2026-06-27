@@ -102,6 +102,52 @@ rushed executor change on the surface we just fixed twice.
 Final (a)/hybrid ACK pending the implementer's §3 Java corroboration (Graefe expects it to confirm, since
 `aliasRewire` is rewrite-side). The impl earns its own ACK on the null-extension row-counts, which Graefe runs.
 
+### 4.2 The LAYER — implementer hit a wall at the rewrite rule; Graefe ACK'd **(a-implement)**
+
+The implementer corroborated (a) via the Java reading (`QueryVisitor.wrapOperandsForOuterJoin`/`rewireQov`,
+fdb-relational-core, collapses `A⋈B` into one rewired operator **at translation**, so `A.id` is a merge `FieldValue`
+by ordinal before the `OuterJoinExpression` exists) — then implemented (a) **at the rewrite rule** and hit a verified
+wall: Go mints the synthetic merge alias `$m"N` at **PLANNING** (`PartitionSelect`, `memo.go:139`), *after*
+`RewriteOuterJoinRule` runs. So rewiring the pushed pred onto `preserved.GetAlias()="B"` targets the pre-merge B-scan
+row (no `"A.ID"` key) → still `(1,NULL),(2,NULL)`. The merge's own `rebaseBuriedLowerReferences`
+(`rule_partition_select.go:889-906`) rewires buried refs onto `QOV($m)` but only *within* the partitioned select; the
+LEFT-OUTER null-supplying inner SUBSEL is a **separate memoized reference**, never rewired. Safety valve invoked,
+reverted (HEAD pristine `15d2ab340`), sentinel committed `924de2c31`.
+
+**Graefe's layer call: (a-implement). Reject (a-translation) and (a-merge).** The principle is *rewire the
+buried-preserved correlation onto the merge quantifier where the merge is established.* Java establishes the merge at
+translation (SQL layer) → rewires there; **Go deliberately establishes it at PLANNING** (`PartitionSelect` mints
+`$m`, a Cascades-core divergence) → the Cascades-faithful Go analog rewires **where `$m` exists: the
+planner/implementation leg** (`yieldGeneralFlatMap`, `rule_implement_nested_loop_join.go:384-457`, where `outerCorr`
+IS `$m`). Same layer + same `rebaseOuterLegRefsToMerged` machinery the **working** EXISTS-over-join path uses.
+- **(a-translation) rejected** — imports Java's SQL-layer pre-collapse into Go's translator, fighting the intentional
+  merge-at-planning architecture; big blast radius (every joined-preserved query, not just LEFT-OUTER) + a
+  representational split. Faithfulness is to the *principle*, not Java's literal layer.
+- **(a-merge) rejected** — couples `PartitionSelect` to LEFT-OUTER semantics AND reaches **across references**
+  (mutating the separate memoized null-supplying SUBSEL when `$m` is born elsewhere) → breaks the Cascades memo model
+  (refs are shared/interned; a rule yields a new expression, it doesn't mutate a sibling ref). Latent correctness
+  hazard.
+
+**Impl conditions (Graefe runs the row-counts at impl ACK):**
+1. **Guard-broaden and rewire are ONE unit** — broadening the guard to fire on buried/provided preserved aliases is
+   safe *only* because the implementation-layer rewire follows; the rewire MUST fire on **every** path the broadened
+   guard admits. A broadened guard without a guaranteed rewire on some path IS the §2 wrong-rows trap.
+2. Reuse `rebaseOuterLegRefsToMerged`/`rebaseOuterLegValue` (the EXISTS-path fn), not a new rewriter.
+3. The C subplan arrives pre-built with the buried-`A` SARG baked in (the rewrite pushed the ON-pred into the C
+   SUBSEL) → rewrite `innerPlan`'s SARG comparands (or rebase the C SUBSEL's predicates) at the point `outerCorr` is
+   known, targeting the **authoritative qualified key** the hardened `qualifyOuterRow` writes (`QOV($m)."A.ID"`).
+   After rewire the comparand is correlated to outer `$m` → `comparandIndependentOfSource` SARGs
+   `Scan(C,[a_id=<$m.A_id>])`; `compensationProbeCorrelations` reports `$m` → probe-fed-residual guard treats C as a
+   genuine correlated inner.
+4. **Row-count matrix (Graefe runs):** joined-preserved `(1,100),(2,NULL)`; its FULL-OUTER variant; a **deeper**
+   nesting (preserved side a 3-way join, correlation to the deepest buried alias); simple-preserved + preserved-only
+   controls (RFC-152 invariant); a buried-correlation-to-the-OTHER-leg (`c.x = b.something`) variant (confirms the
+   rewire targets the right qualified key). Correct rows AND the probe shape (perf). Typed-tree assertions only.
+
+**Safety valve stands:** if (a-implement) doesn't thread cleanly, do NOT escalate to (a-translation)/(a-merge) under
+merge pressure — ship the correct materialized NLJ (green, sentinel `924de2c31`) + file the probe as a perf
+follow-up, and surface to the user. Perf-only; correct-but-slow shipping today beats a rushed cross-layer change.
+
 ## 5. Correctness sentinel (commit now, independent of the fix)
 
 The subagent saved an FDB sentinel (`scratchpad/joined_preserved_outer_join_fdb_test.go.artifact`) asserting the
