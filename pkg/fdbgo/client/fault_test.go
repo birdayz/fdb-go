@@ -222,7 +222,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 // than the request hanging until a timeout.
 //
 // This is the architectural equivalent of FoundationDB C++ PR #12935 (landed in
-// 7.3.76 — the ONLY client-relevant C++ delta in the 7.3.77 → 7.3.77 baseline bump):
+// 7.3.76 — the ONLY client-relevant C++ delta in the 7.3.75 → 7.3.77 baseline bump):
 // that PR added a `when(wait(peer->disconnect.getFuture()))` arm to waitValueOrSignal
 // (fdbrpc/genericactors.actor.h) so loadBalance returns request_maybe_delivered the
 // instant a connection drops, instead of hanging until the IFailureMonitor detection
@@ -269,13 +269,14 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 	// The ONLY thing that can deliver to replyCh is the connection teardown.
 	_, replyCh, replyHandle := conn.PrepareReply()
 	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
-	// to pool the (drained) channel — failAllPending deletes the token under
-	// pendingMu before sending, so that is race-free. A NOT-received outcome (the
-	// 2s arm) MUST Cancel() first: Cancel removes the still-pending token and nils
-	// h.ch so the deferred Release does not pool a channel the pending map still
-	// references (which would let a later failAllPending send a stale value into the
-	// shared replyChanPool — cross-test contamination / false-green). cancelled is
-	// set on the not-received path; defaulting Release on the success path.
+	// to pool the (drained) channel — failAllPending does its non-blocking send and
+	// the token delete in one pendingMu-held iteration and visits each token exactly
+	// once, so once we have received the value no further send can race the pool Put.
+	// A NOT-received outcome (the 2s arm) MUST Cancel() first: Cancel removes the
+	// still-pending token and nils h.ch so the deferred Release does not pool a channel
+	// the pending map still references (which would let a later failAllPending send a
+	// stale value into the shared replyChanPool — cross-test contamination /
+	// false-green). cancelled is set on the not-received path; Release on the success path.
 	cancelled := false
 	defer func() {
 		if cancelled {
