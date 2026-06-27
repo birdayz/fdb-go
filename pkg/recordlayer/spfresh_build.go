@@ -839,3 +839,11 @@ func (s *spfreshQuantizer) Distance(residualQuery []float64, code []byte, dims i
 var spfreshLeaseDurationMs int64 = 60_000
 
 func spfreshLeaseDeadline() int64 { return spfreshNowMs() + spfreshLeaseDurationMs }
+
+// spfreshSealSplitGapHook, when non-nil, fires in the window between a SPLIT
+// task's successful SEAL (which claimed the lease) and its SPLIT re-claim. It
+// is nil in production; it exists so a test can deterministically inject a
+// foreign lease takeover in exactly that window — the seal→split race that,
+// under genuine concurrency, makes spfreshSplitFine's re-claim return
+// errSPFreshLeaseHeld. Without the seam the race is only reproducible by timing.
+var spfreshSealSplitGapHook func(cellID, fineID int64)

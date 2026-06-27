@@ -369,4 +369,82 @@ var _ = Describe("SPFresh concurrency: same-pk writers + multi-rebalancer", func
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("a SPLIT lease lost between SEAL and SPLIT is a benign skip, not a failure", func() {
+		// Deterministic regression for the seal->split lease-takeover race the
+		// concurrent test above only hits intermittently. The
+		// spfreshSealSplitGapHook seam forcibly hands the SPLIT task's lease to
+		// a foreign owner in the exact window between its SEAL (which claimed the
+		// lease) and its SPLIT re-claim, so spfreshSplitFine's re-claim returns
+		// errSPFreshLeaseHeld deterministically. The rebalancer must treat that
+		// as a benign skip (the new owner finishes the split) — NOT a failure.
+		idx, storeBuilder, indexSubspace := newConcurrencyIndex("spf_splitleasegap")
+		config := parseSPFreshConfig(idx)
+		storage := newSPFreshStorage(indexSubspace, 1)
+
+		// Overfill one centroid: a tight (4..6, 4..6) cluster lands on one
+		// centroid and pushes its posting well past Lmax=16, so the next pass
+		// seals + splits it.
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			for id := int64(100); id < 160; id++ {
+				p, q := int32(4+id%3), int32(4+(id/3)%3)
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: &p, Quantity: &q}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// A live lease cannot be claimed away, so the foreign takeover overwrites
+		// the task row's owner directly (preserving its SEALED state + children).
+		var stolen []int64
+		restore := spfreshSealSplitGapHook
+		spfreshSealSplitGapHook = func(cellID, fineID int64) {
+			_, e := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				key := storage.taskKey(spfreshTaskSplit, fineID)
+				data, ge := tx.Get(key).Get()
+				if ge != nil {
+					return nil, ge
+				}
+				Expect(data).NotTo(BeNil())
+				row, de := decodeTaskRow(data)
+				if de != nil {
+					return nil, de
+				}
+				row.owner = "foreign-worker"
+				row.leaseDeadlineMs = spfreshLeaseDeadline()
+				tx.Set(key, encodeTaskRow(row))
+				return nil, nil
+			})
+			Expect(e).NotTo(HaveOccurred())
+			stolen = append(stolen, fineID)
+		}
+		defer func() { spfreshSealSplitGapHook = restore }()
+
+		// One pass as "me": it seals a split, the hook hands the lease to
+		// foreign-worker, and the SPLIT re-claim returns errSPFreshLeaseHeld.
+		_, err = spfreshRebalanceOnce(ctx, sharedDB, storage, config, "me-rebalancer", 7, 0, nil)
+		Expect(err).NotTo(HaveOccurred()) // the fix: a stolen split lease is a skip, not a failure
+		Expect(stolen).NotTo(BeEmpty(), "the hook must fire on a real SPLIT task, or the test proves nothing")
+
+		// The foreign lease survived untouched — we skipped the split, did not
+		// steal it back.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			data, ge := rtx.Transaction().Get(storage.taskKey(spfreshTaskSplit, stolen[0])).Get()
+			Expect(ge).NotTo(HaveOccurred())
+			Expect(data).NotTo(BeNil())
+			row, de := decodeTaskRow(data)
+			Expect(de).NotTo(HaveOccurred())
+			Expect(row.owner).To(Equal("foreign-worker"),
+				"the skipped split's foreign lease must survive untouched")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
