@@ -2,7 +2,7 @@ package fdb_test
 
 // ConflictRange workload — a two-directional read-conflict-range oracle on key-selector getRange.
 //
-// Go port of FoundationDB's fdbserver/workloads/ConflictRange.actor.cpp @ tag 7.3.75 (the non-RYW
+// Go port of FoundationDB's fdbserver/workloads/ConflictRange.actor.cpp @ tag 7.3.77 (the non-RYW
 // variant, testReadYourWrites=false — the core read-conflict-range oracle; RFC-125). It rides FDB's own
 // workload as an oracle on the read-conflict range Go generates for a getRange(beginSel, endSel, limit,
 // reverse): a concurrent writer (tr2) commits between a reader's pinned read version and its commit, and

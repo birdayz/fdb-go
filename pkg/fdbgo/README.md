@@ -10,7 +10,7 @@ The official Go binding (`github.com/apple/foundationdb/bindings/go`) wraps `lib
 
 **Feature-complete.** Full Apple C binding API parity — zero stubs remaining (except `RebootWorker`, admin-only). Beats CGo on reads.
 
-Working and tested against real FDB 7.3.75:
+Working and tested against real FDB 7.3.77:
 - `Get`, `GetKey`, `GetRange` (multi-shard, all streaming modes), `GetEstimatedRangeSizeBytes`, `GetRangeSplitPoints`
 - `Set`, `Clear`, `ClearRange`, all 14 atomic mutation types
 - `Transact` with automatic retry (all retryable FDB error codes including `tag_throttled`, `cluster_version_changed`)
@@ -154,7 +154,7 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
   --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
 ```
 
-Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 78 C binding port tests (96% of C test suite) + 30 correctness tests + 6 fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Line coverage: **72.4%** (client), **78.8%** (record layer). Binding stress: 200+ seeds × 1000 ops validated (0 failures). `just coverage` generates HTML report with per-package coverage.
+Client tests run against real FDB 7.3.77 via testcontainers-go (Docker required). 78 C binding port tests (96% of C test suite) + 30 correctness tests + 6 fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Line coverage: **72.4%** (client), **78.8%** (record layer). Binding stress: 200+ seeds × 1000 ops validated (0 failures). `just coverage` generates HTML report with per-package coverage.
 
 ## Benchmarks
 
@@ -170,7 +170,7 @@ bazelisk run //pkg/fdbgo/client:client_test -- \
 
 Both benchmarks read the same 100-byte key from FDB testcontainers. Measures the full path: GRV + locate + read + parse.
 
-**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-12):
+**Baseline** (Ryzen 9 3900X, FDB 7.3.77 testcontainer, 2026-04-12):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|

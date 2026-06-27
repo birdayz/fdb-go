@@ -174,7 +174,7 @@ func TestConnectPacketCompatibility(t *testing.T) {
 func TestBuildVoidReply(t *testing.T) {
 	t.Parallel()
 
-	// C++ ObjectWriter ground truth for ErrorOr<EnsureTable<Void>> (FDB 7.3.75).
+	// C++ ObjectWriter ground truth for ErrorOr<EnsureTable<Void>> (FDB 7.3.77).
 	expected, _ := hex.DecodeString(
 		"200000004aad1e02" +
 			"0000000000000400" +

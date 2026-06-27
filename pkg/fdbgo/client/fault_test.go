@@ -215,6 +215,103 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 }
 
+// TestPeerDisconnect_FailsInFlightReplyImmediately proves the Go client detects a
+// storage-server peer disconnect on an IN-FLIGHT request immediately: the moment the
+// TCP connection drops, the connection's readLoop sees EOF and failConnection →
+// failAllPending delivers an error to every pending reply at once (conn.go), rather
+// than the request hanging until a timeout.
+//
+// This is the architectural equivalent of FoundationDB C++ PR #12935 (landed in
+// 7.3.76 — the ONLY client-relevant C++ delta in the 7.3.75 → 7.3.77 baseline bump):
+// that PR added a `when(wait(peer->disconnect.getFuture()))` arm to waitValueOrSignal
+// (fdbrpc/genericactors.actor.h) so loadBalance returns request_maybe_delivered the
+// instant a connection drops, instead of hanging until the IFailureMonitor detection
+// lag elapses. The Go transport's single-owner connection model has this property
+// structurally — the readLoop owns the socket and there is no separate failure
+// monitor to lag behind — so Go never had the bug #12935 fixed. Pinning it here is the
+// load-bearing evidence that the baseline bump needs no Go behaviour change.
+//
+// Determinism (no timer-vs-real-reply race, the #288 lesson): a reply token is
+// registered but NO request is sent, so the server can never answer it. The only path
+// that can ever wake replyCh is the connection-teardown failAllPending. We then close
+// the underlying socket (a faithful peer disconnect — the readLoop discovers it via an
+// EOF, exactly the §3 mechanism, not an explicit local Close) and assert replyCh wakes
+// well under any RPC timeout. Revert-prove: make failAllPending a no-op (or drop the
+// readLoop failConnection) and replyCh never wakes → the 2s arm fires → red.
+func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	db, sd := newSimTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_key")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Warm the location cache so getOrDial returns a live, handshook storage conn.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+
+	addr := storageAddrFor(t, db, ctx, key)
+	conn, err := db.db.getOrDial(ctx, addr)
+	if err != nil {
+		t.Fatalf("getOrDial(%s): %v", addr, err)
+	}
+
+	// Register an in-flight reply the server will NEVER answer (no request is sent).
+	// The ONLY thing that can deliver to replyCh is the connection teardown.
+	_, replyCh, replyHandle := conn.PrepareReply()
+	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
+	// to pool the (drained) channel — failAllPending does its non-blocking send and
+	// the token delete in one pendingMu-held iteration and visits each token exactly
+	// once, so once we have received the value no further send can race the pool Put.
+	// A NOT-received outcome (the 2s arm) MUST Cancel() first: Cancel removes the
+	// still-pending token and nils h.ch so the deferred Release does not pool a channel
+	// the pending map still references (which would let a later failAllPending send a
+	// stale value into the shared replyChanPool — cross-test contamination /
+	// false-green). cancelled is set on the not-received path; Release on the success path.
+	cancelled := false
+	defer func() {
+		if cancelled {
+			replyHandle.Cancel()
+		}
+		replyHandle.Release()
+	}()
+
+	// Simulate the peer dropping the TCP connection: close the underlying socket so
+	// the storage conn's readLoop reads EOF → failConnection → failAllPending.
+	sd.mu.Lock()
+	for _, c := range sd.conns[addr] {
+		_ = c.Conn.Close()
+	}
+	sd.mu.Unlock()
+
+	start := time.Now()
+	select {
+	case resp := <-replyCh:
+		elapsed := time.Since(start)
+		if resp.Err == nil {
+			t.Fatalf("in-flight reply got a value %q after disconnect; expected a connection error", resp.Body)
+		}
+		// 2s is a generous CI margin; real teardown is sub-millisecond and far below
+		// DefaultRPCTimeout (5s) — so a regression to "wait for the timeout" goes red.
+		if elapsed >= 2*time.Second {
+			t.Fatalf("in-flight reply failed only after %v; peer disconnect was not detected immediately", elapsed)
+		}
+		t.Logf("peer disconnect failed the in-flight reply in %v: %v", elapsed, resp.Err)
+	case <-time.After(2 * time.Second):
+		cancelled = true // not received: deferred cleanup must Cancel() before Release()
+		t.Fatal("in-flight reply was NOT failed within 2s of peer disconnect — the client hangs (the bug FDB C++ PR #12935 fixed); Go's failConnection must wake all pending replies")
+	}
+}
+
 // startProxyFDB starts an FDB container and returns a ClusterFile whose
 // Coordinators are the external (dial-through) addresses while Description/ID
 // carry the container-internal cluster identity — the shape a frame-proxying

@@ -1,7 +1,7 @@
 // serializer.go — Mechanical port of C++ FDB FlatBuffers serialization.
 //
 // Every type and function references the C++ original by name and location:
-//   Source: flow/include/flow/flat_buffers.h (FDB 7.3.75)
+//   Source: flow/include/flow/flat_buffers.h (FDB 7.3.77)
 //
 // The C++ serializer uses a two-pass approach:
 //   Pass 1 (PrecomputeSize): compute total buffer size, record object positions

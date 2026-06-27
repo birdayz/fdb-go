@@ -103,7 +103,7 @@ func TestTransactRetry(t *testing.T) {
 }
 
 // TestSetGet is the minimal end-to-end test: write a key, read it back.
-// Pure Go client, no C bindings. Talks to a real FDB 7.3.75 testcontainer.
+// Pure Go client, no C bindings. Talks to a real FDB 7.3.77 testcontainer.
 func TestSetGet(t *testing.T) {
 	t.Parallel()
 

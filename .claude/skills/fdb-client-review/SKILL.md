@@ -1,6 +1,6 @@
 ---
 name: fdb-client-review
-description: Work on the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, wire encoding). Includes mandatory review by the FDB C++ client developer (validates Go against the 7.3.75 C++ source — the spec) and Torvalds (code quality). The client/wire analog of the query-engine skill: the FDB C++ dev substitutes for Graefe on client/wire items.
+description: Work on the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, wire encoding). Includes mandatory review by the FDB C++ client developer (validates Go against the 7.3.77 C++ source — the spec) and Torvalds (code quality). The client/wire analog of the query-engine skill: the FDB C++ dev substitutes for Graefe on client/wire items.
 ---
 
 # FDB Client Work (pure-Go `pkg/fdbgo`)
@@ -22,7 +22,7 @@ mutations).
 ## The two reviewers
 
 ### FDB C++ client developer (substitute for Graefe on client/wire items)
-- Evaluates the change **against the actual C++ source at tag 7.3.75** — `libfdb_c`
+- Evaluates the change **against the actual C++ source at tag 7.3.77** — `libfdb_c`
   semantics, not a remembered approximation. Their word is final on client/wire
   correctness, exactly as Graefe's is final on Cascades.
 - Cites `file:line` in the C++ for every verdict. "Java/C++ does X here (`NativeAPI.actor.cpp:NNNN`),
@@ -53,18 +53,18 @@ The PR-level gates that follow these two (see "Review gauntlet" below): **codex*
 (repeatedly catches storage-shadow / cleared-base / sticky-unreadable edges the others
 miss) and **@claude** on the GitHub PR (final gate; LGTM must be on the final HEAD).
 
-## The spec: C++ source 7.3.75
+## The spec: C++ source 7.3.77
 
-The oracle is the **FoundationDB C++ source at tag 7.3.75** — the `foundationdb` pin in
-`MODULE.bazel` (`bazel_dep(name = "foundationdb", version = "7.3.75")`), which is exactly
+The oracle is the **FoundationDB C++ source at tag 7.3.77** — the `foundationdb` pin in
+`MODULE.bazel` (`bazel_dep(name = "foundationdb", version = "7.3.77")`), which is exactly
 what `libfdb_c` (and the cgo binding the differential harness compares against) is built
 from. **Do NOT confuse this with `4.11.1.0`**, the *Java* `fdb-record-layer-core` version —
 a different project with a different spec.
 
 Checkout (already present in this environment; clone if missing):
 ```bash
-ls /tmp/fdbsrc || git clone --branch 7.3.75 https://github.com/apple/foundationdb /tmp/fdbsrc
-( cd /tmp/fdbsrc && git describe --tags )   # must print 7.3.75
+ls /tmp/fdbsrc || git clone --branch 7.3.77 https://github.com/apple/foundationdb /tmp/fdbsrc
+( cd /tmp/fdbsrc && git describe --tags )   # must print 7.3.77
 ```
 
 Key C++ files (read the **actual** function before porting/verifying):
@@ -121,11 +121,11 @@ bazelisk test //pkg/fdbgo/client:client_test \
 ### 3. Review cycle (MANDATORY)
 
 After implementation passes all tests, launch BOTH reviewers in parallel as background
-agents. The FDB C++ reviewer prompt MUST anchor on `/tmp/fdbsrc` (7.3.75) and demand
+agents. The FDB C++ reviewer prompt MUST anchor on `/tmp/fdbsrc` (7.3.77) and demand
 file:line citations:
 
 ```
-Agent(description: "FDB C++ client review", prompt: "You are a senior FoundationDB C++ client developer. The spec is the C++ source at /tmp/fdbsrc, tag 7.3.75 (the `libfdb_c` this Go client must match byte- and behavior-for-behavior). Review the diff in /home/birdy/projects/fdb-record-layer-go — run `git diff master..HEAD`. [describe what changed and why]. For EVERY claim cite the C++ function and file:line in /tmp/fdbsrc that the Go code must match. Check: does Go now match libfdb_c's commit/GRV/retry/conflict-range/error-code/cancellation semantics exactly? Any forced GRV the C++ skips? Any wire-byte / conflict-range / error-code divergence? Under 300 words. ACK or NAK with specific C++ file:line reasons.", run_in_background: true)
+Agent(description: "FDB C++ client review", prompt: "You are a senior FoundationDB C++ client developer. The spec is the C++ source at /tmp/fdbsrc, tag 7.3.77 (the `libfdb_c` this Go client must match byte- and behavior-for-behavior). Review the diff in /home/birdy/projects/fdb-record-layer-go — run `git diff master..HEAD`. [describe what changed and why]. For EVERY claim cite the C++ function and file:line in /tmp/fdbsrc that the Go code must match. Check: does Go now match libfdb_c's commit/GRV/retry/conflict-range/error-code/cancellation semantics exactly? Any forced GRV the C++ skips? Any wire-byte / conflict-range / error-code divergence? Under 300 words. ACK or NAK with specific C++ file:line reasons.", run_in_background: true)
 
 Agent(description: "Torvalds code review", prompt: "You are Linus Torvalds. Review the diff in /home/birdy/projects/fdb-record-layer-go — run `git diff master..HEAD`. [describe what changed]. Focus on dead code, logic holes, incomplete conversions, papered-over regressions, missing red→green / revert-proof, concurrency footguns (shared-field writes without atomics). Under 300 words. ACK or NAK with file:line.", run_in_background: true)
 ```
@@ -179,7 +179,7 @@ If the item is purely SQL/planner with no client contract, use `query-engine` in
 
 ## Hard rules (from CLAUDE.md — non-negotiable)
 
-- **C++ is the spec.** Read `/tmp/fdbsrc` (7.3.75) first; port 1:1; no invented shortcuts.
+- **C++ is the spec.** Read `/tmp/fdbsrc` (7.3.77) first; port 1:1; no invented shortcuts.
   Go divergence from C++ is a bug in Go — never skip a divergence test, fix Go.
 - **Wire compat is the hard line.** Bytes written to FDB (keys, records, index entries,
   continuations, split records, atomic mutations) MUST be byte-identical to Java/C++.

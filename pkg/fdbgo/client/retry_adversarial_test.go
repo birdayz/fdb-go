@@ -338,15 +338,18 @@ func TestIntersectConflictRanges_Adversarial(t *testing.T) {
 func TestOnError_RespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	// Force a multi-second backoff so the cancel-vs-sleep race is
-	// unambiguous. nextBackoff returns tx.backoff*rand for the first call,
-	// so seeding tx.backoff = 4s gives a first delay of 0–4s (mean ~2s).
-	// ErrThrottledHotShard is in the resource-constrained bucket whose
-	// internal cap is 30s, NOT maxRetryDelay — but we set maxRetryDelay
-	// = 4s as belt-and-suspenders in case the bucket dispatch ever changes.
+	// Force a DETERMINISTIC multi-second backoff so the cancel-vs-sleep race is
+	// structurally impossible to lose. nextBackoff returns tx.backoff*jitter;
+	// pinning jitter=1.0 (backoffJitter override) makes the first delay exactly
+	// tx.backoff = 4s — without the override a rand draw near 0 made the backoff
+	// finish before the 20ms cancel, so OnError returned nil (a real ~0.5% flake).
+	// ErrThrottledHotShard is in the resource-constrained bucket whose internal cap
+	// is 30s, NOT maxRetryDelay — but we set maxRetryDelay = 4s as belt-and-suspenders
+	// in case the bucket dispatch ever changes.
 	tx := &Transaction{}
 	tx.backoff = 4 * time.Second
 	tx.maxRetryDelay = 4 * time.Second
+	tx.backoffJitter = func() float64 { return 1.0 }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelAt := 20 * time.Millisecond

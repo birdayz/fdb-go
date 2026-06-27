@@ -111,7 +111,7 @@ VECTOR_BENCH_RABITQ=false    # enable RaBitQ quantization
 
 ## 2026-06 HNSW perf pass (branch perf/hnsw-span-decode)
 
-Hardware: 24-core, 64 GB, FDB 7.3.75 testcontainer (single node). All at 1536-D
+Hardware: 24-core, 64 GB, FDB 7.3.77 testcontainer (single node). All at 1536-D
 DOUBLE vectors, the LanceDB-1M comparison shape.
 
 > **UPDATE — cross-transaction cache removed for Java compliance.** The rows below

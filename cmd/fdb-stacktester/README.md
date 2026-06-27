@@ -85,7 +85,7 @@ addition to `[]byte` and `string`.
 
 ```sh
 # 1. Start FDB
-docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.75
+docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.77
 sleep 3
 docker exec fdb-test fdbcli --exec "configure new single memory; configure tenant_mode=optional_experimental"
 echo "docker:docker@127.0.0.1:4500" > /tmp/fdb-test.cluster

@@ -32,7 +32,7 @@ RFC/implementation reviews in Steps 5 and 7.
 - **Pure-Go FDB client** (anything under `pkg/fdbgo/` — transport, transaction, commit path,
   RYW, retry/ctx, wire encoding — or a `TODO-production.md` "client robustness" item):
   `Skill(skill: "fdb-client-review")` — loads the **FDB C++ client developer** (substitute
-  for Graefe; validates Go against the 7.3.75 C++ source at `/tmp/fdbsrc`) + Torvalds
+  for Graefe; validates Go against the 7.3.77 C++ source at `/tmp/fdbsrc`) + Torvalds
   protocols and C++-as-spec. For a *divergence* found via differential/fuzz, also load
   `hunt-divergences`.
 

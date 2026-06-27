@@ -50,7 +50,7 @@ var (
 	// recordLayerPin extracts the fdb-record-layer-core version from MODULE.bazel.
 	recordLayerPin = regexp.MustCompile(`fdb-record-layer-core:(\d+\.\d+\.\d+\.\d+)`)
 	// foundationDBPin extracts the FDB C++ client version from MODULE.bazel
-	// (bazel_dep(name = "foundationdb", version = "7.3.75")).
+	// (bazel_dep(name = "foundationdb", version = "7.3.77")).
 	foundationDBPin = regexp.MustCompile(`name\s*=\s*"foundationdb"\s*,\s*version\s*=\s*"(\d+\.\d+\.\d+)"`)
 	// fdbContextCited matches a 3-part version that FOLLOWS an FDB-client keyword on the same line
 	// (within 30 non-digit chars). This anchors on context, not the major number, so it catches FDB
@@ -168,7 +168,7 @@ func TestLivingDocsCiteCurrentFDBVersion(t *testing.T) {
 			v := body[m[2]:m[3]]
 			// Skip a 4-part version's 3-part prefix (e.g. the Java 4.11.1.0 — its own anchor
 			// handles it): only when the capture is followed by '.<digit>' (a genuine fourth
-			// part), NOT a bare trailing period like "...7.3.75." ending a sentence (Torvalds #330).
+			// part), NOT a bare trailing period like "...7.3.77." ending a sentence (Torvalds #330).
 			if m[3]+1 < len(body) && body[m[3]] == '.' && body[m[3]+1] >= '0' && body[m[3]+1] <= '9' {
 				continue
 			}

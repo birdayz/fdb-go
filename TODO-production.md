@@ -122,7 +122,7 @@ the codebase (RFCs, CI workflows, code, tests) and the statuses below updated to
   `getReadVersion`'s `<-ctx.Done()` select, `grv.go:216` → non-`*wire.FDBError` → `OnError`:1243
   non-retryable), while the commit RPC + `commitDummyTransaction` stay detached (RFC-090 idempotency
   intact). The reverted-P2 forced-GRV regression is structurally avoided — the read-only/no-op fast
-  path returns at :1100 before any GRV. **FDB C++ verified against 7.3.75** (`NativeAPI.actor.cpp:6578`
+  path returns at :1100 before any GRV. **FDB C++ verified against 7.3.77** (`NativeAPI.actor.cpp:6578`
   GRV is a cancellable read; `:6750`/`:6306` `commitDummyTransaction` is the only no-abandon path — the
   Go split matches where C++ draws the line). Three stale comments at the old call site
   (`database.go:527-536` "also detaches the GRV", the `:538-549` "tracked as a follow-up" NOTE, and the
@@ -619,7 +619,7 @@ README links it. **P1.7 is now fully closed.**
 *(Verified 2026-06-24.)* The work is in-tree and verifiable: every downloaded runner artifact is
 pinned **and SHA-256-verified** via `fetch_verified` (`infra/cloud-init.yaml`; `infra/main.tf`
 `locals.versions` — `runner_sha256`, `bazelisk_sha256`, `just_sha256`, `mc_sha256`,
-`fdb_clients_sha256`). FDB skew fixed to `7.3.75` (matches `MODULE.bazel`); GitHub runner pinned
+`fdb_clients_sha256`). FDB skew fixed to `7.3.77` (matches `MODULE.bazel`); GitHub runner pinned
 (was `releases/latest`); ephemeral-runner opt-in (`runner_ephemeral`); stand-up documented
 (`infra/README.md`). A GitHub-hosted reproducibility floor (`hosted-smoke.yml` on `ubuntu-latest`
 — build+vet+pure unit tests) gives external adopters a Docker-free green signal. The self-hosted
@@ -742,11 +742,11 @@ predicate-as-value planner panic fixed in `prod-stack/09`.)*
 ### [x] P2.5 — Pin FDB image version in tests · S — DONE
 The test infra was already pinned to a single specific version, never `:latest`:
 `foundationdb.Run`/`RunCluster` build `foundationdb/foundationdb:%s` from
-`defaultOptions().version = fdbVersion()` = **7.3.75** (overridable via the `FDB_VERSION` env
-that `.bazelrc:30` sets to `7.3.75` for every Bazel test). That matches `MODULE.bazel`
-(7.3.75) and the README target table. The only drift was the README quickstart docker snippet
-(`README.md:239`), which used `7.3.63` — **fixed to 7.3.75**. All FDB version references now
-reconcile on 7.3.75.
+`defaultOptions().version = fdbVersion()` = **7.3.77** (overridable via the `FDB_VERSION` env
+that `.bazelrc:30` sets to `7.3.77` for every Bazel test). That matches `MODULE.bazel`
+(7.3.77) and the README target table. The only drift was the README quickstart docker snippet
+(`README.md:239`), which used `7.3.63` — **fixed to 7.3.77**. All FDB version references now
+reconcile on 7.3.77.
 
 ---
 

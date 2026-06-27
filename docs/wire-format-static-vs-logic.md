@@ -13,7 +13,7 @@ The vtable closure is part of the wire format. Missing or misordered vtables = s
 
 ## What the C++ build produces (vtables_generated.go)
 
-One C++ binary (`cmd/fdb-schema-extract/`) compiles against real FDB 7.3.75 and outputs Go constants:
+One C++ binary (`cmd/fdb-schema-extract/`) compiles against real FDB 7.3.77 and outputs Go constants:
 
 | Constant | What it is | How it's used |
 |---|---|---|

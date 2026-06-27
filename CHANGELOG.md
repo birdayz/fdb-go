@@ -22,7 +22,7 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 - A documentation-consistency CI guard (`pkg/docscheck`) that fails the build if a living doc drifts
   from the `MODULE.bazel` / `go.mod` version pins or reintroduces a known contradiction (RFC-131/132).
 - A public **FDB client option matrix** (`pkg/fdbgo/fdb/OPTIONS.md`) classifying every `Set*` option
-  as honored / `UnsupportedOptionError` / safe no-op, each with its `libfdb_c` 7.3.75 reference, plus
+  as honored / `UnsupportedOptionError` / safe no-op, each with its `libfdb_c` 7.3.77 reference, plus
   a completeness guard that fails CI if an option is added without a matrix row (RFC-133).
 - A **panic-boundary release gate** (RFC-134): a `norecover` nogo analyzer fails the build if a
   `recover()` is added outside the documented panic→error boundary allowlist (`docs/panic-audit.md`
@@ -30,6 +30,14 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
   with the allowlist. Makes the "untrusted input → error, never crash" discipline self-enforcing.
 
 ### Changed
+- **FDB C++ wire-protocol baseline bumped 7.3.75 → 7.3.77** (RFC-152). Patch bump within the 7.3
+  line: no wire-format, error-code, `ClientKnobs`, RYW, or serialization change (regenerated
+  `pkg/fdbgo/wire/types/*_generated.go` differ only in the version-string header comment). The only
+  client-relevant upstream delta is PR #12935 (a `peer->disconnect` arm in `waitValueOrSignal` so
+  `loadBalance` fails an in-flight request immediately on peer disconnect instead of waiting out the
+  failure-monitor lag); the pure-Go client already has this structurally (single-owner connection:
+  `readLoop` EOF → `failConnection` → `failAllPending`), pinned by
+  `TestPeerDisconnect_FailsInFlightReplyImmediately`. No production-code behaviour change.
 - SQL `LIMIT`/`OFFSET` now flows through a single uniform `RecordQueryLimitPlan` + continuation
   envelope, including for nested derived tables (RFC-128).
 
@@ -74,11 +82,11 @@ releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`R
 - **SQL behaviour:** net additions only (memory-budget option; the LIMIT-envelope and pagination
   fixes correct latent bugs, they don't change correct-query results).
 - **FDB client option semantics:** now documented option-by-option in `pkg/fdbgo/fdb/OPTIONS.md`
-  (honored / `UnsupportedOptionError` / safe no-op, vs `libfdb_c` 7.3.75). **One behavioural change:**
+  (honored / `UnsupportedOptionError` / safe no-op, vs `libfdb_c` 7.3.77). **One behavioural change:**
   three database-level defaults (`snapshot_ryw_disable`/`enable`, `transaction_bypass_unreadable`,
   `transaction_causal_read_risky`) that were previously silent no-ops now take effect on each new
   transaction — a caller that set them and relied on them being ignored will now see them applied
   (this is the faithful `libfdb_c` behaviour). The unsafe access/auth/quota family still fails loud
   with `UnsupportedOptionError`; no option's *wire* behaviour changed (RFC-133).
-- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.75**, Go
+- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).

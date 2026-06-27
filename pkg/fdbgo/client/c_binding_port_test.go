@@ -2,7 +2,7 @@ package client
 
 // Ported from FoundationDB C binding unit tests.
 // Source: bindings/c/test/unit/unit_tests.cpp
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ import (
 // TestGetRangeReverse verifies that reading a range in reverse returns keys
 // in descending order. C++ uses negative limit for reverse scans.
 // Ported from unit_tests.cpp line 1185
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1185
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1185
 func TestGetRangeReverse(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -94,7 +94,7 @@ func TestGetRangeReverse(t *testing.T) {
 // TestGetRangeLimit verifies that GetRange respects the limit parameter and
 // returns more=true when there are additional keys beyond the limit.
 // Ported from unit_tests.cpp line 1226
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1226
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1226
 func TestGetRangeLimit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -150,7 +150,7 @@ func TestGetRangeLimit(t *testing.T) {
 
 // TestClearSingleKey verifies that clearing a single key removes it.
 // Ported from unit_tests.cpp line 1293
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1293
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1293
 func TestClearSingleKey(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -195,7 +195,7 @@ func TestClearSingleKey(t *testing.T) {
 
 // TestAtomicAdd_CPort verifies FDB_MUTATION_TYPE_ADD.
 // Ported from unit_tests.cpp line 1314
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1314
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1314
 func TestAtomicAdd_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -244,7 +244,7 @@ func TestAtomicAdd_CPort(t *testing.T) {
 // TestAtomicBitAnd_CPort verifies FDB_MUTATION_TYPE_BIT_AND with same-length,
 // extended, and truncated operands.
 // Ported from unit_tests.cpp line 1348
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1348
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1348
 func TestAtomicBitAnd_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -318,7 +318,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 // TestAtomicBitOr_CPort verifies FDB_MUTATION_TYPE_BIT_OR with same-length,
 // extended, and truncated operands.
 // Ported from unit_tests.cpp line 1415
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1415
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1415
 func TestAtomicBitOr_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -392,7 +392,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 // TestAtomicBitXor_CPort verifies FDB_MUTATION_TYPE_BIT_XOR with same-length,
 // extended, and truncated operands.
 // Ported from unit_tests.cpp line 1480
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1480
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1480
 func TestAtomicBitXor_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -467,7 +467,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 // If the operand matches the stored value, the key is cleared. If not, the key
 // is left unchanged.
 // Ported from unit_tests.cpp line 1557
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1557
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1557
 func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -521,7 +521,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 // TestAtomicAppendIfFits_CPort verifies FDB_MUTATION_TYPE_APPEND_IF_FITS.
 // Appends operand to existing value, or inserts if key doesn't exist.
 // Ported from unit_tests.cpp line 1584
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1584
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1584
 func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -584,7 +584,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 // TestAtomicMax_CPort verifies FDB_MUTATION_TYPE_MAX (integer-like comparison
 // with zero-extension and truncation).
 // Ported from unit_tests.cpp line 1623
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1623
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1623
 func TestAtomicMax_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -658,7 +658,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 // TestAtomicMin_CPort verifies FDB_MUTATION_TYPE_MIN (integer-like comparison
 // with zero-extension and truncation).
 // Ported from unit_tests.cpp line 1657
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1657
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1657
 func TestAtomicMin_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -731,7 +731,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 // comparison without extension/truncation — keeps the longer string if it's
 // the max).
 // Ported from unit_tests.cpp line 1693
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1693
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1693
 func TestAtomicByteMax_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -803,7 +803,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 // comparison without extension/truncation — keeps the shorter string if it's
 // the min).
 // Ported from unit_tests.cpp line 1727
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1727
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1727
 func TestAtomicByteMin_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -875,7 +875,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 // The key contains a placeholder for the 10-byte versionstamp plus a 4-byte
 // little-endian offset suffix indicating where the versionstamp goes.
 // Ported from unit_tests.cpp line 1761
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1761
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1761
 func TestAtomicSetVersionstampedKey_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -939,7 +939,7 @@ func TestAtomicSetVersionstampedKey_CPort(t *testing.T) {
 // The value contains a placeholder for the 10-byte versionstamp plus a 4-byte
 // little-endian offset suffix.
 // Ported from unit_tests.cpp line 1800
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1800
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1800
 func TestAtomicSetVersionstampedValue_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1004,7 +1004,7 @@ func TestAtomicSetVersionstampedValue_CPort(t *testing.T) {
 // TestSetReadVersionOld_CPort verifies that setting the read version to 1
 // (ancient) causes transaction_too_old (1007) on read.
 // Ported from unit_tests.cpp line 905
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L905
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L905
 func TestSetReadVersionOld_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1037,7 +1037,7 @@ func TestSetReadVersionOld_CPort(t *testing.T) {
 // TestSetReadVersionFuture_CPort verifies that setting the read version to a
 // far-future value causes future_version (1009) on read.
 // Ported from unit_tests.cpp line 915
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L915
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L915
 func TestSetReadVersionFuture_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1066,7 +1066,7 @@ func TestSetReadVersionFuture_CPort(t *testing.T) {
 // GetCommittedVersion after a read-only Commit returns 0 (the zero-value),
 // since no commit was sent to FDB. The C test checks for -1.
 // Ported from unit_tests.cpp line 1849
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1849
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1849
 func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1101,7 +1101,7 @@ func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
 // TestGetCommittedVersion_CPort verifies that a write transaction returns a
 // non-negative committed version after successful commit.
 // Ported from unit_tests.cpp line 1869
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1869
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1869
 func TestGetCommittedVersion_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1130,7 +1130,7 @@ func TestGetCommittedVersion_CPort(t *testing.T) {
 // TestTransactionCancel_CPort verifies that cancelling a transaction prevents
 // further operations.
 // Ported from unit_tests.cpp line 2105
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2105
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2105
 func TestTransactionCancel_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1150,7 +1150,7 @@ func TestTransactionCancel_CPort(t *testing.T) {
 // TestAddConflictRange_CPort verifies that explicit conflict ranges cause
 // transactions to conflict as expected.
 // Ported from unit_tests.cpp line 2118
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2118
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2118
 func TestAddConflictRange_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1204,7 +1204,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 // clear its internal state for GetCommittedVersion. After commit, the read
 // version should still be accessible.
 // Ported from unit_tests.cpp line 2516
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2516
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2516
 func TestCommitDoesNotReset_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -1249,7 +1249,7 @@ func TestCommitDoesNotReset_CPort(t *testing.T) {
 // TestErrorPredicate_CPort verifies error retryability classification.
 // This is a pure logic test — no database needed.
 // Ported from unit_tests.cpp line 2432
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2432
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2432
 func TestErrorPredicate_CPort(t *testing.T) {
 	t.Parallel()
 
@@ -1326,7 +1326,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 
 // TestSetTimeout_CPort verifies that a 1ms timeout eventually fires with error 1031.
 // Ported from unit_tests.cpp line 769
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L769
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L769
 //
 // The C test sets a 1ms timeout and loops Get + OnError until 1031 escapes.
 // Our Go implementation checks the deadline before each operation, so with
@@ -2136,7 +2136,7 @@ func TestGetKey_AllSelectors(t *testing.T) {
 // TestWatch_CPort verifies the full Watch lifecycle: start a watch on a key,
 // update the key from another goroutine, and confirm the watch resolves.
 // Ported from unit_tests.cpp line 2071
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2071
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2071
 func TestWatch_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2214,7 +2214,7 @@ func TestWatch_CPort(t *testing.T) {
 // TestReadYourWrites_CPort verifies that uncommitted writes are visible to
 // subsequent reads within the same transaction (read-your-writes semantics).
 // Ported from unit_tests.cpp line 643
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L643
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L643
 func TestReadYourWrites_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2264,7 +2264,7 @@ func TestReadYourWrites_CPort(t *testing.T) {
 // TestSizeLimit_CPort verifies that setting a transaction size limit causes
 // Commit to fail with transaction_too_large (2101) when exceeded.
 // Ported from unit_tests.cpp line 835
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L835
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L835
 //
 // Pure unit test — no Docker needed. The size limit check happens at Commit
 // time in our Go client.
@@ -2304,7 +2304,7 @@ func TestSizeLimit_CPort(t *testing.T) {
 // returns precisely that many results, and that more=true when additional keys
 // exist beyond the limit.
 // Ported from unit_tests.cpp FDB_STREAMING_MODE_EXACT line 1261
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1261
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1261
 func TestGetRangeStreamingExact_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2393,7 +2393,7 @@ func TestGetRangeStreamingExact_CPort(t *testing.T) {
 // to bypass the RYW cache. An uncommitted Set is invisible to subsequent Get
 // when RYW is disabled, because the server hasn't seen the write yet.
 // Ported from unit_tests.cpp line 671
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L671
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L671
 func TestRYWDisable_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2427,7 +2427,7 @@ func TestRYWDisable_CPort(t *testing.T) {
 // TestSnapshotRYWEnable_CPort verifies that snapshot reads go through the
 // RYW cache by default. An uncommitted Set is visible via Snapshot().Get().
 // Ported from unit_tests.cpp line 699
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L699
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L699
 func TestSnapshotRYWEnable_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2462,7 +2462,7 @@ func TestSnapshotRYWEnable_CPort(t *testing.T) {
 // TestSnapshotRYWDisable_CPort verifies that disabling snapshot RYW makes
 // snapshot reads bypass the cache, while regular reads still use RYW.
 // Ported from unit_tests.cpp line 728
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L728
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L728
 func TestSnapshotRYWDisable_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2511,7 +2511,7 @@ func TestSnapshotRYWDisable_CPort(t *testing.T) {
 // TestSizeLimitTooSmall_CPort verifies that a size limit below the minimum
 // (32) causes error 2006 (invalid_option_value) at commit time.
 // Ported from unit_tests.cpp line 811
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L811
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L811
 func TestSizeLimitTooSmall_CPort(t *testing.T) {
 	t.Parallel()
 
@@ -2536,7 +2536,7 @@ func TestSizeLimitTooSmall_CPort(t *testing.T) {
 // TestSizeLimitTooLarge_CPort verifies that a size limit above the maximum
 // (10,000,000) causes error 2006 (invalid_option_value) at commit time.
 // Ported from unit_tests.cpp line 823
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L823
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L823
 func TestSizeLimitTooLarge_CPort(t *testing.T) {
 	t.Parallel()
 
@@ -2562,7 +2562,7 @@ func TestSizeLimitTooLarge_CPort(t *testing.T) {
 // is accepted but the transaction still fails with 2101 (transaction_too_large)
 // when the mutations exceed that tiny limit.
 // Ported from unit_tests.cpp line 835
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L835
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L835
 func TestSizeLimitMinimum_CPort(t *testing.T) {
 	t.Parallel()
 
@@ -2591,7 +2591,7 @@ func TestSizeLimitMinimum_CPort(t *testing.T) {
 // TestWatchRYWDisable_CPort verifies that creating a watch on a transaction
 // with RYW disabled returns watches_disabled (1034) immediately.
 // Ported from unit_tests.cpp line 1973
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1973
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1973
 func TestWatchRYWDisable_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2627,7 +2627,7 @@ func TestWatchRYWDisable_CPort(t *testing.T) {
 // TestCannotReadSystemKey_CPort verifies that reading a \xff system key
 // without READ_SYSTEM_KEYS returns key_outside_legal_range (2004).
 // Ported from unit_tests.cpp line 595
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L595
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L595
 func TestCannotReadSystemKey_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2657,7 +2657,7 @@ func TestCannotReadSystemKey_CPort(t *testing.T) {
 // TestReadSystemKey_CPort verifies that reading a \xff system key
 // succeeds when READ_SYSTEM_KEYS is set.
 // Ported from unit_tests.cpp line 604
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L604
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L604
 func TestReadSystemKey_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2686,7 +2686,7 @@ func TestReadSystemKey_CPort(t *testing.T) {
 // TestCannotWriteSystemKey_CPort verifies that writing a \xff system key
 // without ACCESS_SYSTEM_KEYS returns key_outside_legal_range (2004) at commit.
 // Ported from unit_tests.cpp line 609
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L609
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L609
 func TestCannotWriteSystemKey_CPort(t *testing.T) {
 	t.Parallel()
 
@@ -2709,7 +2709,7 @@ func TestCannotWriteSystemKey_CPort(t *testing.T) {
 // TestWriteSystemKey_CPort verifies that writing a \xff system key
 // succeeds when ACCESS_SYSTEM_KEYS is set.
 // Ported from unit_tests.cpp line 619
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L619
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L619
 func TestWriteSystemKey_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -2746,7 +2746,7 @@ func TestWriteSystemKey_CPort(t *testing.T) {
 // SET_VERSIONSTAMPED_KEY with an offset that would place the 10-byte
 // versionstamp past the end of the key returns an error on commit.
 // Ported from unit_tests.cpp line 1834
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1834
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L1834
 func TestAtomicSetVersionstampedKeyInvalidIndex_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -3608,7 +3608,7 @@ func TestRYWSetNewKeysGetRange_CPort(t *testing.T) {
 // TestGetAddressesForKey_CPort verifies that GetAddressesForKey returns at
 // least one non-empty address for a key that exists on a storage server.
 // Ported from unit_tests.cpp line 2317
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2317
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2317
 func TestGetAddressesForKey_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -3662,7 +3662,7 @@ func TestGetAddressesForKey_CPort(t *testing.T) {
 //   - 1036 (accessed_unreadable): not retryable
 //
 // Ported from unit_tests.cpp line 2432
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2432
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2432
 func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -3748,7 +3748,7 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 // TestGetEstimatedRangeSizeBytes_CPort verifies that GetEstimatedRangeSizeBytes
 // returns a non-negative value for a populated key range.
 // Ported from unit_tests.cpp line 2500
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2500
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2500
 func TestGetEstimatedRangeSizeBytes_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -3788,7 +3788,7 @@ func TestGetEstimatedRangeSizeBytes_CPort(t *testing.T) {
 // without error for a populated key range. The result may be empty (no split
 // points) when the range fits within one chunk — that is correct behaviour.
 // Ported from unit_tests.cpp line 2530
-// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2530
+// https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L2530
 func TestGetRangeSplitPoints_CPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

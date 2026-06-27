@@ -2,7 +2,7 @@ package client
 
 // AtomicOps workload — atomic-op + companion-log transactional-consistency oracle.
 //
-// Go port of FoundationDB's fdbserver/workloads/AtomicOps.actor.cpp @ tag 7.3.75 (AddValue arm).
+// Go port of FoundationDB's fdbserver/workloads/AtomicOps.actor.cpp @ tag 7.3.77 (AddValue arm).
 // Each committed transaction writes, ATOMICALLY together: a UNIQUE log key set to val, and an atomic
 // Add of val to an ops key. Because the set + the atomicOp commit as one unit (both-or-neither), the
 // per-keyspace aggregates must match exactly: sum(log) == sum(ops). A torn commit (log without op, or

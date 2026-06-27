@@ -16,7 +16,7 @@ import (
 // rejection/acceptance but NOT the error code; codes 2101/2102/2103 (transaction/key/
 // value too large) were entirely unprobed at the code level.
 //
-// C++ (7.3.75, error_definitions.h): key_outside_legal_range=2004,
+// C++ (7.3.77, error_definitions.h): key_outside_legal_range=2004,
 // transaction_too_large=2101, key_too_large=2102, value_too_large=2103. Limits
 // (ClientKnobs): KEY_SIZE_LIMIT=10000, VALUE_SIZE_LIMIT=100000, TRANSACTION_SIZE_LIMIT=1e7.
 //

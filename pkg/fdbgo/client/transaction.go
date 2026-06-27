@@ -277,6 +277,13 @@ type Transaction struct {
 	// shrinks ours, it never lengthens the observable contract.)
 	rpcTimeoutOverride time.Duration
 
+	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
+	// Test-only knob to make the backoff delay deterministic (production leaves it
+	// nil → real rand.Float64()). Used to pin the cancel-during-backoff race in
+	// TestOnError_RespectsContextCancellation without depending on a lucky rand draw
+	// (a rand near 0 made the backoff complete before the cancel — a real flake).
+	backoffJitter func() float64
+
 	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
 	// ranges. Used for insert-only batch writes where all keys are unique (no
 	// write-write conflicts possible) and all atomics commute. Reduces commit
@@ -2698,7 +2705,11 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 		tx.backoff = defaultBackoff
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
-	delay := time.Duration(float64(tx.backoff) * rand.Float64())
+	jitter := rand.Float64()
+	if tx.backoffJitter != nil {
+		jitter = tx.backoffJitter() // test-only deterministic override
+	}
+	delay := time.Duration(float64(tx.backoff) * jitter)
 
 	// Tag throttle: use server-supplied duration for tag_throttled errors.
 	// C++ getBackoff(): max(backoff, min(TAG_THROTTLE_RECHECK_INTERVAL, tagThrottleDuration))

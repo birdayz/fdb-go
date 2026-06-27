@@ -203,7 +203,7 @@ const injectPenalty = 1.0
 // delivers: an ErrorOr<reply>(tag=value) — a SUCCESS union — whose nested reply
 // carries the error in the inline LoadBalancedReply.error field (not the root
 // ErrorOr), byte-shape-identical to sendErrorWithPenalty (storageserver.actor.cpp,
-// 7.3.75; Reply{}; reply.error=err; reply.penalty=penalty; promise.send(reply)).
+// 7.3.77; Reply{}; reply.error=err; reply.penalty=penalty; promise.send(reply)).
 // The frame is type-agnostic: the inline-error slots (Penalty@0, HasError@1,
 // Error@2) are identical across GetValueReply / GetKeyReply / GetKeyValuesReply, so
 // one frame is decoded identically by all three production parsers via

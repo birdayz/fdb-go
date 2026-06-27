@@ -27,7 +27,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Start FDB testcontainer with version matching our wire protocol (7.3.75).
+	// Start FDB testcontainer with version matching our wire protocol (7.3.77).
 	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)

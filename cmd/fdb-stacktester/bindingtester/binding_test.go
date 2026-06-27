@@ -6,7 +6,7 @@
 // Architecture:
 //
 //	Docker network (shared)
-//	├── FDB container (foundationdb:7.3.75) — the database
+//	├── FDB container (foundationdb:7.3.77) — the database
 //	└── Tester container (custom image: Python + fdb + bindingtester.py + our binary)
 //	    └── runs: bindingtester.py --tester-binary /usr/local/bin/fdb-stacktester
 //
@@ -177,7 +177,7 @@ func fdbVersion() string {
 	if v := os.Getenv("FDB_VERSION"); v != "" {
 		return v
 	}
-	return "7.3.75"
+	return "7.3.77"
 }
 
 func strPtr(s string) *string { return &s }

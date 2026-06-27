@@ -287,7 +287,7 @@ var errorOrInlineErrorTemplate = wire.NewMessageTemplate(
 // storage server emits for a read error: a SUCCESSFUL ErrorOr whose nested reply
 // carries ONLY the inline LoadBalancedReply.error (Penalty + HasError + Error{code})
 // and no value — byte-shape-identical to sendErrorWithPenalty's `Reply r; r.error=err;
-// r.penalty=penalty; promise.send(r)` (storageserver.actor.cpp, 7.3.75). Because the
+// r.penalty=penalty; promise.send(r)` (storageserver.actor.cpp, 7.3.77). Because the
 // inline-error slots (Penalty@0, HasError@1, Error@2) are IDENTICAL across
 // GetValueReply / GetKeyReply / GetKeyValuesReply (TestLoadBalancedReplyErrorSlots),
 // this single frame is decoded identically by all three read parsers, so one builder

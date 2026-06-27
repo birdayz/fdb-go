@@ -9,7 +9,7 @@ user-invocable: true
 This project pins **two independent versions**:
 
 - **A — Java fdb-record-layer / fdb-relational artifacts.** Currently `4.11.1.0`. Used by the conformance Java server and as the canonical source for proto schemas.
-- **B — FDB C++ wire protocol.** Currently `7.3.75`. Used by the pure-Go FDB client (`pkg/fdbgo/`) — wire frames, request/reply types, error codes, atomic mutation semantics all match this version.
+- **B — FDB C++ wire protocol.** Currently `7.3.77`. Used by the pure-Go FDB client (`pkg/fdbgo/`) — wire frames, request/reply types, error codes, atomic mutation semantics all match this version.
 
 These versions are independent — bumping Java does not require bumping FDB C++ or vice versa. Each procedure has its own canonical command sequence and its own set of "things you must touch."
 
@@ -140,7 +140,7 @@ Always confirm the picked version with the user before editing any files. Bumpin
    docker manifest inspect foundationdb/foundationdb:$VERSION >/dev/null && echo OK || echo MISSING
    ```
 
-2. **Confirm wire-protocol compatibility.** A 7.3.75 → 7.3.76 patch bump is wire-compatible. A 7.3 → 7.4 minor bump may add new request/reply types but should remain backwards-compatible for the existing wire frames. A 7.x → 8.x major bump moves serialization in non-trivial ways — get explicit user confirmation before proceeding. Read [FoundationDB release notes](https://github.com/apple/foundationdb/blob/main/release-notes/release-notes-730.md) for the new version.
+2. **Confirm wire-protocol compatibility.** A patch bump within a minor line (e.g. 7.3.x → 7.3.y) is wire-compatible. A 7.3 → 7.4 minor bump may add new request/reply types but should remain backwards-compatible for the existing wire frames. A 7.x → 8.x major bump moves serialization in non-trivial ways — get explicit user confirmation before proceeding. Read [FoundationDB release notes](https://github.com/apple/foundationdb/blob/main/release-notes/release-notes-730.md) for the new version.
 
 3. **Bump `MODULE.bazel`.** Replace the version in **four places** inside the foundationdb block:
    ```

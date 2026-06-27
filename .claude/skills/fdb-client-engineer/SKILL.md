@@ -1,6 +1,6 @@
 ---
 name: fdb-client-engineer
-description: End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.75) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method).
+description: End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method).
 ---
 
 # FDB Client Engineering (pure-Go `pkg/fdbgo`)
@@ -41,16 +41,16 @@ shipped + differential-proved them.)
 
 ---
 
-## 1. The spec: C++ source at 7.3.75 — read it FIRST, every time
+## 1. The spec: C++ source at 7.3.77 — read it FIRST, every time
 
-The oracle is the FoundationDB C++ source at tag **7.3.75** (the `foundationdb` pin in
+The oracle is the FoundationDB C++ source at tag **7.3.77** (the `foundationdb` pin in
 `MODULE.bazel`; exactly what `libfdb_c` and the cgo binding in the differential are built from).
 **Do NOT confuse with `4.11.1.0`** (the *Java* record-layer version — different project).
 
 Checkout is usually present at `/tmp/fdbsrc`; clone if missing:
 ```bash
-ls /tmp/fdbsrc || git clone --branch 7.3.75 https://github.com/apple/foundationdb /tmp/fdbsrc
-( cd /tmp/fdbsrc && git describe --tags )   # MUST print 7.3.75
+ls /tmp/fdbsrc || git clone --branch 7.3.77 https://github.com/apple/foundationdb /tmp/fdbsrc
+( cd /tmp/fdbsrc && git describe --tags )   # MUST print 7.3.77
 ```
 If `/tmp/fdbsrc` is unavailable, fetch raw files (the source is NOT vendored):
 `https://raw.githubusercontent.com/apple/foundationdb/release-7.3/<path>` and quote them.
@@ -109,7 +109,7 @@ must be a C++ citation, not an assertion.
 
 ### Step 2 — review the RFC (all three, in parallel)
 - **FDB C++ maintainer** + **Torvalds** — invoke the **`fdb-client-review`** skill (its prompts
-  anchor on `/tmp/fdbsrc` 7.3.75 and demand `file:line` citations).
+  anchor on `/tmp/fdbsrc` 7.3.77 and demand `file:line` citations).
 - **`/code-review`** — run it on the RFC diff for a third lens.
 
 Iterate until the FDB C++ maintainer ACKs the approach (no wire divergence, no invented
@@ -229,7 +229,7 @@ the next engineer avoids re-auditing closed work.
 
 ## Hard rules (from CLAUDE.md — non-negotiable)
 
-- **C++ is the spec.** Read `/tmp/fdbsrc` (7.3.75) first; port 1:1; no invented shortcuts. Go
+- **C++ is the spec.** Read `/tmp/fdbsrc` (7.3.77) first; port 1:1; no invented shortcuts. Go
   divergence from C++ is a Go bug — fix Go, never skip a divergence test.
 - **Wire compat is the hard line.** Bytes written to FDB (keys, records, index entries,
   continuations, split records, atomic mutations) MUST be byte-identical to Java/C++.

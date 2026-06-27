@@ -53,7 +53,7 @@ func fdbVersion() string {
 	if v := os.Getenv("FDB_VERSION"); v != "" {
 		return v
 	}
-	return "7.3.75"
+	return "7.3.77"
 }
 
 // Container represents a running FoundationDB container.

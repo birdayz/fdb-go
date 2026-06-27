@@ -19,7 +19,7 @@ cluster, just `docker rm -f` when you're done.
 ### 1. Start a single-node FDB cluster
 
 ```sh
-docker run -d --name frl-demo --network host foundationdb/foundationdb:7.3.75
+docker run -d --name frl-demo --network host foundationdb/foundationdb:7.3.77
 sleep 3
 docker exec frl-demo fdbcli --exec 'configure new single memory'
 ```

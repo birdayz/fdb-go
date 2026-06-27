@@ -58,12 +58,12 @@ bazel_dep(name = "rules_cc", version = "0.1.1")
 # FDB C++ source — fetched automatically from GitHub, pinned to tag.
 # Bazel downloads, caches, and injects MODULE.bazel + BUILD.bazel via patch_cmds.
 # FDB version — MUST match .bazelrc FDB_VERSION.
-bazel_dep(name = "foundationdb", version = "7.3.75")
+bazel_dep(name = "foundationdb", version = "7.3.77")
 archive_override(
     module_name = "foundationdb",
     patch_cmds = [
         """cat > MODULE.bazel <<'MODEOF'
-module(name = "foundationdb", version = "7.3.75")
+module(name = "foundationdb", version = "7.3.77")
 bazel_dep(name = "rules_cc", version = "0.1.1")
 MODEOF""",
         """cat > BUILD.bazel <<'BUILDEOF'
@@ -98,8 +98,8 @@ filegroup(
 )
 BUILDEOF""",
     ],
-    strip_prefix = "foundationdb-7.3.75",
-    urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.75.tar.gz"],
+    strip_prefix = "foundationdb-7.3.77",
+    urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.77.tar.gz"],
 )
 
 # Proto (codegen stays with buf generate)

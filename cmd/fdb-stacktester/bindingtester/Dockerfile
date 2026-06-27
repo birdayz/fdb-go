@@ -1,11 +1,11 @@
-ARG FDB_VERSION=7.3.75
+ARG FDB_VERSION=7.3.77
 FROM foundationdb/foundationdb:${FDB_VERSION}
 
 ENTRYPOINT []
 ENV LD_LIBRARY_PATH=/usr/lib
 
 # Bootstrap pip, install FDB Python binding matching the image version.
-ARG FDB_VERSION=7.3.75
+ARG FDB_VERSION=7.3.77
 RUN python3 -m ensurepip && \
     FDB_MAJOR_MINOR=$(echo ${FDB_VERSION} | cut -d. -f1,2) && \
     python3 -m pip install "foundationdb>=${FDB_MAJOR_MINOR},<${FDB_MAJOR_MINOR}.99"

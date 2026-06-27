@@ -8,7 +8,7 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 const Backend = "pure-go"
 
 // apiVersion is the FDB API version fdbclient selects when the app has not already
-// selected one. It matches the 7.3.75 server (and the libfdb_c binding's 730).
+// selected one. It matches the 7.3.77 server (and the libfdb_c binding's 730).
 const apiVersion = 730
 
 // Open opens clusterFile on the from-scratch pure-Go FDB client (the default).
