@@ -439,8 +439,19 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 		flatMapPlan.SetLeftOuter(true)
 	}
 
-	outerQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerExpr))
+	// Bind the wrapper's quantifiers with the FlatMap plan's ACTUAL outer/inner
+	// correlation aliases (outerCorr/innerCorr) — NOT fresh ForEach aliases. The
+	// inner probe reports (D.2) its correlation to the bound outer alias; the
+	// Reference.GetCorrelatedTo aggregation subtracts each member's quantifier
+	// aliases from its children's correlations, so a fresh alias fails to subtract
+	// the bound outer/inner aliases and a COMPLETED (self-contained) inner join
+	// leaks them as if externally correlated → an upper multiway join sees the
+	// subplan as still correlated and skips/misroutes valid alternatives (codex
+	// P2-2). A FlatMap that binds X is not correlated to X; binding with the real
+	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD paths
+	// already bind via NamedPhysicalQuantifier(quants[i].GetAlias()).)
+	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
+	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExpr))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
 }
 
