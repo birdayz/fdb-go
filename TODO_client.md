@@ -305,7 +305,7 @@ Fix notes:
 
 Evidence:
 
-- C++ `TransactionState::getReadVersion` gates the cache block on `rkThrottlingCooledDown(cx.getPtr(), options.priority)` (`/tmp/fdbsrc` 7.3.75, `fdbclient/NativeAPI.actor.cpp:7506`). When the ratekeeper has recently throttled this priority, C++ skips the whole block — it does NOT start `backgroundGrvUpdater` and does NOT serve a cached version, going straight to a real GRV.
+- C++ `TransactionState::getReadVersion` gates the cache block on `rkThrottlingCooledDown(cx.getPtr(), options.priority)` (`/tmp/fdbsrc` 7.3.77, `fdbclient/NativeAPI.actor.cpp:7506`). When the ratekeeper has recently throttled this priority, C++ skips the whole block — it does NOT start `backgroundGrvUpdater` and does NOT serve a cached version, going straight to a real GRV.
 - Go's gate (`pkg/fdbgo/client/grv.go` `getReadVersion`) is `!isImmediate && useGrvCache && !skipGrvCache`, with no throttle-cooldown condition. `tryCache` DOES recheck throttle on the serve path (`grv.go:64-71`), so a stale/throttled cache never serves — but the background refresher now starts under throttle where C++ would not.
 
 Impact:

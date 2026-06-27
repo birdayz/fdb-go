@@ -81,7 +81,7 @@ locals {
     # the version without updating the SHA would make fetch-verified.sh abort (codex). MUST
     # match MODULE.bazel + the testcontainers default (RFC-108 §2) — a bump is one reviewed
     # edit of both fields.
-    fdb_version        = "7.3.75"
+    fdb_version        = "7.3.77"
     fdb_clients_sha256 = "642841a90acd7f2cc0ae08297245f4f9df76fe250b7b1331f2f99702fec3bee8"
   }
 }

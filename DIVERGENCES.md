@@ -316,7 +316,7 @@ intentional divergence at the statement layer:
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
 
-## Pure-Go FDB client (`pkg/fdbgo`) — deliberate divergences from `libfdb_c` 7.3.75
+## Pure-Go FDB client (`pkg/fdbgo`) — deliberate divergences from `libfdb_c` 7.3.77
 
 **Client option behaviour** (honored / `UnsupportedOptionError` / accepted-and-ignored) is documented
 option-by-option, with the `libfdb_c` C++ reference for each, in

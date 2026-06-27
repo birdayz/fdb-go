@@ -2,7 +2,7 @@
 
 ## Summary
 
-Our pure Go FDB client sends wire messages that crash the FDB 7.3.75 server
+Our pure Go FDB client sends wire messages that crash the FDB 7.3.77 server
 with SIGSEGV. The official CGo client does not crash the server with identical
 workloads.
 
@@ -23,7 +23,7 @@ grep 'Type="Crash"' /tmp/fdb-logs/trace.*.xml
 
 # 3. Download debug symbols (one-time per FDB version)
 #    Find the right file at https://github.com/apple/foundationdb/releases/tag/<version>
-curl -sL "https://github.com/apple/foundationdb/releases/download/7.3.75/fdbserver.debug.x86_64.gz" \
+curl -sL "https://github.com/apple/foundationdb/releases/download/7.3.77/fdbserver.debug.x86_64.gz" \
   -o /tmp/fdbserver.debug.x86_64.gz
 gunzip -f /tmp/fdbserver.debug.x86_64.gz
 
@@ -67,7 +67,7 @@ small Go program that reads the wirelog binary format (29-byte header per frame:
 ```sh
 # 1. Start FDB
 docker rm -f fdb-test 2>/dev/null
-docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.75
+docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.77
 sleep 5
 docker exec fdb-test fdbcli --exec "configure new single memory tenant_mode=optional_experimental"
 echo "docker:docker@127.0.0.1:4500" > /tmp/fdb-test.cluster
@@ -96,7 +96,7 @@ PYTHONPATH=/tmp/bt-run python3 bindingtester/bindingtester.py \
 # Result: FDB crashes with SIGSEGV, binary hangs on dead connection
 
 # 5. Restart FDB, run SAME seed with CGo stacktester — passes fine
-docker rm -f fdb-test; docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.75
+docker rm -f fdb-test; docker run -d --name fdb-test -p 4500:4500 foundationdb/foundationdb:7.3.77
 sleep 5; docker exec fdb-test fdbcli --exec "configure new single memory tenant_mode=optional_experimental"
 cd /tmp/bt-run
 PYTHONPATH=/tmp/bt-run python3 bindingtester/bindingtester.py \

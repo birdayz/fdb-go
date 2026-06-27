@@ -14,7 +14,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-// Correctness tests run against a real FDB 7.3.75 testcontainer.
+// Correctness tests run against a real FDB 7.3.77 testcontainer.
 // Each test uses the shared openTestDB helper which starts a container,
 // configures the cluster, and connects.
 

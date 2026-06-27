@@ -61,7 +61,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	// 730 (NOT 720): this package's FDBDatabaseFactory specs route through
 	// fdbclient.Open, which under -tags libfdbc selects facade API 730
 	// unconditionally. A 720 pin here would then fail those specs with
-	// api_version_already_set (2201). 730 is also the 7.3.75 server's native
+	// api_version_already_set (2201). 730 is also the 7.3.77 server's native
 	// version and the testcontainer default. Keep this in sync with the container
 	// WithAPIVersion above.
 	fdb.MustAPIVersion(730)

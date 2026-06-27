@@ -157,7 +157,7 @@ write_files:
       #!/bin/bash
       # Match containers by IMAGE NAME (tag-agnostic). The previous version used
       # `docker ps --filter ancestor=foundationdb/foundationdb` (no tag), which on
-      # this Docker version matches NOTHING — the containers are tagged `:7.3.75`
+      # this Docker version matches NOTHING — the containers are tagged `:7.3.77`
       # and the untagged ancestor filter does not match a tagged image. That made
       # the whole sweep AND the Ryuk priority bump a silent no-op (exit 0, killed
       # nothing), so FDB orphans accumulated for weeks until a fresh CI run OOMed

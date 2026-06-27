@@ -114,11 +114,11 @@ commit/RFC. Docker required (`docker ps`); if down, say so — don't fake it.
 
 ## Step 4 — root-cause against the C++ source (NEVER guess)
 
-C++ reference: the **FoundationDB C++ source, version 7.3.75** — the `foundationdb` pin
-in `MODULE.bazel` (`bazel_dep(name = "foundationdb", version = "7.3.75")`), which is what
+C++ reference: the **FoundationDB C++ source, version 7.3.77** — the `foundationdb` pin
+in `MODULE.bazel` (`bazel_dep(name = "foundationdb", version = "7.3.77")`), which is what
 `libfdb_c` (the cgo binding) is built from. (Do NOT confuse this with `4.11.1.0`, the
 *Java* `fdb-record-layer-core` artifact version — a different project.) Check it out at
-`/tmp/fdbsrc` (`git clone --branch 7.3.75 https://github.com/apple/foundationdb`). Key
+`/tmp/fdbsrc` (`git clone --branch 7.3.77 https://github.com/apple/foundationdb`). Key
 files: `fdbclient/NativeAPI.actor.cpp`, `ReadYourWrites.actor.cpp`, `WriteMap.cpp`,
 `RYWIterator.cpp`, `include/fdbclient/Atomic.h`, `ClientKnobs.cpp`, `SystemData.cpp`.
 Read the **actual** C++ function that handles the case, understand the algorithm, then

@@ -56,7 +56,7 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 	// — record versions, MAX_EVER, SPFresh), and fdb.OpenDatabase below requires it too, so if
 	// libfdbc.Open had not set the facade version this whole test would fail with
 	// api_version_unset (2200). That makes this the regression for codex #295 r13. Both clients
-	// run API 730 (the cgofdb binding's header version, matching the 7.3.75 server).
+	// run API 730 (the cgofdb binding's header version, matching the 7.3.77 server).
 	cgoBackend, err := libfdbc.Open(clusterFile)
 	if err != nil {
 		t.Fatalf("open libfdb_c backend: %v", err)

@@ -1,7 +1,7 @@
 # Pure-Go FDB client — option honored / unsupported / no-op matrix
 
 This documents how every client option (`pkg/fdbgo/fdb/options.go`) behaves in the **pure-Go**
-backend versus Apple's **`libfdb_c`** (the spec; verified against the C++ source at tag **7.3.75**).
+backend versus Apple's **`libfdb_c`** (the spec; verified against the C++ source at tag **7.3.77**).
 It exists so a user never *mistakenly believes a libfdb option is active when the pure-Go backend
 ignores it*.
 
@@ -33,7 +33,7 @@ cases); **honored** options take effect (`options_internal_test.go`); and a **co
 (`options_matrix_test.go`, `TestOptionMatrix_DocumentsEveryOption`) fails CI if any `Set*` method is
 missing a row in this file, so the matrix can't silently fall behind the code.
 
-C++ references are into the FoundationDB 7.3.75 source: `T::setOption` =
+C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 `fdbclient/NativeAPI.actor.cpp` `Transaction::setOption` (~:6948); `RYW::setOptionImpl` =
 `fdbclient/ReadYourWrites.actor.cpp` (~:2534); `DB::setOption` =
 `fdbclient/NativeAPI.actor.cpp` `DatabaseContext::setOption` (~:2114).

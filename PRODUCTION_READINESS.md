@@ -1,7 +1,7 @@
 # Production Readiness Checklist
 
 > **This is the single authoritative current-status page.** Target versions: Java
-> `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.75**, Go **1.26.x** (the pins in
+> `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go **1.26.x** (the pins in
 > `MODULE.bazel` are the source of truth). The executable truth is the test suites
 > (`//conformance:conformance_test`, the cross-engine differential, binding-stress); `README.md` and
 > `DIVERGENCES.md` are the other living docs. Point-in-time audit snapshots live under

@@ -8,7 +8,7 @@ import (
 )
 
 // RFC-133 anti-rot guard for the public option matrix (OPTIONS.md). The matrix classifies every
-// client option as honored / UnsupportedOptionError / safe no-op, verified against libfdb_c 7.3.75.
+// client option as honored / UnsupportedOptionError / safe no-op, verified against libfdb_c 7.3.77.
 // The behavioural contracts themselves are pinned elsewhere — the unsafe family must error
 // (fdb_test.go's *_RejectUnsupportedOptions / DB-default tests) and honored options take effect
 // (options_internal_test.go). This guard only ensures the *documentation* can't silently fall behind

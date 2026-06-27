@@ -28,7 +28,7 @@ backup, and observability — see the [operator guide](docs/operations.md).
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| **FoundationDB** | **7.3.75** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
+| **FoundationDB** | **7.3.77** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
 | **Java Record Layer** | **4.12.11.0** | Wire compatibility target. Conformance tests run against this version. |
 | **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
@@ -266,7 +266,7 @@ Ginkgo specs against real FDB via testcontainers. **8000+ total test entry point
 
 ```sh
 # 1. Start FoundationDB (Docker)
-docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.75
+docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.77
 
 # 2. Get the cluster file
 docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster

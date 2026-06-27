@@ -2,7 +2,7 @@ package client
 
 // Cycle workload — a pure-client serializability oracle.
 //
-// Go port of FoundationDB's fdbserver/workloads/Cycle.actor.cpp @ tag 7.3.75. nodeCount keys form
+// Go port of FoundationDB's fdbserver/workloads/Cycle.actor.cpp @ tag 7.3.77. nodeCount keys form
 // a single directed Hamiltonian cycle key(n) -> value((n+1) % nodeCount). Each transaction reads a
 // 4-node chain r -> r2 -> r3 -> r4 and transposes r2/r3 by writing key(r)=r3, key(r2)=r4,
 // key(r3)=r2 — a move whose serial composition preserves exactly one Hamiltonian cycle, and which

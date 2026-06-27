@@ -50,7 +50,7 @@ so every build is from source — no external cache trust boundary.
 Residual drift (documented, bounded): the Hetzner `ubuntu-24.04` base image is a rolling
 label (point-release may differ between provisions) and apt packages beyond `docker.io`
 ride the Ubuntu mirror. Every *test-relevant tool* is pinned on top, so this is bounded to
-the apt baseline. `fdb_version` is pinned to **7.3.75** to match `MODULE.bazel` + the
+the apt baseline. `fdb_version` is pinned to **7.3.77** to match `MODULE.bazel` + the
 testcontainers default (so the host `libfdb_c` the differential harness links is the same
 FDB the tests run against).
 

@@ -26,7 +26,7 @@ The advantage narrows from 3.6x to ~2.4x at realistic latencies, then converges 
 
 At 10ms RTT, Go takes 5.3ms while CGo takes 12.6ms. The gap is primarily **round-trip count**: each `ReadTransact` needs a GRV (read version) then a Get — two network calls. Go's GRV cache (100ms TTL, atomic int64 check) serves the version from memory, so only the Get hits the network. The CGo binding's GRV request also goes through the C event loop, adding a second delayed round-trip. At 1s RTT with sequential single requests, both clients do one operation at a time and converge to parity.
 
-<sub>Ryzen 9 3900X, FDB 7.3.75, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.</sub>
+<sub>Ryzen 9 3900X, FDB 7.3.77, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.</sub>
 
 ## Root Cause
 

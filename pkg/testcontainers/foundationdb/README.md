@@ -48,8 +48,8 @@ Internal clients (containers on same Docker network) connect via `containerIP:45
 ## Options
 
 ```go
-// FDB version (Docker image tag). Default: FDB_VERSION env or 7.3.75.
-foundationdbtc.WithVersion("7.3.75")
+// FDB version (Docker image tag). Default: FDB_VERSION env or 7.3.77.
+foundationdbtc.WithVersion("7.3.77")
 
 // FDB API version (metadata for callers). Default: 730.
 foundationdbtc.WithAPIVersion(730)

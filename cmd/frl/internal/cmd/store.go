@@ -124,7 +124,7 @@ func writeStoreInfoJSON(out io.Writer, info *gen.DataStoreInfo) error {
 
 // fdbAPIVersion is the wire protocol version frl talks to FDB with.
 // Pinned to 730 to match pkg/relational/sqldriver, which now opens via
-// fdbclient.Open — that selects the default API version 730 (the 7.3.75 server
+// fdbclient.Open — that selects the default API version 730 (the 7.3.77 server
 // version) when the process hasn't already chosen one, instead of the old
 // unconditional 720 pin. When `frl sql` and `frl meta catalog` share a process,
 // the second call to fdb.APIVersion() errors if the version differs — so both

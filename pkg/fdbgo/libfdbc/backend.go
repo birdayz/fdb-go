@@ -31,7 +31,7 @@
 //
 // The one place this differs from the RFC's "options by raw integer": cgofdb's raw
 // setOpt is unexported, so options are forwarded through cgofdb's generated typed
-// setters (same fdb.options codes, generated for this 7.3.75 binding). The handful
+// setters (same fdb.options codes, generated for this 7.3.77 binding). The handful
 // of options cgofdb lacks a setter for (SkipGrvCache) or that have no libfdb_c
 // analog (write-conflicts-disabled, EnsureMutationCapacity) are no-ops here; this
 // is documented per-method and is a known v1 limitation, not a silent divergence.
@@ -48,7 +48,7 @@ import (
 )
 
 // apiVersion is the libfdb_c API version this binding is built against (the
-// binding's header is FDB_API_VERSION 730, matching the 7.3.75 server pin).
+// binding's header is FDB_API_VERSION 730, matching the 7.3.77 server pin).
 const apiVersion = 730
 
 // cgofdb.OpenDatabase caches one Database (one C fdb_database) per cluster file and

@@ -222,7 +222,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 // than the request hanging until a timeout.
 //
 // This is the architectural equivalent of FoundationDB C++ PR #12935 (landed in
-// 7.3.76 — the ONLY client-relevant C++ delta in the 7.3.75 → 7.3.77 baseline bump):
+// 7.3.76 — the ONLY client-relevant C++ delta in the 7.3.77 → 7.3.77 baseline bump):
 // that PR added a `when(wait(peer->disconnect.getFuture()))` arm to waitValueOrSignal
 // (fdbrpc/genericactors.actor.h) so loadBalance returns request_maybe_delivered the
 // instant a connection drops, instead of hanging until the IFailureMonitor detection
