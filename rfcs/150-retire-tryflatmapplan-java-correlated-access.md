@@ -73,15 +73,38 @@ identical to today for every pinned shape.
 
 ## 3. Design — the three load-bearing invariants (Graefe conditions)
 
-**B1 — a STRUCTURAL no-correlated-standalone-leg-winner invariant, ported from Java, not a Go guard.**
-Today there is **no** correlation awareness in `findBestPhysicalExpr` / `getWinnerForOrdering` /
-`PruneWith` (`physical_wrapper.go:238-252`, `winner_lookup.go:19-76`, `reference.go:491-494`); `!refIsJoinLeg`
-is the only thing preventing a correlated `SUBSEL` scan (referencing an unbound outer) from being stamped as
-that ref's standalone `OptimizeGroup` winner → 0 rows. The replacement must specify, ported from Java's
-`OptimizeInputs` / FlatMap-inner consumption (where the correlated inner is optimized **with the outer
-binding live** and consumed only by the driving join): **where** a correlated leg's plan is consumed only by
-the driving join, and **why** `OptimizeGroup` structurally never stamps it standalone. "A test verifies it"
-is explicitly insufficient for this axis.
+**B1 — a STRUCTURAL no-correlated-standalone-leg-winner invariant, ported from Java's task graph, not a Go
+guard. SOLVED — root-caused + empirically proven.**
+
+*The Java mechanism (verified in source).* `OptimizeGroup` is constructed in exactly two places:
+`CascadesPlanner.java:584` (the uncorrelated **query root**) and `:1269` inside `OptimizeInputs.execute`, over
+a parent expression's `quantifier.getRangesOver()`. `OptimizeInputs` is constructed in exactly **one** place,
+`:524`, only for already-implemented **plan** expressions. Therefore a correlated reference's group is
+optimized/pruned **only** as the inner child of the binding parent (the FlatMap), with the outer alias live —
+never as a free-standing root. Exploration *does* visit the inner independently (so the data-access rule
+generates the correlated scan), but the correlation operand stays **symbolic** through planning and is bound
+per-row at runtime by the FlatMap. No standalone-unbound state exists → no 0-row, and no muzzle is needed.
+
+*The Go divergence (root cause).* `unified_tasks.go:88` (`ExploreGroupTask.Run`) pushes `OptimizeInputsTask`
+for **every exploratory (logical) member** of a ref during PLANNING. `OptimizeInputsTask.Run` then pushes
+`OptimizeGroupTask` per child ref (`:389`). So a correlated leg's `OptimizeGroupTask` — which prunes the ref
+to one winner with **zero** correlation awareness (`PruneWith`/`SetWinner`/`stampOrderingWinners`/
+`findBestValidPhysicalExpr`) — fires whenever ANY logical parent member has the leg as a child, independent of
+whether the binding physical FlatMap exists. That is the gap `!refIsJoinLeg` band-aids. (Child *exploration*
+is separately driven by `ExploreExprTask` step 4, `:138-142`, so it does not depend on `OptimizeInputsTask`.)
+
+*The fix (1:1 port of Java's `:524`).* Gate `OptimizeInputsTask` construction at `unified_tasks.go:88` to
+**physical** members only (`isPhysical(expr)`). Then `OptimizeGroupTask(C)` for a correlated leg is reachable
+only via a *physical* parent's `OptimizeInputsTask` — i.e. only as the inner child of the implemented FlatMap,
+outer binding live — exactly Java's invariant. This is the structural property, not a `refIsJoinLeg` flag.
+
+*Empirical proof (prototype, this branch).* (a) B1 alone: **plandiff byte-identical** + full cascades +
+embedded green — the logical-member-driven `OptimizeInputsTask` was redundant for every existing shape.
+(b) B1 + muzzle OFF (`refIsJoinLeg` removed): **plandiff byte-identical** + cascades + embedded + the full
+**sqldriver FDB row-count** suite + yamsql + every correlated 0-row sentinel
+(`CorrelatedResidualNotStandaloneLeg`, `MultiTableJoinCompoundResidualNotMaterialized`,
+`JoinLegResidualNoNilFetch`, `ResidualCompensationPreservesOrdering`) **all green**. The muzzle is proven
+redundant once B1 holds. Patch saved as evidence.
 
 **B2 — residual-placement reconciliation is a CORRECTNESS axis, not plan-shape.** When PATH B owns residual
 placement (PATH A owns it today), **LEFT/FULL OUTER** placement must be proven with **row-level** tests: a
@@ -97,7 +120,22 @@ stays.
 **Plus** RFC-148's `pushDataAccessTasks` re-entry/termination guard (inherited) and the `comp.IsImpossible()`
 equivalence audit (prerequisite, shared with RFC-148's index-only arm).
 
-## 4. Method — one shape at a time, behind a switch
+## 4. Method — two pieces (decomposition proven empirically)
+
+**Piece 1 — B1 (the task-graph invariant) + remove the `!refIsJoinLeg` muzzle.** PROVEN safe above (plandiff
+byte-identical + FDB row-count + every 0-row sentinel green). Lands first, independently of PATH A: it ports
+Java's structural invariant and retires the band-aid, while `tryFlatMapPlan` stays. This is the principial
+core — replace the special-case `if X` muzzle with the emergent structural property (design-principle #10).
+
+**Piece 2 — retire `tryFlatMapPlan` (PATH A).** Empirically, dropping PATH A wholesale (with Piece 1 in
+place) breaks exactly one dimension: **`TestPlanHarness_LeftJoin`** falls back from a correlated `FlatMap` to a
+materialized `NestedLoopJoin(LEFT OUTER)`. Root cause: Go has no `RewriteOuterJoinRule` (Java
+`rules/RewriteOuterJoinRule.java`) — PATH A hand-rolls LEFT-OUTER residual placement (inner-pushed,
+`rule_implement_nested_loop_join.go:1129-1137`), and PATH B's `yieldGeneralFlatMap` is blocked for LEFT OUTER
+by `canSwap := joinType != JoinLeftOuter` (`:179`). **So Piece 2's real work is porting `RewriteOuterJoinRule`:
+push the ON-predicates BELOW the null-extension boundary into a correlated null-supplying inner select**, so
+PATH B produces the correlated LEFT/FULL OUTER FlatMap with correct NULL-extension — only then can PATH A be
+deleted. This is the B2 correctness axis below.
 
 Grind shape-by-shape; for each, route correlated access through PATH B, prove EXPLAIN + row-count identical,
 then remove the corresponding PATH A branch. Order (least → most NULL-sensitive):

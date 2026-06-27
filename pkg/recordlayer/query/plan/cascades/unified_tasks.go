@@ -84,7 +84,22 @@ func (t *ExploreGroupTask) Run(p *Planner) {
 	members := t.Ref.Members()
 	for i := startIdx; i < len(members); i++ {
 		expr := members[i]
-		if t.Phase == PhasePlanning {
+		// OptimizeInputs only for PHYSICAL (plan) members — the 1:1 port of Java's
+		// CascadesPlanner. Java constructs OptimizeInputs in exactly one place
+		// (CascadesPlanner.java:524), and its only callers push it ONLY for final/plan
+		// expressions: ExploreGroup splits getFinalExpressions()→…AndOptimizeInputs vs
+		// getExploratoryExpressions()→exploreExpression (:744-748), and executeRuleCall
+		// makes the same new-final vs new-exploratory split (:1064-1070). Since
+		// OptimizeInputsTask.Run pushes OptimizeGroupTask per child, gating it to
+		// physical members means a child reference is pruned to a winner ONLY as the
+		// inner of an IMPLEMENTED parent — so a CORRELATED leg is optimized only as the
+		// inner child of the binding physical FlatMap, with the outer alias live, never
+		// as a free-standing group with the correlation unbound. That structural
+		// property (not a `refIsJoinLeg` flag) is why a correlated SUBSEL scan is never
+		// stamped as a standalone winner → no 0-row. Child EXPLORATION is unaffected —
+		// it is driven independently by ExploreExprTask step 4 (children's ExploreGroup),
+		// not by OptimizeInputsTask — so this removes only premature standalone pruning.
+		if t.Phase == PhasePlanning && isPhysical(expr) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
 		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
@@ -218,7 +233,18 @@ func (t *TransformExprTask) Run(p *Planner) {
 			}
 
 			for _, newExpr := range call.Yielded() {
-				if t.Phase == PhasePlanning {
+				// OptimizeInputs only for PHYSICAL yields — the other half of the B1
+				// task-graph invariant (the executeRuleCall analog). Java's
+				// CascadesPlanner.executeRuleCall (:1064-1070) splits ruleCall yields:
+				// new FINAL expressions → OptimizeInputs, new EXPLORATORY → explore-only.
+				// An ExpressionRule that yields a LOGICAL expression here (e.g.
+				// PartitionBinarySelectRule's correlated SUBSEL SelectExpression) must NOT
+				// drive child OptimizeGroupTask — otherwise a correlated leg could still be
+				// pruned to a standalone winner from a logical parent, re-opening the
+				// 0-row gap the muzzle covered (codex P1). Gating this together with the
+				// ExploreGroupTask site makes Go's OptimizeInputs scheduling match Java's
+				// BOTH construction sites (ExploreGroup :744-748 + executeRuleCall :1064).
+				if t.Phase == PhasePlanning && isPhysical(newExpr) {
 					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
 				}
 				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: newExpr})
@@ -282,7 +308,16 @@ func (t *TransformImplTask) Run(p *Planner) {
 		for _, y := range call.yielded {
 			t.Ref.InsertFinal(y)
 			if !isAlreadyExploratoryMember(t.Ref, y) {
-				p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+				// OptimizeInputs only for PHYSICAL yields — third of the three gated
+				// rule-yield sites (with ExploreGroupTask + the TransformExprTask yield).
+				// ImplementationRule yields are physical wrappers, so this is a no-op in
+				// practice, but it makes the "OptimizeInputs only for plan expressions"
+				// property explicit at this site rather than relying on the rule kind
+				// (codex P1). The 4th site (the swapped-quantifier impl yield below) is
+				// intentionally NOT gated — it is load-bearing, not redundant.
+				if isPhysical(y) {
+					p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
+				}
 				p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 			}
 		}
@@ -318,6 +353,23 @@ func (t *TransformImplTask) Run(p *Planner) {
 				for _, y := range call.yielded {
 					t.Ref.InsertFinal(y)
 					if !isAlreadyExploratoryMember(t.Ref, y) {
+						// NOTE (Torvalds F2): this 4th OptimizeInputs site — the
+						// swapped-quantifier impl yield — is INTENTIONALLY NOT gated to
+						// isPhysical. Unlike the other three, it is load-bearing, not a
+						// no-op: gating it defers finalization in a way that breaks
+						// TestFDB_ArrayUnnestOrdinality (HAVING on a shadowed grouped
+						// unnest key). The B1 correlated-leg invariant doesn't need it —
+						// the swapped path is join-commutativity over already-explored
+						// members, not the correlated-SUBSEL yield path codex's P1 named —
+						// so the three gated sites are the complete set for the invariant.
+						// A correlated INNER leg CAN reach this swap (ChildrenAsSet is true
+						// for JoinInner, no correlation gate on the swap), but that is
+						// HARMLESS: residual 0-row safety for any correlated leg is held
+						// DOWNSTREAM and independently of which site drives the optimize —
+						// by compensationSafeForYield's outer-correlation guard + B1a's
+						// isNilInnerFetch winner selection (defense-in-depth) — not by B1's
+						// gating. B1 only removes a premature standalone prune (codex's
+						// :248 path); it was never the sole 0-row guarantee (Torvalds).
 						p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 						p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: y})
 					}
