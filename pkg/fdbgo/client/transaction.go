@@ -2698,8 +2698,12 @@ func (tx *Transaction) reset() {
 
 // nextBackoff returns the current backoff duration with jitter, then grows
 // the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
-// errCode determines the backoff cap: proxy memory errors (1042, 1078) use
-// RESOURCE_CONSTRAINED_MAX_BACKOFF (30s), all others use DEFAULT_MAX_BACKOFF (1s).
+// errCode determines the backoff cap: the resource-constrained bucket —
+// commit_proxy_memory_limit_exceeded (1042), grv_proxy_memory_limit_exceeded
+// (1078), throttled_hot_shard (1235), and range_locked (1242) — uses
+// RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) and IGNORES the user's maxRetryDelay;
+// all other errors use the user's maxRetryDelay or DEFAULT_MAX_BACKOFF (1s). The
+// two branches are mutually exclusive (see the cap selection below).
 func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	if tx.backoff == 0 {
 		tx.backoff = defaultBackoff
