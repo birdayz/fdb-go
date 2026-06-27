@@ -708,7 +708,7 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
   errors (`types.MarshalErrorOrInlineError`). Closes the four C4 deferred Phase-0 test gaps below.
 - [x] **B2 — libfdb_c escape hatch** — DONE (RFC-109, PR #295). `BackendDatabase` interface
   (`pkg/fdbgo/fdb/backend.go`) + a CGo-backed impl over `cgofdb` (`pkg/fdbgo/libfdbc/backend.go`),
-  selected at BUILD time via the `libfdbc` build tag (`pkg/fdbgo/fdbclient`, netgo/netcgo idiom) —
+  selected at BUILD time via the `libfdbc` build tag (`pkg/internal/fdbclient`, netgo/netcgo idiom) —
   NOT runtime config, because libfdb_c's network thread is process-global + unrecoverable so there is
   no live switch between backends anyway (FDB-C-dev + Torvalds vetted; hardened across 11 codex rounds).
 

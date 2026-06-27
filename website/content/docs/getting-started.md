@@ -36,4 +36,4 @@ The `fdb` package mirrors Apple's Go binding, so existing FoundationDB code port
 
 ## Next
 
-For structured records and SQL on top of the client, see the [Record Layer and SQL guides](https://github.com/birdayz/fdb-go) in the repository. Before depending on it in production, read [Maturity & Status](maturity).
+For structured records and SQL on top of the client, see the [Record Layer and SQL guides](https://github.com/birdayz/fdb-go) in the repository. Before depending on it in production, read [Maturity & Status](/docs/maturity/).

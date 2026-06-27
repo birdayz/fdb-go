@@ -1,6 +1,6 @@
 name: libfdb_c differential (per-PR + nightly)
 
-# The libfdb_c (cgo) backend is gated behind the `libfdbc` build tag (pkg/fdbgo/fdbclient),
+# The libfdb_c (cgo) backend is gated behind the `libfdbc` build tag (pkg/internal/fdbclient),
 # so the main bazel suite builds and tests ONLY the pure-Go client and never needs libfdb_c
 # or cgo. This job is the cross-client gold gate: it builds the real cgo backend
 # (-tags libfdbc) and runs the differential, which opens BOTH the pure-Go client and libfdb_c
@@ -58,10 +58,10 @@ jobs:
       - name: Build the libfdb_c backend (-tags libfdbc)
         run: |
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
-          "$GO_BIN" build -tags libfdbc ./pkg/fdbgo/libfdbc/... ./pkg/fdbgo/fdbclient/...
+          "$GO_BIN" build -tags libfdbc ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
 
       - name: Cross-client differential + libfdbc unit tests (-tags libfdbc, cgo + Docker)
         run: |
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
           "$GO_BIN" test -tags libfdbc -count=1 -timeout 30m -v \
-            ./pkg/fdbgo/libfdbc/... ./pkg/fdbgo/fdbclient/...
+            ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
