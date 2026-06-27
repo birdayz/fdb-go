@@ -268,7 +268,21 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 	// Register an in-flight reply the server will NEVER answer (no request is sent).
 	// The ONLY thing that can deliver to replyCh is the connection teardown.
 	_, replyCh, replyHandle := conn.PrepareReply()
-	defer replyHandle.Release()
+	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
+	// to pool the (drained) channel — failAllPending deletes the token under
+	// pendingMu before sending, so that is race-free. A NOT-received outcome (the
+	// 2s arm) MUST Cancel() first: Cancel removes the still-pending token and nils
+	// h.ch so the deferred Release does not pool a channel the pending map still
+	// references (which would let a later failAllPending send a stale value into the
+	// shared replyChanPool — cross-test contamination / false-green). cancelled is
+	// set on the not-received path; defaulting Release on the success path.
+	cancelled := false
+	defer func() {
+		if cancelled {
+			replyHandle.Cancel()
+		}
+		replyHandle.Release()
+	}()
 
 	// Simulate the peer dropping the TCP connection: close the underlying socket so
 	// the storage conn's readLoop reads EOF → failConnection → failAllPending.
@@ -292,6 +306,7 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 		}
 		t.Logf("peer disconnect failed the in-flight reply in %v: %v", elapsed, resp.Err)
 	case <-time.After(2 * time.Second):
+		cancelled = true // not received: deferred cleanup must Cancel() before Release()
 		t.Fatal("in-flight reply was NOT failed within 2s of peer disconnect — the client hangs (the bug FDB C++ PR #12935 fixed); Go's failConnection must wake all pending replies")
 	}
 }
