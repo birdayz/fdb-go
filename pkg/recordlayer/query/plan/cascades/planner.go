@@ -696,6 +696,12 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	if !ok {
 		return false
 	}
+	// A residual filter with no predicates is not a yield candidate (byte-identical
+	// to the OLD isSimpleResidualCompensation's `if len(preds) == 0 { return false }`;
+	// ForMatchCompensation.ApplyAllNeeded never produces one, but match the allowlist).
+	if len(f.GetPredicates()) == 0 {
+		return false
+	}
 	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
 	for _, q := range f.GetQuantifiers() {
 		local[q.GetAlias()] = struct{}{}
@@ -713,22 +719,16 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		}
 	}
 	for _, pred := range f.GetPredicates() {
-		// SHAPE gate — DEFERRED rot-fix, not safety. A non-simple residual (a
-		// compound/OR predicate, or an IN) is held on the OLD InsertFinal path for
-		// now because materializing it via yieldUnknown is unsafe on a partition
-		// SUBSEL that is consumed by an enclosing join: such a leg is NOT flagged by
-		// refIsJoinLeg (the join correlation lives in a SIBLING predicate, not this
-		// ref's bound prefix or residual), so the materialized leg filter wins and
-		// severs the join feed → Fetch(<nil>) / 0 rows (codex's 3-way-join repro).
-		// Distinguishing "standalone single-table" from "partition-SUBSEL join leg"
-		// requires the parent context — RFC-150's winner-selection invariant. Until
-		// that lands, keep Phase-1 byte-identical by yielding only the SIMPLE shapes
-		// the old isSimpleResidualCompensation accepted. (RFC-150 retires this gate
-		// together with the join-leg coupling + tryFlatMapPlan.)
-		cp, isCmp := pred.(*predicates.ComparisonPredicate)
-		if !isCmp || cp.Comparison.Type == predicates.ComparisonIn {
-			return false
-		}
+		// ROT-FIX (RFC-150, post-B1a): the predicate-SHAPE restriction the OLD
+		// isSimpleResidualCompensation carried (ComparisonPredicate-only, non-IN) is
+		// RETIRED. A compound/OR or IN residual now yields through yieldUnknown and
+		// re-optimizes to an index plan instead of silently degrading to a full scan.
+		// This was unsafe in Phase 1 only because materializing such a residual on a
+		// partition-SUBSEL join leg (not flagged by refIsJoinLeg) produced a nil-inner
+		// Fetch shell that the NLJ embedded → Fetch(<nil>) / 0 rows. B1a (nil-safe
+		// join-child selection, RFC-150 Phase 2a) closed that, so the materialized leg
+		// filter is no longer a degenerate winner. The index-only + outer-correlation
+		// + vector/aggregate-inner SAFETY guards below remain.
 		if predicateContainsUncompensatableValues(pred) {
 			return false
 		}

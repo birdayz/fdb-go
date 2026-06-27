@@ -1573,3 +1573,49 @@ func TestPlanHarness_JoinLegResidualNoNilFetch(t *testing.T) {
 	assertPlanNotContains(t, orPlan, "<nil>")
 	assertPlanContains(t, orPlan, "FlatMap")
 }
+
+// TestPlanHarness_RotFix_CompoundResidualUsesIndex pins the RFC-150 rot-fix (post-B1a):
+// a single-table query with an indexed equality + a NON-simple residual (OR / IN) now
+// rides the index scan instead of degrading to a full scan. The retired
+// isSimpleResidualCompensation allowlist admitted only simple non-IN ComparisonPredicate
+// residuals, so these lost to `PredicatesFilter(Scan(T))`; yieldUnknown now re-optimizes
+// them to `PredicatesFilter(Fetch(IndexScan(IDX_K)))`. Safe only with B1a's nil-safe
+// join-child selection in place (Phase-1 shipped these on the InsertFinal path).
+func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, b bigint, m bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	for _, sql := range []string{
+		"SELECT * FROM t WHERE k = 5 AND (a > 1 OR b < 2)",
+		"SELECT * FROM t WHERE k = 5 AND m IN (1, 2, 3)",
+	} {
+		plan, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		t.Logf("%s -> %s", sql, plan)
+		// Assert the residual SURVIVES over the index scan — `PredicatesFilter(Fetch(
+		// IndexScan(IDX_K…)))`, not a bare `Fetch(IndexScan(IDX_K))`. A plan that used
+		// the index but DROPPED the OR/IN residual would return wrong rows yet still
+		// contain "IndexScan(IDX_K"; this is the dimension that actually matters
+		// (Torvalds: the hazard is "residual survives", not "index used").
+		assertPlanContains(t, plan, "PredicatesFilter(Fetch(IndexScan(IDX_K")
+	}
+
+	// Join-leg IN: a 3-way join where the indexed leg t carries an IN residual and is
+	// consumed correlated. Structurally distinct from the single-table IN (the
+	// explode-or-filter path on a partition-SUBSEL leg) and from the OR/AND join-leg
+	// shapes already pinned — and join legs are where this series repeatedly bit
+	// (Graefe). Must plan valid (no nil inner) with the IN residual realized.
+	joinSchema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
+		CREATE TABLE t (id bigint, fk bigint, k bigint, m bigint, x bigint, PRIMARY KEY (id))
+		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	joinPlan, err := PlanQueryForTest("SELECT t.k FROM o, t, u WHERE t.k = 5 AND t.m IN (1, 2, 3) AND t.fk = o.id AND u.x = t.x", joinSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("join-leg IN -> %s", joinPlan)
+	assertPlanNotContains(t, joinPlan, "<nil>")
+	assertPlanContains(t, joinPlan, "IndexScan(IDX_K") // t drives via idx_k, residual applied
+}
