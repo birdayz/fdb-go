@@ -72,6 +72,10 @@ Install the driver, then open a database, create a schema, and read and write, a
 
 </div>
 
+{{< callout type="info" >}}
+  No cluster handy? `frl fdb up` starts a single-node FoundationDB in Docker (the only prerequisite) and points the `frl` CLI at it. Remove it with `frl fdb down`.
+{{< /callout >}}
+
 <div class="s-steps">
 
 {{% steps %}}
