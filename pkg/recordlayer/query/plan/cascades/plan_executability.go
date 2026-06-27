@@ -29,25 +29,29 @@ func (e *UnplannableIndexOnlyResidualError) Error() string {
 		"evaluated as a residual filter and no index serves it", e.Predicate)
 }
 
-// validateNoIndexOnlyResidual rejects a final physical plan that carries an
-// index-only predicate as a residual filter.
+// validateNoIndexOnlyResidual is the CATCH-ALL backstop: it rejects a final
+// PHYSICAL plan that carries an index-only predicate as a residual filter,
+// regardless of which rule produced the filter.
 //
-// Go reaches a physical filter via more rules than Java does — notably
-// ImplementFilterRule, which synthesizes a RecordQueryPredicatesFilterPlan over
-// a base scan without routing through Compensation. When an index DOES serve the
-// index-only predicate (the common path) a vector/aggregate scan wins and no
-// residual survives; this guard then never fires. It only triggers when the
-// leaking filter is the sole survivor — i.e. nothing could bind the index-only
-// value — and converts what would be an execution-time panic into a clean
-// planning error. The structural fix (route filter implementation through
-// Compensation so the bad plan is never built) is tracked as TODO 7.7 /
-// DIVERGENCES.md "ImplementIndexScanRule is a Go-only second index-scan path".
+// The Java !isIndexOnly() gate on ImplementFilterRule (rule_implement_filter.go)
+// prevents that ONE Go-only filter producer from building such a plan. But Go has
+// several OTHER physical-filter builders that Java routes through compensation
+// instead — ImplementSimpleSelectRule (builds a filter from a SelectExpression's
+// predicates), the NLJ residual builder, ImplementIndexScanRule's residual loop.
+// An index-only DistanceRank in the ORIGINAL query (e.g. a metric-mismatched
+// distance inside a join → a Select, not a LogicalFilter) reaches a physical
+// residual through one of those, which the gate does not see. This walk is the one
+// place that covers EVERY physical-filter path, so it stays until all builders are
+// gated (Graefe: a cheap catch-all is the correct backstop while Go has more
+// filter builders than Java's single compensation-gated path). Pinned by
+// TestVectorPlan_MetricMismatchDoesNotMatchVector (single-table, LogicalFilter) +
+// the join-vector regression (Select path).
 func validateNoIndexOnlyResidual(expr expressions.RelationalExpression) error {
 	ph, ok := expr.(interface {
 		GetRecordQueryPlan() plans.RecordQueryPlan
 	})
 	if !ok {
-		return nil // Not a physical plan; the caller surfaces that separately.
+		return nil // Not a physical plan; the logical-side check handles that case.
 	}
 	plan := ph.GetRecordQueryPlan()
 	if plan == nil {
@@ -59,8 +63,9 @@ func validateNoIndexOnlyResidual(expr expressions.RelationalExpression) error {
 	return nil
 }
 
-// findIndexOnlyResidual walks a physical plan tree and returns the first filter
-// predicate that contains an index-only (uncompensatable) value, or nil.
+// findIndexOnlyResidual walks a physical plan tree (incl. nested under union /
+// intersection arms — leaks at depth > 0) and returns the first filter predicate
+// that contains an index-only (uncompensatable) value, or nil.
 func findIndexOnlyResidual(plan plans.RecordQueryPlan) predicates.QueryPredicate {
 	var found predicates.QueryPredicate
 	var walk func(p plans.RecordQueryPlan)
@@ -84,5 +89,46 @@ func findIndexOnlyResidual(plan plans.RecordQueryPlan) predicates.QueryPredicate
 		}
 	}
 	walk(plan)
+	return found
+}
+
+// findIndexOnlyLogicalResidual walks the logical expression DAG rooted at `ref`
+// and returns the first LogicalFilterExpression predicate that contains an
+// index-only (uncompensatable) value, or nil.
+//
+// This complements the physical-side validateNoIndexOnlyResidual backstop. When
+// the Java !isIndexOnly() ImplementFilterRule gate keeps a LogicalFilter
+// unimplemented and no other producer realizes it, the best plan is NON-physical
+// (e.g. a LogicalProjection), so the physical walk sees nothing. This walk runs on
+// that case to recover the precise cause and surface the same clean
+// UnplannableIndexOnlyResidualError (matching Java leaving the match impossible),
+// rather than the caller reporting the internal expression type.
+func findIndexOnlyLogicalResidual(ref *expressions.Reference) predicates.QueryPredicate {
+	if ref == nil {
+		return nil
+	}
+	visited := make(map[*expressions.Reference]bool)
+	var found predicates.QueryPredicate
+	var walk func(r *expressions.Reference)
+	walk = func(r *expressions.Reference) {
+		if r == nil || found != nil || visited[r] {
+			return
+		}
+		visited[r] = true
+		for _, m := range r.AllMembers() {
+			if lf, ok := m.(*expressions.LogicalFilterExpression); ok {
+				for _, pr := range lf.GetPredicates() {
+					if predicateContainsUncompensatableValues(pr) {
+						found = pr
+						return
+					}
+				}
+			}
+			for _, q := range m.GetQuantifiers() {
+				walk(q.GetRangesOver())
+			}
+		}
+	}
+	walk(ref)
 	return found
 }

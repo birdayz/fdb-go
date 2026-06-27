@@ -44,6 +44,28 @@ func (r *ImplementFilterRule) Matcher() matching.BindingMatcher { return r.match
 // inner.
 func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	f := matching.Get[*expressions.LogicalFilterExpression](call.Bindings, r.matcher)
+
+	// Java's ImplementFilterRule binds `all(anyCompensatablePredicate())` where the
+	// extractor is `!isIndexOnly()` (ImplementFilterRule.java:62 +
+	// QueryPredicateMatchers.java:66-68): the rule fires only when EVERY predicate is
+	// compensatable. A predicate carrying an index-only value (a vector DistanceRank /
+	// UnmatchedAggregateValue marker that has no executable form outside the index
+	// access) cannot be evaluated by a RecordQueryPredicatesFilterPlan at runtime, so
+	// the rule must not synthesize one. When the index legitimately serves the
+	// index-only predicate, the data-access match consumes it into the scan (and, with
+	// the partial-match re-trigger in TransformExprTask, is consumed without relying on
+	// this rule's incidental yield); when nothing can serve it the rule's non-firing
+	// leaves the query correctly unplannable. This is the structural Java gate that
+	// retires the compensationSafeForYield index-only branch (B4). Note:
+	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
+	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
+	// that this gate does not cover — do not remove it until every such builder is gated.
+	for _, pred := range f.GetPredicates() {
+		if predicateContainsUncompensatableValues(pred) {
+			return
+		}
+	}
+
 	innerRef := f.GetInner().GetRangesOver()
 	if innerRef == nil {
 		return

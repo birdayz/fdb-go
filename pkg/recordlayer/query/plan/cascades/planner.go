@@ -350,12 +350,23 @@ func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalEx
 	if err != nil {
 		return plan, p.tasksRun, err
 	}
-	// Reject a final plan that would evaluate an index-only predicate (e.g. a
-	// vector K-NN DistanceRank) as a residual filter — not executable, see
-	// validateNoIndexOnlyResidual. Surfaces a clean planning error instead of an
-	// execution-time panic when no index serves the index-only predicate.
-	if err := validateNoIndexOnlyResidual(plan); err != nil {
-		return nil, p.tasksRun, err
+	// Catch-all backstop: reject any PHYSICAL plan that carries an index-only
+	// predicate as a residual filter (a vector K-NN DistanceRank that no index
+	// serves — e.g. a metric-mismatched distance, which can reach a physical filter
+	// via ImplementSimpleSelectRule / the NLJ residual builder, NOT just the gated
+	// ImplementFilterRule). Surfaces the clean UnplannableIndexOnlyResidualError
+	// instead of an execution-time panic in Comparison.EvalAgainst.
+	if perr := validateNoIndexOnlyResidual(plan); perr != nil {
+		return nil, p.tasksRun, perr
+	}
+	// When the Java !isIndexOnly() ImplementFilterRule gate instead left the best
+	// plan NON-physical (no producer realized the index-only LogicalFilter), the
+	// physical walk above sees nothing — surface the same clean error from the
+	// logical side rather than letting the caller report the internal type.
+	if plan != nil && !isPhysical(plan) {
+		if bad := findIndexOnlyLogicalResidual(rootRef); bad != nil {
+			return nil, p.tasksRun, &UnplannableIndexOnlyResidualError{Predicate: bad.Explain()}
+		}
 	}
 	return plan, p.tasksRun, nil
 }
@@ -547,18 +558,16 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 				ref.InsertFinal(expr)
 				continue
 			}
-			// STANDALONE ref. An UNSAFE logical compensation — over a vector top-K /
-			// aggregate inner, or carrying an index-only value — is NOT narrowable by a
-			// post-filter (a residual applied after the top-K / grouping / index-only
-			// access changes the result). It keeps the OLD InsertFinal path: it stays
-			// logical and the query correctly fails to plan if there is no physical
-			// alternative (the missing-physical-member error / validateNoIndexOnlyResidual),
-			// rather than being re-optimized into a wrong plan. These inner-scan +
-			// index-only guards are the SAFETY half of the retired
-			// isSimpleResidualCompensation allowlist; the legit-vs-illegit distinction for
-			// a vector DistanceRank lives at the MATCH (whether the vector scan consumed
-			// it), not here — the match-level consumption fix that would let these also
-			// yield is deferred (design-principle #10).
+			// STANDALONE ref. An UNSAFE logical compensation — one whose inner scan is a
+			// vector top-K / aggregate — is NOT narrowable by a post-filter (a residual
+			// applied after the top-K / grouping changes the result). It keeps the OLD
+			// InsertFinal path: it stays logical and the query correctly fails to plan if
+			// there is no physical alternative, rather than being re-optimized into a wrong
+			// plan. This inner-scan guard is the remaining SAFETY half of the retired
+			// isSimpleResidualCompensation allowlist (compensationSafeForYield). The
+			// separate index-only-predicate concern is now handled structurally by the Java
+			// !isIndexOnly() ImplementFilterRule gate + the validateNoIndexOnlyResidual
+			// catch-all backstop (Plan()), not by this compensation guard (RFC-151).
 			if !isPhysical(expr) && !compensationSafeForYield(expr) {
 				ref.InsertFinal(expr)
 				continue
@@ -662,27 +671,28 @@ func (p *Planner) yieldUnknown(ref *expressions.Reference, expr expressions.Rela
 // compensationSafeForYield reports whether a standalone logical data-access
 // compensation may be routed through yieldUnknown's exploratory re-optimization.
 // It is UNSAFE (kept on the OLD InsertFinal path) when its inner scan is a vector
-// top-K or aggregate scan, or when any predicate carries an index-only value: such
-// a compensation is not narrowable by a post-filter (a residual applied after the
-// top-K / grouping / index-only access changes the result), so re-optimizing it
-// would mint a wrong plan or wrongly make an unplannable query plan. These are the
-// SAFETY guards of the retired isSimpleResidualCompensation allowlist; the
-// predicate-SHAPE restrictions it also carried (IN-only, simple-comparison-only) —
-// the actual rot — are gone, so those shapes now yield and realize.
+// top-K or aggregate scan: a residual applied AFTER the top-K / grouping changes
+// the result (you would post-filter the K rows, not the underlying set), so
+// re-optimizing it would mint a wrong plan. This is the remaining SAFETY guard of
+// the retired isSimpleResidualCompensation allowlist; the predicate-SHAPE
+// restrictions it also carried (IN-only, simple-comparison-only) — the actual rot —
+// are gone, so those shapes now yield and realize.
 //
-// STAND-IN — not the final architecture. This guard exists because Go's vector /
-// aggregate match leaves an index-only value (vector DistanceRank,
-// vector_index_match_candidate.go:220-234; aggregate UnmatchedAggregateValue) as a
-// RESIDUAL where Java marks it CONSUMED by the index access. Until the deferred
-// match-level consumption fix lands (TODO.md §7.7 follow-up — at which point the
-// proper Java `ImplementFilterRule` `!isIndexOnly()` matcher gate goes in and this
-// guard + validateNoIndexOnlyResidual both become redundant), we must guard at the
-// data-access boundary so a non-consumable index-only residual stays unplannable
-// instead of being re-optimized into a wrong plan (design-principle #10: the real
-// property is match-level consumption; this is the conservative downstream proxy).
-// Sentinels for the deferred fix: TestVectorPlan_QualifyPlansToVectorScan (must
-// still plan) + TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must
-// stay unplannable).
+// An index-only predicate (a vector DistanceRank that no index serves) is NOT
+// guarded here anymore: that property is handled outside this function. Java's
+// `ImplementFilterRule` `!isIndexOnly()` matcher gate (rule_implement_filter.go)
+// stops THAT producer from building such a physical filter, and the legitimate
+// vector scan is consumed by the partial-match re-trigger in TransformExprTask
+// (the Java getNewPartialMatches() reaction). But Go has OTHER physical-filter
+// builders the gate does not cover (ImplementSimpleSelectRule, the NLJ residual
+// builder, ImplementIndexScanRule), so the catch-all validateNoIndexOnlyResidual
+// backstop in Plan() is RETAINED — it, not this function, is the authority that
+// rejects an index-only physical residual (pinned by
+// TestVectorPlan_MetricMismatchInJoinDoesNotLeak). Do NOT remove that net until
+// every such builder is gated/retired (TODO follow-up).
+// Sentinels: TestVectorPlan_QualifyPlansToVectorScan (must still plan) +
+// TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual (must stay
+// unplannable, via the inner-scan guard).
 func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 	// Only a plain residual FILTER is a yield candidate — byte-identical to the OLD
 	// isSimpleResidualCompensation's leading `f, ok := expr.(*LogicalFilterExpression);
@@ -727,11 +737,16 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		// partition-SUBSEL join leg (not flagged by refIsJoinLeg) produced a nil-inner
 		// Fetch shell that the NLJ embedded → Fetch(<nil>) / 0 rows. B1a (nil-safe
 		// join-child selection, RFC-150 Phase 2a) closed that, so the materialized leg
-		// filter is no longer a degenerate winner. The index-only + outer-correlation
-		// + vector/aggregate-inner SAFETY guards below remain.
-		if predicateContainsUncompensatableValues(pred) {
-			return false
-		}
+		// filter is no longer a degenerate winner. The outer-correlation +
+		// vector/aggregate-inner SAFETY guards remain.
+		//
+		// NOTE: an index-only predicate (vector DistanceRank) is NO LONGER guarded
+		// here. The Java !isIndexOnly() ImplementFilterRule gate (rule_implement_filter.go)
+		// is now the single structural authority: such a residual, even if yielded,
+		// cannot be realized to a physical filter, so it stays logical and surfaces the
+		// clean UnplannableIndexOnlyResidualError (planner.go Plan()). Guarding it here
+		// too would be a redundant second authority for the same property.
+		//
 		// OUTER-correlation guard (M2 0-row safety, NOT shape rot). A residual
 		// correlated to a non-local (OUTER) quantifier belongs at the JOIN, not a
 		// standalone leg filter. refHasCorrelatedMatch only inspects the bound

@@ -245,3 +245,37 @@ func TestVectorPlan_MetricMismatchDoesNotMatchVector(t *testing.T) {
 		t.Fatalf("expected UnplannableIndexOnlyResidualError for metric mismatch, got err=%v\nexplain=%s", err, explain)
 	}
 }
+
+// TestVectorPlan_MetricMismatchInJoinDoesNotLeak pins the JOIN dimension of the
+// metric-mismatch case — the shape Graefe + Torvalds both reproduced as a
+// regression when validateNoIndexOnlyResidual was prematurely retired. Here the
+// index-only cosine DistanceRank is a predicate of a SelectExpression (the join
+// body), not a standalone LogicalFilter, so it reaches a PHYSICAL residual filter
+// via ImplementSimpleSelectRule / the NLJ residual builder — NOT the gated
+// ImplementFilterRule. The catch-all validateNoIndexOnlyResidual backstop (which
+// the ImplementFilterRule !isIndexOnly() gate does NOT replace) must still reject
+// it with the clean UnplannableIndexOnlyResidualError rather than building a plan
+// that panics in Comparison.EvalAgainst at execution.
+func TestVectorPlan_MetricMismatchInJoinDoesNotLeak(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE TABLE tags (zone string, doc_id string, tag string,
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	sql := `SELECT d.doc_id FROM docs d, tags t
+		WHERE d.zone = 'z1' AND d.zone = t.zone AND d.doc_id = t.doc_id
+		QUALIFY ROW_NUMBER() OVER (
+			PARTITION BY d.zone
+			ORDER BY cosine_distance(d.embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	explain, err := PlanQueryForTest(sql, schema, nil)
+	var uerr *cascades.UnplannableIndexOnlyResidualError
+	if !errors.As(err, &uerr) {
+		t.Fatalf("expected UnplannableIndexOnlyResidualError for metric mismatch in a join, got err=%v\nexplain=%s", err, explain)
+	}
+}

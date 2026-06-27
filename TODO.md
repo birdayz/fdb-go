@@ -76,14 +76,24 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      growth-keyed re-entry guard; `!refIsJoinLeg`/`matchBoundPrefixIsCorrelated` retained. Behavior-preserving
      (plandiff byte-identical + full suite green); rot-fix pinned by `TestPlanHarness_CompoundResidualUsesIndex`
      (OLD full-scanned an OR-residual; now `IndexScan`). Graefe ACK (Option A).
-   - **[ ] Phase 1 follow-up — match-level index-only consumption + proper B3 gate (NAMED, Graefe condition).**
-     Go's vector/aggregate match leaves the index-only value (vector `DistanceRank`,
-     `vector_index_match_candidate.go:220-234`; aggregate `UnmatchedAggregateValue`) as a RESIDUAL where Java
-     marks it CONSUMED. Port the match-level consumption so `ImplementFilterRule`'s `!isIndexOnly()` matcher
-     gate (Java `ImplementFilterRule.java:62`) can go in WITHOUT breaking legit queries — at which point
-     `compensationSafeForYield` + `validateNoIndexOnlyResidual` both become redundant. **Sentinels (red→green):**
-     `TestVectorPlan_QualifyPlansToVectorScan` (must still plan) + `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual`
-     (must stay unplannable). Vector-matching subsystem change — its own gated commit (design-principle #10).
+   - **[x] Phase 1 follow-up — index-only `ImplementFilterRule` gate (NAMED, Graefe condition) — DONE (RFC-151).**
+     Root cause was NOT unconsumed match-level residual (the match already binds `DistanceRank` via
+     `flattenConjuncts`) — it was a SCHEDULING coupling: `pushDataAccessTasks` ran inline before the matching
+     rules seeded the ref's partial matches, so data-access consumption relied on `ImplementFilterRule`'s
+     incidental physical-filter yield to re-trigger. Fix: `TransformExprTask` re-runs data-access when a rule
+     grows the ref's partial-match set (Java `getNewPartialMatches()` reaction, `CascadesPlanner.java:1058`),
+     so Java's `ImplementFilterRule` `!isIndexOnly()` gate (`ImplementFilterRule.java:62`) goes in cleanly;
+     `compensationSafeForYield`'s index-only branch retired (redundant behind the gate). `validateNoIndexOnlyResidual`
+     is **RETAINED as the catch-all backstop** — Graefe + Torvalds both reproduced a JOIN leak (the distance is a
+     `Select` predicate → physical residual via `ImplementSimpleSelectRule`/NLJ, which the `ImplementFilterRule`
+     gate doesn't see); a logical-side `Plan()` check handles the complementary non-physical case.
+     **Sentinels (green):** `TestVectorPlan_QualifyPlansToVectorScan` (plans) + `MetricMismatch` (single-table clean
+     error) + `MetricMismatchInJoinDoesNotLeak` (join clean error — the regression pin) +
+     `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (unplannable via the kept inner-scan guard).
+   - **[ ] Follow-up — gate the remaining physical-filter builders to fully retire the net.** Gate
+     `ImplementSimpleSelectRule` + the NLJ residual builder on `!isIndexOnly()` (mirror `ImplementFilterRule`),
+     and retire `ImplementIndexScanRule`'s residual-skip loop, so NO builder can emit an index-only physical
+     residual — only then is `validateNoIndexOnlyResidual` genuinely dead and removable (Graefe's design-#10 path).
    - **[ ] Phase 2 (RFC-150):** remove `!refIsJoinLeg` + retire the Go-only `tryFlatMapPlan` + the B1 structural
      no-correlated-standalone-leg-winner invariant + LEFT/FULL OUTER residual-placement reconciliation, one
      shape at a time (EXPLAIN + row-count + 1M stress). The PR-#201 surface. Gated: 148 lands → Graefe re-ACK

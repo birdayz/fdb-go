@@ -36,27 +36,25 @@ Same timing and inputs. Go creates physical plans directly (single intersection 
 
 **Go:** Two paths reach a physical index scan: (1) the data-access/compensation match path (`predicate_multi_map.go`), and (2) `ImplementIndexScanRule` — a Go-only fusion of Java's `ImplementPhysicalScanRule` + candidate matching that iterates `ComparisonPredicate`s directly and synthesizes residual filters itself, bypassing `Compensation`. So the index-only compensatability check is applied at BOTH layers: `valueContainsUncompensatable` via `values.IsIndexOnly` (match path) and the residual-skip loop in `ImplementIndexScanRule.OnMatch` (implement path). Both are load-bearing — removing either makes `TestVectorPlan_QualifyPlansToVectorScan` fail; the implement layer is pinned directly by `TestImplementIndexScanRule_SkipsIndexOnlyResidual`. This surfaced wiring up vector K-NN (RFC-045): the `DistanceRowNumberValue` operand is index-only, and a partition-only primary-scan candidate would otherwise leave the `DistanceRank` comparison as a residual filter (panics in `Comparison.EvalAgainst`).
 
-There is a THIRD Go-only filter producer: `ImplementFilterRule` synthesizes a `RecordQueryPredicatesFilterPlan` over the inner physical winner, again without routing through `Compensation`. When an index DOES serve the index-only predicate (the common path) a vector/aggregate scan wins and no residual survives. But when nothing can bind it — e.g. `QUALIFY ... ORDER BY cosine_distance(...)` against a EUCLIDEAN-metric index, or a distance query on a column with no vector index — `ImplementFilterRule` is the only producer and yields a filter with the index-only predicate as a residual (which would panic in `Comparison.EvalAgainst`). Guarding `ImplementFilterRule` directly is not viable: removing its member collapses the filter `Reference`'s member population and the data-access intersection is never built (an entangled memo dependency). So this leak is caught at the planner boundary by `validateNoIndexOnlyResidual` (`plan_executability.go`), which rejects a *final* plan carrying an index-only residual with `UnplannableIndexOnlyResidualError` — converting an execution-time panic into a clean planning error. Pinned by `TestVectorPlan_MetricMismatchDoesNotMatchVector`.
+A THIRD Go-only filter producer was `ImplementFilterRule` (synthesizes a `RecordQueryPredicatesFilterPlan` over the inner physical winner without routing through `Compensation`). **RESOLVED (RFC-151):** `ImplementFilterRule` now carries Java's `all(anyCompensatablePredicate())` / `!isIndexOnly()` gate (`ImplementFilterRule.java:62`, `QueryPredicateMatchers.java:66-68`) — it returns early for any index-only predicate, exactly like Java, so the leaking filter is **never built**. The old "guarding ImplementFilterRule is not viable — removing its member collapses the filter Reference and the data-access intersection is never built" claim was a *scheduling* artifact, not a memo entanglement: Go's `pushDataAccessTasks` ran inline at `ExploreExprTask` start, BEFORE the matching rules seeded the ref's partial matches, so the data-access consumption depended on `ImplementFilterRule`'s incidental physical-filter yield to re-trigger exploration. RFC-151 makes `TransformExprTask` re-run data-access whenever a rule grows the ref's partial-match set (Java's `getNewPartialMatches()` reaction, `CascadesPlanner.java:1058-1062`), so the legitimate vector scan is consumed directly and the gate is safe.
+
+**The `validateNoIndexOnlyResidual` physical net is RETAINED as the catch-all backstop** — the gate covers ONLY `ImplementFilterRule`, but an index-only `DistanceRank` in the original query reaches a physical residual via other Go-only builders too: `ImplementSimpleSelectRule` (a `SelectExpression`'s predicates — the JOIN shape, where the distance is a Select predicate not a standalone LogicalFilter), the NLJ residual builder, and `ImplementIndexScanRule`'s residual loop. The net is the one place covering EVERY physical-filter path. A logical-side `findIndexOnlyLogicalResidual` check is ADDED for the complementary case (when the gate leaves the best plan non-physical, the physical walk sees nothing). Both surface the clean `UnplannableIndexOnlyResidualError`. Pinned by `TestVectorPlan_MetricMismatchDoesNotMatchVector` (single-table) + `TestVectorPlan_MetricMismatchInJoinDoesNotLeak` (join, the regression Graefe + Torvalds caught) + `TestVectorPlan_QualifyPlansToVectorScan` (legit). **End-state to fully retire the net:** gate `ImplementSimpleSelectRule` + NLJ on `!isIndexOnly()` (and retire `ImplementIndexScanRule`) so no physical builder can produce an index-only residual — a smaller separate follow-up.
 
 **Phase-1 (RFC-148, Option A) update:** the data-access compensation path no longer uses the
 `isSimpleResidualCompensation` predicate-shape allowlist. A standalone (non-join-leg) logical compensation
 now routes through `yieldUnknown` → exploratory re-optimization (Java's `yieldUnknownExpression`), EXCEPT
-when `compensationSafeForYield` is false. `compensationSafeForYield` is the **safety** half of the retired
-allowlist (vector/aggregate inner-scan + index-only-predicate guards) — a documented **stand-in**: it exists
-only because Go's vector/aggregate match leaves the index-only value (vector `DistanceRank`,
-`vector_index_match_candidate.go:220-234`; aggregate `UnmatchedAggregateValue`) as a RESIDUAL where Java
-marks it CONSUMED. An unsafe compensation keeps the old `InsertFinal` path so it stays correctly unplannable
-rather than being re-optimized into a wrong plan (design-principle #10 — the gate is a downstream proxy; the
-real property is match-level consumption).
+when `compensationSafeForYield` is false. **RFC-151 update:** `compensationSafeForYield`'s index-only-predicate
+branch is **retired** — the `ImplementFilterRule` `!isIndexOnly()` gate above is now the single structural
+authority for "index-only predicate can't be a residual", so guarding it again here would be a redundant
+second authority. The **inner-scan guard** (vector/aggregate inner) STAYS: it protects a *normal* residual
+applied after a top-K / grouping (the `TrailingEqualityResidual` shape) — a different property the gate does
+not cover, and the reason that sentinel must still be unplannable.
 
-**End-state:** the NAMED follow-up (TODO.md §7.7) ports Java's match-level index-only **consumption**, after
-which the proper `ImplementFilterRule` `!isIndexOnly()` matcher gate (Java `ImplementFilterRule.java:62`) goes
-in and `compensationSafeForYield`, the `ImplementIndexScanRule` residual-skip guard, AND
-`validateNoIndexOnlyResidual` all become redundant — the property is enforced once (as in Java). Red→green
-sentinels for that fix: `TestVectorPlan_QualifyPlansToVectorScan` (must still plan) +
-`TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual` (must stay unplannable). Until it lands, the
-layered guards + final validation are the correct defensive choice — the alternative is a latent panic /
-wrong plan. RFC-150 separately retires `tryFlatMapPlan` + the join-leg coupling.
+The earlier "match-level consumption" framing turned out to be a mis-diagnosis: Go's vector match already
+BINDS the `DistanceRank` (via `flattenConjuncts`); the index-only value was never an unconsumed residual at
+the match — the leak was purely the `ImplementFilterRule` scheduling coupling (above). So no match-candidate
+rewrite was needed; the fix is the partial-match re-trigger + the gate. RFC-150 separately retires
+`tryFlatMapPlan` + the join-leg coupling.
 
 ### Type mismatch detection: eval-time vs compile-time
 

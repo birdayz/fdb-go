@@ -192,7 +192,30 @@ func (t *TransformExprTask) Run(p *Planner) {
 				memo:        p.memo,
 				yieldFn:     yieldFn,
 			}
+			// React to NEW PARTIAL MATCHES, not just new expressions. A matching
+			// rule (MatchIntermediateRule / MatchLeafRule) seeds PartialMatches on
+			// t.Ref without yielding any expression. Java's planner schedules a
+			// follow-up task per new partial match (CascadesPlanner.executeRuleCall
+			// iterating ruleCall.getNewPartialMatches()); Go's pushDataAccessTasks
+			// instead runs inline at ExploreExprTask start — BEFORE the matching
+			// rules have seeded this round's matches. So a match seeded here is only
+			// consumed by a LATER, incidental re-exploration of t.Ref (e.g. when
+			// ImplementFilterRule yields a physical filter member). When that
+			// incidental trigger is absent — notably for an index-only filter, which
+			// the Java !isIndexOnly() ImplementFilterRule gate legitimately
+			// suppresses — the fully-bound match (e.g. a vector DistanceRank scan)
+			// would never be consumed and the ref would stay logical. Re-run
+			// data-access whenever this rule grew t.Ref's partial-match set, mirroring
+			// Java's getNewPartialMatches() reaction. Self-bounded by the
+			// match-growth re-entry guard inside pushDataAccessTasks (planner.go).
+			var matchesBefore int
+			if t.Phase == PhasePlanning {
+				matchesBefore = len(t.Ref.GetAllPartialMatches())
+			}
 			t.Rule.OnMatch(call)
+			if t.Phase == PhasePlanning && len(t.Ref.GetAllPartialMatches()) > matchesBefore {
+				p.pushDataAccessTasks(t.Ref, t.Expr)
+			}
 
 			for _, newExpr := range call.Yielded() {
 				if t.Phase == PhasePlanning {
