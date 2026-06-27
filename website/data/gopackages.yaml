@@ -1,5 +1,6 @@
 # Go package import subpaths under module root fdb.dev (one Go module rooted at the domain).
 # Used to generate vanity-import stub pages. Regenerate in CI with: go list ./... | sed ...
+# internal/ packages are excluded (not importable by external code).
 packages:
   - cmd/bench-report
   - cmd/fdb-binding-stress
@@ -9,9 +10,6 @@ packages:
   - cmd/fdb-wirelog-dump
   - cmd/frl
   - cmd/frl/gen/frl/config/v1
-  - cmd/frl/internal/cmd
-  - cmd/frl/internal/config
-  - cmd/frl/internal/meta
   - cmd/gen-feature-matrix
   - cmd/test-report
   - conformance
@@ -23,12 +21,10 @@ packages:
   - pkg/fdbgo/client
   - pkg/fdbgo/conformance
   - pkg/fdbgo/fdb
-  - pkg/fdbgo/fdbclient
   - pkg/fdbgo/fdb/directory
   - pkg/fdbgo/fdbmetrics
   - pkg/fdbgo/fdb/subspace
   - pkg/fdbgo/fdb/tuple
-  - pkg/fdbgo/internal/diag
   - pkg/fdbgo/libfdbc
   - pkg/fdbgo/transport
   - pkg/fdbgo/wire

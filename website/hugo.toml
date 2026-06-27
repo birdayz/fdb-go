@@ -1,4 +1,4 @@
-# fdb.dev — FoundationDB for Go
+# fdb.dev website (FoundationDB for Go)
 # Static site (landing + docs + changelog + performance + Go vanity imports),
 # built with Hugo + the vendored hextra theme (themes/hextra), deployed to GitHub Pages.
 

@@ -49,25 +49,25 @@ rdb := recordlayer.NewFDBDatabase(db)
 
 ### The C-client escape hatch
 
-The client is **pure Go by default** (no cgo). To run against Apple's `libfdb_c` instead — e.g. the
-battle-tested C client on a bet-the-company write path — open through the **backend seam**
-(`fdbclient.Open` picks the backend by build tag) and build with the tag:
+The client is **pure Go by default** (no cgo). To run the Record Layer against Apple's `libfdb_c`
+instead, for example the battle-tested C client on a bet-the-company write path, open through the
+**factory** and build with the tag. The factory routes through an internal, build-tag-selected
+backend seam (`pkg/internal/fdbclient`), so no source change is needed:
 
 ```go
-backend, _ := fdbclient.Open(clusterFile)            // pure-Go OR libfdb_c, per build tag
-rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
+rdb, _ := recordlayer.NewFDBDatabaseFactory().GetDatabase(clusterFile) // pure-Go OR libfdb_c, per build tag
 ```
 
 ```sh
-go build ./...                       # default → pure-Go
-CGO_ENABLED=1 go build -tags libfdbc ./...   # → libfdb_c
+go build ./...                       # default: pure-Go
+CGO_ENABLED=1 go build -tags libfdbc ./...   # libfdb_c
 ```
 
-The plain `fdb.OpenDatabase` form above is *not* backend-selected; the switch lives in
-`fdbclient.Open`. This is a **build-time** choice (the libfdb_c network thread is once-per-process),
-not a runtime switch. Both backends are wire-compatible; a cross-client byte-identical differential
-gates every PR (`nightly-libfdbc.yml`). The SQL driver and `FDBDatabaseFactory` route through this
-seam too, so `-tags libfdbc` switches them as well.
+The plain `fdb.OpenDatabase` form is always the pure-Go client; the backend switch lives in the
+internal seam the factory uses, not in a public package. This is a **build-time** choice (the
+libfdb_c network thread is once-per-process), not a runtime switch. Both backends are wire-compatible;
+a cross-client byte-identical differential gates every PR (`nightly-libfdbc.yml`). The SQL driver
+routes through the same seam, so `-tags libfdbc` switches it as well.
 
 ---
 

@@ -4,7 +4,7 @@
 // CGO_ENABLED=0 build (e.g. `go build -tags libfdbc` without cgo, or tooling that
 // type-checks every package). Open then fails gracefully with a clear message
 // instead of the package failing to compile. The normal selector,
-// pkg/fdbgo/fdbclient, imports this package only under -tags libfdbc, which is a
+// pkg/internal/fdbclient, imports this package only under -tags libfdbc, which is a
 // cgo build — so this stub is a safety net for a nonsensical tag/cgo combination,
 // not a path the default build ever reaches.
 package libfdbc

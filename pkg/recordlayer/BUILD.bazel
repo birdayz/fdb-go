@@ -124,7 +124,7 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
-        "//pkg/fdbgo/fdbclient",
+        "//pkg/internal/fdbclient",
         "//pkg/rabitq",
         "//pkg/recordlayer/vectorcodec",
         "@com_github_google_uuid//:uuid",
