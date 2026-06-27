@@ -28,25 +28,10 @@ if err != nil {
 }
 ```
 
-## Your first record
+`fdbclient.Backend` reports which client a binary carries (`"pure-go"` / `"libfdb_c"`).
 
-```go
-db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-    store, err := recordlayer.NewStoreBuilder().
-        SetMetaDataProvider(metadata).
-        SetContext(rtx).
-        SetSubspace(keyspace).
-        CreateOrOpen()
-    if err != nil {
-        return nil, err
-    }
-    return store.SaveRecord(order)
-})
-```
+## Next
 
-## Next steps
-
-{{< cards >}}
-  {{< card link="/docs/record-layer" title="Record Layer" subtitle="Indexes, versions, continuations." >}}
-  {{< card link="/docs/sql" title="SQL Engine" subtitle="Query with database/sql." >}}
-{{< /cards >}}
+Record-layer and SQL usage, the operator guide, and runnable examples live in the
+[repository](https://github.com/birdayz/fdb-go). Before depending on it in production, read
+[Maturity & Status](maturity).
