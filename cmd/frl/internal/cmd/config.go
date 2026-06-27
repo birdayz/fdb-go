@@ -13,8 +13,8 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/cmd/frl/internal/config"
 )
 
 // newConfigCmd houses every config-file subcommand:

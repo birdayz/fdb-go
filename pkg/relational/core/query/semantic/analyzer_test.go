@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // parseTableFullId walks the parse tree for a SELECT and returns the

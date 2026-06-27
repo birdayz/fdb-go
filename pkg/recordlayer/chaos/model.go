@@ -9,10 +9,10 @@
 package chaos
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // StoreModel is a trivially simple in-memory shadow of the record store.

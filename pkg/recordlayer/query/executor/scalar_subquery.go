@@ -3,9 +3,9 @@ package executor
 import (
 	"context"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 // EvaluateScalarSubquery executes a scalar subquery plan and returns

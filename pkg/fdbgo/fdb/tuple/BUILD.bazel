@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "tuple",
     srcs = ["tuple.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple",
+    importpath = "fdb.dev/pkg/fdbgo/fdb/tuple",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
 )

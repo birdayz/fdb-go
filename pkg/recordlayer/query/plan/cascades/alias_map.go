@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // AliasMap is an immutable bidirectional mapping between
 // CorrelationIdentifiers. Used during graph traversal to track

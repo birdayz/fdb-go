@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 // TestDivergenceHolds pins divergenceHolds — the RFC-082 regression-lock

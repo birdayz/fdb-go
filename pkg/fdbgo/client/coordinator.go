@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator

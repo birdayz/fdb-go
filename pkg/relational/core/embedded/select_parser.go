@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
 // Parse-tree → selectQuery extraction.

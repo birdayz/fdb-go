@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestLargeValue_NearLimit writes a value near the 100KB limit.

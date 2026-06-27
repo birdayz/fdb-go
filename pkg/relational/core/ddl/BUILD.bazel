@@ -13,7 +13,7 @@ go_library(
         "save_schema_template.go",
         "schema_evolution_validator.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl",
+    importpath = "fdb.dev/pkg/relational/core/ddl",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer",

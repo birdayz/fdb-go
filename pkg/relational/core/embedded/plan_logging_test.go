@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/session"
 )
 
 // captureLogger records every PlanGenerationInfo it receives.

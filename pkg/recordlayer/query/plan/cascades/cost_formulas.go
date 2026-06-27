@@ -3,7 +3,7 @@ package cascades
 import (
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // Single source of truth for per-operator physical cost formulas (RFC-069).

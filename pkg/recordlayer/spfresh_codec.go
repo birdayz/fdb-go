@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh value codecs (RFC-094 §3). Vector-bearing values are RAW fixed-width

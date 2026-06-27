@@ -13,14 +13,14 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/directory"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/libfdbc"
+	"fdb.dev/pkg/recordlayer"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // This is RFC-109's gold gate: the libfdb_c escape hatch (pkg/fdbgo/libfdbc) and

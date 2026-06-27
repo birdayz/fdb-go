@@ -5,7 +5,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // SemanticHashCode returns an ALIAS-INVARIANT structural hash of a

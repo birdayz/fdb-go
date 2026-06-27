@@ -26,7 +26,7 @@
 // package layout — code review across languages stays tractable.
 package plans
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // RecordQueryPlan is the root interface for every physical plan
 // node. Mirrors Java's `RecordQueryPlan` interface — implementations

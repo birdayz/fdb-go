@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
 func TestParse_ValidStatements(t *testing.T) {

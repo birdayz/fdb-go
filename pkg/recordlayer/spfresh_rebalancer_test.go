@@ -8,9 +8,9 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 var _ = Describe("SPFresh rebalancer + coarse splits", func() {

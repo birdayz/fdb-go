@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // footerRootObject returns the absolute position of the object the footer's

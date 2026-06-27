@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // RecordQueryFlatMapPlan represents a correlated nested-loop join where

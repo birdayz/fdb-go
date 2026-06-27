@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh query path (RFC-094 §4): route on the cached two-level table →

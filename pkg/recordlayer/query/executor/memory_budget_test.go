@@ -7,8 +7,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // --- estimateQueryResultBytes sanity + nil-safety (RFC-130 §3.5) ---

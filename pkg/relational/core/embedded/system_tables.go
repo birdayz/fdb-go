@@ -5,10 +5,10 @@ import (
 	"database/sql/driver"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // INFORMATION_SCHEMA.* query handlers + SHOW DATABASES / SHOW SCHEMA

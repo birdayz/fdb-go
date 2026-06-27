@@ -7,7 +7,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // Distributed-tracing span context (RFC-115 §4). The pure-Go client historically

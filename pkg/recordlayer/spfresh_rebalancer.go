@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
 // The rebalancer (RFC-094 §6): the autonomous consumer of the trigger tasks

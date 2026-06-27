@@ -14,7 +14,7 @@ go_library(
         "some_elements_matcher.go",
         "typed_matcher.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/matching",
     visibility = ["//visibility:public"],
     deps = ["//pkg/recordlayer/query/plan/cascades/values"],
 )

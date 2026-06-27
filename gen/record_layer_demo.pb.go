@@ -568,8 +568,8 @@ const file_record_layer_demo_proto_rawDesc = "" +
 	"\x04BLUE\x10\x02\x12\n" +
 	"\n" +
 	"\x06YELLOW\x10\x03\x12\b\n" +
-	"\x04PINK\x10\x04B\xfd\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x14RecordLayerDemoProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x04PINK\x10\x04B\xde\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x14RecordLayerDemoProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_layer_demo_proto_rawDescOnce sync.Once

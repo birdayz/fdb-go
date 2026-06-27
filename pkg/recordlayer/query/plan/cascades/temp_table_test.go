@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 func TestTempTable_AddSingle(t *testing.T) {

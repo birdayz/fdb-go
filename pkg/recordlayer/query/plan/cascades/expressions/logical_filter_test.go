@@ -3,7 +3,7 @@ package expressions
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 func TestLogicalFilter_Construction(t *testing.T) {

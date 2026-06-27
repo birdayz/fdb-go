@@ -34,7 +34,7 @@ go_library(
         "walk.go",
         "with_predicates.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/expressions",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",

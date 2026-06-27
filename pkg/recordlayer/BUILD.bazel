@@ -117,7 +117,7 @@ go_library(
         "vector_index_maintainer.go",
         "version_index_maintainer.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer",
+    importpath = "fdb.dev/pkg/recordlayer",
     visibility = ["//visibility:public"],
     deps = [
         "//gen",

@@ -3,7 +3,7 @@ package fdb_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // TestReadYourOwnWrite_Get demonstrates that the pure Go client does NOT
@@ -14,7 +14,7 @@ import (
 // Our client sends the read to the storage server, which only sees committed data.
 //
 // This is the root cause of 770/2307 record layer test failures.
-// Tracked in: https://github.com/birdayz/fdb-record-layer-go/issues/19
+// Tracked in: https://fdb.dev/issues/19
 func TestReadYourOwnWrite_Get(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // RFC-121 conflict-range differential probes vs libfdb_c — two documented divergences (this file

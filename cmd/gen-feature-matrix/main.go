@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
+	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 func main() {

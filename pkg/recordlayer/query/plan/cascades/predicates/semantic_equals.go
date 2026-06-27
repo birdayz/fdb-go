@@ -1,7 +1,7 @@
 package predicates
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // SemanticEqualsUnderAliasMap is the ALIAS-AWARE, bool counterpart of

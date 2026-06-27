@@ -6,12 +6,12 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // Scenario is the primary chaos testing primitive. It wraps a real FDB store

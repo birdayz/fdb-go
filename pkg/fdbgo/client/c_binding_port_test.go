@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // ---------------------------------------------------------------------------

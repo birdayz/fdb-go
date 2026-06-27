@@ -3,10 +3,10 @@ package cascades
 import (
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Planner is the task-stack driven cascades planner — Track B6.

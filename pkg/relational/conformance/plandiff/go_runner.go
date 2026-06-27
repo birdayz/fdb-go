@@ -37,7 +37,7 @@ import (
 	"github.com/google/uuid"
 
 	// Register the fdbsql driver for blank-import side-effects.
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
 // goSQLRunner is the in-process Go runner. It opens a database/sql

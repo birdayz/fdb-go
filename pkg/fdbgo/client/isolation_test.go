@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestConflictDetection verifies that two concurrent transactions writing

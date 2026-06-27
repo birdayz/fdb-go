@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"fdb.dev/pkg/recordlayer"
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/parser"
+	"fdb.dev/pkg/relational/core/query"
 )
 
 // PlanQueryForTest runs the full Cascades pipeline on a SQL query against

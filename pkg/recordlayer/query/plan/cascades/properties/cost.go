@@ -42,7 +42,7 @@ package properties
 import (
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // Tunable constants. Calibrated to give plausible orderings for the

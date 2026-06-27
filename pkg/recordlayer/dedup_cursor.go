@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // DedupCursor removes adjacent duplicate elements from an inner cursor.

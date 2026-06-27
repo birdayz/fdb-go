@@ -1,8 +1,8 @@
 package ddl
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
 )
 
 // DropDatabaseConstantAction removes a database and all its schemas.

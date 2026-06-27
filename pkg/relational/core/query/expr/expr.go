@@ -68,10 +68,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // SubqueryPlanner is the callback interface for building subquery

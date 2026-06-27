@@ -6,13 +6,13 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // ScalarSubqueryPlan pairs a correlation alias with a logical operator

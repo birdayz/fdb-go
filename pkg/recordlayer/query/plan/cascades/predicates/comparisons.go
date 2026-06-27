@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/functions"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TypeMismatchError is returned when a comparison encounters incompatible

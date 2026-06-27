@@ -10,9 +10,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 )
 
 // Builder constructs a RecordLayerSchemaTemplate from SQL-level table

@@ -3,8 +3,8 @@ package cascades
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Example rule: "constant folding for ADD" — when we see

@@ -34,8 +34,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/query"
 )
 
 // Query is a single harness input: a SQL string with a name for

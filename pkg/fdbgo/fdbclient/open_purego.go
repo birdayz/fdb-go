@@ -2,7 +2,7 @@
 
 package fdbclient
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+import "fdb.dev/pkg/fdbgo/fdb"
 
 // Backend names the FDB client compiled into this binary.
 const Backend = "pure-go"

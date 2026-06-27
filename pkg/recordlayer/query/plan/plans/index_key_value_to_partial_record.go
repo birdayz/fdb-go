@@ -3,7 +3,7 @@ package plans
 import (
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TupleSource identifies which part of an IndexEntry to extract a field from.

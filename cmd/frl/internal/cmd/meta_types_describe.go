@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 func newMetaTypesDescribeCmd() *cobra.Command {

@@ -178,8 +178,8 @@ const file_record_query_runtime_proto_rawDesc = "" +
 	"\x05datum\"f\n" +
 	"\n" +
 	"PTempTable\x12X\n" +
-	"\vbufferItems\x18\x02 \x03(\v26.com.apple.foundationdb.record.planprotos.PQueryResultR\vbufferItemsB\xb9\x02\n" +
-	",com.com.apple.foundationdb.record.planprotosB\x17RecordQueryRuntimeProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x05CAFRP\xaa\x02(Com.Apple.Foundationdb.Record.Planprotos\xca\x02(Com\\Apple\\Foundationdb\\Record\\Planprotos\xe2\x024Com\\Apple\\Foundationdb\\Record\\Planprotos\\GPBMetadata\xea\x02,Com::Apple::Foundationdb::Record::Planprotos"
+	"\vbufferItems\x18\x02 \x03(\v26.com.apple.foundationdb.record.planprotos.PQueryResultR\vbufferItemsB\x9a\x02\n" +
+	",com.com.apple.foundationdb.record.planprotosB\x17RecordQueryRuntimeProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRP\xaa\x02(Com.Apple.Foundationdb.Record.Planprotos\xca\x02(Com\\Apple\\Foundationdb\\Record\\Planprotos\xe2\x024Com\\Apple\\Foundationdb\\Record\\Planprotos\\GPBMetadata\xea\x02,Com::Apple::Foundationdb::Record::Planprotos"
 
 var (
 	file_record_query_runtime_proto_rawDescOnce sync.Once

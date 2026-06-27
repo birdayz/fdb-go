@@ -423,8 +423,8 @@ const file_tuple_fields_proto_rawDesc = "" +
 	"\x0eNullableString\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\"%\n" +
 	"\rNullableBytes\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\fR\x05valueB\xf9\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x10TupleFieldsProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x05value\x18\x01 \x01(\fR\x05valueB\xda\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x10TupleFieldsProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_tuple_fields_proto_rawDescOnce sync.Once

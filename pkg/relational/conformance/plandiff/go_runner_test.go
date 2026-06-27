@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // goSQLClusterFilePath is set by TestMain when an FDB testcontainer is

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // rfc128DB seeds a single-column table t(id) with ids 1..10 and returns a *sql.DB

@@ -9,17 +9,17 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 var testDB *recordlayer.FDBDatabase

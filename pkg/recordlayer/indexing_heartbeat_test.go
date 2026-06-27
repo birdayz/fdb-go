@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

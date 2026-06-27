@@ -6,9 +6,9 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // ReadEndpointFromSlot reads an Endpoint from a proxy/storage interface at the given slot.

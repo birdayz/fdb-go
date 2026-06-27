@@ -8,9 +8,9 @@ import (
 	"math/big"
 	"strings"
 
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any) error {

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // errReplyTimeout is the INTERNAL signal that an RPC reply did not arrive

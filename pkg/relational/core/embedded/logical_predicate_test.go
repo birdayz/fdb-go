@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // parseQueryFromSelect parses SQL and returns the IQueryContext from

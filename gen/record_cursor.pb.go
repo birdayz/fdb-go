@@ -1989,8 +1989,8 @@ const file_record_cursor_proto_rawDesc = "" +
 	"\vLevelCursor\x12\"\n" +
 	"\fcontinuation\x18\x01 \x01(\fR\fcontinuation\x12\x1f\n" +
 	"\vcheck_value\x18\x02 \x01(\fR\n" +
-	"checkValueB\xfa\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x11RecordCursorProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"checkValueB\xdb\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x11RecordCursorProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_cursor_proto_rawDescOnce sync.Once

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of the given

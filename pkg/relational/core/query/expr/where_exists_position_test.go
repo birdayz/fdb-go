@@ -3,9 +3,9 @@ package expr_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 )
 
 // parseWhere extracts the WHERE expression parse node from a single SELECT.

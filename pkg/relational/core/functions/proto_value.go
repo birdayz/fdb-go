@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // UUIDProtoMessageName is the fully-qualified name of the

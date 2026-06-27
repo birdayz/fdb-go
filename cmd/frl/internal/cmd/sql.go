@@ -32,12 +32,12 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	relapi "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	relapi "fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
 
 	// Register the "fdbsql" driver via blank import.
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
 // newSQLCmd is the top-level `sql` noun — opens an interactive REPL

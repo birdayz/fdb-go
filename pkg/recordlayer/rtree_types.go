@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // NodeKind identifies a node as leaf or intermediate.

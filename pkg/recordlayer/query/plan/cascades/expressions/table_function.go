@@ -1,7 +1,7 @@
 package expressions
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TableFunctionExpression is a table-function expression that

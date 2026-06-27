@@ -9,7 +9,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "libfdbc",
     srcs = ["backend_stub.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc",
+    importpath = "fdb.dev/pkg/fdbgo/libfdbc",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
 )

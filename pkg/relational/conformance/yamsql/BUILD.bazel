@@ -8,7 +8,7 @@ go_library(
         "runner.go",
         "yamsql.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql",
+    importpath = "fdb.dev/pkg/relational/conformance/yamsql",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/api",

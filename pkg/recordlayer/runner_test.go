@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 var _ = Describe("FDBDatabaseRunner", func() {

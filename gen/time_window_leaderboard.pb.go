@@ -246,8 +246,8 @@ const file_time_window_leaderboard_proto_rawDesc = "" +
 	"\x0fstart_timestamp\x18\x02 \x01(\x04R\x0estartTimestamp\x12#\n" +
 	"\rend_timestamp\x18\x03 \x01(\x04R\fendTimestamp\x12!\n" +
 	"\fsubspace_key\x18\x05 \x01(\fR\vsubspaceKey\x12\x18\n" +
-	"\anlevels\x18\x06 \x01(\x05R\anlevelsB\x83\x02\n" +
-	"!com.com.apple.foundationdb.recordB\x1aTimeWindowLeaderboardProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\anlevels\x18\x06 \x01(\x05R\anlevelsB\xe4\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x1aTimeWindowLeaderboardProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_time_window_leaderboard_proto_rawDescOnce sync.Once

@@ -40,9 +40,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 // a3Key identifies a single cross-engine test (scenario name + its index in the

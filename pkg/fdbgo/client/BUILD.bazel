@@ -30,7 +30,7 @@ go_library(
         "topology.go",
         "transaction.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client",
+    importpath = "fdb.dev/pkg/fdbgo/client",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/internal/diag",

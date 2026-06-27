@@ -21,6 +21,6 @@ go_test(
 go_library(
     name = "bindingtester",
     srcs = ["doc.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-stacktester/bindingtester",
+    importpath = "fdb.dev/cmd/fdb-stacktester/bindingtester",
     visibility = ["//visibility:public"],
 )

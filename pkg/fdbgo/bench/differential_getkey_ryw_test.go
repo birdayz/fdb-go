@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // GetKey read-your-writes differential vs libfdb_c — RFC-056 sub-item (1).

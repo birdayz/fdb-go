@@ -14,7 +14,7 @@ package types
 import (
 	"encoding/binary"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // --- ErrorOr vtable: tag(uint8) at slot 0 (offset 8), value(RelOff) at slot 1 (offset 4) ---

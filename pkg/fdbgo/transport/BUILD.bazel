@@ -9,7 +9,7 @@ go_library(
         "wellknown.go",
         "wirelog.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport",
+    importpath = "fdb.dev/pkg/fdbgo/transport",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/wire",

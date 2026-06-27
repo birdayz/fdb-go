@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/fdbgo/transport"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // RFC-093 — the commit-path GRV (ensureReadVersion, transaction.go:1106) must

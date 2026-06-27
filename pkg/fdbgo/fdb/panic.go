@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/internal/diag"
+	"fdb.dev/pkg/fdbgo/internal/diag"
 )
 
 // recoverFuturePanic is the RFC-110 backstop for the facade-future goroutines

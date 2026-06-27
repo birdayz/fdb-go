@@ -1,8 +1,8 @@
 package cascades
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // DeMorganRule applies De Morgan's law to push a NOT past an AND or

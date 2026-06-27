@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestRecoveredPanicError pins the database/sql boundary-recover contract (P0.2):

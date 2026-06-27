@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
+	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 // TestFeatureMatrixUpToDate is the anti-rot guard for FEATURE_MATRIX.md: it

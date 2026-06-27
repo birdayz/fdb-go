@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"testing"
 
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/directory"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestDirectoryLayerBasic verifies that the Apple Go directory layer works

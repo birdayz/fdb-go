@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
+	"fdb.dev/pkg/rabitq"
 )
 
 // --- Java Random compatibility tests ---

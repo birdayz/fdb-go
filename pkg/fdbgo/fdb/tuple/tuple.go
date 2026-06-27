@@ -47,7 +47,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // A TupleElement is one of the types that may be encoded in FoundationDB

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // transaction wraps client.Transaction with the Apple-compatible API.

@@ -5,7 +5,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/internal/diag"
+	"fdb.dev/pkg/fdbgo/internal/diag"
 )
 
 // panicBackstop is the per-goroutine recover sink for the client's long-lived /

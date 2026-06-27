@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // L2 differential write battery — RFC-053 (RFC-010 C2). Run the SAME logical write

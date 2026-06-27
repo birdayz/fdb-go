@@ -10,10 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/rabitq"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh bulk build (RFC-094 §8): two-level clustering with a real state

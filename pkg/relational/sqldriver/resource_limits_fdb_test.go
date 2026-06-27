@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // pinEmbeddedConn pins a single *sql.Conn and hands back its underlying

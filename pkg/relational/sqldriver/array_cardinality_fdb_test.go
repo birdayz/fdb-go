@@ -10,14 +10,14 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // TestFDB_ArrayCardinality is the RFC-143 Phase 1 end-to-end proof: the

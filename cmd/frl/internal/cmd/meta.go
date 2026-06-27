@@ -12,10 +12,10 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/cmd/frl/internal/config"
+	"fdb.dev/cmd/frl/internal/meta"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // newMetaCmd is the `meta` noun.

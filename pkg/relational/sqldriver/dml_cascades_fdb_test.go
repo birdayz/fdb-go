@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // dmlCascadesDB creates an isolated db+schema with an Item table and

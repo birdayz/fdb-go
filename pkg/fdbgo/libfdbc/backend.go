@@ -43,8 +43,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // apiVersion is the libfdb_c API version this binding is built against (the

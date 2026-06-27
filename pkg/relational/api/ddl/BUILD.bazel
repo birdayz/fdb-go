@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "ddl",
     srcs = ["ddl.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl",
+    importpath = "fdb.dev/pkg/relational/api/ddl",
     visibility = ["//visibility:public"],
     deps = ["//pkg/relational/api"],
 )

@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 const (

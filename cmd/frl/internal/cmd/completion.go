@@ -3,9 +3,9 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/cmd/frl/internal/config"
+	"fdb.dev/cmd/frl/internal/meta"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // registerContextCompletion wires a ValidArgsFunction to the `--context`

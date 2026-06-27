@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 

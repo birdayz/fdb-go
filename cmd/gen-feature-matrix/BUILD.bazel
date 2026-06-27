@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 go_library(
     name = "gen-feature-matrix_lib",
     srcs = ["main.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/gen-feature-matrix",
+    importpath = "fdb.dev/cmd/gen-feature-matrix",
     visibility = ["//visibility:private"],
     deps = ["//pkg/relational/conformance/yamsql"],
 )

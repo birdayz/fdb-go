@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
+	fdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/session"
 )
 
 func TestSubstituteParams(t *testing.T) {

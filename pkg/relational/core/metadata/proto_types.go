@@ -3,7 +3,7 @@ package metadata
 import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // protoFieldToDataType translates a protobuf field descriptor into the

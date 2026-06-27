@@ -1,4 +1,4 @@
-module github.com/birdayz/fdb-record-layer-go/cmd/frl
+module fdb.dev/cmd/frl
 
 go 1.26.1
 
@@ -6,7 +6,7 @@ require (
 	buf.build/go/protoyaml v0.6.0
 	charm.land/fang/v2 v2.0.1
 	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08
-	github.com/birdayz/fdb-record-layer-go v0.0.0
+	fdb.dev v0.0.0
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/protobuf v1.36.11
@@ -62,4 +62,4 @@ require (
 // at the repo root also covers local dev, but the replace keeps `go build ./cmd/frl`
 // honest when run outside the workspace (or when a consumer runs `go install`
 // against a future tagged version in a branch without the tag).
-replace github.com/birdayz/fdb-record-layer-go => ../..
+replace fdb.dev => ../..

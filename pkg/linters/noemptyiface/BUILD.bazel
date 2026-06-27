@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "noemptyiface",
     srcs = ["analyzer.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/linters/noemptyiface",
+    importpath = "fdb.dev/pkg/linters/noemptyiface",
     visibility = ["//visibility:public"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )

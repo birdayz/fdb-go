@@ -291,8 +291,8 @@ const file_keyspace_proto_rawDesc = "" +
 	"\x04uuid\x18\t \x01(\v2T.com.apple.foundationdb.record.provider.foundationdb.keyspace.KeySpacePathEntry.UUIDR\x04uuid\x1ap\n" +
 	"\x04UUID\x122\n" +
 	"\x15most_significant_bits\x18\x01 \x01(\x10R\x13mostSignificantBits\x124\n" +
-	"\x16least_significant_bits\x18\x02 \x01(\x10R\x14leastSignificantBitsB\x97\x03\n" +
-	"@com.com.apple.foundationdb.record.provider.foundationdb.keyspaceB\rKeyspaceProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\aCAFRPFK\xaa\x02<Com.Apple.Foundationdb.Record.Provider.Foundationdb.Keyspace\xca\x02<Com\\Apple\\Foundationdb\\Record\\Provider\\Foundationdb\\Keyspace\xe2\x02HCom\\Apple\\Foundationdb\\Record\\Provider\\Foundationdb\\Keyspace\\GPBMetadata\xea\x02BCom::Apple::Foundationdb::Record::Provider::Foundationdb::Keyspace"
+	"\x16least_significant_bits\x18\x02 \x01(\x10R\x14leastSignificantBitsB\xf8\x02\n" +
+	"@com.com.apple.foundationdb.record.provider.foundationdb.keyspaceB\rKeyspaceProtoP\x01Z\vfdb.dev/gen\xa2\x02\aCAFRPFK\xaa\x02<Com.Apple.Foundationdb.Record.Provider.Foundationdb.Keyspace\xca\x02<Com\\Apple\\Foundationdb\\Record\\Provider\\Foundationdb\\Keyspace\xe2\x02HCom\\Apple\\Foundationdb\\Record\\Provider\\Foundationdb\\Keyspace\\GPBMetadata\xea\x02BCom::Apple::Foundationdb::Record::Provider::Foundationdb::Keyspace"
 
 var (
 	file_keyspace_proto_rawDescOnce sync.Once

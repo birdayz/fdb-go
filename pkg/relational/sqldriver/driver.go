@@ -6,7 +6,7 @@
 //
 //	import (
 //	    "database/sql"
-//	    _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+//	    _ "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
 //	db, err := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster")
@@ -33,14 +33,14 @@ import (
 	"os"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdbclient"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/ddl"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // DriverName is the database/sql driver name.

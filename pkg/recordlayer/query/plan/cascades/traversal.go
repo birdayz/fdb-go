@@ -1,7 +1,7 @@
 package cascades
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // Traversal is a pre-computed walk of an expression DAG rooted at a

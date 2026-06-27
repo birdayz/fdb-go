@@ -3,7 +3,7 @@ package types
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Benchmarks for wire marshal/unmarshal of generated FDB types.

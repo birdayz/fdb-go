@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // OrderDirection specifies how tuple values are encoded for ordered storage.

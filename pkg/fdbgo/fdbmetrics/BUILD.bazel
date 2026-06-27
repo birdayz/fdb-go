@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "fdbmetrics",
     srcs = ["fdbmetrics.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbmetrics",
+    importpath = "fdb.dev/pkg/fdbgo/fdbmetrics",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/client"],
 )

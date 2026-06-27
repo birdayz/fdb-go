@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestInMemoryTransaction_LifecycleCommit(t *testing.T) {

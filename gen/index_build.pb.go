@@ -291,8 +291,8 @@ const file_index_build_proto_rawDesc = "" +
 	"\x13IndexBuildHeartbeat\x12\x12\n" +
 	"\x04info\x18\x01 \x01(\tR\x04info\x126\n" +
 	"\x16createTimeMilliseconds\x18\x02 \x01(\x03R\x16createTimeMilliseconds\x12<\n" +
-	"\x19heartbeatTimeMilliseconds\x18\x03 \x01(\x03R\x19heartbeatTimeMillisecondsB\xf8\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x0fIndexBuildProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x19heartbeatTimeMilliseconds\x18\x03 \x01(\x03R\x19heartbeatTimeMillisecondsB\xd9\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x0fIndexBuildProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_index_build_proto_rawDescOnce sync.Once

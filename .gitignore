@@ -66,3 +66,8 @@ REVIEW.md
 
 # stray build artifact from `go build ./example/sql`
 /sql
+
+# Hugo website build output / cache (website/ is the fdb.dev site source)
+website/public/
+website/resources/
+website/.hugo_build.lock

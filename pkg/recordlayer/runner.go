@@ -7,7 +7,7 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // RecordContextConfig holds configuration for creating FDBRecordContext instances.

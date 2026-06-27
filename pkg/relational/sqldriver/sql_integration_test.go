@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 	// Blank import registers the "fdbsql" driver.
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
 func TestSQLOpenRegistered(t *testing.T) {

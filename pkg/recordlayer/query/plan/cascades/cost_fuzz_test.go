@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // FuzzCostMonotonicity pins two B4 cost-model invariants:

@@ -6,7 +6,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // Tests targeting uncovered lines in metadata.go to push coverage from ~79% to ~85%.

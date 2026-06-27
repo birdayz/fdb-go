@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "keyspace",
     srcs = ["keyspace.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace",
+    importpath = "fdb.dev/pkg/relational/core/keyspace",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/subspace",

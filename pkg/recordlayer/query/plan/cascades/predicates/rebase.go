@@ -1,6 +1,6 @@
 package predicates
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // RebasePredicate replaces correlation references in a predicate tree
 // according to the alias map. Returns the original predicate if no

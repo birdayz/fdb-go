@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestFDB_DatabaseLocked_ReadPathEnforcement pins the locked-database read

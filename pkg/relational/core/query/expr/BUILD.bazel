@@ -7,7 +7,7 @@ go_library(
         "resolver_iface.go",
         "walk.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/expr",
+    importpath = "fdb.dev/pkg/relational/core/query/expr",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",

@@ -3,7 +3,7 @@ package catalog
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // TestBuildCatalogMetaData_RecordTypes confirms the three record types

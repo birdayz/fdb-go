@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestComputeRecordsRange pins the typed-records build-range preset bounds (RFC-139).

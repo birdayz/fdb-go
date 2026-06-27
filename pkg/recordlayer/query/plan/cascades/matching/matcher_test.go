@@ -3,7 +3,7 @@ package matching
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // The 10-line predicate matcher pattern RFC-023 commits to:

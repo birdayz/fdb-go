@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
 
 // tempConfigPath returns a fresh file path inside t.TempDir(). Tests use

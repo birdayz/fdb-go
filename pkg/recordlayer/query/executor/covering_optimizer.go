@@ -3,9 +3,9 @@ package executor
 import (
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // NOT YET WIRED INTO THE QUERY PIPELINE.

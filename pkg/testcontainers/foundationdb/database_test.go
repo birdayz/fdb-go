@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 func TestFoundationDBDatabaseConnection(t *testing.T) {

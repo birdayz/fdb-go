@@ -4,12 +4,12 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
+	"fdb.dev/pkg/recordlayer"
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
 )
 
 // BenchmarkPlannerPlanVsCache isolates exactly what the plan cache buys: the

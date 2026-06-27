@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"testing"
 
-	gen "github.com/birdayz/fdb-record-layer-go/gen"
+	gen "fdb.dev/gen"
 	"google.golang.org/protobuf/proto"
 )
 

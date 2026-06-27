@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // FuzzDifferential_ConflictOutcome is RFC-121's under-conflict guard. It applies the SAME random

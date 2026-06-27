@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // rywCache implements a read-your-writes cache that intercepts reads and

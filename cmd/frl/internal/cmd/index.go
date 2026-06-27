@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/cmd/frl/internal/meta"
+	"fdb.dev/pkg/recordlayer"
 )
 
 func newIndexCmd() *cobra.Command {

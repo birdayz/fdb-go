@@ -14,7 +14,7 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // FDB tuple type codes.

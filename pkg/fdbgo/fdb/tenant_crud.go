@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 const (

@@ -3,7 +3,7 @@ package chaos
 import (
 	"context"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // verifyMinMaxEverIndexes checks MIN_EVER_LONG and MAX_EVER_LONG index values

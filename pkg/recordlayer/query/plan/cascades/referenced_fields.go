@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // ReferencedFields tracks which FieldValues are referenced by upstream
 // operators (predicates, projections, ordering). Pushed top-down via

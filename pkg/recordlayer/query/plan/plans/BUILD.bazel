@@ -50,7 +50,7 @@ go_library(
         "values.go",
         "vector_index_scan.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/plans",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

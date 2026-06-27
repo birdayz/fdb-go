@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestIntersectionCompKeyFunc_Int32Widened pins RFC-092 (TODO-production P0.3-G).
