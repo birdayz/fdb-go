@@ -153,6 +153,9 @@ func OpenDatabase(clusterFile string, opts ...Option) (Database, error) {
 	// bootstrap context (which we cancel after connect).
 	bootstrapCtx, bootstrapCancel := bootstrapContext(context.Background())
 	defer bootstrapCancel()
+	// Thread the selected API version into the client (RFC-149); the unset check
+	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
+	opts = append(opts, client.WithAPIVersion(int(apiVersion.Load())))
 	db, err := client.OpenDatabase(bootstrapCtx, clusterFile, opts...)
 	if err != nil {
 		return Database{}, err
@@ -183,6 +186,9 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile, opts ..
 	}
 	bootstrapCtx, cancel := bootstrapContext(ctx)
 	defer cancel()
+	// Thread the selected API version into the client (RFC-149); the unset check
+	// above guarantees it is non-zero, so the client's mandatory-set gate passes.
+	opts = append(opts, client.WithAPIVersion(int(apiVersion.Load())))
 	db, err := client.OpenDatabaseFromConfig(bootstrapCtx, cf, opts...)
 	if err != nil {
 		return Database{}, err

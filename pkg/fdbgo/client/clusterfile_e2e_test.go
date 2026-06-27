@@ -105,7 +105,7 @@ func TestClusterFileRewatch_FollowsForward_E2E(t *testing.T) {
 	forwardBody := (&types.ClientDBInfo{HasForward: true, Forward: []byte(cfB.String())}).MarshalFDB()
 	d := &forwardInjectDialer{injectAddr: cfA.Coordinators[0], forwardBody: forwardBody, enabled: true}
 
-	db, err := OpenDatabase(ctx, path, WithDialFunc(d.dial))
+	db, err := OpenDatabase(ctx, path, WithDialFunc(d.dial), WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase (should follow forward to B): %v", err)
 	}
@@ -160,7 +160,7 @@ func TestClusterFileRewatch_NoForward_E2E(t *testing.T) {
 	}
 	d := &forwardInjectDialer{injectAddr: cfA.Coordinators[0], enabled: false}
 
-	db, err := OpenDatabase(ctx, path, WithDialFunc(d.dial))
+	db, err := OpenDatabase(ctx, path, WithDialFunc(d.dial), WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}

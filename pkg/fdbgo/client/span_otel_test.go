@@ -43,7 +43,7 @@ func TestTracerExportsSpans(t *testing.T) {
 	defer tp.Shutdown(context.Background())
 
 	db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile,
-		WithTracer(tp.Tracer("test")), WithTracingSampleRate(1.0))
+		WithTracer(tp.Tracer("test")), WithTracingSampleRate(1.0), WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("open with tracer: %v", err)
 	}

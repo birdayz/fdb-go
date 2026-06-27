@@ -27,8 +27,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "invalid api-version: %s\n", os.Args[2])
 		os.Exit(1)
 	}
-	_ = apiVersion // TODO: use for version-gated behavior
-
 	clusterFile := ""
 	if len(os.Args) > 3 {
 		clusterFile = os.Args[3]
@@ -43,7 +41,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	db, err := client.OpenDatabase(ctx, clusterFile)
+	db, err := client.OpenDatabase(ctx, clusterFile, client.WithAPIVersion(apiVersion))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)

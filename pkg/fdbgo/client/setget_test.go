@@ -150,7 +150,7 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
 
-	db, err := OpenDatabaseFromConfig(setupCtx, sharedClusterFile)
+	db, err := OpenDatabaseFromConfig(setupCtx, sharedClusterFile, WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}

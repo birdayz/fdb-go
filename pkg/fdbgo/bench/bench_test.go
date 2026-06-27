@@ -22,6 +22,7 @@ import (
 
 var (
 	goClient      gofdb.Database
+	goRawClient   *client.Database // low-level pure-Go client (bypasses the fdb facade)
 	cgoClient     cgofdb.Database
 	testContainer *tc.Container
 )
@@ -85,6 +86,16 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	defer goClient.Close()
+
+	// A raw pure-Go client (NOT the fdb facade) so a differential can exercise
+	// the low-level client.Transaction.Atomic path that cmd/fdb-stacktester uses
+	// (RFC-149). WithAPIVersion(730) ≥ 510 → the Min→MinV2/And→AndV2 upgrade fires.
+	goRawClient, err = client.OpenDatabaseFromConfig(ctx, connectCF, client.WithAPIVersion(730))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open raw client db: %v\n", err)
+		os.Exit(1)
+	}
+	defer goRawClient.Close()
 
 	// CGo client
 	tmpFile, _ := os.CreateTemp("", "bench_cluster_*.txt")

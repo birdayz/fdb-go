@@ -54,7 +54,7 @@ func TestRangeByteCeiling(t *testing.T) {
 	const ceiling = 50 * 1024
 
 	t.Run("exceeds_cap_errors", func(t *testing.T) {
-		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithRangeByteCeiling(ceiling))
+		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithRangeByteCeiling(ceiling), WithAPIVersion(730))
 		if err != nil {
 			t.Fatalf("open with ceiling: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestRangeByteCeiling(t *testing.T) {
 
 	t.Run("unset_cap_is_unbounded", func(t *testing.T) {
 		// No ceiling (default) — oracle-matching: the full range materializes.
-		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile)
+		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithAPIVersion(730))
 		if err != nil {
 			t.Fatalf("open without ceiling: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestRangeByteCeiling(t *testing.T) {
 	// A ceiling that exceeds the whole result must NOT trip (boundary: the cap is a
 	// ceiling, not a per-batch limit).
 	t.Run("cap_above_total_does_not_trip", func(t *testing.T) {
-		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithRangeByteCeiling(totalSz*4))
+		db, err := OpenDatabaseFromConfig(ctx, sharedClusterFile, WithRangeByteCeiling(totalSz*4), WithAPIVersion(730))
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}

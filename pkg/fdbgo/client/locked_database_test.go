@@ -35,7 +35,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	db, err := OpenDatabaseFromConfig(ctx, connectCF)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF, WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 	// GRV cache may legitimately hold a fresh pre-lock version (C++ accepts
 	// the same staleness for its cache), which would make the arms
 	// timing-dependent.
-	db2, err := OpenDatabaseFromConfig(ctx, connectCF)
+	db2, err := OpenDatabaseFromConfig(ctx, connectCF, WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig (fresh handle): %v", err)
 	}

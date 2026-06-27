@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // ClusterFile represents an fdb.cluster file.
@@ -297,6 +298,13 @@ type database struct {
 	// paths are unconditional and allocation-free when unset. Read-only after open.
 	tracer oteltrace.Tracer
 
+	// Selected FDB API version (WithAPIVersion, RFC-149) — the C++
+	// DatabaseContext::apiVersion analog. Mandatory-set: OpenDatabase rejects an
+	// unset (0) version, so apiVersionAtLeast can never silently no-op. Gates
+	// version-dependent wire behaviour (e.g. the Min→MinV2/And→AndV2 atomic upgrade
+	// at >=510). Read-only after open.
+	apiVersion int
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -304,6 +312,11 @@ type database struct {
 	connected chan struct{}
 	wg        sync.WaitGroup
 }
+
+// apiVersionAtLeast reports whether the selected API version is >= v. Mirrors
+// C++ DatabaseContext::apiVersionAtLeast (Transaction::apiVersionAtLeast →
+// trState->cx->apiVersionAtLeast). Gates version-dependent wire behaviour.
+func (db *database) apiVersionAtLeast(v int) bool { return db.apiVersion >= v }
 
 // getGRVProxy returns a GRV proxy address using round-robin selection.
 func (db *database) getGRVProxy() (*ProxyInfo, error) {
@@ -707,6 +720,13 @@ func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (
 func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (*Database, error) {
 	o := applyOptions(opts)
 
+	// Mandatory-set API version (RFC-149): C++ cannot open a DB without
+	// fdb_select_api_version, so "unset" never occurs there. Reject an unset
+	// version here so the apiVersionAtLeast gate can never silently no-op.
+	if o.apiVersion == 0 {
+		return nil, &wire.FDBError{Code: 2200} // api_version_unset
+	}
+
 	// Resolve transport security (WithTLSConfig > ":tls"+FDB_TLS_* > plaintext).
 	// A non-nil tlsConfig is the only "use TLS" signal. The default-config-dir
 	// stat inside resolveTLSConfig is reached only for a TLS cluster, so a
@@ -742,6 +762,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		rangeByteCeiling:  o.rangeByteCeiling,
 		tracingSampleRate: o.tracingSampleRate,
 		tracer:            tracer,
+		apiVersion:        o.apiVersion,
 		connPool:          make(map[string]*transport.Conn),
 		dialing:           make(map[string]*dialCall),
 		topologyKick:      make(chan struct{}, 1),

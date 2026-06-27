@@ -25,6 +25,7 @@ type openOptions struct {
 	rangeByteCeiling  int64            // opt-in GetRange materialization ceiling (RFC-115 §2); 0 = unlimited (default)
 	tracingSampleRate float64          // distributed-trace sample rate (RFC-115 §4); 0.0 = unsampled (default, matches C++ TRACING_SAMPLE_RATE)
 	tracer            oteltrace.Tracer // OpenTelemetry export backend (RFC-115 §4 Layer 2); nil → noop (no telemetry)
+	apiVersion        int              // selected FDB API version (RFC-149); required — OpenDatabase rejects an unset version
 }
 
 func applyOptions(opts []Option) openOptions {
@@ -112,6 +113,14 @@ func WithTracingSampleRate(rate float64) Option {
 // transaction. Always Reset() or Cancel() a raw handle you don't commit.
 func WithTracer(t oteltrace.Tracer) Option {
 	return func(o *openOptions) { o.tracer = t }
+}
+
+// WithAPIVersion records the selected FDB API version; required — OpenDatabase
+// rejects an unset version, mirroring fdb_select_api_version. Gates
+// version-dependent wire behaviour, e.g. the Min→MinV2/And→AndV2 atomic upgrade
+// at >=510.
+func WithAPIVersion(v int) Option {
+	return func(o *openOptions) { o.apiVersion = v }
 }
 
 // WithLogger sets the per-handle logger for the client's operational events

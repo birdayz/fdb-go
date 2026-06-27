@@ -75,7 +75,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	}
 
 	// Create database and connect.
-	db, err := OpenDatabaseFromConfig(ctx, connectCF)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF, WithAPIVersion(730))
 	if err != nil {
 		// If bootstrap fails, try raw coordinator exchange for debugging.
 		t.Logf("OpenDatabaseFromConfig failed: %v", err)
@@ -310,7 +310,7 @@ func TestGetRange(t *testing.T) {
 		ID:           internalCF.ID,
 		Coordinators: cf.Coordinators,
 	}
-	db, err := OpenDatabaseFromConfig(ctx, connectCF)
+	db, err := OpenDatabaseFromConfig(ctx, connectCF, WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}

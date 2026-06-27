@@ -66,7 +66,7 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 	cf, err := ParseClusterString(connStr)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
-	db, err := OpenDatabaseFromConfig(ctx, cf)
+	db, err := OpenDatabaseFromConfig(ctx, cf, WithAPIVersion(730))
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })
 

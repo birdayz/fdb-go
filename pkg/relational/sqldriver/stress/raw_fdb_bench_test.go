@@ -27,7 +27,7 @@ func TestFDB_RawIngestBench(t *testing.T) {
 
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	db, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	db, err := purefdb.OpenDatabase(ctx0, clusterFilePath, purefdb.WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestFDB_RawReadScaling(t *testing.T) {
 
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	db, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	db, err := purefdb.OpenDatabase(ctx0, clusterFilePath, purefdb.WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestFDB_SaveRecordBatchScaling(t *testing.T) {
 
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath, purefdb.WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath, purefdb.WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
-	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath)
+	pureDB, err := purefdb.OpenDatabase(ctx0, clusterFilePath, purefdb.WithAPIVersion(730))
 	if err != nil {
 		t.Fatalf("OpenDatabase: %v", err)
 	}
