@@ -84,6 +84,7 @@ go_test(
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "statistics_fdb_test.go",
+        "subquery_in_on_crossproduct_fdb_test.go",
         "twotable_order_invariant_test.go",
         "union_aggregate_expr_alias_test.go",
         "union_aggregate_remap_test.go",

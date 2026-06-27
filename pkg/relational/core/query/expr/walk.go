@@ -2164,6 +2164,44 @@ func ContainsExistsAtom(ctx antlr.Tree) bool {
 	return false
 }
 
+// ContainsSubqueryAtom reports whether the parse tree rooted at ctx contains a
+// SCALAR subquery atom `(SELECT ...)` (SubqueryExpressionAtomContext) or an
+// `x IN (SELECT ...)` subquery body (an InListContext carrying a
+// QueryExpressionBody) at the CURRENT query level. A structural typed-node walk,
+// no GetText.
+//
+// Used by the logical builder to reject these subquery shapes cleanly in
+// positions that do not install a SubqueryPlanner — notably a JOIN ON clause,
+// where Go (like Java) does not support IN-subqueries or correlated scalar
+// subqueries. Without this, the ON resolver's WalkPredicate declines the shape
+// with UnsupportedExpressionShapeError and the caller silently DROPS the whole
+// ON predicate → the join degrades to a CROSS PRODUCT (silent wrong rows). EXISTS
+// atoms are matched separately by ContainsExistsAtom (EXISTS-in-ON IS supported).
+//
+// An `x IN (a, b, c)` value list (no QueryExpressionBody) is NOT a subquery and
+// is not matched; the walk descends into its elements in case one is itself a
+// scalar subquery. A matched subquery atom is not descended into — its inner
+// SELECT is that subquery's own concern.
+func ContainsSubqueryAtom(ctx antlr.Tree) bool {
+	if ctx == nil {
+		return false
+	}
+	switch c := ctx.(type) {
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return true
+	case *antlrgen.InListContext:
+		if c.QueryExpressionBody() != nil {
+			return true
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if ContainsSubqueryAtom(ctx.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
 // WhereExistsInScalarPosition reports whether the WHERE expression rooted at ctx
 // contains an EXISTS atom that is NOT in a directly-handled top-level boolean
 // position — i.e. it is buried inside a SCALAR expression (a CASE, a comparison
