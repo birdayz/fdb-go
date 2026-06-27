@@ -6,7 +6,7 @@ go_library(
         "doc.go",
         "open_purego.go",
     ],
-    importpath = "fdb.dev/pkg/fdbgo/fdbclient",
+    importpath = "fdb.dev/pkg/internal/fdbclient",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
 )

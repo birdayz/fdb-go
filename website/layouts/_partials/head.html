@@ -1,5 +1,5 @@
 <head>
-  {{/* go-import FIRST — before any CSS/JS. `go get` parses go-import with a
+  {{/* go-import FIRST, before any CSS/JS. `go get` parses go-import with a
        non-strict XML decoder that chokes on a full page's scripts/SVG, so the meta
        must precede them, and it stops scanning at </head> or <body> (see
        `go help importpath`). Module root = fdb.dev → github.com/birdayz/fdb-go.
@@ -19,7 +19,7 @@
     {{- if .IsHome -}}
       {{ .Site.Title -}}
     {{ else -}}
-      {{ with .Title }}{{ . }} – {{ end -}}
+      {{ with .Title }}{{ . }} · {{ end -}}
       {{ .Site.Title -}}
     {{ end -}}
   </title>

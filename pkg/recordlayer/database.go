@@ -11,7 +11,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/fdbgo/fdbclient"
+	"fdb.dev/pkg/internal/fdbclient"
 )
 
 // WeakReadSemantics configures relaxed read consistency for a transaction.

@@ -34,7 +34,7 @@ import (
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/fdbclient"
+	"fdb.dev/pkg/internal/fdbclient"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"

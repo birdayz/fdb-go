@@ -1,10 +1,10 @@
-/* fdb.dev — landing polish. Loaded by hextra after the theme's compiled CSS.
+/* fdb.dev landing polish. Loaded by hextra after the theme's compiled CSS.
    Note: hextra ships PRECOMPILED Tailwind, so ad-hoc `hx:` utilities used only in
    our content don't exist in the stylesheet. We style the landing with real
    classes here instead. */
 
 /* ---- Layout rhythm --------------------------------------------------------- */
-/* Body copy reads left-aligned at a comfortable measure — never centered
+/* Body copy reads left-aligned at a comfortable measure, never centered
    (centered multi-line paragraphs look unfinished), aligned under each heading. */
 /* hextra-home lays content out in a flex column with align-items:flex-start, so
    block children shrink-wrap to content instead of stretching. width:100% makes
