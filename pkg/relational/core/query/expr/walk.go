@@ -721,7 +721,11 @@ func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value)
 		case *predicates.ExistentialValuePredicate:
 			if q.Value != nil {
 				if v, ok := next(); ok {
-					return &predicates.ExistentialValuePredicate{Value: v, Comparison: q.Comparison}
+					// Use the validated constructor (a rebased existential operand
+					// stays a QuantifiedObjectValue). Defensive: this arm is unreached
+					// in practice — a predicateValue only ever wraps a CASE WHEN
+					// condition, and EXISTS-in-CASE-WHEN is rejected upstream.
+					return predicates.MustNewExistentialValuePredicate(v, q.Comparison)
 				}
 			}
 			return q
@@ -776,13 +780,16 @@ func (pv *predicateValue) WithChildrenValue(newChildren []values.Value) values.V
 // EqualsWithoutChildrenValue implements values.SelfEqualsWithoutChildren so the
 // Cascades matcher (values.EqualsWithoutChildren) can structurally compare a
 // predicate-as-value without the values package importing expr (which would
-// cycle). predicateValue is a leaf Value — Children() is empty — so its node
-// equality is the full structural equality of the wrapped predicate.
-// Non-alias-aware, matching EqualsWithoutChildren's structural (not semantic)
-// contract.
+// cycle). Its node equality is the FULL structural equality of the wrapped
+// predicate. Children() now also exposes the predicate's operand values, so the
+// matcher additionally recurses them — a redundant (but consistent) double-check,
+// since equal-whole-predicate implies equal-operands. Non-alias-aware, matching
+// EqualsWithoutChildren's structural (not semantic) contract.
 //
-// NOTE: the SelfEqualsWithoutChildren interface carries no alias map, so this
-// comparison is alias-blind inside the opaque leaf. That is safe today because the
+// NOTE: the SelfEqualsWithoutChildren interface carries no alias map, so the
+// node-level comparison is alias-blind. AND-ed with the alias-AWARE child
+// recursion this makes predicateValue equality effectively alias-blind (stricter
+// → can only MISS interning, never produce a false merge). That is safe today because the
 // memo interns non-merge selects under the identity alias map (so raw correlation
 // equality is exactly the alias-aware result). If alias-aware interning is ever
 // widened to selects whose result trees carry predicateValues, this interface (and

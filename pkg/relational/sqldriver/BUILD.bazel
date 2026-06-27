@@ -88,6 +88,7 @@ go_test(
         "rfc087_swallow_sort_fdb_test.go",
         "rfc153_matrix_fdb_test.go",
         "scalar_subquery_cte_test.go",
+        "selfjoin_having_probe_test.go",
         "setops_distinct_probe_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
