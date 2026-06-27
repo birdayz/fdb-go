@@ -59,6 +59,62 @@ Most FDB tooling links Apple's C library through cgo — no static binaries, pai
 
 <div style="height:4rem"></div>
 
+{{< hextra/hero-section heading="h2" >}}Quickstart{{< /hextra/hero-section >}}
+
+<div class="s-body">
+
+Define a schema, write a row, query it from the CLI. The pure-Go client is the default backend — nothing to install but a cluster file.
+
+</div>
+
+<div class="s-steps">
+
+{{% steps %}}
+
+### Install
+
+```sh
+go get fdb.dev/pkg/recordlayer
+```
+
+### Create a database and schema
+
+```sql
+CREATE DATABASE /myapp;
+CREATE SCHEMA TEMPLATE app
+    CREATE TABLE users (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))
+    CREATE INDEX by_email ON users (email);
+CREATE SCHEMA /myapp/main WITH TEMPLATE app;
+```
+
+### Write a row
+
+```go
+import _ "fdb.dev/pkg/relational/sqldriver"
+
+db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+db.Exec(`INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')`)
+```
+
+### Query it from the CLI
+
+```text
+$ frl sql --database /myapp
+fdb> SELECT name, email FROM users WHERE email = 'alice@example.com';
+ name  │ email
+───────┼─────────────────────
+ Alice │ alice@example.com
+(1 row)
+```
+
+{{% /steps %}}
+
+</div>
+
+<p class="muted-note">The Cascades planner picks the <code>by_email</code> index for that query — no full scan. Prefer Go's typed record API to store protobuf records directly? See the <a href="https://github.com/birdayz/fdb-go">record-layer guide</a>.</p>
+
+<div style="height:4rem"></div>
+
 {{< hextra/hero-section heading="h2" >}}A&nbsp;client, and&nbsp;layers&nbsp;on&nbsp;top.{{< /hextra/hero-section >}}
 
 <div class="s-body">
