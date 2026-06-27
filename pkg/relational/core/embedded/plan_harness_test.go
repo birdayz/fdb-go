@@ -1442,3 +1442,96 @@ func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
 	}
 	assertPlanContains(t, plan, "PredicatesFilter")
 }
+
+// TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized pins that Phase-1's
+// yieldUnknown does NOT materialize a NON-simple (OR) residual on a partition-SUBSEL
+// join leg. The leg's join correlation lives in a SIBLING predicate (t.fk = o.id), so
+// refIsJoinLeg does not flag this ref (it inspects only the bound prefix); materializing
+// the OR residual as a standalone leg filter would win and sever the join feed →
+// FlatMap(... inner=Fetch(<nil>)) → 0 rows (codex's 3-way-join repro). The SHAPE gate in
+// compensationSafeForYield keeps the OR residual on the OLD InsertFinal path → byte-
+// identical to pre-yieldUnknown behavior → the join is driven correctly. (Materializing
+// such residuals SAFELY — the rot-fix — is RFC-150, gated on the winner-selection
+// invariant; a pre-existing variant with a simple-AND residual is the RFC-150 sentinel.)
+func TestPlanHarness_MultiTableJoinCompoundResidualNotMaterialized(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
+		CREATE TABLE t (id bigint, fk bigint, k bigint, a bigint, b bigint, x bigint, PRIMARY KEY (id))
+		CREATE TABLE u (id bigint, x bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	plan, err := PlanQueryForTest("SELECT t.k FROM o, t, u WHERE t.k = 5 AND (t.a > 1 OR t.b < 2) AND t.fk = o.id AND u.x = t.x", schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanNotContains(t, plan, "<nil>") // no degenerate nil-inner leg (the join feed is intact)
+}
+
+// TestPlanHarness_CorrelatedResidualNotStandaloneLeg pins the M2 0-row guard RFC-148
+// Phase 1 restored in compensationSafeForYield. A join leg whose correlation lives
+// in the RESIDUAL (an unindexed `t.fk = o.id`) alongside an indexed local predicate
+// (`t.k = 5`) is NOT flagged by refHasCorrelatedMatch (which inspects only the bound
+// prefix). The retired isSimpleResidualCompensation rejected such a compensation via
+// its predicate-correlation check — safety, not shape rot. Without the restored
+// guard, yieldUnknown realizes a physical correlated leg filter that severs the
+// join's correlation feed → FlatMap(outer=Scan(O), inner=Fetch(<nil>)) → 0 rows (the
+// PR-#201 shape, reproduced by Graefe). The valid plan drives the inner from the outer.
+func TestPlanHarness_CorrelatedResidualNotStandaloneLeg(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE o (id bigint, PRIMARY KEY (id))
+		CREATE TABLE t (id bigint, fk bigint, k bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	plan, err := PlanQueryForTest("SELECT t.id FROM o, t WHERE t.fk = o.id AND t.k = 5", schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanNotContains(t, plan, "<nil>") // no degenerate nil-inner leg
+	assertPlanContains(t, plan, "FlatMap")  // correlated join, not a standalone leg filter
+}
+
+// TestPlanHarness_ResidualCompensationPreservesOrdering pins RFC-148 §3d: a SIMPLE
+// residual re-optimized through yieldUnknown still receives the requested-ordering push,
+// so the index scan's matched order eliminates the in-memory sort (a missed push would
+// add a physical InMemorySort over the filter). `a > 1` rides the IDX_K range scan;
+// ORDER BY k is served by the scan order.
+func TestPlanHarness_ResidualCompensationPreservesOrdering(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	plan, err := PlanQueryForTest("SELECT * FROM t WHERE k > 5 AND a > 1 ORDER BY k", schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("plan: %s", plan)
+	assertPlanContains(t, plan, "IDX_K")
+	assertPlanNotContains(t, plan, "Sort") // ordering eliminated by the index scan, not a physical sort
+}
+
+// TestPlanHarness_YieldUnknownReentryConverges pins RFC-148 §3c termination: the
+// yieldUnknown exploratory re-entry into pushDataAccessTasks converges to a single
+// stable plan across repeated planning (the B4 growth-keyed guard + Insert dedup hold
+// the fixpoint; a regressed guard re-consuming every round would either diverge to the
+// 10-round cap — a degraded/missing plan — or flap nondeterministically).
+func TestPlanHarness_YieldUnknownReentryConverges(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE t (id bigint, k bigint, a bigint, PRIMARY KEY (id))
+		CREATE INDEX idx_k ON t(k)`
+	sql := "SELECT * FROM t WHERE k = 5 AND a > 1"
+	first, err := PlanQueryForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "IDX_K") {
+		t.Fatalf("re-entry query degraded (cap hit?): %s", first)
+	}
+	for i := 0; i < 5; i++ {
+		got, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if got != first {
+			t.Fatalf("non-deterministic plan (re-entry convergence failure):\nrun0: %s\nrun%d: %s", first, i, got)
+		}
+	}
+}

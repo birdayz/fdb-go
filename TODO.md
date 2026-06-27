@@ -56,27 +56,38 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
 2. **[ ] RFC-056 continuation item 3 — ongoing `/hunt-divergences`.** Standing differential-axis hunt
    vs libfdb_c (atomic-op edges across `Atomic.h`, error-code/option semantics, key/tuple/versionstamp
    encoding). RFC-059→067 closed. Detail: conformance section, "Fresh differential axes".
-   **Atomic-op axis hunted (2026-06-25): one concrete divergence found → RFC-149.** The Min→MinV2 /
-   And→AndV2 op-code upgrade lives only in the `fdb` facade, so `client.Transaction.Atomic` (and thus the
-   `cmd/fdb-stacktester` binding tester) ships legacy `Min(13)`/`And(6)` where libfdb_c ships
-   `MinV2(18)`/`AndV2(19)` — diverges on absent-key fold. Fix: move the upgrade into `client.Atomic` (the
-   `RYW::atomicOp` analog), 1:1 with `ReadYourWrites.actor.cpp:2243-2248`. All other fold functions verified
-   byte-identical to `Atomic.h`. Gate: FDB-C-dev + Torvalds + codex. Next axes: option `defaultFor` matrix,
-   versionstamp-offset edges (RFC-063 still Draft).
+   **Atomic-op axis hunted (2026-06-25): one concrete divergence found → RFC-149 — DELIVERED (PR #358).**
+   The Min→MinV2 / And→AndV2 op-code upgrade lived only in the `fdb` facade, so `client.Transaction.Atomic`
+   (and the `cmd/fdb-stacktester` binding tester) shipped legacy `Min(13)`/`And(6)` where libfdb_c ships
+   `MinV2(18)`/`AndV2(19)` — diverged on absent-key fold. Fixed: the upgrade now lives in `client.Atomic`
+   (the `RYW::atomicOp` analog), 1:1 with `ReadYourWrites.actor.cpp:2243-2248`, gated `apiVersionAtLeast(510)`
+   with the API version threaded into `client.database` (mandatory-set → `api_version_unset` 2200). Pinned by
+   a cgo in-txn-RYW + committed red→green differential + the 509/510 boundary. FDB-C-dev + Torvalds + codex +
+   @claude all green. Next axes: option `defaultFor` matrix, versionstamp-offset edges (RFC-063 still Draft).
 3. **[ ] C2-followup — confirm RFC-057's lazy iterator closed the go-vs-cgo 1007-rate** near the 5s
    MVCC edge (profiling, not a fix). Detail: conformance section, "C2-followup".
 4. **[ ] Query-engine "one query path" unification.** Route `buildSelectShell`/SimpleTable builder +
    INSERT…SELECT through `visitSelectGroupBy`, delete the legacy builder (CLAUDE.md "no parallel
    pipelines" endgame). Graefe-gated. Detail: "vs Java" follow-ups (RFC-079b + RFC-084) + §7.6 history.
-5. **[ ] 7.7 follow-up — RFC-148 (re-scoped: NOT architecturally blocked).** Replace the
-   `isSimpleResidualCompensation` allowlist with Java's exploratory-yield re-optimization
-   (`yieldUnknownExpression`). Research (2026-06-25) found the primitives already exist in Go — the
-   two-set memo (`Insert`/`InsertFinal`), the exploratory re-explore loop, and the PLANNING-phase
-   explode/join/filter rules (`InComparisonToExplodeRule` is already in `PlanningExplorationRules`). The
-   residual work is a `yieldUnknown` router (trivial) + a `pushDataAccessTasks` re-entry/termination guard
-   (the real engineering) + per-shape red→green grinding (IN/correlated/index-only/join-leg/vector-inner,
-   each already has a sentinel). Reclassified from "BLOCKED" to "open — grind one shape at a time."
-   Graefe-gated. Detail: §7.7 + RFC-148.
+5. **[~] 7.7 — RFC-148 split into Phase 1 (RFC-148) + Phase 2 (RFC-150), both Graefe direction+text ACK'd.**
+   - **[x] Phase 1 (RFC-148, Option A):** retire the `isSimpleResidualCompensation` **predicate-shape**
+     allowlist (the rot) via `yieldUnknown` exploratory re-optimization; **keep** the inner-scan + index-only
+     **safety** guards as `compensationSafeForYield` (a documented stand-in); `yieldUnknown` router + B4
+     growth-keyed re-entry guard; `!refIsJoinLeg`/`matchBoundPrefixIsCorrelated` retained. Behavior-preserving
+     (plandiff byte-identical + full suite green); rot-fix pinned by `TestPlanHarness_CompoundResidualUsesIndex`
+     (OLD full-scanned an OR-residual; now `IndexScan`). Graefe ACK (Option A).
+   - **[ ] Phase 1 follow-up — match-level index-only consumption + proper B3 gate (NAMED, Graefe condition).**
+     Go's vector/aggregate match leaves the index-only value (vector `DistanceRank`,
+     `vector_index_match_candidate.go:220-234`; aggregate `UnmatchedAggregateValue`) as a RESIDUAL where Java
+     marks it CONSUMED. Port the match-level consumption so `ImplementFilterRule`'s `!isIndexOnly()` matcher
+     gate (Java `ImplementFilterRule.java:62`) can go in WITHOUT breaking legit queries — at which point
+     `compensationSafeForYield` + `validateNoIndexOnlyResidual` both become redundant. **Sentinels (red→green):**
+     `TestVectorPlan_QualifyPlansToVectorScan` (must still plan) + `TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual`
+     (must stay unplannable). Vector-matching subsystem change — its own gated commit (design-principle #10).
+   - **[ ] Phase 2 (RFC-150):** remove `!refIsJoinLeg` + retire the Go-only `tryFlatMapPlan` + the B1 structural
+     no-correlated-standalone-leg-winner invariant + LEFT/FULL OUTER residual-placement reconciliation, one
+     shape at a time (EXPLAIN + row-count + 1M stress). The PR-#201 surface. Gated: 148 lands → Graefe re-ACK
+     148 impl → 150 impl design (concrete Java B1 mechanism) → Graefe ACK → grind. Detail: RFC-150.
 6. **[ ] Parallelize `//conformance` off Ginkgo** [LOW PRIO]. Detail: "Test infra (low priority)".
 7. **[~] Java target bump to 4.12.11.0 (from the 4.11 series; RFC-135).** Mechanical bump landed (pins + proto
    sync + regen + version-target docs; `record_query_plan.proto` removed `PVersionValue`/reserved tag
