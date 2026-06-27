@@ -677,6 +677,77 @@ func predicateChildValues(p predicates.QueryPredicate) []values.Value {
 	return nil
 }
 
+// predicateWithChildValues reconstructs a predicate, substituting its operand
+// Values with the entries of newCh consumed in the SAME order predicateChildValues
+// yields them. The inverse of predicateChildValues — used by
+// predicateValue.WithChildrenValue so values.Replace / RebaseValue can rewrite
+// (e.g. correlation-rebase) the values inside a CASE WHEN condition. Returns the
+// input unchanged on an arity mismatch (defensive; the framework always passes a
+// matching slice).
+func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value) predicates.QueryPredicate {
+	idx := 0
+	var rebuild func(predicates.QueryPredicate) predicates.QueryPredicate
+	next := func() (values.Value, bool) {
+		if idx >= len(newCh) {
+			return nil, false
+		}
+		v := newCh[idx]
+		idx++
+		return v, true
+	}
+	rebuild = func(p predicates.QueryPredicate) predicates.QueryPredicate {
+		switch q := p.(type) {
+		case *predicates.ComparisonPredicate:
+			op := q.Operand
+			if q.Operand != nil {
+				if v, ok := next(); ok {
+					op = v
+				}
+			}
+			cmp := q.Comparison
+			if q.Comparison.Operand != nil {
+				if v, ok := next(); ok {
+					cmp.Operand = v
+				}
+			}
+			return &predicates.ComparisonPredicate{Operand: op, Comparison: cmp}
+		case *predicates.ValuePredicate:
+			if q.Value != nil {
+				if v, ok := next(); ok {
+					return predicates.NewValuePredicate(v)
+				}
+			}
+			return q
+		case *predicates.ExistentialValuePredicate:
+			if q.Value != nil {
+				if v, ok := next(); ok {
+					return &predicates.ExistentialValuePredicate{Value: v, Comparison: q.Comparison}
+				}
+			}
+			return q
+		case *predicates.AndPredicate:
+			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+			for i, sp := range q.SubPredicates {
+				subs[i] = rebuild(sp)
+			}
+			return predicates.NewAnd(subs...)
+		case *predicates.OrPredicate:
+			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+			for i, sp := range q.SubPredicates {
+				subs[i] = rebuild(sp)
+			}
+			return predicates.NewOr(subs...)
+		case *predicates.NotPredicate:
+			return predicates.NewNot(rebuild(q.Child))
+		}
+		return p
+	}
+	if len(newCh) != len(predicateChildValues(p)) {
+		return p
+	}
+	return rebuild(p)
+}
+
 // Children exposes the operand Values of the WRAPPED predicate (a CASE WHEN
 // condition like `a.x > 5`). Without this, the predicate's value references are
 // invisible to every values.WalkValue-based walk — notably GetCorrelatedToOfValue
@@ -692,6 +763,15 @@ func (pv *predicateValue) Name() string                             { return "pr
 func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
 func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
+
+// WithChildrenValue implements values.SelfWithChildren: it rebuilds the wrapped
+// predicate with the substituted operand Values (the inverse of Children() above),
+// so values.Replace / RebaseValue can rewrite the values inside the CASE WHEN
+// condition (e.g. correlation rebase) instead of hitting withChildren's
+// unhandled-type panic.
+func (pv *predicateValue) WithChildrenValue(newChildren []values.Value) values.Value {
+	return &predicateValue{pred: predicateWithChildValues(pv.pred, newChildren)}
+}
 
 // EqualsWithoutChildrenValue implements values.SelfEqualsWithoutChildren so the
 // Cascades matcher (values.EqualsWithoutChildren) can structurally compare a

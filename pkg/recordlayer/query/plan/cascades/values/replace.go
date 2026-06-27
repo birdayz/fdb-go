@@ -361,6 +361,25 @@ func withChildren(v Value, newChildren []Value) Value {
 		return &ExistsValue{Value: newChildren[0]}
 
 	default:
+		// A Value defined OUTSIDE this package (e.g. expr.predicateValue, which
+		// would import-cycle if referenced here) reconstructs itself via
+		// SelfWithChildren — the WithChildren analogue of SelfEqualsWithoutChildren
+		// / SelfSemanticHash. Without this, exposing such a value's Children()
+		// (e.g. a CASE WHEN condition's operand values) would hit the
+		// unhandled-type panic the moment Replace/RebaseValue rebuilds it.
+		if swc, ok := v.(SelfWithChildren); ok {
+			return swc.WithChildrenValue(newChildren)
+		}
 		panic(fmt.Sprintf("withChildren: unhandled Value type %T", v))
 	}
+}
+
+// SelfWithChildren lets a Value defined outside this package reconstruct itself
+// with new children, so values.WithChildren (and Replace/RebaseValue, which build
+// new trees bottom-up) can rewrite it without this package's type switch
+// enumerating it. The WithChildren analogue of SelfEqualsWithoutChildren and
+// SelfSemanticHash. The newChildren slice has the same length and order as the
+// value's Children().
+type SelfWithChildren interface {
+	WithChildrenValue(newChildren []Value) Value
 }
