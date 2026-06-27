@@ -775,20 +775,20 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] executor: materialized NestedLoopJoin DROPS an `IN`-subquery conjunct in a compound LEFT-OUTER ON clause → CROSS PRODUCT (pre-existing, surfaced by RFC-153 attribution 2026-06-27)
+### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
-returns the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of the correctly-null-extended
-`(1,NULL)(2,NULL)`. **Pre-existing, NOT an RFC-153 regression** — verified by attribution: the base commit
-`15d2ab340` (no RFC-153 changes at all) returns the IDENTICAL cross-product. Both base and HEAD route this
-shape to the materialized `RecordQueryNestedLoopJoinPlan` (base: RewriteOuterJoinRule's guard doesn't fire;
-HEAD: RFC-153's fail-closed verifier declines the probe), and the NLJ's per-pair predicate evaluation
-mishandles the compound ON clause when one conjunct is an `IN`-subquery — it drops the conjunct (and
-apparently the `c.a_id=a.id` conjunct too) → emits the full cross product. Scope: the materialized NLJ
-executor's compound-ON / IN-in-ON handling (`executeNestedLoopJoin` → `passesJoinPredicates`), likely the
-correlated IN-subquery comparand inside an ON-applied (not WHERE) predicate. Pin: an FDB test asserting the
-above query null-extends correctly. Independent of RFC-153 (which only governs the joined-preserved *probe*
-path; the decline correctly falls back to this NLJ, exposing the pre-existing NLJ bug).
+returned the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of `(1,NULL)(2,NULL)`. **Root cause was NOT the
+executor** (this entry's original guess of `passesJoinPredicates` was wrong): the conjunct was dropped at
+SQL→logical translation. `upgradeJoinOnPredicates` installs no SubqueryPlanner, so `WalkPredicate` declined the
+subquery shape, a permissive `continue` dropped the WHOLE ON predicate, and the translator ignores `OnText` once
+`OnPredicate==nil` → cross product (NLJ with zero preds — EXPLAIN confirmed). **Fixed (RFC-154 Phase 1):**
+fail-CLOSED — `expr.ContainsSubqueryAtom` rejects IN-subquery / scalar-subquery in ON with `0AF00` (Go, like Java,
+supports neither anywhere); the silent `continue` now surfaces a clean error; `mapPredicateWalkError` shared by
+WHERE+ON. **RFC-154 Phase 2a** additionally adds INNER `EXISTS`-in-ON support (Java parity). OUTER EXISTS-in-ON is
+deferred behind a fail-closed rejection (Graefe-gated on the RFC-153 rebaser-correlation work). Pinned:
+`subquery_in_on_crossproduct_fdb_test.go`, `exists_in_on_fdb_test.go`, `rfc153_joined_preserved_plan_test.go`,
+`logical_predicate_test.go`. Graefe + Torvalds ACK.
 
 ### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
 

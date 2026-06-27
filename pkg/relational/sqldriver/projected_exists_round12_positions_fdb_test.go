@@ -96,13 +96,18 @@ func TestFDB_ProjectedExistsRound12_OtherPositions(t *testing.T) {
 
 	exists := "EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id)"
 
-	const unsupportedJoinOn = "EXISTS in a JOIN ON clause is not yet supported"
 	const unsupportedOrderBy = "EXISTS in an ORDER BY clause is not yet supported"
 	const unsupportedWhereScalar = "EXISTS nested in a scalar expression is not yet supported"
 
-	// --- JOIN ON EXISTS → reject (was: ON condition dropped, all joined rows passed). ---
-	t.Run("join_on_exists_rejected", func(t *testing.T) {
-		assertRejected(t, "SELECT t1.id FROM t1 JOIN t2 AS j ON "+exists, unsupportedJoinOn)
+	// --- INNER JOIN ON EXISTS → supported (RFC-154 §5, Java parity). The
+	// correlated EXISTS gates which (t1,j) pairs survive: EXISTS(t2.fk=t1.id) is
+	// true only for t1.id=2 (t2 has the single row fk=2), and j ranges over the
+	// one t2 row, so only t1.id=2 is emitted. (Was: ON condition silently dropped,
+	// every joined row passed — the cross-product bug.) ---
+	t.Run("join_on_exists_supported", func(t *testing.T) {
+		if got := queryInts(t, "SELECT t1.id FROM t1 JOIN t2 AS j ON "+exists); !eq(got, []int64{2}) {
+			t.Fatalf("INNER JOIN ON EXISTS: got %v want [2]", got)
+		}
 	})
 
 	// --- ORDER BY EXISTS → reject (was: key dropped, wrong/no ordering). ---

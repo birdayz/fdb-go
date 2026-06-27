@@ -544,15 +544,42 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
-			// RFC-141 R4: EXISTS in a JOIN ON clause is NOT a
-			// directly-handled position. The ON resolver carries no
-			// SubqueryPlanner, so WalkPredicate would error on the EXISTS and the
-			// whole ON predicate would be silently DROPPED → every joined row
-			// passes (a silent wrong result). Detect a contained EXISTS atom
-			// structurally and reject cleanly rather than drop the condition.
+			// EXISTS in a JOIN ON clause (RFC-154 §5, Java parity). For an INNER
+			// join this is equivalent to EXISTS in WHERE (no null-extension):
+			// install a SubqueryPlanner so WalkPredicate builds the ON predicate's
+			// ExistentialValuePredicate, then carry the collected EXISTS subqueries
+			// on the join so translateJoin attaches the existential quantifier and
+			// the NLJ rule's implementJoinWithExistential path builds the semi-join.
+			//
+			// OUTER joins are deferred (RFC-154 §5.2b): the ON-EXISTS is correlated
+			// to the PRESERVED side and gates null-extension, which the semi-join
+			// shape cannot express (implementJoinWithExistential would drop preserved
+			// rows whose EXISTS is false instead of null-extending). Reject
+			// fail-closed so OUTER EXISTS-in-ON never returns wrong rows.
 			if expr.ContainsExistsAtom(sq.joins[sqIdx].onExpr) {
-				return api.NewError(api.ErrCodeUnsupportedQuery,
-					"EXISTS in a JOIN ON clause is not yet supported")
+				if j.Kind != logical.JoinInner {
+					return api.NewError(api.ErrCodeUnsupportedQuery,
+						"EXISTS in an OUTER JOIN ON clause is not yet supported")
+				}
+				onPlanner := &existsSubqueryPlanner{
+					md:          md,
+					schemaName:  schemaName,
+					outerScopes: buildOuterScopeSources(sq, md, schemaName),
+					cteScopes:   cteScopes,
+				}
+				resolver.SetSubqueryPlanner(onPlanner)
+				pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
+				resolver.SetSubqueryPlanner(nil) // don't leak into the next join's walk
+				if walkErr != nil {
+					if apiErr := mapPredicateWalkError(walkErr); apiErr != nil {
+						return apiErr
+					}
+					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+						"unsupported EXISTS in JOIN ON clause: %v", walkErr)
+				}
+				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+				j.OnExistsSubqueries = onPlanner.subqueries
+				continue
 			}
 			// A scalar `(SELECT ...)` or `x IN (SELECT ...)` subquery in the ON
 			// clause: Go (like Java) does not support correlated scalar subqueries
