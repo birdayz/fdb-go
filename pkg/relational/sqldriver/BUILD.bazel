@@ -94,6 +94,7 @@ go_test(
         "w3_5_plan_diversity_test.go",
         "zz_in_proj_repro_test.go",
         "zz_join_selpred_repro_test.go",
+        "zz_sarg_comparand_guard_test.go",
     ],
     embed = [":sqldriver"],
     deps = [

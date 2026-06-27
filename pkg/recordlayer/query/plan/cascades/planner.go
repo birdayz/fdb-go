@@ -7,6 +7,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
 
 // Planner is the task-stack driven cascades planner — Track B6.
@@ -712,6 +713,12 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			}
 		}
 	}
+	// Bound-prefix correlations carried by the compensation's own scan probe(s) —
+	// the outer aliases the probe already feeds (see the OUTER-correlation guard
+	// below). Computed once: the data-access scan hides these at
+	// GetCorrelatedToWithoutChildren, so they are recovered from the scan's
+	// ComparisonRanges directly.
+	probeCorr := compensationProbeCorrelations(f)
 	for _, pred := range f.GetPredicates() {
 		// ROT-FIX (RFC-150, post-B1a): the predicate-SHAPE restriction the OLD
 		// isSimpleResidualCompensation carried (ComparisonPredicate-only, non-IN) is
@@ -745,9 +752,26 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 		corr := predicates.GetCorrelatedToOfPredicate(pred)
 		deletePredicateConstantObjectAliases(pred, corr)
 		for alias := range corr {
-			if _, isLocal := local[alias]; !isLocal {
-				return false
+			if _, isLocal := local[alias]; isLocal {
+				continue
 			}
+			// A residual correlated to an OUTER alias is SAFE when the
+			// compensation's own bound-prefix SCAN is already correlated to that
+			// same alias: the probe establishes the join's correlation feed (e.g.
+			// the inner U-leg `Scan(U,[id=t.fk])` is a T-driven PK probe), so this
+			// residual (`u.c = t.a`) is a SECONDARY filter on the already-bound
+			// probe, not the severed primary join key. This is the inverse of the
+			// PR-#201 shape, where the join key itself lives in the residual
+			// (`t.fk = o.id` over a constant-bound `Scan(T,[k=5])`, whose probe
+			// carries NO correlation) — there `o ∉ probeCorr` so the reject stands.
+			// Without this, the data-access path can never produce the cheap
+			// correlated index-nested-loop inner whenever a second, non-sargable
+			// cross-correlation predicate rides along (GRAEFE-2: drives the U
+			// full-scan O(N×M) instead of the T-driven U-PK-probe O(N)).
+			if _, fedByProbe := probeCorr[alias]; fedByProbe {
+				continue
+			}
+			return false
 		}
 	}
 	return true
@@ -1017,4 +1041,68 @@ func stampOrderingWinners(ref *expressions.Reference, costModel func(a, b expres
 // declare what ordering they produce.
 type orderingHinter interface {
 	HintOrdering() properties.Ordering
+}
+
+// compensationProbeCorrelations returns the outer aliases that the bound prefix of
+// any scan beneath the compensation filter f is correlated to (the comparands of
+// its ScanComparisons). The data-access scan (scanPlanExpression / the physical
+// scan wrappers) deliberately HIDES these at GetCorrelatedToWithoutChildren — the
+// path can SARG a correlated join key into a bare probe — so they are recovered
+// from the scan's comparison ranges, the value-level twin of D.2's
+// scanComparisonCorrelations. Used by compensationSafeForYield to tell a probe-fed
+// secondary residual (safe) from a severed primary-join-key residual (PR-#201).
+func compensationProbeCorrelations(f *expressions.LogicalFilterExpression) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	visited := map[expressions.RelationalExpression]struct{}{}
+	var walk func(m expressions.RelationalExpression)
+	walk = func(m expressions.RelationalExpression) {
+		if m == nil {
+			return
+		}
+		if _, ok := visited[m]; ok {
+			return
+		}
+		visited[m] = struct{}{}
+		if pe, ok := m.(physicalPlanExpression); ok {
+			collectScanPlanCorrelations(pe.GetRecordQueryPlan(), out)
+		}
+		for _, q := range m.GetQuantifiers() {
+			if cref := q.GetRangesOver(); cref != nil {
+				for _, cm := range cref.AllMembers() {
+					walk(cm)
+				}
+			}
+		}
+	}
+	for _, q := range f.GetQuantifiers() {
+		if cref := q.GetRangesOver(); cref != nil {
+			for _, m := range cref.AllMembers() {
+				walk(m)
+			}
+		}
+	}
+	return out
+}
+
+// collectScanPlanCorrelations adds the bound-prefix (ScanComparisons comparand)
+// correlations of every primary or index scan in p's plan subtree into out. The
+// matched data-access plan is wrapped (TypeFilter / Fetch / Covering …) above the
+// bound Scan, so recurse through GetChildren to reach it.
+func collectScanPlanCorrelations(p plans.RecordQueryPlan, out map[values.CorrelationIdentifier]struct{}) {
+	if p == nil {
+		return
+	}
+	switch sp := p.(type) {
+	case *plans.RecordQueryScanPlan:
+		for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+			out[a] = struct{}{}
+		}
+	case *plans.RecordQueryIndexPlan:
+		for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+			out[a] = struct{}{}
+		}
+	}
+	for _, c := range p.GetChildren() {
+		collectScanPlanCorrelations(c, out)
+	}
 }

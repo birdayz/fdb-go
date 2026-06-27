@@ -589,17 +589,20 @@ func comparisonOrientations(cp *predicates.ComparisonPredicate) []comparisonOrie
 // (sourceAlias). Returns the bound ComparisonRange, or nil if no orientation
 // can SARG this placeholder. Each orientation must (1) be a sargable comparison
 // type, (2) have its column operand be a column of the matched source — not an
-// outer correlation, the field-name-collision guard — (3) match the
-// placeholder's column, and (4) be type-compatible. The comparand of the chosen
-// orientation becomes the scan range's bound value (a correlated value for a
+// outer correlation, the field-name-collision guard — (3) have its COMPARAND be
+// independently evaluable w.r.t. the matched source (an outer correlation or a
+// constant, NOT a per-row column of the source — the self-comparison guard), (4)
+// match the placeholder's column, and (5) be type-compatible. The comparand of the
+// chosen orientation becomes the scan range's bound value (a correlated value for a
 // join probe, a literal for an equality filter).
 //
-// Risk → 0-row: the column must be the matched INNER source's column and the
-// comparand the OTHER side; when ambiguous (both sides are inner columns / a
-// self-comparison) or the operator is not commutable (IN / IS NULL / NOT
-// EQUALS), only the as-written orientation is offered and an outer column on the
-// LHS simply fails the source-correlation guard → no SARG → the predicate stays
-// residual (correct, not wrong rows).
+// Risk → 0-row / wrong-rows: the column must be the matched INNER source's column
+// and the comparand a value evaluable WITHOUT a row of that source; when ambiguous
+// (both sides are inner columns / a self-comparison `b = a`) or the operator is not
+// commutable (IN / IS NULL / NOT EQUALS), no orientation SARGs and the predicate
+// stays residual (correct rows). An outer column on the LHS fails guard (2); a
+// source column on the comparand side fails guard (3) — which otherwise SARGs the
+// circular range `a = <this row's b>` → 0 rows.
 func bindOrientedComparison(
 	cp *predicates.ComparisonPredicate,
 	ph *predicates.Placeholder,
@@ -633,6 +636,18 @@ func bindOrientedComparison(
 			if _, ofSource := colCorr[sourceAlias]; !ofSource {
 				continue
 			}
+		}
+		// Comparand-side guard (design-ACK condition #1): the comparand bound into
+		// the scan range must be INDEPENDENTLY EVALUABLE w.r.t. the matched source —
+		// an outer correlation or a constant — NEVER a per-row column of the matched
+		// source. A self-comparison `b = a` (both columns of the scanned row) would
+		// otherwise bind the indexed column `a` and SARG the circular range
+		// `a = <this row's b>` → 0 rows. This is the "self-cmp / both-inner → do NOT
+		// SARG, leave residual" arm: rejecting here keeps the predicate a residual
+		// filter (correct rows). A constant literal (`a = 5`) and a correlated join
+		// probe (`inner.pk = outer.fk`) remain independently evaluable → still SARG.
+		if !comparandIndependentOfSource(orient.comparison.Operand, sourceAlias) {
+			continue
 		}
 		if !valuesMatchColumn(orient.column, ph.GetValue()) {
 			continue
@@ -680,6 +695,44 @@ func valueCorrelationWithSeeds(v values.Value) map[values.CorrelationIdentifier]
 		return true
 	})
 	return out
+}
+
+// comparandIndependentOfSource reports whether comparand can be bound into a scan
+// range over the matched source — i.e. it is evaluable WITHOUT a row of that source.
+// It is independent iff:
+//   - its correlation set (incl. hidden merge-RC legs) is non-empty and EXCLUDES
+//     sourceAlias — a pure OUTER correlation (the valid join-probe comparand,
+//     `a = outer.fk`); or
+//   - it references no column at all — a constant/literal (`a = 5`).
+//
+// It is NOT independent (→ leave the predicate residual) when it reads the matched
+// source's own row: directly or via a merge RC (correlation includes sourceAlias),
+// or as a FLAT FieldValue whose source correlation has been elided (a bare column
+// of the scanned row, the `b = a` self-comparison case → circular range → 0 rows).
+func comparandIndependentOfSource(comparand values.Value, sourceAlias values.CorrelationIdentifier) bool {
+	if comparand == nil {
+		// A unary comparison (IS [NOT] NULL) binds a null-range with no comparand —
+		// nothing to evaluate against a source row, so no circular range is possible.
+		return true
+	}
+	cc := valueCorrelationWithSeeds(comparand)
+	if _, ofSource := cc[sourceAlias]; ofSource {
+		return false
+	}
+	if len(cc) > 0 {
+		return true // correlated only to OTHER alias(es) → outer, independently evaluable
+	}
+	// Empty correlation: independent only if it reads no column — a constant. A bare
+	// FieldValue (a source column with its correlation elided) is NOT independent.
+	readsColumn := false
+	values.WalkValue(comparand, func(node values.Value) bool {
+		if _, ok := node.(*values.FieldValue); ok {
+			readsColumn = true
+			return false
+		}
+		return true
+	})
+	return !readsColumn
 }
 
 // isPassThroughSingleSourceSelect reports whether sel is a single-ForEach-

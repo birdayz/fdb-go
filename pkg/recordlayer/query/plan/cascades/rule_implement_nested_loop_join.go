@@ -263,38 +263,44 @@ func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.Corr
 	return ok
 }
 
-// legProvidedAliases returns the correlation aliases a join leg subtree PROVIDES
-// (binds) to a predicate referencing it: its own quantifier alias plus every
-// table alias buried inside it — a MERGE leg `$m=(A⋈B)` provides {$m, A, B}, so a
-// spanning predicate in the OTHER leg that reads A's column (`p.x = a.y`) is seen
-// as correlated to $m. Recurses through the leg ref's member quantifiers (the
+// physicalProvidedAliases returns the correlation aliases a join leg subtree
+// PROVIDES (binds) to a predicate referencing it: its own quantifier alias plus
+// every table alias buried inside it — a MERGE leg `$m=(A⋈B)` provides {$m, A, B},
+// so a spanning predicate in the OTHER leg that reads A's column (`p.x = a.y`) is
+// seen as correlated to $m. Recurses through the leg's member quantifiers (the
 // buried tables of a re-enumerated merge). Without this, a predicate referencing a
 // BURIED merge leg (not the merge alias itself) is invisible to the hasCorrelation
 // check, so a spanning 3-way join (a connects both b and c) emits a MATERIALIZED
 // NLJ that embeds a leg with the buried table unbound → 0 rows
 // (TestFDB_DerivedTableExistsJoin three-way; the GROUP-BY-wrapped twin of
-// TestFDB_JoinMerge_OuterColumn_NotDropped).
+// TestFDB_JoinMerge_OuterColumn_NotDropped). Cycle-breaking is by pointer-identity
+// on visited expressions (RelationalExpression members are pointers → comparable):
+// a fixed depth bound would silently return an INCOMPLETE alias set for a deeply
+// nested leg, re-introducing the exact unbound-buried-table 0-row bug class.
 func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{ownAlias: {}}
-	var walk func(e expressions.RelationalExpression, depth int)
-	walk = func(e expressions.RelationalExpression, depth int) {
-		if e == nil || depth > 8 {
+	visited := map[expressions.RelationalExpression]struct{}{}
+	var walk func(e expressions.RelationalExpression)
+	walk = func(e expressions.RelationalExpression) {
+		if e == nil {
 			return
 		}
+		if _, ok := visited[e]; ok {
+			return
+		}
+		visited[e] = struct{}{}
 		for _, q := range e.GetQuantifiers() {
-			if _, seen := out[q.GetAlias()]; !seen {
-				out[q.GetAlias()] = struct{}{}
-			}
+			out[q.GetAlias()] = struct{}{}
 			r := q.GetRangesOver()
 			if r == nil {
 				continue
 			}
 			for _, m := range r.AllMembers() {
-				walk(m, depth+1)
+				walk(m)
 			}
 		}
 	}
-	walk(expr, 0)
+	walk(expr)
 	return out
 }
 
