@@ -634,7 +634,60 @@ type predicateValue struct {
 	pred predicates.QueryPredicate
 }
 
-func (pv *predicateValue) Children() []values.Value                 { return []values.Value{} }
+// predicateChildValues returns the operand Values reachable inside a predicate
+// (used to surface a predicateValue's hidden value references to value-tree
+// walks). Recurses the boolean connectives; a leaf comparison/value predicate
+// yields its operand value(s). Unknown predicate types yield nothing (degrading
+// to the prior opaque behavior rather than guessing). Mirrors the predicate
+// shapes SimplifyPredicateValues handles.
+func predicateChildValues(p predicates.QueryPredicate) []values.Value {
+	switch q := p.(type) {
+	case *predicates.ComparisonPredicate:
+		var out []values.Value
+		if q.Operand != nil {
+			out = append(out, q.Operand)
+		}
+		if q.Comparison.Operand != nil {
+			out = append(out, q.Comparison.Operand)
+		}
+		return out
+	case *predicates.ValuePredicate:
+		if q.Value != nil {
+			return []values.Value{q.Value}
+		}
+	case *predicates.ExistentialValuePredicate:
+		if q.Value != nil {
+			return []values.Value{q.Value}
+		}
+	case *predicates.AndPredicate:
+		var out []values.Value
+		for _, sp := range q.SubPredicates {
+			out = append(out, predicateChildValues(sp)...)
+		}
+		return out
+	case *predicates.OrPredicate:
+		var out []values.Value
+		for _, sp := range q.SubPredicates {
+			out = append(out, predicateChildValues(sp)...)
+		}
+		return out
+	case *predicates.NotPredicate:
+		return predicateChildValues(q.Child)
+	}
+	return nil
+}
+
+// Children exposes the operand Values of the WRAPPED predicate (a CASE WHEN
+// condition like `a.x > 5`). Without this, the predicate's value references are
+// invisible to every values.WalkValue-based walk — notably GetCorrelatedToOfValue
+// and PushFilterBelowJoinRule's predicateSingleSide — so a CASE used as a
+// cross-table comparison operand (`CASE WHEN a.x>5 THEN .. END = c.y`) was
+// mis-classified as single-side and wrongly pushed below the join, where `a.x` is
+// unbound → silent WRONG ROWS. (values.withChildren has no case for this
+// external type, so it returns the node unchanged — matching the prior
+// opaque-rebase behavior; equality/hash below use the whole predicate, which is
+// consistent with these children.)
+func (pv *predicateValue) Children() []values.Value                 { return predicateChildValues(pv.pred) }
 func (pv *predicateValue) Name() string                             { return "predicate" }
 func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
