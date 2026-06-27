@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // PIN (codex P2-1): a query-PARAMETER-bound scan in a join leg must plan and
@@ -125,16 +126,21 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_existsleak")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_existsleak")
+	// Unique db/schema per process so the pin is stable under --runs_per_test
+	// (separate processes sharing one FDB container).
+	u := time.Now().UnixNano()
+	dbp := fmt.Sprintf("/testdb_existsleak_%d", u)
+	tmpl := fmt.Sprintf("existsleak_tmpl_%d", u)
+	setup := openTestDB(t, dbp)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbp)
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE existsleak_tmpl "+
+		"CREATE SCHEMA TEMPLATE "+tmpl+" "+
 			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsleak/s WITH TEMPLATE existsleak_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbp+"/s WITH TEMPLATE "+tmpl)
 
-	dsn := fmt.Sprintf("fdbsql:///testdb_existsleak?cluster_file=%s&schema=s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbp, clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -152,10 +158,14 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (21, 3)")
 
 	// a=1: joins b10, EXISTS c(fk=1) -> yes; a=2: joins b11, no c(fk=2) -> no;
-	// a=3: joins b12, EXISTS c(fk=3) -> yes.
-	const q = "SELECT a.id FROM a, b WHERE b.fk = a.id AND EXISTS (SELECT 1 FROM c WHERE c.fk = a.id)"
-	got := queryIDs(t, db, ctx, q)
-	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
-		t.Errorf("%q: got %v, want [1 3] — a leaked EXISTS outer correlation would misroute the enclosing join", q, got)
+	// a=3: joins b12, EXISTS c(fk=3) -> yes. Project BOTH leg columns: the
+	// pre-fix bug (qualifyOuterRow clobbering the merged row's qualified "A.ID"
+	// with the bare last-leg-wins value) collapsed a.id and b.id onto one leg
+	// nondeterministically — so assert the exact (a.id, b.id) pairs, not just a.id.
+	const q = "SELECT a.id, b.id FROM a, b WHERE b.fk = a.id AND EXISTS (SELECT 1 FROM c WHERE c.fk = a.id)"
+	got := queryIDCounts(t, db, ctx, q) // reuses (int64,int64) row reader; .id=a.id .count=b.id
+	want := []idCount{{1, 10}, {3, 12}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("%q: got %v, want [{1 10} {3 12}] — a leaked/collapsed EXISTS-join correlation misroutes the columns", q, got)
 	}
 }
