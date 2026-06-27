@@ -692,10 +692,12 @@ read-but-never-written (their writers were island-only); `validQualifiers` is re
 `eval_map.go:57` qualifier check (always-nil → branch never fires) and `outerScopes` by `scope.go:85`.
 Removing them touches the kept map-path eval logic (behavior-preserving since both are always nil for the
 kept consumers — single-source system-table WHERE + constant INSERT-VALUES never set them). Small,
-separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.) **→ RFC-147**
-(2026-06-25 research confirmed: zero non-nil production writers; the only non-nil writer is `scope_test.go`;
-the whole of `scope.go` becomes dead. Net-negative ~5-file deletion + one pin for the kept qualified
-fallback. Gate: Torvalds + codex + @claude — not Graefe surface.)
+separate cleanup. (`cteData`/`ctes` was the third such orphan — removed in Phase 2.) **→ RFC-147 — DONE.**
+Deleted both fields + their resets, collapsed the always-nil branches in `eval_map.go`/`eval_proto.go`,
+removed `scope.go` + `scope_test.go` (the only non-nil writer), and pinned the kept qualified→bare
+fallback with `TestFDB_InfoSchema_SchemataWhere_QualifiedRef` (red→green: 42703 when disabled). Net
+−111 LOC. Torvalds LGTM (collapse proven behavior-preserving; fixed an orphaned `resolveOuterColumn`
+comment ref he caught).
 
 Original writeup (kept for context):
 

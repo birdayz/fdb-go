@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
 	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
@@ -42,51 +41,15 @@ func evalExprAtomOnMap(ctx context.Context, conn *EmbeddedConnection, row map[st
 		ref := parseColRef(name)
 		v, found := row[name]
 		if !found && ref.isQualified() {
-			// Try unqualified: "Order.amount" → "amount".
-			qualUpper := strings.ToUpper(ref.table)
-			// When a JOIN scope is active, reject a qualified
-			// reference whose qualifier isn't a valid FROM source
-			// alias — symmetric with the SELECT projection check.
-			// Fires before the bare-column fallback so wrong
-			// qualifiers error 42F01 instead of silently picking
-			// whichever source populated the bare key.
-			//
-			// Correlated subquery exception: if the qualifier matches
-			// an outer-scope alias, skip the reject and let the outer
-			// fallback below resolve it.
-			if conn != nil && conn.validQualifiers != nil && !conn.validQualifiers[qualUpper] {
-				if !outerScopesContainQualifier(conn, qualUpper) {
-					return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
-						"column reference %q names unknown table/alias %q", name, ref.table)
-				}
-				// Outer qualifier in JOIN scope: leave found=false
-				// so the `if !found` block below routes to the
-				// outer-scope walk via resolveOuterColumn.
-			} else if conn != nil && outerScopesContainQualifier(conn, qualUpper) {
-				// CTE / single-source path (validQualifiers nil) with
-				// an active outer scope whose alias matches the
-				// qualifier — defer to the outer-scope walk below
-				// (leave found=false). Without this, `big.gid =
-				// a.gid` inside `EXISTS (SELECT 1 FROM big WHERE …)`
-				// would silently resolve `a.gid` to big's bare `gid`
-				// column, making the predicate `big.gid = big.gid`
-				// (tautology). Outer-scope wins iff the qualifier
-				// names an outer source.
-			} else {
-				v, found = row[ref.bare()]
-			}
+			// Try unqualified: "Order.amount" → "amount". The
+			// qualifier-reject and correlated outer-scope paths were
+			// removed with the legacy interpreter (RFC-147): the kept
+			// map-path consumers (INFORMATION_SCHEMA WHERE,
+			// INSERT-VALUES folding) never set a JOIN/outer scope, so
+			// those branches were unreachable dead state.
+			v, found = row[ref.bare()]
 		}
 		if !found {
-			// Correlated subquery fallback: walk outer-row stack.
-			if conn != nil && len(conn.outerScopes) > 0 {
-				ov, ofound, oerr := conn.resolveOuterColumn(name)
-				if oerr != nil {
-					return nil, oerr
-				}
-				if ofound {
-					return ov, nil
-				}
-			}
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q not found in row", name)
 		}
 		if m, isAmb := v.(ambiguousColumnMarker); isAmb {

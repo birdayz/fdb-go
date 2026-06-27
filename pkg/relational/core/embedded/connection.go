@@ -70,21 +70,6 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
-	// validQualifiers holds the uppercased set of valid qualifier aliases
-	// in scope for the map-path evaluator (eval_map.go), used to reject
-	// WHERE/ON references like `c.name` when no source `c` is in scope
-	// (42F01). nil falls back to bare-column lookup. After RFC-145 removed
-	// the legacy executor nothing populates it; the read site preserves
-	// the nil-fallthrough semantics.
-	validQualifiers map[string]bool
-
-	// outerScopes is a stack of outer-row scopes used to resolve correlated
-	// column references from inside a subquery. The innermost scope is at
-	// the end; empty stack = no correlation context. Read by
-	// resolveOuterColumn / the map+proto evaluators. After RFC-145 removed
-	// the legacy executor nothing populates it; the read sites fall through.
-	outerScopes []outerScope
-
 	// currentSourceAliases holds the uppercased set of qualifier aliases
 	// for the outer proto-path scan currently executing. Consumed by the
 	// proto-path evaluator (eval_proto.go) so a correlated inner reference
@@ -564,8 +549,6 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		c.activeTx = nil
 		tx.rctx.Cancel()
 	}
-	c.outerScopes = nil
-	c.validQualifiers = nil
 	c.currentSourceAliases = nil
 	c.sess.ResetSchemaCache()
 	c.invalidatePlanCache()
