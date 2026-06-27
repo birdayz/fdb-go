@@ -4,11 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// queryIDs runs q and returns the single BIGINT column of every row, sorted.
+// queryIDs runs q and returns the single BIGINT column of every row, sorted
+// ascending. The callers assert on a row SET (membership/count), not the
+// executor's emission order — none of these queries carry an ORDER BY — so the
+// helper sorts to keep the assertions order-insensitive (a valid plan/ordering
+// change must not flake them).
 func queryIDs(t *testing.T, db *sql.DB, ctx context.Context, q string) []int64 {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, q)
@@ -27,6 +32,7 @@ func queryIDs(t *testing.T, db *sql.DB, ctx context.Context, q string) []int64 {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err %q: %v", q, err)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
