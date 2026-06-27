@@ -71,6 +71,25 @@ func (p *RecordQueryIndexPlan) GetScanComparisons() []*predicates.ComparisonRang
 	return p.scanComparisons
 }
 
+// WithScanComparisons returns a copy of the plan with new per-column comparison
+// ranges, preserving every other field (covering/coveringColumns/strictlySorted/
+// reverse/flowedType/recordTypes). Used by the RFC-153 buried-merge correlation
+// rebase to rewrite a SARG comparand without losing the index's covering metadata.
+func (p *RecordQueryIndexPlan) WithScanComparisons(comps []*predicates.ComparisonRange) *RecordQueryIndexPlan {
+	copied := make([]*predicates.ComparisonRange, len(comps))
+	copy(copied, comps)
+	return &RecordQueryIndexPlan{
+		indexName:       p.indexName,
+		scanComparisons: copied,
+		recordTypes:     p.recordTypes,
+		flowedType:      p.flowedType,
+		reverse:         p.reverse,
+		strictlySorted:  p.strictlySorted,
+		covering:        p.covering,
+		coveringColumns: p.coveringColumns,
+	}
+}
+
 // GetRecordTypes returns the covered record types.
 func (p *RecordQueryIndexPlan) GetRecordTypes() []string { return p.recordTypes }
 

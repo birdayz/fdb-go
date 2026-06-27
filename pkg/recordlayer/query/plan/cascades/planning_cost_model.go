@@ -913,6 +913,38 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 	// template-free plans fall through to the exact phantom-free concretePlanCost.
 	costA := exprConcreteCost(a, stats, ctx)
 	costB := exprConcreteCost(b, stats, ctx)
+
+	// A materialized NLJ vs a correlated FlatMap (DIFFERENT root join shapes) is a
+	// Go-ONLY comparison — Java keeps no materialized NLJ (RewriteOuterJoinRule
+	// canonicalizes the OuterJoinExpression to FlatMaps and the cost model only ever
+	// ranks FlatMap-vs-FlatMap; see Java PlanningCostModel.compare, which gates its
+	// join-ordering criterion on `a instanceof RecordQueryFlatMapPlan && b instanceof
+	// RecordQueryFlatMapPlan`). For this Go-only pair the two cardinality FORMULAS are
+	// inconsistent — nestedLoopJoinCost uses a cross-product proxy
+	// (outerCard*innerCard*sel), flatMapCost an outer-only proxy (outerCard*sel) — for
+	// the SAME logical join (identical true output cardinality, a group property), so
+	// the cardinality term is an UNFAIR discriminator. Rank by WORK (CPU): with the
+	// materialization fix (nestedLoopJoinCost charges the inner scanned ONCE), CPU
+	// orders materialized-NLJ < re-scan-FlatMap for a non-probe inner and FlatMap < NLJ
+	// for a card-1 probe inner — the correct plan for each, cost-driven, no rule
+	// heuristic (RFC-152, Graefe).
+	//
+	// For SAME-shape pairs (FlatMap-vs-FlatMap, NLJ-vs-NLJ) the cardinality term is a
+	// CONSISTENT, fair discriminator and is LOAD-BEARING — for two FlatMaps it is the
+	// Java small-side-driving heuristic (drive from the lower-cardinality outer; Java
+	// PlanningCostModel "Return the one with lower cardinality on the outer plan"). So
+	// keep the full recursive Total there (the RFC-069 behaviour). Ranking those by CPU
+	// would discard the outer-cardinality asymmetry and pick the larger-outer driver
+	// (the order-invariant index-join regression). The CPU branch fires ONLY for the
+	// Go-only NLJ-vs-FlatMap shape mismatch.
+	if joinShapesDiffer(planA, planB) {
+		if costA.CPU != costB.CPU {
+			if costA.CPU < costB.CPU {
+				return -1
+			}
+			return 1
+		}
+	}
 	if costA.Less(costB) {
 		return -1
 	}
@@ -920,6 +952,43 @@ func compareJoinOrdering(a, b expressions.RelationalExpression, stats properties
 		return 1
 	}
 	return 0
+}
+
+// topmostJoinIsNLJ reports whether the topmost join operator (NLJ or FlatMap) in a
+// concrete plan tree is a materialized RecordQueryNestedLoopJoinPlan (true) or a
+// correlated RecordQueryFlatMapPlan (false). The second return is false when the
+// plan contains no join at all.
+func topmostJoinIsNLJ(p plans.RecordQueryPlan) (isNLJ bool, found bool) {
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if found {
+			return false
+		}
+		switch n.(type) {
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			isNLJ, found = true, true
+			return false
+		case *plans.RecordQueryFlatMapPlan:
+			isNLJ, found = false, true
+			return false
+		}
+		return true
+	})
+	return isNLJ, found
+}
+
+// joinShapesDiffer reports whether two plans' topmost join operators are different
+// shapes — one a materialized NestedLoopJoin, the other a correlated FlatMap. This
+// is the Go-only materialized-vs-re-scan comparison (Java has only FlatMaps), the
+// one case where the per-shape cardinality proxies are inconsistent and the cost
+// model must rank by work rather than the (unfair) cardinality term. Returns false
+// for same-shape pairs (both FlatMap, both NLJ) and when either lacks a join.
+func joinShapesDiffer(planA, planB plans.RecordQueryPlan) bool {
+	aNLJ, aFound := topmostJoinIsNLJ(planA)
+	bNLJ, bFound := topmostJoinIsNLJ(planB)
+	if !aFound || !bFound {
+		return false
+	}
+	return aNLJ != bNLJ
 }
 
 // concretePlanCost computes the recursive Cost of a CONCRETE RecordQueryPlan tree,

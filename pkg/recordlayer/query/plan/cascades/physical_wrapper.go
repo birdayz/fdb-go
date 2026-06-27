@@ -6,10 +6,138 @@ import (
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+// scanComparisonCorrelations returns the union of outer correlations referenced
+// by the comparands of a set of scan ComparisonRanges — the correlations a
+// physical (index or primary) scan probe carries. A correlated probe
+// (`col = QOV(outer).x`) reports the outer alias; a literal/parameter range
+// reports nothing. Used by the physical scan wrappers'
+// GetCorrelatedToWithoutChildren (RFC-150 Phase-2b D.2): the data-access path
+// can SARG a join predicate into a bare correlated PHYSICAL scan (no residual
+// filter to carry the correlation), so unless the scan itself reports it, the
+// physical probe looks uncorrelated and B1 join-leg detection / winner-stamping
+// would mis-treat it. Java's RecordQueryScanPlan derives correlatedTo from its
+// ScanComparisons the same way.
+func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	collect := func(c *predicates.Comparison) {
+		if c == nil || c.Operand == nil {
+			return
+		}
+		for a := range values.GetCorrelatedToOfValue(c.Operand) {
+			out[a] = struct{}{}
+		}
+		// A query-parameter (ConstantObjectValue) comparand is an execution constant
+		// bound at run time, NOT a row correlation — its constant-pool alias appears
+		// in GetCorrelatedToOfValue but must not make a `Scan(T,[k=?param])` look
+		// join-correlated to planning (B1 leg detection) or to the GRAEFE-2
+		// probe-fed-residual guard (compensationProbeCorrelations). Subtract any such
+		// aliases — the value-level twin of deletePredicateConstantObjectAliases.
+		values.WalkValue(c.Operand, func(node values.Value) bool {
+			if cov, ok := node.(*values.ConstantObjectValue); ok {
+				delete(out, cov.Alias)
+			}
+			return true
+		})
+	}
+	for _, cr := range comps {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			collect(cr.GetEqualityComparison())
+		} else if cr.IsInequality() {
+			for _, c := range cr.GetInequalityComparisons() {
+				collect(c)
+			}
+		}
+	}
+	return out
+}
+
+// valueCorrelationsNoParams returns the outer correlations a value references with
+// query-parameter (ConstantObjectValue) aliases subtracted — the value-tree twin of the
+// param exclusion scanComparisonCorrelations applies to a SARG comparand.
+func valueCorrelationsNoParams(v values.Value) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if v == nil {
+		return out
+	}
+	for a := range values.GetCorrelatedToOfValue(v) {
+		out[a] = struct{}{}
+	}
+	values.WalkValue(v, func(node values.Value) bool {
+		if cov, ok := node.(*values.ConstantObjectValue); ok {
+			delete(out, cov.Alias)
+		}
+		return true
+	})
+	return out
+}
+
+// dataAccessExprCorrelations collects the COMPLETE set of outer correlations a
+// data-access subplan reports — SARG comparands (scan/index), residual filter
+// predicates, and map result values — query-parameter aliases subtracted. Used by the
+// plan-backed leaf expression scanPlanExpression so a SARGed PK-scan probe
+// (`pk = QOV(outer).fk`) and an RFC-153 buried-merge-rebased FlatMap inner report the
+// correlations their executable plan actually carries, instead of nil/stale (codex P2 on
+// 05c742100: an under-reported correlation lets join-leg / winner / root bookkeeping
+// treat a correlated probe as self-contained — a latent planning hazard, the same
+// incomplete-coverage family as the fail-open verifier). Complete for the data-access
+// node shapes scanPlanExpression wraps (a single PK scan; a fully-rebased recognized
+// inner — the verifier declines any inner with an unrecognized node, so a rebased inner
+// reaching this point contains only scan/index/filter/map/pass-through nodes).
+func dataAccessExprCorrelations(p plans.RecordQueryPlan) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	if p == nil {
+		return out
+	}
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		switch sp := n.(type) {
+		case *plans.RecordQueryScanPlan:
+			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+				out[a] = struct{}{}
+			}
+		case *plans.RecordQueryIndexPlan:
+			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
+				out[a] = struct{}{}
+			}
+		case *plans.RecordQueryPredicatesFilterPlan:
+			for _, pr := range sp.GetPredicates() {
+				c := map[values.CorrelationIdentifier]struct{}{}
+				for a := range predicates.GetCorrelatedToOfPredicate(pr) {
+					c[a] = struct{}{}
+				}
+				deletePredicateConstantObjectAliases(pr, c)
+				for a := range c {
+					out[a] = struct{}{}
+				}
+			}
+		case *plans.RecordQueryFilterPlan:
+			for _, pr := range sp.GetPredicates() {
+				c := map[values.CorrelationIdentifier]struct{}{}
+				for a := range predicates.GetCorrelatedToOfPredicate(pr) {
+					c[a] = struct{}{}
+				}
+				deletePredicateConstantObjectAliases(pr, c)
+				for a := range c {
+					out[a] = struct{}{}
+				}
+			}
+		case *plans.RecordQueryMapPlan:
+			for a := range valueCorrelationsNoParams(sp.GetResultValue()) {
+				out[a] = struct{}{}
+			}
+		}
+		return true
+	})
+	return out
+}
 
 // physicalPlanExpression is implemented by all physical-plan wrapper
 // types. Lets implement rules discover physical plans in a Reference
@@ -322,9 +450,15 @@ func (w *physicalScanWrapper) CanCorrelate() bool { return false }
 // ChildrenAsSet is false — leaf has no children.
 func (w *physicalScanWrapper) ChildrenAsSet() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns the empty set.
+// GetCorrelatedToWithoutChildren reports the OUTER correlations the scan's
+// comparison comparands reference — for a correlated PK/index probe
+// (`pk = QOV(outer).fk`), the outer alias. See scanComparisonCorrelations
+// (RFC-150 Phase-2b D.2).
 func (w *physicalScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	if w.plan == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return scanComparisonCorrelations(w.plan.GetScanComparisons())
 }
 
 // EqualsWithoutChildren compares wrapped plans via plans.Equals on
@@ -449,8 +583,14 @@ func (w *physicalIndexScanWrapper) GetQuantifiers() []expressions.Quantifier { r
 func (w *physicalIndexScanWrapper) CanCorrelate() bool                       { return false }
 func (w *physicalIndexScanWrapper) ChildrenAsSet() bool                      { return false }
 
+// GetCorrelatedToWithoutChildren reports the OUTER correlations the index scan's
+// comparison comparands reference — the correlated index probe's outer alias.
+// See scanComparisonCorrelations (RFC-150 Phase-2b D.2).
 func (w *physicalIndexScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	if w.plan == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return scanComparisonCorrelations(w.plan.GetScanComparisons())
 }
 
 func (w *physicalIndexScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {

@@ -58,6 +58,7 @@ bench-raw.txt
 bench-results.txt
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
 test-report.html
 REVIEW.md
 

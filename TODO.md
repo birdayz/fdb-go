@@ -116,15 +116,59 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
        `refHasCorrelatedMatch` removed; `matchBoundPrefixIsCorrelated` kept (RFC-069 intersection). plandiff
        byte-identical; +1.1%/+2.0% interning baseline (faithful deferred-optimization timing). Graefe re-ACK +
        Torvalds + codex + @claude.
-     - **[ ] Piece 2 — retire `tryFlatMapPlan` (PATH A) via porting `RewriteOuterJoinRule`.** Dropping PATH A
-       breaks ONLY LEFT OUTER (`TestPlanHarness_LeftJoin` → materialized NLJ) because Go lacks Java's
-       `RewriteOuterJoinRule` (pushes ON-predicates BELOW the null-extension boundary → correlated null-supplying
-       SUBSEL so PATH B's `yieldGeneralFlatMap` fires). Go already has `DefaultOnEmptyPlan` + null-on-empty
-       quantifiers; needs: a named null-on-empty ctor, the `RewriteOuterJoinRule` (REWRITING), wire `DefaultOnEmpty`
-       into `yieldGeneralFlatMap`, delete `tryFlatMapPlan`. FULL OUTER stays on the materialized NLJ (Java has no
-       Cascades FULL). The PR-#201 surface — Graefe-gated: RFC + impl ACK, full INNER/LEFT/FULL × (covering/residual)
-       × (PK/secondary) **row-count** matrix, PATH-A branch deleted only after each PATH-B replacement is
-       row-count-proven, `Fetch(<nil>)` shapes pinned throughout. Detail: RFC-150 §3 (B1 solved) + §4.
+     - **[~] Piece 2 — retire `tryFlatMapPlan` (PATH A). Step 1-3 DONE (commit b8b3b6ad7); deletion blocked on
+       INNER-multiway PATH-B coverage.**
+       - **[x] RewriteOuterJoinRule + DefaultOnEmpty null-extension (the LEFT-OUTER enabler — the one shape PATH B
+         genuinely couldn't do).** `NamedForEachNullOnEmptyQuantifier` ctor; `RewriteOuterJoinRule` (REWRITING +
+         PLANNING) rewrites a CORRELATED LEFT OUTER into Java's nested form (ON-preds below the null-extension
+         boundary in a correlated null-supplying SUBSEL, outer made INNER); `yieldGeneralFlatMap` wraps a
+         null-on-empty inner in `DefaultOnEmptyPlan` (FlatMap stays a pure map, like Java). Guard: only rewrite
+         when an ON-pred references the preserved leg (uncorrelated LEFT — ON FALSE/NULL — stays on the
+         materialized NLJ). Row-count-proven: `TestFDB_LeftJoinCountSumPerDept`, `JoinWithLeftAndInnerCompare`,
+         `OuterParity_Left` (3-way), `OuterParity_BooleanOn`; plandiff byte-identical (PATH A still competes).
+       - **[ ] Make PATH B cover INNER join legs (multiway chain + PK probe), THEN delete `tryFlatMapPlan`.**
+         Three layers root-caused over 3 DFS rounds (all validated fixes REVERTED — they only pay off together
+         with the deepest layer + the deletion; re-apply as one Graefe-gated change). Disabling PATH A breaks
+         `MultiwayJoinIndexProbe`, `MultiwayJoinOrder_Probe/Nway`, `JoinSelPred_Repro`.
+         - **Layer 1 (multiway chain) — VALIDATED FIX.** `PartitionBinarySelectRule`'s idempotency guard
+           (`rule_partition_binary_select.go:88-93`) blocks on *any* predicate-free 2-quant select in the group,
+           so sibling bipartitions of an N-way join never partition → no chained index-probe. Narrow it to the
+           SAME quantifier-alias-set as `sel` (Java has no such guard; relies on memo interning). Verified: 3-/4-way
+           chain to byte-identical index-probe FlatMaps. Bumps `ChainInterningBaseline` (3-way 9095→11122, 4-way
+           31210→46483, < 100k).
+         - **Layer 2a (PK probe never generated) — VALIDATED FIX.** `matchSingleSourceAgainstSelect`
+           (`rule_match_intermediate.go:350+`) only tries the predicate LHS (`cp.Operand`) as the candidate column,
+           so a join pred with the leg's key on the RHS (`O.CUSTOMER_ID = C.ID` → customers PK on RHS) never SARGs
+           the leg's PK. Fix: add `ComparisonType.Commute()` (=↔=, <↔>, <=↔>=) + a `bindOrientedComparison` that
+           tries as-written then commuted (Java's Value matching is commutative). Verified: generates the
+           `Scan(CUSTOMERS,[=corr])` PK probe that didn't exist.
+         - **Layer 2b SOLVED + DESIGN-ACK'd (Graefe) — SARG the correlation as a sargable BOUND, not a residual.**
+           The PK probe must be captured INSIDE the scan's ScanComparisons (residual-free) so it's a PHYSICAL leg
+           member that bypasses `compensationSafeForYield` entirely (which only gates LOGICAL compensations). Java's
+           bound-vs-residual line: `PredicateWithValueAndRanges.java:423-432` (`containsKey(alias) →
+           noCompensationNeeded`). The 0-row guard is UNCHANGED — it still rejects the genuine residual-correlation
+           PR-#201 shape; a sargable-bound correlation is the safe shape Java itself distinguishes. **D.1**
+           (commutative SARG in `matchSingleSourceAgainstSelect` + mark the bound pred matched so no residual) +
+           **D.2** (physical scan/index wrappers must surface ScanComparisons correlations — Go returns empty,
+           a latent bug vs `RecordQueryScanPlan.java:299-302`) are VALIDATED: the unfiltered 2-way correlated join
+           produces the bare physical PK probe `FlatMap(Scan(ORDERS), Scan(CUSTOMERS,[=corr]))`. Graefe ACK'd the design.
+         - **Layer 2c (THE ACTUAL GATE — a COST-MODEL change, distinct RFC, Graefe-gated, PR-#201 perf surface).**
+           Round 4 proof: with D.1 enabling correlated PK probes everywhere, the multiway chain gains an all-PK-probe
+           candidate driving off the *largest* table (full scan, zero Fetches, all card-1). The cost model PREFERS
+           it over the RFC-042 secondary-index chain driving from the small table, because the fetch-count /
+           max-cardinality tiebreaks (`planning_cost_model.go:205/246/272`, criterion #2 + fetch heuristic) fire
+           BEFORE `compareJoinOrdering`. Rows correct, but multiway tests fail the index-probe SHAPE (full-scan
+           driver = perf regression). **D.1 cannot land standalone** — it makes multiway WORSE without the cost-model
+           fix. Fix: make join-order costing prefer driving from the smallest/most-selective table — run
+           `compareJoinOrdering` (total recursive join cost) BEFORE the structural fetch/card tiebreaks for
+           join-wrapper pairs (or stop criterion #2 rewarding an all-PK chain whose outer is a full scan of the
+           larger table). HIGH blast radius (every join plan) → its own RFC + Graefe ACK + full plandiff/row-count/
+           1M-stress. Also: the JoinSelPred FILTERED leg (`o.id<10` sibling) doesn't reach
+           `matchSingleSourceAgainstSelect` cleanly — a separate match-firing fix.
+         Sequence to finish: cost-model RFC (Layer 2c) → re-apply Gap#1 + D.1 + D.2 → filtered-leg match-firing →
+         delete `tryFlatMapPlan` (+ cleanup `leftOuter` flag). Keep `tryExistsFlatMap` (EXISTS). FULL OUTER stays
+         on the materialized NLJ. All validated round-3/4 fixes were REVERTED (pay off only together with 2c).
+         Detail: RFC-150 §3/§4.
    - **[ ] PROCESS HAZARD (found this shift) — the codex-review CLI can leave the repo on a detached HEAD,
      orphaning the branch tip.** Commit a567acb68 (a Torvalds F1 fix) was silently dropped this way — its content
      was not in HEAD's history afterward and had to be re-applied. After running `codex-review`, verify
@@ -730,6 +774,21 @@ each on its own stacked branch.
    so a live backend switch is impossible anyway). FDB-C-dev + Torvalds vetted; 11 codex rounds. (Was TODO-production P2.2.)
 
 ## Known gaps
+
+### [ ] executor: materialized NestedLoopJoin DROPS an `IN`-subquery conjunct in a compound LEFT-OUTER ON clause → CROSS PRODUCT (pre-existing, surfaced by RFC-153 attribution 2026-06-27)
+
+`SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
+returns the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of the correctly-null-extended
+`(1,NULL)(2,NULL)`. **Pre-existing, NOT an RFC-153 regression** — verified by attribution: the base commit
+`15d2ab340` (no RFC-153 changes at all) returns the IDENTICAL cross-product. Both base and HEAD route this
+shape to the materialized `RecordQueryNestedLoopJoinPlan` (base: RewriteOuterJoinRule's guard doesn't fire;
+HEAD: RFC-153's fail-closed verifier declines the probe), and the NLJ's per-pair predicate evaluation
+mishandles the compound ON clause when one conjunct is an `IN`-subquery — it drops the conjunct (and
+apparently the `c.a_id=a.id` conjunct too) → emits the full cross product. Scope: the materialized NLJ
+executor's compound-ON / IN-in-ON handling (`executeNestedLoopJoin` → `passesJoinPredicates`), likely the
+correlated IN-subquery comparand inside an ON-applied (not WHERE) predicate. Pin: an FDB test asserting the
+above query null-extends correctly. Independent of RFC-153 (which only governs the joined-preserved *probe*
+path; the decline correctly falls back to this NLJ, exposing the pre-existing NLJ bug).
 
 ### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
 

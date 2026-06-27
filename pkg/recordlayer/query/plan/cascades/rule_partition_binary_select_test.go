@@ -685,9 +685,11 @@ func TestPartitionBinarySelectRule_PredicateOnOneSideOnly(t *testing.T) {
 func TestPartitionBinarySelectRule_IdempotencyGuard(t *testing.T) {
 	t.Parallel()
 
-	// If the Reference already contains a 2-quantifier SelectExpression
-	// with no predicates, the rule should not fire (idempotency guard).
-
+	// The idempotency guard fires only when the Reference already contains the
+	// predicate-less partition of THIS select — a 2-quantifier predicate-free
+	// SelectExpression over the SAME quantifier alias set. This is the rule's
+	// OWN re-fire (it reuses the source quantifier aliases when it pushes
+	// predicates into sub-Selects), so re-creating it is the cycle to break.
 	tQ := baseT()
 	tauQ := baseTau()
 
@@ -698,13 +700,10 @@ func TestPartitionBinarySelectRule_IdempotencyGuard(t *testing.T) {
 		addPredicate(pbFieldPred(tQ, "b", pbLiteralCmp(predicates.ComparisonEquals, "hello"))).
 		buildSelect()
 
-	// Second select: no predicates, 2 quantifiers (simulates a prior
-	// rule fire result).
-	tQ2 := baseT()
-	tauQ2 := baseTau()
-	noopSel := joinOf(tQ2, tauQ2).
-		addResultColumn(tQ2, "a").
-		addResultColumn(tauQ2, "alpha").
+	// Prior-fire result: no predicates, SAME quantifier aliases (tQ, tauQ).
+	noopSel := joinOf(tQ, tauQ).
+		addResultColumn(tQ, "a").
+		addResultColumn(tauQ, "alpha").
 		buildSelect()
 
 	ref := expressions.InitialOf(sel)
@@ -712,7 +711,43 @@ func TestPartitionBinarySelectRule_IdempotencyGuard(t *testing.T) {
 
 	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
 	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (idempotency guard: existing 2-quantifier predicate-free select in ref), got %d", len(yielded))
+		t.Fatalf("expected 0 yields (idempotency guard: predicate-free partition over the same alias set already present), got %d", len(yielded))
+	}
+}
+
+// TestPartitionBinarySelectRule_DistinctBipartitionNotBlocked pins the narrowed
+// guard's load-bearing dimension: a predicate-free 2-quantifier select over a
+// DIFFERENT quantifier alias set is a sibling bipartition of the same join (e.g.
+// {$m(t1⋈t2), t3} vs {$m(t2⋈t3), t1}), NOT this select's own re-fire. The earlier
+// "any predicate-free binary in the group" guard blocked it, so the correlated
+// index-probe FlatMap chain for ≥3-way joins was never enumerated (the inner
+// materialized as a full-scan NLJ). The guard must NOT block here.
+func TestPartitionBinarySelectRule_DistinctBipartitionNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	tQ := baseT()
+	tauQ := baseTau()
+
+	sel := joinOf(tQ, tauQ).
+		addResultColumn(tQ, "a").
+		addResultColumn(tauQ, "alpha").
+		addPredicate(pbFieldPred(tQ, "b", pbLiteralCmp(predicates.ComparisonEquals, "hello"))).
+		buildSelect()
+
+	// A different bipartition's predicate-free binary: fresh, distinct aliases.
+	tQ2 := baseT()
+	tauQ2 := baseTau()
+	otherSel := joinOf(tQ2, tauQ2).
+		addResultColumn(tQ2, "a").
+		addResultColumn(tauQ2, "alpha").
+		buildSelect()
+
+	ref := expressions.InitialOf(sel)
+	ref.Insert(otherSel)
+
+	yielded := FireExpressionRule(NewPartitionBinarySelectRule(), ref)
+	if len(yielded) == 0 {
+		t.Fatal("expected >0 yields: a predicate-free binary over a DIFFERENT alias set is a sibling bipartition, not this select's own re-fire — the guard must not block it")
 	}
 }
 
