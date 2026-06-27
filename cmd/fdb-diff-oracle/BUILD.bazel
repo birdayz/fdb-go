@@ -68,7 +68,7 @@ CMAKEOF
 )
 
 go_library(
-    name = "fdb-diff-oracle_lib",
+    name = "fdb-diff-oracle",
     srcs = ["oracle.go"],
     importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-diff-oracle",
     visibility = ["//visibility:private"],
@@ -81,7 +81,7 @@ go_test(
         "readoptions_diff_test.go",
     ],
     data = [":diff_oracle_bin"],
-    embed = [":fdb-diff-oracle_lib"],
+    embed = [":fdb-diff-oracle"],
     env = {
         "DIFF_ORACLE_BIN": "$(rootpath :diff_oracle_bin)",
     },
