@@ -1,7 +1,7 @@
 package cascades
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // RequestedSortOrder specifies the desired sort direction for one

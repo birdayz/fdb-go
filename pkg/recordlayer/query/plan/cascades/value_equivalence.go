@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // ValueEquivalence defines axiomatic equality relationships between
 // Values beyond structural equality. Structural equality

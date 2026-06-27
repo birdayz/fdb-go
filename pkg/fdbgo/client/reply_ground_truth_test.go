@@ -8,9 +8,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // Reply-direction ground truth: each vector is the EXACT server->client

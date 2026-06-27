@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // TestVectorDistanceFromBytes_MatchesDeserialize asserts the zero-alloc

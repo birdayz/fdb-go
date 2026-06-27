@@ -11,7 +11,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // LoadFVecs reads vectors from the fvecs binary format.

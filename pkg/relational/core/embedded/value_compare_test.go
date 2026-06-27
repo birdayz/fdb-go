@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/functions"
 )
 
 // TestValuesComparable pins the type-compatibility check used by

@@ -6,10 +6,10 @@ import (
 	"hash/fnv"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // SPFresh foreground write path (RFC-094 §5), running inside the caller's

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // RunConfig controls scenario execution.

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbmetrics"
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/fdbmetrics"
 )
 
 // The live integration is one line next to any *client.Database:

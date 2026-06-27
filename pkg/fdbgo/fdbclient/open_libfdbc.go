@@ -3,8 +3,8 @@
 package fdbclient
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/libfdbc"
 )
 
 // Backend names the FDB client compiled into this binary.

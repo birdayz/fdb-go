@@ -1,12 +1,12 @@
 package embedded
 
 import (
-	recordlayer "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
+	recordlayer "fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // buildQualifyPredicate builds the QUALIFY-clause predicate for sq and applies

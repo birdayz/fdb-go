@@ -3,7 +3,7 @@ package plans
 import (
 	"hash/fnv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // RecordQueryDefaultOnEmptyPlan returns the inner plan's rows if any

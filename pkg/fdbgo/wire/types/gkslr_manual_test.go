@@ -11,7 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestManualMarshal_GetKeyServerLocationsRequest_basic does a full two-pass

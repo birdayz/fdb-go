@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // buildCardTestMessage builds a dynamic message descriptor with an int32

@@ -494,8 +494,8 @@ const file_record_metadata_options_proto_rawDesc = "" +
 	"dimensions:c\n" +
 	"\x06schema\x12\x1c.google.protobuf.FileOptions\x18\xd1\t \x01(\v2,.com.apple.foundationdb.record.SchemaOptionsR\x06schema:j\n" +
 	"\x06record\x12\x1f.google.protobuf.MessageOptions\x18\xd1\t \x01(\v20.com.apple.foundationdb.record.RecordTypeOptionsR\x06record:a\n" +
-	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xd1\t \x01(\v2+.com.apple.foundationdb.record.FieldOptionsR\x05fieldB\x83\x02\n" +
-	"!com.com.apple.foundationdb.recordB\x1aRecordMetadataOptionsProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xd1\t \x01(\v2+.com.apple.foundationdb.record.FieldOptionsR\x05fieldB\xe4\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x1aRecordMetadataOptionsProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_metadata_options_proto_rawDescOnce sync.Once

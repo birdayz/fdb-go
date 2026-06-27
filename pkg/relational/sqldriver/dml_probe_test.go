@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_DMLCascades_ParamsIndexAndPK pins three DML dimensions that are

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // sliceResumeCursor is a deterministic, continuation-resumable in-memory cursor

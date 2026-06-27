@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	gotuple "fdb.dev/pkg/fdbgo/fdb/tuple"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 	cgotuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	gotuple "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // Versionstamp-mutation differential vs libfdb_c — RFC-063.

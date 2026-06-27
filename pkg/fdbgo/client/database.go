@@ -17,8 +17,8 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // ClusterFile represents an fdb.cluster file.

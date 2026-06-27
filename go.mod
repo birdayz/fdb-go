@@ -1,4 +1,4 @@
-module github.com/birdayz/fdb-record-layer-go
+module fdb.dev
 
 go 1.26.4
 

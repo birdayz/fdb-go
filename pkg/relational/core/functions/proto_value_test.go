@@ -9,8 +9,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/relational/api"
 )
 
 func typedFD(name string) protoreflect.FieldDescriptor {

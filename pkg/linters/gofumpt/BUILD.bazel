@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "gofumpt",
     srcs = ["analyzer.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/linters/gofumpt",
+    importpath = "fdb.dev/pkg/linters/gofumpt",
     visibility = ["//visibility:public"],
     deps = [
         "@cc_mvdan_gofumpt//format",

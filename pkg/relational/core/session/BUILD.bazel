@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "session",
     srcs = ["session.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session",
+    importpath = "fdb.dev/pkg/relational/core/session",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer",

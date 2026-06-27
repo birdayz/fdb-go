@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // TestErrorShim_RetryRecognizedAndContextPreserved pins the two-way error bridge

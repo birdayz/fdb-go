@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "config",
     srcs = ["config.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config",
+    importpath = "fdb.dev/cmd/frl/internal/config",
     visibility = ["//cmd/frl:__subpackages__"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",

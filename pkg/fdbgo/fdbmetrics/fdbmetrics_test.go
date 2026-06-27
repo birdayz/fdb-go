@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 type fakeSource struct{ s client.ClientMetricsSnapshot }

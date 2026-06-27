@@ -1,7 +1,7 @@
 package embedded
 
 import (
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // Operator classifiers shared by the expression evaluators

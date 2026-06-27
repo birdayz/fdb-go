@@ -3,8 +3,8 @@ package types_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestInlineErrorUnionRoundTrip is the RFC-115 §6 proof. Real FDB read replies deliver

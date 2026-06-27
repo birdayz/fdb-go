@@ -3,7 +3,7 @@ package matching
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestSatisfyingMatcher_PredicateTrue pins the success path: type

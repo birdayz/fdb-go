@@ -3,7 +3,7 @@ package catalog
 import (
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // InMemoryTransaction is a minimal api.Transaction for tests.

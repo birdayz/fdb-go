@@ -18,7 +18,7 @@ go_library(
         "references_and_dependencies_property.go",
         "used_types_property.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/properties",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

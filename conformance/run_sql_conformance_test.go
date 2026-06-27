@@ -37,8 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

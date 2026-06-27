@@ -3,11 +3,11 @@ package plangen_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/plangen"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/plangen"
 )
 
 // BenchmarkConvert_Scan measures the cost of converting the simplest

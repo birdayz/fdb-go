@@ -3,8 +3,8 @@ package functions
 import (
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/api"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // StripIdentifierQuotes normalizes an identifier's raw parse text to

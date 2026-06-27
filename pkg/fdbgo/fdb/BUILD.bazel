@@ -19,7 +19,7 @@ go_library(
         "tenant_crud.go",
         "transaction.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb",
+    importpath = "fdb.dev/pkg/fdbgo/fdb",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/client",

@@ -6,8 +6,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/relational/api"
 )
 
 // FuzzDeserializeTemplate stresses the META_DATA blob deserialiser. This is

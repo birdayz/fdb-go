@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"

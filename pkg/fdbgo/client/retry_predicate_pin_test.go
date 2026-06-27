@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // allKnownRetryCodes is the fixed enumeration the pin tests iterate so each

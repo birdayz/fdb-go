@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/api"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // jdbcColumnName transforms an internal projection name into the

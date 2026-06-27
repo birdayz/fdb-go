@@ -3,8 +3,8 @@ package metadata
 import (
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 )
 
 // RecordLayerSchemaTemplate is the concrete api.SchemaTemplate backed

@@ -3,7 +3,7 @@ package properties
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 func TestEvaluateRecordTypes_Nil(t *testing.T) {

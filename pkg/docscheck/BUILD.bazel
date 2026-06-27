@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "docscheck",
     srcs = ["doc.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/docscheck",
+    importpath = "fdb.dev/pkg/docscheck",
     visibility = ["//visibility:public"],
 )
 

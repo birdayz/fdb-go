@@ -1,6 +1,6 @@
-# fdb-record-layer-go
+# fdb-go — FoundationDB for Go
 
-[![CI](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml)
+[![CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml)
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
@@ -97,7 +97,7 @@ one (there is no runtime flag — the choice is static per binary). Application 
 backend-agnostic and opens through `fdbclient.Open`:
 
 ```go
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
+import "fdb.dev/pkg/fdbgo/fdbclient"
 
 db, _ := fdbclient.Open(clusterFile)            // backend-agnostic
 rl := recordlayer.NewFDBDatabaseWithBackend(db)
@@ -122,7 +122,7 @@ Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by 
 Cascades-based query planner ported from Java's `fdb-relational-core`.
 
 ```go
-import _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+import _ "fdb.dev/pkg/relational/sqldriver"
 
 db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
 
@@ -272,7 +272,7 @@ docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.77
 docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster
 
 # 3. Use from Go
-go get github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver
+go get fdb.dev/pkg/relational/sqldriver
 ```
 
 ```go
@@ -281,7 +281,7 @@ package main
 import (
     "database/sql"
     "fmt"
-    _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+    _ "fdb.dev/pkg/relational/sqldriver"
 )
 
 func main() {

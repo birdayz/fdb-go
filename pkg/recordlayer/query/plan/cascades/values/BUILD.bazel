@@ -68,7 +68,7 @@ go_library(
         "values.go",
         "values_helpers.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/values",
     visibility = ["//visibility:public"],
     deps = ["//pkg/recordlayer/vectorcodec"],
 )

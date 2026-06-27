@@ -10,9 +10,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // sampleMetaDataBytes returns a minimal but valid serialized MetaData proto

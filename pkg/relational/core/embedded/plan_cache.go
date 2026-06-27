@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // PlanCache caches Cascades query plans keyed by normalized SQL text.

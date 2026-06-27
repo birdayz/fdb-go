@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestGetKey_AllKeysEndSelector verifies the allKeysEnd short-circuit in getKey.

@@ -6,7 +6,7 @@ go_library(
         "doc.go",
         "open_purego.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient",
+    importpath = "fdb.dev/pkg/fdbgo/fdbclient",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/fdb"],
 )

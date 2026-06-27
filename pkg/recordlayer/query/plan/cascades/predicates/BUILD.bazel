@@ -22,7 +22,7 @@ go_library(
         "structural_equal.go",
         "structural_hash.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/values",

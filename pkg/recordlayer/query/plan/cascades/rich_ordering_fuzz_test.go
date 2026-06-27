@@ -3,7 +3,7 @@ package cascades
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func FuzzRichOrdering_Satisfies(f *testing.F) {

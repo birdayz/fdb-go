@@ -3,7 +3,7 @@ package fdb_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	. "github.com/onsi/gomega"
 )
 

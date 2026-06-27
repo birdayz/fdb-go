@@ -3,11 +3,11 @@ package chaos
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // --- MAX_EVER_LONG metadata builders ---

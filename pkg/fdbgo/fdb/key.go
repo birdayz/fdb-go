@@ -1,7 +1,7 @@
 // Package fdb provides a pure-Go client for FoundationDB.
 //
 // This package is API-compatible with the official Apple FDB Go binding
-// (github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb) but requires no
+// (fdb.dev/pkg/fdbgo/fdb) but requires no
 // C library (libfdb_c). It uses a native Go wire protocol implementation.
 //
 // Basic usage:

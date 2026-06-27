@@ -46,7 +46,7 @@ go_library(
         "watchvaluereply_generated.go",
         "watchvaluerequest_generated.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types",
+    importpath = "fdb.dev/pkg/fdbgo/wire/types",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/wire"],
 )

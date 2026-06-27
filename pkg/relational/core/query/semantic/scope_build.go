@@ -3,7 +3,7 @@ package semantic
 import (
 	"fmt"
 
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // BuildScopeFromFromClause walks a parsed FROM clause and produces

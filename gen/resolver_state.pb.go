@@ -163,8 +163,8 @@ const file_resolver_state_proto_rawDesc = "" +
 	"\tWriteLock\x12\f\n" +
 	"\bUNLOCKED\x10\x01\x12\x10\n" +
 	"\fWRITE_LOCKED\x10\x02\x12\v\n" +
-	"\aRETIRED\x10\x03B\xfb\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x12ResolverStateProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\aRETIRED\x10\x03B\xdc\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x12ResolverStateProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_resolver_state_proto_rawDescOnce sync.Once

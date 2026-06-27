@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql/driver"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // Map-path expression evaluator (mirror of eval_proto.go).

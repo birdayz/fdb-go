@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "plangen",
     srcs = ["plangen.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/plangen",
+    importpath = "fdb.dev/pkg/relational/core/query/plangen",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/expressions",

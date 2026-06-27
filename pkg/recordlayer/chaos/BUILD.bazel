@@ -19,7 +19,7 @@ go_library(
         "verify_vector.go",
         "verify_version.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/chaos",
+    importpath = "fdb.dev/pkg/recordlayer/chaos",
     visibility = ["//visibility:public"],
     deps = [
         "//gen",

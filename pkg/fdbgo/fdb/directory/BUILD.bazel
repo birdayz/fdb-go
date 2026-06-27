@@ -10,7 +10,7 @@ go_library(
         "directorySubspace.go",
         "node.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory",
+    importpath = "fdb.dev/pkg/fdbgo/fdb/directory",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb",

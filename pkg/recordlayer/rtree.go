@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // RTree is a Hilbert R-tree backed by FDB.

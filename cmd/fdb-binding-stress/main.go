@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 const perSeedTimeout = 5 * time.Minute

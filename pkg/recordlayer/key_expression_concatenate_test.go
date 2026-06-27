@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestFieldKeyExpression_ConcatenatePacksAsNestedTuple pins that a FanType.Concatenate

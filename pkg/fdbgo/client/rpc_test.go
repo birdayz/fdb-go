@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 func TestGetPutTimer_Recycle(t *testing.T) {

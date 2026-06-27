@@ -26,8 +26,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
 // DirectorySubspace represents a Directory that may also be used as a Subspace

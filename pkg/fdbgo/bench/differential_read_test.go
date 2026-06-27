@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // L3 differential read parity — RFC-053 (RFC-010 C2). The read-side counterpart to

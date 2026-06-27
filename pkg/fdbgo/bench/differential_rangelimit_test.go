@@ -4,8 +4,8 @@ import (
 	"math"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // Error-CODE differentials for two client-side input-validation divergences RFC-126 closed (the

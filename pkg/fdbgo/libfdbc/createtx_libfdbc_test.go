@@ -6,8 +6,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/libfdbc"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/libfdbc"
 )
 
 // TestLibFDBC_CreateWritableTransaction proves the libfdb_c backend can create a

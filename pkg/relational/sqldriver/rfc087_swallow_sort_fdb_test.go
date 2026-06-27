@@ -14,7 +14,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_RFC087_WhereConstTypeMismatch_NoCrash pins that `WHERE 5 = 'abc'`

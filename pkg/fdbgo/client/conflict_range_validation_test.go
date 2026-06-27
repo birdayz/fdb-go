@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Client-side validation for AddReadConflictRange / AddWriteConflictRange — RFC-126 Divergence B.

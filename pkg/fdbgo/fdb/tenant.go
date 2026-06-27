@@ -3,7 +3,7 @@ package fdb
 import (
 	"context"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 // Tenant is a handle to a FoundationDB tenant.

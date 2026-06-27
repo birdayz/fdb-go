@@ -16,7 +16,7 @@ go_library(
         "template_catalog.go",
         "transaction.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog",
+    importpath = "fdb.dev/pkg/relational/core/catalog",
     visibility = ["//visibility:public"],
     deps = [
         "//gen",

@@ -6,10 +6,10 @@ import (
 
 	"go.uber.org/mock/gomock"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // newSeededCatalog returns an empty store catalog with templateName

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // buildConcurrentMetadata creates metadata with VALUE index + COUNT index + record counting.

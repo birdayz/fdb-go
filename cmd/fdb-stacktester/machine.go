@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // traceEnabled enables verbose stack tracing via STACKTESTER_TRACE=1.

@@ -3,8 +3,8 @@ package bench
 import (
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // metadataVersionKey write-validation differential vs libfdb_c — RFC-067 follow-up (codex /

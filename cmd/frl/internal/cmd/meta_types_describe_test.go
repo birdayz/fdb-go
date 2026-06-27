@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 func TestSortedRecordTypeNames(t *testing.T) {

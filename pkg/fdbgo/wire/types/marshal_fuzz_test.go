@@ -11,7 +11,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // fuzzData is a tiny consumer that drains random fuzz bytes deterministically

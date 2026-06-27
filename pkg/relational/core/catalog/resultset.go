@@ -1,6 +1,6 @@
 package catalog
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+import "fdb.dev/pkg/relational/api"
 
 // stringResultSet is a trivial slice-backed api.ResultSet used by
 // InMemoryStoreCatalog's listXxx methods. Column names are mandatory;

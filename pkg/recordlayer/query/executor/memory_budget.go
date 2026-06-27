@@ -3,7 +3,7 @@ package executor
 import (
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // RFC-130: statement-wide memory byte budget. Cardinality-growing buffers in

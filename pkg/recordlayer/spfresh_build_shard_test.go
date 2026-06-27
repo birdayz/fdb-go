@@ -3,8 +3,8 @@ package recordlayer
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestSPFreshShardGate pins the prefix-safety gate predicate (RFC-103): a

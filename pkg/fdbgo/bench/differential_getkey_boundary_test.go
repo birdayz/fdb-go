@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // getKey BOUNDARY-resolution differential vs libfdb_c — RFC-065.

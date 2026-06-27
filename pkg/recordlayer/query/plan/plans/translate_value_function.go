@@ -1,6 +1,6 @@
 package plans
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // TranslateValueFunction translates a Value from the domain of a
 // fetched full record to the domain of the partial record (index entry)

@@ -1,6 +1,6 @@
 package expressions
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // PlannerStage tracks which planner phase has processed a Reference.
 type PlannerStage int

@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // Aggregate function name constants matching Java's FunctionNames.

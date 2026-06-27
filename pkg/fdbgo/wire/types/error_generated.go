@@ -5,7 +5,7 @@ package types
 import (
 	"encoding/binary"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 const (

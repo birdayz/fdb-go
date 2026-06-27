@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestFastUnpackEquivalence verifies fastUnpack produces identical results

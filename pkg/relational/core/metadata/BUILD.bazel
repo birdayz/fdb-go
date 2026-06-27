@@ -11,7 +11,7 @@ go_library(
         "schema_template.go",
         "table.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata",
+    importpath = "fdb.dev/pkg/relational/core/metadata",
     visibility = ["//visibility:public"],
     deps = [
         "//gen",

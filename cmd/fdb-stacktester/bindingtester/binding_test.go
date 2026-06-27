@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

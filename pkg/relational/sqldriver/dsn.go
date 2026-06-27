@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // Scheme is the DSN scheme accepted by this driver. It matches Java's

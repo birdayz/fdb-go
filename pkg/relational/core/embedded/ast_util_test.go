@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/functions"
 )
 
 // TestStripIdentifierQuotes pins the SQL identifier normalization

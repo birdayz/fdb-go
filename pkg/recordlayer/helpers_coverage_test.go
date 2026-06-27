@@ -7,7 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // Tests targeting uncovered lines in atomic_index_helpers.go and runner.go.

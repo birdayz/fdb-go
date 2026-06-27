@@ -10,7 +10,7 @@ go_library(
         "relationalparser_listener.go",
         "relationalparser_visitor.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen",
+    importpath = "fdb.dev/pkg/relational/core/parser/gen",
     visibility = ["//visibility:public"],
     deps = ["@com_github_antlr4_go_antlr_v4//:antlr"],
 )

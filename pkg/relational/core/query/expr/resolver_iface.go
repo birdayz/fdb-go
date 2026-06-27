@@ -1,8 +1,8 @@
 package expr
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // ExpressionResolver is the interface a parse-tree → values.Value

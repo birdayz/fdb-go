@@ -3,7 +3,7 @@ package cascades
 import (
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // BiMap is a bidirectional map: every key maps to exactly one value,

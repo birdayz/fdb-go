@@ -12,7 +12,7 @@ package libfdbc
 import (
 	"errors"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 var errNoCgo = errors.New(

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestAtomic_MinAndV2UpgradeGate pins the Min→MinV2 / And→AndV2 op-code upgrade

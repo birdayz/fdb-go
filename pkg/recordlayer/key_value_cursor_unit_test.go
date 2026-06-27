@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // fakeRangeIterator is a deterministic rangeIterator for white-box cursor tests:

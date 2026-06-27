@@ -19536,8 +19536,8 @@ const file_record_query_plan_proto_rawDesc = "" +
 	"\x1eUSE_REMOTE_FETCH_WITH_FALLBACK\x10\x03*A\n" +
 	"\x12PFetchIndexRecords\x12\x0f\n" +
 	"\vPRIMARY_KEY\x10\x01\x12\x1a\n" +
-	"\x16SYNTHETIC_CONSTITUENTS\x10\x02B\xb6\x02\n" +
-	",com.com.apple.foundationdb.record.planprotosB\x14RecordQueryPlanProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x05CAFRP\xaa\x02(Com.Apple.Foundationdb.Record.Planprotos\xca\x02(Com\\Apple\\Foundationdb\\Record\\Planprotos\xe2\x024Com\\Apple\\Foundationdb\\Record\\Planprotos\\GPBMetadata\xea\x02,Com::Apple::Foundationdb::Record::Planprotos"
+	"\x16SYNTHETIC_CONSTITUENTS\x10\x02B\x97\x02\n" +
+	",com.com.apple.foundationdb.record.planprotosB\x14RecordQueryPlanProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRP\xaa\x02(Com.Apple.Foundationdb.Record.Planprotos\xca\x02(Com\\Apple\\Foundationdb\\Record\\Planprotos\xe2\x024Com\\Apple\\Foundationdb\\Record\\Planprotos\\GPBMetadata\xea\x02,Com::Apple::Foundationdb::Record::Planprotos"
 
 var (
 	file_record_query_plan_proto_rawDescOnce sync.Once

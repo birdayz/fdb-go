@@ -275,8 +275,8 @@ const file_frl_config_v1_config_proto_rawDesc = "" +
 	"\x0eMetadataSource\x12\x1d\n" +
 	"\tmeta_file\x18\x01 \x01(\tH\x00R\bmetaFile\x120\n" +
 	"\x13meta_store_keyspace\x18\x02 \x01(\tH\x00R\x11metaStoreKeyspaceB\b\n" +
-	"\x06sourceB\xc1\x01\n" +
-	"\x11com.frl.config.v1B\vConfigProtoP\x01ZIgithub.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1;configv1\xa2\x02\x03FCX\xaa\x02\rFrl.Config.V1\xca\x02\rFrl\\Config\\V1\xe2\x02\x19Frl\\Config\\V1\\GPBMetadata\xea\x02\x0fFrl::Config::V1b\x06proto3"
+	"\x06sourceB\xa2\x01\n" +
+	"\x11com.frl.config.v1B\vConfigProtoP\x01Z*fdb.dev/cmd/frl/gen/frl/config/v1;configv1\xa2\x02\x03FCX\xaa\x02\rFrl.Config.V1\xca\x02\rFrl\\Config\\V1\xe2\x02\x19Frl\\Config\\V1\\GPBMetadata\xea\x02\x0fFrl::Config::V1b\x06proto3"
 
 var (
 	file_frl_config_v1_config_proto_rawDescOnce sync.Once

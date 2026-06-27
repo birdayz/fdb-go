@@ -5,7 +5,7 @@ package conformance_test
 import (
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // OrderBuilder provides a fluent interface for building test Order records

@@ -1,6 +1,6 @@
 package predicates
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // ComparisonRange represents a contiguous range of values for a
 // single column. Mirrors Java's

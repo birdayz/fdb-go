@@ -3,10 +3,10 @@ package ddl
 import (
 	"errors"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // CreateSchemaConstantAction creates a new schema in the catalog and,

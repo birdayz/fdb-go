@@ -3,7 +3,7 @@ package predicates
 import (
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // Placeholder is a QueryPredicate representing a sargable parameter

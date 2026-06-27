@@ -153,6 +153,6 @@ go_test(
 go_library(
     name = "conformance",
     srcs = ["doc.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/conformance",
+    importpath = "fdb.dev/conformance",
     visibility = ["//visibility:public"],
 )

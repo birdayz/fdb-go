@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
 func TestFDB_SQLParallelConnections(t *testing.T) {

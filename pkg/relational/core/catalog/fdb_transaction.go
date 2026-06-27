@@ -3,8 +3,8 @@ package catalog
 import (
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 )
 
 // FDBTransaction bridges a *recordlayer.FDBRecordContext onto the

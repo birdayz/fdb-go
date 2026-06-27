@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestOnError_ResetsRYWCache verifies that OnError (which calls reset()) clears

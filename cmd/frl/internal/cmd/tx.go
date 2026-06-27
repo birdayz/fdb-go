@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/cmd/frl/internal/config"
+	"fdb.dev/pkg/recordlayer"
 )
 
 func newTxCmd() *cobra.Command {

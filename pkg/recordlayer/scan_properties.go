@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // ScanLimitReachedError is returned by a leaf cursor when it hits a

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/encoding/protojson"

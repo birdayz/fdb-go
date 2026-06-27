@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // oracleBinaryPath is set by the DIFF_ORACLE_BIN environment variable.

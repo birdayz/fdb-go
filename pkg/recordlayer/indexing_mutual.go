@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"math/rand"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // fragmentIterationType represents the phase of mutual index building.

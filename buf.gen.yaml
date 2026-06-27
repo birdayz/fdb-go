@@ -3,7 +3,7 @@ managed:
   enabled: true
   override:
     - file_option: go_package_prefix
-      value: github.com/birdayz/fdb-record-layer-go/gen
+      value: fdb.dev/gen
 plugins:
   - local:
       - bazelisk
@@ -22,4 +22,4 @@ plugins:
     opt:
       - paths=source_relative
       - features=marshal+unmarshal+size+pool
-      - pool=github.com/birdayz/fdb-record-layer-go/gen.*
+      - pool=fdb.dev/gen.*

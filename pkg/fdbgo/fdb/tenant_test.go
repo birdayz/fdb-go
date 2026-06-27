@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/fdbgo/fdb"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/gomega"
 )
 

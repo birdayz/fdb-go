@@ -2484,8 +2484,8 @@ const file_record_metadata_proto_rawDesc = "" +
 	"\x16GREATER_THAN_OR_EQUALS\x10\x06\x12\x0f\n" +
 	"\vSTARTS_WITH\x10\a\x12\f\n" +
 	"\bNOT_NULL\x10\b\x12\v\n" +
-	"\aIS_NULL\x10\tB\xfc\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x13RecordMetadataProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\aIS_NULL\x10\tB\xdd\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x13RecordMetadataProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_metadata_proto_rawDescOnce sync.Once

@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestParseCoordinatorResponse_Forward proves the coordinator-reply parser reads

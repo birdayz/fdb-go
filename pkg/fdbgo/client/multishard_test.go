@@ -11,8 +11,8 @@ import (
 
 	"github.com/onsi/gomega"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/fdbgo/wire/types"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // multiShardEnv holds a shared multi-shard FDB environment for cross-shard tests.

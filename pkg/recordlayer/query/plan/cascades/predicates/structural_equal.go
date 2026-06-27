@@ -1,6 +1,6 @@
 package predicates
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // StructurallyEqual reports whether two predicates are structurally
 // equal: same concrete type, same non-child attributes, and

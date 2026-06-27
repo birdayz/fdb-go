@@ -24,7 +24,7 @@ go_library(
         "tx.go",
         "version.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/cmd",
+    importpath = "fdb.dev/cmd/frl/internal/cmd",
     visibility = ["//cmd/frl:__subpackages__"],
     deps = [
         "//cmd/frl/gen/frl/config/v1:config",

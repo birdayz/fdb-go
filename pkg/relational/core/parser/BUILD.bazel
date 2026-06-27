@@ -7,7 +7,7 @@ go_library(
         "doc.go",
         "parser.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser",
+    importpath = "fdb.dev/pkg/relational/core/parser",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/api",

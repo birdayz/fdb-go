@@ -13,7 +13,7 @@ import (
 	"buf.build/go/protoyaml"
 	"github.com/birdayz/protobuf-ecosystem/protoconfig"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
 
 // DefaultPath is the canonical on-disk location. Override with FRL_CONFIG.
