@@ -146,20 +146,18 @@ func evalExprPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg pro
 func evalComparisonPredicateTri(ctx context.Context, conn *EmbeddedConnection, msg proto.Message, pred *antlrgen.PredicatedExpressionContext, allowBareField bool) (triBool, error) {
 	bcp, ok := pred.ExpressionAtom().(*antlrgen.BinaryComparisonPredicateContext)
 	if !ok {
-		// Bare column reference as a top-level WHERE predicate (`WHERE
-		// flag` for a BOOLEAN column) is rejected by fdb-relational
-		// with "expected BooleanValue but got FieldValue". The planner
-		// requires explicit comparisons (`WHERE flag = TRUE`) — a
-		// FieldValue can't be implicitly coerced into a boolean
-		// predicate at top level. Match that strictness here.
-		//
-		// When allowBareField=true (operand of AND/OR/NOT/XOR, or any
-		// projection context), Java accepts the bare column and
-		// converts via truthiness. Fall through to value-eval below.
+		// A bare column reference as a top-level WHERE predicate (`WHERE
+		// flag`) is rejected here in the embedded proto-path evaluator.
+		// This path is now reached only by the Go-only INFORMATION_SCHEMA
+		// WHERE + INSERT-VALUES consumers (RFC-145/147) — real table
+		// SELECTs go through Cascades, which plans `WHERE flag` by lifting
+		// it to `flag = TRUE` (RFC-146, matching Java 4.12's
+		// Expression.Utils.toUnderlyingPredicate; 4.11 rejected it). On
+		// this Go-only surface (Java has no INFORMATION_SCHEMA to compare
+		// against) the strict rejection is retained; only operand/
+		// projection context (allowBareField=true) falls through to
+		// truthiness, as Java does for `b AND TRUE` etc.
 		if _, isFieldValue := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); isFieldValue && !allowBareField {
-			// Java verbatim: "expected BooleanValue but got FieldValue".
-			// Cross-engine corpus `bare_bool_where_rejected` pins
-			// byte-equality.
 			return triFalse, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"expected BooleanValue but got FieldValue")
 		}

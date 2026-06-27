@@ -1346,3 +1346,99 @@ func assertAtOrdinalityRejected(t *testing.T, err error) {
 		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeWrongObjectType}", err, err)
 	}
 }
+
+// boolSchema has a BOOLEAN column WITH an index, so the sargability tests can
+// assert a bare `WHERE flag` matches the boolean index exactly as `flag = TRUE`.
+const boolSchema = `
+CREATE TABLE A (
+  id BIGINT NOT NULL,
+  flag BOOLEAN,
+  amount BIGINT,
+  PRIMARY KEY (id)
+)
+CREATE INDEX idx_flag ON A(flag)
+`
+
+// TestPlanHarness_BareBooleanWhere — a bare boolean column as a single-table
+// top-level WHERE predicate plans (RFC-146). Previously 0AF00.
+func TestPlanHarness_BareBooleanWhere(t *testing.T) {
+	t.Parallel()
+	plan, err := PlanQueryForTest("SELECT id FROM A WHERE flag", boolSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// flag lifts to `flag = TRUE` → matches the boolean index (sargable), same
+	// as the explicit comparison (a COVERING index scan here).
+	assertPlanContains(t, plan, "IndexScan(IDX_FLAG, [=]")
+}
+
+// TestPlanHarness_BareBooleanWhereUnifiesWithComparison — `WHERE flag` and
+// `WHERE flag = TRUE` produce the IDENTICAL plan (RFC-146 §2: they lift to the
+// same ComparisonPredicate, so they unify for index matching/plan shape).
+func TestPlanHarness_BareBooleanWhereUnifiesWithComparison(t *testing.T) {
+	t.Parallel()
+	bare, err := PlanQueryForTest("SELECT id FROM A WHERE flag", boolSchema, nil)
+	if err != nil {
+		t.Fatalf("bare WHERE flag: %v", err)
+	}
+	cmp, err := PlanQueryForTest("SELECT id FROM A WHERE flag = TRUE", boolSchema, nil)
+	if err != nil {
+		t.Fatalf("WHERE flag = TRUE: %v", err)
+	}
+	if bare != cmp {
+		t.Fatalf("WHERE flag and WHERE flag = TRUE plan differently:\n  bare: %s\n  cmp:  %s", bare, cmp)
+	}
+}
+
+// TestPlanHarness_BareNonBooleanWhereRejected — a bare NON-boolean value as a
+// top-level WHERE predicate is a type error (RFC-146 §3 / Java DATATYPE_MISMATCH
+// 42804), not a silent 0-row plan.
+func TestPlanHarness_BareNonBooleanWhereRejected(t *testing.T) {
+	t.Parallel()
+	_, err := PlanQueryForTest("SELECT id FROM A WHERE amount", boolSchema, nil)
+	if err == nil {
+		t.Fatal("expected DATATYPE_MISMATCH for a bare non-boolean WHERE, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatatypeMismatch {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeDatatypeMismatch}", err, err)
+	}
+}
+
+// TestPlanHarness_BareDoubleWhereRejected — a bare `WHERE <double_col>` must
+// raise 42804, NOT silently lift to `d = TRUE` and filter to nothing (codex
+// catch on #357). sqlTypeToCascadesType now carries the real TypeCodeDouble for
+// FLOAT/DOUBLE (and TypeCodeBytes for BYTES), so the predicate-lift type gate
+// rejects them as non-boolean — while genuinely un-typeable values (params,
+// CTE/derived columns whose projected type isn't propagated) stay permissive.
+func TestPlanHarness_BareDoubleWhereRejected(t *testing.T) {
+	t.Parallel()
+	const sch = `CREATE TABLE A (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))`
+	_, err := PlanQueryForTest("SELECT id FROM A WHERE d", sch, nil)
+	if err == nil {
+		t.Fatal("expected DATATYPE_MISMATCH for a bare DOUBLE WHERE, got nil")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatatypeMismatch {
+		t.Fatalf("err = %v (%T), want *api.Error{ErrCodeDatatypeMismatch}", err, err)
+	}
+}
+
+// TestPlanHarness_BareCTEBooleanColumnWhere — the inverse of the DOUBLE
+// rejection: a CTE/derived column holding a boolean expression (`NOT flag`) is
+// UNKNOWN-typed in the outer scope (its projected type isn't propagated), so it
+// MUST stay on the permissive UNKNOWN path and PLAN as a bare WHERE predicate,
+// NOT be rejected 42804. This pins the exact shape the codex #2 rework was
+// reverted to protect — a *FieldValue of UNKNOWN type is not always non-boolean.
+// Without this pin, a future "be stricter about UNKNOWN" change re-breaks
+// boolean CTE columns with green CI (the dimensional-gap trap).
+func TestPlanHarness_BareCTEBooleanColumnWhere(t *testing.T) {
+	t.Parallel()
+	const sch = `CREATE TABLE A (id BIGINT NOT NULL, flag BOOLEAN, PRIMARY KEY (id))`
+	plan, err := PlanQueryForTest(
+		"WITH c AS (SELECT NOT flag AS x, id FROM A) SELECT id FROM c WHERE x", sch, nil)
+	if err != nil {
+		t.Fatalf("bare CTE boolean column WHERE must plan, got: %v", err)
+	}
+	assertPlanContains(t, plan, "PredicatesFilter")
+}

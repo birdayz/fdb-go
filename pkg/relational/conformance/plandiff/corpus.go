@@ -786,14 +786,12 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT no_such_col FROM T_UC",
 		},
 		{
-			// Bare `WHERE flag` on a BOOLEAN column. fdb-relational
-			// rejects with "expected BooleanValue but got FieldValue"
-			// — the planner refuses to treat a column reference as a
-			// predicate. Pinning this as a negative test ensures Go
-			// rejects it the same way; if Go silently accepted (e.g.
-			// by coercing the FieldValue to bool), this test surfaces
-			// the divergence.
-			Name:           "bare_bool_where_rejected",
+			// Bare `WHERE flag` on a BOOLEAN column. Java 4.12 lifts it
+			// to `flag = TRUE` (Expression.Utils.toUnderlyingPredicate),
+			// and Go does the same as of RFC-146 — both plan it and
+			// return the flag=TRUE row. Parity (4.11 rejected it, hence
+			// the now-removed JavaSucceedsGoRejects divergence entry).
+			Name:           "bare_bool_where",
 			SchemaTemplate: "CREATE TABLE T_BBW (id BIGINT, flag BOOLEAN, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_BBW VALUES (1, TRUE)"},
 			Query:          "SELECT id FROM T_BBW WHERE flag",
@@ -1994,9 +1992,9 @@ func SeedRunCorpus() []RunQuery {
 		// aggregate they wedge the Java state.
 		//
 		// Negative tests of QUERY-time errors (undefined_column,
-		// undefined_table, type_mismatch_compare, bare_bool_where_
-		// rejected) DO NOT trigger this — they stay fast across the
-		// full corpus. Only setup-time INSERT errors compound state.
+		// undefined_table, type_mismatch_compare) DO NOT trigger this —
+		// they stay fast across the full corpus. Only setup-time INSERT
+		// errors compound state.
 		//
 		// `duplicate_pk_insert` (2nd INSERT throws
 		// RecordAlreadyExists) is the same shape as

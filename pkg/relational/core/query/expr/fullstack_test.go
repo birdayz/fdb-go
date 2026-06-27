@@ -120,8 +120,9 @@ func TestFullStack_Pipeline(t *testing.T) {
 	}
 
 	// 9. Pin the Explain output so Simplify regressions or
-	// Explain-formatting changes surface here.
-	wantExplain := "(ID >= 18 AND (NAME IS NOT NULL OR ACTIVE))"
+	// Explain-formatting changes surface here. Bare boolean ACTIVE lifts
+	// to `ACTIVE = TRUE` (RFC-146), matching Java's toUnderlyingPredicate.
+	wantExplain := "(ID >= 18 AND (NAME IS NOT NULL OR ACTIVE = TRUE))"
 	if got := simplified.Explain(); got != wantExplain {
 		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
 	}

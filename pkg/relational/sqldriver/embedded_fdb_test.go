@@ -2878,9 +2878,8 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 // behaviour in SELECT projection. `SELECT b AND TRUE`, `SELECT NOT b`,
 // `SELECT b OR FALSE` over a BOOLEAN column evaluate the column as a
 // value (via IsTruthy) rather than rejecting with "expected
-// BooleanValue but got FieldValue". Top-level WHERE `WHERE flag` still
-// rejects to match Java's planner — Java's WHERE-bare-bool rejection
-// is a separate, intentional gap.
+// BooleanValue but got FieldValue". Top-level `WHERE b` now plans too
+// (RFC-146): it lifts to `b = TRUE`, matching Java 4.12.
 func TestFDB_BareBoolProjection(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
@@ -2964,9 +2963,111 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 			"row %d: AND FALSE always FALSE", i)
 	}
 
-	// Top-level WHERE bare bool still rejects (matches Java strictness).
-	_, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b")
-	g.Expect(err).To(gomega.HaveOccurred(), "WHERE flag still rejects per Java planner alignment")
+	// Top-level bare boolean WHERE now plans (RFC-146): `WHERE b` lifts to
+	// `b = TRUE`, so only the b=TRUE row (id 1) survives.
+	rows, err = db.QueryContext(ctx, "SELECT id FROM T WHERE b ORDER BY id")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+		ids = append(ids, id)
+	}
+	rows.Close()
+	g.Expect(ids).To(gomega.Equal([]int64{1}))
+}
+
+// TestFDB_DoubleColumnComparison pins row-level DOUBLE comparison correctness
+// after RFC-146 typed FLOAT/DOUBLE as TypeCodeDouble (the type-mapping change
+// touched the whole DOUBLE resolver path, and there was previously zero
+// row-level coverage of a DOUBLE column in a WHERE comparison). Covers
+// double-vs-double, int-literal → double promotion, and a CTE-derived double.
+func TestFDB_DoubleColumnComparison(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_double_cmp")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE double_cmp_tmpl "+
+			"CREATE TABLE D (id BIGINT NOT NULL, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_double_cmp?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO D VALUES (1, 0.5), (2, 1.5), (3, 2.5)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	collect := func(q string) []int64 {
+		rows, qerr := db.QueryContext(ctx, q)
+		g.Expect(qerr).NotTo(gomega.HaveOccurred())
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			g.Expect(rows.Scan(&id)).To(gomega.Succeed())
+			ids = append(ids, id)
+		}
+		g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+		return ids
+	}
+
+	// double-vs-double: only d=2.5 (id 3) exceeds 1.5.
+	g.Expect(collect("SELECT id FROM D WHERE d > 1.5")).To(gomega.ConsistOf(int64(3)))
+	// int-literal → double promotion: d=1.5 (id 2) and d=2.5 (id 3) exceed 1.
+	g.Expect(collect("SELECT id FROM D WHERE d > 1")).To(gomega.ConsistOf(int64(2), int64(3)))
+	// CTE-derived double column compares identically.
+	g.Expect(collect("WITH c AS (SELECT d, id FROM D) SELECT id FROM c WHERE d > 1.5")).To(gomega.ConsistOf(int64(3)))
+}
+
+// TestFDB_DMLBareNonBooleanWhereRejected pins that a bare non-boolean DML WHERE
+// predicate (`DELETE/UPDATE ... WHERE amount`) raises 42804 — the SAME SQLSTATE
+// the SELECT/JOIN-ON paths give — instead of swallowing it into a generic DML
+// translation error (codex consistency catch on #357). The row must survive
+// (both error before executing).
+func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	setup := openTestDB(t, "/testdb_dml_nonbool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE dml_nonbool_tmpl "+
+			"CREATE TABLE A (id BIGINT NOT NULL, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_dml_nonbool?cluster_file=%s&schema=items", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, "INSERT INTO A VALUES (1, 10)")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	_, err = db.ExecContext(ctx, "DELETE FROM A WHERE amount")
+	g.Expect(err).To(gomega.HaveOccurred(), "DELETE WHERE <non-boolean> must error")
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
+
+	_, err = db.ExecContext(ctx, "UPDATE A SET amount = 2 WHERE amount")
+	g.Expect(err).To(gomega.HaveOccurred(), "UPDATE WHERE <non-boolean> must error")
+	g.Expect(err.Error()).To(gomega.ContainSubstring("42804"))
+
+	// The row survived (both statements errored before executing).
+	var id, amount int64
+	row := db.QueryRowContext(ctx, "SELECT id, amount FROM A WHERE id = 1")
+	g.Expect(row.Scan(&id, &amount)).To(gomega.Succeed())
+	g.Expect(amount).To(gomega.Equal(int64(10)))
 }
 
 func TestFDB_SelectScalarExpression(t *testing.T) {

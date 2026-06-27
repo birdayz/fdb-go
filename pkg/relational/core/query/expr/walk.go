@@ -1321,17 +1321,57 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if err != nil {
 		return nil, err
 	}
-	// BooleanValue with a concrete TRUE/FALSE → ConstantPredicate,
-	// not ValuePredicate. This is what the simplifier's constant-
-	// fold rules expect to see; a ValuePredicate-wrapped boolean
-	// would be treated as opaque and not simplified.
+	// Lift a bare value used as a predicate, mirroring Java's
+	// Expression.Utils.toUnderlyingPredicate (Expression.java:384-399)
+	// branch order. Shared by WHERE and ON (both reach here).
+	//
+	// 1. Concrete boolean literal TRUE/FALSE → ConstantPredicate (what
+	//    the simplifier's constant-fold rules expect; a wrapped boolean
+	//    would be opaque and unsimplified).
 	if bv, ok := v.(*values.BooleanValue); ok && bv.Value != nil {
 		if *bv.Value {
 			return predicates.NewConstantPredicate(predicates.TriTrue), nil
 		}
 		return predicates.NewConstantPredicate(predicates.TriFalse), nil
 	}
-	return predicates.NewValuePredicate(v), nil
+	// 2. NULL → unknown constant (Java :384, `value instanceof NullValue`).
+	//    Detected by VALUE type, not Type().Code(): a NULL literal is built as
+	//    NewNullValue(TypeUnknown), so its type code is Unknown — only the
+	//    value-type assertion identifies it. Must be folded HERE: the
+	//    comparison-form lift below bypasses ValuePredicateConstantFoldRule
+	//    (which matches only *ValuePredicate) that `WHERE NULL` relied on.
+	if _, isNull := v.(*values.NullValue); isNull {
+		return predicates.NewConstantPredicate(predicates.TriUnknown), nil
+	}
+	switch v.Type().Code() {
+	case values.TypeCodeBoolean, values.TypeCodeUnknown:
+		// 4. A boolean value (column / expression) → `value = TRUE` (Java
+		//    :399). This is byte-for-byte the ComparisonPredicate that
+		//    `value = TRUE` builds (ResolveComparison, expr.go:314), so a bare
+		//    `WHERE flag` and `WHERE flag = TRUE` unify — same plan, same
+		//    EXPLAIN, same semantic hash, and the SAME index match (Go's index
+		//    matcher binds only *ComparisonPredicate; a bare ValuePredicate
+		//    would never use a boolean index).
+		//
+		//    UNKNOWN is permitted (permissive-only divergence from Java's strict
+		//    BOOLEAN assert): a value Go's pre-plan resolution can't type — a
+		//    parameter, an expression, or a CTE/derived column whose projected
+		//    type isn't propagated to the outer scope (it may legitimately be
+		//    boolean, e.g. `WITH c AS (SELECT NOT flag AS x ...) ... WHERE x`).
+		//    Definitively-typed columns (DOUBLE/FLOAT/BYTES) are typed by
+		//    sqlTypeToCascadesType and hit the non-boolean branch below — they
+		//    are NOT Unknown, so this never silently accepts a known non-boolean.
+		return predicates.NewComparisonPredicate(v, predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: values.NewBooleanValue(true),
+		}), nil
+	default:
+		// 3. A definitively-typed non-boolean bare value is a type error
+		//    (Java :389 asserts getTypeCode() == BOOLEAN → DATATYPE_MISMATCH).
+		//    Clause-agnostic wording: this lift is shared by WHERE and ON.
+		return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+			"expected boolean expression, got type %s", v.Type())
+	}
 }
 
 // unwrapParenPredicate recurses WalkPredicate on a single-element

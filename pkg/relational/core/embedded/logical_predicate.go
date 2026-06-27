@@ -83,8 +83,24 @@ func buildWherePredicateForTable(
 	tableName, tableAlias string,
 	whereExpr antlrgen.IWhereExprContext,
 ) (predicates.QueryPredicate, bool) {
+	pred, ok, _ := buildWherePredicateForTableE(md, tableName, tableAlias, whereExpr)
+	return pred, ok
+}
+
+// buildWherePredicateForTableE is buildWherePredicateForTable that also carries
+// a structured *api.Error from the predicate walk (e.g. DATATYPE_MISMATCH from a
+// bare non-boolean WHERE, RFC-146). The DML (DELETE/UPDATE) paths use it so
+// `DELETE FROM t WHERE <non-boolean>` surfaces 42804 — the same SQLSTATE the
+// SELECT/ON paths give — instead of swallowing it into a generic DML translation
+// error. A non-api walk failure (an unhandled shape that should soft-fall-back
+// to the text builder) returns a nil error, preserving existing behaviour.
+func buildWherePredicateForTableE(
+	md *recordlayer.RecordMetaData,
+	tableName, tableAlias string,
+	whereExpr antlrgen.IWhereExprContext,
+) (predicates.QueryPredicate, bool, error) {
 	if md == nil || tableName == "" || whereExpr == nil || whereExpr.Expression() == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
@@ -93,7 +109,7 @@ func buildWherePredicateForTable(
 	// dotted segment that would never resolve in the catalog.
 	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 	if err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	alias := semantic.NewUnquoted(tableAlias)
 	if tableAlias == "" {
@@ -105,18 +121,24 @@ func buildWherePredicateForTable(
 		Alias:           alias,
 		CorrelationName: alias.Name(),
 	}); err != nil {
-		return nil, false
+		return nil, false, nil
 	}
 	resolver := expr.New(analyzer, scope)
 	pred, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil {
-		return nil, false
+		// Surface a structured SQL error (e.g. 42804 DATATYPE_MISMATCH) so the
+		// DML caller returns it; an unstructured shape failure soft-falls-back.
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) {
+			return nil, false, apiErr
+		}
+		return nil, false, nil
 	}
 	// Plan-time fold of constant Value sub-trees inside the predicate
 	// (`name = 1+2` → `name = 3`). Best-effort — SimplifyPredicateValues
 	// is pointer-stable when nothing folds.
 	pred = predicates.SimplifyPredicateValues(pred)
-	return pred, true
+	return pred, true, nil
 }
 
 // buildWherePredicate is the selectQuery-shaped adapter over the
@@ -490,6 +512,15 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 				if errors.As(walkErr, &srcNotFound) {
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"no FROM source aliased as %s", srcNotFound.Alias.Name())
+				}
+				// A structured api.Error (e.g. DATATYPE_MISMATCH from a
+				// non-boolean bare ON predicate like `ON a.amount`, RFC-146) is a
+				// real user error — surface it rather than dropping the ON
+				// condition, which the translator would silently degrade to a
+				// cross join (it ignores OnText once OnPredicate is nil).
+				var apiErr *api.Error
+				if errors.As(walkErr, &apiErr) {
+					return apiErr
 				}
 				continue
 			}
@@ -2987,7 +3018,12 @@ func buildLogicalPlanForDeleteWithCatalog(
 	} else if carried != nil {
 		return nil, carried
 	}
-	pred, ok := buildWherePredicateForTable(md, bare, bare, w)
+	pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
+	if werr != nil {
+		// e.g. 42804 from a bare non-boolean DELETE WHERE — surface it, don't
+		// mask it as a generic DML translation error (RFC-146 / codex).
+		return nil, werr
+	}
 	if !ok {
 		return op, nil
 	}
@@ -3131,7 +3167,12 @@ func buildLogicalPlanForUpdateWithCatalog(
 			if carried != nil {
 				return nil, carried
 			}
-			if pred, ok := buildWherePredicateForTable(md, bare, bare, w); ok {
+			pred, ok, werr := buildWherePredicateForTableE(md, bare, bare, w)
+			if werr != nil {
+				// e.g. 42804 from a bare non-boolean UPDATE WHERE — surface it.
+				return nil, werr
+			}
+			if ok {
 				_ = upgradeFirstFilter(op, pred)
 			}
 		}

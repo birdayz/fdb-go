@@ -1684,9 +1684,6 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	if f.Predicate == nil && f.PredicateText != "" {
 		return nil
 	}
-	if f.Predicate != nil && isBareFieldPredicate(f.Predicate) {
-		return nil
-	}
 	if f.Predicate != nil && predicateContainsUnsafeFunction(f.Predicate) {
 		return nil
 	}
@@ -2862,15 +2859,6 @@ func predicateContainsUnsafeFunction(p predicates.QueryPredicate) bool {
 		return true
 	})
 	return unsafe
-}
-
-func isBareFieldPredicate(p predicates.QueryPredicate) bool {
-	vp, ok := p.(*predicates.ValuePredicate)
-	if !ok {
-		return false
-	}
-	_, isField := vp.Value.(*values.FieldValue)
-	return isField
 }
 
 func (t *cascadesTranslator) translateUnion(u *logical.LogicalUnion) expressions.RelationalExpression {
