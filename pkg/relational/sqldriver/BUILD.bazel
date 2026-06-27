@@ -36,6 +36,7 @@ go_test(
         "covering_index_test.go",
         "cross_table_predicate_probe_test.go",
         "derived_limit_rfc128_test.go",
+        "derived_table_probe_test.go",
         "dml_cascades_fdb_test.go",
         "dml_probe_test.go",
         "driver_test.go",
