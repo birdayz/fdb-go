@@ -98,8 +98,12 @@ INNER reuses the existing FlatMap+FirstOrDefault semi-join cursor. OUTER reuses 
 DefaultOnEmpty path if approach (i) is chosen.
 
 ### 5.4 Scope guard
-EXISTS combined with FULL OUTER is rejected (existing `findFullOuterWithExists`). EXISTS under an OR in ON is
-rejected (mirror `existsUnderDisjunction`).
+EXISTS combined with FULL OUTER is rejected (existing `findFullOuterWithExists`). EXISTS that is NOT a top-level
+ON conjunct — buried under an OR or a deeper boolean (`ON (x AND EXISTS) OR y`, `ON x OR EXISTS`) — is rejected
+fail-closed by `CheckBuriedExistentialPredicate` (the translate flatten lifts only a top-level AND, so a buried
+`ExistentialValuePredicate` survives and the backstop catches it). NOTE: `existsUnderDisjunction` is a WHERE-only
+guard and does NOT cover the ON position; the buried-existential backstop is what rejects OR-in-ON. Pinned by
+`exists_in_on_fdb_test.go` `inner_exists_under_or_in_on_rejected`.
 
 ## 6. Test plan (Phase 2)
 yamsql + FDB row-count tests: INNER ON-EXISTS (correlated to either leg), LEFT ON-EXISTS correlated to preserved
