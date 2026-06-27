@@ -248,8 +248,16 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// shared sub-products, and the 4-table count stays well under the 100k task
 		// budget. This is the cost of producing the cost-optimal index-nested-loop chain
 		// via the single data-access path instead of the hand-rolled tryFlatMapPlan.
+		//
+		// RFC-152 (cost-model materialization for the LEFT-OUTER rewrite) nudged the
+		// 4-table count 46483→45306 (-2.5%): nestedLoopJoinCost now charges its inner
+		// scanned ONCE and compareJoinOrdering ranks same-Reference join candidates by
+		// WORK, so the NLJ-vs-FlatMap decision resolves slightly differently and the
+		// search prunes marginally earlier (FEWER tasks — a strict improvement, well
+		// inside the interning/correlation sentinels this baseline guards). 3-table is
+		// unaffected.
 		{3, 11122},
-		{4, 46483},
+		{4, 45306},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
