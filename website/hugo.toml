@@ -28,10 +28,6 @@ hasCJKLanguage = false
     pageRef = "/docs"
     weight = 1
   [[menu.main]]
-    name = "Performance"
-    pageRef = "/performance"
-    weight = 2
-  [[menu.main]]
     name = "Changelog"
     pageRef = "/changelog"
     weight = 3
