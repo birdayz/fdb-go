@@ -44,7 +44,7 @@ func TestGetWinnerForOrdering_FallbackToFindBestWhenNoWinner(t *testing.T) {
 	scanRule := NewPrimaryScanRule()
 	FireExpressionRule(scanRule, ref)
 
-	// No winner stamped — getWinnerForOrdering should fall back to findBestPhysicalExpr
+	// No winner stamped — getWinnerForOrdering should fall back to findBestValidPhysicalExpr
 	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
 	if winner == nil {
 		t.Fatal("getWinnerForOrdering(PRESERVE) returned nil (fallback should work)")
@@ -114,14 +114,14 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 		t.Fatal("findPhysicalPlan returned nil")
 	}
 
-	best := findBestPhysicalExpr(ref, PlanningCostModelLess)
+	best := findBestValidPhysicalExpr(ref, PlanningCostModelLess)
 	if best == nil {
-		t.Fatal("findBestPhysicalExpr returned nil")
+		t.Fatal("findBestValidPhysicalExpr returned nil")
 	}
 
 	// Log what each returns so we can see if they differ
 	t.Logf("findPhysicalPlan returned: %v (type %T)", first, first)
-	t.Logf("findBestPhysicalExpr returned: %v (type %T)", best, best)
+	t.Logf("findBestValidPhysicalExpr returned: %v (type %T)", best, best)
 
 	// Test getWinnerForOrdering with no winner stamped
 	winner := getWinnerForOrdering(ref, PreserveOrdering(), nil)
@@ -130,9 +130,9 @@ func TestFindPhysicalPlanVsFindBestPhysicalExpr_InsertionOrderMatters(t *testing
 	}
 	t.Logf("getWinnerForOrdering(PRESERVE) returned: %v (type %T)", winner, winner)
 
-	// Winner should equal findBestPhysicalExpr since no winner is stamped
+	// Winner should equal findBestValidPhysicalExpr since no winner is stamped
 	if winner != best {
-		t.Fatal("getWinnerForOrdering fallback should return findBestPhysicalExpr result")
+		t.Fatal("getWinnerForOrdering fallback should return findBestValidPhysicalExpr result")
 	}
 }
 

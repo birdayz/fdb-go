@@ -45,7 +45,7 @@ type ExpressionRuleCall struct {
 	// join child) use REAL cardinalities rather than the default
 	// LeafScanCardinality. Nil on test/utility firing paths — CostModel()
 	// falls back to the default-stats comparator. Without this, the NLJ
-	// rule's findBestPhysicalExpr ranks join children with every table at
+	// rule's findBestValidPhysicalExpr ranks join children with every table at
 	// LeafScanCardinality, so child selection ties and commits to the
 	// FROM-clause order instead of the cost-optimal one (RFC-041).
 	Stats       properties.StatisticsProvider

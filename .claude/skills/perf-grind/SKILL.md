@@ -147,7 +147,7 @@ If the plan looks right but the query is slow, the issue is in the executor (sca
 
 7. **Case sensitivity kills silently.** Proto datum maps use lowercase; planner produces uppercase. FieldValue.evaluateCorrelated has a case-insensitive fallback.
 
-8. **`findPhysicalPlan` (first physical) is a trap.** Use `findBestPhysicalExpr(ref, PlanningCostModelLess)` for cost-based selection.
+8. **`findPhysicalPlan` (first physical) is a trap.** Use `findBestValidPhysicalExpr(ref, PlanningCostModelLess)` for cost-based selection.
 
 ## What NOT to do
 
