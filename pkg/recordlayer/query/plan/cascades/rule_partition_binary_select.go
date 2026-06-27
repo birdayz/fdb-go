@@ -185,8 +185,8 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	// where it SARGs the driver's scan). Without flattening, the whole And —
 	// correlated to BOTH sides — lands on one leg, so the selective conjunct
 	// never reaches the outer leg as a separate SARGable predicate and the driver
-	// stays a full scan (the index-nested-loop's selective driver is lost; this
-	// is what tryFlatMapPlan hand-rolled via tryPushPredicatesIntoScan).
+	// stays a full scan (the index-nested-loop's selective driver is lost; this is
+	// the selective-driver SARG the retired tryFlatMapPlan used to hand-roll).
 	// PartitionSelectRule (the ≥3-way twin) already flattens the same way.
 	for _, pred := range flattenConjuncts(sel.GetPredicates()) {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)

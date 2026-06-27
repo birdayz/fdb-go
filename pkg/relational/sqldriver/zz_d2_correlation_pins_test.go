@@ -109,3 +109,53 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 		t.Errorf("%q: got %v, want [20 21] — a leaked sub-join correlation would misroute the upper join", q, got)
 	}
 }
+
+// PIN (@claude/Torvalds REQUIRED-2, the EXISTS/FOD twin of codex P2-2): a
+// correlated EXISTS whose FlatMap sits over an upper join. The EXISTS FlatMap binds
+// its outer with the plan's real outer alias (NamedForEachQuantifier(mergedOuterCorr
+// / outerCorrelation)) and its FOD inner with NamedPhysicalQuantifier(existCorr /
+// innerCorrelation) — NOT fresh aliases — so a completed correlated-EXISTS subplan
+// does not leak its bound outer correlation upward (Reference.GetCorrelatedTo would
+// otherwise fail to subtract a fresh alias) and the enclosing join is not misrouted.
+// EXISTS c.fk=a.id correlates the subquery to a (joined to b above); rows must be
+// exactly the a's that join b AND have a matching c.
+func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_existsleak")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_existsleak")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE existsleak_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, fk BIGINT, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsleak/s WITH TEMPLATE existsleak_tmpl")
+
+	dsn := fmt.Sprintf("fdbsql:///testdb_existsleak?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (3)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (12, 3)")
+	// c has fk for a=1 and a=3 only.
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (20, 1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (21, 3)")
+
+	// a=1: joins b10, EXISTS c(fk=1) -> yes; a=2: joins b11, no c(fk=2) -> no;
+	// a=3: joins b12, EXISTS c(fk=3) -> yes.
+	const q = "SELECT a.id FROM a, b WHERE b.fk = a.id AND EXISTS (SELECT 1 FROM c WHERE c.fk = a.id)"
+	got := queryIDs(t, db, ctx, q)
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Errorf("%q: got %v, want [1 3] — a leaked EXISTS outer correlation would misroute the enclosing join", q, got)
+	}
+}

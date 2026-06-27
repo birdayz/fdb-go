@@ -448,8 +448,10 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// leaks them as if externally correlated → an upper multiway join sees the
 	// subplan as still correlated and skips/misroutes valid alternatives (codex
 	// P2-2). A FlatMap that binds X is not correlated to X; binding with the real
-	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD paths
-	// already bind via NamedPhysicalQuantifier(quants[i].GetAlias()).)
+	// aliases makes the aggregation report so. (The EXISTS / correlated-FOD builders
+	// — implementExistentialSelect, tryExistsFlatMap, buildExistsFlatMap — bind their
+	// wrapper quantifiers the same way: outer via the named outer alias, inner via
+	// NamedPhysicalQuantifier(inner alias) over the FOD wrapper.)
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, call.MemoizeExpression(outerExpr))
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, call.MemoizeExpression(innerExpr))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, outerQ, innerQ))
@@ -1184,13 +1186,17 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		flatMapResult, false,
 	)
 
+	// Bind the wrapper quantifiers with the FlatMap plan's REAL outer/inner aliases
+	// (mergedOuterCorr/existCorr), not fresh ones — same EXISTS correlation-leak fix
+	// as buildExistsFlatMap above (the codex P2-2 twin): a fresh outer alias fails to
+	// subtract the FOD inner's correlation to mergedOuterCorr, leaking it upward.
 	leftMemoRef := call.MemoizeExpression(leftExpr)
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr)))
-	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
+	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(
 		flatMapPlan,
-		expressions.ForEachQuantifier(leftMemoRef),
+		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
 	))
 }
@@ -1397,10 +1403,16 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 		outerCorrelation, innerCorrelation,
 		resultValue, false,
 	)
-	leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(outerExpr))
+	// Bind the wrapper quantifiers with the FlatMap plan's REAL outer/inner aliases
+	// (outerCorrelation/innerCorrelation), not fresh ones — the FOD inner reports
+	// its correlation to outerCorrelation, so a fresh outer alias would fail to
+	// subtract it and a completed correlated-EXISTS FlatMap would leak
+	// outerCorrelation upward → misroute an enclosing multiway join (the EXISTS twin
+	// of codex P2-2 / yieldGeneralFlatMap:453-454).
+	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
 	fodWrapper := NewPhysicalFirstOrDefaultWrapper(fodPlan,
 		expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr)))
-	rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(fodWrapper))
+	rightQ := expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(fodWrapper))
 	call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
 }
 
@@ -1479,80 +1491,6 @@ func bareColumnName(fv *values.FieldValue, expectedAlias string) string {
 		return col
 	}
 	return fv.Field
-}
-
-func tryPushPredicatesIntoScan(
-	outerPlan plans.RecordQueryPlan,
-	preds []predicates.QueryPredicate,
-	ctx PlanContext,
-	alias string,
-	correlation values.CorrelationIdentifier,
-) plans.RecordQueryPlan {
-	scan, ok := outerPlan.(*plans.RecordQueryScanPlan)
-	if !ok {
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, preds, correlation)
-	}
-	recordTypes := scan.GetRecordTypes()
-	if len(recordTypes) != 1 || ctx == nil {
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, preds, correlation)
-	}
-	pkCols := ctx.GetPrimaryKeyColumns(recordTypes[0])
-	if len(pkCols) == 0 {
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, preds, correlation)
-	}
-
-	var matchedRanges []*predicates.ComparisonRange
-	matchedPreds := make(map[int]bool)
-	for _, pkCol := range pkCols {
-		pkUpper := strings.ToUpper(pkCol)
-		found := false
-		for pi, p := range preds {
-			if matchedPreds[pi] {
-				continue
-			}
-			cp, ok := p.(*predicates.ComparisonPredicate)
-			if !ok {
-				continue
-			}
-			fv, ok := cp.Operand.(*values.FieldValue)
-			if !ok {
-				continue
-			}
-			if !isScanRangeCompatible(cp.Comparison.Type) {
-				continue
-			}
-			if strings.ToUpper(fv.Field) != pkUpper {
-				continue
-			}
-			cr := predicates.EmptyComparisonRange()
-			mergeResult := cr.Merge(&cp.Comparison)
-			if !mergeResult.Ok {
-				continue
-			}
-			matchedRanges = append(matchedRanges, mergeResult.Range)
-			matchedPreds[pi] = true
-			found = true
-			break
-		}
-		if !found {
-			break
-		}
-	}
-
-	if len(matchedRanges) > 0 {
-		narrowedScan := scan.WithScanComparisons(matchedRanges)
-		var residual []predicates.QueryPredicate
-		for i, p := range preds {
-			if !matchedPreds[i] {
-				residual = append(residual, p)
-			}
-		}
-		if len(residual) > 0 {
-			return plans.NewRecordQueryPredicatesFilterPlanWithAlias(narrowedScan, residual, correlation)
-		}
-		return narrowedScan
-	}
-	return plans.NewRecordQueryPredicatesFilterPlanWithAlias(outerPlan, preds, correlation)
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)
