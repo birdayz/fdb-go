@@ -1,0 +1,97 @@
+/* fdb.dev — landing polish. Loaded by hextra after the theme's compiled CSS.
+   Note: hextra ships PRECOMPILED Tailwind, so ad-hoc `hx:` utilities used only in
+   our content don't exist in the stylesheet. We style the landing with real
+   classes here instead. */
+
+/* ---- Layout rhythm --------------------------------------------------------- */
+/* Body copy reads left-aligned at a comfortable measure — never centered
+   (centered multi-line paragraphs look unfinished), aligned under each heading. */
+/* hextra-home lays content out in a flex column with align-items:flex-start, so
+   block children shrink-wrap to content instead of stretching. width:100% makes
+   max-width actually govern the measure (and lets the bench 1fr track expand). */
+.s-body { width: 100%; max-width: 46rem; line-height: 1.62; }
+.s-body p { margin: 0.9rem 0; }
+.hero-code { width: 100%; max-width: 44rem; }
+.hero-note {
+  width: 100%;
+  max-width: 44rem;
+  margin-top: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #828b9a;
+}
+.hero-note a { color: var(--color-primary-400, #4aa8ff); }
+
+/* ---- Benchmark component ----------------------------------------------------
+   A database benchmark shown the way a systems engineer reads one: monospace,
+   tabular numbers, one bar per row whose LENGTH encodes the speedup (longer is
+   faster). Pure-Go in the theme accent; parity rows go quiet. Honest by design —
+   each bar is speedup ÷ max-speedup, so nothing is exaggerated. */
+.bench {
+  width: 100%;
+  max-width: 44rem;
+  margin: 1.5rem 0 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.bench-head {
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #79828f;
+}
+.bench-row {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(7.5rem, auto) 1fr 2.6rem;
+  align-items: center;
+  gap: 0.4rem 1.1rem;
+}
+.bench-name { font-size: 0.92rem; color: #d6dbe4; font-weight: 500; }
+.bench-name small { color: #79828f; font-weight: 400; }
+.bench-nums {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: #828b9a;
+  white-space: nowrap;
+}
+.bench-nums b { color: var(--color-primary-400, #4aa8ff); font-weight: 600; }
+.bench-track { height: 0.5rem; background: #1d2129; border-radius: 99px; overflow: hidden; }
+.bench-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--color-primary-700, #1763a0), var(--color-primary-400, #4aa8ff));
+}
+.bench-fill.is-par { background: #3a4150; }
+.bench-x {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-primary-400, #4aa8ff);
+  text-align: right;
+}
+.bench-x.is-par { color: #6b7280; }
+
+.muted-note {
+  width: 100%;
+  max-width: 46rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: #828b9a;
+  margin-top: 0.6rem;
+}
+.muted-note code { color: #aeb6c2; }
+.muted-note a { color: var(--color-primary-400, #4aa8ff); }
+
+@media (max-width: 640px) {
+  .bench-row {
+    grid-template-columns: 1fr auto;
+    gap: 0.3rem 0.75rem;
+    padding-bottom: 0.5rem;
+  }
+  .bench-name { grid-column: 1; grid-row: 1; }
+  .bench-x   { grid-column: 2; grid-row: 1; }
+  .bench-nums { grid-column: 1 / -1; grid-row: 2; }
+  .bench-track { grid-column: 1 / -1; grid-row: 3; }
+}
