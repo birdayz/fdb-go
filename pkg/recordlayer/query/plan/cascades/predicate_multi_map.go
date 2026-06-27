@@ -894,6 +894,21 @@ func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) v
 // predicateContainsUncompensatableValues reports whether a predicate
 // contains UnmatchedAggregateValue or IndexOnlyValue markers in its
 // value trees. Ports Java's predicateContainsUncompensatableValues.
+//
+// Java dispatches on the PredicateWithValue / PredicateWithComparisons
+// INTERFACES; Go switches on the two concrete query-predicate types that carry a
+// value or comparison — ComparisonPredicate (Java ValuePredicate's value +
+// comparison) and ValuePredicate — descending And/Or/Not via WalkPredicate. This
+// is exhaustive for the predicates that actually reach this gate: it is only ever
+// called on QUERY predicates (residual query preds in rule_match_intermediate /
+// the amended query pred), which the SQL translator builds exclusively from
+// Comparison/Value/And/Or/Not/Constant nodes. Java's other PredicateWithValue
+// implementors — PredicateWithValueAndRanges and Placeholder — are CANDIDATE-side
+// / matching constructs (PredicateWithValueAndRanges is never even constructed in
+// the Go port) and never flow in; ExistentialValuePredicate's value is always a
+// QuantifiedObjectValue and its comparison a NullComparison, so it carries no
+// uncompensatable value and the false default matches Java. (Verified during the
+// RFC-153 bug-hunt: this is not the fail-open gate it superficially resembles.)
 func predicateContainsUncompensatableValues(p predicates.QueryPredicate) bool {
 	found := false
 	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {

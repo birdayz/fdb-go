@@ -577,6 +577,17 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
 						"unsupported EXISTS in JOIN ON clause: %v", walkErr)
 				}
+				// The NLJ rule's implementJoinWithExistential handles exactly ONE
+				// existential quantifier on a binary join (a 2-ForEach + 1-Existential
+				// select); a join with two+ existentials falls through unplanned. That
+				// is a pre-existing limitation shared with WHERE EXISTS over a join —
+				// reject MULTIPLE EXISTS-in-ON cleanly here rather than let it surface
+				// as the opaque "Cascades planner could not plan query" (RFC-154 §5;
+				// single EXISTS-in-ON is the supported shape).
+				if len(onPlanner.subqueries) > 1 {
+					return api.NewError(api.ErrCodeUnsupportedQuery,
+						"multiple EXISTS in a JOIN ON clause is not yet supported")
+				}
 				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
 				j.OnExistsSubqueries = onPlanner.subqueries
 				continue

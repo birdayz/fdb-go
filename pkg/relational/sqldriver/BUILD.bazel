@@ -42,6 +42,7 @@ go_test(
         "exists_alias_shadow_fdb_test.go",
         "exists_computed_column_fdb_test.go",
         "exists_in_on_fdb_test.go",
+        "exists_in_on_probe_test.go",
         "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "groupby_insert_select_fdb_test.go",
