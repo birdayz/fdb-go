@@ -82,7 +82,7 @@ locals {
     # match MODULE.bazel + the testcontainers default (RFC-108 §2) — a bump is one reviewed
     # edit of both fields.
     fdb_version        = "7.3.77"
-    fdb_clients_sha256 = "642841a90acd7f2cc0ae08297245f4f9df76fe250b7b1331f2f99702fec3bee8"
+    fdb_clients_sha256 = "b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254"
   }
 }
 
