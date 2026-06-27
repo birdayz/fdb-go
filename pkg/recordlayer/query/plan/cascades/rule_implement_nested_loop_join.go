@@ -402,6 +402,34 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 		}
 	}
 
+	// RFC-153 (a-implement, Graefe ACK): rebase BURIED-preserved-leg references in the
+	// inner onto the merge correlation `outerCorr` ($m), which IS known at THIS layer
+	// (Go assigns $m at PLANNING, after RewriteOuterJoinRule, so the rewrite rule could
+	// not). When the preserved side is itself a join/merge (`A JOIN B ... LEFT JOIN C ON
+	// C.a_id = A.id`), the null-supplying inner arrives with the ON-predicate baked in
+	// as a SARG correlated to the buried source `A`; `A` is not bound below the FlatMap
+	// (only $m is), so without the rebase the probe evaluates NULL → wrong null-extension
+	// (codex 2nd P2 / RFC-153 §2). Rebasing `QOV(A).col` → `FieldValue(QOV($m),"A.col")`
+	// (the authoritative qualified key the merged outer row carries) makes the comparand
+	// a field of the BOUND merge row → it resolves AND SARGs Scan(C,[a_id=<$m.A_id>]).
+	//
+	// CRITICAL (Graefe): the broadened RewriteOuterJoinRule guard and this rewire are ONE
+	// unit. After rebasing, VERIFY no buried reference survives anywhere in the inner; if
+	// one does (an alias mismatch, or an inner shape the rebaser does not cover), DECLINE
+	// the probe — the materialized NLJ (which resolves the buried predicate via the merged
+	// row's qualified keys) is the correct fallback. A path that fires the broadened guard
+	// but cannot guarantee the rewire MUST NOT yield the probe (the §2 wrong-rows trap).
+	buriedLegAliases := buriedPreservedAliases(outerExpr, outerCorr)
+	if len(buriedLegAliases) > 0 {
+		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr)
+		for i, p := range joinPreds {
+			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr)
+		}
+		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
+			return
+		}
+	}
+
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if len(joinPreds) > 0 {
 		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
@@ -856,6 +884,276 @@ func rebaseOuterLegValue(
 		return v
 	}
 	return values.WithChildren(v, newChildren)
+}
+
+// rebasePlanBuriedRefs rewrites every reference to a BURIED preserved-leg alias in a
+// built inner plan tree onto the merge correlation (RFC-153, approach a-implement).
+// The null-supplying inner of a joined-preserved LEFT OUTER arrives here already
+// implemented, with the ON-predicate baked in as a SARG (IndexScan/Scan comparison)
+// or a residual (PredicatesFilter) correlated to a buried preserved source `A`. At
+// this layer (yieldGeneralFlatMap) the preserved merge correlation `mergedCorr` ($m)
+// IS known, so we rebase `QOV(A).col` → `FieldValue(QOV($m), "A.col")` — the
+// authoritative qualified key the merged outer row carries (Graefe condition 4) —
+// using the exact rebaseOuterLegValue/rebaseOuterLegRefsToMerged machinery the
+// EXISTS-over-join path uses. Pass-through nodes are rebuilt around their rebased
+// inner; an unhandled node is returned as-is and caught by the post-rebase
+// verification (planReferencesAnyBuriedAlias) which declines the probe so the
+// correct materialized NLJ fallback wins.
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier) plans.RecordQueryPlan {
+	if p == nil || len(legAliases) == 0 {
+		return p
+	}
+	switch pl := p.(type) {
+	case *plans.RecordQueryIndexPlan:
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr)
+		if !changed {
+			return p
+		}
+		return pl.WithScanComparisons(newComps)
+	case *plans.RecordQueryScanPlan:
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr)
+		if !changed {
+			return p
+		}
+		return pl.WithScanComparisons(newComps)
+	case *plans.RecordQueryPredicatesFilterPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		preds := pl.GetPredicates()
+		newPreds := make([]predicates.QueryPredicate, len(preds))
+		changed := inner != pl.GetInner()
+		for i, pr := range preds {
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr)
+			if newPreds[i] != pr {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias())
+	case *plans.RecordQueryFilterPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		preds := pl.GetPredicates()
+		newPreds := make([]predicates.QueryPredicate, len(preds))
+		changed := inner != pl.GetInner()
+		for i, pr := range preds {
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr)
+			if newPreds[i] != pr {
+				changed = true
+			}
+		}
+		if !changed {
+			return p
+		}
+		return plans.NewRecordQueryFilterPlan(newPreds, inner)
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		if inner == pl.GetInner() {
+			return p
+		}
+		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords())
+	case *plans.RecordQueryDefaultOnEmptyPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		if inner == pl.GetInner() {
+			return p
+		}
+		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue())
+	case *plans.RecordQueryFirstOrDefaultPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		if inner == pl.GetInner() {
+			return p
+		}
+		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
+	case *plans.RecordQueryTypeFilterPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		if inner == pl.GetInner() {
+			return p
+		}
+		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner)
+	case *plans.RecordQueryMapPlan:
+		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr)
+		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr)
+		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
+			return p
+		}
+		return plans.NewRecordQueryMapPlan(inner, newResult)
+	default:
+		// Unhandled node — return unchanged. planReferencesAnyBuriedAlias will detect
+		// any buried reference that survives here and decline the probe.
+		return p
+	}
+}
+
+// rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
+// comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier) ([]*predicates.ComparisonRange, bool) {
+	out := make([]*predicates.ComparisonRange, len(comps))
+	changed := false
+	for i, cr := range comps {
+		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr)
+		out[i] = nc
+		if ch {
+			changed = true
+		}
+	}
+	return out, changed
+}
+
+// rebaseComparisonRange rebases the buried-leg references in one comparison range's
+// equality/inequality comparison operands. Returns the (possibly rebuilt) range and
+// whether it changed. A range whose rebuilt comparison cannot be re-merged is
+// returned unchanged (the verification then declines the probe).
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier) (*predicates.ComparisonRange, bool) {
+	if cr == nil || cr.IsEmpty() {
+		return cr, false
+	}
+	var comparisons []*predicates.Comparison
+	if cr.IsEquality() {
+		comparisons = []*predicates.Comparison{cr.GetEqualityComparison()}
+	} else {
+		comparisons = cr.GetInequalityComparisons()
+	}
+	rebuilt := predicates.EmptyComparisonRange()
+	changed := false
+	for _, c := range comparisons {
+		nc := rebaseComparison(c, legAliases, mergedCorr)
+		if nc != c {
+			changed = true
+		}
+		res := rebuilt.Merge(nc)
+		if !res.Ok {
+			return cr, false
+		}
+		rebuilt = res.Range
+	}
+	if !changed {
+		return cr, false
+	}
+	return rebuilt, true
+}
+
+// rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
+// copying the comparison so every non-operand field (Type, Escape, ParameterName,
+// the Text*/vector fields) is preserved verbatim.
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier) *predicates.Comparison {
+	if c == nil || c.Operand == nil {
+		return c
+	}
+	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr)
+	if newOperand == c.Operand {
+		return c
+	}
+	nc := *c
+	nc.Operand = newOperand
+	return &nc
+}
+
+// planReferencesAnyBuriedAlias reports whether any SARG comparand, residual-filter
+// predicate, or map result value in the plan tree STILL references one of the buried
+// preserved-leg aliases (case-insensitive) — i.e. the rebase was incomplete and the
+// probe would evaluate an unbound correlation at runtime (the §2 wrong-rows trap).
+// yieldGeneralFlatMap declines the probe when this returns true.
+func planReferencesAnyBuriedAlias(p plans.RecordQueryPlan, legAliases []string) bool {
+	if p == nil || len(legAliases) == 0 {
+		return false
+	}
+	upper := make(map[string]struct{}, len(legAliases))
+	for _, a := range legAliases {
+		if a != "" {
+			upper[strings.ToUpper(a)] = struct{}{}
+		}
+	}
+	found := false
+	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
+		if found {
+			return false
+		}
+		switch sp := n.(type) {
+		case *plans.RecordQueryScanPlan:
+			if comparisonRangesReferenceAlias(sp.GetScanComparisons(), upper) {
+				found = true
+			}
+		case *plans.RecordQueryIndexPlan:
+			if comparisonRangesReferenceAlias(sp.GetScanComparisons(), upper) {
+				found = true
+			}
+		case *plans.RecordQueryPredicatesFilterPlan:
+			if predsReferenceAlias(sp.GetPredicates(), upper) {
+				found = true
+			}
+		case *plans.RecordQueryFilterPlan:
+			if predsReferenceAlias(sp.GetPredicates(), upper) {
+				found = true
+			}
+		case *plans.RecordQueryMapPlan:
+			if valueReferencesAlias(sp.GetResultValue(), upper) {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func comparisonRangesReferenceAlias(comps []*predicates.ComparisonRange, upper map[string]struct{}) bool {
+	for a := range scanComparisonCorrelations(comps) {
+		if _, ok := upper[strings.ToUpper(a.Name())]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func predsReferenceAlias(preds []predicates.QueryPredicate, upper map[string]struct{}) bool {
+	for _, pr := range preds {
+		for a := range predicates.GetCorrelatedToOfPredicate(pr) {
+			if _, ok := upper[strings.ToUpper(a.Name())]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func valueReferencesAlias(v values.Value, upper map[string]struct{}) bool {
+	if v == nil {
+		return false
+	}
+	for a := range values.GetCorrelatedToOfValue(v) {
+		if _, ok := upper[strings.ToUpper(a.Name())]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// buriedPreservedAliases returns the BURIED source aliases of a join's outer
+// (preserved) leg — everything physicalProvidedAliases reports EXCEPT the leg's own
+// merge correlation. These are the aliases a null-supplying inner correlation may
+// target through the merge (RFC-153). Empty when the leg is a bare table.
+func buriedPreservedAliases(outerExpr expressions.RelationalExpression, outerCorr values.CorrelationIdentifier) []string {
+	if outerExpr == nil {
+		return nil
+	}
+	var out []string
+	for alias := range physicalProvidedAliases(outerExpr, outerCorr) {
+		if alias != outerCorr && alias.Name() != "" {
+			out = append(out, alias.Name())
+		}
+	}
+	return out
+}
+
+// buriedAliasUpperSet returns the upper-cased name set of legAliases for the
+// post-rebase verification's case-insensitive membership test.
+func buriedAliasUpperSet(legAliases []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(legAliases))
+	for _, a := range legAliases {
+		if a != "" {
+			out[strings.ToUpper(a)] = struct{}{}
+		}
+	}
+	return out
 }
 
 // predicateReferencesInnerLeg reports whether a predicate references any

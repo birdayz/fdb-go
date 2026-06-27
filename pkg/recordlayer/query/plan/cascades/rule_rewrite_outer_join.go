@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/matching"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // RewriteOuterJoinRule canonicalizes a LEFT OUTER join SelectExpression into the
@@ -89,11 +90,34 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// INNER join type and DROP the unmatched outer rows (silent degrade to INNER).
 	// Those are left on the original LEFT-OUTER materialized NLJ, which null-extends
 	// correctly. (tryFlatMapPlan likewise only handled the correlated case.)
-	preservedAlias := preserved.GetAlias()
+	//
+	// The correlation check tests every alias the preserved leg PROVIDES — its own
+	// quantifier alias PLUS every source alias buried inside it (RFC-153). When the
+	// preserved side is itself a join/merge (`A JOIN B ... LEFT JOIN C ON C.a_id =
+	// A.id`), the preserved quantifier is a synthetic merge M over A⋈B and the
+	// ON-predicate correlates to the BURIED source A, not to M. Checking only
+	// preserved.GetAlias() missed this → the rewrite was skipped → the planner fell
+	// back to a materialized NLJ over a full Scan(C) (codex 2nd P2 on #364).
+	//
+	// CRITICAL (Graefe, RFC-153): broadening this guard to fire on buried-preserved
+	// correlation is safe ONLY because the implementation-layer rewire in
+	// ImplementNestedLoopJoinRule.yieldGeneralFlatMap rebases the buried reference onto
+	// the merge correlation (where Go assigns the $m alias — at PLANNING, after this
+	// rule). The two are ONE unit: a broadened guard WITHOUT the guaranteed rewire is
+	// the §2 wrong-rows trap (the buried correlation evaluates NULL at runtime). The
+	// FlatMap impl declines the probe when it cannot guarantee the rewire, so the
+	// materialized NLJ (which resolves the buried predicate via the merged row's
+	// qualified keys) stays the correct fallback.
+	preservedProvided := preservedProvidedAliases(preserved)
 	correlated := false
 	for _, p := range preds {
-		if _, ok := predicates.GetCorrelatedToOfPredicate(p)[preservedAlias]; ok {
-			correlated = true
+		for alias := range predicates.GetCorrelatedToOfPredicate(p) {
+			if _, ok := preservedProvided[alias]; ok {
+				correlated = true
+				break
+			}
+		}
+		if correlated {
 			break
 		}
 	}
@@ -153,6 +177,28 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 		expressions.JoinInner,
 	)
 	call.Yield(outerSelect)
+}
+
+// preservedProvidedAliases returns every correlation alias the preserved leg of a
+// LEFT OUTER provides to an ON-predicate: its own quantifier alias PLUS every source
+// alias buried inside it. When the preserved side is a join/merge, its quantifier is
+// a synthetic merge over a sub-product (e.g. M=(A⋈B) provides {M, A, B}), and an
+// ON-predicate `C.a_id = A.id` correlates to the buried `A`, not to M. Delegates the
+// buried-alias collection to physicalProvidedAliases (the same machinery
+// ImplementNestedLoopJoinRule uses for spanning-join correlation), adapted from its
+// expression entry point to the preserved quantifier's ranged-over members.
+func preservedProvidedAliases(preserved expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{preserved.GetAlias(): {}}
+	ref := preserved.GetRangesOver()
+	if ref == nil {
+		return out
+	}
+	for _, m := range ref.AllMembers() {
+		for alias := range physicalProvidedAliases(m, preserved.GetAlias()) {
+			out[alias] = struct{}{}
+		}
+	}
+	return out
 }
 
 var _ ExpressionRule = (*RewriteOuterJoinRule)(nil)
