@@ -24,10 +24,10 @@ import (
 // Why this is needed (RFC-150 Phase-2b Piece 2): without it, neither
 // PartitionBinarySelectRule nor PushFilterBelowJoinRule fires (both guard on
 // JoinInner), so no leg becomes correlated, and the data-access FlatMap path
-// (yieldGeneralFlatMap) never produces a correlated LEFT-OUTER FlatMap — only the
-// Go-only tryFlatMapPlan does, by hand-rolling the inner-pushed residual placement.
-// This rule creates the correlation Java's single path relies on, so tryFlatMapPlan
-// can be retired.
+// (yieldGeneralFlatMap) never produces a correlated LEFT-OUTER FlatMap. This rule
+// creates the correlation Java's single path relies on — it is what let the former
+// Go-only tryFlatMapPlan (a hand-rolled inner-pushed-residual shortcut) be retired:
+// the correlated LEFT-OUTER FlatMap now emerges from the standard data-access path.
 //
 // Correctness (the LEFT-OUTER axis): the ON-predicates MUST filter the inner stream
 // BEFORE the empty→NULL extension. Folding them into innerSelect (below the
@@ -82,7 +82,7 @@ func (r *RewriteOuterJoinRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Only rewrite a CORRELATED LEFT OUTER — one whose ON-predicates actually
 	// reference the preserved leg, so the rewritten inner SUBSEL becomes correlated and
-	// the data-access FlatMap path (the thing replacing tryFlatMapPlan) can fire. For
+	// the data-access FlatMap path (which replaced the retired tryFlatMapPlan) can fire. For
 	// an UNCORRELATED LEFT OUTER (ON FALSE / ON NULL / a predicate local to the
 	// null-supplying side), the rewrite would produce a null-on-empty inner with no
 	// correlation → no FlatMap → the non-correlated NLJ path, which would use the now-

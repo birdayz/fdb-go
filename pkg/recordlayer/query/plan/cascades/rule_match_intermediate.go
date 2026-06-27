@@ -417,67 +417,35 @@ func matchSingleSourceAgainstSelect(
 				continue // already bound to an earlier placeholder
 			}
 
-			// Only sargable comparison types can bind to an index scan
-			// constraint: value-index range types (= and binary inequalities
-			// + STARTS_WITH) OR a vector DISTANCE_RANK bound. IN, IS NULL,
-			// NOT EQUALS, LIKE, etc. cannot be a contiguous FDB range —
-			// ComparisonRange.Merge would mis-classify them as an inequality
-			// range (a bogus [<>] scan returning the wrong rows). They must
-			// stay residual (or, for IN, take the explode→InJoin path).
-			if !isSargableComparisonForMatch(cp.Comparison.Type) {
+			// Index/PK matching is COMMUTATIVE: a join predicate `outer.fk =
+			// inner.pk` constrains inner.pk exactly as `inner.pk = outer.fk`
+			// does. The predicate is stored in SQL operand order, so for the
+			// matched (inner) source the local column may sit on EITHER side. Try
+			// the as-written orientation (column on the LHS), then the commuted
+			// one (column on the RHS, operator flipped via ComparisonType.Commute).
+			// tryFlatMapPlan hand-rolled this both-orientation probe for the inner
+			// PK scan (matchJoinPKPredicate); the data-access path must do the same
+			// so a join inner's correlated PK/index predicate SARGs into a bare
+			// scan (Java's Value-based predicate matching is inherently
+			// commutative). The CRUCIAL effect: the join predicate binds as a
+			// sargable scan BOUND (residual-free, marked matched below so the
+			// residual loop skips it), so the compensation is "noCompensationNeeded"
+			// (Java PredicateWithValueAndRanges.java:423-432) and
+			// DataAccessForMatchPartition returns a bare PHYSICAL probe — not a
+			// LogicalFilter carrying an outer-correlated residual that
+			// compensationSafeForYield must reject.
+			rng := bindOrientedComparison(cp, ph, queryQs[0].GetAlias())
+			if rng == nil {
 				continue
 			}
 
-			// The candidate-column operand must be a column of the source
-			// being matched (queryQs[0]), not an outer correlation. valuesMatchColumn
-			// compares FieldValues by field NAME only (the bound alias map isn't
-			// built until after this step), so a join predicate like
-			// `Customer.id = Order.customer_id`, when matching the ORDER source,
-			// has its OUTER operand (Customer.id) on this side and would spuriously
-			// bind to Order's same-named PK column (id) — seeking Order.id =
-			// Customer.id, which is the wrong column and returns 0 rows
-			// (TestFDB_InnerJoin). The query-side correlation and matchedQ.alias
-			// share the table-alias namespace (7.1), so reject an operand whose
-			// correlations exclude the matched source. Flat FieldValues (no
-			// correlation) are assumed to be over the matched source.
-			opCorr := values.GetCorrelatedToOfValue(cp.Operand)
-			if len(opCorr) > 0 {
-				if _, ofSource := opCorr[queryQs[0].GetAlias()]; !ofSource {
-					continue
-				}
-			}
-
-			// Check if the ComparisonPredicate's operand references
-			// the same column as the Placeholder's value. Comparison
-			// is structural via ExplainValue (field name for
-			// FieldValue, full expression tree for complex values).
-			if !valuesMatchColumn(cp.Operand, ph.GetValue()) {
-				continue
-			}
-
-			// Don't push a type-incompatible comparison (e.g. a BIGINT
-			// column vs a string literal) into a scan range — it must
-			// surface as a residual so the executor raises the type error,
-			// not silently produce an empty range. Mirrors the rule's guard.
-			if fv, ok := cp.Operand.(*values.FieldValue); ok {
-				if !comparisonTypesCompatible(fv, &cp.Comparison) {
-					continue
-				}
-			}
-
-			// Merge the comparison into a ComparisonRange.
-			mr := predicates.EmptyComparisonRange().Merge(&cp.Comparison)
-			if !mr.Ok {
-				continue
-			}
-
-			paramBindings[ph.GetParameterAlias()] = mr.Range
+			paramBindings[ph.GetParameterAlias()] = rng
 			matched = true
 			matchedQueryPreds[queryPred] = true
 			// Defer the sargable mapping until after the scan prefix is known
 			// (see reconciliation below): a binding the candidate cannot consume
 			// into its prefix must become a residual, not a dropped sargable.
-			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: cp, rng: mr.Range})
+			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: cp, rng: rng})
 			break
 		}
 
@@ -585,6 +553,133 @@ func matchSingleSourceAgainstSelect(
 		mi,
 	)
 	AddPartialMatchForCandidate(call.Reference, candidate, pm)
+}
+
+// comparisonOrientation is one way to read a ComparisonPredicate as
+// "column COMPARISON comparand": as-written (the LHS is the column) or commuted
+// (the RHS is the column, operator flipped).
+type comparisonOrientation struct {
+	column     values.Value
+	comparison predicates.Comparison
+}
+
+// comparisonOrientations returns the orientations to try when binding cp to a
+// candidate placeholder. Index/PK matching is commutative, so the local column
+// may be on either side of a join predicate. The as-written orientation is
+// tried first (preserving behaviour for the common `column OP literal` shape);
+// the commuted orientation is added only for a binary, commutable operator (the
+// inner-leg join probe `outer.fk = inner.pk`, and the literal-on-the-left
+// `5 = col`). Unary operators (IS [NOT] NULL) and non-commutable ones (IN,
+// STARTS_WITH, LIKE) yield only the as-written orientation.
+func comparisonOrientations(cp *predicates.ComparisonPredicate) []comparisonOrientation {
+	out := []comparisonOrientation{{column: cp.Operand, comparison: cp.Comparison}}
+	if cp.Comparison.Operand != nil {
+		if flipped, ok := cp.Comparison.Type.Commute(); ok {
+			commuted := cp.Comparison // copy preserves Escape and the other Comparison fields
+			commuted.Type = flipped
+			commuted.Operand = cp.Operand
+			out = append(out, comparisonOrientation{column: cp.Comparison.Operand, comparison: commuted})
+		}
+	}
+	return out
+}
+
+// bindOrientedComparison attempts to bind one of cp's operand orientations to
+// the candidate placeholder ph as a sargable scan range over the matched source
+// (sourceAlias). Returns the bound ComparisonRange, or nil if no orientation
+// can SARG this placeholder. Each orientation must (1) be a sargable comparison
+// type, (2) have its column operand be a column of the matched source — not an
+// outer correlation, the field-name-collision guard — (3) match the
+// placeholder's column, and (4) be type-compatible. The comparand of the chosen
+// orientation becomes the scan range's bound value (a correlated value for a
+// join probe, a literal for an equality filter).
+//
+// Risk → 0-row: the column must be the matched INNER source's column and the
+// comparand the OTHER side; when ambiguous (both sides are inner columns / a
+// self-comparison) or the operator is not commutable (IN / IS NULL / NOT
+// EQUALS), only the as-written orientation is offered and an outer column on the
+// LHS simply fails the source-correlation guard → no SARG → the predicate stays
+// residual (correct, not wrong rows).
+func bindOrientedComparison(
+	cp *predicates.ComparisonPredicate,
+	ph *predicates.Placeholder,
+	sourceAlias values.CorrelationIdentifier,
+) *predicates.ComparisonRange {
+	for _, orient := range comparisonOrientations(cp) {
+		if !isSargableComparisonForMatch(orient.comparison.Type) {
+			continue
+		}
+		// The column operand must be a column of the matched source, not an
+		// outer correlation. valuesMatchColumn compares FieldValues by NAME
+		// only (the bound alias map isn't built yet), so a join predicate like
+		// `Customer.id = Order.customer_id` matching the ORDER source would
+		// otherwise bind Customer.id to Order's same-named PK column (id),
+		// seeking Order.id = Customer.id — the wrong column, 0 rows
+		// (TestFDB_InnerJoin). Reject a column operand whose correlations
+		// exclude the matched source. A flat FieldValue (no correlation) is
+		// assumed to be over the matched source.
+		//
+		// CRUCIAL: include the source-anchored join RC's HIDDEN leg aliases
+		// (valueCorrelationWithSeeds). A multi-way join reads the OTHER side's
+		// column through a merge RC (e.g. `(R⋈S).ID`), whose leg QOVs
+		// GetCorrelatedToOfValue deliberately HIDES → an empty correlation set,
+		// which this guard would otherwise treat as "of the matched source" and
+		// the field-name collision (`.ID` vs the source PK `id`) would bind the
+		// source's PK to the OTHER table's id — the wrong column, 0 rows
+		// (TestFDB_MultiJoinWithFilter). Un-hiding the merge legs makes the guard
+		// reject such a column so the predicate stays a residual filter.
+		colCorr := valueCorrelationWithSeeds(orient.column)
+		if len(colCorr) > 0 {
+			if _, ofSource := colCorr[sourceAlias]; !ofSource {
+				continue
+			}
+		}
+		if !valuesMatchColumn(orient.column, ph.GetValue()) {
+			continue
+		}
+		// Don't push a type-incompatible comparison (e.g. a BIGINT column vs a
+		// string literal) into a scan range — it must surface as a residual so
+		// the executor raises the type error, not silently produce an empty range.
+		if fv, ok := orient.column.(*values.FieldValue); ok {
+			if !comparisonTypesCompatible(fv, &orient.comparison) {
+				continue
+			}
+		}
+		comparison := orient.comparison
+		mr := predicates.EmptyComparisonRange().Merge(&comparison)
+		if !mr.Ok {
+			continue
+		}
+		return mr.Range
+	}
+	return nil
+}
+
+// valueCorrelationWithSeeds returns v's correlation set PLUS the re-exposed leg
+// aliases of every source-anchored join RC it reads through. GetCorrelatedToOfValue
+// deliberately HIDES an anchored RC's leg QOVs (exploration-budget reasons), so a
+// value that reads another table's column through a merge RC reports an EMPTY
+// correlation set. The data-access source-correlation guard MUST see those buried
+// legs (it is the value-level twin of predicates.AddMergeSeedAliases) — otherwise a
+// merge-RC column is mistaken for the matched source's own column and the
+// field-name collision mis-binds the source PK (TestFDB_MultiJoinWithFilter).
+func valueCorrelationWithSeeds(v values.Value) map[values.CorrelationIdentifier]struct{} {
+	if v == nil {
+		return nil
+	}
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range values.GetCorrelatedToOfValue(v) {
+		out[k] = struct{}{}
+	}
+	values.WalkValue(v, func(node values.Value) bool {
+		if rc, ok := node.(*values.RecordConstructorValue); ok && rc.AnchoredJoin {
+			for a := range values.GetCorrelatedToOfAnchoredJoinLegs(rc) {
+				out[a] = struct{}{}
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // isPassThroughSingleSourceSelect reports whether sel is a single-ForEach-

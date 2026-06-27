@@ -80,14 +80,49 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	// Idempotency guard: if the Reference already contains a 2-quantifier
-	// SelectExpression with no predicates, this rule (or a previous
-	// iteration) has already pushed predicates into sub-SelectExpressions.
-	// Without this guard, the cycle PartitionBinary → SelectMerge →
-	// PartitionBinary causes infinite memo growth (MaxTasks cap hit).
+	// An UNCORRELATED Explode leg is the IN-list shape (`col IN (v1,v2,…)` → a
+	// SelectExpression with an Explode over the constant list) — owned by
+	// ImplementInJoinRule, not the binary-join partition path. Partitioning it
+	// pushes the IN-match predicate (`col = <explode binding>`) into the Explode
+	// leg: that predicate's table column is a FLAT FieldValue, so its correlation
+	// reports only the explode binding (not the table), and the predicate is
+	// routed into the Explode leg where the table column is unbound — the
+	// materialized NLJ then embeds it → 0 rows (TestFDB_GroupByWithWherePush /
+	// the IN-with-GROUP-BY cases). A CORRELATED Explode (a lateral array UNNEST,
+	// `FROM t, t.arr AS x`) genuinely partitions and is left alone. Mirrors the
+	// same uncorrelated-Explode guard in ImplementNestedLoopJoinRule.
+	for i, q := range quantifiers {
+		other := quantifiers[1-i]
+		if getExplodeExpression(q.GetRangesOver()) != nil &&
+			!referenceIsCorrelatedTo(q.GetRangesOver(), other.GetAlias()) {
+			return
+		}
+	}
+
+	// Idempotency guard: if the Reference already contains the predicate-less
+	// partition of THIS select — a 2-quantifier SelectExpression with no
+	// predicates over the SAME quantifier alias set — then this rule (or a
+	// previous iteration) has already pushed THIS select's predicates into
+	// sub-SelectExpressions. Re-firing would re-create it, and the cycle
+	// PartitionBinary → SelectMerge → PartitionBinary would grow the memo
+	// without bound (MaxTasks cap hit). Java has no such guard — it relies on
+	// memo interning to dedup the identical re-partition; Go's fixpoint needs
+	// the explicit check.
+	//
+	// The match is on the QUANTIFIER ALIAS SET, not "any predicate-less binary
+	// in the group": a join group holds several DISTINCT bipartitions of the
+	// same N-way join (e.g. {$m(t1⋈t2), t3} and {$m(t2⋈t3), t1}), each with a
+	// different alias set. Blocking on "any predicate-less binary" stopped every
+	// merge-quantifier upper from ever being partitioned, so the correlated
+	// index-probe FlatMap chain for ≥3-way joins was never enumerated (the inner
+	// materialized as a full-scan NLJ instead). Scoping the guard to THIS
+	// select's own alias set breaks the cycle (the same partition can't be
+	// re-created) while leaving the sibling bipartitions free to partition.
+	selAliases := quantifierAliasSet(sel)
 	for _, m := range call.Reference.Members() {
 		if other, ok := m.(*expressions.SelectExpression); ok && other != sel {
-			if len(other.GetQuantifiers()) == 2 && !other.HasPredicates() {
+			if len(other.GetQuantifiers()) == 2 && !other.HasPredicates() &&
+				aliasSetsEqual(selAliases, quantifierAliasSet(other)) {
 				return
 			}
 		}
@@ -100,6 +135,28 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 		rightQ := quantifiers[ordering[1]]
 		r.tryPartition(call, sel, leftQ, rightQ)
 	}
+}
+
+// quantifierAliasSet returns the set of quantifier aliases of a SelectExpression.
+func quantifierAliasSet(sel *expressions.SelectExpression) map[values.CorrelationIdentifier]struct{} {
+	out := make(map[values.CorrelationIdentifier]struct{}, len(sel.GetQuantifiers()))
+	for _, q := range sel.GetQuantifiers() {
+		out[q.GetAlias()] = struct{}{}
+	}
+	return out
+}
+
+// aliasSetsEqual reports whether two alias sets contain exactly the same aliases.
+func aliasSetsEqual(a, b map[values.CorrelationIdentifier]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *PartitionBinarySelectRule) tryPartition(
@@ -120,8 +177,29 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	var leftPredicates []predicates.QueryPredicate
 	var rightPredicates []predicates.QueryPredicate
 
-	for _, pred := range sel.GetPredicates() {
+	// Route each CONJUNCT independently, not the predicate list opaquely. Go
+	// stores a multi-conjunct WHERE as a single AndPredicate; Java's
+	// SelectExpression keeps a FLAT conjunct list, so Java's identical routing
+	// loop splits `o.fk = c.id AND o.id = 5` into a join conjunct (→ the inner
+	// leg, creating the correlation) and a selective conjunct (→ the outer leg,
+	// where it SARGs the driver's scan). Without flattening, the whole And —
+	// correlated to BOTH sides — lands on one leg, so the selective conjunct
+	// never reaches the outer leg as a separate SARGable predicate and the driver
+	// stays a full scan (the index-nested-loop's selective driver is lost; this
+	// is what tryFlatMapPlan hand-rolled via tryPushPredicatesIntoScan).
+	// PartitionSelectRule (the ≥3-way twin) already flattens the same way.
+	for _, pred := range flattenConjuncts(sel.GetPredicates()) {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
+		// Re-expose the buried leg aliases of any source-anchored join RC the
+		// predicate reads through (GetCorrelatedToOfPredicate HIDES them for
+		// exploration-budget reasons). A spanning predicate like `c.c_bid = b.bid`
+		// reads B's column through a (B⋈A) merge RC; without un-hiding B, its
+		// correlation reports only the merge alias, so it is routed into the merge
+		// leg instead of creating the correlation to the OTHER leg — the materialized
+		// NLJ then embeds it with B unbound → 0 rows
+		// (TestFDB_JoinMerge_OuterColumn_NotDropped). PartitionSelectRule (the ≥3-way
+		// twin) layers the same re-exposure on its classification.
+		predicates.AddMergeSeedAliases(pred, correlatedTo)
 		if _, ok := correlatedTo[rightAlias]; ok {
 			rightPredicates = append(rightPredicates, pred)
 		} else {

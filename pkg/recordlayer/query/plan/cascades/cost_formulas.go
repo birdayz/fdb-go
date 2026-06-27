@@ -20,6 +20,17 @@ import (
 // inputs to the same recursion, documented at each site.
 
 // flatMapCost: a correlated dependent join re-runs the inner once per outer row.
+//
+// The CPU has two per-outer-row terms: outerCard*innerCPU (the inner's own work,
+// re-paid each iteration) PLUS outerCard*IterationOverhead — a fixed per-iteration
+// re-execution overhead (open the inner cursor, init the range read, bind the
+// correlation). The overhead term is what makes driving the nested loop from the
+// SMALLER side cheaper when criterion #2 abstains (two full-scan drivers, e.g. a
+// 20-row vs a 200-row outer in a re-enumerated multi-way sub-join): the 200-row
+// driver pays 10x the per-iteration setup. It is a Go-only read-side cost
+// extension that lives ONLY here (the compareJoinOrdering concrete-cost path),
+// sized as a tie-breaker so it never flips a clear cardinality/total-cost winner
+// (Graefe, RFC-041/042).
 func flatMapCost(outer, inner properties.Cost) properties.Cost {
 	outerCard := outer.Cardinality
 	if outerCard == 0 {
@@ -31,7 +42,7 @@ func flatMapCost(outer, inner properties.Cost) properties.Cost {
 	}
 	return properties.Cost{
 		Cardinality: outerCard * properties.FilterSelectivity * physicalWrapperCostMultiplier,
-		CPU:         (outer.CPU + outerCard*innerCPU) * physicalWrapperCostMultiplier,
+		CPU:         (outer.CPU + outerCard*(innerCPU+properties.IterationOverhead)) * physicalWrapperCostMultiplier,
 	}
 }
 

@@ -6,10 +6,47 @@ import (
 	"hash/fnv"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/properties"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
 )
+
+// scanComparisonCorrelations returns the union of outer correlations referenced
+// by the comparands of a set of scan ComparisonRanges — the correlations a
+// physical (index or primary) scan probe carries. A correlated probe
+// (`col = QOV(outer).x`) reports the outer alias; a literal/parameter range
+// reports nothing. Used by the physical scan wrappers'
+// GetCorrelatedToWithoutChildren (RFC-150 Phase-2b D.2): the data-access path
+// can SARG a join predicate into a bare correlated PHYSICAL scan (no residual
+// filter to carry the correlation), so unless the scan itself reports it, the
+// physical probe looks uncorrelated and B1 join-leg detection / winner-stamping
+// would mis-treat it. Java's RecordQueryScanPlan derives correlatedTo from its
+// ScanComparisons the same way.
+func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	collect := func(c *predicates.Comparison) {
+		if c == nil || c.Operand == nil {
+			return
+		}
+		for a := range values.GetCorrelatedToOfValue(c.Operand) {
+			out[a] = struct{}{}
+		}
+	}
+	for _, cr := range comps {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		if cr.IsEquality() {
+			collect(cr.GetEqualityComparison())
+		} else if cr.IsInequality() {
+			for _, c := range cr.GetInequalityComparisons() {
+				collect(c)
+			}
+		}
+	}
+	return out
+}
 
 // physicalPlanExpression is implemented by all physical-plan wrapper
 // types. Lets implement rules discover physical plans in a Reference
@@ -322,9 +359,15 @@ func (w *physicalScanWrapper) CanCorrelate() bool { return false }
 // ChildrenAsSet is false — leaf has no children.
 func (w *physicalScanWrapper) ChildrenAsSet() bool { return false }
 
-// GetCorrelatedToWithoutChildren returns the empty set.
+// GetCorrelatedToWithoutChildren reports the OUTER correlations the scan's
+// comparison comparands reference — for a correlated PK/index probe
+// (`pk = QOV(outer).fk`), the outer alias. See scanComparisonCorrelations
+// (RFC-150 Phase-2b D.2).
 func (w *physicalScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	if w.plan == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return scanComparisonCorrelations(w.plan.GetScanComparisons())
 }
 
 // EqualsWithoutChildren compares wrapped plans via plans.Equals on
@@ -449,8 +492,14 @@ func (w *physicalIndexScanWrapper) GetQuantifiers() []expressions.Quantifier { r
 func (w *physicalIndexScanWrapper) CanCorrelate() bool                       { return false }
 func (w *physicalIndexScanWrapper) ChildrenAsSet() bool                      { return false }
 
+// GetCorrelatedToWithoutChildren reports the OUTER correlations the index scan's
+// comparison comparands reference — the correlated index probe's outer alias.
+// See scanComparisonCorrelations (RFC-150 Phase-2b D.2).
 func (w *physicalIndexScanWrapper) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	if w.plan == nil {
+		return map[values.CorrelationIdentifier]struct{}{}
+	}
+	return scanComparisonCorrelations(w.plan.GetScanComparisons())
 }
 
 func (w *physicalIndexScanWrapper) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {

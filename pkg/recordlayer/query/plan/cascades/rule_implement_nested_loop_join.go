@@ -141,10 +141,10 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// structurally cannot observe which inner rows matched nothing, so it
 	// is not a valid FULL implementation — yielding it would be silently
 	// wrong, not merely suboptimal. A single explicit guard here is
-	// cleaner than threading `joinType != JoinFullOuter` through
-	// tryFlatMapPlan and both correlated-FlatMap branches below (and
-	// makes the `canSwap` swap-logic unreachable for FULL — FULL is
-	// symmetric but we keep the original left/right column layout).
+	// cleaner than threading `joinType != JoinFullOuter` through both
+	// correlated-FlatMap branches below (and makes the `canSwap` swap-logic
+	// unreachable for FULL — FULL is symmetric but we keep the original
+	// left/right column layout).
 	if joinType == plans.JoinFullOuter {
 		// Correlated FULL OUTER (inner ranges over the outer's alias) is
 		// not standard SQL and cannot be materialized independently of the
@@ -166,19 +166,69 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Correlated scan FlatMap: O(N×logM) via correlated PK/index probes.
-	// Yield as an alternative — do NOT early-return. The cost model
-	// compares this against the NLJ below and picks the better plan.
-	r.tryFlatMapPlan(call, sel, leftPlan, rightPlan, leftAlias, rightAlias, leftExpr, rightExpr, joinType)
-
+	// Correlated INNER/LEFT joins are implemented as a FlatMap (O(N×logM) via
+	// the inner's correlated PK/index probes) by the leftDepsRight/rightDepsLeft
+	// branches below; uncorrelated joins fall through to the materialized NLJ.
+	// This is the single data-access-driven join path — the former Go-only
+	// tryFlatMapPlan (a hand-rolled correlated-PK-probe shortcut, RFC-150
+	// Phase-2b Piece 2) is retired: PartitionBinary/PartitionSelectRule absorb
+	// the join predicates into correlated sub-Selects and the data-access path
+	// (MatchIntermediateRule → bindOrientedComparison) SARGs them into bare
+	// correlated probes, so the same correlated index-nested-loop chains now
+	// emerge from the standard Cascades machinery (matching Java, which has no
+	// such shortcut).
 	leftCorr := values.NamedCorrelationIdentifier(leftAlias)
 	rightCorr := values.NamedCorrelationIdentifier(rightAlias)
 
-	leftDepsRight := referenceIsCorrelatedTo(leftRef, quants[1].GetAlias())
-	rightDepsLeft := referenceIsCorrelatedTo(rightRef, quants[0].GetAlias())
+	// Provided-alias sets are computed from the actual EMBEDDED physical exprs
+	// (leftExpr/rightExpr) — not the logical refs — because a re-enumerated merge
+	// leg's logical alias (e.g. `E`) ranges over a ref whose chosen PHYSICAL plan
+	// is a whole sub-join `(DEPT⋈EMP)` that PROVIDES buried tables (D) the logical
+	// ref doesn't expose. The materialized NLJ embeds those physical plans
+	// directly, so a predicate in the OTHER leg that reads a buried table is a
+	// genuine cross-leg correlation that must route to the FlatMap branch, not a
+	// materialized NLJ with the buried table unbound → 0 rows
+	// (TestFDB_DerivedTableExistsJoin three-way).
+	leftProvided := physicalProvidedAliases(leftExpr, quants[0].GetAlias())
+	rightProvided := physicalProvidedAliases(rightExpr, quants[1].GetAlias())
+	leftDepsRight := legReferencesAny(leftRef, rightProvided)
+	rightDepsLeft := legReferencesAny(rightRef, leftProvided)
 	canSwap := joinType != plans.JoinLeftOuter
 	hasCorrelation := leftDepsRight || rightDepsLeft
 	if !hasCorrelation {
+		// Incomplete-bipartition guard: if BOTH legs reference (via re-exposed
+		// merge seeds) the SAME external table that is neither leg's own provided
+		// alias, the two legs are connected through a sibling that this bipartition
+		// excluded — e.g. the 3-way `d,e,p WHERE d.id=e.dept_id AND d.id=p.dept_id`
+		// surfaces a {(d⋈e), p}-shaped select where both legs read d through a merge
+		// RC. As a materialized NLJ that select is only valid as the INNER of a
+		// FlatMap(d, …) that binds d; the cost model can otherwise pick it as a
+		// standalone root with d unbound → 0 rows (TestFDB_DerivedTableExistsJoin
+		// three-way). The leg's d-correlation is hidden by the anchored-RC mechanism,
+		// so neither hasCorrelation nor the planner's root-correlation check sees it.
+		// Skipping the materialized NLJ here leaves the COMPLETE bipartitions (which
+		// keep d as a real quantifier and produce the correct correlated FlatMap
+		// chain) to win. A legitimate leg-to-leg correlation is handled by the
+		// hasCorrelation FlatMap branch above; a true OUTER correlation is bound by
+		// an enclosing FlatMap and reaches only ONE leg, so it does not trip this
+		// both-legs-share guard.
+		leftExternal := legExternalAliases(leftRef, leftProvided)
+		rightExternal := legExternalAliases(rightRef, rightProvided)
+		leftQAlias := quants[0].GetAlias()
+		rightQAlias := quants[1].GetAlias()
+		sharesExcludedSibling := false
+		for a := range leftExternal {
+			if a == leftQAlias || a == rightQAlias {
+				continue
+			}
+			if _, ok := rightExternal[a]; ok {
+				sharesExcludedSibling = true
+				break
+			}
+		}
+		if sharesExcludedSibling {
+			return
+		}
 		joinPlan := plans.NewRecordQueryNestedLoopJoinPlan(
 			leftPlan, rightPlan,
 			sel.GetPredicates(),
@@ -211,6 +261,106 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 func referenceIsCorrelatedTo(ref *expressions.Reference, targetAlias values.CorrelationIdentifier) bool {
 	_, ok := ref.GetCorrelatedTo()[targetAlias]
 	return ok
+}
+
+// legProvidedAliases returns the correlation aliases a join leg subtree PROVIDES
+// (binds) to a predicate referencing it: its own quantifier alias plus every
+// table alias buried inside it — a MERGE leg `$m=(A⋈B)` provides {$m, A, B}, so a
+// spanning predicate in the OTHER leg that reads A's column (`p.x = a.y`) is seen
+// as correlated to $m. Recurses through the leg ref's member quantifiers (the
+// buried tables of a re-enumerated merge). Without this, a predicate referencing a
+// BURIED merge leg (not the merge alias itself) is invisible to the hasCorrelation
+// check, so a spanning 3-way join (a connects both b and c) emits a MATERIALIZED
+// NLJ that embeds a leg with the buried table unbound → 0 rows
+// (TestFDB_DerivedTableExistsJoin three-way; the GROUP-BY-wrapped twin of
+// TestFDB_JoinMerge_OuterColumn_NotDropped).
+func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias values.CorrelationIdentifier) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{ownAlias: {}}
+	var walk func(e expressions.RelationalExpression, depth int)
+	walk = func(e expressions.RelationalExpression, depth int) {
+		if e == nil || depth > 8 {
+			return
+		}
+		for _, q := range e.GetQuantifiers() {
+			if _, seen := out[q.GetAlias()]; !seen {
+				out[q.GetAlias()] = struct{}{}
+			}
+			r := q.GetRangesOver()
+			if r == nil {
+				continue
+			}
+			for _, m := range r.AllMembers() {
+				walk(m, depth+1)
+			}
+		}
+	}
+	walk(expr, 0)
+	return out
+}
+
+// legReferencesAny reports whether the leg subtree ref is correlated to ANY alias
+// in targetSet (the OTHER leg's provided aliases) — directly (Reference.GetCorrelatedTo)
+// or through a source-anchored join RC whose leg QOVs GetCorrelatedTo deliberately
+// HIDES (predicates.AddMergeSeedAliases re-exposes them). This is the seed-aware
+// hasCorrelation check: a spanning predicate pushed into a merge leg reads the
+// other leg's (possibly buried) column through a merge RC, so the correlation is
+// hidden and must be re-exposed — otherwise ImplementNestedLoopJoinRule emits a
+// materialized NLJ that embeds an unbound-outer-correlated leg → 0 rows
+// (TestFDB_JoinMerge_OuterColumn_NotDropped / TestFDB_DerivedTableExistsJoin).
+func legReferencesAny(ref *expressions.Reference, targetSet map[values.CorrelationIdentifier]struct{}) bool {
+	for a := range ref.GetCorrelatedTo() {
+		if _, ok := targetSet[a]; ok {
+			return true
+		}
+	}
+	for _, m := range ref.AllMembers() {
+		se, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		for _, p := range se.GetPredicates() {
+			seeds := map[values.CorrelationIdentifier]struct{}{}
+			predicates.AddMergeSeedAliases(p, seeds)
+			for a := range seeds {
+				if _, ok := targetSet[a]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// legExternalAliases returns the aliases a leg subtree REFERENCES (directly or via
+// re-exposed merge seeds) that it does NOT itself provide — its dangling external
+// dependencies. Used by the incomplete-bipartition guard: when BOTH legs of a
+// would-be materialized NLJ share an external alias, that alias is an excluded
+// sibling table the two legs join through, so the materialized NLJ is unsafe as a
+// standalone root (the sibling is unbound).
+func legExternalAliases(ref *expressions.Reference, provided map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	add := func(a values.CorrelationIdentifier) {
+		if _, ok := provided[a]; !ok {
+			out[a] = struct{}{}
+		}
+	}
+	for a := range ref.GetCorrelatedTo() {
+		add(a)
+	}
+	for _, m := range ref.AllMembers() {
+		se, ok := m.(*expressions.SelectExpression)
+		if !ok {
+			continue
+		}
+		for _, p := range se.GetPredicates() {
+			seeds := map[values.CorrelationIdentifier]struct{}{}
+			predicates.AddMergeSeedAliases(p, seeds)
+			for a := range seeds {
+				add(a)
+			}
+		}
+	}
+	return out
 }
 
 // selQuantifierIsNullOnEmpty reports whether sel's quantifier with the given alias is
@@ -249,7 +399,8 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if len(joinPreds) > 0 {
 		innerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			innerPlan, joinPreds, innerCorr)
+			innerPlan, joinPreds, innerCorr,
+		)
 	}
 	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:317-322
 	// / ImplementSimpleSelectRule:100-109): when the inner quantifier is null-on-empty
@@ -261,13 +412,15 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// SUBSEL), so they filter before the null-fill — correct LEFT-OUTER semantics.
 	if innerNullOnEmpty {
 		innerWrapped = plans.NewRecordQueryDefaultOnEmptyPlan(
-			innerWrapped, values.NewNullValue(values.UnknownType))
+			innerWrapped, values.NewNullValue(values.UnknownType),
+		)
 	}
 
 	var outerWrapped plans.RecordQueryPlan = outerPlan
 	if len(outerPreds) > 0 {
 		outerWrapped = plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			outerPlan, outerPreds, outerCorr)
+			outerPlan, outerPreds, outerCorr,
+		)
 	}
 
 	flatMapPlan := plans.NewRecordQueryFlatMapPlan(
@@ -653,8 +806,8 @@ func rebaseOuterLegValue(
 	if fv, ok := v.(*values.FieldValue); ok {
 		// Only direct leg columns are rewritten. An already-dotted Field would
 		// indicate a pre-qualified reference from a deeper join level — those do
-		// not reach the EXISTS path (they are handled by tryFlatMapPlan's probe
-		// machinery), and re-qualifying would invent a key like "E.A.B".
+		// not reach the EXISTS path (they are handled by the data-access correlated
+		// probe machinery), and re-qualifying would invent a key like "E.A.B".
 		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && !strings.Contains(fv.Field, ".") {
 			corr := strings.ToUpper(qov.Correlation.String())
 			for _, leg := range legAliases {
@@ -1025,308 +1178,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	))
 }
 
-// physicalChildForCost wraps a concrete child plan in a physical wrapper so the FlatMap
-// wrapper's cost walk sees the child's REAL cardinality (a filtered/range scan, or a
-// single-row correlated PK probe) rather than the bare full-table Reference. RFC-069: without
-// this the join cost is blind to the selective outer filter and the PK-probe inner, so every
-// join orientation costs identically and the cheaper order cannot be selected. Only the scan
-// shape (the case that matters for PK/range-driven joins) is wrapped; any other shape falls
-// back to `fallback`, which preserves the prior behaviour.
-func physicalChildForCost(plan plans.RecordQueryPlan, fallback expressions.RelationalExpression) expressions.RelationalExpression {
-	if scan, ok := plan.(*plans.RecordQueryScanPlan); ok {
-		return &physicalScanWrapper{plan: scan}
-	}
-	return fallback
-}
-
-// tryFlatMapPlan checks whether the join can be implemented as a
-// FlatMap with correlated inner PK scan. Returns true (and yields)
-// if successful, false otherwise. Mirrors Java's pattern where
-// RecordQueryFlatMapPlan re-executes the inner plan per outer row
-// with correlation bindings that parameterize the inner scan range.
-func (r *ImplementNestedLoopJoinRule) tryFlatMapPlan(
-	call *ExpressionRuleCall,
-	sel *expressions.SelectExpression,
-	leftPlan, rightPlan plans.RecordQueryPlan,
-	leftAlias, rightAlias string,
-	leftExpr, rightExpr expressions.RelationalExpression,
-	joinType plans.JoinType,
-) bool {
-	// Only applies when the inner side is a full table scan.
-	innerScan, ok := rightPlan.(*plans.RecordQueryScanPlan)
-	if !ok {
-		return false
-	}
-
-	// Need the inner table's PK columns to match against predicates.
-	recordTypes := innerScan.GetRecordTypes()
-	if len(recordTypes) != 1 {
-		return false
-	}
-
-	pkCols := call.Context.GetPrimaryKeyColumns(recordTypes[0])
-	if len(pkCols) == 0 {
-		return false
-	}
-
-	// Find equality predicates matching leading PK columns. For composite
-	// PKs like (customer_id, order_num), match as many leading columns as
-	// have equality predicates. Unmatched trailing PK columns become
-	// residual filters. This turns O(N×M) NLJ into O(N×logM) prefix scan.
-	preds := flattenAndPredicates(sel.GetPredicates())
-	innerPrefix := strings.ToUpper(rightAlias) + "."
-	outerPrefix := strings.ToUpper(leftAlias) + "."
-	outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
-
-	var matchedRanges []*predicates.ComparisonRange
-	matchedPreds := make(map[int]bool)
-	for _, pkColRaw := range pkCols {
-		pkCol := strings.ToUpper(pkColRaw)
-		found := false
-		for pi, pred := range preds {
-			if matchedPreds[pi] {
-				continue
-			}
-			cp, ok := pred.(*predicates.ComparisonPredicate)
-			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
-				continue
-			}
-			if cp.Operand == nil || cp.Comparison.Operand == nil {
-				continue
-			}
-			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, pkCol)
-			if outerVal == nil {
-				continue
-			}
-			bareField := bareColumnName(outerVal, leftAlias)
-			correlatedOperand := values.NewFieldValue(
-				values.NewQuantifiedObjectValue(outerCorrelation),
-				bareField, outerVal.Typ,
-			)
-			correlatedComp := &predicates.Comparison{
-				Type:    predicates.ComparisonEquals,
-				Operand: correlatedOperand,
-			}
-			cr := predicates.EmptyComparisonRange()
-			mergeResult := cr.Merge(correlatedComp)
-			if !mergeResult.Ok {
-				continue
-			}
-			matchedRanges = append(matchedRanges, mergeResult.Range)
-			matchedPreds[pi] = true
-			found = true
-			break
-		}
-		if !found {
-			break
-		}
-	}
-
-	if len(matchedRanges) > 0 {
-		correlatedScan := innerScan.WithScanComparisons(matchedRanges)
-
-		innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
-		flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-			leftPlan, correlatedScan,
-			outerCorrelation, innerCorrelation,
-			sel.GetResultValue(), false,
-		)
-		switch joinType {
-		case plans.JoinLeftOuter:
-			flatMapPlan.SetLeftOuter(true)
-		}
-		rightCorr := values.NamedCorrelationIdentifier(rightAlias)
-		leftCorr := values.NamedCorrelationIdentifier(leftAlias)
-		var outerPreds, innerOnlyPreds, abovePreds []predicates.QueryPredicate
-		for pi, p := range preds {
-			if matchedPreds[pi] {
-				continue
-			}
-			corrSet := predicates.GetCorrelatedToOfPredicate(p)
-			if _, hasRight := corrSet[rightCorr]; hasRight {
-				_, hasLeft := corrSet[leftCorr]
-				if joinType == plans.JoinLeftOuter && !hasLeft {
-					innerOnlyPreds = append(innerOnlyPreds, p)
-				} else {
-					abovePreds = append(abovePreds, p)
-				}
-			} else {
-				outerPreds = append(outerPreds, p)
-			}
-		}
-
-		if len(innerOnlyPreds) > 0 {
-			innerWithFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(flatMapPlan.GetInner(), innerOnlyPreds, rightCorr)
-			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
-				flatMapPlan.GetOuter(), innerWithFilter,
-				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
-				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
-			)
-			flatMapPlan.SetLeftOuter(true)
-		}
-
-		if len(outerPreds) > 0 {
-			pushedOuter := tryPushPredicatesIntoScan(flatMapPlan.GetOuter(), outerPreds, call.Context, leftAlias, leftCorr)
-			flatMapPlan = plans.NewRecordQueryFlatMapPlan(
-				pushedOuter, flatMapPlan.GetInner(),
-				flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
-				flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
-			)
-			switch joinType {
-			case plans.JoinLeftOuter:
-				flatMapPlan.SetLeftOuter(true)
-			}
-		}
-
-		// Cost-visibility (RFC-069 / Graefe): range the FlatMap wrapper's child quantifiers
-		// over the ACTUAL physical children — the pushed/filtered outer scan and the
-		// single-row correlated inner probe — NOT the bare full-table References. The cost
-		// walk (BestMemberCostWith / EstimateCostWith) recurses into these quantifiers'
-		// References; if they point at the unfiltered table groups it cannot see the
-		// selective outer filter or the PK-probe inner, so every join orientation costs the
-		// same and the cheaper order can't be selected. Wrapping the real children lets
-		// criterion #2 (max data-access cardinality) separate the orderings. Falls back to
-		// the bare expr for child plan shapes not wrapped here (no worse than before).
-		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(physicalChildForCost(flatMapPlan.GetOuter(), leftExpr)))
-		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(physicalChildForCost(flatMapPlan.GetInner(), rightExpr)))
-		if len(abovePreds) > 0 {
-			flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
-			flatMapRef := call.MemoizeExpression(flatMapWrapper)
-			// No alias binding: abovePreds reference BOTH correlations
-			// (cross-join predicates), and the FlatMap emits merged rows
-			// with qualified "ALIAS.COL" keys. The predicates resolve via
-			// the qualified-key datum path in evaluateCorrelated — binding
-			// the merged row under one alias would misresolve the other.
-			aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, abovePreds)
-			call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
-		} else {
-			call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
-		}
-		return true
-	}
-
-	// PK didn't match. Try secondary indexes: for each MatchCandidate
-	// whose first column matches the predicate's inner column, create a
-	// correlated INDEX scan.
-	for _, cand := range call.Context.GetMatchCandidates() {
-		candCols := cand.GetColumnNames()
-		if len(candCols) == 0 {
-			continue
-		}
-		candTypes := cand.GetRecordTypes()
-		if len(candTypes) == 0 || candTypes[0] != recordTypes[0] {
-			continue
-		}
-		idxFirstCol := strings.ToUpper(candCols[0])
-
-		for _, pred := range preds {
-			cp, ok := pred.(*predicates.ComparisonPredicate)
-			if !ok || cp.Comparison.Type != predicates.ComparisonEquals {
-				continue
-			}
-			if cp.Operand == nil || cp.Comparison.Operand == nil {
-				continue
-			}
-			outerVal, _ := r.matchJoinPKPredicate(cp, outerPrefix, innerPrefix, idxFirstCol)
-			if outerVal == nil {
-				continue
-			}
-
-			outerCorrelation := values.NamedCorrelationIdentifier(leftAlias)
-			bareField := bareColumnName(outerVal, leftAlias)
-			correlatedOperand := values.NewFieldValue(
-				values.NewQuantifiedObjectValue(outerCorrelation),
-				bareField, outerVal.Typ,
-			)
-			correlatedComp := &predicates.Comparison{
-				Type:    predicates.ComparisonEquals,
-				Operand: correlatedOperand,
-			}
-			cr := predicates.EmptyComparisonRange()
-			mergeResult := cr.Merge(correlatedComp)
-			if !mergeResult.Ok {
-				continue
-			}
-
-			correlatedIndexScan := plans.NewRecordQueryIndexPlan(
-				cand.CandidateName(),
-				[]*predicates.ComparisonRange{mergeResult.Range},
-				recordTypes,
-				innerScan.GetFlowedType(),
-				false,
-			)
-
-			innerCorrelation := values.NamedCorrelationIdentifier(rightAlias)
-			flatMapPlan := plans.NewRecordQueryFlatMapPlan(
-				leftPlan, correlatedIndexScan,
-				outerCorrelation, innerCorrelation,
-				sel.GetResultValue(), false,
-			)
-			switch joinType {
-			case plans.JoinLeftOuter:
-				flatMapPlan.SetLeftOuter(true)
-			}
-			idxRightCorr := values.NamedCorrelationIdentifier(rightAlias)
-			idxLeftCorr := values.NamedCorrelationIdentifier(leftAlias)
-			var innerOnlyResiduals, otherResiduals []predicates.QueryPredicate
-			for _, p := range preds {
-				if p == pred {
-					continue
-				}
-				corrSet := predicates.GetCorrelatedToOfPredicate(p)
-				_, hasRight := corrSet[idxRightCorr]
-				_, hasLeft := corrSet[idxLeftCorr]
-				if joinType == plans.JoinLeftOuter && hasRight && !hasLeft {
-					innerOnlyResiduals = append(innerOnlyResiduals, p)
-				} else {
-					otherResiduals = append(otherResiduals, p)
-				}
-			}
-			if len(innerOnlyResiduals) > 0 {
-				innerWithFilter := plans.NewRecordQueryPredicatesFilterPlanWithAlias(flatMapPlan.GetInner(), innerOnlyResiduals, idxRightCorr)
-				flatMapPlan = plans.NewRecordQueryFlatMapPlan(
-					flatMapPlan.GetOuter(), innerWithFilter,
-					flatMapPlan.GetOuterAlias(), flatMapPlan.GetInnerAlias(),
-					flatMapPlan.GetResultValue(), flatMapPlan.InheritOuterRecordProperties(),
-				)
-				flatMapPlan.SetLeftOuter(true)
-			}
-			leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
-			// The FlatMap's inner quantifier must range over the correlated
-			// INDEX scan (what the plan actually executes), not the original
-			// full scan (rightExpr). findExpressionsByType walks the wrapper's
-			// quantifiers to compute maxDataAccessCardinality (PlanningCostModel
-			// criterion #2); ranging over the full scan would report the whole
-			// table's cardinality and tie the equality index probe with a full
-			// scan — so the index-nested-loop plan could never win on cost. The
-			// plan (flatMapPlan.inner = correlatedIndexScan) is unchanged; only
-			// the cost-visible inner expression is corrected. (RFC-042 L3.)
-			idxInnerExpr := &physicalIndexScanWrapper{
-				plan:        correlatedIndexScan,
-				columnNames: candCols,
-				unique:      cand.IsUnique(),
-			}
-			rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(idxInnerExpr))
-			if len(otherResiduals) > 0 {
-				flatMapWrapper := newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ)
-				flatMapRef := call.MemoizeExpression(flatMapWrapper)
-				// No alias binding: otherResiduals reference both correlations
-				// (cross-join predicates) over the merged-row FlatMap output;
-				// they resolve via the qualified-key datum path (see the PK
-				// branch above for the full rationale).
-				aboveFilterPlan := plans.NewRecordQueryPredicatesFilterPlan(flatMapPlan, otherResiduals)
-				call.Yield(NewPhysicalPredicatesFilterWrapper(aboveFilterPlan, expressions.ForEachQuantifier(flatMapRef)))
-			} else {
-				call.Yield(newPhysicalFlatMapWrapper(flatMapPlan, leftQ, rightQ))
-			}
-			return true
-		}
-	}
-
-	return false
-}
-
-// tryExistsFlatMap is like tryFlatMapPlan but for EXISTS subqueries.
+// tryExistsFlatMap implements an EXISTS subquery as a correlated FlatMap.
 // It pushes the correlation predicate into a parameterized inner scan
 // (PK or secondary index), then wraps that correlated inner in
 // FirstOrDefault(NULL) and (for WHERE-EXISTS) a residual existential

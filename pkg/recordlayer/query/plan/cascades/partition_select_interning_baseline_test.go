@@ -232,20 +232,24 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		tables   int
 		expected int // pinned post-change baseline
 	}{
-		// Bumped for RFC-150 Phase-2b Piece-1: the B1 task-graph invariant gates
-		// OptimizeInputs to PHYSICAL members at the three rule-yield scheduling sites
-		// (ExploreGroupTask + the two non-swapped Transform yields), matching Java, which
-		// schedules OptimizeInputs only for new FINAL/plan expressions (ExploreGroup
-		// CascadesPlanner.java:744-748 + executeRuleCall :1064-1070). The old counts
-		// reflected a Go-only "early optimize" — driving child OptimizeGroupTask from
-		// LOGICAL parent yields — which pruned children sooner. Deferring to the physical
-		// parent (the faithful Java timing) costs a few re-exploration rounds: 8999→9095
-		// (3-table, +1.1%) / 30593→31210 (4-table, +2.0%), bounded. Plans byte-identical
-		// (plandiff); only task count moved. (The 4th site — the swapped-quantifier impl
-		// yield — is intentionally left ungated: it is load-bearing, not redundant —
-		// gating it breaks TestFDB_ArrayUnnestOrdinality.)
-		{3, 9095},
-		{4, 31210},
+		// Bumped for RFC-150 Phase-2b Piece-2: PartitionBinarySelectRule's
+		// idempotency guard was narrowed from "any predicate-free binary in the
+		// group blocks" to "only the predicate-free partition over THIS select's
+		// own quantifier alias set blocks". The broad guard let the FIRST sibling
+		// bipartition's predicate-free result block EVERY other bipartition from
+		// being partitioned, so the merge-quantifier uppers ({$m(t1⋈t2), t3} etc.)
+		// were never pushed into correlated sub-Selects — the correlated index-probe
+		// FlatMap chain for ≥3-way joins was never enumerated and the inner table
+		// materialized as a full-scan NLJ (the gap the Go-only tryFlatMapPlan papered
+		// over, now RETIRED). Narrowing the guard enumerates those siblings, which is
+		// the extra work: 9095→11122 (3-table, +22%) / 31210→46483 (4-table, +49%).
+		// Bounded — the round-trip cycle (PartitionBinary↔SelectMerge) is still broken
+		// (the same alias-set partition can't be re-created), interning still collapses
+		// shared sub-products, and the 4-table count stays well under the 100k task
+		// budget. This is the cost of producing the cost-optimal index-nested-loop chain
+		// via the single data-access path instead of the hand-rolled tryFlatMapPlan.
+		{3, 11122},
+		{4, 46483},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
