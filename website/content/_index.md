@@ -63,7 +63,7 @@ Most FDB tooling links Apple's C library through cgo — no static binaries, pai
 
 <div class="s-body">
 
-Define a schema, write a row, query it from the CLI. The pure-Go client is the default backend — nothing to install but a cluster file.
+Install the driver, then open a database, create a schema, and read and write — all from Go. The pure-Go client is the default backend; you only need a cluster file.
 
 </div>
 
@@ -74,36 +74,58 @@ Define a schema, write a row, query it from the CLI. The pure-Go client is the d
 ### Install
 
 ```sh
-go get fdb.dev/pkg/recordlayer
+go get fdb.dev/pkg/relational/sqldriver
 ```
 
-### Create a database and schema
-
-```sql
-CREATE DATABASE /myapp;
-CREATE SCHEMA TEMPLATE app
-    CREATE TABLE users (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))
-    CREATE INDEX by_email ON users (email);
-CREATE SCHEMA /myapp/main WITH TEMPLATE app;
-```
-
-### Write a row
+### Open a database, create a schema, write and read — in Go
 
 ```go
-import _ "fdb.dev/pkg/relational/sqldriver"
+package main
 
-db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
-db.Exec(`INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')`)
+import (
+	"database/sql"
+	"fmt"
+	"log"
+
+	_ "fdb.dev/pkg/relational/sqldriver"
+)
+
+func main() {
+	db, err := sql.Open("fdbsql",
+		"fdbsql:///myapp?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create the database, a schema template, and a schema.
+	db.Exec(`CREATE DATABASE /myapp`)
+	db.Exec(`CREATE SCHEMA TEMPLATE app
+	    CREATE TABLE users (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))
+	    CREATE INDEX by_email ON users (email)`)
+	db.Exec(`CREATE SCHEMA /myapp/main WITH TEMPLATE app`)
+
+	// Write a row, then read it back.
+	db.Exec(`INSERT INTO users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')`)
+
+	var name string
+	if err := db.QueryRow(
+		`SELECT name FROM users WHERE email = ?`, "alice@example.com",
+	).Scan(&name); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(name) // Alice
+}
 ```
 
-### Query it from the CLI
+### Or query the same data from the CLI
 
 ```text
-$ frl sql --database /myapp
+$ frl sql --database /myapp --schema main
 fdb> SELECT name, email FROM users WHERE email = 'alice@example.com';
- name  │ email
-───────┼─────────────────────
- Alice │ alice@example.com
+NAME  │ EMAIL
+──────┼───────────────────
+Alice │ alice@example.com
 (1 row)
 ```
 
@@ -111,7 +133,7 @@ fdb> SELECT name, email FROM users WHERE email = 'alice@example.com';
 
 </div>
 
-<p class="muted-note">The Cascades planner picks the <code>by_email</code> index for that query — no full scan. Prefer Go's typed record API to store protobuf records directly? See the <a href="https://github.com/birdayz/fdb-go">record-layer guide</a>.</p>
+<p class="muted-note">The Cascades planner picks the <code>by_email</code> index for that query — no full scan. The same store is reachable from Go's typed record API (store protobuf records directly); see the <a href="https://github.com/birdayz/fdb-go">record-layer guide</a>.</p>
 
 <div style="height:4rem"></div>
 
