@@ -373,6 +373,11 @@ func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values
 	default:
 		return left, right
 	}
+	// Typ: colt (the COLUMN's actual DOUBLE type) is load-bearing — do NOT change it
+	// to a generic values.TypeFloat/TypeDouble. The SARG packing path keys on the
+	// declared column type to choose the FDB tuple type code; using anything but the
+	// column's own type descriptor would encode the value with a different wire type
+	// and silently miss every index entry (the bug this function fixes). @claude review.
 	coerced := &values.ConstantValue{Value: f, Typ: colt}
 	if lc {
 		return coerced, right
