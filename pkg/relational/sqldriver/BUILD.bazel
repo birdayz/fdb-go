@@ -103,6 +103,7 @@ go_test(
         "noncorrelated_exists_fdb_test.go",
         "null_index_probe_variants_test.go",
         "null_join_agg_probe_test.go",
+        "null_safe_join_probe_test.go",
         "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",
         "orderby_dnf_probe_test.go",
