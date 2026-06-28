@@ -190,6 +190,7 @@ go_test(
         "statistics_fdb_test.go",
         "string_functions_probe_test.go",
         "string_index_range_probe_test.go",
+        "string_len_pad_probe_test.go",
         "string_oracle_consistency_test.go",
         "string_ordering_probe_test.go",
         "string_param_escaping_probe_test.go",
