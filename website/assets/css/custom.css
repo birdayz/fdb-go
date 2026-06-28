@@ -20,6 +20,16 @@
 .s-steps { width: 100%; max-width: 46rem; }
 .s-steps pre, .hero-code pre { overflow-x: auto; }
 
+/* Quickstart step number markers. The theme's 33px number circle is sized for a
+   larger heading; against our h3 (24px line) it is top-aligned, so the circle hangs
+   ~4-5px below the heading text and its digit isn't centered inside the circle.
+   Center the digit (line-height = circle height) and lift the circle by half the
+   size difference so its center sits on the heading line. */
+.s-steps .hextra-steps :where(h2, h3, h4, h5, h6):not(.no-step-marker)::before {
+  line-height: 33px;
+  margin-top: -4.5px;
+}
+
 /* Hero headings wrap naturally and balance their lines. This replaces the &nbsp;
    runs that used to keep phrases together: those formed unbreakable units that
    overflowed narrow mobile viewports. text-wrap:balance gives tidy multi-line
