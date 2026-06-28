@@ -949,6 +949,22 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity; found 2026-06-28)
+
+`<DML> ... OPTIONS (DRY RUN)` is currently REJECTED (0AF00 "DRY RUN is not supported",
+planDML in cascades_generator.go) — a fail-closed stopgap for what was a SEVERE
+data-loss bug: the option was silently ignored and the statement ran the REAL mutation
+(`DELETE WHERE a>0 OPTIONS (DRY RUN)` wiped every matching row — the opposite of DRY
+RUN's intent). Regression: dryrun_option_rejected_probe_test.go.
+
+To reach Java parity (Java honors DRY RUN: AstNormalizer.visitQueryOptions sets
+Options.Name.DRY_RUN → QueryPlan.setDryRun → previews without committing): (1) parse the
+queryOptions clause into api.Options (OptDryRun already exists, api/options.go:80;
+NOCACHE/LOG QUERY/EF_SEARCH too); (2) thread OptDryRun to the DML executor; (3) branch
+the executor onto the EXISTING store primitives DryRunSaveRecord / DryRunDeleteRecord
+(store_api.go:233/353, already ported from Java's dryRun*Async) and return the
+would-be-affected count WITHOUT committing. Flip the reject + the sentinel when done.
+
 ### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
 
 The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and

@@ -621,6 +621,21 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 	}, nil
 }
 
+// dmlHasDryRunOption reports whether a DML statement's OPTIONS(...) clause requests
+// DRY RUN. The grammar's queryOption is `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n`;
+// DRY RUN is the only one whose silent omission changes whether data is mutated.
+func dmlHasDryRunOption(qo antlrgen.IQueryOptionsContext) bool {
+	if qo == nil {
+		return false
+	}
+	for _, opt := range qo.AllQueryOption() {
+		if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
@@ -641,6 +656,26 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	md := c.cachedMetaData()
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
+	}
+
+	// DML … OPTIONS (DRY RUN) is rejected. Go does not yet wire the SQL DRY RUN option
+	// through to the dry-run store primitives (DryRunSaveRecord/DryRunDeleteRecord exist,
+	// store_api.go, but the executor never branches on OptDryRun), so the statement would
+	// run the REAL mutation. Silently ignoring DRY RUN is DATA LOSS — the statement
+	// mutates when the user explicitly asked for a no-op preview, the exact opposite of
+	// intent. Java honors it (AstNormalizer.visitQueryOptions → QueryPlan.setDryRun).
+	// Until DRY RUN is ported (TODO.md), fail closed rather than mutate. NOCACHE/LOG QUERY
+	// are harmless to ignore (cache/log hints) so they are left accepted-and-ignored.
+	var dmlOpts antlrgen.IQueryOptionsContext
+	if del := dml.DeleteStatement(); del != nil {
+		dmlOpts = del.QueryOptions()
+	} else if upd := dml.UpdateStatement(); upd != nil {
+		dmlOpts = upd.QueryOptions()
+	} else if ins := dml.InsertStatement(); ins != nil {
+		dmlOpts = ins.QueryOptions()
+	}
+	if dmlHasDryRunOption(dmlOpts) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DRY RUN is not supported")
 	}
 
 	var logicalOp logical.LogicalOperator
