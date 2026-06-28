@@ -939,6 +939,27 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
+
+Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
+corpus has `FROM (SELECT … ) AS t` entries). But an alias introduced in an INNER
+derived table is not visible TWO levels up:
+- works: `SELECT x FROM (SELECT a AS x FROM t) i` (1-level alias)
+- works: `SELECT a FROM (SELECT a FROM (SELECT a FROM t) i) s` (2-level, NO alias —
+  the real column name `a` propagates through any depth)
+- FAILS: `SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s` → `42703 column
+  "X" does not exist`; likewise `… (SELECT x AS y FROM (SELECT a AS x FROM t) i) …`.
+Only an alias-introduced name is dropped at depth ≥2. Fail-CLOSED (clean 42703, not
+wrong rows). Standard SQL allows it and Java supports derived tables, so this is most
+likely a Go column-anchoring gap, not a shared limitation — confirm against Java.
+Root cause direction: the nested derived-body column derivation
+(cascades_translator.go derivedOutputColumns / legColumns, RFC-077 7.6) returns the
+alias name for a 1-level LogicalProject body but does not propagate it when that
+body is itself a derived table wrapped in another (the middle Project re-projects
+the alias column, but the outer level can't resolve it). Sentinel:
+nested_derived_table_probe_test.go (pins 1-level + 2-level-no-alias work, 2-level-
+inner-alias → 42703; flip when fixed). Needs query-engine review.
+
 ### [ ] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — follow-up to the SET-column fix (found 2026-06-28)
 
 Sibling to the now-fixed "UPDATE SET undefined column → 42703" leak. Remaining DML
