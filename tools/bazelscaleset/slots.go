@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -58,26 +60,82 @@ func newSlotPool(baseDir, runnerBase string, n int) (*slotPool, error) {
 	return p, nil
 }
 
-// cloneRunnerDir syncs the base actions/runner dir (binaries only — no runtime state)
-// into the per-slot dst, so each slot has its own .runner/.credentials and concurrent
-// runners can't corrupt each other. Run on every startup, NOT skipped when dst exists:
-// rsync only transfers diffs, so it repairs a partial/interrupted clone and propagates a
-// pinned-runner upgrade to existing slots — while --delete + the excludes keep dst an
-// exact copy of the template without clobbering a live runner's (excluded) runtime state.
+// runnerStateNames are a runner's per-job runtime files: never copied into a slot clone,
+// so each slot is a clean install (a fresh JIT runner writes its own .runner/.credentials).
+var runnerStateNames = map[string]bool{
+	"_work": true, "_diag": true, ".runner": true, ".runner_migrated": true,
+	".credentials": true, ".credentials_rsaparams": true, ".service": true,
+}
+
+// cloneRunnerDir copies the base actions/runner tree (binaries only — runtime state
+// excluded) into the per-slot dst, so each slot has its own .runner/.credentials and
+// concurrent runners can't corrupt each other. Done in-process (no rsync dependency, so
+// it works on a minimal image), and run on EVERY startup, not skipped when dst exists:
+// re-copying overwrites changed files, so it repairs a partial/interrupted clone and
+// propagates a pinned-runner upgrade into existing slots. The excluded state dirs are
+// left untouched, so a live runner's in-flight state survives a concurrent re-sync.
 func cloneRunnerDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return fmt.Errorf("mkdir %q: %w", dst, err)
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, 0o755)
+		}
+		// Skip the runtime-state names (and their subtrees) wherever they appear.
+		top := rel
+		if i := strings.IndexByte(rel, filepath.Separator); i >= 0 {
+			top = rel[:i]
+		}
+		if runnerStateNames[top] {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm()|0o700)
+		case info.Mode()&fs.ModeSymlink != 0:
+			// Recreate symlinks as-is (the runner tree currently has none, but be safe);
+			// relative links stay self-contained within the clone.
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			return os.Symlink(link, target)
+		default:
+			return copyFile(path, target, info.Mode().Perm())
+		}
+	})
+}
+
+// copyFile copies a regular file's contents, truncating/creating dst with the given mode.
+func copyFile(src, dst string, mode fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	// -L dereferences the bin/externals version symlinks; the excludes drop any runtime
-	// state so the clone is a clean install (a fresh JIT runner writes its own state).
-	cmd := exec.Command("rsync", "-aL", "--delete",
-		"--exclude=_work", "--exclude=_diag", "--exclude=.runner", "--exclude=.runner_migrated",
-		"--exclude=.credentials", "--exclude=.credentials_rsaparams", "--exclude=.service",
-		src+"/", dst+"/")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rsync %q -> %q: %w: %s", src, dst, err, out)
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
 	}
-	return nil
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // take removes and returns a free slot, or nil if none are available.

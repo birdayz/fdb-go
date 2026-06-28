@@ -371,9 +371,17 @@ func removeRunnerPID(slotPath string) {
 // lock — no `bazel shutdown`). It is scoped to *our* slot pid files, so it never
 // touches a classic or other runner sharing the host (the side-by-side migration).
 // A cmdline check guards against the recorded PID having been reused since the crash.
-func reconcileStrayRunners(logger *slog.Logger, pool *slotPool) {
-	for _, sl := range pool.all {
-		p := filepath.Join(sl.path, runnerPIDFile)
+//
+// It scans EVERY slot dir on disk (workBase/slot-*), not just the current pool: a
+// restart with a lower --max-runners than a previous run (e.g. 2 -> 1) would otherwise
+// leave a stray runner in a now-out-of-pool higher slot unreaped while the supervisor
+// re-advertises that capacity (codex). Slot dirs persist, so the glob covers every slot
+// any prior incarnation created.
+func reconcileStrayRunners(logger *slog.Logger, workBase, runnerBase string) {
+	runnerBase = filepath.Clean(runnerBase)
+	matches, _ := filepath.Glob(filepath.Join(workBase, "slot-*"))
+	for _, slotPath := range matches {
+		p := filepath.Join(slotPath, runnerPIDFile)
 		data, err := os.ReadFile(p)
 		if err != nil {
 			continue // no stray recorded for this slot — the normal, healthy case
@@ -384,12 +392,16 @@ func reconcileStrayRunners(logger *slog.Logger, pool *slotPool) {
 		if err != nil || pid <= 1 {
 			continue
 		}
+		// Derive this slot's runner dir from its index (slot-N -> <base>-slotN), matching
+		// newSlotPool, so the cmdline guard checks the right runner root.
+		idx := strings.TrimPrefix(filepath.Base(slotPath), "slot-")
+		runnerDir := fmt.Sprintf("%s-slot%s", runnerBase, idx)
 		// Decide on group MEMBERS, not just the leader: a process group outlives its
 		// leader, so if run.sh exited but a child (Runner.Worker, etc.) is still alive
 		// in the group it would keep writing the slot. Checking only the leader's
 		// cmdline would miss that. Requiring a runner-like *member* (this slot's own
 		// runner dir) also guards against the recorded PGID having been reused.
-		if !groupHasRunnerMember(pid, sl.runnerDir) {
+		if !groupHasRunnerMember(pid, runnerDir) {
 			continue
 		}
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
@@ -397,7 +409,7 @@ func reconcileStrayRunners(logger *slog.Logger, pool *slotPool) {
 			continue
 		}
 		logger.Warn("reconciled stray runner from a previous incarnation",
-			slog.Int("slot", sl.index), slog.Int("pgid", pid))
+			slog.String("slot", filepath.Base(slotPath)), slog.Int("pgid", pid))
 	}
 }
 

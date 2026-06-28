@@ -114,7 +114,7 @@ func run() error {
 	// before accepting work so we never launch a new runner into an occupied slot.
 	// Scoped to our own slot pid files (never touches a classic/other runner) and
 	// leaves warm bazel servers alone — a new runner reconnects to them.
-	reconcileStrayRunners(logger, pool)
+	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)
 
 	// Initial heartbeat so the watchdog sees a healthy start before the first poll.
 	writeHeartbeat(cfg.heartbeatFile)

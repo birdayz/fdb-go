@@ -195,7 +195,8 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	t.Parallel()
 
-	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	// Record the stray runner against the slot, as a live supervisor would.
 	writeRunnerPID(discardLogger(), pool.all[0].path, pid)
 
-	reconcileStrayRunners(discardLogger(), pool)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	// Process group must be dead, and the pid file removed.
 	done := make(chan struct{})
@@ -232,11 +233,11 @@ func TestReconcileScopedToOurPidFiles(t *testing.T) {
 	otherPID := other.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-otherPID, syscall.SIGKILL); _, _ = other.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1) // no pid files written
-	if err != nil {
+	wb, base := t.TempDir(), templateRunner(t)
+	if _, err := newSlotPool(wb, base, 1); err != nil { // slot dirs, no pid files written
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	if !alive(otherPID) {
 		t.Fatal("reconcile killed an unrecorded process (not scoped to our pid files)")
@@ -257,14 +258,15 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pool.all[0].path, runnerPIDFile), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	if _, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile)); !os.IsNotExist(err) {
 		t.Fatal("reconcile did not clear the stale pid file")
@@ -281,7 +283,8 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
-	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,10 +315,44 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 
 	writeRunnerPID(discardLogger(), pool.all[0].path, pgid)
 
-	reconcileStrayRunners(discardLogger(), pool)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	// The whole group (the orphaned worker) must be gone.
 	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
+}
+
+// TestReconcileCoversPriorHigherMaxSlots pins codex P2: a restart with a LOWER
+// --max-runners than a prior run must still reap a stray runner left in a now-out-of-pool
+// higher slot. reconcile scans all slot dirs on disk, not just the current pool.
+func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
+	t.Parallel()
+
+	wb, base := t.TempDir(), templateRunner(t)
+	// Prior maxRunners=2 run: slot-0 + slot-1 (+ their runner clones) exist on disk.
+	pool2, err := newSlotPool(wb, base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A stray runner left in slot-1, running from slot-1's own runner dir.
+	stray := startStrayRunner(t, pool2.all[1].runnerDir)
+	pid := stray.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
+	writeRunnerPID(discardLogger(), pool2.all[1].path, pid)
+
+	// Supervisor restarts with maxRunners=1 (downgrade): the new pool has only slot-0,
+	// but reconcile must still find + kill the slot-1 stray by scanning every slot dir.
+	if _, err := newSlotPool(wb, base, 1); err != nil {
+		t.Fatal(err)
+	}
+	reconcileStrayRunners(discardLogger(), wb, base)
+
+	done := make(chan struct{})
+	go func() { _, _ = stray.Process.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile did not reap the stray in a prior-higher-max (out-of-pool) slot")
+	}
 }
 
 // fakeClient implements listener.Client for fault-injection tests.
