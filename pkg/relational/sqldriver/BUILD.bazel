@@ -76,6 +76,7 @@ go_test(
         "limit_zero_fdb_test.go",
         "materialized_nlj_null_test.go",
         "memory_budget_fdb_test.go",
+        "multicol_index_gap_probe_test.go",
         "multicol_orderby_probe_test.go",
         "multiway_join_index_probe_test.go",
         "multiway_join_order_nway_test.go",
