@@ -181,6 +181,7 @@ go_test(
         "transaction_probe_test.go",
         "twotable_order_invariant_test.go",
         "tx_select_isolation_probe_test.go",
+        "txctl_statements_probe_test.go",
         "type_coercion_probe_test.go",
         "union_aggregate_expr_alias_test.go",
         "union_aggregate_remap_test.go",
