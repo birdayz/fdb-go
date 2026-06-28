@@ -636,6 +636,21 @@ func dmlHasDryRunOption(qo antlrgen.IQueryOptionsContext) bool {
 	return false
 }
 
+// updateHasDefaultAssignment reports whether an UPDATE has a `SET col = DEFAULT`
+// assignment. The grammar is `updatedElement : fullColumnName '=' (expression | DEFAULT)`,
+// so the DEFAULT alternative is detected via the DEFAULT() terminal.
+func updateHasDefaultAssignment(upd antlrgen.IUpdateStatementContext) bool {
+	if upd == nil {
+		return false
+	}
+	for _, el := range upd.AllUpdatedElement() {
+		if el != nil && el.DEFAULT() != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
@@ -698,6 +713,18 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			return nil, delErr
 		}
 	} else if upd := dml.UpdateStatement(); upd != nil {
+		// `SET col = DEFAULT` is rejected. The grammar accepts it, but this schema system
+		// has no column DEFAULT definitions, and Java doesn't support it either —
+		// ExpressionVisitor.visitUpdatedElement (:1089) calls ctx.expression().accept(this),
+		// which NPEs when the RHS is DEFAULT (expression() is null). Per the conformance
+		// principle (Java NPE → Go emits a CLEAN error, not a crash or silent no-op), reject
+		// it: the builder would otherwise silently DROP the assignment (logical_builder.go's
+		// `el.Expression()==nil` continue), leaving the column UNCHANGED while reporting
+		// success — a misleading silent ignore.
+		if updateHasDefaultAssignment(upd) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"DEFAULT is not supported in UPDATE ... SET")
+		}
 		if w := upd.WhereExpr(); w != nil && expr.WhereExistsInScalarPosition(w.Expression()) {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"EXISTS nested in a scalar expression is not yet supported")
