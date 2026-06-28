@@ -1,9 +1,9 @@
 package sqldriver_test
 
-// Probes LIKE pattern matching: prefix (index SARG), suffix/infix (residual),
-// `_` single-char and `%` multi-char wildcards, exact match, match-all, and
-// case sensitivity. Prefix LIKE lowers to a STARTS_WITH index range; the rest
-// are residual filters.
+// Probes LIKE pattern semantics: `_` matches one char, `%` matches any run,
+// matching is case-sensitive, and regex metacharacters are LITERAL (the pattern
+// 'a.c' must match only the literal 'a.c', NOT 'abc' — a regex-leak bug would
+// make '.' match any char). Also anchoring (LIKE is whole-string).
 
 import (
 	"context"
@@ -19,21 +19,20 @@ func TestFDB_LikePatternProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_likeprobe")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_likeprobe")
+	setup := openTestDB(t, "/testdb_like")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_like")
 	mwjoMustExec(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE likeprobe "+
-			"CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_likeprobe/s WITH TEMPLATE likeprobe")
-	dsn := fmt.Sprintf("fdbsql:///testdb_likeprobe?cluster_file=%s&schema=s", clusterFilePath)
+		"CREATE SCHEMA TEMPLATE likep CREATE TABLE t (id BIGINT NOT NULL, s STRING, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like/s WITH TEMPLATE likep")
+	dsn := fmt.Sprintf("fdbsql:///testdb_like?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	// id1='' id2='abc' id3='abcd' id4='xabc' id5='ABC'
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,''),(2,'abc'),(3,'abcd'),(4,'xabc'),(5,'ABC')")
+	// 1 abc, 2 aXc, 3 a.c, 4 ABC, 5 abcd, 6 (empty), 7 NULL
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,'abc'),(2,'aXc'),(3,'a.c'),(4,'ABC'),(5,'abcd'),(6,'')")
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (7)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -69,14 +68,20 @@ func TestFDB_LikePatternProbe(t *testing.T) {
 		})
 	}
 
-	ck("prefix", "SELECT id FROM t WHERE s LIKE 'abc%'", []int64{2, 3})
-	ck("suffix_case_sensitive", "SELECT id FROM t WHERE s LIKE '%abc'", []int64{2, 4})
-	ck("infix", "SELECT id FROM t WHERE s LIKE '%bc%'", []int64{2, 3, 4})
-	ck("exact", "SELECT id FROM t WHERE s LIKE 'abc'", []int64{2})
-	ck("underscore_single", "SELECT id FROM t WHERE s LIKE 'ab_'", []int64{2})
-	ck("prefix_then_underscore", "SELECT id FROM t WHERE s LIKE 'abc_'", []int64{3})
-	ck("match_all", "SELECT id FROM t WHERE s LIKE '%'", []int64{1, 2, 3, 4, 5})
-	ck("no_match", "SELECT id FROM t WHERE s LIKE 'zzz%'", nil)
-	// Case sensitivity: 'ABC' must NOT match lowercase prefix.
-	ck("case_sensitive_prefix", "SELECT id FROM t WHERE s LIKE 'AB%'", []int64{5})
+	// underscore = exactly one char: matches abc, aXc, a.c (3 chars a_c) — NOT ABC (case), NOT abcd (len).
+	ck("underscore_one_char", "SELECT id FROM t WHERE s LIKE 'a_c'", []int64{1, 2, 3})
+	// percent = any run: a%  matches all starting 'a' lowercase.
+	ck("percent_prefix", "SELECT id FROM t WHERE s LIKE 'a%'", []int64{1, 2, 3, 5})
+	// suffix.
+	ck("percent_suffix", "SELECT id FROM t WHERE s LIKE '%c'", []int64{1, 2, 3}) // 'ABC' ends uppercase 'C', case-sensitive
+	// CRITICAL: literal dot, NOT regex any-char → only 'a.c'.
+	ck("literal_dot_not_regex", "SELECT id FROM t WHERE s LIKE 'a.c'", []int64{3})
+	// exact (no wildcards) is whole-string anchored.
+	ck("exact_anchored", "SELECT id FROM t WHERE s LIKE 'abc'", []int64{1})
+	// case-sensitive: 'ABC' pattern matches only id=4.
+	ck("case_sensitive", "SELECT id FROM t WHERE s LIKE 'ABC'", []int64{4})
+	// % matches empty too → 'a%' won't match '' but '%' matches everything non-NULL.
+	ck("percent_matches_all_nonnull", "SELECT id FROM t WHERE s LIKE '%'", []int64{1, 2, 3, 4, 5, 6})
+	// NULL LIKE anything → UNKNOWN → excluded (id=7 never matches).
+	ck("null_never_matches", "SELECT id FROM t WHERE s LIKE '%'", []int64{1, 2, 3, 4, 5, 6})
 }
