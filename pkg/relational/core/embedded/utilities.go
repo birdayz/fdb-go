@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -137,6 +138,16 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 		case int64:
 			fmt.Fprintf(&b, "%d", val)
 		case float64:
+			// NaN/±Inf have no SQL literal form: rendering them with %g yields
+			// "NaN"/"+Inf"/"-Inf", which the parser then rejects with a confusing
+			// 42601 syntax error (an identifier reference). Reject up front with a
+			// clear, type-accurate error. (Proper non-text parameter binding would
+			// let a DOUBLE column carry these IEEE-754 values; that is the broader
+			// text-interpolation divergence, tracked separately.)
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				return "", api.NewErrorf(api.ErrCodeInvalidParameter,
+					"non-finite float64 parameter (NaN/Inf) is not supported for placeholder %d", argIdx)
+			}
 			fmt.Fprintf(&b, "%g", val)
 		case string:
 			// Escape single quotes by doubling them.
