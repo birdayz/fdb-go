@@ -127,6 +127,7 @@ go_test(
         "outer_join_parity_fdb_test.go",
         "pagination_limit_fdb_test.go",
         "param_rendering_probe_test.go",
+        "param_string_edge_probe_test.go",
         "plan_cache_bench_test.go",
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
