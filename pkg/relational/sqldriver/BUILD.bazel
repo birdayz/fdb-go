@@ -140,6 +140,7 @@ go_test(
         "no_from_select_probe_test.go",
         "noncorrelated_exists_fdb_test.go",
         "not_in_null_probe_test.go",
+        "null_arithmetic_probe_test.go",
         "null_index_probe_variants_test.go",
         "null_join_agg_probe_test.go",
         "null_ordering_probe_test.go",
