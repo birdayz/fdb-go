@@ -145,6 +145,7 @@ go_test(
         "order_by_nonselected_probe_test.go",
         "order_nulls_limit_probe_test.go",
         "orderby_dnf_probe_test.go",
+        "orderby_mixed_dir_probe_test.go",
         "orderby_subquery_probe_test.go",
         "ordered_grouped_scalar_subquery_fdb_test.go",
         "outer_join_filter_probe_test.go",
