@@ -55,6 +55,7 @@ go_test(
         "cross_type_join_probe_test.go",
         "crossjoin_projection_probe_test.go",
         "crosstype_const_sarg_fdb_test.go",
+        "datetime_functions_probe_test.go",
         "derived_groupby_case_probe_test.go",
         "derived_limit_rfc128_test.go",
         "derived_table_probe_test.go",
