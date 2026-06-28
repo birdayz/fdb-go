@@ -45,6 +45,7 @@ go_test(
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
         "constant_predicate_probe_test.go",
+        "constraint_validation_probe_test.go",
         "correlated_exists_crossjoin_test.go",
         "correlated_exists_probe_test.go",
         "correlated_null_inequality_test.go",
