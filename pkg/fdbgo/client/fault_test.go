@@ -938,7 +938,9 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 // and Get. The only thing that can end the read is the opContext deadline waking the
 // ctx.Done() arms in queryLocations (locality.go:468/484), mapped to 1031 by
 // mapTimeout (readpath.go). Revert-prove: drop those ctx.Done() arms (reintroducing
-// the hang) and Get blocks past the 30s assertion → red.
+// the hang) and Get never returns; the independent 30s watchdog below fires → red.
+// (The watchdog is load-bearing: a plain `elapsed > 30s` check AFTER Get could never
+// fire on a true hang — Get would block to the package/CI timeout first.)
 func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -1007,8 +1009,24 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 
 	fd.arm() // every connection now EOFs on Read: no proxy / SS can answer
 
+	// Run the read under an INDEPENDENT watchdog. If the hang regression returns, Get
+	// never returns, so checking elapsed AFTER Get would itself hang to the package/CI
+	// timeout. The watchdog converts that hang into a fast, clear failure at 30s.
 	start := time.Now()
-	_, err = tx.Get(ctx, key)
+	type readResult struct{ err error }
+	done := make(chan readResult, 1)
+	go func() {
+		_, gerr := tx.Get(ctx, key)
+		done <- readResult{err: gerr}
+	}()
+	const watchdog = 30 * time.Second // ≫ the 2s SetTimeout; a real bound returns in ~2s
+	select {
+	case r := <-done:
+		err = r.err
+	case <-time.After(watchdog):
+		cancel() // best-effort: unblock the read if any exit arm still remains
+		t.Fatalf("Get against a wedged cluster did not return within %v — SetTimeout did not bound the getKeyLocation loop (hang regression)", watchdog)
+	}
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1017,9 +1035,6 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	var fe *wire.FDBError
 	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
 		t.Fatalf("want transaction_timed_out (%d), got %v (%T)", ErrTransactionTimedOut, err, err)
-	}
-	if elapsed > 30*time.Second {
-		t.Fatalf("bounded read took %v — SetTimeout did not bound the getKeyLocation loop (hang regression)", elapsed)
 	}
 	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
 }
