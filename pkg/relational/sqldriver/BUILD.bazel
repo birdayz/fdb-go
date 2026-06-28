@@ -123,6 +123,7 @@ go_test(
         "ilike_regexp_boundary_probe_test.go",
         "in_or_compound_sarg_probe_test.go",
         "in_subquery_probe_test.go",
+        "include_clause_rejected_probe_test.go",
         "index_oracle_consistency_test.go",
         "index_sarg_probe_test.go",
         "indexable_types_probe_test.go",

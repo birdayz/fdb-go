@@ -166,6 +166,20 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
 		tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
 		unique := def.UNIQUE() != nil
+		// INCLUDE (covering index) is not yet wired through the SQL DDL layer. Java
+		// SUPPORTS it (DdlVisitor.java:249 → addValueColumn, building a KeyWithValue
+		// covering index), and Go's record layer HAS the machinery
+		// (KeyWithValueExpression; index_maintainer.go), but Builder.AddIndex doesn't
+		// carry included columns yet. Silently dropping INCLUDE would create a PLAIN
+		// index where Java creates a COVERING one — a wire/DDL-portability divergence
+		// (the same CREATE INDEX yields different index structures across engines). Fail
+		// closed until covering-index DDL is implemented (TODO.md), matching the vector
+		// path's own INCLUDE rejection above. ErrCodeUnsupportedOperation mirrors Java's
+		// UNSUPPORTED_OPERATION used for unsupported INCLUDE (DdlVisitor.java:297).
+		if def.IncludeClause() != nil {
+			return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"index %q: INCLUDE clause (covering index) is not yet supported", indexName)
+		}
 		var cols []string
 		if cl := def.IndexColumnList(); cl != nil {
 			for _, spec := range cl.AllIndexColumnSpec() {

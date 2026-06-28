@@ -987,6 +987,23 @@ path (the path that currently rejects all DML with 0A000). Feature port, follow-
 scope. Pinned by returning_clause_probe_test.go (flip when implemented). INSERT
 RETURNING is a 42601 — not in the INSERT grammar — so it's a separate, larger gap.
 
+### [ ] ddl: implement covering indexes — CREATE INDEX ... INCLUDE (cols) (Java parity; found 2026-06-28)
+
+`CREATE INDEX ... ON t (a) INCLUDE (b)` is currently REJECTED (0A000 "INCLUDE clause
+(covering index) is not yet supported", ddl.go parseIndexDefinition) — a fail-closed
+stopgap for what was a SILENT divergence: Go dropped the INCLUDE clause and created a
+PLAIN index, while Java (DdlVisitor.java:249 → addValueColumn) creates a COVERING
+(KeyWithValue) index. Same CREATE INDEX, different index structure across engines = a
+wire/DDL-portability divergence. Regression: include_clause_rejected_probe_test.go.
+
+Go's record layer ALREADY supports covering indexes — KeyWithValueExpression
+(index_maintainer.go:107/217/362, "Matches Java's KeyWithValueExpression path"). The
+gap is only the SQL→metadata DDL wiring: (1) Builder.AddIndex (core/metadata/builder.go)
+needs an included-columns parameter; (2) build a KeyWithValueExpression root (key cols +
+value cols) instead of a plain key expression when INCLUDE is present; (3) wire
+def.IncludeClause().UidList() through parseIndexDefinition (ddl.go). Flip the reject +
+the sentinel when implemented. Same applies to the indexAsSelect / vector paths' INCLUDE.
+
 ### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
 
 `CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build
