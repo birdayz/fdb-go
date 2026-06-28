@@ -970,7 +970,14 @@ Fix path (Graefe review required — cross-cutting): track the SELECT-list outpu
 order in `LogicalAggregate` (e.g. an output-spec list or `[]int` permutation) and
 build a reordering Project over the GroupBy in `translateAggregate` — the infra
 already exists (`buildPostAggregateProjection` builds a SELECT-order Project, reused
-today only for INSERT…SELECT…GROUP BY via `wrapBareAggregateInsertSource`). BLAST
+today only for INSERT…SELECT…GROUP BY via `wrapBareAggregateInsertSource`).
+CONFIRMED no data corruption: the bare INSERT…SELECT…GROUP BY path already runs the
+SELECT through buildPostAggregateProjection and so honors SELECT-LIST order
+correctly (`INSERT INTO dst SELECT SUM(v), a … GROUP BY a` → g=SUM, total=a;
+pinned in insert_select_groupby_probe_test.go), and an explicit target column list
+is fail-closed (0AF00) — so the bug is confined to standalone-SELECT display
+order, and the INSERT path proves the recommended fix (adopt the same projection)
+produces correct results. BLAST
 RADIUS: `aggregateOutputColumns`/`legColumns` (cascades_translator.go:312, 364) is
 also the schema used to ANCHOR a GROUP BY result as a JOIN LEG / CTE body, so
 changing the canonical output order must keep leg-anchoring consistent (or add the

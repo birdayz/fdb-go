@@ -109,6 +109,7 @@ go_test(
         "index_oracle_consistency_test.go",
         "index_sarg_probe_test.go",
         "insert_coercion_probe_test.go",
+        "insert_select_groupby_probe_test.go",
         "insert_select_probe_test.go",
         "insert_type_coercion_probe_test.go",
         "is_truth_value_probe_test.go",
