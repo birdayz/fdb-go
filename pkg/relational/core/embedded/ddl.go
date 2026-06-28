@@ -676,7 +676,15 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 
 	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
 		for _, fullID := range pkDef.FullIdList().AllFullId() {
-			pkCols = append(pkCols, functions.FullIdToName(fullID))
+			pkCol := functions.FullIdToName(fullID)
+			// Reject a PRIMARY KEY over an undefined column with a clean 42703 here,
+			// before the metadata builder would surface a leaky internal error
+			// (XX000 "build RecordMetaData: ... field not found in message").
+			if !seen[pkCol] {
+				return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"primary key column %q is not a defined column", pkCol)
+			}
+			pkCols = append(pkCols, pkCol)
 		}
 	}
 
