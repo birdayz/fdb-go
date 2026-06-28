@@ -119,6 +119,7 @@ go_test(
         "null_safe_join_probe_test.go",
         "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",
+        "order_by_nonselected_probe_test.go",
         "orderby_dnf_probe_test.go",
         "ordered_grouped_scalar_subquery_fdb_test.go",
         "outer_join_filter_probe_test.go",
