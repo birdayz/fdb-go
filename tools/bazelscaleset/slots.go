@@ -141,6 +141,12 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// OpenFile's mode is masked by the process umask, so chmod explicitly to preserve the
+	// template's exact perms (e.g. run.sh's 0755 under a restrictive umask) (codex).
+	if err := out.Chmod(mode); err != nil {
+		_ = out.Close()
+		return err
+	}
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
 		return err

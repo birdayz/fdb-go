@@ -185,29 +185,30 @@ func TestCloneRunnerDirSymlinkedSource(t *testing.T) {
 	}
 }
 
-// TestCopyFileReplacesContentAndMode pins codex P3: re-copying onto an existing file
-// applies the new content AND mode (copyFile unlinks first → a fresh inode), instead of
-// keeping the old file's stale permissions.
+// TestCopyFileReplacesContentAndMode pins codex P3 + the umask fix: re-copying onto an
+// existing file applies the new content AND the exact mode. The 0o775 group-write bit is
+// dropped by the common umask 022 unless copyFile chmods explicitly, so this catches both
+// the stale-perms-on-resync bug and the umask masking.
 func TestCopyFileReplacesContentAndMode(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
-	if err := os.WriteFile(src, []byte("new"), 0o755); err != nil {
+	if err := os.WriteFile(src, []byte("new"), 0o775); err != nil {
 		t.Fatal(err)
 	}
 	dst := filepath.Join(dir, "dst")
 	if err := os.WriteFile(dst, []byte("old"), 0o600); err != nil { // pre-existing, different mode
 		t.Fatal(err)
 	}
-	if err := copyFile(src, dst, 0o755); err != nil {
+	if err := copyFile(src, dst, 0o775); err != nil {
 		t.Fatal(err)
 	}
 	if b, err := os.ReadFile(dst); err != nil || string(b) != "new" {
 		t.Fatalf("content = %q, err %v; want \"new\"", b, err)
 	}
-	if info, err := os.Stat(dst); err != nil || info.Mode().Perm() != 0o755 {
-		t.Fatalf("mode = %v, err %v; want 0755", info.Mode().Perm(), err)
+	if info, err := os.Stat(dst); err != nil || info.Mode().Perm() != 0o775 {
+		t.Fatalf("mode = %v, err %v; want 0775 (umask must not mask it)", info.Mode().Perm(), err)
 	}
 }
 
