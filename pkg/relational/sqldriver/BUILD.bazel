@@ -49,6 +49,7 @@ go_test(
         "cast_probe_test.go",
         "coalesce_nullif_probe_test.go",
         "column_metadata_probe_test.go",
+        "comparison_operators_probe_test.go",
         "comparison_typecheck_probe_test.go",
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
