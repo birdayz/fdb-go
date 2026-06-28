@@ -82,6 +82,7 @@ go_test(
         "full_outer_join_fdb_test.go",
         "group_by_derived_probe_test.go",
         "groupby_insert_select_fdb_test.go",
+        "groupby_ordinal_probe_test.go",
         "groupby_over_join_fdb_test.go",
         "having_probe_test.go",
         "in_or_compound_sarg_probe_test.go",
