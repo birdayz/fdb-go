@@ -886,6 +886,27 @@ other way). The current enforce-non-correlated-only middle is the wart. Behavior
 `scalar_subquery_correlation_probe_test.go` (`corr_scalar_multi_row_currently_unenforced` — flip to expect 21000
 if (a) is chosen). Not a safe unattended change (Cascades/RFC-077, high blast radius); needs the Graefe RFC.
 
+### [ ] driver: NO read-your-writes inside an explicit transaction — SELECT auto-commits (divergence, found 2026-06-28)
+
+Inside `BeginTx`, DML (INSERT/UPDATE/DELETE) joins the explicit FDB transaction (`runInTx` → `activeTx.rctx`) and
+is atomic on Commit / undone on Rollback — correct. But **SELECT runs in a FRESH auto-commit transaction**
+(`DB.Run`), NOT the explicit tx (cascades_generator.go: "DML joins an open explicit transaction (runInTx); SELECT
+runs in a fresh auto-commit transaction (DB.Run)"; only `respectActiveTx` = `IsUpdate()` routes through the tx).
+Consequences, confirmed by `tx_select_isolation_probe_test.go`:
+- **No read-your-writes:** a SELECT in the tx does NOT see the same tx's uncommitted DML (`UPDATE v=777` then
+  `SELECT v` → 100; `INSERT id=2` then `SELECT WHERE id=2` → no rows).
+- **No read-write serialization:** an in-tx SELECT adds no read-conflict range, so a read-modify-write across two
+  explicit txns does not raise 1020/40001 (last-writer-wins).
+
+**Divergence from Java:** Java's relational driver (`setAutoCommit(false)`) reads through the same FDB transaction
+and so DOES provide read-your-writes + read-conflict detection. This is a deliberate Go simplification (the
+executor opens its own record store; binding SELECT to the user write-tx would add read-conflict ranges — the same
+"spurious not_committed" hazard `cachedLoadSchema` already dodges for catalog reads). Fixing it = route the query
+executor's scan through `activeTx.rctx` when one is open AND solve the spurious-conflict problem (snapshot vs
+serializable reads) — a Cascades/executor + driver-tx architecture change (Graefe). Until then it's a real
+read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
+probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
