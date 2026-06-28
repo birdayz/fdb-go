@@ -140,6 +140,7 @@ go_test(
         "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",
         "order_by_nonselected_probe_test.go",
+        "order_nulls_limit_probe_test.go",
         "orderby_dnf_probe_test.go",
         "orderby_subquery_probe_test.go",
         "ordered_grouped_scalar_subquery_fdb_test.go",
