@@ -42,77 +42,39 @@ write_files:
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
-  # Watchdog (RFC-108 §4): two arms, both gated on "GitHub has queued runs" so an
-  # idle runner is never restarted.
-  #   SILENCE arm — the listener wedged on a dead connection: logs nothing for > 8 min
-  #     (was 30 min; lowered so a wedge self-heals within one CI-job-length).
-  #   LOAD arm — a thrash-wedge keeps the box BUSY (not silent), so the silence timer
-  #     misses it. This is the failure mode observed live (rapid pushes →
-  #     concurrency-cancel churn → load ~45-63 on a 4-vCPU box → wedged listener +
-  #     orphaned bazel). Restart only if 1-min load > 4×ncpu for two consecutive checks,
-  #     with a 15-min cooldown so a restart can't fire repeatedly mid-spike.
+  # Watchdog (RFC-155 §5): backstop a WHOLESALE hang of the bazelscaleset supervisor
+  # (process alive but its long-poll loop stuck). The supervisor bounds each poll itself
+  # (--poll-timeout) and systemd Restart=always covers a crash, so this only needs to
+  # catch a wedge via the heartbeat the supervisor stamps on every successful poll. Far
+  # simpler than the classic runner's load/silence arms: a healthy idle supervisor still
+  # polls (~every 50s), so a stale heartbeat means genuinely wedged, not merely idle.
+  # (Classic break-glass mode is a manual fallback and is monitored by hand.)
   - path: /usr/local/bin/runner-watchdog.sh
     permissions: "0755"
     content: |
       #!/bin/bash
-      set -euo pipefail
-      UNIT="actions.runner.birdayz-fdb-record-layer-go.gh-runner-fdb.service"
-      REPO="birdayz/fdb-record-layer-go"
+      set -uo pipefail
+      UNIT="bazelscaleset.service"
+      HEARTBEAT="/run/bazelscaleset/heartbeat"
+      POLL_TIMEOUT=120                 # matches --poll-timeout (2m)
+      STALE=$(( POLL_TIMEOUT * 3 ))    # 6m: heartbeat older than this => wedged
       NOW=$(date +%s)
-      queued_runs() {
-        curl -fsSL -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
-          | jq '.total_count // 0'
-      }
-      # Dead service → restart unconditionally.
+      # Dead process -> restart (Restart=always usually beats us; this is the backstop).
       if ! systemctl is-active --quiet "$UNIT"; then
-        echo "runner not active, restarting"
+        echo "bazelscaleset not active, restarting"
         systemctl restart "$UNIT"
         exit 0
       fi
-      # BUSY guard (codex): a running job spawns a Runner.Worker child, and the runner
-      # SERVICE journal goes quiet for the whole job (the job's output goes to the job
-      # log, not the service journal) while load is high. Both the silence and load arms
-      # below would otherwise KILL that healthy long job just because another run is
-      # queued. The wedge we actually heal is the OPPOSITE — IDLE (no Worker) yet jobs
-      # are queued and not picked up. So if a Worker exists, the runner is doing real
-      # work: never restart.
-      if pgrep -f Runner.Worker >/dev/null 2>&1; then
-        exit 0
-      fi
-      # SILENCE arm.
-      LAST=$(journalctl -u "$UNIT" -n 1 --output=short-unix --no-pager 2>/dev/null | awk '{print int($1)}')
-      if [ -z "$LAST" ] || [ "$LAST" -eq 0 ]; then
-        echo "no log output found, restarting"
-        systemctl restart "$UNIT"
-        exit 0
+      # Alive but its poll loop is wedged: the heartbeat has gone stale. Restart for a
+      # fresh session.
+      LAST=$(cat "$HEARTBEAT" 2>/dev/null || echo 0)
+      if ! [ "$LAST" -gt 0 ] 2>/dev/null; then
+        LAST=0
       fi
       AGE=$(( NOW - LAST ))
-      if [ "$AGE" -gt 480 ] && [ "$(queued_runs)" -gt 0 ]; then
-        echo "runner silent for $${AGE}s with queued runs, restarting"
+      if [ "$AGE" -gt "$STALE" ]; then
+        echo "bazelscaleset heartbeat stale ($${AGE}s > $${STALE}s), restarting"
         systemctl restart "$UNIT"
-        exit 0
-      fi
-      # LOAD arm (thrash-wedge).
-      NCPU=$(nproc)
-      LOAD1=$(cut -d' ' -f1 /proc/loadavg)
-      THRESH=$(( 4 * NCPU ))
-      STATEF=/run/runner-watchdog.highload
-      COOLF=/run/runner-watchdog.cooldown
-      if awk -v l="$LOAD1" -v t="$THRESH" 'BEGIN { exit !(l+0 > t+0) }'; then
-        CNT=$(( $(cat "$STATEF" 2>/dev/null || echo 0) + 1 ))
-      else
-        CNT=0
-      fi
-      echo "$CNT" > "$STATEF"
-      if [ "$CNT" -ge 2 ] && [ "$(queued_runs)" -gt 0 ]; then
-        LASTR=$(cat "$COOLF" 2>/dev/null || echo 0)
-        if [ $(( NOW - LASTR )) -gt 900 ]; then
-          echo "runner thrash: load $LOAD1 > $THRESH for $CNT checks with queued runs, restarting"
-          echo "$NOW" > "$COOLF"
-          echo 0 > "$STATEF"
-          systemctl restart "$UNIT"
-        fi
       fi
 
   - path: /etc/systemd/system/runner-watchdog.service
@@ -208,6 +170,70 @@ write_files:
       [Install]
       WantedBy=timers.target
 
+  # --- bazelscaleset (RFC-155) — runner scale-set supervisor (runner_mode=scaleset) ---
+
+  # CI-box-only Bazel config (NOT the committed repo .bazelrc). Read as the system rc
+  # before the workspace .bazelrc; the committed config stays "build from source, no
+  # cache" (RFC-108) for every developer + fresh checkout. The caches here are LOCAL-ONLY
+  # (this box's own from-source outputs / hash-verified externals, never remote/imported),
+  # so they stay inside RFC-108 — a wider reuse window than the per-output_base action
+  # cache, hardened by --incompatible_strict_action_env (set in the repo). Build flags.
+  - path: /etc/bazel.bazelrc
+    permissions: "0644"
+    content: |
+      # Keep the single warm slot's bazel server resident between jobs (RFC-155 §7).
+      # No --host_jvm_args=-Xmx bound: at maxRunners=1 the one server has ample RAM, and
+      # a cold-build analysis wants the JVM default heap, not a cap (the cap was only ever
+      # to squeeze two servers onto this 7.6 GiB box, which proved unviable — see below).
+      startup --max_idle_secs=21600
+      build --disk_cache=/mnt/ci-data/bazel-disk-cache
+      build --repository_cache=/mnt/ci-data/bazel-repo-cache
+      build --experimental_disk_cache_gc_max_size=20G
+      build --experimental_disk_cache_gc_max_age=14d
+
+  # Wrapper: load the GitHub App private key from its 0600 file into the env var the
+  # supervisor reads, then exec it (keeps the multi-line PEM out of the unit). App ids are
+  # not secret (templated in); the private key is written separately in runcmd.
+  - path: /usr/local/bin/bazelscaleset-run.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      export BAZELSCALESET_APP_PRIVATE_KEY="$(cat /etc/bazelscaleset/app.pem)"
+      # --max-runners 1 is deliberate, NOT just the default: two concurrent heavy
+      # bazel+FDB jobs exhaust this 7.6 GiB box (RAM + 4 GiB swap) into a swap-thrash
+      # sshd-starving wedge (observed live). Real 2-slot capacity needs a bigger
+      # server_type, not this flag. The backlog just serializes — slow is fine.
+      exec /usr/local/bin/bazelscaleset \
+        --url https://github.com/${github_repo} \
+        --name hetzner-fdb \
+        --labels hetzner-fdb \
+        --max-runners 1 \
+        --runner-dir /home/runner/actions-runner-ss \
+        --work-base /mnt/ci-data/bazelwork \
+        --heartbeat-file /run/bazelscaleset/heartbeat \
+        --app-client-id ${bazelscaleset_app_client_id} \
+        --app-installation-id ${bazelscaleset_app_installation_id} \
+        --log-level info
+
+  - path: /etc/systemd/system/bazelscaleset.service
+    content: |
+      [Unit]
+      Description=bazelscaleset runner scale-set supervisor (hetzner-fdb)
+      After=network-online.target docker.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=runner
+      RuntimeDirectory=bazelscaleset
+      ExecStart=/usr/local/bin/bazelscaleset-run.sh
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
 runcmd:
   # CI data volume (RFC-115 §7): the 100GB ext4 volume (hcloud_volume.runner_data) is
   # ext4-formatted by tofu and auto-mounted by Hetzner at /mnt/HC_Volume_<id>. Link it to a
@@ -277,22 +303,42 @@ runcmd:
   # registration token after each job) — that automation is a documented follow-up.
   - |
     set -eu
+    # Extract the stock actions/runner BINARIES (both modes need them: classic registers
+    # this dir; bazelscaleset clones it per its own runner dir). Pinned + checksummed.
     RUNNER_DIR="/home/runner/actions-runner"
     mkdir -p "$RUNNER_DIR"
     /usr/local/bin/fetch-verified.sh "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-x64-${runner_version}.tar.gz" "${runner_sha256}" "$RUNNER_DIR/runner.tar.gz"
     tar --no-same-owner -xzf "$RUNNER_DIR/runner.tar.gz" -C "$RUNNER_DIR"
     rm "$RUNNER_DIR/runner.tar.gz"
     chown -R runner:runner "$RUNNER_DIR"
-    # --disableupdate (codex): without it the runner auto-updates itself the moment
-    # GitHub publishes a newer version — OUTSIDE fetch-verified.sh, so the box would
-    # silently stop running the reviewed runner_version/SHA pair. Pinning means the bump
-    # is a deliberate locals.versions edit + re-provision, not a surprise self-update.
-    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
-    cd "$RUNNER_DIR"
-    ./svc.sh install runner
-    ./svc.sh start
+    systemctl daemon-reload
+    RUNNER_MODE="${runner_mode}"
+    if [ "$RUNNER_MODE" = "classic" ]; then
+      # Break-glass: the classic register-and-listen runner (the wedge-prone path RFC-155
+      # replaces). --disableupdate (codex) keeps it on the reviewed runner_version/SHA.
+      su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
+      ( cd "$RUNNER_DIR" && ./svc.sh install runner && ./svc.sh start )
+      systemctl enable --now runner-watchdog.timer
+    else
+      # bazelscaleset (RFC-155). Clean second runner dir (own .runner/.credentials so it can
+      # never collide), CI-only bazel caches, the App private key, then the supervisor.
+      rsync -aL --exclude=_work --exclude=_diag --exclude='.runner*' --exclude='.credentials*' \
+        --exclude=.service --exclude='bin.*' --exclude='externals.*' \
+        "$RUNNER_DIR/" /home/runner/actions-runner-ss/
+      chown -R runner:runner /home/runner/actions-runner-ss
+      install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache
+      install -d -m 0755 /etc/bazelscaleset
+      printf '%s' "${base64encode(bazelscaleset_app_private_key)}" | base64 -d > /etc/bazelscaleset/app.pem
+      chmod 0600 /etc/bazelscaleset/app.pem && chown runner:runner /etc/bazelscaleset/app.pem
+      # TODO: fetch the pinned bazelscaleset binary once a CI-built release exists; until then
+      # it is placed out-of-band (a `GOOS=linux go build` of tools/bazelscaleset, scp'd in):
+      #   "$FV" ".../bazelscaleset-${bazelscaleset_version}-linux-amd64" "${bazelscaleset_sha256}" /usr/local/bin/bazelscaleset && chmod 0755 /usr/local/bin/bazelscaleset
+      systemctl enable --now bazelscaleset.service
+      # The watchdog now targets bazelscaleset.service + its heartbeat (RFC-155 §5), so
+      # it backstops a wholesale supervisor hang; systemd Restart=always handles a crash.
+      systemctl enable --now runner-watchdog.timer
+    fi
 
-  # Enable runner watchdog + orphan FDB sweep timers
+  # Orphan FDB sweep timer (both modes; bazelscaleset also sweeps per-job, this is the net).
   - systemctl daemon-reload
-  - systemctl enable --now runner-watchdog.timer
   - systemctl enable --now orphan-fdb-sweep.timer

@@ -28,9 +28,41 @@ provider "minio" {
 # --- Variables ---
 
 variable "github_runner_token" {
-  description = "GitHub Actions runner registration token (gh api repos/OWNER/REPO/actions/runners/registration-token -X POST --jq .token)"
+  description = "GitHub Actions runner registration token (gh api repos/OWNER/REPO/actions/runners/registration-token -X POST --jq .token). Only used when runner_mode=classic (break-glass)."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+# --- bazelscaleset (RFC-155) runner scale-set supervisor ---
+# These deploy the supervisor (a GitHub App authenticates it to register the scale
+# set + mint JIT runners). NOTE: this box has prevent_destroy + is grandfathered on a
+# cheaper price tier, so a user_data change can't be `tofu apply`-ed without an explicit
+# replace (which would cost more) — bazelscaleset was deployed OUT-OF-BAND on the live
+# box. This config is the source-of-truth for a future intentional re-provision.
+variable "runner_mode" {
+  description = "Which runner the box provisions: 'scaleset' (bazelscaleset, default) or 'classic' (the old register-and-listen runner; break-glass)."
+  type        = string
+  default     = "scaleset"
+}
+
+variable "bazelscaleset_app_client_id" {
+  description = "GitHub App client id for bazelscaleset (not secret)."
+  type        = string
+  default     = "Iv23litTscHcbrnmhtKa"
+}
+
+variable "bazelscaleset_app_installation_id" {
+  description = "GitHub App installation id for bazelscaleset (not secret)."
+  type        = string
+  default     = "143183909"
+}
+
+variable "bazelscaleset_app_private_key" {
+  description = "GitHub App private key (PEM) for bazelscaleset. Supplied via TF_VAR_bazelscaleset_app_private_key from the BAZELSCALESET_APP_PRIVATE_KEY repo secret in a deploy workflow; never committed."
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "ssh_public_key_file" {
@@ -67,6 +99,12 @@ locals {
     # GitHub Actions runner (was releases/latest — now pinned). SHA from the release body.
     runner_version = "2.335.1"
     runner_sha256  = "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
+    # bazelscaleset supervisor (RFC-155). TODO: build the tools/bazelscaleset nested module in a
+    # GitHub-hosted CI step and publish a pinned release artifact, then set these to its
+    # version+sha (consistent with every other tool here). Until that release exists the binary
+    # is placed out-of-band (the live deploy scp'd a locally-built `GOOS=linux go build`).
+    bazelscaleset_version = "TODO-release"
+    bazelscaleset_sha256  = "TODO-sha256"
     # bazelisk launcher (reads .bazelversion → Bazel 9.0.1; this is just the launcher).
     bazelisk_version = "1.28.1"
     bazelisk_sha256  = "22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8"
@@ -138,6 +176,13 @@ resource "hcloud_server" "runner" {
     mc_release          = local.versions.mc_release
     mc_sha256           = local.versions.mc_sha256
     fdb_clients_sha256  = local.versions.fdb_clients_sha256
+    # bazelscaleset (RFC-155)
+    runner_mode                       = var.runner_mode
+    bazelscaleset_version             = local.versions.bazelscaleset_version
+    bazelscaleset_sha256              = local.versions.bazelscaleset_sha256
+    bazelscaleset_app_client_id       = var.bazelscaleset_app_client_id
+    bazelscaleset_app_installation_id = var.bazelscaleset_app_installation_id
+    bazelscaleset_app_private_key     = var.bazelscaleset_app_private_key
   })
 
   lifecycle {
