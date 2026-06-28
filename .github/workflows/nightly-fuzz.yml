@@ -1,5 +1,15 @@
 name: Nightly Fuzz
 
+# Lighter nightly tuned for ONE self-hosted runner (the 5 jobs serialize on it).
+# The full-depth variant (17×6m diff-fuzz + every client/engine target × 4m)
+# monopolised the single runner for ~8h and starved the other nightlies, so it
+# was disabled. This version keeps NIGHTLY cadence but bounds total runtime to
+# ~2-3h by:
+#   - replaying every seed corpus deterministically EVERY night (regression net),
+#   - actively fuzzing only a ROTATING 1/3 of targets per night (date-based, so
+#     every target is covered across 3 nights), at shorter fuzztimes.
+# Rotation offset = day-of-year mod 3; a target at discovery-index i runs when
+# (i % 3) == offset.
 on:
   schedule:
     # 3:17 AM UTC daily (off-minute to avoid fleet congestion)
@@ -10,7 +20,7 @@ jobs:
   diff-fuzz:
     name: Differential Serialization Fuzzer
     runs-on: [self-hosted, linux, x64, hetzner]
-    timeout-minutes: 180
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -34,20 +44,21 @@ jobs:
           echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
-      - name: Run deterministic tests (TestDiff + all fuzz seed corpora)
-        # `^Fuzz` is load-bearing: -run=TestDiff alone does NOT replay the Fuzz* seed
-        # corpora (same fix as per-PR ci.yml wire-oracle). The active 6-min fuzz below
-        # supersedes this; it's a fast fail-fast pre-check.
+      - name: Run deterministic tests (TestDiff + ALL fuzz seed corpora)
+        # Runs EVERY night, full set — this is the regression net (replays every
+        # known crasher / ground-truth seed). `^Fuzz` is load-bearing: -run=TestDiff
+        # alone does NOT replay the Fuzz* seed corpora (same fix as per-PR ci.yml
+        # wire-oracle). The active rotation below adds new-input discovery on top.
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
-      - name: Fuzz ALL oracle-compared types (6min each)
-        # RFC-107: discover EVERY Fuzz* in cmd/fdb-diff-oracle rather than a hard-coded
-        # list — the old loop named only 9 of 17, leaving the 8 reply-parse types
-        # (GetValueReply / GetKeyReply / GetKeyValuesReply / GetReadVersionReply / Error /
-        # Endpoint / ClientDBInfo / OpenDatabaseCoordRequest) un-fuzzed. Fail on an empty
-        # discovery (no-op guard). 17 × 6m ≈ 1h45m, within the 180m timeout.
+      - name: Actively fuzz a rotating 1/3 of oracle types (2min each)
+        # RFC-107: discover EVERY Fuzz* rather than a hard-coded list. Then fuzz only
+        # a rotating third per night (date-based) at 2min each — ~6 targets × 2min ≈
+        # 12min, vs the old 17 × 6m ≈ 1h45m. Over 3 nights every target gets an
+        # active pass; the deterministic replay above runs the full set every night.
+        # Fail on an empty discovery (no-op guard).
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
@@ -56,12 +67,16 @@ jobs:
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
             exit 1
           fi
-          echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets"
+          ROTATE=$(( 10#$(date -u +%j) % 3 ))
+          echo "Discovered $(echo "$TARGETS" | wc -l) oracle fuzz targets; active rotation offset=$ROTATE (of 3)"
           FAILED=0
+          i=0
           for target in $TARGETS; do
-            echo "=== $target (6m) ==="
-            OUTPUT=$(timeout 370 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
-                -run='^$' -fuzz="^${target}\$" -fuzztime=6m ./cmd/fdb-diff-oracle/ 2>&1) || {
+            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            i=$((i+1))
+            echo "=== $target (2m) ==="
+            OUTPUT=$(timeout 150 env DIFF_ORACLE_BIN="$ORACLE" "$GO_BIN" test \
+                -run='^$' -fuzz="^${target}\$" -fuzztime=2m ./cmd/fdb-diff-oracle/ 2>&1) || {
               echo "FAIL: $target (exit code $?)"
               echo "$OUTPUT"
               FAILED=1
@@ -130,7 +145,7 @@ jobs:
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
     runs-on: [self-hosted, linux, x64, hetzner]
-    timeout-minutes: 180
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -139,27 +154,20 @@ jobs:
       - name: Check Docker + libfdb_c (mandatory for client/bench fuzz)
         # RFC-107: pkg/fdbgo/client TestMain and pkg/fdbgo/bench always start an FDB
         # testcontainer (bench also exercises the cgo libfdb_c binding), so Docker is a
-        # hard prerequisite — fail loudly rather than skip silently. The pure
-        # wire/types/tuple targets don't need it but share the job.
+        # hard prerequisite — fail loudly rather than skip silently.
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker not available — client/bench fuzz cannot run"; exit 1; }
 
-      - name: Fuzz every //pkg/fdbgo Fuzz target (Bazel-native, 4min each)
+      - name: Fuzz a rotating 1/3 of //pkg/fdbgo Fuzz targets (Bazel-native, 90s each)
         # Bazel-native (NOT plain `go test -fuzz`) so the run is faithful to the
-        # MODULE.bazel go_deps.module_override that patches the Apple FDB Go binding —
-        # the pkg/fdbgo/bench FuzzDifferential* targets compare the pure-Go client against
-        # the cgo libfdb_c, which is only correct against the Bazel-built binding.
-        # -test.run='^$' fuzzes only (no unit tests first). Targets are DISCOVERED, not
-        # hard-listed; an empty discovery fails the job (no-op guard, RFC-107).
+        # MODULE.bazel go_deps.module_override that patches the Apple FDB Go binding.
+        # Targets are DISCOVERED, not hard-listed; an empty discovery fails the job
+        # (no-op guard, RFC-107). Only a rotating third runs actively each night
+        # (date-based offset); over 3 nights every target is covered. Seed corpora
+        # for the non-selected targets are still replayed by the per-PR/CI gates.
         run: |
           mkdir -p /tmp/fuzz-cache
-          # The valid go_test labels under pkg/fdbgo, fetched ONCE (per-dir queries in a
-          # loop contend on the bazel server and flake to empty). Targets follow gazelle's
-          # convention //<dir>:<basename>_test; validate each derived label against this set
-          # so a future gazelle rename fails loudly instead of silently fuzzing nothing.
           VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
-          # Build (target, FuzzFunc) pairs: each *_test.go under pkg/fdbgo with a Fuzz
-          # func -> its package's go_test label.
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
             dir=$(dirname "$f")
@@ -176,16 +184,20 @@ jobs:
             echo "::error::no //pkg/fdbgo Fuzz targets discovered — client fuzz gate is a no-op"
             exit 1
           fi
-          echo "Discovered $(echo $PAIRS | wc -w) (target,func) fuzz pairs"
+          ROTATE=$(( 10#$(date -u +%j) % 3 ))
+          echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
           FAILED=0
+          i=0
           for pair in $PAIRS; do
+            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
-            echo "=== $target $fn (4m) ==="
+            echo "=== $target $fn (90s) ==="
             bazelisk test "$target" \
               --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=4m --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
               --sandbox_writable_path=/tmp/fuzz-cache \
-              --test_timeout=600 --nocache_test_results --test_output=errors || {
+              --test_timeout=300 --nocache_test_results --test_output=errors || {
                 echo "::error::fuzz FAIL: $target $fn"
                 FAILED=1
               }
@@ -194,10 +206,6 @@ jobs:
 
       - name: Upload failing fuzz logs + cache
         if: failure()
-        # A Bazel-native fuzz crash is printed to the test log (the sandbox source tree is
-        # read-only, so the minimized crasher can't be persisted to testdata/fuzz/ — it is
-        # recoverable from the log + the new-corpus cache, then added as a regression seed
-        # by hand).
         uses: actions/upload-artifact@v7
         with:
           name: client-fuzz-failure
@@ -210,28 +218,23 @@ jobs:
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
     runs-on: [self-hosted, linux, x64, hetzner]
-    timeout-minutes: 200
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Check Docker (a few targets — e.g. FuzzSQL_QueryContext — need a live FDB)
-        # The vast majority of these fuzz funcs are pure (planner / values / continuations /
-        # serialization), but the e2e ones spin an FDB testcontainer. Require Docker so they
-        # actually fuzz instead of f.Skip-ing — fail loudly rather than silently no-op.
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker not available — engine fuzz cannot run the e2e targets"; exit 1; }
 
-      - name: Fuzz every //pkg/relational + //pkg/recordlayer Fuzz target (Bazel-native, 60s each)
-        # Closes the P2.4 breadth gap: the ~95 SQL-engine + record-layer Fuzz targets
-        # (planner suite, value/predicate simplification, continuations, proto/record
-        # deserialization, SQL front-end + e2e) previously ran SEED CORPORA ONLY (per-PR
-        # replay) with no active fuzz time. This rotates the full set nightly at 60s each
-        # (~95 × ~75s incl. build ≈ 2h, within the 200m timeout). Targets are DISCOVERED,
-        # not hard-listed; an empty discovery fails the job (no-op guard). Same
-        # (target,func)-pair + valid-label validation as client-fuzz so a gazelle rename
-        # fails loudly instead of silently fuzzing nothing.
+      - name: Fuzz a rotating 1/3 of //pkg/relational + //pkg/recordlayer targets (Bazel-native, 90s each)
+        # The ~95 SQL-engine + record-layer Fuzz targets (planner suite, value/predicate
+        # simplification, continuations, proto/record deserialization, SQL front-end +
+        # e2e). Rotating a third per night (~32 targets × 90s ≈ 48min) keeps this inside
+        # the single-runner budget while covering the full set across 3 nights; the seed
+        # corpora are still replayed by the per-PR/CI gates every change. Targets are
+        # DISCOVERED, not hard-listed; an empty discovery fails the job (no-op guard).
         run: |
           mkdir -p /tmp/fuzz-cache
           VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
@@ -251,14 +254,18 @@ jobs:
             echo "::error::no //pkg/relational or //pkg/recordlayer Fuzz targets discovered — engine fuzz gate is a no-op"
             exit 1
           fi
-          echo "Discovered $(echo $PAIRS | wc -w) (target,func) fuzz pairs"
+          ROTATE=$(( 10#$(date -u +%j) % 3 ))
+          echo "Discovered $(echo $PAIRS | wc -w) (target,func) pairs; active rotation offset=$ROTATE (of 3)"
           FAILED=0
+          i=0
           for pair in $PAIRS; do
+            if [ $(( i % 3 )) -ne "$ROTATE" ]; then i=$((i+1)); continue; fi
+            i=$((i+1))
             target="${pair%|*}"; fn="${pair#*|}"
-            echo "=== $target $fn (60s) ==="
+            echo "=== $target $fn (90s) ==="
             bazelisk test "$target" \
               --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
-              --test_arg=-test.fuzztime=60s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
+              --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
               --sandbox_writable_path=/tmp/fuzz-cache \
               --test_timeout=300 --nocache_test_results --test_output=errors || {
                 echo "::error::fuzz FAIL: $target $fn"
