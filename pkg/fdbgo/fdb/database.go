@@ -52,6 +52,23 @@ func GetAPIVersion() (int, error) {
 	return int(v), nil
 }
 
+// IsAPIVersionSelected reports whether an API version has been selected.
+// Mirrors the Apple binding's fdb.IsAPIVersionSelected so callers can branch
+// on it without catching the api_version_unset error.
+func IsAPIVersionSelected() bool {
+	return apiVersion.Load() != 0
+}
+
+// MustGetAPIVersion returns the selected API version, panicking if none has
+// been selected. Mirrors the Apple binding's fdb.MustGetAPIVersion.
+func MustGetAPIVersion() int {
+	v, err := GetAPIVersion()
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // txDefaults holds database-level transaction option defaults.
 // Applied to every new transaction created by Transact/ReadTransact.
 // Matches C++ FDB_DB_OPTION_TRANSACTION_* options.

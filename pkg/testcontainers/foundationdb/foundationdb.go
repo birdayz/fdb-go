@@ -245,9 +245,9 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 			c.config.redundancyMode = savedMode
 			if savedMode != "single" {
 				cmd := fmt.Sprintf("configure %s", savedMode)
-				if _, err := c.FDBCLIExec(ctx, cmd); err != nil {
+				if err := c.configureWithRetry(ctx, "reconfigure redundancy", cmd); err != nil {
 					_ = c.Terminate(ctx)
-					return nil, fmt.Errorf("reconfigure redundancy: %w", err)
+					return nil, err
 				}
 			}
 		} else {
@@ -360,25 +360,41 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 		return fmt.Errorf("context cancelled: %w", err)
 	}
 
-	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	initCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-
-	// Give FDB a moment to stabilize after "FDBD joined cluster".
-	time.Sleep(1 * time.Second)
 
 	cmd := fmt.Sprintf("configure new %s %s tenant_mode=%s",
 		c.config.redundancyMode, c.config.storageEngine, c.config.tenantMode)
+	return c.configureWithRetry(initCtx, "configure new", cmd)
+}
 
-	output, err := c.FDBCLIExec(initCtx, cmd)
-	if err != nil {
-		// "Database already exists" is fine — idempotent.
-		if strings.Contains(output, "already exists") {
+// configureWithRetry runs an fdbcli `configure ...` command, retrying on transient
+// failures. Configure on a freshly started or just-grown cluster is timing- and
+// resource-fragile: the coordinator's fdbserver may not be reachable yet, newly
+// started processes may not be registered as storage servers yet, and fdbcli can be
+// SIGKILLed under memory pressure on a loaded CI runner (exit 137) or refuse the
+// change while the cluster is not yet healthy (exit 1). All of these are transient,
+// so retry with backoff. An "already exists" output (from `configure new` against an
+// already-initialized DB) is success, since configure is idempotent.
+func (c *Container) configureWithRetry(ctx context.Context, what, cmd string) error {
+	var lastErr error
+	for attempt := 1; attempt <= 6; attempt++ {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("%s: %w (last attempt: %v)", what, err, lastErr)
+			}
+			return fmt.Errorf("%s: context cancelled: %w", what, err)
+		}
+		// Backoff also gives FDB time to stabilize between attempts.
+		time.Sleep(time.Duration(attempt) * time.Second)
+
+		output, err := c.FDBCLIExec(ctx, cmd)
+		if err == nil || strings.Contains(output, "already exists") {
 			return nil
 		}
-		return fmt.Errorf("fdbcli configure: %w (output: %s)", err, output)
+		lastErr = fmt.Errorf("%s (attempt %d/6): %w (output: %s)", what, attempt, err, output)
 	}
-
-	return nil
+	return lastErr
 }
 
 // startAdditionalProcesses starts extra fdbserver processes on ports 4501..4500+n-1.
