@@ -100,6 +100,7 @@ go_test(
         "exists_in_on_fdb_test.go",
         "exists_in_on_probe_test.go",
         "exists_semantics_probe_test.go",
+        "float_integer_types_probe_test.go",
         "float_special_param_probe_test.go",
         "full_outer_join_fdb_test.go",
         "greatest_least_probe_test.go",
