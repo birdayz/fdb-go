@@ -2,8 +2,15 @@ package sqldriver_test
 
 // Regression: a windowed aggregate (SUM(v) OVER (PARTITION BY g)) must be REJECTED,
 // not silently computed as a bare aggregate with the OVER clause dropped (which
-// returned a single wrong total instead of per-partition window values). General
-// window functions are unsupported (Java has none either — TODO.md "No
+// returned a single wrong total instead of per-partition window values).
+//
+// This is a deliberate fail-CLOSED DIVERGENCE from Java, not parity: Java's
+// ExpressionVisitor.visitAggregateWindowedFunction silently IGNORES the OVER clause
+// and computes a bare aggregate (the exact wrong-result behaviour Go used to have),
+// so Java does NOT reject aggregate-OVER. Go rejecting it with 0AF00 is the
+// better, allowed read-side behaviour (reject rather than return wrong rows) — there
+// is no aggregate-OVER entry in the cross-engine corpus, so the harness has nothing
+// to diverge on. General window functions are otherwise unsupported (TODO.md "No
 // general-purpose window functions"); only the vector ROW_NUMBER QUALIFY works.
 
 import (

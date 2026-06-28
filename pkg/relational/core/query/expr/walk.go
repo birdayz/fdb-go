@@ -758,10 +758,11 @@ func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value)
 // and PushFilterBelowJoinRule's predicateSingleSide — so a CASE used as a
 // cross-table comparison operand (`CASE WHEN a.x>5 THEN .. END = c.y`) was
 // mis-classified as single-side and wrongly pushed below the join, where `a.x` is
-// unbound → silent WRONG ROWS. (values.withChildren has no case for this
-// external type, so it returns the node unchanged — matching the prior
-// opaque-rebase behavior; equality/hash below use the whole predicate, which is
-// consistent with these children.)
+// unbound → silent WRONG ROWS. (The matching WithChildrenValue below implements
+// values.SelfWithChildren, so values.Replace / RebaseValue now REBUILD the wrapped
+// predicate with the substituted children rather than returning the node unchanged;
+// equality/hash below use the whole predicate, which is consistent with these
+// children.)
 func (pv *predicateValue) Children() []values.Value                 { return predicateChildValues(pv.pred) }
 func (pv *predicateValue) Name() string                             { return "predicate" }
 func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
