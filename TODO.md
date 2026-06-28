@@ -816,6 +816,19 @@ matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended 
 `cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
 work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
 
+**EXPERIMENT FINDING (2026-06-28, saves the next implementer a dead end):** I tried the "obvious" Java-aligned
+approach — make `PromoteValue.Evaluate` coerce (via `promoteConstant`) and wrap the narrower int operand in
+`PromoteValue(floatType)` at `expr.ResolveComparison` (general: const + col-col + narrowing). It does NOT work for
+the index SARG: the `uses_index_range_scan` EXPLAIN assertion still passed (plan shape unchanged) BUT `d = 5`
+regressed to `[]` — i.e. the data-access matcher does NOT route the comparand through `PromoteValue.Evaluate` when
+packing the index range; it extracts/packs the underlying value, bypassing the coercion. So the int 5 was packed,
+not 5.0. (Reverted.) Conclusion: the working const fix uses a BARE coerced `ConstantValue{Value:5.0}` precisely
+because the matcher packs `ConstantValue.Evaluate()` directly — a Promote wrapper is transparent-to-the-matcher and
+gets unwrapped/ignored. **The real fix must coerce at the matcher / SARG-range-build level** (where the comparand
+is turned into a tuple element — e.g. thread the index column's key type into `scanComparisonsToTupleRange` and
+coerce there, or have the matcher rewrite the comparand to a typed constant), NOT merely promote at resolution.
+That is the col-vs-col + narrowing path and is the Graefe DESIGN decision.
+
 **SEVERITY UPDATE (broader + worse than first thought):** the gap is not limited to equality missing rows. With a
 DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
 - `d = 5` → `[]` (misses; should be `{5.0}`) — equality, as documented.
