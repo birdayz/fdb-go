@@ -114,6 +114,7 @@ go_test(
         "projected_exists_round8_fdb_test.go",
         "quality_probes_test.go",
         "rcte_crossjoin_probe_test.go",
+        "recursive_cte_hierarchy_probe_test.go",
         "recursive_cte_rename_probe_test.go",
         "resource_limits_fdb_test.go",
         "rfc087_swallow_sort_fdb_test.go",
