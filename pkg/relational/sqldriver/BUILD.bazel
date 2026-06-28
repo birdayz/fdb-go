@@ -45,6 +45,7 @@ go_test(
         "covering_index_test.go",
         "cross_table_predicate_probe_test.go",
         "cross_type_join_probe_test.go",
+        "derived_groupby_case_probe_test.go",
         "derived_limit_rfc128_test.go",
         "derived_table_probe_test.go",
         "dml_cascades_fdb_test.go",
