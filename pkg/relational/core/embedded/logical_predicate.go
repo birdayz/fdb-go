@@ -2633,7 +2633,8 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	// qualified there (the pre-aggregate row binds `V.V`, the unnest element);
 	// rebaseHavingGroupKeyPredicate keeps that case untouched. RFC-142.
 	agg.HavingPredicate = rebaseHavingGroupKeyPredicate(
-		rewriteAggregateRefsInPredicate(pred), agg)
+		rewriteAggregateRefsInPredicate(pred), agg,
+	)
 	if subqPlanner != nil && len(subqPlanner.subqueries) > 0 {
 		agg.HavingExistsSubqueries = subqPlanner.subqueries
 		subqPlanner.subqueries = nil
@@ -3038,12 +3039,17 @@ func buildLogicalPlanForDeleteWithCatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 ) (logical.LogicalOperator, error) {
-	// DELETE … LIMIT is rejected, matching Java
-	// (QueryVisitor.visitDeleteStatement: Assert ctx.limitClause()==null, "limit is
-	// not supported"). The shared grammar accepts a limitClause on a DELETE, but
-	// honoring it is unimplemented — and the builder otherwise IGNORES it, which
-	// silently DELETES ALL rows matching the WHERE instead of the requested subset
+	// DELETE … LIMIT is rejected — Java rejects it too (QueryVisitor.visitDeleteStatement:
+	// Assert ctx.limitClause()==null, "limit is not supported"), so this is conformant
+	// in REJECTING with the same message. The shared grammar accepts a limitClause on a
+	// DELETE, but honoring it is unimplemented — and the builder otherwise IGNORES it,
+	// which silently DELETES ALL rows matching the WHERE instead of the requested subset
 	// (data loss: `DELETE … WHERE p LIMIT 1` deleted every matching row). Fail closed.
+	//
+	// SQLSTATE: Java's 2-arg Assert.thatUnchecked(bool,String) defaults to
+	// INTERNAL_ERROR (XX000) — a leaky internal code. We deliberately use the cleaner
+	// 0AF00 (UNSUPPORTED_QUERY) instead, consistent with this PR's other XX000→clean-code
+	// fixes; only the code differs from Java, not the reject-with-this-message behavior.
 	if del != nil && del.LimitClause() != nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "limit is not supported")
 	}
