@@ -43,6 +43,7 @@ go_test(
         "bool_precedence_probe_test.go",
         "bool_value_funcs_probe_test.go",
         "boolean_index_probe_test.go",
+        "boolean_projection_probe_test.go",
         "bytes_column_probe_test.go",
         "bytes_gt_index_conformance_probe_test.go",
         "cascades_fdb_test.go",
