@@ -43,6 +43,7 @@ go_test(
         "bool_value_funcs_probe_test.go",
         "boolean_index_probe_test.go",
         "bytes_column_probe_test.go",
+        "bytes_gt_index_conformance_probe_test.go",
         "cascades_fdb_test.go",
         "case_contexts_probe_test.go",
         "case_cross_table_predicate_fdb_test.go",

@@ -145,6 +145,18 @@ func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
 	case EndpointTypeRangeInclusive:
 		begin = ss.Pack(r.Low)
 	case EndpointTypeRangeExclusive:
+		// Exclusive low = Strinc(pack(low)), matching Java TupleRange.toRange()
+		// (TupleRange.java:485: `lowBytes = ByteArrayUtil.strinc(lowBytes)`). This is
+		// the prefix-exclusion boundary, NOT firstGreaterThan(pack(low)) (append
+		// 0x00). The distinction is observable for byte/string keys: `col > X` skips
+		// not only the exact `X` entry but also any entry whose encoding is `pack(X)`
+		// followed by bytes that sort below Strinc's increment — most notably a stored
+		// value equal to X plus a trailing 0x00 (e.g. `b > X'01'` excludes the stored
+		// value X'0100', whose encoding `01 01 00 FF 00` sorts before Strinc's
+		// `01 01 01`). Java behaves identically, so this is REQUIRED for wire-level
+		// cross-engine result consistency — do NOT "correct" it to append-0x00, which
+		// would make Go return rows Java omits on a shared cluster. Pinned by
+		// bytes_gt_index_conformance_probe_test.go.
 		packed := ss.Pack(r.Low)
 		inc, err := fdb.Strinc(packed)
 		if err != nil {
