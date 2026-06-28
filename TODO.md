@@ -827,7 +827,11 @@ because the matcher packs `ConstantValue.Evaluate()` directly — a Promote wrap
 gets unwrapped/ignored. **The real fix must coerce at the matcher / SARG-range-build level** (where the comparand
 is turned into a tuple element — e.g. thread the index column's key type into `scanComparisonsToTupleRange` and
 coerce there, or have the matcher rewrite the comparand to a typed constant), NOT merely promote at resolution.
-That is the col-vs-col + narrowing path and is the Graefe DESIGN decision.
+That is the col-vs-col + narrowing path and is the Graefe DESIGN decision. Plumbing note: there is NO direct
+"index key column types" accessor — `executeIndexScan` has `idx` whose `RootExpression` (a KeyExpression with
+`ColumnSize()`) lists the indexed columns, but per-position TYPES must be derived by mapping each key field to its
+record-type field type (handle nested / grouping key expressions). int→double coercion is exact (the common +
+col-col + severe-inequality direction); float→int (narrowing) needs per-operator floor/ceil + an integral check.
 
 **SEVERITY UPDATE (broader + worse than first thought):** the gap is not limited to equality missing rows. With a
 DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
