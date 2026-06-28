@@ -52,6 +52,18 @@ func TestFDB_DeleteLimitRejectedProbe(t *testing.T) {
 			t.Errorf("after rejected DELETE LIMIT, count = %d, want 5 (NO data loss)", c)
 		}
 	})
+	t.Run("delete_no_where_limit_rejected_worst_case", func(t *testing.T) {
+		// The nastiest variant: `DELETE FROM t LIMIT 1` (no WHERE) — if the LIMIT were
+		// ignored this would wipe the ENTIRE table. The guard is unconditional on the
+		// limitClause, so it rejects regardless of WHERE; pin it + assert no data loss.
+		_, err := db.ExecContext(ctx, "DELETE FROM t LIMIT 1")
+		if err == nil || !strings.Contains(err.Error(), "0AF00") {
+			t.Fatalf("DELETE (no WHERE) LIMIT error = %v, want 0AF00 (limit is not supported)", err)
+		}
+		if c := count(); c != 5 {
+			t.Errorf("after rejected no-WHERE DELETE LIMIT, count = %d, want 5 (table NOT wiped)", c)
+		}
+	})
 	t.Run("delete_without_limit_still_works", func(t *testing.T) {
 		// id=1 still present from above; delete it specifically.
 		res, err := db.ExecContext(ctx, "DELETE FROM t WHERE id = 1")
