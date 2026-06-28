@@ -114,6 +114,7 @@ go_test(
         "keyword_operators_probe_test.go",
         "kitchen_sink_probe_test.go",
         "large_value_split_probe_test.go",
+        "leftjoin_where_on_probe_test.go",
         "like_escape_probe_test.go",
         "like_pattern_probe_test.go",
         "limit_offset_paging_probe_test.go",
