@@ -38,6 +38,7 @@ var _ = Describe("SPFresh lease-held error chain", func() {
 		err := spfreshRun(context.Background(), sharedDB, func(rtx *FDBRecordContext) error {
 			return wrapped
 		})
+		Expect(err).To(HaveOccurred())
 		Expect(errors.Is(err, errSPFreshLeaseHeld)).To(BeTrue(),
 			"spfreshRun dropped the errSPFreshLeaseHeld %w chain: got %T = %v", err, err)
 	})
