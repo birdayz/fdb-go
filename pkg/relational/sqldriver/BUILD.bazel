@@ -95,6 +95,7 @@ go_test(
         "groupby_insert_select_fdb_test.go",
         "groupby_ordinal_probe_test.go",
         "groupby_over_join_fdb_test.go",
+        "groupby_select_order_probe_test.go",
         "having_groupby_probe_test.go",
         "having_probe_test.go",
         "having_subquery_probe_test.go",

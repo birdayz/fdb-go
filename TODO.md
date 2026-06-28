@@ -939,6 +939,41 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] query-engine: GROUP BY ignores SELECT-list COLUMN ORDER — emits keys-then-aggregates (Go-extension bug, Graefe design, found 2026-06-28)
+
+A standalone `SELECT <aggregate>, <key> … GROUP BY <key>` returns its output columns
+in the aggregate's native KEYS-FIRST order, NOT the SELECT-list order — both the
+positions AND the column names. E.g. `SELECT SUM(v), a FROM t GROUP BY a` yields
+columns `[A, SUM(V)]` (a=7, SUM=30) instead of `[SUM(V), A]` (30, 7). `SELECT a,
+SUM(v)` (key-first) happens to be correct because it already matches keys-first.
+Standard SQL (and any client doing POSITIONAL access) expects SELECT-list order.
+Data is correct; NAME-based access is a sound workaround (the name→value map is
+right). GROUP BY is a Go-only extension (Java's fdb-relational has no GROUP BY), so
+this is an extension defect, not a Java divergence — but it still violates SQL
+convention and surprises positional clients. Sentinel:
+`groupby_select_order_probe_test.go` (pins current keys-first order + verifies the
+name-based workaround; flip when fixed).
+
+Root cause: `LogicalAggregate` (logical/operators.go:302) stores `GroupKeys` and
+`Aggregates` as separate ordered lists with NO record of the SELECT-list
+interleaving — the order is lost in `logical_builder`/`logical_predicate` before
+translation. The standalone GROUP BY builder deliberately emits a BARE aggregate
+with no post-aggregate Project (logical_predicate.go ~3313 "derives its schema from
+the physical plan"); `translateAggregate` (cascades_translator.go:3104) builds
+`GroupByExpression(groupKeys, aggSpecs, …)` keys-first; `aggregateOutputColumns`
+mirrors it.
+
+Fix path (Graefe review required — cross-cutting): track the SELECT-list output
+order in `LogicalAggregate` (e.g. an output-spec list or `[]int` permutation) and
+build a reordering Project over the GroupBy in `translateAggregate` — the infra
+already exists (`buildPostAggregateProjection` builds a SELECT-order Project, reused
+today only for INSERT…SELECT…GROUP BY via `wrapBareAggregateInsertSource`). BLAST
+RADIUS: `aggregateOutputColumns`/`legColumns` (cascades_translator.go:312, 364) is
+also the schema used to ANCHOR a GROUP BY result as a JOIN LEG / CTE body, so
+changing the canonical output order must keep leg-anchoring consistent (or add the
+Project only at the top-level SELECT, not for anchored sub-aggregates). Not an
+unattended-overnight change.
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
