@@ -82,6 +82,7 @@ go_test(
         "join_merge_outer_column_test.go",
         "join_oracle_consistency_test.go",
         "joined_preserved_outer_join_fdb_test.go",
+        "kitchen_sink_probe_test.go",
         "large_value_split_probe_test.go",
         "like_pattern_probe_test.go",
         "limit_zero_fdb_test.go",
