@@ -952,7 +952,10 @@ right). GROUP BY is a Go-only extension (Java's fdb-relational has no GROUP BY),
 this is an extension defect, not a Java divergence — but it still violates SQL
 convention and surprises positional clients. Sentinel:
 `groupby_select_order_probe_test.go` (pins current keys-first order + verifies the
-name-based workaround; flip when fixed).
+name-based workaround; flip when fixed). The bug is UNIFORM — a computed expression
+OVER an aggregate placed before the key (`SELECT SUM(v)+1, a … GROUP BY a` → cols
+`[A, _1]`) is ALSO keys-first, so a fix must cover the bare-aggregate AND the
+post-aggregate-Project paths (both pinned in the sentinel).
 
 Root cause: `LogicalAggregate` (logical/operators.go:302) stores `GroupKeys` and
 `Aggregates` as separate ordered lists with NO record of the SELECT-list

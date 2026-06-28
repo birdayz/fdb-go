@@ -81,6 +81,31 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 		}
 	})
 
+	// The bug is UNIFORM: a computed expression OVER an aggregate, placed before
+	// the key, is ALSO emitted keys-first. `SELECT SUM(v)+1, a GROUP BY a` returns
+	// (a=7, SUM+1=31) not (31, 7). A fix must cover this path too — pinned so a
+	// bare-aggregate-only fix can't pass green while expr-over-aggregate stays wrong.
+	t.Run("expr_over_agg_first_is_currently_keysfirst_BUG", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT SUM(v)+1, a FROM t GROUP BY a")
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		defer rows.Close()
+		cols, _ := rows.Columns()
+		if !rows.Next() {
+			t.Fatal("no rows")
+		}
+		var c0, c1 int64
+		if err := rows.Scan(&c0, &c1); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		// CURRENT (buggy): keys-first → (a=7, SUM+1=31). Fixed → (31, 7); flip then.
+		if c0 != 7 || c1 != 31 {
+			t.Errorf("expr-over-agg positional order changed: got (%d, %d) cols=%v. If now "+
+				"(31,7) the SELECT-order bug is FIXED — update this sentinel + TODO.md", c0, c1, cols)
+		}
+	})
+
 	// NAME-based access is the sound workaround — correct regardless of order.
 	t.Run("name_based_access_is_correct", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "SELECT SUM(v) AS total, a AS grp FROM t GROUP BY a")
