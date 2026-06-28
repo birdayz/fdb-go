@@ -259,6 +259,7 @@ go_test(
         "unique_null_batch_probe_test.go",
         "unique_violation_probe_test.go",
         "update_assignment_probe_test.go",
+        "update_constraint_enforcement_probe_test.go",
         "update_index_maintenance_probe_test.go",
         "update_primary_key_probe_test.go",
         "update_set_null_index_probe_test.go",
