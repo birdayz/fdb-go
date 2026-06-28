@@ -166,12 +166,22 @@ func TestFDB_RawReadScaling(t *testing.T) {
 							end = to
 						}
 						tx := db.CreateTransaction()
-						for i := offset; i < end; i++ {
+						for i := offset; i < end; {
 							key := append(append([]byte{}, prefix...), tuple.Tuple{int64(i % 10_000)}.Pack()...)
-							if _, getErr := tx.Get(context.Background(), key); getErr != nil {
-								firstErr.CompareAndSwap(nil, getErr)
-								return
+							_, getErr := tx.Get(context.Background(), key)
+							if getErr != nil {
+								// process_behind (1037) and other retryable read errors: right
+								// after the fast bulk populate the storage server can be briefly
+								// behind (a fast box ingests faster than the SS durably catches
+								// up), so an immediate read is transiently rejected. OnError backs
+								// off and resets the tx; retry the same key. Non-retryable → fatal.
+								if onErr := tx.OnError(context.Background(), getErr); onErr != nil {
+									firstErr.CompareAndSwap(nil, getErr)
+									return
+								}
+								continue // tx reset by OnError; retry key i with a fresh read version
 							}
+							i++
 						}
 						tx.Cancel()
 						totalRead.Add(int64(end - offset))

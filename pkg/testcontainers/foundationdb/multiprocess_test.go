@@ -147,25 +147,41 @@ func TestWithKnob_AppliedToAllProcesses(t *testing.T) {
 	}
 	defer container.Terminate(ctx)
 
-	// Use pgrep to get only actual fdbserver PIDs, then check /proc/PID/cmdline for knob.
-	_, reader, err := container.Exec(ctx, []string{
-		"/bin/bash", "-c",
-		`pgrep fdbserver | while read pid; do tr '\0' ' ' < /proc/$pid/cmdline; echo; done`,
-	},
-		tcexec.Multiplexed())
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	out, _ := io.ReadAll(reader)
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	knobCount := 0
-	for _, line := range lines {
-		if strings.Contains(line, "knob_min_shard_bytes") {
-			knobCount++
+	// Poll the per-process knob check instead of taking a single snapshot. The
+	// secondary fdbserver is started UNSUPERVISED (a backgrounded shell in
+	// startAdditionalProcesses, not fdbmonitor), and Run() confirms the process count
+	// only ONCE before issuing `configure double` (which triggers a cluster recovery).
+	// On a contended coverage box the secondary can be momentarily absent during that
+	// recovery window, so a one-shot pgrep flaked (nightly coverage). Poll until both
+	// processes report the knob; if it never settles within the deadline, THAT is a
+	// real "secondary process died" bug and fails loudly.
+	deadline := time.Now().Add(30 * time.Second)
+	var knobCount int
+	var lastOut []byte
+	for {
+		// pgrep for actual fdbserver PIDs, then read /proc/PID/cmdline for the knob.
+		_, reader, err := container.Exec(ctx, []string{
+			"/bin/bash", "-c",
+			`pgrep fdbserver | while read pid; do tr '\0' ' ' < /proc/$pid/cmdline; echo; done`,
+		},
+			tcexec.Multiplexed())
+		if err != nil {
+			t.Fatalf("exec: %v", err)
 		}
-	}
-	if knobCount != 2 {
-		t.Fatalf("expected 2 fdbserver processes with knob, got %d:\n%s", knobCount, out)
+		lastOut, _ = io.ReadAll(reader)
+		knobCount = 0
+		for _, line := range strings.Split(strings.TrimSpace(string(lastOut)), "\n") {
+			if strings.Contains(line, "knob_min_shard_bytes") {
+				knobCount++
+			}
+		}
+		if knobCount == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected 2 fdbserver processes with knob within 30s, last saw %d:\n%s", knobCount, lastOut)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Logf("knob applied to all %d processes", knobCount)
 }
