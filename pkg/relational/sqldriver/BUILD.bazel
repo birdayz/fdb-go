@@ -115,6 +115,7 @@ go_test(
         "limit_offset_paging_probe_test.go",
         "limit_zero_fdb_test.go",
         "materialized_nlj_null_test.go",
+        "math_functions_probe_test.go",
         "memory_budget_fdb_test.go",
         "modulo_division_probe_test.go",
         "multi_cte_probe_test.go",
