@@ -3,6 +3,11 @@ package sqldriver_test
 // Pins that only UNION ALL is supported: the deduplicating plain `UNION` is rejected
 // 0AF00 ("only UNION ALL is supported"), in self, two-branch, and literal-branch
 // forms. UNION ALL keeps duplicates (set-bag union) — verified by row counts.
+//
+// CONFORMANT with Java: fdb-relational's QueryVisitor.java:351 raises the identical
+// ErrorCode.UNSUPPORTED_QUERY with the exact same "only UNION ALL is supported"
+// message — Go is a faithful port (same limitation, same wording, same SQLSTATE),
+// not a Go-only gap.
 
 import (
 	"context"
