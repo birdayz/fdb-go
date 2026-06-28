@@ -487,6 +487,18 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 // all subsequent statements until Commit or Rollback is called.
 // Isolation levels other than the default and ReadCommitted return an error.
 // Read-only transactions are not separately enforced at the FDB level.
+//
+// KNOWN GAP (database/sql ctx not honored): the caller's ctx is dropped here, and
+// beginTransaction → NewFDBRecordContext pins context.Background() (recordlayer/
+// database.go), so a bounded ExecContext(ctx)/QueryContext(ctx) deadline never
+// reaches the FDB read path. Against a wedged/unreachable cluster a read therefore
+// retries forever (correct C++/Java behaviour — neither sets a default transaction
+// timeout — but it means a caller deadline cannot interrupt it). Honoring ctx here
+// needs care: database/sql ctx is per-statement, an FDB transaction timeout is
+// whole-tx (anchored at creation, bounded by the 5s MVCC window), and txns are pooled
+// — so it is a deliberate follow-up, not a drive-by. The client CAN be bounded today
+// via tx.SetTimeout (see TestRead_BoundedByTimeout_NoHang); what's missing is the
+// SQL layer wiring a caller deadline through to it.
 func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
