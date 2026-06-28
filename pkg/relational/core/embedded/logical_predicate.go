@@ -3038,6 +3038,15 @@ func buildLogicalPlanForDeleteWithCatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 ) (logical.LogicalOperator, error) {
+	// DELETE … LIMIT is rejected, matching Java
+	// (QueryVisitor.visitDeleteStatement: Assert ctx.limitClause()==null, "limit is
+	// not supported"). The shared grammar accepts a limitClause on a DELETE, but
+	// honoring it is unimplemented — and the builder otherwise IGNORES it, which
+	// silently DELETES ALL rows matching the WHERE instead of the requested subset
+	// (data loss: `DELETE … WHERE p LIMIT 1` deleted every matching row). Fail closed.
+	if del != nil && del.LimitClause() != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "limit is not supported")
+	}
 	op := buildLogicalPlanForDelete(del)
 	if op == nil || md == nil || del == nil {
 		return op, nil

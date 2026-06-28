@@ -76,6 +76,7 @@ go_test(
         "cte_alias_propagation_probe_test.go",
         "datetime_functions_probe_test.go",
         "ddl_errors_probe_test.go",
+        "delete_limit_rejected_probe_test.go",
         "derived_groupby_case_probe_test.go",
         "derived_limit_rfc128_test.go",
         "derived_table_probe_test.go",
