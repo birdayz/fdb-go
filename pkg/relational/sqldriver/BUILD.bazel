@@ -42,6 +42,7 @@ go_test(
         "case_cross_table_predicate_fdb_test.go",
         "case_null_branch_type_test.go",
         "cast_probe_test.go",
+        "column_metadata_probe_test.go",
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
         "constant_predicate_probe_test.go",
