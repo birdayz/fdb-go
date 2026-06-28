@@ -17,8 +17,22 @@
    to their widest code line and blow past the viewport on mobile (and drag the
    fixed sidebar's width:100% out with them). Bounding the width lets long code
    lines scroll inside their own block instead of scrolling the whole page. */
-.s-steps { width: 100%; max-width: 46rem; }
+/* margin-top clears the callout above so its box doesn't crowd step 1's number. */
+.s-steps { width: 100%; max-width: 46rem; margin-top: 2rem; }
 .s-steps pre, .hero-code pre { overflow-x: auto; }
+
+/* Quickstart step number markers. The theme's 33px circle has a 4px border, so its
+   content box is only 25px — line-height-based centering of the digit is therefore
+   unreliable (it sits low). Center the digit with flexbox instead, which ignores the
+   border math. The circle is also sized for a larger heading, so against our h3
+   (24px line) it sits low; lift it half the size difference so its center aligns with
+   the heading line. */
+.s-steps .hextra-steps :where(h2, h3, h4, h5, h6):not(.no-step-marker)::before {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: -4.5px;
+}
 
 /* Hero headings wrap naturally and balance their lines. This replaces the &nbsp;
    runs that used to keep phrases together: those formed unbreakable units that
