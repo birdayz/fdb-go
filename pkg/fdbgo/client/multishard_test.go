@@ -555,19 +555,25 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 		g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
 			"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
 	}
-	// Ascending and in range. NOTE: the STRICT (`<`) check is valid only because
-	// this env's chunkSize (100KB) exceeds the shard size (~27KB), so every shard
-	// returns ZERO per-shard chunk splits and the result is just distinct shard
-	// boundaries. Across a real shard SEAM with per-shard splits, FDB can emit a
-	// split point equal to the next inserted boundary (StorageMetrics.actor.cpp:533
-	// breaks on strict `>`), so strict-ascending is NOT a general invariant — if
-	// chunkSize is ever lowered below the shard size, relax this to `<=`.
+	// Ascending (NON-STRICT) and in range. Equal adjacent split points are VALID
+	// C++ output, so this asserts non-decreasing, NOT strictly-ascending. The C++
+	// assembly pushes each internal shard boundary AND then appends that shard's
+	// per-shard chunk splits with NO dedup anywhere (NativeAPI.actor.cpp:8184-8198,
+	// "Need this shard boundary"). At a shard seam the storage server can emit a
+	// per-shard split equal to the next shard's boundary (StorageMetrics.actor.cpp:533
+	// breaks on strict `>`), so the same key appears twice. Per-shard splits arise
+	// whenever a shard is larger than chunkSize — which happens transiently here while
+	// DD is still compacting shards down to max_shard_bytes, even though chunkSize
+	// (100KB) nominally exceeds max_shard_bytes (50KB). Go is a 1:1 port of the C++
+	// loop, so it returns the identical duplicates; a strict `<` check therefore flaked
+	// red on C++-faithful output (nightly coverage, GetRangeSplitPoints). Assert the
+	// spec invariant: non-decreasing.
 	for i, p := range points {
 		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0), "split point %d below range: %x", i, p)
 		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0), "split point %d above range: %x", i, p)
 		if i > 0 {
-			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<", 0),
-				"split points must be strictly ascending (chunkSize>shard ⇒ no per-shard splits): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
+			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<=", 0),
+				"split points must be ascending; equal at a shard seam is valid C++ (NativeAPI.actor.cpp:8184-8198, no dedup): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
 		}
 	}
 }
