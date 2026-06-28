@@ -37,6 +37,10 @@ func newSlotPool(baseDir, runnerBase string, n int) (*slotPool, error) {
 	if n < 1 {
 		return nil, fmt.Errorf("slot pool needs at least 1 slot, got %d", n)
 	}
+	// Clean the base so a trailing slash can't turn the slot dir into a CHILD of the
+	// template (".../actions-runner/-slot0") — which would also make the clone recurse
+	// into the source. We want a sibling (".../actions-runner-slot0").
+	runnerBase = filepath.Clean(runnerBase)
 	p := &slotPool{}
 	for i := range n {
 		path := filepath.Join(baseDir, fmt.Sprintf("slot-%d", i))
@@ -54,13 +58,13 @@ func newSlotPool(baseDir, runnerBase string, n int) (*slotPool, error) {
 	return p, nil
 }
 
-// cloneRunnerDir makes a clean per-slot copy of the base actions/runner dir (binaries
-// only — no runtime state), so each slot has its own .runner/.credentials and concurrent
-// runners can't corrupt each other. Idempotent: a no-op if the clone already has run.sh.
+// cloneRunnerDir syncs the base actions/runner dir (binaries only — no runtime state)
+// into the per-slot dst, so each slot has its own .runner/.credentials and concurrent
+// runners can't corrupt each other. Run on every startup, NOT skipped when dst exists:
+// rsync only transfers diffs, so it repairs a partial/interrupted clone and propagates a
+// pinned-runner upgrade to existing slots — while --delete + the excludes keep dst an
+// exact copy of the template without clobbering a live runner's (excluded) runtime state.
 func cloneRunnerDir(src, dst string) error {
-	if _, err := os.Stat(filepath.Join(dst, "run.sh")); err == nil {
-		return nil // already cloned
-	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("mkdir %q: %w", dst, err)
 	}

@@ -124,6 +124,48 @@ func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
 	}
 }
 
+// TestSlotPoolTrailingSlashBase pins codex P2 #1: a trailing slash on --runner-dir must
+// still yield a SIBLING clone dir (".../actions-runner-slot0"), never a child inside the
+// template (".../actions-runner/-slot0"), which would make the clone recurse into itself.
+func TestSlotPoolTrailingSlashBase(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	p, err := newSlotPool(t.TempDir(), base+"/", 1) // trailing slash
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := base + "-slot0"; p.all[0].runnerDir != want {
+		t.Fatalf("runnerDir = %q, want sibling %q (not a child of the template)", p.all[0].runnerDir, want)
+	}
+}
+
+// TestSlotPoolResyncPropagatesTemplateChange pins codex P2 #2: cloning runs on every
+// startup (not skipped when run.sh already exists), so a template update (e.g. a pinned-
+// runner upgrade) propagates into an existing slot clone instead of leaving it stale.
+func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	workBase := t.TempDir()
+	p1, err := newSlotPool(workBase, base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := p1.all[0].runnerDir // clone exists now (has run.sh)
+
+	// Change the template AFTER the first clone, then rebuild the pool (supervisor restart).
+	if err := os.WriteFile(filepath.Join(base, "bin-version"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSlotPool(workBase, base, 1); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "bin-version")); err != nil || string(b) != "v2" {
+		t.Fatalf("re-sync did not propagate template update: read %q, err %v", b, err)
+	}
+}
+
 // templateRunner creates a minimal template actions/runner dir (just run.sh) that
 // newSlotPool clones per-slot.
 func templateRunner(t *testing.T) string {
