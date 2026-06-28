@@ -238,6 +238,7 @@ go_test(
         "unique_violation_probe_test.go",
         "update_assignment_probe_test.go",
         "update_index_maintenance_probe_test.go",
+        "update_set_null_index_probe_test.go",
         "update_unique_violation_probe_test.go",
         "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
