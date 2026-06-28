@@ -236,6 +236,7 @@ go_test(
         "string_param_escaping_probe_test.go",
         "subquery_in_on_crossproduct_fdb_test.go",
         "subquery_in_on_jointypes_probe_test.go",
+        "temporal_uuid_types_probe_test.go",
         "three_valued_logic_fdb_probe_test.go",
         "three_valued_logic_probe_test.go",
         "transaction_probe_test.go",
