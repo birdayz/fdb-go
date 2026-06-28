@@ -19,7 +19,7 @@ on:
 jobs:
   diff-fuzz:
     name: Differential Serialization Fuzzer
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 45
 
     steps:
@@ -37,6 +37,11 @@ jobs:
         run: |
           OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
           GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
+            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          fi
           if [ -z "$GO_BIN" ]; then
             echo "Bazel Go SDK not found — trying system go"
             GO_BIN=go
@@ -97,7 +102,7 @@ jobs:
 
   race-detector:
     name: Race Detector
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 30
 
     steps:
@@ -122,7 +127,7 @@ jobs:
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
@@ -144,7 +149,7 @@ jobs:
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
@@ -217,7 +222,7 @@ jobs:
 
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 75
 
     steps:
