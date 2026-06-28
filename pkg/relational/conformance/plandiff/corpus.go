@@ -3195,6 +3195,26 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_AOP WHERE x = 1 AND y = 1 OR z = 1 ORDER BY id",
 		},
+		{
+			// OR-before-AND: the DISTINGUISHING case for logical-operator
+			// precedence. fdb-relational has NO precedence — `logicalOperator`
+			// (AND|XOR|OR) is one left-associative grammar alternative — so
+			// `x = 1 OR y = 1 AND z = 1` parses as `(x=1 OR y=1) AND z=1`, NOT the
+			// standard-SQL `x=1 OR (y=1 AND z=1)`. Row (1,1,0,0) distinguishes the
+			// two (left-to-right excludes it; AND-first would include it). This
+			// cross-engine entry pins that Go and Java group it identically (the
+			// existing and_or_precedence entry can't — its AND is textually first,
+			// so both groupings agree).
+			Name:           "or_and_precedence_left_to_right",
+			SchemaTemplate: "CREATE TABLE T_OAP (id BIGINT, x BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id))",
+			SetupSqls: []string{
+				"INSERT INTO T_OAP VALUES (1, 1, 0, 0)",
+				"INSERT INTO T_OAP VALUES (2, 0, 1, 1)",
+				"INSERT INTO T_OAP VALUES (3, 1, 1, 1)",
+				"INSERT INTO T_OAP VALUES (4, 0, 0, 0)",
+			},
+			Query: "SELECT id FROM T_OAP WHERE x = 1 OR y = 1 AND z = 1 ORDER BY id",
+		},
 
 		// ===== Feature combinations =====
 		{
