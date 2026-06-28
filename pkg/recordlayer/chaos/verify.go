@@ -152,6 +152,11 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	// 11. VECTOR index verification (HNSW self-search + count)
 	violations = append(violations, verifyVectorIndexes(ctx, store, model)...)
 
+	// 11b. SPFresh (RFC-094) vector index verification (self-search completeness
+	// + orphan + membership⊆postings structural integrity). Strict integrity:
+	// the scenario drains the maintenance queue before Verify.
+	violations = append(violations, verifyVectorSPFreshIndexes(store, model)...)
+
 	// 12. BITMAP_VALUE index verification (bitmap bits vs model records)
 	violations = append(violations, verifyBitmapValueIndexes(ctx, store, model)...)
 

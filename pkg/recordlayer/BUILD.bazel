@@ -92,6 +92,7 @@ go_library(
         "spfresh_storage.go",
         "spfresh_sweeper.go",
         "spfresh_util.go",
+        "spfresh_verify_api.go",
         "spfresh_write.go",
         "split_helper.go",
         "split_key_expression.go",
