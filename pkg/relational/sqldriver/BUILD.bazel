@@ -142,6 +142,7 @@ go_test(
         "pagination_limit_fdb_test.go",
         "param_rendering_probe_test.go",
         "param_string_edge_probe_test.go",
+        "pipe_operator_probe_test.go",
         "plan_cache_bench_test.go",
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
