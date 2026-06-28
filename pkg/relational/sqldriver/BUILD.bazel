@@ -138,6 +138,7 @@ go_test(
         "sql_querycontext_fuzz_test.go",
         "statistics_fdb_test.go",
         "string_index_range_probe_test.go",
+        "string_oracle_consistency_test.go",
         "string_param_escaping_probe_test.go",
         "subquery_in_on_crossproduct_fdb_test.go",
         "three_valued_logic_fdb_probe_test.go",
