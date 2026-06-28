@@ -987,6 +987,20 @@ path (the path that currently rejects all DML with 0A000). Feature port, follow-
 scope. Pinned by returning_clause_probe_test.go (flip when implemented). INSERT
 RETURNING is a 42601 — not in the INSERT grammar — so it's a separate, larger gap.
 
+### [ ] ddl: in-template index/column errors wrap to 42F59, burying the specific SQLSTATE (found 2026-06-28)
+
+Every error raised while parsing an index/column inside a `CREATE SCHEMA TEMPLATE` is
+re-wrapped to outer SQLSTATE **42F59** with the specific code embedded in the message,
+e.g. `42F59: index: 0A000: index "T_A": INCLUDE clause ...` (ddl.go:~145 wraps via
+`%v`). So a `database/sql` caller doing SQLSTATE extraction sees 42F59, not the real
+cause (0A000 / 42703 / 0A000-only-primitive / etc.). Pre-existing and shared by ALL
+in-template index/column DDL errors (incl. the vector-INCLUDE and TEXT-type rejections),
+so tests in this area assert the specific code via substring on the embedded text
+(see include_clause_rejected_probe_test.go, which now pins BOTH 42F59 and the embedded
+0A000). Verify against Java: does Java surface the specific ErrorCode for in-template
+DDL failures, or also wrap? If Java surfaces the specific code, stop the 42F59 re-wrap
+(propagate the inner SQLSTATE) so cross-engine SQLSTATE matching holds for DDL errors.
+
 ### [ ] ddl: implement covering indexes — CREATE INDEX ... INCLUDE (cols) (Java parity; found 2026-06-28)
 
 `CREATE INDEX ... ON t (a) INCLUDE (b)` is currently REJECTED (0A000 "INCLUDE clause

@@ -24,14 +24,27 @@ func TestFDB_IncludeClauseRejectedProbe(t *testing.T) {
 	db := openTestDB(t, "/testdb_incr")
 	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_incr")
 
-	t.Run("create_index_include_rejected_0A000", func(t *testing.T) {
+	t.Run("create_index_include_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE incr_a CREATE TABLE t (id BIGINT NOT NULL, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 				"CREATE INDEX t_a ON t (a) INCLUDE (b)")
-		if err == nil || !strings.Contains(err.Error(), "0A000") {
-			t.Fatalf("CREATE INDEX ... INCLUDE error = %v, want 0A000 (covering not yet supported, not a silent plain index)", err)
+		if err == nil {
+			t.Fatalf("CREATE INDEX ... INCLUDE unexpectedly succeeded (must reject, not silently build a plain index)")
 		}
-		if !strings.Contains(strings.ToUpper(err.Error()), "INCLUDE") {
+		// In-template DDL errors are wrapped: the OUTER SQLSTATE is 42F59 (invalid
+		// schema-template object), with the specific cause (0A000 UNSUPPORTED_OPERATION)
+		// embedded in the message — e.g. `42F59: index: 0A000: index "T_A": INCLUDE
+		// clause (covering index) is not yet supported`. The 42F59 wrapping of every
+		// in-template index/column error (burying the specific code) is pre-existing and
+		// tracked in TODO.md. Pin BOTH the outer wrapper and the embedded cause.
+		msg := err.Error()
+		if !strings.Contains(msg, "42F59") {
+			t.Errorf("INCLUDE error outer SQLSTATE = %v, want 42F59 (in-template wrapper)", err)
+		}
+		if !strings.Contains(msg, "0A000") {
+			t.Errorf("INCLUDE error embedded cause = %v, want 0A000 (covering not yet supported)", err)
+		}
+		if !strings.Contains(strings.ToUpper(msg), "INCLUDE") {
 			t.Errorf("error should mention INCLUDE: %v", err)
 		}
 	})
