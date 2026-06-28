@@ -47,10 +47,13 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	rejectsCode("drop_nonexistent_database", "DROP DATABASE /testdb_nope_xyz_123", "42F63")
 	rejectsCode("table_without_primary_key",
 		"CREATE SCHEMA TEMPLATE de_nopk CREATE TABLE t (id BIGINT NOT NULL, x BIGINT)", "42601")
-	// dup column / PK over unknown column / unknown type: rejected (fail-closed),
-	// message currently leaky — pin the rejection only.
-	rejects("duplicate_column",
-		"CREATE SCHEMA TEMPLATE de_dup CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))")
+	// duplicate column → clean 42701 (validated in parseTableDefinition before the
+	// proto-descriptor build that used to leak an XX000 internal error).
+	rejectsCode("duplicate_column",
+		"CREATE SCHEMA TEMPLATE de_dup CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))", "42701")
+	// PK over unknown column / unknown type: rejected (fail-closed); PK-unknown
+	// still surfaces a leaky internal error (deeper metadata-builder path, see
+	// TODO.md "DDL error classification") — pin the rejection only.
 	rejects("pk_unknown_column",
 		"CREATE SCHEMA TEMPLATE de_badpk CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (nope))")
 	rejects("unknown_column_type",

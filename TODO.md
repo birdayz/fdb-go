@@ -907,20 +907,18 @@ serializable reads) — a Cascades/executor + driver-tx architecture change (Gra
 read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
 probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
 
-### [ ] DDL error classification: duplicate-column / PK-over-unknown-column leak an internal error (minor, found 2026-06-28)
+### [~] DDL error classification — duplicate-column FIXED; PK-over-unknown-column still leaky (2026-06-28)
 
-Invalid DDL is correctly REJECTED (fail-closed — no bad schema created), but two cases surface a leaky INTERNAL
-error instead of a clean 42-class user error:
-- `CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))` (duplicate column) →
-  `42F59 ... XX000: protodesc.NewFile: proto: descriptor "T.X" already declared` (raw proto-descriptor internals).
-- `... PRIMARY KEY (nope)` (PK over an unknown column) → `XX000: build RecordMetaData: ... field "NOPE" not found`.
-
-`XX000` is INTERNAL_ERROR — wrong class for a user input error; the message leaks proto/metadata-builder internals.
-A clean port should validate duplicate column names and PK-column existence during DDL analysis and raise a clean
-42-class error (e.g. duplicate-column / undefined-column) BEFORE proto-descriptor construction. Rejection itself is
-correct; only the error code/message quality is off. Pinned (rejection only) by `ddl_errors_probe_test.go` — tighten
-to assert the clean code once classified. Other DDL errors are already clean (42F04 db-exists, 42F63 db-missing,
-42601 no-PK, 42F59 dup-template).
+Invalid DDL is correctly REJECTED (fail-closed — no bad schema created). Two cases used to surface a leaky INTERNAL
+error (`XX000` + raw proto/metadata-builder internals) instead of a clean 42-class user error:
+- **FIXED:** `CREATE TABLE t (..., x BIGINT, x STRING, ...)` (duplicate column) — now rejected with a clean `42701`
+  (column-already-exists) validated in `parseTableDefinition` BEFORE the proto-descriptor build (which leaked
+  `protodesc.NewFile: descriptor "T.X" already declared`). Pinned by `ddl_errors_probe_test.go`.
+- **REMAINS:** `... PRIMARY KEY (nope)` (PK over an unknown column) → `XX000: build RecordMetaData: ... field "NOPE"
+  not found in message "T"` (deeper metadata-builder path). Should be validated during DDL analysis with a clean
+  42703/undefined-column before metadata build. Rejection is correct; only the error code/message quality is off
+  (pinned rejection-only). Other DDL errors are already clean (42F04 db-exists, 42F63 db-missing, 42601 no-PK,
+  42F59 dup-template).
 
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 

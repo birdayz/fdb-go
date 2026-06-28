@@ -631,9 +631,18 @@ func findFullColumnName(node antlr.Tree) *antlrgen.FullColumnNameContext {
 func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.ColumnSpec, []string, error) {
 	var cols []metadata.ColumnSpec
 	var pkCols []string
+	seen := make(map[string]bool)
 
 	for i, colDef := range td.AllColumnDefinition() {
 		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
+		// Reject a duplicate column name with a clean 42701 here, before the proto
+		// descriptor build would surface a leaky internal error (XX000
+		// "protodesc.NewFile: descriptor already declared").
+		if seen[colName] {
+			return nil, nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+				"duplicate column name %q in table definition", colName)
+		}
+		seen[colName] = true
 		ct := colDef.ColumnType()
 		if ct == nil {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
