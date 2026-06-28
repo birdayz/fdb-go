@@ -114,6 +114,7 @@ go_test(
         "scalar_subquery_cte_test.go",
         "selfjoin_having_probe_test.go",
         "setops_distinct_probe_test.go",
+        "setops_null_probe_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "statistics_fdb_test.go",

@@ -803,6 +803,14 @@ matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended 
 `cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
 work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
 
+**Implementer caveat (found while scoping):** a naive "promote both operands to MaximumType" will REGRESS plan
+shapes. INT↔LONG (and any tuple-encoding-compatible pair) must NOT be promoted — wrapping the indexed column in a
+`Promote(col)` makes the data-access matcher fail to recognise it and silently drops to a residual full scan
+(plandiff/yamsql assert the index plan). Scope the promotion to the int/float boundary ONLY, and never wrap the
+operand that is (or could be) the indexed column — wrap only the narrower NON-indexed comparand, leaving the wider
+(indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
+(if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
