@@ -287,6 +287,7 @@ go_test(
         "spfresh_gc_test.go",
         "spfresh_kmeans_test.go",
         "spfresh_layout_test.go",
+        "spfresh_leasehold_chain_test.go",
         "spfresh_maintainer_test.go",
         "spfresh_merge_test.go",
         "spfresh_metrics_test.go",
