@@ -907,6 +907,21 @@ serializable reads) — a Cascades/executor + driver-tx architecture change (Gra
 read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
 probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
 
+### [ ] DDL error classification: duplicate-column / PK-over-unknown-column leak an internal error (minor, found 2026-06-28)
+
+Invalid DDL is correctly REJECTED (fail-closed — no bad schema created), but two cases surface a leaky INTERNAL
+error instead of a clean 42-class user error:
+- `CREATE TABLE t (id BIGINT NOT NULL, x BIGINT, x STRING, PRIMARY KEY (id))` (duplicate column) →
+  `42F59 ... XX000: protodesc.NewFile: proto: descriptor "T.X" already declared` (raw proto-descriptor internals).
+- `... PRIMARY KEY (nope)` (PK over an unknown column) → `XX000: build RecordMetaData: ... field "NOPE" not found`.
+
+`XX000` is INTERNAL_ERROR — wrong class for a user input error; the message leaks proto/metadata-builder internals.
+A clean port should validate duplicate column names and PK-column existence during DDL analysis and raise a clean
+42-class error (e.g. duplicate-column / undefined-column) BEFORE proto-descriptor construction. Rejection itself is
+correct; only the error code/message quality is off. Pinned (rejection only) by `ddl_errors_probe_test.go` — tighten
+to assert the clean code once classified. Other DDL errors are already clean (42F04 db-exists, 42F63 db-missing,
+42601 no-PK, 42F59 dup-template).
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
