@@ -919,6 +919,26 @@ proto/metadata-builder internals) instead of a clean 42-class user error. Both f
 Pinned by `ddl_errors_probe_test.go` (asserts the clean codes). Other DDL errors were already clean (42F04
 db-exists, 42F63 db-missing, 42601 no-PK, 42F59 dup-template).
 
+### [ ] identifiers: quoted DDL column is created but unreferenceable by name (case-model divergence, found 2026-06-28)
+
+Unquoted identifiers work correctly (case-insensitive, folded to upper case — `MyCol` resolves as
+MyCol/mycol/MYCOL; pinned by `identifier_case_probe_test.go`). But a column declared with a QUOTED identifier is
+mishandled:
+- `CREATE TABLE t (id BIGINT NOT NULL, "KeepCase" BIGINT, PRIMARY KEY (id))` succeeds; `INSERT INTO t (id,
+  "KeepCase") VALUES (1, 20)` succeeds; `SELECT *` shows the column as `KEEPCASE`.
+- But NO explicit reference resolves it: `SELECT keepcase` / `KEEPCASE` / `KeepCase` / `"KEEPCASE"` / `"KeepCase"`
+  all → `42703 column does not exist`. The column is effectively write-and-`SELECT *`-only — unreferenceable by
+  name in SELECT/WHERE.
+
+Root cause: an identifier-normalization mismatch across DDL storage, SELECT-* expansion, and explicit-reference
+resolution for quoted identifiers. Java has a consistent case-sensitivity model — `SemanticAnalyzer.normalizeString
+(string, caseSensitive)` ("taken as-is if caseSensitive, upper-cased otherwise") with an `isCaseSensitive` flag set
+per-identifier by quoting — so quoted identifiers round-trip (created and queried by the same quoted name). Go folds
+quoted identifiers in DDL but treats them case-sensitively in resolution → the mismatch. Fix = port Java's
+normalizeString/isCaseSensitive model so quoting consistently selects case-sensitive handling in DDL + resolution +
+star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
+(threads through the catalog + semantic analyzer).
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
