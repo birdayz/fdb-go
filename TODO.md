@@ -803,6 +803,23 @@ matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended 
 `cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
 work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
 
+**SEVERITY UPDATE (broader + worse than first thought):** the gap is not limited to equality missing rows. With a
+DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
+- `d = 5` → `[]` (misses; should be `{5.0}`) — equality, as documented.
+- `d IN (5,7)` → `[]` (misses; should be `{5.0,7.0}`) — IN-list has the same bug.
+- `d > 6` → `{5.0,7.0,10.0}` — returns 5.0 which is NOT > 6 (**WRONG ROWS**, not just missing).
+- `d < 8` → `[]` — returns nothing though 5.0,7.0 ARE < 8 (**WRONG ROWS**).
+- `d BETWEEN 5 AND 8` → `{5.0,7.0}` (CORRECT — inconsistent with `>`/`<`; likely a residual re-check on the
+  closed range that the open inequalities skip).
+- All `*.0` double-literal comparands and the residual path are correct.
+The inequality cases are the worst: INT and DOUBLE are different FDB tuple type-codes and all doubles sort after all
+ints, so an int-bound range over a double index degenerates to all-or-nothing. This RAISES priority — `WHERE
+double_col > <int>` silently returning wrong rows is a serious correctness hole, not a niche miss. Design question
+for the fix: plan-time comparand promotion (Java-aligned, ResolveComparison+PromoteValue) vs executor-level coercion
+of the comparand to the index column's key type in scanComparisonsToTupleRange (localized, but a "downstream"
+fix). Graefe should pick. Either way the int/float-exactness rules (float→int inequality bound: floor vs ceil per
+operator) must be handled.
+
 **Implementer caveat (found while scoping):** a naive "promote both operands to MaximumType" will REGRESS plan
 shapes. INT↔LONG (and any tuple-encoding-compatible pair) must NOT be promoted — wrapping the indexed column in a
 `Promote(col)` makes the data-access matcher fail to recognise it and silently drops to a residual full scan
