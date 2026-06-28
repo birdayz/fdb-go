@@ -201,8 +201,11 @@ to 1** — serialize the backlog (matches today; "slow through a backlog is fine
 decision. Two slots mean two resident JVM servers *simultaneously* (the idle slot's server holds
 its heap until `--max_idle_secs`), plus up to 2× build + testcontainer RAM if both ever run at
 once. On a 7.6 GiB box with a documented OOM history that is the binding constraint, not "active
-build RAM" alone. Raising `maxRunners` should come with a bigger `server_type` (or a lower per-job
-RAM ceiling), not just a flag edit.
+build RAM" alone. It is also **not** just a flag: every concurrent slot must get its **own runner
+root**, because the stock runner writes and removes `.runner`/`.credentials` under `--runner-dir`
+per ephemeral runner — two slots sharing one `--runner-dir` corrupt each other's registration. So
+the supervisor **rejects `maxRunners>1`** today; lifting the cap is a deliberate task (per-slot
+runner roots **plus** a bigger `server_type` / lower per-job RAM ceiling), not a config edit.
 
 ### 4. Runner lifecycle (native JIT, not Docker)
 
@@ -220,17 +223,26 @@ using the **host** Docker for FDB testcontainers and share the warm slot:
 4. **Bounded poll + self-heal.** The supervisor wraps each long-poll in a hard timeout
    (`--poll-timeout`, default 2 m, well above the ~50 s idle poll). A half-open poll errors out,
    `listener.Run` returns, the process exits, and `systemd Restart=always` reconnects with a fresh
-   session — so the supervisor's own loop cannot silently inherit the runner's old wedge.
+   session — so the supervisor's own loop cannot silently inherit the runner's old wedge. Each
+   successful poll also stamps a `--heartbeat-file` timestamp for the external watchdog (§5). (A
+   regression test pins both halves of the assumption this rests on: a hanging `GetMessage` is
+   bounded by the timeout, and `listener.Run` returns the error rather than retrying internally —
+   if the Public-Preview library ever changes the latter, the test fails and we add an in-process
+   self-exit.)
 5. **Slot-leak guard.** A runner is launched only because a job was assigned+acquired, so one
    should arrive in seconds. If it does not — e.g. the run was *cancelled mid-flight*, the churn
    case that triggered this RFC — `--job-start-timeout` (default 5 m) kills the idle runner and
    reclaims its slot, so a cancelled run can't pin the only slot. (Disabled when `minRunners>0`,
    where idle runners are expected.)
-6. **Restart reconciliation.** On startup the supervisor kills stray `run.sh` / `Runner.Listener`
-   / `Runner.Worker` from a crashed prior incarnation before accepting work, so it never launches
-   a new runner into a slot a stray job is still writing. Warm bazel *servers* are left running (a
-   fresh runner reconnects; killing the runner's bazel *client* via its process group already
-   releases the `output_base` lock — we do **not** `bazel shutdown`, which would throw away warmth).
+6. **Restart reconciliation.** Each launched runner records its **PGID in a per-slot pid file**.
+   On startup the supervisor reaps any slot whose pid file survived — a runner the previous
+   incarnation crashed out from under — by `SIGKILL`ing that whole **process group** (run.sh +
+   Runner.Listener + Runner.Worker + the job's bazel *client*), so a stray job can't keep writing a
+   slot the pool now treats as free. It is **scoped to our own slot pid files**, so it never
+   touches a classic or other runner sharing the host (the side-by-side migration), and a cmdline
+   check guards against the recorded PID having been reused. Warm bazel *servers* survive (own
+   session); killing the bazel *client* already releases the `output_base` lock — we do **not**
+   `bazel shutdown`, which would throw away warmth.
 7. **Idempotent registration.** A scale-set name is unique per group; a stale set left by a crashed
    run (same name) is deleted before re-creating, so a `Restart=always` daemon can't crash-loop on
    "name already exists".
@@ -254,11 +266,14 @@ using the **host** Docker for FDB testcontainers and share the warm slot:
   (d) never reach for a bare `bazel clean`.
 - **Self-healing.** No *runner* listener to wedge; the supervisor's long-poll is bounded (§4.4), so
   a stuck poll self-restarts via systemd with a fresh session. The heuristic `runner-watchdog` is
-  **not retired but retargeted**: its job changes from the classic-runner wedge arms to a simple
-  liveness check on `bazelscaleset.service` (process up + poll making progress) — the external net
-  for a *wholesale* supervisor hang the in-process poll timeout can't catch. A GitHub API outage
-  degrades gracefully: `go-retryablehttp` (built into the scaleset client) backs off and retries;
-  no jobs run, nothing wedges, work resumes when the API returns.
+  **not retired but retargeted** at `bazelscaleset.service`, with a **concrete** signal — not a
+  bare `pgrep`: the supervisor stamps `--heartbeat-file` (a unix timestamp) on every successful
+  poll (and once at startup), and the watchdog restarts the service if that stamp is older than a
+  threshold (e.g. > 3× `--poll-timeout`) while GitHub shows queued runs. This catches a *wholesale*
+  supervisor hang the in-process poll timeout can't — including a deadlocked scaler cycle, since a
+  stalled cycle stops the poll loop and the stamp goes stale. A GitHub API outage degrades
+  gracefully: `go-retryablehttp` (built into the scaleset client) backs off and retries; no jobs
+  run, nothing wedges, work resumes when the API returns.
 
 ### 6. Auth / secrets
 
@@ -275,15 +290,21 @@ on the repo to register the scale set + mint JIT configs.
   via `fetch-verified.sh` (version+sha pin, consistent with every other tool in `infra/`). No
   box-side build, no throw-away bazel workspace.
 - **`infra/cloud-init.yaml`:** add a `bazelscaleset.service` (systemd, `User=runner`,
-  `Restart=always`, `EnvironmentFile` `0600` for the App private key). Create the warm-slot +
-  `repository_cache` dirs **on `/mnt/ci-data`** owned by `runner`. **Retarget** (don't delete) the
-  `runner-watchdog` at `bazelscaleset.service`; **keep** the periodic `orphan-fdb-sweep.timer`.
+  `Restart=always`, `EnvironmentFile` `0600` for the App private key). It is a **single,
+  non-templated** unit, so systemd guarantees exactly one supervisor per box — preserving the
+  one-name / `maxRunners=1` invariant (don't add a templated `@.service`). Create the warm-slot +
+  `repository_cache` dirs **on `/mnt/ci-data`** owned by `runner`, and a tmpfs heartbeat dir (e.g.
+  `/run/bazelscaleset`, `0755` `runner`) for `--heartbeat-file`. **Retarget** (don't delete) the
+  `runner-watchdog` to read that heartbeat (§5); **keep** the periodic `orphan-fdb-sweep.timer`.
   Keep the classic `config.sh`-register provisioning **behind a flag** (break-glass, see Migration)
   rather than deleting it, until scale sets reach GA.
-- **`.bazelrc` (warmth durability, §2):** set `--max_idle_secs` high (keep the per-slot server
-  resident between jobs) and bound the server heap with `--host_jvm_args=-Xmx…`; have cloud-init
-  set the bazel server's `oom_score_adj` (as it already does for Ryuk). These are what actually
-  make the "warm analysis" claim true on this OOM-prone box.
+- **`.bazelrc` (warmth durability, §2):** keep the per-slot server resident with
+  `--max_idle_secs=86400` (24 h — survives overnight gaps between jobs) and bound its heap with
+  `--host_jvm_args=-Xmx2g` (≈ the JVM's default 25 % of 7.6 GiB, but explicit and predictable next
+  to a 3–4 GiB FDB build — tune against the RAM budget). **Both are bazel *startup* options**: they
+  go on `startup` lines in `.bazelrc` (not `build`/`test`, which reject them), and changing either
+  restarts the server once — so the first build after this lands is a one-time cold-analysis. Have
+  cloud-init set the server's `oom_score_adj` (as it already does for Ryuk).
 - **`infra/main.tf`:** swap the `github_runner_token` registration var for the App credentials.
 
 ## Migration plan
@@ -297,8 +318,11 @@ fresh provisions only:
 1. Land this RFC (review) + the nested module + the binary (pinned).
 2. Drop the supervisor onto the **live** box out-of-band (unit + binary + slot dirs via ssh, not a
    recreate), and stand the scale set up **alongside** the classic runner under a *distinct* label.
-   Run a few real PRs against it. (Warm-build comparison is only meaningful on the **2nd+** run,
-   once the slot has warmed — the first run on a fresh slot is cold by definition.)
+   Give the supervisor its **own `--runner-dir`** (a separate extracted actions/runner, not the
+   classic runner's `/home/runner/actions-runner`) — its JIT runners write `.runner`/`.credentials`
+   under that root and would otherwise clobber the classic runner's. Run a few real PRs against it.
+   (Warm-build comparison is only meaningful on the **2nd+** run, once the slot has warmed — the
+   first run on a fresh slot is cold by definition.)
 3. Flip `runs-on` (or reuse the `gh-runner-fdb` label) to the scale set. **Stop** the classic
    `actions.runner.*` service but keep its provisioning **resurrectable behind a flag**
    (break-glass while scale sets are Public Preview); retarget the watchdog at the supervisor.
@@ -336,8 +360,10 @@ These were open questions in the draft; the maintainer has now locked them.
    `go.mod`/`go.sum`). `cmd/` was rejected — it reads as "part of the main module". The separate
    module is the load-bearing dependency-isolation property.
 3. **Concurrency: `maxRunners=1`, `minRunners=0`** (7.6 GiB box — serialize the backlog; slow is
-   fine, wedged is not). `maxRunners=2` is **RAM/hardware-gated, not a config flip**: two resident
-   JVM servers + up to 2× build RAM on a box with a documented OOM history (§3).
+   fine, wedged is not). `maxRunners>1` is **rejected** today: it is RAM/hardware-gated (two
+   resident JVM servers + up to 2× build RAM on a box with an OOM history) **and** needs per-slot
+   runner roots (shared `--runner-dir` corrupts `.runner`/`.credentials`) — a deliberate task, not
+   a config flip (§3).
 4. **Build path: plain `go build` from the nested module, in a GitHub-hosted CI step, pinned by
    sha** (the box has no Go toolchain). `.bazelignore`'d so scaleset never enters the bazel graph /
    `MODULE.bazel`. No throw-away bazel workspace.

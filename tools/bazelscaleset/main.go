@@ -110,10 +110,14 @@ func run() error {
 	logger.Info("warm slot pool ready", slog.Int("slots", pool.size()), slog.String("base", cfg.workBase))
 
 	// A previous incarnation that crashed (rather than shutting down cleanly) may
-	// have left runner processes still writing a slot's work dir. Kill them before
-	// accepting work so we never launch a new runner into an occupied slot. Warm
-	// bazel servers are left alone on purpose — a new runner reconnects to them.
-	reconcileStrayRunners(logger, cfg.runnerDir)
+	// have left a runner still writing a slot's work dir. Kill its process group
+	// before accepting work so we never launch a new runner into an occupied slot.
+	// Scoped to our own slot pid files (never touches a classic/other runner) and
+	// leaves warm bazel servers alone — a new runner reconnects to them.
+	reconcileStrayRunners(logger, pool, cfg.runnerDir)
+
+	// Initial heartbeat so the watchdog sees a healthy start before the first poll.
+	writeHeartbeat(cfg.heartbeatFile)
 
 	scaler := newScaler(logger.WithGroup("scaler"), client, ss.ID, cfg, pool)
 	defer scaler.shutdown()
@@ -121,8 +125,9 @@ func run() error {
 	// Bound each long-poll: the scaleset session is now the only long-lived loop in
 	// this design, so a half-open poll ("online but not pulling jobs") would be the
 	// very wedge RFC-155 removes. On timeout listener.Run returns and the supervisor
-	// exits for systemd to restart with a fresh session.
-	lis, err := listener.New(&timeoutClient{inner: session, pollTimeout: cfg.pollTimeout}, listener.Config{
+	// exits for systemd to restart with a fresh session; each successful poll also
+	// stamps the heartbeat file for the external watchdog.
+	lis, err := listener.New(&timeoutClient{inner: session, pollTimeout: cfg.pollTimeout, heartbeatFile: cfg.heartbeatFile}, listener.Config{
 		ScaleSetID: ss.ID,
 		MaxRunners: cfg.maxRunners,
 		Logger:     logger.WithGroup("listener"),
@@ -168,6 +173,7 @@ type config struct {
 	grace           time.Duration
 	pollTimeout     time.Duration
 	jobStartTimeout time.Duration
+	heartbeatFile   string
 	logLevel        string
 	logFormat       string
 
@@ -195,6 +201,7 @@ func parseConfig() (*config, error) {
 	fs.DurationVar(&c.grace, "grace-period", envDurOr("BAZELSCALESET_GRACE_PERIOD", 60*time.Second), "shutdown grace period before SIGKILLing in-flight runners")
 	fs.DurationVar(&c.pollTimeout, "poll-timeout", envDurOr("BAZELSCALESET_POLL_TIMEOUT", 2*time.Minute), "hard timeout for a single long-poll; on timeout the supervisor exits and systemd restarts it with a fresh session (must exceed the ~50s idle long-poll)")
 	fs.DurationVar(&c.jobStartTimeout, "job-start-timeout", envDurOr("BAZELSCALESET_JOB_START_TIMEOUT", 5*time.Minute), "kill a launched runner that never starts a job within this long and reclaim its slot (on-demand only, i.e. min-runners=0; 0 disables)")
+	fs.StringVar(&c.heartbeatFile, "heartbeat-file", envOr("BAZELSCALESET_HEARTBEAT_FILE", ""), "if set, write a unix-timestamp heartbeat on each successful poll for an external watchdog to check (empty disables)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("BAZELSCALESET_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	fs.StringVar(&c.logFormat, "log-format", envOr("BAZELSCALESET_LOG_FORMAT", "text"), "log format (text, json)")
 	fs.StringVar(&c.appClientID, "app-client-id", envOr("BAZELSCALESET_APP_CLIENT_ID", ""), "GitHub App client id (or app id)")
@@ -241,6 +248,13 @@ func (c *config) validate() error {
 	}
 	if c.maxRunners < 1 {
 		return fmt.Errorf("--max-runners must be >= 1, got %d", c.maxRunners)
+	}
+	if c.maxRunners > 1 {
+		// All slots would launch run.sh from the same --runner-dir, where the stock
+		// runner writes/removes .runner/.credentials per ephemeral runner — concurrent
+		// runners corrupt each other. Lifting this needs a per-slot runner root (plus
+		// the RAM for N resident bazel servers, §3). Fail loud rather than corrupt.
+		return fmt.Errorf("--max-runners > 1 is not yet supported (needs a per-slot runner root; see RFC-155 §3), got %d", c.maxRunners)
 	}
 	if c.minRunners < 0 || c.minRunners > c.maxRunners {
 		return fmt.Errorf("--min-runners must be in [0, max-runners], got %d", c.minRunners)

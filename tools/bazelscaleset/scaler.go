@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,11 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 	s.running[name] = r
 	s.mu.Unlock()
 
+	// Record the runner's PGID so a crashed supervisor's restart can reap this slot's
+	// stray process group (see reconcileStrayRunners). Pid == PGID: Setpgid made the
+	// child its own group leader.
+	writeRunnerPID(s.logger, sl.path, cmd.Process.Pid)
+
 	s.logger.Info("runner started",
 		slog.String("name", name),
 		slog.Int("slot", sl.index),
@@ -173,6 +179,7 @@ func (s *Scaler) wait(r *runner) {
 
 	err := r.cmd.Wait()
 	close(r.done) // let watchJobStart exit
+	removeRunnerPID(r.slot.path)
 
 	s.mu.Lock()
 	delete(s.running, r.name)
@@ -334,28 +341,90 @@ func (s *Scaler) sweepOrphanFDB() {
 	}
 }
 
-// reconcileStrayRunners kills leftover actions/runner processes from a previous
-// supervisor incarnation that crashed without cleaning up. We must do this before
-// accepting work: a new runner launched into a slot a stray job is still writing
-// would corrupt that job's checkout. Warm bazel servers are deliberately left
-// running (a fresh runner reconnects to them, and killing the runner's bazel
-// client releases the output_base lock). Best-effort: pkill exits non-zero when
-// nothing matches, which is the normal, healthy case.
-func reconcileStrayRunners(logger *slog.Logger, runnerDir string) {
-	patterns := []string{
-		filepath.Join(runnerDir, "run.sh"),
-		"Runner.Listener",
-		"Runner.Worker",
+// runnerPIDFile is written into a slot dir with the launched runner's PGID while a
+// runner occupies the slot, and removed when it exits cleanly. A leftover file
+// therefore marks a slot whose runner the previous supervisor incarnation crashed
+// out from under.
+const runnerPIDFile = ".bazelscaleset-runner.pid"
+
+func writeRunnerPID(logger *slog.Logger, slotPath string, pid int) {
+	p := filepath.Join(slotPath, runnerPIDFile)
+	if err := os.WriteFile(p, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+		logger.Warn("could not write runner pid file", slog.String("path", p), slog.Any("err", err))
 	}
-	reaped := false
-	for _, pat := range patterns {
-		if err := exec.Command("pkill", "-KILL", "-f", pat).Run(); err == nil {
-			reaped = true
+}
+
+func removeRunnerPID(slotPath string) {
+	_ = os.Remove(filepath.Join(slotPath, runnerPIDFile))
+}
+
+// reconcileStrayRunners kills the leftover runner of any slot whose pid file
+// survived — i.e. a runner the previous incarnation crashed out from under before
+// it could clean up. We must do this before accepting work: a new runner launched
+// into a slot a stray job is still writing would corrupt that job's checkout.
+//
+// It kills the whole process GROUP (negative pid) so the stray run.sh AND its
+// children (Runner.Listener / Runner.Worker / the job's bazel *client*) all die,
+// not just the named process. The bazel *server* lives in its own session and
+// survives, staying warm (killing the client already releases the output_base
+// lock — no `bazel shutdown`). It is scoped to *our* slot pid files, so it never
+// touches a classic or other runner sharing the host (the side-by-side migration).
+// A cmdline check guards against the recorded PID having been reused since the crash.
+func reconcileStrayRunners(logger *slog.Logger, pool *slotPool, runnerDir string) {
+	for _, sl := range pool.all {
+		p := filepath.Join(sl.path, runnerPIDFile)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue // no stray recorded for this slot — the normal, healthy case
 		}
+		_ = os.Remove(p)
+
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 1 {
+			continue
+		}
+		if !cmdlineMatchesRunner(procCmdline(pid), runnerDir) {
+			continue // process gone, or the PID was reused by something unrelated
+		}
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+			logger.Warn("reconcile: kill stray runner group failed", slog.Int("pgid", pid), slog.Any("err", err))
+			continue
+		}
+		logger.Warn("reconciled stray runner from a previous incarnation",
+			slog.Int("slot", sl.index), slog.Int("pgid", pid))
 	}
-	if reaped {
-		logger.Warn("reconciled stray runner processes from a previous incarnation")
+}
+
+func procCmdline(pid int) []byte {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return nil
 	}
+	return data
+}
+
+// cmdlineMatchesRunner reports whether a /proc cmdline (NUL-separated argv) looks
+// like one of our runner processes, so reconcile won't SIGKILL a reused PID.
+func cmdlineMatchesRunner(cmdline []byte, runnerDir string) bool {
+	if len(cmdline) == 0 {
+		return false
+	}
+	cmd := strings.ReplaceAll(string(cmdline), "\x00", " ")
+	return strings.Contains(cmd, runnerDir) || strings.Contains(cmd, "Runner.Listener") || strings.Contains(cmd, "Runner.Worker")
+}
+
+// writeHeartbeat atomically records "the supervisor's poll loop is making progress"
+// as a unix timestamp, for the external systemd watchdog to read (restart on a stale
+// heartbeat while capacity is advertised). No-op when no path is configured.
+func writeHeartbeat(path string) {
+	if path == "" {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(time.Now().Unix(), 10)), 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 // timeoutClient wraps the scaleset message-session client to put a hard ceiling on
@@ -365,8 +434,9 @@ func reconcileStrayRunners(logger *slog.Logger, runnerDir string) {
 // listener.Run returns, and the supervisor exits for systemd to restart it with a
 // fresh session.
 type timeoutClient struct {
-	inner       listener.Client
-	pollTimeout time.Duration
+	inner         listener.Client
+	pollTimeout   time.Duration
+	heartbeatFile string
 }
 
 var _ listener.Client = (*timeoutClient)(nil)
@@ -374,7 +444,15 @@ var _ listener.Client = (*timeoutClient)(nil)
 func (c *timeoutClient) GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.pollTimeout)
 	defer cancel()
-	return c.inner.GetMessage(cctx, lastMessageID, maxCapacity)
+	msg, err := c.inner.GetMessage(cctx, lastMessageID, maxCapacity)
+	if err == nil {
+		// A successful poll means the loop is cycling. If a downstream scaler cycle
+		// (HandleDesiredRunnerCount) ever deadlocked, the listener would stop reaching
+		// the next GetMessage, the heartbeat would go stale, and the watchdog would
+		// restart us — so this single signal covers both a half-open poll and a stuck cycle.
+		writeHeartbeat(c.heartbeatFile)
+	}
+	return msg, err
 }
 
 func (c *timeoutClient) DeleteMessage(ctx context.Context, messageID int) error {

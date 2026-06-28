@@ -51,15 +51,19 @@ scaleset long-poll), so the same failure mode is handled head-on:
 
 - **Bounded long-poll** (`--poll-timeout`): every poll has a hard ceiling. A half-open poll
   errors out, `listener.Run` returns, the supervisor exits, and `systemd Restart=always` brings
-  it back with a fresh session. A wholesale process hang is caught by an external systemd
-  watchdog (see `infra/`) retargeted from the old classic-runner watchdog — it is **not** retired.
+  it back with a fresh session. Each successful poll also stamps `--heartbeat-file`; an external
+  systemd watchdog (see `infra/`), **retargeted** from the old classic-runner watchdog (not
+  retired), restarts the service if that stamp goes stale — catching a wholesale hang the
+  in-process timeout can't.
 - **Slot-leak guard** (`--job-start-timeout`): a runner launched for a job that gets cancelled
   before it connects (the churn case that triggered this) is killed and its slot reclaimed, so a
   cancelled run can't pin the only slot.
-- **Restart reconciliation**: on startup the supervisor kills stray `run.sh` / `Runner.Listener`
-  / `Runner.Worker` processes from a crashed prior incarnation before accepting work, so it never
-  launches a new runner into a slot a stray job is still writing. Warm bazel servers are left
-  running (a fresh runner reconnects to them).
+- **Restart reconciliation**: each runner records its PGID in a per-slot pid file; on startup the
+  supervisor SIGKILLs the whole **process group** of any slot whose pid file survived a crash
+  (run.sh + Runner.Listener + Runner.Worker + the job's bazel client), so a stray job can't keep
+  writing a slot the pool treats as free. It is scoped to **our** slot pid files (never touches a
+  classic/other runner on the host) and leaves warm bazel servers running (a fresh runner
+  reconnects; killing the bazel client already frees the `output_base` lock).
 - **Idempotent registration**: a stale scale set left by a crashed run (same name) is deleted
   before re-creating, so a `Restart=always` daemon can't crash-loop on "name already exists".
 
@@ -79,7 +83,7 @@ flags, so they never reach the process table):
 | `--name` | `BAZELSCALESET_NAME` | — | **required**, scale set name (also the default label) |
 | `--labels` | `BAZELSCALESET_LABELS` | `--name` | comma-separated `runs-on` labels |
 | `--runner-group` | `BAZELSCALESET_RUNNER_GROUP` | `default` | runner group name |
-| `--max-runners` | `BAZELSCALESET_MAX_RUNNERS` | `1` | concurrent runners = warm slots |
+| `--max-runners` | `BAZELSCALESET_MAX_RUNNERS` | `1` | concurrent runners = warm slots. **>1 is rejected** — it needs per-slot runner roots (shared `--runner-dir` corrupts `.runner`/`.credentials`) plus more RAM; see RFC-155 §3 |
 | `--min-runners` | `BAZELSCALESET_MIN_RUNNERS` | `0` | pre-warmed idle runners |
 | `--runner-dir` | `BAZELSCALESET_RUNNER_DIR` | `/home/runner/actions-runner` | dir with `run.sh` |
 | `--work-base` | `BAZELSCALESET_WORK_BASE` | `/mnt/ci-data/bazelwork` | base dir for warm slots — keep on the CI data volume, same filesystem as bazel's `output_base`, **not** the root disk |
@@ -87,6 +91,7 @@ flags, so they never reach the process table):
 | `--grace-period` | `BAZELSCALESET_GRACE_PERIOD` | `60s` | shutdown grace before SIGKILL |
 | `--poll-timeout` | `BAZELSCALESET_POLL_TIMEOUT` | `2m` | hard ceiling on a single long-poll; on timeout the supervisor exits for systemd to restart with a fresh session (must be ≥ 60s) |
 | `--job-start-timeout` | `BAZELSCALESET_JOB_START_TIMEOUT` | `5m` | kill a launched runner that never starts a job and reclaim its slot (on-demand only; `0` disables) |
+| `--heartbeat-file` | `BAZELSCALESET_HEARTBEAT_FILE` | _(unset)_ | if set, stamp a unix timestamp on each successful poll for an external watchdog to check (e.g. `/run/bazelscaleset/heartbeat`) |
 | `--app-client-id` | `BAZELSCALESET_APP_CLIENT_ID` | — | GitHub App client/app id |
 | `--app-installation-id` | `BAZELSCALESET_APP_INSTALLATION_ID` | — | GitHub App installation id |
 
