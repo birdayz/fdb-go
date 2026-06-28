@@ -98,6 +98,46 @@ func startStrayRunner(t *testing.T, runnerDir string) *exec.Cmd {
 
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 
+// TestSlotPoolPerSlotRunnerDirs pins the codex-P2 fix: at maxRunners>1 each slot gets
+// its OWN cloned runner dir (distinct from the base and from each other, each with
+// run.sh), so concurrent runners can't clobber each other's .runner/.credentials.
+func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	p, err := newSlotPool(t.TempDir(), base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, s := range p.all {
+		if s.runnerDir == base {
+			t.Fatalf("slot %d shares the base runner dir %q", s.index, base)
+		}
+		if seen[s.runnerDir] {
+			t.Fatalf("slot %d has a duplicate runner dir %q", s.index, s.runnerDir)
+		}
+		seen[s.runnerDir] = true
+		if _, err := os.Stat(filepath.Join(s.runnerDir, "run.sh")); err != nil {
+			t.Fatalf("slot %d runner dir not cloned (no run.sh): %v", s.index, err)
+		}
+	}
+}
+
+// templateRunner creates a minimal template actions/runner dir (just run.sh) that
+// newSlotPool clones per-slot.
+func templateRunner(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "actions-runner")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(d)
@@ -113,19 +153,19 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	t.Parallel()
 
-	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
-	cmd := startStrayRunner(t, runnerDir)
-	pid := cmd.Process.Pid
-	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
-
-	pool, err := newSlotPool(t.TempDir(), 1)
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Stray runner running from THIS slot's own runner dir (so its cmdline contains
+	// sl.runnerDir, which is what reconcile's per-slot guard matches).
+	cmd := startStrayRunner(t, pool.all[0].runnerDir)
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 	// Record the stray runner against the slot, as a live supervisor would.
 	writeRunnerPID(discardLogger(), pool.all[0].path, pid)
 
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), pool)
 
 	// Process group must be dead, and the pid file removed.
 	done := make(chan struct{})
@@ -150,11 +190,11 @@ func TestReconcileScopedToOurPidFiles(t *testing.T) {
 	otherPID := other.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-otherPID, syscall.SIGKILL); _, _ = other.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), 1) // no pid files written
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1) // no pid files written
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), pool)
 
 	if !alive(otherPID) {
 		t.Fatal("reconcile killed an unrecorded process (not scoped to our pid files)")
@@ -175,14 +215,14 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), 1)
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pool.all[0].path, runnerPIDFile), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool, "/home/runner/actions-runner")
+	reconcileStrayRunners(discardLogger(), pool)
 
 	if _, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile)); !os.IsNotExist(err) {
 		t.Fatal("reconcile did not clear the stale pid file")
@@ -199,10 +239,11 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
-	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
-	if err := os.MkdirAll(runnerDir, 0o755); err != nil {
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
+	if err != nil {
 		t.Fatal(err)
 	}
+	runnerDir := pool.all[0].runnerDir // this slot's own runner dir
 	worker := filepath.Join(runnerDir, "Runner.Worker")
 	if err := os.WriteFile(worker, []byte("while true; do sleep 1; done\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -227,13 +268,9 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	// Worker is now an orphan whose process group is still the (dead) leader's pid.
 	waitFor(t, 3*time.Second, func() bool { return groupHasRunnerMember(pgid, runnerDir) })
 
-	pool, err := newSlotPool(t.TempDir(), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	writeRunnerPID(discardLogger(), pool.all[0].path, pgid)
 
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), pool)
 
 	// The whole group (the orphaned worker) must be gone.
 	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
@@ -293,7 +330,7 @@ func TestListenerRunReturnsOnGetMessageError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listener.New: %v", err)
 	}
-	pool, err := newSlotPool(t.TempDir(), 1)
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
 	if err != nil {
 		t.Fatal(err)
 	}

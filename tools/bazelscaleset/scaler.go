@@ -31,7 +31,6 @@ type Scaler struct {
 	minRunners int
 	maxRunners int
 
-	runnerDir       string // dir containing run.sh (the extracted actions/runner)
 	sweepFDB        bool
 	grace           time.Duration
 	jobStartTimeout time.Duration
@@ -63,7 +62,6 @@ func newScaler(logger *slog.Logger, client *scaleset.Client, scaleSetID int, cfg
 		scaleSetID:      scaleSetID,
 		minRunners:      cfg.minRunners,
 		maxRunners:      cfg.maxRunners,
-		runnerDir:       cfg.runnerDir,
 		sweepFDB:        cfg.sweepFDB,
 		grace:           cfg.grace,
 		jobStartTimeout: cfg.jobStartTimeout,
@@ -128,8 +126,8 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 		return fmt.Errorf("generating JIT config: %w", err)
 	}
 
-	cmd := exec.Command(filepath.Join(s.runnerDir, "run.sh"))
-	cmd.Dir = s.runnerDir
+	cmd := exec.Command(filepath.Join(sl.runnerDir, "run.sh"))
+	cmd.Dir = sl.runnerDir
 	cmd.Env = append(os.Environ(), "ACTIONS_RUNNER_INPUT_JITCONFIG="+jit.EncodedJITConfig)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -373,7 +371,7 @@ func removeRunnerPID(slotPath string) {
 // lock — no `bazel shutdown`). It is scoped to *our* slot pid files, so it never
 // touches a classic or other runner sharing the host (the side-by-side migration).
 // A cmdline check guards against the recorded PID having been reused since the crash.
-func reconcileStrayRunners(logger *slog.Logger, pool *slotPool, runnerDir string) {
+func reconcileStrayRunners(logger *slog.Logger, pool *slotPool) {
 	for _, sl := range pool.all {
 		p := filepath.Join(sl.path, runnerPIDFile)
 		data, err := os.ReadFile(p)
@@ -389,9 +387,9 @@ func reconcileStrayRunners(logger *slog.Logger, pool *slotPool, runnerDir string
 		// Decide on group MEMBERS, not just the leader: a process group outlives its
 		// leader, so if run.sh exited but a child (Runner.Worker, etc.) is still alive
 		// in the group it would keep writing the slot. Checking only the leader's
-		// cmdline would miss that. Requiring a runner-like *member* also guards against
-		// the recorded PGID having been reused by something unrelated.
-		if !groupHasRunnerMember(pid, runnerDir) {
+		// cmdline would miss that. Requiring a runner-like *member* (this slot's own
+		// runner dir) also guards against the recorded PGID having been reused.
+		if !groupHasRunnerMember(pid, sl.runnerDir) {
 			continue
 		}
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
