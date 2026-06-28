@@ -75,6 +75,7 @@ go_test(
         "derived_groupby_case_probe_test.go",
         "derived_limit_rfc128_test.go",
         "derived_table_probe_test.go",
+        "derived_table_shapes_probe_test.go",
         "distinct_orderby_computed_probe_test.go",
         "distinct_orderby_limit_probe_test.go",
         "dml_cascades_fdb_test.go",
