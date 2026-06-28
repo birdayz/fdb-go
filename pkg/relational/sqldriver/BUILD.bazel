@@ -96,6 +96,7 @@ go_test(
         "exists_semantics_probe_test.go",
         "float_special_param_probe_test.go",
         "full_outer_join_fdb_test.go",
+        "greatest_least_probe_test.go",
         "group_by_derived_probe_test.go",
         "groupby_insert_select_fdb_test.go",
         "groupby_multikey_agg_probe_test.go",
