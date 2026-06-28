@@ -112,6 +112,7 @@ go_test(
         "in_subquery_probe_test.go",
         "index_oracle_consistency_test.go",
         "index_sarg_probe_test.go",
+        "inlist_index_probe_test.go",
         "insert_coercion_probe_test.go",
         "insert_select_groupby_probe_test.go",
         "insert_select_probe_test.go",
