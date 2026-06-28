@@ -949,6 +949,23 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+
+The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and
+`updateStatement`, and **Java supports it** — `QueryVisitor.visitDeleteStatement:848` /
+`visitUpdateStatement:882` build a `generateSelect` from the RETURNING selectElements
+and return the affected rows as a result set. Go silently DROPS the clause: via `Query`
+you hit the generic DML-via-Query guard (0A000 "INSERT/UPDATE/DELETE return a row
+count, not rows"; connection.go:449) before RETURNING is ever processed; via `Exec` the
+DELETE/UPDATE executes correctly but the RETURNING values never surface (count only).
+
+NOT data loss (the DML is correct) — a Java-supported feature left unimplemented.
+Fix = port Java's generateSelect-from-RETURNING (build the projection over the
+deleted/updated rows) and wire a DML-returning-a-result-set through the driver Query
+path (the path that currently rejects all DML with 0A000). Feature port, follow-up
+scope. Pinned by returning_clause_probe_test.go (flip when implemented). INSERT
+RETURNING is a 42601 — not in the INSERT grammar — so it's a separate, larger gap.
+
 ### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
 
 `CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build

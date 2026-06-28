@@ -213,6 +213,7 @@ go_test(
         "recursive_cte_rename_probe_test.go",
         "resolution_edge_probe_test.go",
         "resource_limits_fdb_test.go",
+        "returning_clause_probe_test.go",
         "rfc087_swallow_sort_fdb_test.go",
         "rfc153_matrix_fdb_test.go",
         "row_value_constructor_probe_test.go",
