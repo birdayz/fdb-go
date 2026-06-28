@@ -85,6 +85,7 @@ go_test(
         "index_sarg_probe_test.go",
         "insert_select_probe_test.go",
         "insert_type_coercion_probe_test.go",
+        "is_truth_value_probe_test.go",
         "join_column_labels_test.go",
         "join_merge_outer_column_test.go",
         "join_oracle_consistency_test.go",
