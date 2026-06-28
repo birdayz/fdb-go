@@ -20,11 +20,12 @@
 .s-steps { width: 100%; max-width: 46rem; }
 .s-steps pre, .hero-code pre { overflow-x: auto; }
 
-/* Headings wrap naturally and balance their lines. This replaces the &nbsp; runs
-   that used to keep phrases together: those formed unbreakable units that overflowed
-   narrow mobile viewports. text-wrap:balance gives tidy multi-line headings without
-   the overflow risk. */
-h1, h2 { text-wrap: balance; }
+/* Hero headings wrap naturally and balance their lines. This replaces the &nbsp;
+   runs that used to keep phrases together: those formed unbreakable units that
+   overflowed narrow mobile viewports. text-wrap:balance gives tidy multi-line
+   headings without the overflow risk. Scoped to the hero shortcode headings
+   (.not-prose) so docs prose headings keep normal wrapping. */
+main h1.not-prose, main h2.not-prose { text-wrap: balance; }
 
 /* Hero headings. The theme sizes the section h2 at text-4xl on phones (36px) but
    text-3xl on desktop — larger on mobile than on desktop, and equal to the h1 at
