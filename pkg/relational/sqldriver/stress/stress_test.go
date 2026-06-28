@@ -324,7 +324,19 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 	for _, cfg := range configs {
 		cfg := cfg
 		t.Run(fmt.Sprintf("w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx), func(t *testing.T) {
-			n := 1_000_000
+			// 200K per config (1M total across the 5 configs), NOT 1M each (5M total).
+			// This test characterises how parallelism (workers/batch/tx) affects ingest
+			// throughput — relative throughput across configs, not raw volume. Raw 1M
+			// volume is already exercised (and sustained) by TestFDB_Stress_1M. Five
+			// configs × 1M sustained writes — especially the 16-worker config — drove the
+			// single-node Docker FDB testcontainer past its throughput ceiling until it
+			// stopped responding, and the client (correctly, matching C++/Java: no default
+			// transaction timeout) retried the now-unreachable cluster forever, hanging the
+			// whole suite to the 1h test deadline (nightly-stress, every night). Same
+			// single-node-Docker ceiling that makes TestFDB_Ingest_10M / TestFDB_Stress_10M
+			// t.Skip with "run against a real cluster". 1M total keeps every parallelism
+			// config meaningful while staying inside what one Docker node sustains.
+			n := 200_000
 			h := newStressHarness(t, fmt.Sprintf("par_w%d_b%d_tx%d", cfg.workers, cfg.batchSize, cfg.batchesPerTx))
 			h.workers = cfg.workers
 			h.batchSize = cfg.batchSize
@@ -353,6 +365,12 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 }
 
 func TestFDB_Ingest_10M(t *testing.T) {
+	// Same single-node-Docker throughput ceiling as TestFDB_Stress_10M: 10M serial
+	// inserts can't finish inside the test budget on one container (~55min at Docker
+	// rates) and degrade the node along the way. It runs AFTER TestFDB_Ingest_Parallelism
+	// in this file, so before the Parallelism right-sizing it was never even reached;
+	// unskipped, it would just move the nightly-stress red here. Run against a real cluster.
+	t.Skip("10M exceeds Docker FDB single-node throughput; run against a real cluster")
 	h := newStressHarness(t, "ingest10m")
 
 	// Minimal schema: single PK, no secondary indexes.
