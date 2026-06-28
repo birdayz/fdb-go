@@ -221,6 +221,7 @@ go_test(
         "type_coercion_probe_test.go",
         "union_aggregate_expr_alias_test.go",
         "union_aggregate_remap_test.go",
+        "union_distinct_unsupported_probe_test.go",
         "union_join_leg_test.go",
         "union_scalar_aggregate_alias_test.go",
         "unique_null_batch_probe_test.go",
