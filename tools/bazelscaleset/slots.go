@@ -75,6 +75,11 @@ var runnerStateNames = map[string]bool{
 // propagates a pinned-runner upgrade into existing slots. The excluded state dirs are
 // left untouched, so a live runner's in-flight state survives a concurrent re-sync.
 func cloneRunnerDir(src, dst string) error {
+	// Resolve a symlinked --runner-dir so WalkDir traverses the real tree: walking a
+	// symlink root visits only the link, yielding an empty clone with no run.sh (codex).
+	if resolved, err := filepath.EvalSymlinks(src); err == nil {
+		src = resolved
+	}
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -120,13 +125,18 @@ func cloneRunnerDir(src, dst string) error {
 	})
 }
 
-// copyFile copies a regular file's contents, truncating/creating dst with the given mode.
+// copyFile copies a regular file's contents into a freshly-created dst with the given
+// mode. It unlinks any existing dst first, which (a) applies the current mode on a resync
+// even when dst already existed (codex P3 — a plain O_CREATE keeps the old perms), and
+// (b) avoids ETXTBSY if the old dst is a currently-executing runner binary: the running
+// process keeps the old, now-unlinked inode while we write a brand-new one.
 func copyFile(src, dst string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	_ = os.Remove(dst)
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err

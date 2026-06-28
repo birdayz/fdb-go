@@ -103,18 +103,20 @@ func run() error {
 	}
 	defer session.Close(context.WithoutCancel(ctx))
 
+	// A previous incarnation that crashed (rather than shutting down cleanly) may have
+	// left a runner still executing from its per-slot clone. Reap it BEFORE building the
+	// pool: newSlotPool re-copies into the clones, and truncating a still-running runner
+	// binary would fail with ETXTBSY and crash startup before the stray is ever reaped
+	// (codex). Reconcile is filesystem-based (scans workBase/slot-*), so it needs no pool.
+	// Scoped to our own slot pid files (never touches a classic/other runner) and leaves
+	// warm bazel servers alone — a new runner reconnects to them.
+	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)
+
 	pool, err := newSlotPool(cfg.workBase, cfg.runnerDir, cfg.maxRunners)
 	if err != nil {
 		return fmt.Errorf("creating slot pool: %w", err)
 	}
 	logger.Info("warm slot pool ready", slog.Int("slots", pool.size()), slog.String("base", cfg.workBase))
-
-	// A previous incarnation that crashed (rather than shutting down cleanly) may
-	// have left a runner still writing a slot's work dir. Kill its process group
-	// before accepting work so we never launch a new runner into an occupied slot.
-	// Scoped to our own slot pid files (never touches a classic/other runner) and
-	// leaves warm bazel servers alone — a new runner reconnects to them.
-	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)
 
 	// Initial heartbeat so the watchdog sees a healthy start before the first poll.
 	writeHeartbeat(cfg.heartbeatFile)

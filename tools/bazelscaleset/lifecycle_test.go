@@ -166,6 +166,51 @@ func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
 	}
 }
 
+// TestCloneRunnerDirSymlinkedSource pins codex P2: a symlinked --runner-dir must still
+// produce a populated clone (run.sh present) — the walk must resolve the symlink root.
+func TestCloneRunnerDirSymlinkedSource(t *testing.T) {
+	t.Parallel()
+
+	real := templateRunner(t)
+	link := filepath.Join(t.TempDir(), "runner-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "clone")
+	if err := cloneRunnerDir(link, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "run.sh")); err != nil {
+		t.Fatalf("clone from symlinked source missing run.sh: %v", err)
+	}
+}
+
+// TestCopyFileReplacesContentAndMode pins codex P3: re-copying onto an existing file
+// applies the new content AND mode (copyFile unlinks first → a fresh inode), instead of
+// keeping the old file's stale permissions.
+func TestCopyFileReplacesContentAndMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(dst, []byte("old"), 0o600); err != nil { // pre-existing, different mode
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "new" {
+		t.Fatalf("content = %q, err %v; want \"new\"", b, err)
+	}
+	if info, err := os.Stat(dst); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode = %v, err %v; want 0755", info.Mode().Perm(), err)
+	}
+}
+
 // templateRunner creates a minimal template actions/runner dir (just run.sh) that
 // newSlotPool clones per-slot.
 func templateRunner(t *testing.T) string {
