@@ -11,6 +11,14 @@ on your hardware before treating them as SLOs).
 SPFresh maintenance is **caller-driven**: nothing runs unless something calls
 it. Pick one of:
 
+- **Reference worker** (turnkey, RFC-156): run `cmd/spfresh-maintainer`, or
+  embed `RunSPFreshMaintenance(ctx, db, SPFreshMaintenanceOptions{...})`. It
+  loops the rebalance sweep on one cadence (`SweepInterval`, default 10s) and
+  RFC-104 refinement on a slower one (`RefineInterval`, default 5m) over your
+  tenant list, with the StoreTimer metrics wired and graceful ctx shutdown.
+  The one thing you supply is tenant discovery (store layout is your keyspace —
+  see `discoverTenants` in the cmd). This is the default starting point; the
+  two shapes below are what it drives under the hood.
 - **In-process on writers** (RFC-094 §6, the benchmark shape): each writer
   process loops `RebalanceSPFreshIndex` beside its write load. Simple; the
   rebalancer competes with your writers for process CPU.
@@ -19,7 +27,9 @@ it. Pick one of:
   cadence (seconds to minutes). Concurrent sweepers are safe by construction
   (unique lease owners, task-level exclusion) — shard the tenant list to
   waste fewer scans, or run the same list everywhere. Per-tenant failures are
-  isolated and reported in the joined error; the pass continues.
+  isolated and reported in the joined error; the pass continues. Pair with
+  `RefineSPFreshIndexes(ctx, db, tenants, opts)` on a slower cadence (RFC-104
+  refinement — see §3a).
 - **Bulk build**: load records with the index DISABLED, `BuildSPFreshIndex`,
   `MarkIndexReadable`. Crash-safe: rerunning takes over a dead build's token
   and its cellfin state machine resumes idempotently. A build that died
@@ -54,6 +64,8 @@ Event reference (`spfresh_metrics.go`):
 | `spfresh_zombie_cleans` | cleanup writes across all kinds: stale/zombie/cooldown/no-target task clears | small; a flood follows crashes or mass merges |
 | `spfresh_csplit_defers` | coarse-split pause-window defer bumps | bursts while a hotspot cell's fine splits run; sustained means a stuck SEALED row |
 | `spfresh_lease_skips` | tasks skipped: another executor's live lease OR already completed (task gone) | ~0 with sharded sweepers; high means overlapping sweepers duplicating scans |
+| `spfresh_refine_moves` | RFC-104 vectors re-routed (assignment refinement) | bursts after a fast-ingest phase, then decays to ~0 as tenants converge |
+| `spfresh_refine_converged` | refinement cursors that wrapped a full cycle moving nothing | climbs to == tenant count in steady state; the back-off signal for quiescent tenants |
 
 ## 3. Tuning
 
@@ -83,6 +95,31 @@ Writers outrunning the rebalancer assign vectors against a lagging topology.
 If steady-state recall matters more than ingest speed: throttle bulk ingest
 phases, or raise kc afterward (the kc=192 point holds ~0.99 even on
 fast-filled topologies), or use the bulk build for initial loads.
+
+## 3a. Refinement (RFC-104)
+
+Fast foreground ingest costs recall versus a bulk build of the same data — a
+vector is closure-replicated once, at insert, against the topology that existed
+then, and is never re-evaluated as the topology refines (the ingest-rate/recall
+trade above). Refinement recovers it: a persistent round-robin cursor re-routes
+each vector against the current converged topology and moves the stale ones.
+
+- **Cadence:** slower than the rebalance sweep. Refinement is recall-recovery,
+  not correctness — a fully converged tenant re-scans its cursor for zero moves
+  each pass. The reference worker defaults to 5m (vs 10s sweep).
+- **Drivers:** `RefineSPFreshIndexes(ctx, db, tenants, opts)` (fleet, one
+  budgeted pass per tenant), `RefineSPFreshIndex(...)` (one index),
+  `RefineSPFreshIndexAll(...)` (one-shot validation: refine every vector once).
+  `BudgetPerTenant` (default 1000) bounds the vectors re-evaluated per pass.
+- **Metrics:** `spfresh_refine_moves` and `spfresh_refine_converged` (§2). Use
+  `Converged` to back off quiescent tenants — when a tenant's cursor wraps a
+  full cycle moving nothing, it is at the bulk-build recall ideal and needs no
+  further passes until more ingest drifts it.
+- **Concurrency:** the refiner and rebalancer are safe to run concurrently —
+  the lifecycle fence serializes their conflicting writes, and every move
+  transaction re-verifies its centroid state. This is exercised under injected
+  faults by the chaos suite (`chaos_vector_spfresh_test.go`, the concurrent
+  refiner-vs-rebalancer test), not just in isolation.
 
 ## 4. Playbooks
 
@@ -145,7 +182,22 @@ too long for your churn.
   fines, entry count (→ effective ρ = entries/records), task backlog by
   kind, posting-size histogram. O(index) — never call it on a serving path.
 - `SPFreshDebugIntegrity(rtx, store, index, n)` — n sampled pks:
-  membership ⊆ postings and all targets ACTIVE.
+  membership ⊆ postings and all targets ACTIVE (human-readable string).
+- `SPFreshCheckIntegrity(rtx, store, index, n)` — the **structured** form of
+  the above (RFC-156): returns `SPFreshIntegrityReport` with `Members`,
+  `Sampled`, `MembershipWithoutEntry`, `BadTargets` (forward/dead/absent
+  references), `TargetStates`, and per-violation detail. Use it to wire an
+  alert: post-drain, `MembershipWithoutEntry` and `BadTargets` must be 0. This
+  is the same check the chaos suite asserts.
+- `MeasureSPFreshRecall(ctx, store, index, k, querySamples, seed)` — the
+  **ground-truth recall monitor** (RFC-156). Samples query vectors from the
+  index's own records, computes the true k-NN by a full metric scan, compares
+  to the index's results, returns `SPFreshRecallReport{MeanRecall, MinRecall,
+  PerfectFraction, ...}`. A vector index corrupts *silently*, so this is the
+  load-bearing production signal: alert on `MeanRecall` dropping below your
+  measured baseline (maintenance behind, an ingest-rate trade, or — with the
+  integrity check also red — real corruption). O(querySamples × corpus); run
+  off the serving path on a cadence.
 - `SPFreshEnableAudit()` / `SPFreshDisableAudit()` — records per-fineID
   lifecycle steps in an in-memory map (unbounded while enabled — incident
   debugging only); read a centroid's history with
@@ -154,8 +206,33 @@ too long for your churn.
 
 ## 6. Known limits
 
-- Bulk build at ≥1M is currently slower than the foreground fill (wave-B
-  flat-scan, TODO #6) — prefer foreground fills for big loads until fixed.
-- Scale validated to 1M vectors; 10M soak pending.
+- Bulk build is the **fast** high-recall path (≈10.7k vec/s with the perf
+  stack, ~20× the online fill) since RFC-099/101 made wave-B two-level — prefer
+  it for offline/batch loads. (The earlier note that bulk build was *slower*
+  than the foreground fill predated RFC-099 and is no longer true.)
+- A single-store bulk build hard-errors above ~267M vectors
+  (`spfreshMaxDeltasPerTx = 65536` coarse cells per changelog tx,
+  `spfresh_storage.go`). Multi-tenant fleets sit far under it; lifting it for a
+  single giant store needs changelog chunking (RFC-156 §4.3, not yet done).
+- Scale validated to 1M vectors; 10M+ soak is the next step (RFC-156 §4.3).
 - Single FDB cluster; multi-tenant via the sweeper; cross-cluster is out of
   scope.
+
+## 7. Scale validation (RFC-156 §4.3)
+
+The churn-soak harness is N-parameterized — drive it at 10M/100M to validate
+beyond the current 1M ceiling. It tracks recall@10 vs brute force per wave plus
+the topology histogram and sampled integrity:
+
+```sh
+SPFRESH_BENCH=1 SIFT_N=10000000 SOAK_WAVES=6 bazelisk test \
+  //pkg/recordlayer/bench:bench_test --test_arg="--test.run=TestSPFreshChurnSoak" \
+  --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SOAK_WAVES \
+  --test_timeout=36000
+```
+
+Recall floors at scale are spfresh-reviewer-owned: fixed probes cover a
+shrinking list fraction as N grows (kc=64 covers 64/11,336 fines at 1M, far
+less at 100M), so the kc/w defaults likely need a per-scale freeze — the same
+re-tune 094.5 did for the 1M+ regime. Pair each run with `MeasureSPFreshRecall`
+(§5) and `SPFreshCheckIntegrity` to pin both recall and structural correctness.

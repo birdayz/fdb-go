@@ -186,6 +186,16 @@ concurrent writers + sweepers without corruption (no faults injected).
 
 ## Open work
 
+> **RFC-156 update:** the production-readiness work below is now executed by
+> **RFC-156**. Landed: the chaos gate (Tier-1 #1 — model-based fault coverage for
+> the whole lifecycle incl. the concurrent refiner-vs-rebalancer race; found no
+> correctness bugs), the ops-doc refresh (Tier-1 #2), the reference maintenance
+> worker (Tier-2 #4, `cmd/spfresh-maintainer` + `RunSPFreshMaintenance`), and a
+> ground-truth recall monitor (`MeasureSPFreshRecall`) + structured integrity
+> API (`SPFreshCheckIntegrity`). Still open: 10M→100M scale validation and the
+> single-store build-cap chunking (Tier-2 #3), and the read-scale-out proof —
+> see RFC-156 §4.
+
 ### Tier 1 — harden & document what shipped
 
 1. **SPFresh has NO chaos / model-based fault coverage** (broader than refinement
