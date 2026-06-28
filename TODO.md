@@ -820,6 +820,11 @@ of the comparand to the index column's key type in scanComparisonsToTupleRange (
 fix). Graefe should pick. Either way the int/float-exactness rules (float→int inequality bound: floor vs ceil per
 operator) must be handled.
 
+**Scope note (good news):** the INSERT/UPDATE *store* side is CORRECT and wire-safe — an int literal written to a
+DOUBLE column is widened and stored as `5.0` (verified: a double-typed index probe finds it; `insert_type_coercion_probe_test.go`),
+and narrowing double→BIGINT is conformantly rejected (22000, no double→long promote). So the bug is confined to the
+COMPARISON/SARG comparand promotion, not record storage — the wire format of stored records is fine.
+
 **Implementer caveat (found while scoping):** a naive "promote both operands to MaximumType" will REGRESS plan
 shapes. INT↔LONG (and any tuple-encoding-compatible pair) must NOT be promoted — wrapping the indexed column in a
 `Promote(col)` makes the data-access matcher fail to recognise it and silently drops to a residual full scan
