@@ -83,10 +83,12 @@ func startStrayRunner(t *testing.T, runnerDir string) *exec.Cmd {
 		t.Fatal(err)
 	}
 	script := filepath.Join(runnerDir, "run.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("while true; do sleep 1; done\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(script)
+	// Run via `/bin/sh <script>` (script read as data) rather than exec'ing the script
+	// directly — the latter races with concurrent forks in parallel tests (ETXTBSY).
+	cmd := exec.Command("/bin/sh", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start stray runner: %v", err)
@@ -95,6 +97,18 @@ func startStrayRunner(t *testing.T, runnerDir string) *exec.Cmd {
 }
 
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+func waitFor(t *testing.T, d time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition not met within timeout")
+}
 
 func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	t.Parallel()
@@ -176,6 +190,53 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	if !alive(pid) {
 		t.Fatal("reconcile killed a non-runner process — cmdline guard failed")
 	}
+}
+
+// TestReconcileKillsGroupAfterLeaderExit pins codex's finding: a process group
+// outlives its leader, so if run.sh exited but a Runner.Worker child still occupies
+// the slot, reconcile must still reap the group (checking group members, not just the
+// leader's cmdline).
+func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
+	t.Parallel()
+
+	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
+	if err := os.MkdirAll(runnerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	worker := filepath.Join(runnerDir, "Runner.Worker")
+	if err := os.WriteFile(worker, []byte("while true; do sleep 1; done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The leader backgrounds the worker (via `sh`, read as data — avoids ETXTBSY) into
+	// its own process group, then exits.
+	leaderScript := filepath.Join(runnerDir, "run.sh")
+	if err := os.WriteFile(leaderScript, []byte("sh \"$1\" &\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	leader := exec.Command("/bin/sh", leaderScript, worker)
+	leader.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pgid := leader.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	if err := leader.Wait(); err != nil { // leader exits immediately, worker lives on
+		t.Fatalf("leader should exit cleanly: %v", err)
+	}
+	// Worker is now an orphan whose process group is still the (dead) leader's pid.
+	waitFor(t, 3*time.Second, func() bool { return groupHasRunnerMember(pgid, runnerDir) })
+
+	pool, err := newSlotPool(t.TempDir(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRunnerPID(discardLogger(), pool.all[0].path, pgid)
+
+	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+
+	// The whole group (the orphaned worker) must be gone.
+	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
 }
 
 // fakeClient implements listener.Client for fault-injection tests.

@@ -228,7 +228,11 @@ using the **host** Docker for FDB testcontainers and share the warm slot:
    regression test pins both halves of the assumption this rests on: a hanging `GetMessage` is
    bounded by the timeout, and `listener.Run` returns the error rather than retrying internally —
    if the Public-Preview library ever changes the latter, the test fails and we add an in-process
-   self-exit.)
+   self-exit.) Trade-off: a poll-timeout restart that happens to fire mid-job kills the in-flight
+   runner (the message session is a separate connection from the job's), so a >2 m blip to the
+   *message* endpoint costs one job re-run. This is strictly better than the old wedge — warmth
+   survives (only the runner's process group dies, not the bazel server), GitHub re-queues, and
+   `go-retryablehttp` absorbs sub-2 m blips — but it will show in the logs.
 5. **Slot-leak guard.** A runner is launched only because a job was assigned+acquired, so one
    should arrive in seconds. If it does not — e.g. the run was *cancelled mid-flight*, the churn
    case that triggered this RFC — `--job-start-timeout` (default 5 m) kills the idle runner and
@@ -238,11 +242,13 @@ using the **host** Docker for FDB testcontainers and share the warm slot:
    On startup the supervisor reaps any slot whose pid file survived — a runner the previous
    incarnation crashed out from under — by `SIGKILL`ing that whole **process group** (run.sh +
    Runner.Listener + Runner.Worker + the job's bazel *client*), so a stray job can't keep writing a
-   slot the pool now treats as free. It is **scoped to our own slot pid files**, so it never
-   touches a classic or other runner sharing the host (the side-by-side migration), and a cmdline
-   check guards against the recorded PID having been reused. Warm bazel *servers* survive (own
-   session); killing the bazel *client* already releases the `output_base` lock — we do **not**
-   `bazel shutdown`, which would throw away warmth.
+   slot the pool now treats as free. It kills the group only if a live group *member* still looks
+   like a runner — scanning the group rather than trusting the leader, because a process group
+   outlives its leader (run.sh can exit while a Runner.Worker keeps writing the slot), which also
+   guards against the recorded PGID having been reused. It is **scoped to our own slot pid files**,
+   so it never touches a classic or other runner sharing the host (the side-by-side migration).
+   Warm bazel *servers* survive (own session); killing the bazel *client* already releases the
+   `output_base` lock — we do **not** `bazel shutdown`, which would throw away warmth.
 7. **Idempotent registration.** A scale-set name is unique per group; a stale set left by a crashed
    run (same name) is deleted before re-creating, so a `Restart=always` daemon can't crash-loop on
    "name already exists".

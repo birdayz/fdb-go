@@ -210,17 +210,20 @@ func (s *Scaler) watchJobStart(r *runner) {
 	case <-r.done:
 		return
 	case <-timer.C:
+		// Check busy and kill atomically under the lock: a JobStarted that lands while
+		// we decide must not be missed. HandleJobStarted sets r.busy under the same lock,
+		// so it either wins (we see busy and skip) or loses (we kill before it sets busy).
 		s.mu.Lock()
-		busy := r.busy
-		s.mu.Unlock()
-		if busy {
+		if r.busy {
+			s.mu.Unlock()
 			return
 		}
-		s.logger.Warn("runner started no job within timeout; killing and reclaiming slot",
+		s.signalGroup(r.cmd, syscall.SIGKILL)
+		s.mu.Unlock()
+		s.logger.Warn("runner started no job within timeout; killed and reclaiming slot",
 			slog.String("name", r.name),
 			slog.Int("slot", r.slot.index),
 			slog.Duration("timeout", s.jobStartTimeout))
-		s.signalGroup(r.cmd, syscall.SIGKILL)
 	}
 }
 
@@ -383,8 +386,13 @@ func reconcileStrayRunners(logger *slog.Logger, pool *slotPool, runnerDir string
 		if err != nil || pid <= 1 {
 			continue
 		}
-		if !cmdlineMatchesRunner(procCmdline(pid), runnerDir) {
-			continue // process gone, or the PID was reused by something unrelated
+		// Decide on group MEMBERS, not just the leader: a process group outlives its
+		// leader, so if run.sh exited but a child (Runner.Worker, etc.) is still alive
+		// in the group it would keep writing the slot. Checking only the leader's
+		// cmdline would miss that. Requiring a runner-like *member* also guards against
+		// the recorded PGID having been reused by something unrelated.
+		if !groupHasRunnerMember(pid, runnerDir) {
+			continue
 		}
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 			logger.Warn("reconcile: kill stray runner group failed", slog.Int("pgid", pid), slog.Any("err", err))
@@ -401,6 +409,53 @@ func procCmdline(pid int) []byte {
 		return nil
 	}
 	return data
+}
+
+// groupHasRunnerMember reports whether any live process in process group pgid has a
+// runner-like cmdline. It scans /proc (rather than trusting the leader) so a group
+// whose leader exited but whose Runner.Worker/run.sh child survives is still reaped,
+// and so a reused PGID with no runner member is left alone.
+func groupHasRunnerMember(pgid int, runnerDir string) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		mpid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue // not a pid dir
+		}
+		if procPGID(mpid) != pgid {
+			continue
+		}
+		if cmdlineMatchesRunner(procCmdline(mpid), runnerDir) {
+			return true
+		}
+	}
+	return false
+}
+
+// procPGID returns the process group id from /proc/<pid>/stat, or -1. The comm field
+// (field 2) can contain spaces and parens, so we parse after the last ')'.
+func procPGID(pid int) int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return -1
+	}
+	rparen := strings.LastIndexByte(string(data), ')')
+	if rparen < 0 {
+		return -1
+	}
+	// After ')': state(0) ppid(1) pgrp(2) ...
+	fields := strings.Fields(string(data)[rparen+1:])
+	if len(fields) < 3 {
+		return -1
+	}
+	pgrp, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return -1
+	}
+	return pgrp
 }
 
 // cmdlineMatchesRunner reports whether a /proc cmdline (NUL-separated argv) looks
