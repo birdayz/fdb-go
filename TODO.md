@@ -775,6 +775,22 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] executor/types: cross-type numeric equality on an INDEXED column drops rows (no SARG comparand promotion) — found 2026-06-28
+
+`SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
+which equals the stored 5.0). Same for a cross-type index-probe join `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` → empty
+instead of matching 5=5.0. **Root cause:** the index SARG packs the comparand in its NATIVE type
+(int64 `5`), which encodes differently from the column's DOUBLE tuple element, so the probe misses the entries.
+The RESIDUAL (non-index) path is CORRECT — `xbig = 5.0` matches via `cmpAny`'s runtime numeric coercion — and an
+explicit `CAST(a.xbig AS DOUBLE) = bd.ydbl` works. Only the index-SARG path is wrong. **Why deferred (dedicated
+effort):** the Java-aligned fix is comparand promotion to `MaximumType` at comparison resolution
+(`expr.ResolveComparison`) PLUS making `values.PromoteValue.Evaluate` actually coerce numerics (it is currently a
+no-op passthrough — an incomplete port; Java's PromoteValue coerces) PLUS the data-access matcher handling a
+`Promote(col)`-wrapped operand. That touches EVERY comparison's resolution + core value-eval semantics + the
+matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended change. Repro shape lives in
+`cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
+work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
