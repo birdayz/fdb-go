@@ -65,7 +65,8 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 		return "", err
 	}
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation, msg)
+		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00); match it.
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
@@ -143,7 +144,8 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 		return "", err
 	}
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
-		return "", api.NewError(api.ErrCodeUnsupportedOperation, msg)
+		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00); match it.
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)

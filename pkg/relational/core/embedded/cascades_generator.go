@@ -323,7 +323,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
+		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00) in
+		// ExpressionVisitor.visitAggregateWindowedFunction; match that SQLSTATE.
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	if msg := findFullOuterWithExists(logicalOp); msg != "" {

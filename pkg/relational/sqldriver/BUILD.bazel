@@ -23,6 +23,7 @@ go_library(
 go_test(
     name = "sqldriver_test",
     srcs = [
+        "agg_null_semantics_probe_test.go",
         "aggregate_edge_probe_test.go",
         "ambiguous_column_star_test.go",
         "array_cardinality_fdb_test.go",
@@ -73,6 +74,7 @@ go_test(
         "noncorrelated_exists_fdb_test.go",
         "null_index_probe_variants_test.go",
         "null_join_agg_probe_test.go",
+        "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",
         "orderby_dnf_probe_test.go",
         "ordered_grouped_scalar_subquery_fdb_test.go",
