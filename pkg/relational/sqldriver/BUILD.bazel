@@ -212,6 +212,7 @@ go_test(
         "three_valued_logic_probe_test.go",
         "transaction_probe_test.go",
         "twotable_order_invariant_test.go",
+        "tx_commit_rollback_probe_test.go",
         "tx_select_isolation_probe_test.go",
         "txctl_statements_probe_test.go",
         "type_coercion_probe_test.go",
