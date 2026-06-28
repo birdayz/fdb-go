@@ -143,6 +143,7 @@ go_test(
         "rfc087_swallow_sort_fdb_test.go",
         "rfc153_matrix_fdb_test.go",
         "scalar_math_probe_test.go",
+        "scalar_subquery_correlation_probe_test.go",
         "scalar_subquery_cte_test.go",
         "selfjoin_chain_probe_test.go",
         "selfjoin_having_probe_test.go",

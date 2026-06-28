@@ -863,6 +863,29 @@ operand that is (or could be) the indexed column — wrap only the narrower NON-
 (indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
 (if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
 
+### [ ] query-engine: scalar-subquery cardinality (21000) NOT enforced for CORRELATED subqueries — Go-extension inconsistency (Graefe design, found 2026-06-28)
+
+A scalar subquery `(SELECT ...)` returning >1 row for a given outer row is, by SQL standard, a runtime
+cardinality violation. Findings:
+- **Java enforces NO cardinality at all** — its `ErrorCode` enum (fdb-relational-api) has no 21000 /
+  CARDINALITY_VIOLATION code, and there is no "more than one row" check anywhere in fdb-relational-core. So Java
+  silently takes some row.
+- **Go added 21000 enforcement** (`executor/scalar_subquery.go`, SQL-standard, stricter than Java) — but ONLY on
+  the NON-correlated path. `SELECT (SELECT salary FROM emp) FROM dept` → 21000. ✔
+- **Correlated scalar subqueries do NOT enforce it.** `SELECT (SELECT salary FROM emp e WHERE e.dept_id=dept.id)
+  FROM dept` with a dept that has 2 employees silently returns the FIRST salary (not 21000); in a WHERE comparison
+  it silently yields wrong rows. Correlated scalar subqueries are planned via the RFC-077 source-anchored join
+  (`NewScalarSubqueryAnchoredRecord`), which has no at-most-one guard and effectively first-or-defaults per outer
+  row.
+
+This is a Go-extension INTERNAL inconsistency, **not a Java-conformance bug** (Java enforces neither, so neither
+direction diverges from Java). The decision is **Graefe's**: either (a) extend 21000 to the correlated path
+(SQL-standard, consistent — the RFC-077 join's inner needs an at-most-one-or-error operator, replacing the
+implicit first-or-default), or (b) drop the non-correlated 21000 to match Java's no-enforcement (consistent the
+other way). The current enforce-non-correlated-only middle is the wart. Behavior pinned by
+`scalar_subquery_correlation_probe_test.go` (`corr_scalar_multi_row_currently_unenforced` — flip to expect 21000
+if (a) is chosen). Not a safe unattended change (Cascades/RFC-077, high blast radius); needs the Graefe RFC.
+
 ### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
