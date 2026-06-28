@@ -8,6 +8,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
@@ -122,5 +124,132 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(report.CorpusSize).To(BeZero())
 		Expect(report.QueriesRun).To(BeZero())
+	})
+
+	It("detects silent index corruption that the integrity check cannot", func() {
+		ks := specSubspace()
+		idx := recallIndex("spf_recall_corrupt")
+		b := recallMetadata()
+		b.AddIndex("Order", idx)
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		// Healthy bulk-built index over 64 distinct grid points.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			if _, serr := store.MarkIndexDisabled("spf_recall_corrupt"); serr != nil {
+				return nil, serr
+			}
+			id := int64(1)
+			for p := int32(0); p < 8; p++ {
+				for q := int32(0); q < 8; q++ {
+					if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(p), Quantity: proto.Int32(q)}); serr != nil {
+						return nil, serr
+					}
+					id++
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_recall_corrupt", 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			_, serr = store.MarkIndexReadable("spf_recall_corrupt")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		measure := func() SPFreshRecallReport {
+			var rep SPFreshRecallReport
+			_, merr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				rep, serr = MeasureSPFreshRecall(ctx, store, "spf_recall_corrupt", 5, 40, 7)
+				return nil, serr
+			})
+			Expect(merr).NotTo(HaveOccurred())
+			return rep
+		}
+		integrityBad := func() int {
+			var rep SPFreshIntegrityReport
+			_, ierr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				rep, serr = SPFreshCheckIntegrity(rtx, store, "spf_recall_corrupt", 1<<30)
+				return nil, serr
+			})
+			Expect(ierr).NotTo(HaveOccurred())
+			return rep.MembershipWithoutEntry + rep.BadTargets
+		}
+
+		healthy := measure()
+		Expect(healthy.MeanRecall).To(BeNumerically(">=", 0.90))
+		Expect(integrityBad()).To(BeZero(), "healthy index has no integrity violations")
+
+		// Silently drop HALF the records from the index — posting entries,
+		// membership row, and sidecar all cleared — WITHOUT deleting the
+		// records. The records still exist (ground truth still expects them),
+		// but the index can no longer return them. Because membership is
+		// removed too, this leaves NO dangling membership, so the integrity
+		// check stays green. Only recall sees it.
+		var idxSub subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			idxSub = store.indexSubspace(idx)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			g, gerr := spfreshReadGenerationSnapshot(tx, newSPFreshStorage(idxSub, 0))
+			if gerr != nil {
+				return nil, gerr
+			}
+			s := newSPFreshStorage(idxSub, g)
+			for pk := int64(1); pk <= 64; pk += 2 { // half the records
+				p := tuple.Tuple{pk}
+				mem, merr := spfreshReadMembership(tx, s, p)
+				if merr != nil {
+					continue
+				}
+				for _, fineID := range mem {
+					tx.Clear(s.postingKey(fineID, p))
+				}
+				tx.Clear(s.membershipKey(p))
+				tx.Clear(s.sidecarKey(p))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Integrity is STILL clean (no dangling membership) — it cannot see
+		// this class of corruption...
+		Expect(integrityBad()).To(BeZero(),
+			"clean removal leaves no structural violation — integrity is blind to it")
+		// ...but recall catches it: dropped records remain in the corpus
+		// (ground truth) and the index can no longer return them.
+		corrupted := measure()
+		GinkgoWriter.Printf("recall@5: healthy mean=%.4f, corrupted mean=%.4f\n",
+			healthy.MeanRecall, corrupted.MeanRecall)
+		Expect(corrupted.MeanRecall).To(BeNumerically("<", healthy.MeanRecall-0.15),
+			"recall monitor must detect the silent drop (healthy %.4f -> corrupted %.4f)",
+			healthy.MeanRecall, corrupted.MeanRecall)
 	})
 })
