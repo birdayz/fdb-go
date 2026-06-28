@@ -46,6 +46,7 @@ go_test(
         "column_metadata_probe_test.go",
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
+        "conditional_aggregation_probe_test.go",
         "constant_predicate_probe_test.go",
         "constraint_validation_probe_test.go",
         "correlated_exists_crossjoin_test.go",
