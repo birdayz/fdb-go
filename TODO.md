@@ -939,6 +939,25 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — follow-up to the SET-column fix (found 2026-06-28)
+
+Sibling to the now-fixed "UPDATE SET undefined column → 42703" leak. Remaining DML
+error-classification asymmetries (all have a SQLSTATE, so lower severity than the SET
+leak which had none):
+- `UPDATE t SET a=5 WHERE nope=1` (nonexistent WHERE column) → `0AF00: DML Cascades
+  translation failed`, whereas `SELECT … WHERE nope=1` → clean 42703 ("column
+  NONEXISTENT does not exist", pinned as error_undefined_column_where).
+- `UPDATE notable …` / `DELETE FROM notable …` (nonexistent table) → `0AF00: DML
+  Cascades translation failed`, whereas `INSERT INTO notable …` → clean `42F01:
+  Unknown table`.
+The WHERE/table resolution failure in the DML builder
+(buildLogicalPlanForUpdateWithCatalog → upgradeDMLWhereWithCatalog /
+buildWherePredicateForTableE, and the DELETE equivalent) collapses to a generic
+0AF00 instead of surfacing the specific 42703/42F01 the SELECT/INSERT paths already
+produce. Fix = thread the specific undefined-column / unknown-table error out of the
+DML WHERE/table resolver (matching SELECT/INSERT), rather than mapping any failure to
+"DML Cascades translation failed". Check Java's wording/SQLSTATE for parity.
+
 ### [ ] executor: UPDATE of a PRIMARY KEY column surfaces a leaky XXXXX error (found 2026-06-28)
 
 `UPDATE t SET id = <new> WHERE id = <old>` (id is the PK) fails with SQLSTATE XXXXX
