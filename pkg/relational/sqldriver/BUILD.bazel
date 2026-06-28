@@ -200,6 +200,7 @@ go_test(
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
         "statistics_fdb_test.go",
+        "string_funcs_boundary_probe_test.go",
         "string_functions_probe_test.go",
         "string_index_range_probe_test.go",
         "string_len_pad_probe_test.go",
