@@ -152,7 +152,12 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			}
 			b.WriteByte('\'')
 		case []byte:
-			b.WriteByte('\'')
+			// A []byte parameter must render as a BYTES literal `X'<hex>'`, NOT a
+			// string literal `'<hex>'`. Without the `X` prefix the value is parsed
+			// as a STRING containing the hex digits and stored as those ASCII
+			// bytes — so a []byte bound to a BYTES column round-trips as the wrong
+			// bytes (and a Java reader sees a hex string, not the intended bytes).
+			b.WriteString("X'")
 			for _, bv := range val {
 				fmt.Fprintf(&b, "%02x", bv)
 			}
