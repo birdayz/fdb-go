@@ -501,12 +501,20 @@ func TestBuildLogicalPlanWithCatalog_CTENoPredNeeded(t *testing.T) {
 func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
+	// Use a column pair that EXISTS in the demo schema (Order.order_id,
+	// Customer.customer_id) so the ON predicate resolves and upgrades. (The
+	// earlier query used Order.customer_id, which Order does not have — the
+	// resolver correctly rejected it, but that masked the upgrade mechanism
+	// under best-effort tolerance.)
 	root, err := parseQueryFromSelect(t,
-		"SELECT Order.order_id FROM Order INNER JOIN Customer ON Order.customer_id = Customer.customer_id WHERE Order.price > 5")
+		"SELECT Order.order_id FROM Order INNER JOIN Customer ON Order.order_id = Customer.customer_id WHERE Order.price > 5")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	op, _ := buildLogicalPlanForQueryWithCatalog(root, md)
+	op, err := buildLogicalPlanForQueryWithCatalog(root, md)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if op == nil {
 		t.Fatal("expected non-nil plan")
 	}
@@ -529,13 +537,34 @@ func TestBuildLogicalPlanWithCatalog_JoinOnPredicateUpgrade(t *testing.T) {
 	if join.OnText == "" {
 		t.Fatal("JOIN OnText should be non-empty")
 	}
-	// OnPredicate upgrade is best-effort — the upgrade may fail if the
-	// resolver can't walk the ON expression. Pin the upgrade success
-	// rather than failing on it.
-	if join.OnPredicate != nil {
-		t.Logf("JOIN ON predicate upgraded successfully: %v", join.OnPredicate)
-	} else {
-		t.Logf("JOIN ON predicate not upgraded (resolver declined) — OnText=%q", join.OnText)
+	// A resolvable equi-join ON MUST upgrade to a structured OnPredicate — the
+	// resolver no longer silently drops it (that drop was the cross-product bug).
+	if join.OnPredicate == nil {
+		t.Fatalf("JOIN ON predicate must upgrade to a structured predicate, got nil (OnText=%q)", join.OnText)
+	}
+}
+
+// TestBuildLogicalPlanWithCatalog_JoinOnUndefinedColumn pins that an ON predicate
+// referencing a column that does not exist is rejected cleanly (42703) rather than
+// silently dropped → cross product. (Order has no customer_id in the demo schema.)
+func TestBuildLogicalPlanWithCatalog_JoinOnUndefinedColumn(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	root, err := parseQueryFromSelect(t,
+		"SELECT Order.order_id FROM Order INNER JOIN Customer ON Order.customer_id = Customer.customer_id")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = buildLogicalPlanForQueryWithCatalog(root, md)
+	if err == nil {
+		t.Fatal("ON referencing a nonexistent column must be rejected, got no error")
+	}
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not *api.Error: %T %v", err, err)
+	}
+	if apiErr.Code != api.ErrCodeUndefinedColumn {
+		t.Fatalf("error code = %s, want %s (42703)", apiErr.Code, api.ErrCodeUndefinedColumn)
 	}
 }
 

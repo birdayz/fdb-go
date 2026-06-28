@@ -917,3 +917,127 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 		t.Fatalf("got %q, want %q (flush error must re-drive through getValue)", got, want)
 	}
 }
+
+// TestRead_BoundedByTimeout_NoHang pins that a read whose proxies / storage servers
+// never reply (a wedged or dead cluster) is bounded by the transaction timeout: it
+// returns transaction_timed_out (1031) within the deadline instead of retrying the
+// unreachable cluster forever inside the getKeyLocation load-balance loop.
+//
+// This is the deterministic regression for the nightly-stress hang. Under sustained
+// ingest the single-node Docker FDB stopped responding and a getValue wedged for
+// ~35 min inside locationCache.queryLocations (locality.go), because the SQL ingest
+// path set no transaction timeout. The infinite retry itself is CORRECT, C++/Java-
+// faithful behaviour (a real cluster recovers and the read resumes; neither client
+// sets a default timeout) — so the fix is not to bound the client by default but to
+// prove that WHEN a timeout is set, an unreachable-cluster read fails fast.
+//
+// Determinism (no timer-vs-real-reply race): (1) succeed a GRV and a warm read while
+// the dialer is clean, (2) invalidate the key's cached location so the next read MUST
+// re-run queryLocations, (3) arm() — every connection now returns EOF on Read, so no
+// proxy can ever answer the GetKeyServerLocations request — then (4) SetTimeout(2s)
+// and Get. The only thing that can end the read is the opContext deadline waking the
+// ctx.Done() arms in queryLocations (locality.go:468/484), mapped to 1031 by
+// mapTimeout (readpath.go). Revert-prove: drop those ctx.Done() arms (reintroducing
+// the hang) and Get never returns; the independent 30s watchdog below fires → red.
+// (The watchdog is load-bearing: a plain `elapsed > 30s` check AFTER Get could never
+// fire on a true hang — Get would block to the package/CI timeout first.)
+func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
+	if err != nil {
+		t.Fatalf("start FDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	connStr, err := container.ClusterFile(ctx)
+	if err != nil {
+		t.Fatalf("get cluster file: %v", err)
+	}
+	cf, err := ParseClusterString(connStr)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, internalReader, _ := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
+	internalBytes, _ := io.ReadAll(internalReader)
+	internalStr := string(internalBytes)
+	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
+		internalStr = internalStr[idx:]
+	}
+	internalCF, _ := ParseClusterString(strings.TrimSpace(internalStr))
+	connectCF := &ClusterFile{
+		Description:  internalCF.Description,
+		ID:           internalCF.ID,
+		Coordinators: cf.Coordinators,
+	}
+
+	fd := &faultDialer{}
+	db := newTestDatabase(t, ctx, connectCF, fd.dial)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_k")
+
+	// Seed + a warm successful read (clean dialer): populates the location cache and
+	// proves the path works before we wedge it.
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v"))
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	}); err != nil {
+		t.Fatalf("warm read: %v", err)
+	}
+
+	// Pre-fetch a read version while the dialer is clean, so the bounded read lands in
+	// the location / load-balance loop rather than blocking in GRV.
+	rv, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, false, false)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+
+	// Force the next read to re-locate (else a cache hit would skip queryLocations).
+	db.db.locCache.invalidate(key, NoTenantID)
+
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	tx.SetTimeout(2000) // 2s — must bound the read well under the 90s ctx
+
+	fd.arm() // every connection now EOFs on Read: no proxy / SS can answer
+
+	// Run the read under an INDEPENDENT watchdog. If the hang regression returns, Get
+	// never returns, so checking elapsed AFTER Get would itself hang to the package/CI
+	// timeout. The watchdog converts that hang into a fast, clear failure at 30s.
+	start := time.Now()
+	type readResult struct{ err error }
+	done := make(chan readResult, 1)
+	go func() {
+		_, gerr := tx.Get(ctx, key)
+		done <- readResult{err: gerr}
+	}()
+	const watchdog = 30 * time.Second // ≫ the 2s SetTimeout; a real bound returns in ~2s
+	select {
+	case r := <-done:
+		err = r.err
+	case <-time.After(watchdog):
+		// Do NOT cancel ctx here: the deferred container.Terminate(ctx) needs a live
+		// ctx to remove the testcontainer (defers run LIFO: db.Close → Terminate →
+		// cancel, so ctx is still live at Terminate). The stuck read goroutine is
+		// unblocked during teardown by the deferred db.Close() via db.ctx.Done().
+		t.Fatalf("Get against a wedged cluster did not return within %v — SetTimeout did not bound the getKeyLocation loop (hang regression)", watchdog)
+	}
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Get returned nil error against a wedged cluster — a read must not succeed when no server can reply")
+	}
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
+		t.Fatalf("want transaction_timed_out (%d), got %v (%T)", ErrTransactionTimedOut, err, err)
+	}
+	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
+}

@@ -634,22 +634,163 @@ type predicateValue struct {
 	pred predicates.QueryPredicate
 }
 
-func (pv *predicateValue) Children() []values.Value                 { return []values.Value{} }
+// predicateChildValues returns the operand Values reachable inside a predicate
+// (used to surface a predicateValue's hidden value references to value-tree
+// walks). Recurses the boolean connectives; a leaf comparison/value predicate
+// yields its operand value(s). Unknown predicate types yield nothing (degrading
+// to the prior opaque behavior rather than guessing). Mirrors the predicate
+// shapes SimplifyPredicateValues handles.
+func predicateChildValues(p predicates.QueryPredicate) []values.Value {
+	switch q := p.(type) {
+	case *predicates.ComparisonPredicate:
+		var out []values.Value
+		if q.Operand != nil {
+			out = append(out, q.Operand)
+		}
+		if q.Comparison.Operand != nil {
+			out = append(out, q.Comparison.Operand)
+		}
+		return out
+	case *predicates.ValuePredicate:
+		if q.Value != nil {
+			return []values.Value{q.Value}
+		}
+	case *predicates.ExistentialValuePredicate:
+		if q.Value != nil {
+			return []values.Value{q.Value}
+		}
+	case *predicates.AndPredicate:
+		var out []values.Value
+		for _, sp := range q.SubPredicates {
+			out = append(out, predicateChildValues(sp)...)
+		}
+		return out
+	case *predicates.OrPredicate:
+		var out []values.Value
+		for _, sp := range q.SubPredicates {
+			out = append(out, predicateChildValues(sp)...)
+		}
+		return out
+	case *predicates.NotPredicate:
+		return predicateChildValues(q.Child)
+	}
+	return nil
+}
+
+// predicateWithChildValues reconstructs a predicate, substituting its operand
+// Values with the entries of newCh consumed in the SAME order predicateChildValues
+// yields them. The inverse of predicateChildValues — used by
+// predicateValue.WithChildrenValue so values.Replace / RebaseValue can rewrite
+// (e.g. correlation-rebase) the values inside a CASE WHEN condition. Returns the
+// input unchanged on an arity mismatch (defensive; the framework always passes a
+// matching slice).
+func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value) predicates.QueryPredicate {
+	idx := 0
+	var rebuild func(predicates.QueryPredicate) predicates.QueryPredicate
+	next := func() (values.Value, bool) {
+		if idx >= len(newCh) {
+			return nil, false
+		}
+		v := newCh[idx]
+		idx++
+		return v, true
+	}
+	rebuild = func(p predicates.QueryPredicate) predicates.QueryPredicate {
+		switch q := p.(type) {
+		case *predicates.ComparisonPredicate:
+			op := q.Operand
+			if q.Operand != nil {
+				if v, ok := next(); ok {
+					op = v
+				}
+			}
+			cmp := q.Comparison
+			if q.Comparison.Operand != nil {
+				if v, ok := next(); ok {
+					cmp.Operand = v
+				}
+			}
+			return &predicates.ComparisonPredicate{Operand: op, Comparison: cmp}
+		case *predicates.ValuePredicate:
+			if q.Value != nil {
+				if v, ok := next(); ok {
+					return predicates.NewValuePredicate(v)
+				}
+			}
+			return q
+		case *predicates.ExistentialValuePredicate:
+			if q.Value != nil {
+				if v, ok := next(); ok {
+					// Use the validated constructor (a rebased existential operand
+					// stays a QuantifiedObjectValue). Defensive: this arm is unreached
+					// in practice — a predicateValue only ever wraps a CASE WHEN
+					// condition, and EXISTS-in-CASE-WHEN is rejected upstream.
+					return predicates.MustNewExistentialValuePredicate(v, q.Comparison)
+				}
+			}
+			return q
+		case *predicates.AndPredicate:
+			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+			for i, sp := range q.SubPredicates {
+				subs[i] = rebuild(sp)
+			}
+			return predicates.NewAnd(subs...)
+		case *predicates.OrPredicate:
+			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
+			for i, sp := range q.SubPredicates {
+				subs[i] = rebuild(sp)
+			}
+			return predicates.NewOr(subs...)
+		case *predicates.NotPredicate:
+			return predicates.NewNot(rebuild(q.Child))
+		}
+		return p
+	}
+	if len(newCh) != len(predicateChildValues(p)) {
+		return p
+	}
+	return rebuild(p)
+}
+
+// Children exposes the operand Values of the WRAPPED predicate (a CASE WHEN
+// condition like `a.x > 5`). Without this, the predicate's value references are
+// invisible to every values.WalkValue-based walk — notably GetCorrelatedToOfValue
+// and PushFilterBelowJoinRule's predicateSingleSide — so a CASE used as a
+// cross-table comparison operand (`CASE WHEN a.x>5 THEN .. END = c.y`) was
+// mis-classified as single-side and wrongly pushed below the join, where `a.x` is
+// unbound → silent WRONG ROWS. (The matching WithChildrenValue below implements
+// values.SelfWithChildren, so values.Replace / RebaseValue now REBUILD the wrapped
+// predicate with the substituted children rather than returning the node unchanged;
+// equality/hash below use the whole predicate, which is consistent with these
+// children.)
+func (pv *predicateValue) Children() []values.Value                 { return predicateChildValues(pv.pred) }
 func (pv *predicateValue) Name() string                             { return "predicate" }
 func (pv *predicateValue) Type() values.Type                        { return values.TypeBool }
 func (pv *predicateValue) GetPredicate() predicates.QueryPredicate  { return pv.pred }
 func (pv *predicateValue) SetPredicate(p predicates.QueryPredicate) { pv.pred = p }
 
+// WithChildrenValue implements values.SelfWithChildren: it rebuilds the wrapped
+// predicate with the substituted operand Values (the inverse of Children() above),
+// so values.Replace / RebaseValue can rewrite the values inside the CASE WHEN
+// condition (e.g. correlation rebase) instead of hitting withChildren's
+// unhandled-type panic.
+func (pv *predicateValue) WithChildrenValue(newChildren []values.Value) values.Value {
+	return &predicateValue{pred: predicateWithChildValues(pv.pred, newChildren)}
+}
+
 // EqualsWithoutChildrenValue implements values.SelfEqualsWithoutChildren so the
 // Cascades matcher (values.EqualsWithoutChildren) can structurally compare a
 // predicate-as-value without the values package importing expr (which would
-// cycle). predicateValue is a leaf Value — Children() is empty — so its node
-// equality is the full structural equality of the wrapped predicate.
-// Non-alias-aware, matching EqualsWithoutChildren's structural (not semantic)
-// contract.
+// cycle). Its node equality is the FULL structural equality of the wrapped
+// predicate. Children() now also exposes the predicate's operand values, so the
+// matcher additionally recurses them — a redundant (but consistent) double-check,
+// since equal-whole-predicate implies equal-operands. Non-alias-aware, matching
+// EqualsWithoutChildren's structural (not semantic) contract.
 //
-// NOTE: the SelfEqualsWithoutChildren interface carries no alias map, so this
-// comparison is alias-blind inside the opaque leaf. That is safe today because the
+// NOTE: the SelfEqualsWithoutChildren interface carries no alias map, so the
+// node-level comparison is alias-blind. AND-ed with the alias-AWARE child
+// recursion this makes predicateValue equality effectively alias-blind (stricter
+// → can only MISS interning, never produce a false merge). That is safe today because the
 // memo interns non-merge selects under the identity alias map (so raw correlation
 // equality is exactly the alias-aware result). If alias-aware interning is ever
 // widened to selects whose result trees carry predicateValues, this interface (and
@@ -2158,6 +2299,44 @@ func ContainsExistsAtom(ctx antlr.Tree) bool {
 	}
 	for i := 0; i < ctx.GetChildCount(); i++ {
 		if ContainsExistsAtom(ctx.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ContainsSubqueryAtom reports whether the parse tree rooted at ctx contains a
+// SCALAR subquery atom `(SELECT ...)` (SubqueryExpressionAtomContext) or an
+// `x IN (SELECT ...)` subquery body (an InListContext carrying a
+// QueryExpressionBody) at the CURRENT query level. A structural typed-node walk,
+// no GetText.
+//
+// Used by the logical builder to reject these subquery shapes cleanly in
+// positions that do not install a SubqueryPlanner — notably a JOIN ON clause,
+// where Go (like Java) does not support IN-subqueries or correlated scalar
+// subqueries. Without this, the ON resolver's WalkPredicate declines the shape
+// with UnsupportedExpressionShapeError and the caller silently DROPS the whole
+// ON predicate → the join degrades to a CROSS PRODUCT (silent wrong rows). EXISTS
+// atoms are matched separately by ContainsExistsAtom (EXISTS-in-ON IS supported).
+//
+// An `x IN (a, b, c)` value list (no QueryExpressionBody) is NOT a subquery and
+// is not matched; the walk descends into its elements in case one is itself a
+// scalar subquery. A matched subquery atom is not descended into — its inner
+// SELECT is that subquery's own concern.
+func ContainsSubqueryAtom(ctx antlr.Tree) bool {
+	if ctx == nil {
+		return false
+	}
+	switch c := ctx.(type) {
+	case *antlrgen.SubqueryExpressionAtomContext:
+		return true
+	case *antlrgen.InListContext:
+		if c.QueryExpressionBody() != nil {
+			return true
+		}
+	}
+	for i := 0; i < ctx.GetChildCount(); i++ {
+		if ContainsSubqueryAtom(ctx.GetChild(i)) {
 			return true
 		}
 	}

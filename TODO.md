@@ -775,20 +775,390 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] executor: materialized NestedLoopJoin DROPS an `IN`-subquery conjunct in a compound LEFT-OUTER ON clause → CROSS PRODUCT (pre-existing, surfaced by RFC-153 attribution 2026-06-27)
+### [x] planner: `LIMIT 0` returned ALL rows unless the inner was a bare table scan (Go-only LIMIT extension) — FIXED 2026-06-28
+
+`SELECT id FROM t LIMIT 0` (bare scan) returned 0 rows, but `LIMIT 0` over any non-bare inner (WHERE / ORDER BY /
+index) returned EVERY row. **Root cause:** `ZeroLimitRule` rewrote `Limit(0, X)` to
+`NewFullUnorderedScanExpression(nil, UnknownType)`, believing nil record-types meant an empty source — but nil means
+"scan ALL record types", i.e. a full table scan. The broken full-scan alternative won on cost over the correct
+`Limit(0, …)` whenever the inner was more than a bare scan (the bare case kept `Limit(0, Scan)`). **Fix:** deleted
+the broken Go-only `ZeroLimitRule` (Java has no LIMIT, so no reference). `LIMIT 0` now always lowers to
+`RecordQueryLimitPlan(0)` via `ImplementLimitRule`, which the executor's limitEnvelopeCursor short-circuits to 0
+rows. Regression: `limit_zero_fdb_test.go` (bare / WHERE / ORDER BY / index / aggregate / OFFSET shapes). The
+pre-existing `TestFDB_LimitZeroReturnsNothing` only covered the bare case — a dimensional gap.
+
+### [~] executor/types: cross-type numeric SARG on an INDEXED column — PARTIALLY FIXED 2026-06-28 (int-const vs DOUBLE-col done; IN / float-const / col-col remain)
+
+**FIXED (2026-06-28):** the common + severe direction — an INTEGER literal vs a DOUBLE indexed column, for both
+comparison ops (`=,<>,<,<=,>,>=`, via `expr.ResolveComparison`→`widenIntConstAgainstDouble`) AND IN-lists (`d IN
+(5,7)`, via `expr.ResolveIn`). The int constant(s) are widened to DOUBLE (`5`→`5.0`) when the other operand /
+the LHS is a non-constant DOUBLE, so the SARG packs the right tuple type while the indexed column stays bare (index
+still matched — verified with an EXPLAIN IndexScan assertion). Regression: `crosstype_const_sarg_fdb_test.go`. Full
+53-target suite green (no plan-shape/result regression); Graefe + Torvalds ACK. **STILL BROKEN (deferred — need the
+broader MaximumType+PromoteValue design that SUBSUMES this special case, not a parallel branch):**
+- DOUBLE/FLOAT literal vs INT/LONG column (the narrowing direction): `n_bigint = 5.0` / `n > 6.0` → `[]`. Needs
+  per-operator float→int exactness (floor/ceil + integral check), so it was NOT folded into the safe int→double fix.
+- col-vs-col cross-type join: `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` (both non-constant) → still empty.
+- FLOAT (not DOUBLE) columns — only DOUBLE handled. **SEVERE + now pinned
+  (indexed_float_sarg_probe_test.go, 2026-06-28):** an INDEXED FLOAT(32-bit) column
+  returns ZERO rows for EVERY equality/range comparison — even `f = 1.5` where 1.5 is
+  exactly representable in float32 (so it is NOT a precision edge; the SARG is wholly
+  cross-type-broken for FLOAT cols). The float64 literal is packed into the float32
+  index with a mismatched FDB tuple type code → matches nothing. Non-indexed FLOAT and
+  indexed DOUBLE are both correct. Note `promoteConstant`
+  (value_constant_object.go:150) has no `float64→TypeCodeFloat` case. The fix is a
+  cross-WIDTH SARG decision (compare in float32-space, or widen the float32 scan +
+  residual-filter in double-space) — part of the MaximumType/PromoteValue design
+  below, Graefe-gated.
+Original detail below (the equality `ydbl = 5` case is now fixed; the rest stands):
+
+`SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
+which equals the stored 5.0). Same for a cross-type index-probe join `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` → empty
+instead of matching 5=5.0. **Root cause:** the index SARG packs the comparand in its NATIVE type
+(int64 `5`), which encodes differently from the column's DOUBLE tuple element, so the probe misses the entries.
+The RESIDUAL (non-index) path is CORRECT — `xbig = 5.0` matches via `cmpAny`'s runtime numeric coercion — and an
+explicit `CAST(a.xbig AS DOUBLE) = bd.ydbl` works. Only the index-SARG path is wrong. **Why deferred (dedicated
+effort):** the Java-aligned fix is comparand promotion to `MaximumType` at comparison resolution
+(`expr.ResolveComparison`) PLUS making `values.PromoteValue.Evaluate` actually coerce numerics (it is currently a
+no-op passthrough — an incomplete port; Java's PromoteValue coerces) PLUS the data-access matcher handling a
+`Promote(col)`-wrapped operand. That touches EVERY comparison's resolution + core value-eval semantics + the
+matching/SARG infra (Graefe-gated, high blast radius) — not a safe unattended change. Repro shape lives in
+`cross_type_join_probe_test.go` (the BIGINT=DOUBLE case is noted, not asserted, pending the fix). int↔bigint joins
+work (identical tuple encoding); the gap is specifically int/bigint ↔ double/float (and presumably ↔ string).
+
+**EXPERIMENT FINDING (2026-06-28, saves the next implementer a dead end):** I tried the "obvious" Java-aligned
+approach — make `PromoteValue.Evaluate` coerce (via `promoteConstant`) and wrap the narrower int operand in
+`PromoteValue(floatType)` at `expr.ResolveComparison` (general: const + col-col + narrowing). It does NOT work for
+the index SARG: the `uses_index_range_scan` EXPLAIN assertion still passed (plan shape unchanged) BUT `d = 5`
+regressed to `[]` — i.e. the data-access matcher does NOT route the comparand through `PromoteValue.Evaluate` when
+packing the index range; it extracts/packs the underlying value, bypassing the coercion. So the int 5 was packed,
+not 5.0. (Reverted.) Conclusion: the working const fix uses a BARE coerced `ConstantValue{Value:5.0}` precisely
+because the matcher packs `ConstantValue.Evaluate()` directly — a Promote wrapper is transparent-to-the-matcher and
+gets unwrapped/ignored. **The real fix must coerce at the matcher / SARG-range-build level** (where the comparand
+is turned into a tuple element — e.g. thread the index column's key type into `scanComparisonsToTupleRange` and
+coerce there, or have the matcher rewrite the comparand to a typed constant), NOT merely promote at resolution.
+That is the col-vs-col + narrowing path and is the Graefe DESIGN decision. Plumbing note: there is NO direct
+"index key column types" accessor — `executeIndexScan` has `idx` whose `RootExpression` (a KeyExpression with
+`ColumnSize()`) lists the indexed columns, but per-position TYPES must be derived by mapping each key field to its
+record-type field type (handle nested / grouping key expressions). int→double coercion is exact (the common +
+col-col + severe-inequality direction); float→int (narrowing) needs per-operator floor/ceil + an integral check.
+
+**SEVERITY UPDATE (broader + worse than first thought):** the gap is not limited to equality missing rows. With a
+DOUBLE indexed column `d ∈ {5.0,7.0,10.0}` and INT literal comparands:
+- `d = 5` → `[]` (misses; should be `{5.0}`) — equality, as documented.
+- `d IN (5,7)` → `[]` (misses; should be `{5.0,7.0}`) — IN-list has the same bug.
+- `d > 6` → `{5.0,7.0,10.0}` — returns 5.0 which is NOT > 6 (**WRONG ROWS**, not just missing).
+- `d < 8` → `[]` — returns nothing though 5.0,7.0 ARE < 8 (**WRONG ROWS**).
+- `d BETWEEN 5 AND 8` → `{5.0,7.0}` (CORRECT — inconsistent with `>`/`<`; likely a residual re-check on the
+  closed range that the open inequalities skip).
+- All `*.0` double-literal comparands and the residual path are correct.
+The inequality cases are the worst: INT and DOUBLE are different FDB tuple type-codes and all doubles sort after all
+ints, so an int-bound range over a double index degenerates to all-or-nothing. This RAISES priority — `WHERE
+double_col > <int>` silently returning wrong rows is a serious correctness hole, not a niche miss. Design question
+for the fix: plan-time comparand promotion (Java-aligned, ResolveComparison+PromoteValue) vs executor-level coercion
+of the comparand to the index column's key type in scanComparisonsToTupleRange (localized, but a "downstream"
+fix). Graefe should pick. Either way the int/float-exactness rules (float→int inequality bound: floor vs ceil per
+operator) must be handled.
+
+**Scope note (good news):** the INSERT/UPDATE *store* side is CORRECT and wire-safe — an int literal written to a
+DOUBLE column is widened and stored as `5.0` (verified: a double-typed index probe finds it; `insert_type_coercion_probe_test.go`),
+and narrowing double→BIGINT is conformantly rejected (22000, no double→long promote). So the bug is confined to the
+COMPARISON/SARG comparand promotion, not record storage — the wire format of stored records is fine.
+
+**Implementer caveat (found while scoping):** a naive "promote both operands to MaximumType" will REGRESS plan
+shapes. INT↔LONG (and any tuple-encoding-compatible pair) must NOT be promoted — wrapping the indexed column in a
+`Promote(col)` makes the data-access matcher fail to recognise it and silently drops to a residual full scan
+(plandiff/yamsql assert the index plan). Scope the promotion to the int/float boundary ONLY, and never wrap the
+operand that is (or could be) the indexed column — wrap only the narrower NON-indexed comparand, leaving the wider
+(indexed) operand bare so its index is still matched. Also confirm whether FLOAT↔DOUBLE tuple encodings differ
+(if so they need the same treatment). This is why it needs a Graefe DESIGN review, not just an ACK.
+
+### [ ] query-engine: scalar-subquery cardinality (21000) NOT enforced for CORRELATED subqueries — Go-extension inconsistency (Graefe design, found 2026-06-28)
+
+A scalar subquery `(SELECT ...)` returning >1 row for a given outer row is, by SQL standard, a runtime
+cardinality violation. Findings:
+- **Java enforces NO cardinality at all** — its `ErrorCode` enum (fdb-relational-api) has no 21000 /
+  CARDINALITY_VIOLATION code, and there is no "more than one row" check anywhere in fdb-relational-core. So Java
+  silently takes some row.
+- **Go added 21000 enforcement** (`executor/scalar_subquery.go`, SQL-standard, stricter than Java) — but ONLY on
+  the NON-correlated path. `SELECT (SELECT salary FROM emp) FROM dept` → 21000. ✔
+- **Correlated scalar subqueries do NOT enforce it.** `SELECT (SELECT salary FROM emp e WHERE e.dept_id=dept.id)
+  FROM dept` with a dept that has 2 employees silently returns the FIRST salary (not 21000); in a WHERE comparison
+  it silently yields wrong rows. Correlated scalar subqueries are planned via the RFC-077 source-anchored join
+  (`NewScalarSubqueryAnchoredRecord`), which has no at-most-one guard and effectively first-or-defaults per outer
+  row.
+
+This is a Go-extension INTERNAL inconsistency, **not a Java-conformance bug** (Java enforces neither, so neither
+direction diverges from Java). The decision is **Graefe's**: either (a) extend 21000 to the correlated path
+(SQL-standard, consistent — the RFC-077 join's inner needs an at-most-one-or-error operator, replacing the
+implicit first-or-default), or (b) drop the non-correlated 21000 to match Java's no-enforcement (consistent the
+other way). The current enforce-non-correlated-only middle is the wart. Behavior pinned by
+`scalar_subquery_correlation_probe_test.go` (`corr_scalar_multi_row_currently_unenforced` — flip to expect 21000
+if (a) is chosen). Not a safe unattended change (Cascades/RFC-077, high blast radius); needs the Graefe RFC.
+
+### [ ] driver: NO read-your-writes inside an explicit transaction — SELECT auto-commits (divergence, found 2026-06-28)
+
+Inside `BeginTx`, DML (INSERT/UPDATE/DELETE) joins the explicit FDB transaction (`runInTx` → `activeTx.rctx`) and
+is atomic on Commit / undone on Rollback — correct. But **SELECT runs in a FRESH auto-commit transaction**
+(`DB.Run`), NOT the explicit tx (cascades_generator.go: "DML joins an open explicit transaction (runInTx); SELECT
+runs in a fresh auto-commit transaction (DB.Run)"; only `respectActiveTx` = `IsUpdate()` routes through the tx).
+Consequences, confirmed by `tx_select_isolation_probe_test.go`:
+- **No read-your-writes:** a SELECT in the tx does NOT see the same tx's uncommitted DML (`UPDATE v=777` then
+  `SELECT v` → 100; `INSERT id=2` then `SELECT WHERE id=2` → no rows).
+- **No read-write serialization:** an in-tx SELECT adds no read-conflict range, so a read-modify-write across two
+  explicit txns does not raise 1020/40001 (last-writer-wins).
+
+**Divergence from Java:** Java's relational driver (`setAutoCommit(false)`) reads through the same FDB transaction
+and so DOES provide read-your-writes + read-conflict detection. This is a deliberate Go simplification (the
+executor opens its own record store; binding SELECT to the user write-tx would add read-conflict ranges — the same
+"spurious not_committed" hazard `cachedLoadSchema` already dodges for catalog reads). Fixing it = route the query
+executor's scan through `activeTx.rctx` when one is open AND solve the spurious-conflict problem (snapshot vs
+serializable reads) — a Cascades/executor + driver-tx architecture change (Graefe). Until then it's a real
+read-modify-write footgun: a txn that reads then writes the same row sees stale data. Behavior pinned (flip the
+probe's `no_read_your_writes_in_explicit_tx` assertion when in-tx reads land).
+
+### [x] DDL error classification — duplicate-column + PK-over-unknown-column now clean 42-class errors (2026-06-28)
+
+Invalid DDL was already REJECTED (fail-closed) but two cases surfaced a leaky INTERNAL error (`XX000` + raw
+proto/metadata-builder internals) instead of a clean 42-class user error. Both fixed in `parseTableDefinition`
+(ddl.go), validated BEFORE the proto-descriptor / metadata build:
+- duplicate column (`..., x BIGINT, x STRING, ...`) → clean **42701** (was `XX000: protodesc.NewFile: descriptor
+  "T.X" already declared`).
+- PRIMARY KEY over an undefined column (`... PRIMARY KEY (nope)`) → clean **42703** (was `XX000: build
+  RecordMetaData: ... field "NOPE" not found in message "T"`).
+Pinned by `ddl_errors_probe_test.go` (asserts the clean codes). Other DDL errors were already clean (42F04
+db-exists, 42F63 db-missing, 42601 no-PK, 42F59 dup-template).
+
+### [ ] identifiers: quoted DDL column is created but unreferenceable by name (case-model divergence, found 2026-06-28)
+
+Unquoted identifiers work correctly (case-insensitive, folded to upper case — `MyCol` resolves as
+MyCol/mycol/MYCOL; pinned by `identifier_case_probe_test.go`). But a column declared with a QUOTED identifier is
+mishandled:
+- `CREATE TABLE t (id BIGINT NOT NULL, "KeepCase" BIGINT, PRIMARY KEY (id))` succeeds; `INSERT INTO t (id,
+  "KeepCase") VALUES (1, 20)` succeeds; `SELECT *` shows the column as `KEEPCASE`.
+- But NO explicit reference resolves it: `SELECT keepcase` / `KEEPCASE` / `KeepCase` / `"KEEPCASE"` / `"KeepCase"`
+  all → `42703 column does not exist`. The column is effectively write-and-`SELECT *`-only — unreferenceable by
+  name in SELECT/WHERE.
+
+Root cause: an identifier-normalization mismatch across DDL storage, SELECT-* expansion, and explicit-reference
+resolution for quoted identifiers. Java has a consistent case-sensitivity model — `SemanticAnalyzer.normalizeString
+(string, caseSensitive)` ("taken as-is if caseSensitive, upper-cased otherwise") with an `isCaseSensitive` flag set
+per-identifier by quoting — so quoted identifiers round-trip (created and queried by the same quoted name). Go folds
+quoted identifiers in DDL but treats them case-sensitively in resolution → the mismatch. Fix = port Java's
+normalizeString/isCaseSensitive model so quoting consistently selects case-sensitive handling in DDL + resolution +
+star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
+(threads through the catalog + semantic analyzer).
+
+### [ ] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity; found 2026-06-28)
+
+`<DML> ... OPTIONS (DRY RUN)` is currently REJECTED (0AF00 "DRY RUN is not supported",
+planDML in cascades_generator.go) — a fail-closed stopgap for what was a SEVERE
+data-loss bug: the option was silently ignored and the statement ran the REAL mutation
+(`DELETE WHERE a>0 OPTIONS (DRY RUN)` wiped every matching row — the opposite of DRY
+RUN's intent). Regression: dryrun_option_rejected_probe_test.go.
+
+To reach Java parity (Java honors DRY RUN: AstNormalizer.visitQueryOptions sets
+Options.Name.DRY_RUN → QueryPlan.setDryRun → previews without committing): (1) parse the
+queryOptions clause into api.Options (OptDryRun already exists, api/options.go:80;
+NOCACHE/LOG QUERY/EF_SEARCH too); (2) thread OptDryRun to the DML executor; (3) branch
+the executor onto the EXISTING store primitives DryRunSaveRecord / DryRunDeleteRecord
+(store_api.go:233/353, already ported from Java's dryRun*Async) and return the
+would-be-affected count WITHOUT committing. Flip the reject + the sentinel when done.
+
+Note (Graefe): the reject sits in planDML (the exec path), so EXPLAIN-only mode
+(`EXPLAIN <DML> ... OPTIONS (DRY RUN)`, no DB) bypasses it and renders a plan rather
+than 0AF00. Harmless (EXPLAIN never mutates), slightly inconsistent — when wiring DRY
+RUN, surface it on the explain path too (or reject there) for consistency.
+
+### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
+
+The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and
+`updateStatement`, and **Java supports it** — `QueryVisitor.visitDeleteStatement:848` /
+`visitUpdateStatement:882` build a `generateSelect` from the RETURNING selectElements
+and return the affected rows as a result set. Go silently DROPS the clause: via `Query`
+you hit the generic DML-via-Query guard (0A000 "INSERT/UPDATE/DELETE return a row
+count, not rows"; connection.go:449) before RETURNING is ever processed; via `Exec` the
+DELETE/UPDATE executes correctly but the RETURNING values never surface (count only).
+
+NOT data loss (the DML is correct) — a Java-supported feature left unimplemented.
+Fix = port Java's generateSelect-from-RETURNING (build the projection over the
+deleted/updated rows) and wire a DML-returning-a-result-set through the driver Query
+path (the path that currently rejects all DML with 0A000). Feature port, follow-up
+scope. Pinned by returning_clause_probe_test.go (flip when implemented). INSERT
+RETURNING is a 42601 — not in the INSERT grammar — so it's a separate, larger gap.
+
+### [ ] ddl: in-template index/column errors wrap to 42F59, burying the specific SQLSTATE (found 2026-06-28)
+
+Every error raised while parsing an index/column inside a `CREATE SCHEMA TEMPLATE` is
+re-wrapped to outer SQLSTATE **42F59** with the specific code embedded in the message,
+e.g. `42F59: index: 0A000: index "T_A": INCLUDE clause ...` (ddl.go:~145 wraps via
+`%v`). So a `database/sql` caller doing SQLSTATE extraction sees 42F59, not the real
+cause (0A000 / 42703 / 0A000-only-primitive / etc.). Pre-existing and shared by ALL
+in-template index/column DDL errors (incl. the vector-INCLUDE and TEXT-type rejections),
+so tests in this area assert the specific code via substring on the embedded text
+(see include_clause_rejected_probe_test.go, which now pins BOTH 42F59 and the embedded
+0A000). Verify against Java: does Java surface the specific ErrorCode for in-template
+DDL failures, or also wrap? If Java surfaces the specific code, stop the 42F59 re-wrap
+(propagate the inner SQLSTATE) so cross-engine SQLSTATE matching holds for DDL errors.
+
+### [ ] ddl: implement covering indexes — CREATE INDEX ... INCLUDE (cols) (Java parity; found 2026-06-28)
+
+`CREATE INDEX ... ON t (a) INCLUDE (b)` is currently REJECTED (0A000 "INCLUDE clause
+(covering index) is not yet supported", ddl.go parseIndexDefinition) — a fail-closed
+stopgap for what was a SILENT divergence: Go dropped the INCLUDE clause and created a
+PLAIN index, while Java (DdlVisitor.java:249 → addValueColumn) creates a COVERING
+(KeyWithValue) index. Same CREATE INDEX, different index structure across engines = a
+wire/DDL-portability divergence. Regression: include_clause_rejected_probe_test.go.
+
+Go's record layer ALREADY supports covering indexes — KeyWithValueExpression
+(index_maintainer.go:107/217/362, "Matches Java's KeyWithValueExpression path"). The
+gap is only the SQL→metadata DDL wiring: (1) Builder.AddIndex (core/metadata/builder.go)
+needs an included-columns parameter; (2) build a KeyWithValueExpression root (key cols +
+value cols) instead of a plain key expression when INCLUDE is present; (3) wire
+def.IncludeClause().UidList() through parseIndexDefinition (ddl.go). Flip the reject +
+the sentinel when implemented. Same applies to the indexAsSelect / vector paths' INCLUDE.
+
+### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
+
+`CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build
+RecordMetaData: ... index "T_V" validation failed: field "V" in "T" is a message
+type; use Nest() to navigate into nested messages`. All other column types index fine
+(TIMESTAMP, DATE, FLOAT, INTEGER, BOOLEAN, BIGINT, DOUBLE, STRING, BYTES — pinned in
+indexable_types_probe_test.go). Fail-CLOSED (CREATE fails, no corruption).
+
+Root cause: Go stores a UUID column as the `tuple_fields.UUID` proto MESSAGE
+(cascades_generator.go:2978), and the record-layer index-maintainer validation
+rejects message-typed index fields. Likely a Go DIVERGENCE, not a shared limit: Java
+treats UUID as a first-class indexable PRIMITIVE — `DataType.Primitives.UUID` /
+`Type.uuidType()` (SemanticAnalyzer.java:724, DataTypeUtils.java:152) — so a UUID
+index works in Java even though storage is the same `tuple_fields.UUID` message. Fix
+= teach the index path to treat the tuple_fields.UUID message as an indexable
+primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
+replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
+metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
+
+### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
+
+Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
+corpus has `FROM (SELECT … ) AS t` entries). But an alias introduced in an INNER
+derived table is not visible TWO levels up:
+- works: `SELECT x FROM (SELECT a AS x FROM t) i` (1-level alias)
+- works: `SELECT a FROM (SELECT a FROM (SELECT a FROM t) i) s` (2-level, NO alias —
+  the real column name `a` propagates through any depth)
+- FAILS: `SELECT x FROM (SELECT x FROM (SELECT a AS x FROM t) i) s` → `42703 column
+  "X" does not exist`; likewise `… (SELECT x AS y FROM (SELECT a AS x FROM t) i) …`.
+Only an alias-introduced name is dropped at depth ≥2. Fail-CLOSED (clean 42703, not
+wrong rows). Standard SQL allows it and Java supports derived tables, so this is most
+likely a Go column-anchoring gap, not a shared limitation — confirm against Java.
+Root cause direction: the nested derived-body column derivation
+(cascades_translator.go derivedOutputColumns / legColumns, RFC-077 7.6) returns the
+alias name for a 1-level LogicalProject body but does not propagate it when that
+body is itself a derived table wrapped in another (the middle Project re-projects
+the alias column, but the outer level can't resolve it). Sentinel:
+nested_derived_table_probe_test.go (pins 1-level + 2-level-no-alias work, 2-level-
+inner-alias → 42703; flip when fixed). Needs query-engine review. WORKAROUND: the gap
+is specific to INLINE derived tables — the structurally-identical CTE chain
+(`WITH c1 AS (SELECT a AS x FROM t), c2 AS (SELECT x FROM c1) SELECT x FROM c2`)
+propagates the alias correctly (translateCTE registers the body under the CTE name),
+pinned in cte_alias_propagation_probe_test.go. So the fix likely is to give the inline
+derived body the same named-anchoring treatment translateCTE uses.
+
+### [ ] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — follow-up to the SET-column fix (found 2026-06-28)
+
+Sibling to the now-fixed "UPDATE SET undefined column → 42703" leak. Remaining DML
+error-classification asymmetries (all have a SQLSTATE, so lower severity than the SET
+leak which had none):
+- `UPDATE t SET a=5 WHERE nope=1` (nonexistent WHERE column) → `0AF00: DML Cascades
+  translation failed`, whereas `SELECT … WHERE nope=1` → clean 42703 ("column
+  NONEXISTENT does not exist", pinned as error_undefined_column_where).
+- `UPDATE notable …` / `DELETE FROM notable …` (nonexistent table) → `0AF00: DML
+  Cascades translation failed`, whereas `INSERT INTO notable …` → clean `42F01:
+  Unknown table`.
+The WHERE/table resolution failure in the DML builder
+(buildLogicalPlanForUpdateWithCatalog → upgradeDMLWhereWithCatalog /
+buildWherePredicateForTableE, and the DELETE equivalent) collapses to a generic
+0AF00 instead of surfacing the specific 42703/42F01 the SELECT/INSERT paths already
+produce. Fix = thread the specific undefined-column / unknown-table error out of the
+DML WHERE/table resolver (matching SELECT/INSERT), rather than mapping any failure to
+"DML Cascades translation failed". Check Java's wording/SQLSTATE for parity.
+
+### [ ] executor: UPDATE of a PRIMARY KEY column surfaces a leaky XXXXX error (found 2026-06-28)
+
+`UPDATE t SET id = <new> WHERE id = <old>` (id is the PK) fails with SQLSTATE XXXXX
+(ErrCodeUnknown), message "record does not exist: executor: updating record: record
+does not exist". Root cause: executor.go ~2474 applies the SET to the proto message
+(including the PK field), then calls `SaveRecordWithOptions(msg,
+RecordExistenceCheckErrorIfNotExistsOrTypeChanged)`, which computes the record key
+from the NEW pk and fails the existence check (no record at the new pk). The code's
+own comment (~2461) assumes "an UPDATE does not change the PK" — an assumption the
+SET clause can violate. It is fail-CLOSED: the table is left UNCHANGED (no
+corruption; verified). Right end-state: either a clean user-facing rejection
+("cannot update primary key", proper 42-class SQLSTATE) or record relocation
+(delete-old + insert-new), whichever matches Java — needs a Java-behavior check
+(no PK-update handling found in fdb-relational's UPDATE visitor on a quick grep) and
+an executor/builder change + review. Low severity (uncommon op, fail-closed) but a
+leaky internal error. Sentinel: update_primary_key_probe_test.go (pins: rejected +
+no data corruption + non-PK UPDATE still works).
+
+### [ ] query-engine: GROUP BY ignores SELECT-list COLUMN ORDER — emits keys-then-aggregates (Go-extension bug, Graefe design, found 2026-06-28)
+
+A standalone `SELECT <aggregate>, <key> … GROUP BY <key>` returns its output columns
+in the aggregate's native KEYS-FIRST order, NOT the SELECT-list order — both the
+positions AND the column names. E.g. `SELECT SUM(v), a FROM t GROUP BY a` yields
+columns `[A, SUM(V)]` (a=7, SUM=30) instead of `[SUM(V), A]` (30, 7). `SELECT a,
+SUM(v)` (key-first) happens to be correct because it already matches keys-first.
+Standard SQL (and any client doing POSITIONAL access) expects SELECT-list order.
+Data is correct; NAME-based access is a sound workaround (the name→value map is
+right). GROUP BY is a Go-only extension (Java's fdb-relational has no GROUP BY), so
+this is an extension defect, not a Java divergence — but it still violates SQL
+convention and surprises positional clients. Sentinel:
+`groupby_select_order_probe_test.go` (pins current keys-first order + verifies the
+name-based workaround; flip when fixed). The bug is UNIFORM — a computed expression
+OVER an aggregate placed before the key (`SELECT SUM(v)+1, a … GROUP BY a` → cols
+`[A, _1]`) is ALSO keys-first, so a fix must cover the bare-aggregate AND the
+post-aggregate-Project paths (both pinned in the sentinel).
+
+Root cause: `LogicalAggregate` (logical/operators.go:302) stores `GroupKeys` and
+`Aggregates` as separate ordered lists with NO record of the SELECT-list
+interleaving — the order is lost in `logical_builder`/`logical_predicate` before
+translation. The standalone GROUP BY builder deliberately emits a BARE aggregate
+with no post-aggregate Project (logical_predicate.go ~3313 "derives its schema from
+the physical plan"); `translateAggregate` (cascades_translator.go:3104) builds
+`GroupByExpression(groupKeys, aggSpecs, …)` keys-first; `aggregateOutputColumns`
+mirrors it.
+
+Fix path (Graefe review required — cross-cutting): track the SELECT-list output
+order in `LogicalAggregate` (e.g. an output-spec list or `[]int` permutation) and
+build a reordering Project over the GroupBy in `translateAggregate` — the infra
+already exists (`buildPostAggregateProjection` builds a SELECT-order Project, reused
+today only for INSERT…SELECT…GROUP BY via `wrapBareAggregateInsertSource`).
+CONFIRMED no data corruption: the bare INSERT…SELECT…GROUP BY path already runs the
+SELECT through buildPostAggregateProjection and so honors SELECT-LIST order
+correctly (`INSERT INTO dst SELECT SUM(v), a … GROUP BY a` → g=SUM, total=a;
+pinned in insert_select_groupby_probe_test.go), and an explicit target column list
+is fail-closed (0AF00) — so the bug is confined to standalone-SELECT display
+order, and the INSERT path proves the recommended fix (adopt the same projection)
+produces correct results. BLAST
+RADIUS: `aggregateOutputColumns`/`legColumns` (cascades_translator.go:312, 364) is
+also the schema used to ANCHOR a GROUP BY result as a JOIN LEG / CTE body, so
+changing the canonical output order must keep leg-anchoring consistent (or add the
+Project only at the top-level SELECT, not for anchored sub-aggregates). Not an
+unattended-overnight change.
+
+### [x] translation: subquery conjunct in a compound JOIN ON clause → CROSS PRODUCT (pre-existing) — FIXED (RFC-154, 2026-06-27)
 
 `SELECT a.id, c.id FROM a JOIN b ON b.a_id=a.id LEFT JOIN c ON c.a_id=a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id=a.id+999)`
-returns the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of the correctly-null-extended
-`(1,NULL)(2,NULL)`. **Pre-existing, NOT an RFC-153 regression** — verified by attribution: the base commit
-`15d2ab340` (no RFC-153 changes at all) returns the IDENTICAL cross-product. Both base and HEAD route this
-shape to the materialized `RecordQueryNestedLoopJoinPlan` (base: RewriteOuterJoinRule's guard doesn't fire;
-HEAD: RFC-153's fail-closed verifier declines the probe), and the NLJ's per-pair predicate evaluation
-mishandles the compound ON clause when one conjunct is an `IN`-subquery — it drops the conjunct (and
-apparently the `c.a_id=a.id` conjunct too) → emits the full cross product. Scope: the materialized NLJ
-executor's compound-ON / IN-in-ON handling (`executeNestedLoopJoin` → `passesJoinPredicates`), likely the
-correlated IN-subquery comparand inside an ON-applied (not WHERE) predicate. Pin: an FDB test asserting the
-above query null-extends correctly. Independent of RFC-153 (which only governs the joined-preserved *probe*
-path; the decline correctly falls back to this NLJ, exposing the pre-existing NLJ bug).
+returned the CROSS PRODUCT `(1,50)(1,51)(2,50)(2,51)` instead of `(1,NULL)(2,NULL)`. **Root cause was NOT the
+executor** (this entry's original guess of `passesJoinPredicates` was wrong): the conjunct was dropped at
+SQL→logical translation. `upgradeJoinOnPredicates` installs no SubqueryPlanner, so `WalkPredicate` declined the
+subquery shape, a permissive `continue` dropped the WHOLE ON predicate, and the translator ignores `OnText` once
+`OnPredicate==nil` → cross product (NLJ with zero preds — EXPLAIN confirmed). **Fixed (RFC-154 Phase 1):**
+fail-CLOSED — `expr.ContainsSubqueryAtom` rejects IN-subquery / scalar-subquery in ON with `0AF00` (Go, like Java,
+supports neither anywhere); the silent `continue` now surfaces a clean error; `mapPredicateWalkError` shared by
+WHERE+ON. **RFC-154 Phase 2a** additionally adds INNER `EXISTS`-in-ON support (Java parity). OUTER EXISTS-in-ON is
+deferred behind a fail-closed rejection (Graefe-gated on the RFC-153 rebaser-correlation work). Pinned:
+`subquery_in_on_crossproduct_fdb_test.go`, `exists_in_on_fdb_test.go`, `rfc153_joined_preserved_plan_test.go`,
+`logical_predicate_test.go`. Graefe + Torvalds ACK.
 
 ### [x] ARCHITECTURE — eliminate the legacy embedded SQL interpreter (a "No parallel pipelines" violation, surfaced 2026-06-23 during R8) — DONE (RFC-145)
 

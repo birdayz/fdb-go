@@ -65,14 +65,15 @@ func TestTypeFilterRedundantOverScanRule_DisjointTypes_NoFire(t *testing.T) {
 	}
 }
 
-func TestTypeFilterRedundantOverScanRule_BothEmpty_Fires(t *testing.T) {
+func TestTypeFilterRedundantOverScanRule_BothNilTypes_Fires(t *testing.T) {
 	t.Parallel()
-	// Both filter and scan are empty record-type sets — the empty
-	// scan ⊆ empty filter trivially. The rule fires (even though
-	// both are degenerate). The semantics are "scan produces no
-	// rows, filter rejects nothing" — eliminating the filter doesn't
-	// change output. This is a corner case but worth pinning so an
-	// over-cautious refactor doesn't accidentally exempt it.
+	// Both filter and scan carry nil record-type sets. nil does NOT mean
+	// "empty / no rows" — it means "ALL record types" (an unrestricted full
+	// scan / a filter that rejects nothing). So the filter's type set ⊇ the
+	// scan's type set (all ⊇ all) and the filter is redundant over the scan:
+	// eliminating it doesn't change output. The rule fires. (Worth pinning so a
+	// refactor doesn't accidentally exempt the nil/nil case — and so nobody
+	// resurrects the "nil = empty source" misconception that broke LIMIT 0.)
 	scan := expressions.NewFullUnorderedScanExpression(nil, values.UnknownType)
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	tf := expressions.NewLogicalTypeFilterExpression(nil, q)

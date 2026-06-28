@@ -282,10 +282,11 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
 shared driver key (`three_way_join_shared_driver`), both fixed by 4.12's "planner no longer drops
 ANDed predicates" change; and `WHERE TRUE AND val > 5`, now planned by 4.12 (boolean literals in
-WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FALSE`). The
-boolean-literal WHERE flip also means `bare_bool_where_rejected` is now a Go-side gap, not a Java
-bug: Java 4.12 plans it and Go rejects it (tracked as a Go capability gap in the corpus), so it is
-not listed here. The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
+WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FALSE`). The former
+`bare_bool_where_rejected` Go-side gap is now CLOSED — Go supports bare boolean WHERE forms
+(`WHERE TRUE`, `WHERE FALSE`, `WHERE bool_col`, `WHERE NOT bool_col`, and combinations with column
+predicates), verified 2026-06-28 and pinned by `bare_bool_where_probe_test.go` (literal forms) plus the
+corpus `bare_bool_where` (`WHERE flag`). The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
 fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
 4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
 side per the corpus's omit comment.

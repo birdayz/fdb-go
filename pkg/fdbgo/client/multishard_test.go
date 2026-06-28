@@ -555,22 +555,25 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 		g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
 			"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
 	}
-	// In range and NON-DECREASING. Equal consecutive points are valid: at a shard
-	// seam the last per-shard chunk split of one shard can coincide with the next
-	// shard's boundary, so FDB emits the same key twice and we match it byte for byte
-	// (NativeAPI.actor.cpp:8164-8191 framing; StorageMetrics.actor.cpp:533 breaks on
-	// strict `>`, i.e. treats an equal key as a valid stop). Whether per-shard splits
-	// happen at all depends on the data distributor, which is non-deterministic —
-	// shards are not guaranteed to stay under the 100KB chunk size — so a strict
-	// `<` is NOT an invariant and flakes when a seam duplicate appears. The real
-	// invariant is ordering: split points never go backwards. (Exact equality with
-	// libfdb_c is pinned by the go-vs-cgo differential; here we pin order.)
+	// Ascending (NON-STRICT) and in range. Equal adjacent split points are VALID
+	// C++ output, so this asserts non-decreasing, NOT strictly-ascending. The C++
+	// assembly pushes each internal shard boundary AND then appends that shard's
+	// per-shard chunk splits with NO dedup anywhere (NativeAPI.actor.cpp:8184-8198,
+	// "Need this shard boundary"). At a shard seam the storage server can emit a
+	// per-shard split equal to the next shard's boundary (StorageMetrics.actor.cpp:533
+	// breaks on strict `>`), so the same key appears twice. Per-shard splits arise
+	// whenever a shard is larger than chunkSize — which happens transiently here while
+	// DD is still compacting shards down to max_shard_bytes, even though chunkSize
+	// (100KB) nominally exceeds max_shard_bytes (50KB). Go is a 1:1 port of the C++
+	// loop, so it returns the identical duplicates; a strict `<` check therefore flaked
+	// red on C++-faithful output (nightly coverage, GetRangeSplitPoints). Assert the
+	// spec invariant: non-decreasing.
 	for i, p := range points {
 		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0), "split point %d below range: %x", i, p)
 		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0), "split point %d above range: %x", i, p)
 		if i > 0 {
 			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<=", 0),
-				"split points must be non-decreasing (equal is valid at a shard seam with per-shard splits): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
+				"split points must be ascending; equal at a shard seam is valid C++ (NativeAPI.actor.cpp:8184-8198, no dedup): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
 		}
 	}
 }

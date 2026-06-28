@@ -15,11 +15,13 @@ package embedded
 // plan), NOT EXPLAIN string matches.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 const rfc153mxSchema = `
@@ -205,28 +207,32 @@ CREATE INDEX c_x ON c(x)
 CREATE INDEX s_ak ON s(ak)
 `
 
-// TestRFC153_CorrelatedInInner_DeclinesToMaterializedNLJ — Graefe's correlated-IN shape:
-// the null-supplying ON predicate is `c.x IN (SELECT … WHERE s.ak = a.id)`, correlating
-// to the buried preserved alias A through an IN-subquery (an InJoin/correlated node the
-// rebaser does not rewrite). Asserts ONLY the DECLINE (materialized NLJ, no correlated
-// probe on c) — the row correctness of IN-in-ON is governed by a SEPARATE pre-existing
-// materialized-NLJ bug (TODO.md), independent of RFC-153, so rows are not asserted here.
-func TestRFC153_CorrelatedInInner_DeclinesToMaterializedNLJ(t *testing.T) {
+// TestRFC153_CorrelatedInInner_RejectedCleanly — Graefe's correlated-IN shape:
+// the null-supplying ON predicate is `c.x IN (SELECT … WHERE s.ak = a.id)`. An
+// IN-subquery in a JOIN ON clause is a shape Go (like Java) does not support
+// anywhere. It used to be silently DROPPED at translation → CROSS PRODUCT (the
+// pre-existing materialized-NLJ wrong-rows bug; rows were not asserted here back
+// when this only pinned the RFC-153 decline). It is now rejected fail-CLOSED with
+// ErrCodeUnsupportedQuery, so no wrong-rows plan is ever produced. (The RFC-153
+// decline path itself is still exercised by the aggregate-inner test above, whose
+// inner is NOT a subquery and still plans.)
+func TestRFC153_CorrelatedInInner_RejectedCleanly(t *testing.T) {
 	t.Parallel()
 	tmpl, err := buildSchemaTemplateFromDDL(rfc153corrInSchema)
 	if err != nil {
 		t.Fatalf("schema DDL: %v", err)
 	}
-	plan, err := PlanRecordQueryWithMetadata(
+	_, err = PlanRecordQueryWithMetadata(
 		"SELECT a.id FROM a JOIN b ON b.a_id = a.id LEFT JOIN c ON c.x IN (SELECT s.cv FROM s WHERE s.ak = a.id)",
 		tmpl.Underlying(), properties.FixedStatistics{Cardinality: 1_000_000})
-	if err != nil {
-		t.Fatalf("plan: %v", err)
+	if err == nil {
+		t.Fatal("IN-subquery in a JOIN ON clause must be rejected cleanly, got a plan (silent cross-product?)")
 	}
-	if !hasLeftOuterNLJ(plan) {
-		t.Errorf("correlated-IN LEFT OUTER must be a materialized NLJ (never a wrong-rows correlated probe), got: %s", plan.Explain())
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not *api.Error: %T %v", err, err)
 	}
-	if indexProbes(plan, "c_x") {
-		t.Errorf("correlated-IN LEFT OUTER must NOT correlated-probe c via c_x: %s", plan.Explain())
+	if apiErr.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("error code = %s, want %s (0AF00)", apiErr.Code, api.ErrCodeUnsupportedQuery)
 	}
 }

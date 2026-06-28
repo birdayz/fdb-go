@@ -1,0 +1,3 @@
+# Site-level i18n overrides (merged over the theme's i18n).
+# Replaces Hextra's default footer copyright with the project's.
+copyright: "© 2026 fdb.dev · Apache-2.0 · [github.com/birdayz/fdb-go](https://github.com/birdayz/fdb-go)"

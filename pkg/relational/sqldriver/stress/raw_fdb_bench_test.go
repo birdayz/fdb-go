@@ -143,6 +143,14 @@ func TestFDB_RawReadScaling(t *testing.T) {
 			batchSize := 2000
 			chunkSize := (n + workers - 1) / workers
 
+			// Bound the reads (and their retry/backoff) so a storage server that is
+			// PERMANENTLY behind — not just transiently — fails cleanly instead of
+			// spinning forever in OnError (the db sets no retry limit, and OnError only
+			// returns early on ctx cancellation). Generous (≫ the ~25s a 1-worker legit
+			// run takes here) so transient process_behind still drains and passes.
+			readCtx, cancelRead := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancelRead()
+
 			start := time.Now()
 			var totalRead atomic.Int64
 			var wg sync.WaitGroup
@@ -166,12 +174,23 @@ func TestFDB_RawReadScaling(t *testing.T) {
 							end = to
 						}
 						tx := db.CreateTransaction()
-						for i := offset; i < end; i++ {
+						for i := offset; i < end; {
 							key := append(append([]byte{}, prefix...), tuple.Tuple{int64(i % 10_000)}.Pack()...)
-							if _, getErr := tx.Get(context.Background(), key); getErr != nil {
-								firstErr.CompareAndSwap(nil, getErr)
-								return
+							_, getErr := tx.Get(readCtx, key)
+							if getErr != nil {
+								// process_behind (1037) and other retryable read errors: right
+								// after the fast bulk populate the storage server can be briefly
+								// behind (a fast box ingests faster than the SS durably catches
+								// up), so an immediate read is transiently rejected. OnError backs
+								// off and resets the tx; retry the same key. Non-retryable, or
+								// readCtx expired (a permanently-behind SS) → fatal, bounded.
+								if onErr := tx.OnError(readCtx, getErr); onErr != nil {
+									firstErr.CompareAndSwap(nil, getErr)
+									return
+								}
+								continue // tx reset by OnError; retry key i with a fresh read version
 							}
+							i++
 						}
 						tx.Cancel()
 						totalRead.Add(int64(end - offset))

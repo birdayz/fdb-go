@@ -3298,7 +3298,20 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
 		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
-			preds = []predicates.QueryPredicate{qp}
+			// When the ON clause carries EXISTS subqueries (RFC-154 §5), flatten a
+			// top-level AND so the ExistentialValuePredicate becomes its OWN
+			// top-level conjunct — the directly-handled semi-join shape
+			// CheckBuriedExistentialPredicate requires and implementJoinWithExistential
+			// routes (a single And(equi, EXISTS) predicate reads as a BURIED
+			// existential and is rejected). Mirrors translateJoinWithExists's flatten
+			// of the WHERE predicate. Non-EXISTS joins keep the single predicate
+			// (the conjunctive SelectExpression predicate list is semantically the
+			// same; this avoids touching the heavily-tested plain-join shape).
+			if and, ok := qp.(*predicates.AndPredicate); ok && len(j.OnExistsSubqueries) > 0 {
+				preds = append(preds, and.SubPredicates...)
+			} else {
+				preds = []predicates.QueryPredicate{qp}
+			}
 		}
 	}
 
@@ -3332,11 +3345,36 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
 		return nil
 	}
+
+	quantifiers := []expressions.Quantifier{leftQ, rightQ}
+	sourceAliases := []string{leftAlias, rightAlias}
+
+	// EXISTS in the ON clause (RFC-154 §5): attach each lifted EXISTS subquery as
+	// an existential quantifier + its correlation predicate, producing a
+	// 2-ForEach-+-Existential SelectExpression that the NLJ rule's
+	// implementJoinWithExistential path lowers to a semi-join. Only populated for
+	// INNER joins (upgradeJoinOnPredicates rejects OUTER EXISTS-in-ON), so the
+	// joinType passed below is JoinInner and the existential semantics match
+	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
+	for _, esq := range j.OnExistsSubqueries {
+		subRef := t.translateRef(esq.Plan)
+		if subRef == nil {
+			return nil
+		}
+		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+		quantifiers = append(quantifiers, existQ)
+		innerCorrName, joinPred := existsInnerCorrelation(esq)
+		if joinPred != nil {
+			preds = append(preds, joinPred)
+		}
+		sourceAliases = append(sourceAliases, innerCorrName)
+	}
+
 	return expressions.NewSelectExpressionWithJoinType(
 		resultValue,
-		[]expressions.Quantifier{leftQ, rightQ},
+		quantifiers,
 		preds,
-		[]string{leftAlias, rightAlias},
+		sourceAliases,
 		joinType,
 	)
 }

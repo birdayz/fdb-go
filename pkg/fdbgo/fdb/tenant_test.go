@@ -3,6 +3,7 @@ package fdb_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -169,9 +170,21 @@ func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 	}
 	defer db.Options().SetTransactionTimeout(0)
 
-	is1031 := func(err error) bool {
-		fe, ok := err.(fdb.Error)
-		return ok && fe.Code == 1031 // transaction_timed_out (never retryable → escapes Transact)
+	// The inherited 1ms timeout normally surfaces as transaction_timed_out (1031),
+	// but under heavy parallel coverage load a degraded connection can surface the
+	// same blown 1ms deadline as a raw context.DeadlineExceeded from the timeout-
+	// bounded read ctx rather than a clean wire 1031 — and a bare `err.(fdb.Error)`
+	// type assertion misses both a wrapped 1031 and the DeadlineExceeded form, so all
+	// 100 iterations could fail to match and flake the test red (nightly coverage).
+	// Use errors.As + errors.Is; both forms prove the timeout was inherited. If it
+	// were NOT inherited the read would simply succeed (no error), so neither branch
+	// can pass spuriously.
+	inheritedTimeout := func(err error) bool {
+		var fe fdb.Error
+		if errors.As(err, &fe) && fe.Code == 1031 { // transaction_timed_out
+			return true
+		}
+		return errors.Is(err, context.DeadlineExceeded)
 	}
 	var timedOut bool
 	for i := 0; i < 100; i++ {
@@ -179,7 +192,7 @@ func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 			tr.Get(fdb.Key("k")).MustGet() // GRV round-trip (>1ms) trips the inherited timeout
 			return nil, nil
 		})
-		if is1031(err) {
+		if inheritedTimeout(err) {
 			timedOut = true
 			break
 		}
