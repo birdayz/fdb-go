@@ -219,6 +219,7 @@ go_test(
         "setops_null_probe_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
+        "star_expansion_join_probe_test.go",
         "statistics_fdb_test.go",
         "string_funcs_boundary_probe_test.go",
         "string_functions_probe_test.go",
