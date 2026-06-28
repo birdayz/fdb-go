@@ -775,6 +775,22 @@ each on its own stacked branch.
 
 ## Known gaps
 
+### [ ] planner: `LIMIT 0` returns ALL rows unless the inner is a bare table scan (Go-only LIMIT extension) — found 2026-06-28
+
+`SELECT id FROM t LIMIT 0` (bare scan) correctly returns 0 rows (plan `Limit(0, Scan)`). But add ANY non-trivial
+inner and the `Limit(0)` operator is DROPPED and every row comes back:
+- `SELECT id FROM t WHERE s >= '' LIMIT 0` → all rows
+- `SELECT id FROM t ORDER BY s LIMIT 0` → all rows (plan `Project([ID], Scan())` — sort AND limit gone)
+Non-zero limits are fine in all shapes (`ORDER BY s LIMIT 1` → `Limit(1, IndexScan(T_S))`). So the bug is that a
+LIMIT-0 plan over a filter/sort/index inner is replaced by an unbounded scan during planning. `ImplementLimitRule`
+always builds `Limit(0,…)`, so the drop is downstream — a rule rewriting/pruning the limit-0 plan, or it losing to
+a plain-scan alternative on cost. **Related cost bugs (same `limit ≤ 0` = "no cap" root):** `plan_properties.go:409`
+(`if limit <= 0 { return child }`) and `physical_limit_wrapper.go:69` (`GetLimit() > 0`) both estimate a LIMIT-0
+plan's cardinality as the FULL child cardinality instead of 0 — likely why the limit-0 plan is costed/pruned wrong.
+**Why deferred:** LIMIT is a Go-only extension (no Java reference); the fix is a Graefe-gated planning change with
+regression risk, not a safe unattended edit. Repro: `string_index_range_probe_test.go` pins the working bare
+`LIMIT 0`; the filter/ORDER-BY cases are documented here, not asserted.
+
 ### [ ] executor/types: cross-type numeric equality on an INDEXED column drops rows (no SARG comparand promotion) — found 2026-06-28
 
 `SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
