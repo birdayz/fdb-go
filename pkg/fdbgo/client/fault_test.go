@@ -1024,7 +1024,10 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	case r := <-done:
 		err = r.err
 	case <-time.After(watchdog):
-		cancel() // best-effort: unblock the read if any exit arm still remains
+		// Do NOT cancel ctx here: the deferred container.Terminate(ctx) needs a live
+		// ctx to remove the testcontainer (defers run LIFO: db.Close → Terminate →
+		// cancel, so ctx is still live at Terminate). The stuck read goroutine is
+		// unblocked during teardown by the deferred db.Close() via db.ctx.Done().
 		t.Fatalf("Get against a wedged cluster did not return within %v — SetTimeout did not bound the getKeyLocation loop (hang regression)", watchdog)
 	}
 	elapsed := time.Since(start)
