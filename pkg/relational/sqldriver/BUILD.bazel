@@ -182,6 +182,7 @@ go_test(
         "orderby_mixed_dir_probe_test.go",
         "orderby_subquery_probe_test.go",
         "ordered_grouped_scalar_subquery_fdb_test.go",
+        "ordinal_reference_probe_test.go",
         "outer_join_filter_probe_test.go",
         "outer_join_parity_fdb_test.go",
         "outer_join_types_probe_test.go",
