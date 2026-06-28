@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -36,7 +37,13 @@ func TestFDB_WindowedAggregateRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rows, err := db.QueryContext(ctx, q)
 			if err != nil {
-				return // rejected at plan time — good
+				// Must reject for the RIGHT reason (0AF00 UNSUPPORTED_QUERY), not a
+				// stray parse/table error — pin the SQLSTATE so a future change that
+				// rejects for the wrong reason still fails.
+				if !strings.Contains(err.Error(), "0AF00") {
+					t.Errorf("%s error = %v, want 0AF00 (unsupported windowed aggregate)", name, err)
+				}
+				return
 			}
 			// must NOT silently succeed with a dropped OVER clause.
 			defer rows.Close()

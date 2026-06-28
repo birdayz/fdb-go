@@ -273,6 +273,17 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		}
 	}
 
+	// A windowed aggregate (`SUM(v) OVER (PARTITION BY g)`) is not supported. The
+	// aggregate planner ignores the OVER clause and computes a bare aggregate,
+	// which silently returns WRONG results, so reject it up front — a true
+	// front-end pre-pass (before building a soon-discarded logical plan). Detected
+	// on the parse tree because the OVER clause is dropped during lowering, so the
+	// logical plan provably cannot carry it (mirrors findAggregateInTree).
+	if windowedAggregateInTree(q) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+
 	visitor := NewPlanVisitorWithSchema(md, g.c.sess.Schema)
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
@@ -286,15 +297,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUndefinedFunction,
 			"Unsupported operator "+fn)
-	}
-
-	// A windowed aggregate (`SUM(v) OVER (PARTITION BY g)`) is not supported. The
-	// aggregate planner ignores the OVER clause and computes a bare aggregate,
-	// which silently returns WRONG results, so reject it up front. Detected on the
-	// parse tree because the OVER clause is dropped before the logical plan exists.
-	if windowedAggregateInTree(q) {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"windowed aggregate (aggregate function with an OVER clause) is not supported")
 	}
 
 	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
