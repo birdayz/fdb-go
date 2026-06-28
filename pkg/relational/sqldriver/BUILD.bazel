@@ -221,6 +221,7 @@ go_test(
         "row_value_constructor_probe_test.go",
         "rows_affected_probe_test.go",
         "scalar_math_probe_test.go",
+        "scalar_subq_overflow_probe_test.go",
         "scalar_subquery_correlation_probe_test.go",
         "scalar_subquery_cte_test.go",
         "scalar_subquery_noncorrelated_probe_test.go",
