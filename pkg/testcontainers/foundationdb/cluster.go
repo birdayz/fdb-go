@@ -105,9 +105,9 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 	// Reconfigure redundancy now that all processes are up.
 	if cfg.redundancyMode != "single" && size > 1 {
 		cmd := fmt.Sprintf("configure %s", cfg.redundancyMode)
-		if _, err := coordinator.FDBCLIExec(ctx, cmd); err != nil {
+		if err := coordinator.configureWithRetry(ctx, "configure redundancy", cmd); err != nil {
 			cluster.Terminate(ctx)
-			return nil, fmt.Errorf("configure redundancy: %w", err)
+			return nil, err
 		}
 		// Wait for the cluster to stabilize after redundancy change.
 		// FDB needs time to replicate data to meet the new policy.
