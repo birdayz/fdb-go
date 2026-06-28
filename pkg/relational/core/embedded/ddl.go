@@ -578,6 +578,28 @@ func findAggregateInTree(node antlr.Tree) *antlrgen.AggregateWindowedFunctionCon
 	return nil
 }
 
+// windowedAggregateInTree reports whether the parse tree contains an aggregate
+// function with an OVER clause (a windowed aggregate, e.g. `SUM(v) OVER (PARTITION
+// BY g)`). General window functions are unsupported (Java has no general window
+// operator either — only the vector ROW_NUMBER QUALIFY case works). Without this
+// check the aggregate planner silently DROPS the OVER clause and computes a bare
+// aggregate, returning WRONG results (a single SUM instead of per-partition
+// window values), so the query is rejected up front.
+func windowedAggregateInTree(node antlr.Tree) bool {
+	if node == nil {
+		return false
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.OverClause() != nil {
+		return true
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if windowedAggregateInTree(node.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractColumnNameFromExpression extracts a simple column name from an expression
 // that is a bare column reference (fullColumnName).
 func extractColumnNameFromExpression(expr antlrgen.IExpressionContext) (string, error) {

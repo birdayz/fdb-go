@@ -288,6 +288,15 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			"Unsupported operator "+fn)
 	}
 
+	// A windowed aggregate (`SUM(v) OVER (PARTITION BY g)`) is not supported. The
+	// aggregate planner ignores the OVER clause and computes a bare aggregate,
+	// which silently returns WRONG results, so reject it up front. Detected on the
+	// parse tree because the OVER clause is dropped before the logical plan exists.
+	if windowedAggregateInTree(q) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+
 	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
 	// function BEFORE treating it as a correlated array field. The parser, which
 	// has no metadata, may classify a schema-qualified table (`FROM PA AS s,
