@@ -30,9 +30,10 @@ type Scaler struct {
 	minRunners int
 	maxRunners int
 
-	runnerDir string // dir containing run.sh (the extracted actions/runner)
-	sweepFDB  bool
-	grace     time.Duration
+	runnerDir       string // dir containing run.sh (the extracted actions/runner)
+	sweepFDB        bool
+	grace           time.Duration
+	jobStartTimeout time.Duration
 
 	pool *slotPool
 
@@ -48,24 +49,26 @@ type runner struct {
 	name string
 	slot *slot
 	cmd  *exec.Cmd
-	busy bool
+	busy bool          // set true once the runner reports JobStarted
+	done chan struct{} // closed by wait once the process is reaped
 }
 
 var _ listener.Scaler = (*Scaler)(nil)
 
 func newScaler(logger *slog.Logger, client *scaleset.Client, scaleSetID int, cfg *config, pool *slotPool) *Scaler {
 	return &Scaler{
-		logger:     logger,
-		client:     client,
-		scaleSetID: scaleSetID,
-		minRunners: cfg.minRunners,
-		maxRunners: cfg.maxRunners,
-		runnerDir:  cfg.runnerDir,
-		sweepFDB:   cfg.sweepFDB,
-		grace:      cfg.grace,
-		pool:       pool,
-		nonce:      time.Now().Unix(),
-		running:    make(map[string]*runner),
+		logger:          logger,
+		client:          client,
+		scaleSetID:      scaleSetID,
+		minRunners:      cfg.minRunners,
+		maxRunners:      cfg.maxRunners,
+		runnerDir:       cfg.runnerDir,
+		sweepFDB:        cfg.sweepFDB,
+		grace:           cfg.grace,
+		jobStartTimeout: cfg.jobStartTimeout,
+		pool:            pool,
+		nonce:           time.Now().Unix(),
+		running:         make(map[string]*runner),
 	}
 }
 
@@ -137,7 +140,7 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 		return fmt.Errorf("starting run.sh: %w", err)
 	}
 
-	r := &runner{name: name, slot: sl, cmd: cmd}
+	r := &runner{name: name, slot: sl, cmd: cmd, done: make(chan struct{})}
 	s.mu.Lock()
 	s.running[name] = r
 	s.mu.Unlock()
@@ -149,6 +152,16 @@ func (s *Scaler) launch(ctx context.Context, sl *slot) error {
 
 	s.wg.Add(1)
 	go s.wait(r)
+
+	// On-demand runners (min-runners=0) are launched only because a job was
+	// assigned and acquired, so one should arrive within seconds. If it does not
+	// — e.g. the run was cancelled mid-flight, the churn case that triggered
+	// RFC-155 — the runner would idle forever and pin its slot. Reclaim it. With
+	// min-runners>0, pre-warmed runners are expected to idle, so this is disabled.
+	if s.jobStartTimeout > 0 && s.minRunners == 0 {
+		s.wg.Add(1)
+		go s.watchJobStart(r)
+	}
 	return nil
 }
 
@@ -159,6 +172,8 @@ func (s *Scaler) wait(r *runner) {
 	defer s.wg.Done()
 
 	err := r.cmd.Wait()
+	close(r.done) // let watchJobStart exit
+
 	s.mu.Lock()
 	delete(s.running, r.name)
 	remaining := len(s.running)
@@ -172,6 +187,33 @@ func (s *Scaler) wait(r *runner) {
 
 	if s.sweepFDB && remaining == 0 {
 		s.sweepOrphanFDB()
+	}
+}
+
+// watchJobStart kills a runner that never picked up a job within jobStartTimeout
+// and lets wait reclaim its slot. Without this, a runner launched for a job that
+// was cancelled before it connected would idle forever and pin its (only) slot.
+func (s *Scaler) watchJobStart(r *runner) {
+	defer s.wg.Done()
+
+	timer := time.NewTimer(s.jobStartTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-r.done:
+		return
+	case <-timer.C:
+		s.mu.Lock()
+		busy := r.busy
+		s.mu.Unlock()
+		if busy {
+			return
+		}
+		s.logger.Warn("runner started no job within timeout; killing and reclaiming slot",
+			slog.String("name", r.name),
+			slog.Int("slot", r.slot.index),
+			slog.Duration("timeout", s.jobStartTimeout))
+		s.signalGroup(r.cmd, syscall.SIGKILL)
 	}
 }
 
@@ -290,4 +332,59 @@ func (s *Scaler) sweepOrphanFDB() {
 	if err := exec.CommandContext(ctx, "docker", append([]string{"rm", "-f"}, ids...)...).Run(); err != nil {
 		s.logger.Warn("fdb sweep: docker rm failed", slog.Any("err", err))
 	}
+}
+
+// reconcileStrayRunners kills leftover actions/runner processes from a previous
+// supervisor incarnation that crashed without cleaning up. We must do this before
+// accepting work: a new runner launched into a slot a stray job is still writing
+// would corrupt that job's checkout. Warm bazel servers are deliberately left
+// running (a fresh runner reconnects to them, and killing the runner's bazel
+// client releases the output_base lock). Best-effort: pkill exits non-zero when
+// nothing matches, which is the normal, healthy case.
+func reconcileStrayRunners(logger *slog.Logger, runnerDir string) {
+	patterns := []string{
+		filepath.Join(runnerDir, "run.sh"),
+		"Runner.Listener",
+		"Runner.Worker",
+	}
+	reaped := false
+	for _, pat := range patterns {
+		if err := exec.Command("pkill", "-KILL", "-f", pat).Run(); err == nil {
+			reaped = true
+		}
+	}
+	if reaped {
+		logger.Warn("reconciled stray runner processes from a previous incarnation")
+	}
+}
+
+// timeoutClient wraps the scaleset message-session client to put a hard ceiling on
+// each long-poll. The scaleset session is the only long-lived loop in this design,
+// so a half-open poll connection that never returns would reproduce the classic
+// "online but not pulling jobs" wedge. On timeout GetMessage returns an error,
+// listener.Run returns, and the supervisor exits for systemd to restart it with a
+// fresh session.
+type timeoutClient struct {
+	inner       listener.Client
+	pollTimeout time.Duration
+}
+
+var _ listener.Client = (*timeoutClient)(nil)
+
+func (c *timeoutClient) GetMessage(ctx context.Context, lastMessageID, maxCapacity int) (*scaleset.RunnerScaleSetMessage, error) {
+	cctx, cancel := context.WithTimeout(ctx, c.pollTimeout)
+	defer cancel()
+	return c.inner.GetMessage(cctx, lastMessageID, maxCapacity)
+}
+
+func (c *timeoutClient) DeleteMessage(ctx context.Context, messageID int) error {
+	return c.inner.DeleteMessage(ctx, messageID)
+}
+
+func (c *timeoutClient) AcquireJobs(ctx context.Context, requestIDs []int64) ([]int64, error) {
+	return c.inner.AcquireJobs(ctx, requestIDs)
+}
+
+func (c *timeoutClient) Session() scaleset.RunnerScaleSetSession {
+	return c.inner.Session()
 }

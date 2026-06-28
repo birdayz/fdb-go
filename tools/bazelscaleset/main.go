@@ -109,10 +109,20 @@ func run() error {
 	}
 	logger.Info("warm slot pool ready", slog.Int("slots", pool.size()), slog.String("base", cfg.workBase))
 
+	// A previous incarnation that crashed (rather than shutting down cleanly) may
+	// have left runner processes still writing a slot's work dir. Kill them before
+	// accepting work so we never launch a new runner into an occupied slot. Warm
+	// bazel servers are left alone on purpose — a new runner reconnects to them.
+	reconcileStrayRunners(logger, cfg.runnerDir)
+
 	scaler := newScaler(logger.WithGroup("scaler"), client, ss.ID, cfg, pool)
 	defer scaler.shutdown()
 
-	lis, err := listener.New(session, listener.Config{
+	// Bound each long-poll: the scaleset session is now the only long-lived loop in
+	// this design, so a half-open poll ("online but not pulling jobs") would be the
+	// very wedge RFC-155 removes. On timeout listener.Run returns and the supervisor
+	// exits for systemd to restart with a fresh session.
+	lis, err := listener.New(&timeoutClient{inner: session, pollTimeout: cfg.pollTimeout}, listener.Config{
 		ScaleSetID: ss.ID,
 		MaxRunners: cfg.maxRunners,
 		Logger:     logger.WithGroup("listener"),
@@ -146,18 +156,20 @@ func systemInfo(scaleSetID int) scaleset.SystemInfo {
 // (with env fallbacks); secrets (app private key, PAT) come from env only so they
 // never appear in the process argv / table.
 type config struct {
-	url         string
-	name        string
-	labelList   []string
-	runnerGroup string
-	maxRunners  int
-	minRunners  int
-	runnerDir   string
-	workBase    string
-	sweepFDB    bool
-	grace       time.Duration
-	logLevel    string
-	logFormat   string
+	url             string
+	name            string
+	labelList       []string
+	runnerGroup     string
+	maxRunners      int
+	minRunners      int
+	runnerDir       string
+	workBase        string
+	sweepFDB        bool
+	grace           time.Duration
+	pollTimeout     time.Duration
+	jobStartTimeout time.Duration
+	logLevel        string
+	logFormat       string
 
 	appClientID       string
 	appInstallationID int64
@@ -178,9 +190,11 @@ func parseConfig() (*config, error) {
 	fs.IntVar(&c.maxRunners, "max-runners", envIntOr("BAZELSCALESET_MAX_RUNNERS", 1), "max concurrent runners (= number of warm slots)")
 	fs.IntVar(&c.minRunners, "min-runners", envIntOr("BAZELSCALESET_MIN_RUNNERS", 0), "min pre-warmed idle runners")
 	fs.StringVar(&c.runnerDir, "runner-dir", envOr("BAZELSCALESET_RUNNER_DIR", "/home/runner/actions-runner"), "directory of the extracted actions/runner (contains run.sh)")
-	fs.StringVar(&c.workBase, "work-base", envOr("BAZELSCALESET_WORK_BASE", "/srv/bazelwork"), "base directory for warm per-slot work folders")
+	fs.StringVar(&c.workBase, "work-base", envOr("BAZELSCALESET_WORK_BASE", "/mnt/ci-data/bazelwork"), "base directory for warm per-slot work folders (keep on the CI data volume, same filesystem as the bazel output_base, not the root disk)")
 	fs.BoolVar(&c.sweepFDB, "sweep-fdb", envBoolOr("BAZELSCALESET_SWEEP_FDB", true), "remove orphaned foundationdb/foundationdb containers when the box goes idle")
 	fs.DurationVar(&c.grace, "grace-period", envDurOr("BAZELSCALESET_GRACE_PERIOD", 60*time.Second), "shutdown grace period before SIGKILLing in-flight runners")
+	fs.DurationVar(&c.pollTimeout, "poll-timeout", envDurOr("BAZELSCALESET_POLL_TIMEOUT", 2*time.Minute), "hard timeout for a single long-poll; on timeout the supervisor exits and systemd restarts it with a fresh session (must exceed the ~50s idle long-poll)")
+	fs.DurationVar(&c.jobStartTimeout, "job-start-timeout", envDurOr("BAZELSCALESET_JOB_START_TIMEOUT", 5*time.Minute), "kill a launched runner that never starts a job within this long and reclaim its slot (on-demand only, i.e. min-runners=0; 0 disables)")
 	fs.StringVar(&c.logLevel, "log-level", envOr("BAZELSCALESET_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	fs.StringVar(&c.logFormat, "log-format", envOr("BAZELSCALESET_LOG_FORMAT", "text"), "log format (text, json)")
 	fs.StringVar(&c.appClientID, "app-client-id", envOr("BAZELSCALESET_APP_CLIENT_ID", ""), "GitHub App client id (or app id)")
@@ -236,6 +250,14 @@ func (c *config) validate() error {
 	}
 	if c.workBase == "" {
 		return errors.New("--work-base is required")
+	}
+	if c.pollTimeout < 60*time.Second {
+		// The idle long-poll blocks ~50s before returning; a tighter cap would
+		// restart the supervisor on every healthy idle poll.
+		return fmt.Errorf("--poll-timeout must be >= 60s, got %s", c.pollTimeout)
+	}
+	if c.jobStartTimeout < 0 {
+		return fmt.Errorf("--job-start-timeout must be >= 0, got %s", c.jobStartTimeout)
 	}
 	hasApp := c.appClientID != "" && c.appInstallationID != 0 && c.appPrivateKey != ""
 	if !hasApp && c.token == "" {

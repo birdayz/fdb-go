@@ -42,6 +42,27 @@ At `--max-runners=1` (the default for a 7.6 GiB box) the backlog is serialized t
 always-warm slot. Raise it (and add RAM) to run more slots concurrently; each stays
 independently warm.
 
+## Reliability
+
+The classic runner wedged because its long-lived listener could go half-open — alive at TCP,
+dead at the app layer — and sit "online but not pulling jobs" forever. Going JIT-ephemeral
+removes the runner's listener, but the supervisor now owns the only long-lived loop (the
+scaleset long-poll), so the same failure mode is handled head-on:
+
+- **Bounded long-poll** (`--poll-timeout`): every poll has a hard ceiling. A half-open poll
+  errors out, `listener.Run` returns, the supervisor exits, and `systemd Restart=always` brings
+  it back with a fresh session. A wholesale process hang is caught by an external systemd
+  watchdog (see `infra/`) retargeted from the old classic-runner watchdog — it is **not** retired.
+- **Slot-leak guard** (`--job-start-timeout`): a runner launched for a job that gets cancelled
+  before it connects (the churn case that triggered this) is killed and its slot reclaimed, so a
+  cancelled run can't pin the only slot.
+- **Restart reconciliation**: on startup the supervisor kills stray `run.sh` / `Runner.Listener`
+  / `Runner.Worker` processes from a crashed prior incarnation before accepting work, so it never
+  launches a new runner into a slot a stray job is still writing. Warm bazel servers are left
+  running (a fresh runner reconnects to them).
+- **Idempotent registration**: a stale scale set left by a crashed run (same name) is deleted
+  before re-creating, so a `Restart=always` daemon can't crash-loop on "name already exists".
+
 ## Configuration
 
 Every flag also reads a `BAZELSCALESET_<UPPER_SNAKE>` env var. **Secrets are env-only** (never
@@ -61,9 +82,11 @@ flags, so they never reach the process table):
 | `--max-runners` | `BAZELSCALESET_MAX_RUNNERS` | `1` | concurrent runners = warm slots |
 | `--min-runners` | `BAZELSCALESET_MIN_RUNNERS` | `0` | pre-warmed idle runners |
 | `--runner-dir` | `BAZELSCALESET_RUNNER_DIR` | `/home/runner/actions-runner` | dir with `run.sh` |
-| `--work-base` | `BAZELSCALESET_WORK_BASE` | `/srv/bazelwork` | base dir for warm slots |
+| `--work-base` | `BAZELSCALESET_WORK_BASE` | `/mnt/ci-data/bazelwork` | base dir for warm slots — keep on the CI data volume, same filesystem as bazel's `output_base`, **not** the root disk |
 | `--sweep-fdb` | `BAZELSCALESET_SWEEP_FDB` | `true` | sweep orphaned FDB containers when idle |
 | `--grace-period` | `BAZELSCALESET_GRACE_PERIOD` | `60s` | shutdown grace before SIGKILL |
+| `--poll-timeout` | `BAZELSCALESET_POLL_TIMEOUT` | `2m` | hard ceiling on a single long-poll; on timeout the supervisor exits for systemd to restart with a fresh session (must be ≥ 60s) |
+| `--job-start-timeout` | `BAZELSCALESET_JOB_START_TIMEOUT` | `5m` | kill a launched runner that never starts a job and reclaim its slot (on-demand only; `0` disables) |
 | `--app-client-id` | `BAZELSCALESET_APP_CLIENT_ID` | — | GitHub App client/app id |
 | `--app-installation-id` | `BAZELSCALESET_APP_INSTALLATION_ID` | — | GitHub App installation id |
 
@@ -95,7 +118,7 @@ Against a throwaway scale set and label, with the App or a PAT exported:
   --url https://github.com/birdayz/fdb-go \
   --name smoke-test --labels smoke-test \
   --runner-dir /home/runner/actions-runner \
-  --work-base /srv/bazelwork \
+  --work-base /mnt/ci-data/bazelwork \
   --log-level debug
 ```
 

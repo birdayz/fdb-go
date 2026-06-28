@@ -13,7 +13,9 @@ func baseValidConfig() *config {
 		maxRunners:        1,
 		minRunners:        0,
 		runnerDir:         "/home/runner/actions-runner",
-		workBase:          "/srv/bazelwork",
+		workBase:          "/mnt/ci-data/bazelwork",
+		pollTimeout:       2 * time.Minute,
+		jobStartTimeout:   5 * time.Minute,
 		appClientID:       "Iv1.deadbeef",
 		appInstallationID: 12345,
 		appPrivateKey:     "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
@@ -43,6 +45,10 @@ func TestConfigValidate(t *testing.T) {
 		{"minRunners equals max ok", func(c *config) { c.maxRunners, c.minRunners = 2, 2 }, false},
 		{"empty runnerDir", func(c *config) { c.runnerDir = "" }, true},
 		{"empty workBase", func(c *config) { c.workBase = "" }, true},
+		{"pollTimeout too small", func(c *config) { c.pollTimeout = 30 * time.Second }, true},
+		{"pollTimeout at floor ok", func(c *config) { c.pollTimeout = 60 * time.Second }, false},
+		{"jobStartTimeout negative", func(c *config) { c.jobStartTimeout = -1 }, true},
+		{"jobStartTimeout zero disables ok", func(c *config) { c.jobStartTimeout = 0 }, false},
 		{"no creds at all", func(c *config) {
 			c.appClientID, c.appInstallationID, c.appPrivateKey, c.token = "", 0, "", ""
 		}, true},
