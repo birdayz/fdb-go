@@ -164,6 +164,7 @@ go_test(
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
         "precedence_levels_probe_test.go",
+        "prepared_stmt_probe_test.go",
         "projected_exists_fdb_test.go",
         "projected_exists_orderby_scalar_fdb_test.go",
         "projected_exists_round10_fdb_test.go",
