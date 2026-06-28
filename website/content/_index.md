@@ -20,9 +20,8 @@ toc: false
 {{< /hextra/hero-subtitle >}}
 </div>
 
-<div style="margin:2rem 0 3rem">
+<div class="hero-cta">
 {{< hextra/hero-button text="Get started  →" link="docs" >}}
-&nbsp;&nbsp;
 {{< hextra/hero-button text="Star on GitHub" link="https://github.com/birdayz/fdb-go" style="background:transparent;border:1px solid var(--hextra-primary-color, #888);color:inherit" >}}
 </div>
 
@@ -146,7 +145,7 @@ Alice │ alice@example.com
 
 <div style="height:4rem"></div>
 
-{{< hextra/hero-section heading="h2" >}}A&nbsp;client, and&nbsp;layers&nbsp;on&nbsp;top.{{< /hextra/hero-section >}}
+{{< hextra/hero-section heading="h2" >}}A client, and layers on top.{{< /hextra/hero-section >}}
 
 <div class="s-body">
 
@@ -178,7 +177,7 @@ FoundationDB is an ordered, transactional key-value store with strict-serializab
 
 <div style="height:4rem"></div>
 
-{{< hextra/hero-section heading="h2" >}}Share&nbsp;a&nbsp;cluster&nbsp;with&nbsp;Java.{{< /hextra/hero-section >}}
+{{< hextra/hero-section heading="h2" >}}Share a cluster with Java.{{< /hextra/hero-section >}}
 
 <div class="s-body">
 

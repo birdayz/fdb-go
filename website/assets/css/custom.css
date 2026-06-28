@@ -12,6 +12,39 @@
 .s-body { width: 100%; max-width: 46rem; line-height: 1.62; }
 .s-body p { margin: 0.9rem 0; }
 .hero-code { width: 100%; max-width: 44rem; }
+/* Quickstart steps. Like the blocks above, this must be told to fill the measure:
+   hextra-home shrink-wraps its flex children, so without width:100% the steps grow
+   to their widest code line and blow past the viewport on mobile (and drag the
+   fixed sidebar's width:100% out with them). Bounding the width lets long code
+   lines scroll inside their own block instead of scrolling the whole page. */
+.s-steps { width: 100%; max-width: 46rem; }
+.s-steps pre, .hero-code pre { overflow-x: auto; }
+
+/* Headings wrap naturally and balance their lines. This replaces the &nbsp; runs
+   that used to keep phrases together: those formed unbreakable units that overflowed
+   narrow mobile viewports. text-wrap:balance gives tidy multi-line headings without
+   the overflow risk. */
+h1, h2 { text-wrap: balance; }
+
+/* Hero headings. The theme sizes the section h2 at text-4xl on phones (36px) but
+   text-3xl on desktop — larger on mobile than on desktop, and equal to the h1 at
+   320px, which flattens the hierarchy. Scale the section h2 down on small screens,
+   and relax the theme's leading-none so the now-wrapping headings don't crowd. */
+main h1.not-prose { line-height: 1.15; }
+main h2.not-prose { font-size: 1.5rem; line-height: 1.2; }   /* 24px on phones */
+@media (min-width: 640px) {
+  main h2.not-prose { font-size: 1.875rem; }                 /* 30px from sm up, matches desktop */
+}
+
+/* Hero CTAs: real gap so the buttons never touch when they stack on mobile, and
+   full-width (equal, not ragged) on phones. */
+.hero-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 2rem 0 3rem; }
+/* Transparent border so the primary button matches the secondary's bordered box
+   height exactly (otherwise the secondary's 1px border makes it 2px taller). */
+.hero-cta a { margin: 0; border: 1px solid transparent; }
+@media (max-width: 480px) {
+  .hero-cta a { flex: 1 1 100%; text-align: center; }
+}
 .hero-note {
   width: 100%;
   max-width: 44rem;
