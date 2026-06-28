@@ -172,6 +172,7 @@ go_test(
         "union_scalar_aggregate_alias_test.go",
         "unique_null_batch_probe_test.go",
         "unique_violation_probe_test.go",
+        "update_index_maintenance_probe_test.go",
         "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
         "vector_spfresh_e2e_fdb_test.go",
