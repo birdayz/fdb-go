@@ -84,6 +84,14 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 }
 
 func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.DropSchemaStatementContext) (int64, error) {
+	// DROP SCHEMA deliberately does NOT honor IF EXISTS — this matches Java exactly.
+	// Java's DdlVisitor.visitDropSchemaStatement (DdlVisitor.java:472) never reads
+	// ctx.ifExists(): it builds getDropSchemaConstantAction(db, schema, Options.NONE),
+	// so `DROP SCHEMA IF EXISTS <nonexistent>` errors (schema does not exist) just like
+	// the bare form. Only DROP DATABASE (visitDropDatabaseStatement:466) and DROP SCHEMA
+	// TEMPLATE (visitDropSchemaTemplateStatement:483) thread throwIfDoesNotExist from
+	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
+	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
 	schemaText := s.Uid().GetText()
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
@@ -158,6 +166,20 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
 		tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
 		unique := def.UNIQUE() != nil
+		// INCLUDE (covering index) is not yet wired through the SQL DDL layer. Java
+		// SUPPORTS it (DdlVisitor.java:249 → addValueColumn, building a KeyWithValue
+		// covering index), and Go's record layer HAS the machinery
+		// (KeyWithValueExpression; index_maintainer.go), but Builder.AddIndex doesn't
+		// carry included columns yet. Silently dropping INCLUDE would create a PLAIN
+		// index where Java creates a COVERING one — a wire/DDL-portability divergence
+		// (the same CREATE INDEX yields different index structures across engines). Fail
+		// closed until covering-index DDL is implemented (TODO.md), matching the vector
+		// path's own INCLUDE rejection above. ErrCodeUnsupportedOperation mirrors Java's
+		// UNSUPPORTED_OPERATION used for unsupported INCLUDE (DdlVisitor.java:297).
+		if def.IncludeClause() != nil {
+			return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+				"index %q: INCLUDE clause (covering index) is not yet supported", indexName)
+		}
 		var cols []string
 		if cl := def.IndexColumnList(); cl != nil {
 			for _, spec := range cl.AllIndexColumnSpec() {
@@ -578,6 +600,28 @@ func findAggregateInTree(node antlr.Tree) *antlrgen.AggregateWindowedFunctionCon
 	return nil
 }
 
+// windowedAggregateInTree reports whether the parse tree contains an aggregate
+// function with an OVER clause (a windowed aggregate, e.g. `SUM(v) OVER (PARTITION
+// BY g)`). General window functions are unsupported (Java has no general window
+// operator either — only the vector ROW_NUMBER QUALIFY case works). Without this
+// check the aggregate planner silently DROPS the OVER clause and computes a bare
+// aggregate, returning WRONG results (a single SUM instead of per-partition
+// window values), so the query is rejected up front.
+func windowedAggregateInTree(node antlr.Tree) bool {
+	if node == nil {
+		return false
+	}
+	if awf, ok := node.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.OverClause() != nil {
+		return true
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		if windowedAggregateInTree(node.GetChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
 // extractColumnNameFromExpression extracts a simple column name from an expression
 // that is a bare column reference (fullColumnName).
 func extractColumnNameFromExpression(expr antlrgen.IExpressionContext) (string, error) {
@@ -609,9 +653,18 @@ func findFullColumnName(node antlr.Tree) *antlrgen.FullColumnNameContext {
 func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.ColumnSpec, []string, error) {
 	var cols []metadata.ColumnSpec
 	var pkCols []string
+	seen := make(map[string]bool)
 
 	for i, colDef := range td.AllColumnDefinition() {
 		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
+		// Reject a duplicate column name with a clean 42701 here, before the proto
+		// descriptor build would surface a leaky internal error (XX000
+		// "protodesc.NewFile: descriptor already declared").
+		if seen[colName] {
+			return nil, nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+				"duplicate column name %q in table definition", colName)
+		}
+		seen[colName] = true
 		ct := colDef.ColumnType()
 		if ct == nil {
 			return nil, nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
@@ -645,7 +698,15 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext) ([]metadata.Colum
 
 	if pkDef := td.PrimaryKeyDefinition(); pkDef != nil {
 		for _, fullID := range pkDef.FullIdList().AllFullId() {
-			pkCols = append(pkCols, functions.FullIdToName(fullID))
+			pkCol := functions.FullIdToName(fullID)
+			// Reject a PRIMARY KEY over an undefined column with a clean 42703 here,
+			// before the metadata builder would surface a leaky internal error
+			// (XX000 "build RecordMetaData: ... field not found in message").
+			if !seen[pkCol] {
+				return nil, nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"primary key column %q is not a defined column", pkCol)
+			}
+			pkCols = append(pkCols, pkCol)
 		}
 	}
 

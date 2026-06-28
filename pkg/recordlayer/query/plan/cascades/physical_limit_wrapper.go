@@ -66,10 +66,11 @@ func (w *physicalLimitWrapper) HintCost(child []properties.Cost, _ properties.St
 		return properties.Cost{}
 	}
 	outCard := child[0].Cardinality
-	if w.plan != nil && w.plan.GetLimit() > 0 {
-		limitF := float64(w.plan.GetLimit())
-		if limitF < outCard {
-			outCard = limitF
+	if w.plan != nil {
+		if l := w.plan.GetLimit(); l == 0 {
+			outCard = 0 // LIMIT 0 → no rows (not "no cap").
+		} else if l > 0 && float64(l) < outCard {
+			outCard = float64(l)
 		}
 	}
 	return properties.Cost{

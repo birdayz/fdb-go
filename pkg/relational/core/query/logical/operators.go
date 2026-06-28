@@ -378,6 +378,12 @@ type LogicalJoin struct {
 	Kind        JoinKind
 	OnText      string
 	OnPredicate any // predicates.QueryPredicate when set
+	// OnExistsSubqueries carries EXISTS subqueries lifted from the ON clause
+	// (RFC-154 §5). The cascades translator turns each into an existential
+	// quantifier on the join's SelectExpression, so the NLJ rule's
+	// implementJoinWithExistential path builds the semi-join. Only populated for
+	// INNER joins (OUTER EXISTS-in-ON is deferred — RFC-154 §5.2b).
+	OnExistsSubqueries []ExistsSubquery
 }
 
 func NewJoin(left, right LogicalOperator, kind JoinKind, on string) *LogicalJoin {

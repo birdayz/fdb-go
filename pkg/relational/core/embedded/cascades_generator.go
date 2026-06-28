@@ -273,6 +273,17 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		}
 	}
 
+	// A windowed aggregate (`SUM(v) OVER (PARTITION BY g)`) is not supported. The
+	// aggregate planner ignores the OVER clause and computes a bare aggregate,
+	// which silently returns WRONG results, so reject it up front — a true
+	// front-end pre-pass (before building a soon-discarded logical plan). Detected
+	// on the parse tree because the OVER clause is dropped during lowering, so the
+	// logical plan provably cannot carry it (mirrors findAggregateInTree).
+	if windowedAggregateInTree(q) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+			"windowed aggregate (aggregate function with an OVER clause) is not supported")
+	}
+
 	visitor := NewPlanVisitorWithSchema(md, g.c.sess.Schema)
 	logicalOp, buildErr := visitor.VisitQuery(q)
 	if buildErr != nil {
@@ -323,7 +334,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedOperation, msg)
+		// Java rejects DISTINCT aggregates with UNSUPPORTED_QUERY (0AF00) in
+		// ExpressionVisitor.visitAggregateWindowedFunction; match that SQLSTATE.
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, msg)
 	}
 
 	if msg := findFullOuterWithExists(logicalOp); msg != "" {
@@ -608,6 +621,36 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 	}, nil
 }
 
+// dmlHasDryRunOption reports whether a DML statement's OPTIONS(...) clause requests
+// DRY RUN. The grammar's queryOption is `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n`;
+// DRY RUN is the only one whose silent omission changes whether data is mutated.
+func dmlHasDryRunOption(qo antlrgen.IQueryOptionsContext) bool {
+	if qo == nil {
+		return false
+	}
+	for _, opt := range qo.AllQueryOption() {
+		if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// updateHasDefaultAssignment reports whether an UPDATE has a `SET col = DEFAULT`
+// assignment. The grammar is `updatedElement : fullColumnName '=' (expression | DEFAULT)`,
+// so the DEFAULT alternative is detected via the DEFAULT() terminal.
+func updateHasDefaultAssignment(upd antlrgen.IUpdateStatementContext) bool {
+	if upd == nil {
+		return false
+	}
+	for _, el := range upd.AllUpdatedElement() {
+		if el != nil && el.DEFAULT() != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatementContext) (plan query.Plan, err error) {
 	c := g.c
 
@@ -630,6 +673,26 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
 	}
 
+	// DML … OPTIONS (DRY RUN) is rejected. Go does not yet wire the SQL DRY RUN option
+	// through to the dry-run store primitives (DryRunSaveRecord/DryRunDeleteRecord exist,
+	// store_api.go, but the executor never branches on OptDryRun), so the statement would
+	// run the REAL mutation. Silently ignoring DRY RUN is DATA LOSS — the statement
+	// mutates when the user explicitly asked for a no-op preview, the exact opposite of
+	// intent. Java honors it (AstNormalizer.visitQueryOptions → QueryPlan.setDryRun).
+	// Until DRY RUN is ported (TODO.md), fail closed rather than mutate. NOCACHE/LOG QUERY
+	// are harmless to ignore (cache/log hints) so they are left accepted-and-ignored.
+	var dmlOpts antlrgen.IQueryOptionsContext
+	if del := dml.DeleteStatement(); del != nil {
+		dmlOpts = del.QueryOptions()
+	} else if upd := dml.UpdateStatement(); upd != nil {
+		dmlOpts = upd.QueryOptions()
+	} else if ins := dml.InsertStatement(); ins != nil {
+		dmlOpts = ins.QueryOptions()
+	}
+	if dmlHasDryRunOption(dmlOpts) {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DRY RUN is not supported")
+	}
+
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
 	if del := dml.DeleteStatement(); del != nil {
@@ -650,6 +713,18 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			return nil, delErr
 		}
 	} else if upd := dml.UpdateStatement(); upd != nil {
+		// `SET col = DEFAULT` is rejected. The grammar accepts it, but this schema system
+		// has no column DEFAULT definitions, and Java doesn't support it either —
+		// ExpressionVisitor.visitUpdatedElement (:1089) calls ctx.expression().accept(this),
+		// which NPEs when the RHS is DEFAULT (expression() is null). Per the conformance
+		// principle (Java NPE → Go emits a CLEAN error, not a crash or silent no-op), reject
+		// it: the builder would otherwise silently DROP the assignment (logical_builder.go's
+		// `el.Expression()==nil` continue), leaving the column UNCHANGED while reporting
+		// success — a misleading silent ignore.
+		if updateHasDefaultAssignment(upd) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"DEFAULT is not supported in UPDATE ... SET")
+		}
 		if w := upd.WhereExpr(); w != nil && expr.WhereExistsInScalarPosition(w.Expression()) {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"EXISTS nested in a scalar expression is not yet supported")

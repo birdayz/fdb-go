@@ -379,6 +379,54 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery) (semantic.Sco
 	}, true
 }
 
+// mapPredicateWalkError converts a resolver.WalkPredicate failure into the
+// SQLSTATE-classified *api.Error it should surface as, or nil when the error is
+// not one of the recognized semantic / IN-shape errors (the caller then decides
+// whether to fall back to a text predicate or fail closed). Shared by the
+// WHERE-clause and JOIN-ON resolution paths so both classify column, ambiguity,
+// source, and IN-shape failures identically — and a structured *api.Error from a
+// nested subquery build surfaces verbatim.
+//
+// A bare ColumnNotFoundError maps to ErrCodeUndefinedColumn so a WHERE-clause
+// correlated subquery's BuildExists can fall back to buildCorrelatedExists with
+// its richer outer scope (RFC-141/RFC-142); in the JOIN-ON path the same mapping
+// is simply the correct 42703 for an ON column that does not exist.
+func mapPredicateWalkError(walkErr error) *api.Error {
+	var ambigErr *semantic.AmbiguousColumnError
+	if errors.As(walkErr, &ambigErr) {
+		return api.NewErrorf(api.ErrCodeAmbiguousColumn, "column reference is ambiguous")
+	}
+	var inListNull *expr.InListNullError
+	if errors.As(walkErr, &inListNull) {
+		return api.NewError(api.ErrCodeWrongObjectType, "NULL values are not allowed in the IN list")
+	}
+	var srcNotFound *semantic.SourceNotFoundError
+	if errors.As(walkErr, &srcNotFound) {
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "no FROM source aliased as %s", srcNotFound.Alias.Name())
+	}
+	var colNotFound *semantic.ColumnNotFoundError
+	if errors.As(walkErr, &colNotFound) {
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", colNotFound.Id.Name())
+	}
+	var inColRef *expr.InColumnRefError
+	if errors.As(walkErr, &inColRef) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, inColRef.Error())
+	}
+	var binErr *expr.InvalidBinaryLiteralError
+	if errors.As(walkErr, &binErr) {
+		return api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
+	}
+	var corrExistsErr *CorrelatedExistsError
+	if errors.As(walkErr, &corrExistsErr) {
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "nested correlated EXISTS: %v", walkErr)
+	}
+	var apiErr *api.Error
+	if errors.As(walkErr, &apiErr) {
+		return apiErr
+	}
+	return nil
+}
+
 // upgradeJoinOnPredicates walks the logical plan tree to find LogicalJoin
 // nodes and upgrades their OnText to OnPredicate using the full join scope.
 // The join nodes are created in order matching sq.joins, so we match
@@ -496,33 +544,85 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			break
 		}
 		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
-			// RFC-141 R4: EXISTS in a JOIN ON clause is NOT a
-			// directly-handled position. The ON resolver carries no
-			// SubqueryPlanner, so WalkPredicate would error on the EXISTS and the
-			// whole ON predicate would be silently DROPPED → every joined row
-			// passes (a silent wrong result). Detect a contained EXISTS atom
-			// structurally and reject cleanly rather than drop the condition.
+			// EXISTS in a JOIN ON clause (RFC-154 §5, Java parity). For an INNER
+			// join this is equivalent to EXISTS in WHERE (no null-extension):
+			// install a SubqueryPlanner so WalkPredicate builds the ON predicate's
+			// ExistentialValuePredicate, then carry the collected EXISTS subqueries
+			// on the join so translateJoin attaches the existential quantifier and
+			// the NLJ rule's implementJoinWithExistential path builds the semi-join.
+			//
+			// OUTER joins are deferred (RFC-154 §5.2b): the ON-EXISTS is correlated
+			// to the PRESERVED side and gates null-extension, which the semi-join
+			// shape cannot express (implementJoinWithExistential would drop preserved
+			// rows whose EXISTS is false instead of null-extending). Reject
+			// fail-closed so OUTER EXISTS-in-ON never returns wrong rows.
 			if expr.ContainsExistsAtom(sq.joins[sqIdx].onExpr) {
+				if j.Kind != logical.JoinInner {
+					return api.NewError(api.ErrCodeUnsupportedQuery,
+						"EXISTS in an OUTER JOIN ON clause is not yet supported")
+				}
+				onPlanner := &existsSubqueryPlanner{
+					md:          md,
+					schemaName:  schemaName,
+					outerScopes: buildOuterScopeSources(sq, md, schemaName),
+					cteScopes:   cteScopes,
+				}
+				resolver.SetSubqueryPlanner(onPlanner)
+				pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
+				resolver.SetSubqueryPlanner(nil) // don't leak into the next join's walk
+				if walkErr != nil {
+					if apiErr := mapPredicateWalkError(walkErr); apiErr != nil {
+						return apiErr
+					}
+					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+						"unsupported EXISTS in JOIN ON clause: %v", walkErr)
+				}
+				// The NLJ rule's implementJoinWithExistential handles exactly ONE
+				// existential quantifier on a binary join (a 2-ForEach + 1-Existential
+				// select); a join with two+ existentials falls through unplanned. That
+				// is a pre-existing limitation shared with WHERE EXISTS over a join —
+				// reject MULTIPLE EXISTS-in-ON cleanly here rather than let it surface
+				// as the opaque "Cascades planner could not plan query" (RFC-154 §5;
+				// single EXISTS-in-ON is the supported shape).
+				if len(onPlanner.subqueries) > 1 {
+					return api.NewError(api.ErrCodeUnsupportedQuery,
+						"multiple EXISTS in a JOIN ON clause is not yet supported")
+				}
+				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
+				j.OnExistsSubqueries = onPlanner.subqueries
+				continue
+			}
+			// A scalar `(SELECT ...)` or `x IN (SELECT ...)` subquery in the ON
+			// clause: Go (like Java) does not support correlated scalar subqueries
+			// or IN-subqueries anywhere. The ON resolver installs no SubqueryPlanner,
+			// so WalkPredicate would decline with UnsupportedExpressionShapeError and
+			// the fail-closed backstop below would surface it — but detect it
+			// structurally first to emit a clear, position-specific message (mirroring
+			// the EXISTS-in-ON rejection above) rather than leaking the resolver's
+			// internal shape string.
+			if expr.ContainsSubqueryAtom(sq.joins[sqIdx].onExpr) {
 				return api.NewError(api.ErrCodeUnsupportedQuery,
-					"EXISTS in a JOIN ON clause is not yet supported")
+					"subquery in a JOIN ON clause is not supported")
 			}
 			pred, walkErr := resolver.WalkPredicate(sq.joins[sqIdx].onExpr)
 			if walkErr != nil {
-				var srcNotFound *semantic.SourceNotFoundError
-				if errors.As(walkErr, &srcNotFound) {
-					return api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"no FROM source aliased as %s", srcNotFound.Alias.Name())
-				}
-				// A structured api.Error (e.g. DATATYPE_MISMATCH from a
-				// non-boolean bare ON predicate like `ON a.amount`, RFC-146) is a
-				// real user error — surface it rather than dropping the ON
-				// condition, which the translator would silently degrade to a
-				// cross join (it ignores OnText once OnPredicate is nil).
-				var apiErr *api.Error
-				if errors.As(walkErr, &apiErr) {
+				// A recognized semantic / shape error (undefined or ambiguous column,
+				// unknown source, bad IN list, a structured api.Error from a non-boolean
+				// bare ON predicate like `ON a.amount`, RFC-146) is a real user error —
+				// surface it with its correct SQLSTATE rather than dropping the ON
+				// condition, which the translator silently degrades to a cross join (it
+				// ignores OnText once OnPredicate is nil).
+				if apiErr := mapPredicateWalkError(walkErr); apiErr != nil {
 					return apiErr
 				}
-				continue
+				// FAIL-CLOSED: any other resolver failure means we could not build this
+				// ON predicate (e.g. an UnsupportedExpressionShapeError from a shape this
+				// resolver has no planner for). Dropping it is NEVER safe — it degrades
+				// the join to a CROSS PRODUCT (silent wrong rows, the pre-existing bug in
+				// TODO.md "Known gaps"). Surface a clean error instead of the historical
+				// silent `continue`.
+				return api.NewErrorf(api.ErrCodeUnsupportedQuery,
+					"unsupported expression in JOIN ON clause: %v", walkErr)
 			}
 			j.OnPredicate = predicates.SimplifyPredicateValues(pred)
 		}
@@ -1542,70 +1642,16 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 	if resolver != nil && sq.whereExpr.Expression() != nil {
 		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
 		if walkErr != nil {
-			var ambigErr *semantic.AmbiguousColumnError
-			if errors.As(walkErr, &ambigErr) {
-				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-					"column reference is ambiguous")
-			}
-			var inListNull *expr.InListNullError
-			if errors.As(walkErr, &inListNull) {
-				return nil, api.NewError(api.ErrCodeWrongObjectType,
-					"NULL values are not allowed in the IN list")
-			}
-			var srcNotFound *semantic.SourceNotFoundError
-			if errors.As(walkErr, &srcNotFound) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"no FROM source aliased as %s", srcNotFound.Alias.Name())
-			}
-			// A BARE column unresolvable in THIS (sub)query's own scope. For a
-			// correlated subquery (`SELECT 1 FROM UV WHERE UV.V = VAL` where VAL is the
-			// OUTER query's lateral-unnest element binding), the column is not local;
-			// surface it as ErrCodeUndefinedColumn so BuildExists falls back to
-			// buildCorrelatedExists, which resolves it against the richer outer scope
-			// (outerScopes — including the unnest virtual source, RFC-142
-			// P2c). This mirrors the qualified-outer-ref path above
-			// (SourceNotFoundError for `T1.ID`): a bare outer ref must take the SAME
-			// correlation fallback as a qualified one, never silently degrade to a
-			// text WHERE the translator then rejects. Only the SUBQUERY / derived-table
-			// inner-plan build reaches this walk (the main query plans via the
-			// PlanVisitor and validates columns separately), so the main-query text
-			// fallback is unaffected.
-			var colNotFound *semantic.ColumnNotFoundError
-			if errors.As(walkErr, &colNotFound) {
-				name := colNotFound.Id.Name()
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q does not exist", name)
-			}
-			var inColRef *expr.InColumnRefError
-			if errors.As(walkErr, &inColRef) {
-				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-					inColRef.Error())
-			}
-			var binErr *expr.InvalidBinaryLiteralError
-			if errors.As(walkErr, &binErr) {
-				return nil, api.NewError(api.ErrCodeInvalidBinaryRepresentation, binErr.Error())
-			}
-			// When a nested correlated EXISTS fails because the outer
-			// scope is insufficient (e.g. inner EXISTS references a
-			// grandparent table), propagate as ErrCodeUndefinedColumn
-			// so the caller's BuildExists can fall back to
-			// buildCorrelatedExists with its richer outer scope.
-			var corrExistsErr *CorrelatedExistsError
-			if errors.As(walkErr, &corrExistsErr) {
-				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"nested correlated EXISTS: %v", walkErr)
-			}
-			// A structured *api.Error from the walk is a deliberate, already
-			// SQLSTATE-classified rejection raised by a nested subquery's build
-			// (e.g. an EXISTS subquery whose own WHERE buries a scalar EXISTS, which
-			// BuildExists' postBuild guard rejects with ErrCodeUnsupportedQuery —
-			// RFC-141 R4). It must surface VERBATIM, not fall through to
-			// the text-fallback predicate builder below — which declines the EXISTS
-			// shape and reports the generic "Cascades planner could not plan",
-			// masking the precise reason. (The specific remappings above run first,
-			// so a fallback-intended ErrCodeUndefinedColumn still takes precedence.)
-			var apiErr *api.Error
-			if errors.As(walkErr, &apiErr) {
+			// Classify the failure with its correct SQLSTATE (shared with the
+			// JOIN-ON path). A bare ColumnNotFoundError maps to
+			// ErrCodeUndefinedColumn so a correlated subquery's BuildExists falls
+			// back to buildCorrelatedExists with its richer outer scope (RFC-142
+			// P2c); a structured *api.Error from a nested subquery build (e.g.
+			// RFC-141 R4's buried-scalar-EXISTS rejection) surfaces VERBATIM rather
+			// than degrading to the text-fallback builder below (which would mask the
+			// precise reason). An UNrecognized error falls through to that text
+			// fallback, preserving the historical WHERE behavior.
+			if apiErr := mapPredicateWalkError(walkErr); apiErr != nil {
 				return nil, apiErr
 			}
 		} else {
@@ -2587,7 +2633,8 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 	// qualified there (the pre-aggregate row binds `V.V`, the unnest element);
 	// rebaseHavingGroupKeyPredicate keeps that case untouched. RFC-142.
 	agg.HavingPredicate = rebaseHavingGroupKeyPredicate(
-		rewriteAggregateRefsInPredicate(pred), agg)
+		rewriteAggregateRefsInPredicate(pred), agg,
+	)
 	if subqPlanner != nil && len(subqPlanner.subqueries) > 0 {
 		agg.HavingExistsSubqueries = subqPlanner.subqueries
 		subqPlanner.subqueries = nil
@@ -2992,6 +3039,20 @@ func buildLogicalPlanForDeleteWithCatalog(
 	md *recordlayer.RecordMetaData,
 	schemaName string,
 ) (logical.LogicalOperator, error) {
+	// DELETE … LIMIT is rejected — Java rejects it too (QueryVisitor.visitDeleteStatement:
+	// Assert ctx.limitClause()==null, "limit is not supported"), so this is conformant
+	// in REJECTING with the same message. The shared grammar accepts a limitClause on a
+	// DELETE, but honoring it is unimplemented — and the builder otherwise IGNORES it,
+	// which silently DELETES ALL rows matching the WHERE instead of the requested subset
+	// (data loss: `DELETE … WHERE p LIMIT 1` deleted every matching row). Fail closed.
+	//
+	// SQLSTATE: Java's 2-arg Assert.thatUnchecked(bool,String) defaults to
+	// INTERNAL_ERROR (XX000) — a leaky internal code. We deliberately use the cleaner
+	// 0AF00 (UNSUPPORTED_QUERY) instead, consistent with this PR's other XX000→clean-code
+	// fixes; only the code differs from Java, not the reject-with-this-message behavior.
+	if del != nil && del.LimitClause() != nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "limit is not supported")
+	}
 	op := buildLogicalPlanForDelete(del)
 	if op == nil || md == nil || del == nil {
 		return op, nil
@@ -3138,6 +3199,31 @@ func buildLogicalPlanForUpdateWithCatalog(
 		return op, nil
 	}
 	bare := bareTableName(tableName)
+
+	// Validate each SET target column exists in the table, mirroring INSERT's
+	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
+	// nonexistent column reaches the executor and surfaces a LEAKY raw error
+	// ("executor: update field %q not found in descriptor", no SQLSTATE) instead of
+	// a clean 42703 — the same condition INSERT and SELECT already report as 42703.
+	// The check is case-insensitive (EqualFold over the descriptor field names) so it
+	// is exactly as permissive as the executor's lookup (ByName(lower) →
+	// fieldByNameFold) and never rejects a column the executor would accept.
+	if rt := md.GetRecordType(bare); rt != nil && rt.Descriptor != nil {
+		fields := rt.Descriptor.Fields()
+		for _, set := range updOp.Sets {
+			found := false
+			for i := 0; i < fields.Len(); i++ {
+				if strings.EqualFold(string(fields.Get(i).Name()), set.Column) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in table %q", set.Column, bare)
+			}
+		}
+	}
 
 	// Resolve each SET RHS expression to a real Value against the target
 	// table (e.g. `price / 2` → Divide(FieldValue(PRICE), 2)) so the
