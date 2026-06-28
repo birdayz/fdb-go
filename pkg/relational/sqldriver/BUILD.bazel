@@ -35,6 +35,7 @@ go_test(
         "avg_double_insert_fdb_test.go",
         "avg_fractional_probe_test.go",
         "bare_bool_where_probe_test.go",
+        "between_edges_probe_test.go",
         "bool_value_funcs_probe_test.go",
         "boolean_index_probe_test.go",
         "bytes_column_probe_test.go",
