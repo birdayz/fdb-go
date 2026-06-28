@@ -193,8 +193,8 @@ func TestExecuteLimit_ZeroLimit(t *testing.T) {
 	if limitPlan.GetLimit() != 0 {
 		t.Fatalf("expected limit=0, got %d", limitPlan.GetLimit())
 	}
-	// The ZeroLimitRule in Cascades eliminates this to an empty plan.
-	// At the executor level, SkipThenLimit with limit=0 returns empty.
+	// LIMIT 0 lowers to RecordQueryLimitPlan(limit=0); at the executor level the
+	// limitEnvelopeCursor short-circuits remLimit==0 to an empty, exhausted result.
 }
 
 // --- Sort + Limit integration (top-K) ---

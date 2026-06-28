@@ -775,21 +775,17 @@ each on its own stacked branch.
 
 ## Known gaps
 
-### [ ] planner: `LIMIT 0` returns ALL rows unless the inner is a bare table scan (Go-only LIMIT extension) — found 2026-06-28
+### [x] planner: `LIMIT 0` returned ALL rows unless the inner was a bare table scan (Go-only LIMIT extension) — FIXED 2026-06-28
 
-`SELECT id FROM t LIMIT 0` (bare scan) correctly returns 0 rows (plan `Limit(0, Scan)`). But add ANY non-trivial
-inner and the `Limit(0)` operator is DROPPED and every row comes back:
-- `SELECT id FROM t WHERE s >= '' LIMIT 0` → all rows
-- `SELECT id FROM t ORDER BY s LIMIT 0` → all rows (plan `Project([ID], Scan())` — sort AND limit gone)
-Non-zero limits are fine in all shapes (`ORDER BY s LIMIT 1` → `Limit(1, IndexScan(T_S))`). So the bug is that a
-LIMIT-0 plan over a filter/sort/index inner is replaced by an unbounded scan during planning. `ImplementLimitRule`
-always builds `Limit(0,…)`, so the drop is downstream — a rule rewriting/pruning the limit-0 plan, or it losing to
-a plain-scan alternative on cost. **Related cost bugs (same `limit ≤ 0` = "no cap" root):** `plan_properties.go:409`
-(`if limit <= 0 { return child }`) and `physical_limit_wrapper.go:69` (`GetLimit() > 0`) both estimate a LIMIT-0
-plan's cardinality as the FULL child cardinality instead of 0 — likely why the limit-0 plan is costed/pruned wrong.
-**Why deferred:** LIMIT is a Go-only extension (no Java reference); the fix is a Graefe-gated planning change with
-regression risk, not a safe unattended edit. Repro: `string_index_range_probe_test.go` pins the working bare
-`LIMIT 0`; the filter/ORDER-BY cases are documented here, not asserted.
+`SELECT id FROM t LIMIT 0` (bare scan) returned 0 rows, but `LIMIT 0` over any non-bare inner (WHERE / ORDER BY /
+index) returned EVERY row. **Root cause:** `ZeroLimitRule` rewrote `Limit(0, X)` to
+`NewFullUnorderedScanExpression(nil, UnknownType)`, believing nil record-types meant an empty source — but nil means
+"scan ALL record types", i.e. a full table scan. The broken full-scan alternative won on cost over the correct
+`Limit(0, …)` whenever the inner was more than a bare scan (the bare case kept `Limit(0, Scan)`). **Fix:** deleted
+the broken Go-only `ZeroLimitRule` (Java has no LIMIT, so no reference). `LIMIT 0` now always lowers to
+`RecordQueryLimitPlan(0)` via `ImplementLimitRule`, which the executor's limitEnvelopeCursor short-circuits to 0
+rows. Regression: `limit_zero_fdb_test.go` (bare / WHERE / ORDER BY / index / aggregate / OFFSET shapes). The
+pre-existing `TestFDB_LimitZeroReturnsNothing` only covered the bare case — a dimensional gap.
 
 ### [ ] executor/types: cross-type numeric equality on an INDEXED column drops rows (no SARG comparand promotion) — found 2026-06-28
 

@@ -406,7 +406,17 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 	case *plans.RecordQueryLimitPlan:
 		child := cardinalitiesFromChildRef(w)
 		limit := p.GetLimit()
-		if limit <= 0 {
+		if limit == 0 {
+			// LIMIT 0 produces exactly zero rows — not "no cap". Folding it into
+			// the negative ("no limit") arm would mis-cost any parent over a
+			// LIMIT-0 subtree as the full child cardinality.
+			return properties.Cardinalities{
+				Min: properties.OfCardinality(0),
+				Max: properties.OfCardinality(0),
+			}
+		}
+		if limit < 0 {
+			// Negative limit = no cap (OFFSET-only stream).
 			return child
 		}
 		maxCard := child.GetMaxCardinality()

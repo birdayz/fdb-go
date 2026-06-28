@@ -63,6 +63,7 @@ go_test(
         "join_column_labels_test.go",
         "join_merge_outer_column_test.go",
         "joined_preserved_outer_join_fdb_test.go",
+        "limit_zero_fdb_test.go",
         "materialized_nlj_null_test.go",
         "memory_budget_fdb_test.go",
         "multiway_join_index_probe_test.go",

@@ -83,10 +83,7 @@ func TestFDB_StringIndexRangeProbe(t *testing.T) {
 	check("ge_empty_all", "SELECT id FROM t WHERE s >= ''", false, []int64{1, 2, 3, 4, 5, 6})
 	check("order_asc", "SELECT id FROM t ORDER BY s ASC", true, []int64{1, 2, 3, 4, 5, 6})
 	check("eq_multichar", "SELECT id FROM t WHERE s = 'banana'", false, []int64{5})
-	// LIMIT edges. NOTE: a BARE `SELECT … FROM t LIMIT 0` correctly returns 0
-	// rows (plan Limit(0, Scan)); but `LIMIT 0` over any non-bare inner (WHERE,
-	// ORDER BY, index) is a KNOWN gap — the Limit(0) operator is dropped and all
-	// rows come back. Tracked in TODO.md "Known gaps". Pin the working bare form.
-	check("limit_zero_bare", "SELECT id FROM t LIMIT 0", false, nil)
+	// LIMIT edges (LIMIT 0 in all shapes is pinned in limit_zero_fdb_test.go).
+	check("limit_zero", "SELECT id FROM t ORDER BY s LIMIT 0", true, nil)
 	check("limit_over", "SELECT id FROM t ORDER BY s ASC LIMIT 100", true, []int64{1, 2, 3, 4, 5, 6})
 }
