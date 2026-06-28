@@ -939,6 +939,25 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
+
+`CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build
+RecordMetaData: ... index "T_V" validation failed: field "V" in "T" is a message
+type; use Nest() to navigate into nested messages`. All other column types index fine
+(TIMESTAMP, DATE, FLOAT, INTEGER, BOOLEAN, BIGINT, DOUBLE, STRING, BYTES — pinned in
+indexable_types_probe_test.go). Fail-CLOSED (CREATE fails, no corruption).
+
+Root cause: Go stores a UUID column as the `tuple_fields.UUID` proto MESSAGE
+(cascades_generator.go:2978), and the record-layer index-maintainer validation
+rejects message-typed index fields. Likely a Go DIVERGENCE, not a shared limit: Java
+treats UUID as a first-class indexable PRIMITIVE — `DataType.Primitives.UUID` /
+`Type.uuidType()` (SemanticAnalyzer.java:724, DataTypeUtils.java:152) — so a UUID
+index works in Java even though storage is the same `tuple_fields.UUID` message. Fix
+= teach the index path to treat the tuple_fields.UUID message as an indexable
+primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
+replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
+metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
+
 ### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
 
 Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
