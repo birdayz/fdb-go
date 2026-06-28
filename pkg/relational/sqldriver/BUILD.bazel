@@ -28,6 +28,7 @@ go_test(
         "aggregate_edges_probe_test.go",
         "aggregate_index_sum_probe_test.go",
         "ambiguous_column_star_test.go",
+        "arith_precedence_probe_test.go",
         "arithmetic_edge_probe_test.go",
         "array_cardinality_fdb_test.go",
         "array_cardinality_index_fdb_test.go",
