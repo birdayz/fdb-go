@@ -109,6 +109,7 @@ go_test(
         "memory_budget_fdb_test.go",
         "modulo_division_probe_test.go",
         "multi_index_selection_probe_test.go",
+        "multi_statement_probe_test.go",
         "multicol_index_gap_probe_test.go",
         "multicol_orderby_probe_test.go",
         "multiway_join_index_probe_test.go",
