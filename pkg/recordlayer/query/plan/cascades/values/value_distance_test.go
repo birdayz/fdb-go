@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"github.com/stretchr/testify/require"
 )
 

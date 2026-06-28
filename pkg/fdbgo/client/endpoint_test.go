@@ -5,8 +5,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestIPAddressString_IPv4 verifies IPv4 address rendering from big-endian uint32.

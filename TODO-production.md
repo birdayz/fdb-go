@@ -666,7 +666,7 @@ mechanical (move `[Unreleased]` → `v0.1.0`, tag).
 ### [x] P2.2 — libfdb_c escape hatch · L — DONE (RFC-109 + entry-point routing, `prod-stack/11`)
 *(Completed 2026-06-25.)* A build-tag-selectable libfdb_c backend, with the two real production open
 paths now routed through it:
-- **Seam:** `fdbclient.Open` chooses at build time — `pkg/fdbgo/fdbclient/open_purego.go`
+- **Seam:** `fdbclient.Open` chooses at build time — `pkg/internal/fdbclient/open_purego.go`
   (`//go:build !libfdbc`, default) vs `open_libfdbc.go` (`//go:build libfdbc`); the default build
   never imports/links cgo.
 - **Backend:** `pkg/fdbgo/libfdbc/backend.go` (`//go:build cgo && libfdbc`) is a full

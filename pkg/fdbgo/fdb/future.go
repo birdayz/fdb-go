@@ -1,7 +1,7 @@
 package fdb
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 // Future represents a value (or error) available at some later time.

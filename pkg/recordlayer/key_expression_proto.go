@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 )
 
 // fanTypeToProto converts Go FanType to proto Field.FanType.

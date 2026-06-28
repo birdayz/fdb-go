@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 func main() {

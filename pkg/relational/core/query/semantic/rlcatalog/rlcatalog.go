@@ -9,8 +9,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // Wrap adapts a *RecordMetaData to the semantic.Catalog interface.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/linters/norecover"
+	"fdb.dev/pkg/linters/norecover"
 )
 
 // RFC-134 (audit P2): the panic-boundary discipline has two halves. The recover ratchet is the

@@ -70,7 +70,7 @@ CMAKEOF
 go_library(
     name = "fdb-diff-oracle",
     srcs = ["oracle.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-diff-oracle",
+    importpath = "fdb.dev/cmd/fdb-diff-oracle",
     visibility = ["//visibility:private"],
 )
 

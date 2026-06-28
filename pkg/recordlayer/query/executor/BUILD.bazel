@@ -15,7 +15,7 @@ go_library(
         "scalar_subquery.go",
         "streaming_cursors.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/executor",
+    importpath = "fdb.dev/pkg/recordlayer/query/executor",
     visibility = ["//visibility:public"],
     deps = [
         "//gen",

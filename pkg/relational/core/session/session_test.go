@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // Tests for the Session helpers added in nightshift-45 Phase 1d:

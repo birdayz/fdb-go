@@ -3,8 +3,8 @@ package executor
 import (
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // EvaluationContext holds runtime bindings for plan execution:

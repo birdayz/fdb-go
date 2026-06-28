@@ -19,7 +19,7 @@ exports_files([
     "FEATURE_MATRIX.md",
 ])
 
-# gazelle:prefix github.com/birdayz/fdb-record-layer-go
+# gazelle:prefix fdb.dev
 # gazelle:proto disable
 # Build tags gazelle treats as satisfied so it keeps the corresponding `srcs` on
 # regen. These mirror the tags set repo-wide in `.bazelrc`

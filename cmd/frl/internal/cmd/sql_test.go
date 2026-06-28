@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
 
 func TestBuildFDBSQLDSN(t *testing.T) {

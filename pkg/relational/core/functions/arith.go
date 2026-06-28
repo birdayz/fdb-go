@@ -18,7 +18,7 @@ package functions
 import (
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // AddInt64Checked returns a+b and a success flag. Overflow iff

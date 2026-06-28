@@ -3,7 +3,7 @@ package difforacle
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // TestDiffReadOptions is the C++ byte-truth for RFC-117: ReadOptions'

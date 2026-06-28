@@ -3,10 +3,10 @@ package embedded
 import (
 	"strings"
 
+	"fdb.dev/pkg/relational/core/functions"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
 )
 
 // buildLogicalPlanForQuery is the outer-most builder entry point.

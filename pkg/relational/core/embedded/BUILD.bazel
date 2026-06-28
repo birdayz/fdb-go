@@ -32,7 +32,7 @@ go_library(
         "value_compare.go",
         "where_extractors.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded",
+    importpath = "fdb.dev/pkg/relational/core/embedded",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb",

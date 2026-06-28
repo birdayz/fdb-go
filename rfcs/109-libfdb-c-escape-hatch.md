@@ -2,7 +2,7 @@
 
 **Status:** IMPLEMENTED (PR #295, stacked). Phases A–C landed; the cgo backend was hardened
 across 11 codex rounds + FDB C++ dev / Torvalds review, and backend selection was finalized
-as a build-tag choice (pkg/fdbgo/fdbclient — netgo/netcgo idiom), vetted by stdlib-net +
+as a build-tag choice (pkg/internal/fdbclient — netgo/netcgo idiom), vetted by stdlib-net +
 sqlite-driver + Torvalds reviewers. Client launch-readiness #6 (TODO-production P2.2).
 Wire compatibility is the whole point and the hard line.
 
@@ -225,7 +225,7 @@ transaction-internal or per-transaction:
     make the pure-Go client itself link `libfdb_c` whenever `CGO_ENABLED=1` (the auto `cgo` tag). A
     separate `pkg/fdbgo/libfdbc` is linked **only when the build asks for it**, so the pure-Go client
     stays cgo-free. Package `fdb` exposes only the backend-agnostic surface (`BackendDatabase` +
-    `Database.IsValid`); it never imports the cgo package. The selector is the tiny `pkg/fdbgo/fdbclient`
+    `Database.IsValid`); it never imports the cgo package. The selector is the tiny `pkg/internal/fdbclient`
     shim — `open_purego.go` (`//go:build !libfdbc`) returns the pure-Go client and `open_libfdbc.go`
     (`//go:build libfdbc`) returns `libfdbc.Open`, so a default build never even imports `libfdbc`. The
     `//go:build !cgo` stub still exists (in `libfdbc`), returning a clear *"built without cgo"* error

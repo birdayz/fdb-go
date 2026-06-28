@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // TestDifferential_ApproximateSize compares GetApproximateSize() — the client-side running

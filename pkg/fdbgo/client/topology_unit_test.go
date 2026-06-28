@@ -3,7 +3,7 @@ package client
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 func TestDBInfoEqual_BothEmpty(t *testing.T) {

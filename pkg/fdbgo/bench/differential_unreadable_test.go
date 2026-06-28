@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // accessed_unreadable (1036) differential vs libfdb_c — RFC-098. Reading a key whose

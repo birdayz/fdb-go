@@ -1,7 +1,7 @@
 package expressions
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // RelationalExpressionWithPredicates is the optional interface

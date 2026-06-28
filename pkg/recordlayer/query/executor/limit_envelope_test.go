@@ -9,7 +9,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // TestLimitContinuation_RoundTrip verifies encode→decode preserves the inner

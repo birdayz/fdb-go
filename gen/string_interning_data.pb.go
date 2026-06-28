@@ -100,8 +100,8 @@ const file_string_interning_data_proto_rawDesc = "" +
 	"\x1bstring_interning_data.proto\x12\x1dcom.apple.foundationdb.record\x1a google/protobuf/descriptor.proto\"H\n" +
 	"\x04Data\x12$\n" +
 	"\rinternedValue\x18\x01 \x01(\x04R\rinternedValue\x12\x1a\n" +
-	"\bmetadata\x18\x02 \x01(\fR\bmetadataB\x81\x02\n" +
-	"!com.com.apple.foundationdb.recordB\x18StringInterningDataProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\bmetadata\x18\x02 \x01(\fR\bmetadataB\xe2\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x18StringInterningDataProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_string_interning_data_proto_rawDescOnce sync.Once

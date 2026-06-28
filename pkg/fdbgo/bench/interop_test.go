@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	godir "fdb.dev/pkg/fdbgo/fdb/directory"
+	gotuple "fdb.dev/pkg/fdbgo/fdb/tuple"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 	cgodir "github.com/apple/foundationdb/bindings/go/src/fdb/directory"
 	cgotuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	godir "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
-	gotuple "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // TestInterop_GoWriteCGoRead verifies the pure Go client writes data that the

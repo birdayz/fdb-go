@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // gojDB sets up emp + dept for GROUP-BY-over-join tests. Groups by dept:

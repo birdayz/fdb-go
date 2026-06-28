@@ -3,7 +3,7 @@ package expressions
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestLogicalUnique_Construction(t *testing.T) {

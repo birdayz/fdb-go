@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestRangeIterator_ReversePaging verifies that iterating in reverse with a

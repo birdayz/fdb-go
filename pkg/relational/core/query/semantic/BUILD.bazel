@@ -12,7 +12,7 @@ go_library(
         "scope.go",
         "scope_build.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic",
+    importpath = "fdb.dev/pkg/relational/core/query/semantic",
     visibility = ["//visibility:public"],
     deps = ["//pkg/relational/core/parser/gen"],
 )

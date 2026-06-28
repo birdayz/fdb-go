@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // TestGetOrDialConn_DialOutsideConnMu pins that getOrDialConn does NOT hold the

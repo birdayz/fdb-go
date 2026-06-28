@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // Cancelled-transaction error-CODE differential vs libfdb_c — RFC-068 (RFC-010 C3 hunt).

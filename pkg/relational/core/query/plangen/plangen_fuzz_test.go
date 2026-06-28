@@ -3,8 +3,8 @@ package plangen_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/plangen"
+	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/plangen"
 )
 
 func FuzzPredicateTextParser(f *testing.F) {

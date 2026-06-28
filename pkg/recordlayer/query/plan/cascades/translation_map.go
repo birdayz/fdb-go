@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // TranslationMap is a map-like interface used to specify translations
 // of correlation references within a Value tree. When a plan rule

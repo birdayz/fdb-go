@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // PlanCacheEvent classifies how the plan cache participated in a single

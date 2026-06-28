@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/fdb"
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 // Shared FDB container for all tests in this package.

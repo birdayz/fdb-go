@@ -3,8 +3,8 @@ package client
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // Per-op write-conflict-range rules for atomic mutations — C2 differential vs

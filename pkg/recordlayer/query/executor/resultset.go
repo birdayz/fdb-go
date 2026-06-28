@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 )
 
 // RecordLayerResultSet wraps a RecordCursor[QueryResult] and implements

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // GetRange with key-SELECTOR bounds carrying NON-ZERO offsets / orEqual — RFC-010 C3

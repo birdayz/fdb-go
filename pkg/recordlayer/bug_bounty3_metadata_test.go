@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
+	"fdb.dev/gen"
 	"google.golang.org/protobuf/proto"
 )
 

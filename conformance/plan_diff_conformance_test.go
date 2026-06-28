@@ -39,7 +39,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

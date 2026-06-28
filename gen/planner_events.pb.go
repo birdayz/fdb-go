@@ -1430,8 +1430,8 @@ const file_planner_events_proto_rawDesc = "" +
 	"\x0fpartial_matches\x18\x02 \x03(\v2S.com.apple.foundationdb.record.query.plan.cascades.events.eventprotos.PPartialMatchR\x0epartialMatches*,\n" +
 	"\rPPlannerPhase\x12\r\n" +
 	"\tREWRITING\x10\x01\x12\f\n" +
-	"\bPLANNING\x10\x02B\xc8\x03\n" +
-	"Hcom.com.apple.foundationdb.record.query.plan.cascades.events.eventprotosB\x12PlannerEventsProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\tCAFRQPCEE\xaa\x02DCom.Apple.Foundationdb.Record.Query.Plan.Cascades.Events.Eventprotos\xca\x02DCom\\Apple\\Foundationdb\\Record\\Query\\Plan\\Cascades\\Events\\Eventprotos\xe2\x02PCom\\Apple\\Foundationdb\\Record\\Query\\Plan\\Cascades\\Events\\Eventprotos\\GPBMetadata\xea\x02LCom::Apple::Foundationdb::Record::Query::Plan::Cascades::Events::Eventprotos"
+	"\bPLANNING\x10\x02B\xa9\x03\n" +
+	"Hcom.com.apple.foundationdb.record.query.plan.cascades.events.eventprotosB\x12PlannerEventsProtoP\x01Z\vfdb.dev/gen\xa2\x02\tCAFRQPCEE\xaa\x02DCom.Apple.Foundationdb.Record.Query.Plan.Cascades.Events.Eventprotos\xca\x02DCom\\Apple\\Foundationdb\\Record\\Query\\Plan\\Cascades\\Events\\Eventprotos\xe2\x02PCom\\Apple\\Foundationdb\\Record\\Query\\Plan\\Cascades\\Events\\Eventprotos\\GPBMetadata\xea\x02LCom::Apple::Foundationdb::Record::Query::Plan::Cascades::Events::Eventprotos"
 
 var (
 	file_planner_events_proto_rawDescOnce sync.Once

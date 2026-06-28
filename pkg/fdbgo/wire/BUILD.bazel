@@ -9,7 +9,7 @@ go_library(
         "writer.go",
         "writer_direct.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire",
+    importpath = "fdb.dev/pkg/fdbgo/wire",
     visibility = ["//visibility:public"],
 )
 

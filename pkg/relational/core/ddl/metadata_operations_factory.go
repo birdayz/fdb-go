@@ -1,9 +1,9 @@
 package ddl
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // RecordLayerMetadataOperationsFactory is the concrete

@@ -26,11 +26,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // Session carries the resource handles and session identifiers a SQL

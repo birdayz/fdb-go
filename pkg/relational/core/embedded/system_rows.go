@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // driver.Rows shims for pre-materialised result sets.

@@ -2,7 +2,7 @@ syntax = "proto2";
 
 package com.apple.foundationdb.record;
 
-option go_package = "github.com/birdayz/fdb-record-layer-go/gen";
+option go_package = "fdb.dev/gen";
 
 import "record_metadata_options.proto";
 

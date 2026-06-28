@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Metric-op (getRangeSplitPoints / getEstimatedRangeSizeBytes) early-return precedence — RFC-126.

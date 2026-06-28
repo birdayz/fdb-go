@@ -3,9 +3,9 @@ package embedded
 import (
 	"strings"
 
+	"fdb.dev/pkg/relational/core/functions"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
 // Shared parse-tree walkers used by the Cascades planner (plan_visitor.go,

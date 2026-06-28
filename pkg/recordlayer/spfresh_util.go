@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
+	"fdb.dev/pkg/rabitq"
 )
 
 // spfreshRun adapts FDBDatabase.Run for error-only transaction bodies.

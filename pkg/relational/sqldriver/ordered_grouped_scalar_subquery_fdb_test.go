@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // ogsDB sets up customers + orders for the ordered-grouped correlated scalar

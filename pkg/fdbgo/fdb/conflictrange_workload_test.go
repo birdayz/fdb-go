@@ -43,7 +43,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // conflictRangeWorkload holds the (unique-prefix) keyspace geometry. maxKeySpace/maxOffset mirror the

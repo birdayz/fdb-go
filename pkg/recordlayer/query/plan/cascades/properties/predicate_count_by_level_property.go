@@ -3,7 +3,7 @@ package properties
 import (
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // PredicateCountByLevelInfo holds the number of predicates at each

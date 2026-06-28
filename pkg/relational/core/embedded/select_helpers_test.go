@@ -6,7 +6,7 @@ import (
 	"database/sql/driver"
 	"testing"
 
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // ----- isSimpleIdentifier ---------------------------------------------------

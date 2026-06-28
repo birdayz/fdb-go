@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 func benchmarkCatalogWithSchemas(b *testing.B, numDatabases, schemasPerDB int) (*InMemoryStoreCatalog, api.Transaction, api.SchemaTemplate) {

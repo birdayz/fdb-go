@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/client"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	tc "fdb.dev/pkg/testcontainers/foundationdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	tc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"

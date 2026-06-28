@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
 
 // These pin the same silent-row-loss fix as key_value_cursor_unit_test.go, but for

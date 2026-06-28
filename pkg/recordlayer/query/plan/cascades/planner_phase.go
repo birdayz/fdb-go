@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/expressions"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 
 // PlannerPhase drives the multi-phase planning lifecycle.
 // Java's CascadesPlanner runs REWRITING first (exploration rules,

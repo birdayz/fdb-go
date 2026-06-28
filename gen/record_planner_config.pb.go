@@ -380,8 +380,8 @@ const file_record_planner_config_proto_rawDesc = "" +
 	"\x10IndexFetchMethod\x12\x12\n" +
 	"\x0eSCAN_AND_FETCH\x10\x00\x12\x14\n" +
 	"\x10USE_REMOTE_FETCH\x10\x01\x12\"\n" +
-	"\x1eUSE_REMOTE_FETCH_WITH_FALLBACK\x10\x02B\x81\x02\n" +
-	"!com.com.apple.foundationdb.recordB\x18RecordPlannerConfigProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\x1eUSE_REMOTE_FETCH_WITH_FALLBACK\x10\x02B\xe2\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x18RecordPlannerConfigProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_planner_config_proto_rawDescOnce sync.Once

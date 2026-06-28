@@ -6,7 +6,7 @@ go_library(
         "operator.go",
         "operators.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/logical",
+    importpath = "fdb.dev/pkg/relational/core/query/logical",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",

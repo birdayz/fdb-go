@@ -11,7 +11,7 @@ go_library(
         "proto_value.go",
         "time.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions",
+    importpath = "fdb.dev/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/api",

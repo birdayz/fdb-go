@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	tcfdb "fdb.dev/pkg/testcontainers/foundationdb"
 	fdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // Benchmarks comparing pure Go FDB client vs CGo (libfdb_c) client.

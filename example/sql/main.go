@@ -23,7 +23,7 @@ import (
 	"os"
 
 	// Registers the "fdbsql" driver with database/sql.
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
 func main() {

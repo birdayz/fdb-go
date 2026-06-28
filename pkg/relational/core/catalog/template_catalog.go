@@ -4,7 +4,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // InMemorySchemaTemplateCatalog stores schema templates keyed by

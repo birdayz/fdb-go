@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/client"
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // Atomic-fold differential vs libfdb_c across operand/base widths and edge operands — RFC-062.

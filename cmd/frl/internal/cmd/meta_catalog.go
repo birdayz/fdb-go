@@ -13,12 +13,12 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	relapi "github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	relkeyspace "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/recordlayer"
+	relapi "fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
+	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 )
 
 // newMetaCatalogCmd is the `meta catalog` noun — a read-only view of

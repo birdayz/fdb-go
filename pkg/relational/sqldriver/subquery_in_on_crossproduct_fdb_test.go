@@ -20,7 +20,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 func siCanon(a, c sql.NullInt64) string {

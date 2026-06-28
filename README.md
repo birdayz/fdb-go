@@ -1,6 +1,6 @@
-# fdb-record-layer-go
+# fdb-go — FoundationDB for Go
 
-[![CI](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml)
+[![CI](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-go/actions/workflows/ci.yml)
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
@@ -90,31 +90,37 @@ typed := recordlayer.NewTypedFDBRecordStore[*pb.Order](store)
 order, err := typed.LoadRecord(ctx, primaryKey)
 ```
 
-## FDB client backend (pure-Go vs libfdb_c)
+## FDB client
 
-The record layer runs on either of two wire-compatible FDB clients; a **build tag** picks
-one (there is no runtime flag — the choice is static per binary). Application code is
-backend-agnostic and opens through `fdbclient.Open`:
+Use the pure-Go client directly through `pkg/fdbgo/fdb`. It mirrors Apple's Go binding
+(`apple/foundationdb/bindings/go`), so existing FoundationDB code ports with minimal changes:
 
 ```go
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdbclient"
+import "fdb.dev/pkg/fdbgo/fdb"
 
-db, _ := fdbclient.Open(clusterFile)            // backend-agnostic
-rl := recordlayer.NewFDBDatabaseWithBackend(db)
+fdb.MustAPIVersion(730)
+db, _ := fdb.OpenDatabase(clusterFile)
+db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+	tx.Set(fdb.Key("k"), []byte("v"))
+	return tx.Get(fdb.Key("k")).MustGet(), nil
+})
 ```
+
+A default `go build` links no cgo and no C library. The Record Layer and SQL engine can
+optionally run on Apple's libfdb_c instead, selected by a **build tag**. The choice is static
+per binary, since libfdb_c's network thread is initialized once per process:
 
 ```sh
-go build ./...                        # default: the from-scratch pure-Go client (no cgo, no libfdb_c)
-CGO_ENABLED=1 go build -tags libfdbc  # Apple's libfdb_c client (the escape hatch)
+go build ./...                        # default: the pure-Go client (no cgo, no libfdb_c)
+CGO_ENABLED=1 go build -tags libfdbc  # the Record Layer on Apple's libfdb_c (the escape hatch)
 ```
 
-Exactly one client is linked, so a default build never pulls in cgo or the C library;
-`fdbclient.Backend` (`"pure-go"` / `"libfdb_c"`) reports which one a binary carries. Both
-clients read and write byte-identical records, index entries, and continuations against the
-same cluster — proven by a cross-backend differential suite — so you can flip the tag and
-keep sharing data (with each other, and with Java/C apps). This is the same idiom the
-standard library uses for its `netgo`/`netcgo` resolver split and the sqlite ecosystem uses
-to swap mattn/go-sqlite3 (cgo) for modernc.org/sqlite (pure-Go).
+Both clients read and write byte-identical records, index entries, and continuations against
+the same cluster, proven by a cross-backend differential suite, so flipping the tag keeps data
+shared (with each other, and with Java/C apps). This is the idiom the standard library uses for
+its `netgo`/`netcgo` split and sqlite uses to swap mattn/go-sqlite3 (cgo) for modernc.org/sqlite
+(pure-Go). The build-tag backend selection is internal to the layers (`pkg/internal/fdbclient`);
+code that uses the `fdb` client directly always gets the pure-Go client.
 
 ## SQL engine
 
@@ -122,7 +128,7 @@ Built-in SQL engine via Go's `database/sql` interface. Queries are optimized by 
 Cascades-based query planner ported from Java's `fdb-relational-core`.
 
 ```go
-import _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+import _ "fdb.dev/pkg/relational/sqldriver"
 
 db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
 
@@ -272,7 +278,7 @@ docker run -d --name fdb -p 4500:4500 foundationdb/foundationdb:7.3.77
 docker exec fdb cat /var/fdb/fdb.cluster > /tmp/fdb.cluster
 
 # 3. Use from Go
-go get github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver
+go get fdb.dev/pkg/relational/sqldriver
 ```
 
 ```go
@@ -281,7 +287,7 @@ package main
 import (
     "database/sql"
     "fmt"
-    _ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
+    _ "fdb.dev/pkg/relational/sqldriver"
 )
 
 func main() {

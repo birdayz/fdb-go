@@ -3,8 +3,8 @@ package semantic
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // Parse a SELECT and return the FullIdContext of its first FROM table.

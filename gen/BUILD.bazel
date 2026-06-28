@@ -38,7 +38,7 @@ go_library(
         "tuple_fields.pb.go",
         "tuple_fields_vtproto.pb.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/gen",
+    importpath = "fdb.dev/gen",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_planetscale_vtprotobuf//protohelpers",

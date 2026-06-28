@@ -6,7 +6,7 @@ import (
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // DialFunc is the custom-dialer signature (alias of transport.DialFunc) so

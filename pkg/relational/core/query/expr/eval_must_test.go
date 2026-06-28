@@ -1,6 +1,6 @@
 package expr_test
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/predicates"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 
 // must* helpers replicate the deleted panic-on-error Evaluate/Eval
 // wrappers (RFC-091 collapse): each calls the error-returning method and

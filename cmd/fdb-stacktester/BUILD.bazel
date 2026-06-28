@@ -8,7 +8,7 @@ go_library(
         "main.go",
         "operations.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-stacktester",
+    importpath = "fdb.dev/cmd/fdb-stacktester",
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/fdbgo/client",

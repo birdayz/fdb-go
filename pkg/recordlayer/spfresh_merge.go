@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // Merge lifecycle (RFC-094 §6): a posting drained below Lmin folds its

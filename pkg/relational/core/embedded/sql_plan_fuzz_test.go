@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
+	"fdb.dev/pkg/relational/core/parser"
+	"fdb.dev/pkg/relational/core/session"
 )
 
 // FuzzSQLPlan closes the front-end half of the P0.3-F gap: a SQL *string* driven

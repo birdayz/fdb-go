@@ -3,8 +3,8 @@ package keyspace_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 func TestSchemaSubspace_EmptyPath(t *testing.T) {

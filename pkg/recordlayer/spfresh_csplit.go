@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // Coarse-level growth (RFC-094 §6b): metadata-only cell splits. POSTINGS and

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	cascades "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades"
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 )
 
 // TestVectorPlan_QualifyPlansToVectorScan is the 9.3a/b proof: a full

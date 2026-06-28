@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	gotuple "fdb.dev/pkg/fdbgo/fdb/tuple"
 	cgotuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	gotuple "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // Tuple-codec byte-identity differential vs libfdb_c — RFC-060.

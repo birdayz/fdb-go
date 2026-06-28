@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/ddl"
+	"fdb.dev/pkg/relational/core/keyspace"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	"github.com/onsi/gomega"
 )
 

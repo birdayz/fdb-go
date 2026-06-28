@@ -18,19 +18,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	fdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	fdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/wire"
 
-	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/keyspace"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/session"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/keyspace"
+	"fdb.dev/pkg/relational/core/metadata"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
+	"fdb.dev/pkg/relational/core/session"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 )
 
 // ambiguousColumnMarker is the sentinel stored in a JOIN row map's bare

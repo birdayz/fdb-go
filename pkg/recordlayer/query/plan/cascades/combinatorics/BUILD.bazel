@@ -7,7 +7,7 @@ go_library(
         "topological_sort.go",
         "transitive_closure.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/combinatorics",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/combinatorics",
     visibility = ["//visibility:public"],
 )
 

@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fdbclient",
+    srcs = [
+        "doc.go",
+        "open_purego.go",
+    ],
+    importpath = "fdb.dev/pkg/internal/fdbclient",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/fdbgo/fdb"],
+)
+
+go_test(
+    name = "fdbclient_test",
+    srcs = ["backend_purego_test.go"],
+    embed = [":fdbclient"],
+)

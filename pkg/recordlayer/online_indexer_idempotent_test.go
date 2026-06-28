@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 func TestIsIndexIdempotent(t *testing.T) {

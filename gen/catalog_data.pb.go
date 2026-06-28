@@ -300,8 +300,8 @@ const file_catalog_data_proto_rawDesc = "" +
 	"\n" +
 	"_Databases\x18\x02 \x01(\v24.com.apple.foundationdb.relational.catalog.DatabasesR\tDatabases\x12S\n" +
 	"\n" +
-	"_Templates\x18\x03 \x01(\v24.com.apple.foundationdb.relational.catalog.TemplatesR\tTemplates:\x05\x8aM\x02\b\x02B\xb7\x02\n" +
-	"-com.com.apple.foundationdb.relational.catalogB\x10CatalogDataProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x05CAFRC\xaa\x02)Com.Apple.Foundationdb.Relational.Catalog\xca\x02)Com\\Apple\\Foundationdb\\Relational\\Catalog\xe2\x025Com\\Apple\\Foundationdb\\Relational\\Catalog\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Relational::Catalog"
+	"_Templates\x18\x03 \x01(\v24.com.apple.foundationdb.relational.catalog.TemplatesR\tTemplates:\x05\x8aM\x02\b\x02B\x98\x02\n" +
+	"-com.com.apple.foundationdb.relational.catalogB\x10CatalogDataProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRC\xaa\x02)Com.Apple.Foundationdb.Relational.Catalog\xca\x02)Com\\Apple\\Foundationdb\\Relational\\Catalog\xe2\x025Com\\Apple\\Foundationdb\\Relational\\Catalog\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Relational::Catalog"
 
 var (
 	file_catalog_data_proto_rawDescOnce sync.Once

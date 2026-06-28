@@ -13,7 +13,7 @@ go_library(
         "plandiff.go",
         "runsql.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff",
+    importpath = "fdb.dev/pkg/relational/conformance/plandiff",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/core/embedded",

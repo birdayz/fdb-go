@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // syncCaptureLogger is a concurrency-safe PlanGenerationLogger for tests.

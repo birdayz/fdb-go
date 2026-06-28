@@ -3,7 +3,7 @@ package predicates
 import (
 	"hash/fnv"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // ExistentialValuePredicate is the QueryPredicate-layer SQL EXISTS,

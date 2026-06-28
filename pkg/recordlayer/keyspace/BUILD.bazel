@@ -7,7 +7,7 @@ go_library(
         "keyspace.go",
         "resolver.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/keyspace",
+    importpath = "fdb.dev/pkg/recordlayer/keyspace",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb",

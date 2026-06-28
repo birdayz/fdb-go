@@ -6,11 +6,11 @@ go_library(
         "driver.go",
         "dsn.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver",
+    importpath = "fdb.dev/pkg/relational/sqldriver",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/subspace",
-        "//pkg/fdbgo/fdbclient",
+        "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/core/catalog",

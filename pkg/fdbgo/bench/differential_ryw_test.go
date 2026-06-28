@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // RYW-read differential vs libfdb_c — RFC-055 (RFC-010 C2 follow-up). RFC-053/054

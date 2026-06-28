@@ -8,8 +8,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // filterCursor wraps another cursor and filters records by a predicate.

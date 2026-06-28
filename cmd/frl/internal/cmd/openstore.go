@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/config"
-	"github.com/birdayz/fdb-record-layer-go/cmd/frl/internal/meta"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/cmd/frl/internal/config"
+	"fdb.dev/cmd/frl/internal/meta"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // resolveContextAndOverride is the shared prelude for record/index

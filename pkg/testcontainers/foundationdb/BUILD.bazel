@@ -7,7 +7,7 @@ go_library(
         "foundationdb.go",
         "options.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb",
+    importpath = "fdb.dev/pkg/testcontainers/foundationdb",
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_docker_docker//client",

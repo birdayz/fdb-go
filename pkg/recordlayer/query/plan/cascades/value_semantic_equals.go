@@ -1,6 +1,6 @@
 package cascades
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 // ValueSemanticEquals compares two Values for semantic equality using
 // the given ValueEquivalence for cross-scope comparisons. Returns a

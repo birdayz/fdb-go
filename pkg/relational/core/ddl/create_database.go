@@ -1,7 +1,7 @@
 package ddl
 
 import (
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // CreateDatabaseConstantAction creates a new database entry in the catalog.

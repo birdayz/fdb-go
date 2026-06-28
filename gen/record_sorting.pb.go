@@ -421,8 +421,8 @@ const file_record_sorting_proto_rawDesc = "" +
 	"\x13start_record_number\x18\x02 \x01(\aR\x11startRecordNumber\x12*\n" +
 	"\x11number_of_records\x18\x03 \x01(\aR\x0fnumberOfRecords\x12&\n" +
 	"\x0fnumber_of_bytes\x18\x04 \x01(\x06R\rnumberOfBytes\x12#\n" +
-	"\rencryption_iv\x18\x05 \x01(\fR\fencryptionIvB\xfb\x01\n" +
-	"!com.com.apple.foundationdb.recordB\x12RecordSortingProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
+	"\rencryption_iv\x18\x05 \x01(\fR\fencryptionIvB\xdc\x01\n" +
+	"!com.com.apple.foundationdb.recordB\x12RecordSortingProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
 	file_record_sorting_proto_rawDescOnce sync.Once

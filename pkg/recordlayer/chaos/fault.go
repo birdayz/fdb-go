@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"sync"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 // FaultType identifies a specific fault that can be injected.

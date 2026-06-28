@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 )
 
 // pageContinuationState is the load-bearing decision behind the RFC-127 (audit P0) fix: the SQL

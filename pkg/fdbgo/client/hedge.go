@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 // rpcAccount carries the QueueModel bookkeeping for one started request:

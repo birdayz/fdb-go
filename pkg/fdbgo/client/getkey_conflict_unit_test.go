@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestCommit_RYWPoisonBeatsTimeout pins codex's RFC-059 precedence point: a transaction

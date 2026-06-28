@@ -207,7 +207,7 @@ go_library(
         "windowed_index_match_candidate.go",
         "winner_lookup.go",
     ],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades",
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/combinatorics",

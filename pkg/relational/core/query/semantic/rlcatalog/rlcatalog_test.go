@@ -3,10 +3,10 @@ package rlcatalog_test
 import (
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/query/semantic/rlcatalog"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
 )
 
 // Build a minimal RecordMetaData with a couple of record types —

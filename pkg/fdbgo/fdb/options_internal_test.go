@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 // newBareOptionsTx builds a facade transaction over a bare client transaction.

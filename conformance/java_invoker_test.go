@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"github.com/bazelbuild/rules_go/go/runfiles"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

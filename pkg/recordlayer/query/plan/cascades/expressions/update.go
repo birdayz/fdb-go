@@ -5,7 +5,7 @@ import (
 	"hash/fnv"
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // UpdateTransform is one column-update of an UPDATE statement: a

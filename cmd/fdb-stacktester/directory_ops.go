@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/directory"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	ourtuple "fdb.dev/pkg/fdbgo/fdb/tuple"
 	appletuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
-	ourtuple "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // dirEntry is an entry in the directory list. It can hold a Directory,

@@ -1064,8 +1064,8 @@ const file_record_key_expression_proto_rawDesc = "" +
 	"\x04list\x18\f \x01(\v2/.com.apple.foundationdb.record.expressions.ListR\x04list\x12U\n" +
 	"\n" +
 	"dimensions\x18\r \x01(\v25.com.apple.foundationdb.record.expressions.DimensionsR\n" +
-	"dimensionsB\xbf\x02\n" +
-	"-com.com.apple.foundationdb.record.expressionsB\x18RecordKeyExpressionProtoP\x01Z*github.com/birdayz/fdb-record-layer-go/gen\xa2\x02\x05CAFRE\xaa\x02)Com.Apple.Foundationdb.Record.Expressions\xca\x02)Com\\Apple\\Foundationdb\\Record\\Expressions\xe2\x025Com\\Apple\\Foundationdb\\Record\\Expressions\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Record::Expressions"
+	"dimensionsB\xa0\x02\n" +
+	"-com.com.apple.foundationdb.record.expressionsB\x18RecordKeyExpressionProtoP\x01Z\vfdb.dev/gen\xa2\x02\x05CAFRE\xaa\x02)Com.Apple.Foundationdb.Record.Expressions\xca\x02)Com\\Apple\\Foundationdb\\Record\\Expressions\xe2\x025Com\\Apple\\Foundationdb\\Record\\Expressions\\GPBMetadata\xea\x02-Com::Apple::Foundationdb::Record::Expressions"
 
 var (
 	file_record_key_expression_proto_rawDescOnce sync.Once

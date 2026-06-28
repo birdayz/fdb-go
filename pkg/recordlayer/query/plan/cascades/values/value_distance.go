@@ -3,7 +3,7 @@ package values
 import (
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // DistanceOperator enumerates the vector-distance metrics SQL can

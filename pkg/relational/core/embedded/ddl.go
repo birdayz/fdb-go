@@ -6,14 +6,14 @@ import (
 	"strconv"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/metadata"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	apiddl "github.com/birdayz/fdb-record-layer-go/pkg/relational/api/ddl"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/catalog"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/functions"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
-	antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
 )
 
 // DDL execution: CREATE / DROP DATABASE / SCHEMA / SCHEMA TEMPLATE +

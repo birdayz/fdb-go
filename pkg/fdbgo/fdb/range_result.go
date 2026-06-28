@@ -3,7 +3,7 @@ package fdb
 import (
 	"math"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 // RangeResult is the asynchronous result of a range read. It is an INTERFACE (RFC-109)

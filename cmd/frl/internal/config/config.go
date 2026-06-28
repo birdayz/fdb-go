@@ -13,7 +13,7 @@ import (
 	"buf.build/go/protoyaml"
 	"github.com/birdayz/protobuf-ecosystem/protoconfig"
 
-	configv1 "github.com/birdayz/fdb-record-layer-go/cmd/frl/gen/frl/config/v1"
+	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
 
 // DefaultPath is the canonical on-disk location. Override with FRL_CONFIG.
@@ -80,7 +80,7 @@ func SaveTo(path string, cfg *configv1.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
-	bytes, err := protoyaml.MarshalOptions{Indent: 2}.Marshal(cfg)
+	bytes, err := protoyaml.MarshalOptions{Indent: 2, UseProtoNames: true}.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

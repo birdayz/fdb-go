@@ -1,0 +1,17 @@
+{{/* Generate one vanity-import stub page per Go package path. GitHub Pages is static
+     and cannot run a `?go-get=1` handler, so `go get fdb.dev/<pkg>` needs an HTTP 200
+     at that exact path. The pages use the minimal `gometa` layout (NOT the full theme
+     page). Go's meta parser is a non-strict XML decoder and chokes on a full HTML
+     document's scripts/SVG, so the stub must be a tiny well-formed page carrying only
+     the go-import/go-source meta. Package list: data/gopackages.yaml (from go list). */}}
+{{ range hugo.Data.gopackages.packages }}
+  {{ $p := . }}
+  {{ $.AddPage (dict
+    "path" $p
+    "title" (printf "fdb.dev/%s" $p)
+    "kind" "page"
+    "layout" "gometa"
+    "params" (dict "excludeSearch" true)
+    "build" (dict "list" "never" "render" "always" "publishResources" false)
+  ) }}
+{{ end }}

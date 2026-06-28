@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {

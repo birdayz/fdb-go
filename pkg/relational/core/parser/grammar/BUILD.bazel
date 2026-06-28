@@ -4,7 +4,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 go_library(
     name = "grammar",
     srcs = ["sync.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/grammar",
+    importpath = "fdb.dev/pkg/relational/core/parser/grammar",
     visibility = ["//visibility:public"],
 )
 

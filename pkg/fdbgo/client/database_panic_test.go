@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/transport"
 )
 
 func panicDialFn(context.Context, string, string) (net.Conn, error) {

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestOnError_SelfConflicting_CommitUnknown verifies that OnError(commit_unknown_result)

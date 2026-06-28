@@ -1,6 +1,6 @@
 package semantic
 
-import antlrgen "github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser/gen"
+import antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 
 // FromFullIdContext converts an ANTLR IFullIdContext parse-tree node
 // to a QualifiedName. Each Uid segment is read via GetText() (which

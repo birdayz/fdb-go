@@ -11,7 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/plandiff"
 )
 
 // classifyRun reduces a RunResult to a small label so we can count distinct

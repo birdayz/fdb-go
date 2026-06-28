@@ -5,7 +5,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Read-your-writes key-selector resolution — a faithful port of C++

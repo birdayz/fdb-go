@@ -1,0 +1,74 @@
+# fdb.dev website (FoundationDB for Go)
+# Static site (landing + docs + changelog + performance + Go vanity imports),
+# built with Hugo + the vendored hextra theme (themes/hextra), deployed to GitHub Pages.
+
+baseURL = "https://fdb.dev/"
+title = "fdb.dev"
+theme = "hextra"
+
+enableRobotsTXT = true
+enableGitInfo = false
+hasCJKLanguage = false
+
+# hextra renders some HTML (badges, SVG icons) from shortcodes.
+[markup]
+  [markup.highlight]
+    noClasses = false
+    lineNos = false
+    style = "github-dark"
+  [markup.goldmark.renderer]
+    unsafe = true
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 3
+
+[menu]
+  [[menu.main]]
+    name = "Docs"
+    pageRef = "/docs"
+    weight = 1
+  [[menu.main]]
+    name = "Changelog"
+    pageRef = "/changelog"
+    weight = 3
+  [[menu.main]]
+    name = "Search"
+    weight = 8
+    [menu.main.params]
+      type = "search"
+  [[menu.main]]
+    name = "GitHub"
+    weight = 9
+    url = "https://github.com/birdayz/fdb-go"
+    [menu.main.params]
+      icon = "github"
+
+[params]
+  description = "A pure-Go FoundationDB client (no cgo, 2-4x faster reads than libfdb_c), plus a wire-compatible Record Layer and SQL engine for Go."
+
+  [params.navbar]
+    displayTitle = true
+    displayLogo = false
+
+  [params.theme]
+    # FAANG/HN audience: dark, fast, dense.
+    default = "dark"
+    displayToggle = true
+
+  [params.footer]
+    enable = true
+    displayCopyright = true
+    displayPoweredBy = false
+
+  [params.editURL]
+    enable = false
+
+  [params.search]
+    enable = true
+    type = "flexsearch"
+    [params.search.flexsearch]
+      index = "content"
+      tokenize = "forward"
+
+  [params.page]
+    width = "normal"

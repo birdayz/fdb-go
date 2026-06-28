@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/metadata"
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/core/parser"
+	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/core/parser"
 )
 
 // TestIntegration_ParseAndResolveTable wires three packages together:

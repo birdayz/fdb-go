@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/api"
+	"fdb.dev/pkg/relational/api"
 )
 
 // CatalogDatabaseMetaData implements api.DatabaseMetaData by running

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/relational/conformance/yamsql"
-	_ "github.com/birdayz/fdb-record-layer-go/pkg/relational/sqldriver"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/relational/conformance/yamsql"
+	_ "fdb.dev/pkg/relational/sqldriver"
+	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
 var clusterFilePath string

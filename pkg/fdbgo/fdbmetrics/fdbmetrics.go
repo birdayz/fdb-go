@@ -21,7 +21,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/client"
 )
 
 // MetricsSource is the part of *client.Database this package consumes —
