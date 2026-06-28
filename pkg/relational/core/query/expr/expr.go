@@ -311,9 +311,73 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
+	left, right = widenIntConstAgainstDouble(op, left, right)
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
+}
+
+// widenIntConstAgainstDouble fixes a cross-type index-SARG hole: when one operand
+// of an ordered/equality comparison is an INTEGER compile-time CONSTANT and the
+// other is a non-constant DOUBLE-typed value (typically an indexed column), it
+// widens the constant to a DOUBLE constant (e.g. `5` → `5.0`). Without this the
+// int literal is packed into the index range as a tuple-int, which encodes under
+// a different type-code than the column's tuple-double entries: an equality
+// probe misses and an inequality range degenerates to all-or-nothing (INT and
+// DOUBLE tuple elements never interleave). Coercing the constant to the column's
+// type makes the SARG pack the value in the right tuple type while leaving the
+// (indexed) column operand untouched, so its index is still matched.
+//
+// Deliberately NARROW — only INT/LONG constant vs DOUBLE non-constant. INT↔LONG
+// share tuple encoding (no fix needed; wrapping would needlessly do work), and
+// the col-vs-col / DOUBLE-const-vs-INT-col / FLOAT cases need the broader
+// MaximumType+promotion design (TODO.md "cross-type numeric SARG"). The residual
+// (non-index) path already coerces via cmpAny, so this only changes the value's
+// declared type, never the matched rows for non-index cases.
+func widenIntConstAgainstDouble(op predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+	default:
+		return left, right
+	}
+	lc, rc := values.IsConstantValue(left), values.IsConstantValue(right)
+	if lc == rc { // need exactly one constant operand
+		return left, right
+	}
+	constV, colV := left, right
+	if rc {
+		constV, colV = right, left
+	}
+	ct, colt := constV.Type(), colV.Type()
+	if ct == nil || colt == nil {
+		return left, right
+	}
+	isIntConst := ct.Code() == values.TypeCodeInt || ct.Code() == values.TypeCodeLong
+	if !isIntConst || colt.Code() != values.TypeCodeDouble {
+		return left, right
+	}
+	cv, ok := values.EvaluateConstant(constV)
+	if !ok {
+		return left, right
+	}
+	var f float64
+	switch n := cv.(type) {
+	case int64:
+		f = float64(n)
+	case int32:
+		f = float64(n)
+	case int:
+		f = float64(n)
+	default:
+		return left, right
+	}
+	coerced := &values.ConstantValue{Value: f, Typ: colt}
+	if lc {
+		return coerced, right
+	}
+	return left, coerced
 }
 
 // ResolveCast wraps v in a CastValue with the target type. Rejects
@@ -406,11 +470,26 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
+	// Same cross-type index-SARG fix as widenIntConstAgainstDouble, for IN: when
+	// the LHS is a DOUBLE column, widen integer list elements to float64 so each
+	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE
+	// index misses everything — int and double tuple elements don't interleave).
+	widenIntToDouble := left.Type() != nil && left.Type().Code() == values.TypeCodeDouble
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
 		lit, ok := values.EvaluateConstant(v)
 		if !ok {
 			return nil, fmt.Errorf("expr.ResolveIn: element %d is not constant (%T)", i, v)
+		}
+		if widenIntToDouble {
+			switch n := lit.(type) {
+			case int64:
+				lit = float64(n)
+			case int32:
+				lit = float64(n)
+			case int:
+				lit = float64(n)
+			}
 		}
 		list = append(list, lit)
 	}

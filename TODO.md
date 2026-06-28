@@ -787,7 +787,20 @@ the broken Go-only `ZeroLimitRule` (Java has no LIMIT, so no reference). `LIMIT 
 rows. Regression: `limit_zero_fdb_test.go` (bare / WHERE / ORDER BY / index / aggregate / OFFSET shapes). The
 pre-existing `TestFDB_LimitZeroReturnsNothing` only covered the bare case — a dimensional gap.
 
-### [ ] executor/types: cross-type numeric equality on an INDEXED column drops rows (no SARG comparand promotion) — found 2026-06-28
+### [~] executor/types: cross-type numeric SARG on an INDEXED column — PARTIALLY FIXED 2026-06-28 (int-const vs DOUBLE-col done; IN / float-const / col-col remain)
+
+**FIXED (2026-06-28):** the common + severe direction — an INTEGER literal vs a DOUBLE indexed column, for both
+comparison ops (`=,<>,<,<=,>,>=`, via `expr.ResolveComparison`→`widenIntConstAgainstDouble`) AND IN-lists (`d IN
+(5,7)`, via `expr.ResolveIn`). The int constant(s) are widened to DOUBLE (`5`→`5.0`) when the other operand /
+the LHS is a non-constant DOUBLE, so the SARG packs the right tuple type while the indexed column stays bare (index
+still matched — verified with an EXPLAIN IndexScan assertion). Regression: `crosstype_const_sarg_fdb_test.go`. Full
+53-target suite green (no plan-shape/result regression); Graefe + Torvalds ACK. **STILL BROKEN (deferred — need the
+broader MaximumType+PromoteValue design that SUBSUMES this special case, not a parallel branch):**
+- DOUBLE/FLOAT literal vs INT/LONG column (the narrowing direction): `n_bigint = 5.0` / `n > 6.0` → `[]`. Needs
+  per-operator float→int exactness (floor/ceil + integral check), so it was NOT folded into the safe int→double fix.
+- col-vs-col cross-type join: `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` (both non-constant) → still empty.
+- FLOAT (not DOUBLE) columns — only DOUBLE handled.
+Original detail below (the equality `ydbl = 5` case is now fixed; the rest stands):
 
 `SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
 which equals the stored 5.0). Same for a cross-type index-probe join `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` → empty
