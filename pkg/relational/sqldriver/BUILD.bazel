@@ -136,6 +136,7 @@ go_test(
         "subquery_in_on_crossproduct_fdb_test.go",
         "three_valued_logic_fdb_probe_test.go",
         "three_valued_logic_probe_test.go",
+        "transaction_probe_test.go",
         "twotable_order_invariant_test.go",
         "type_coercion_probe_test.go",
         "union_aggregate_expr_alias_test.go",
