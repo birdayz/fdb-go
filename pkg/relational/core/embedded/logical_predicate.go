@@ -3185,6 +3185,31 @@ func buildLogicalPlanForUpdateWithCatalog(
 	}
 	bare := bareTableName(tableName)
 
+	// Validate each SET target column exists in the table, mirroring INSERT's
+	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
+	// nonexistent column reaches the executor and surfaces a LEAKY raw error
+	// ("executor: update field %q not found in descriptor", no SQLSTATE) instead of
+	// a clean 42703 — the same condition INSERT and SELECT already report as 42703.
+	// The check is case-insensitive (EqualFold over the descriptor field names) so it
+	// is exactly as permissive as the executor's lookup (ByName(lower) →
+	// fieldByNameFold) and never rejects a column the executor would accept.
+	if rt := md.GetRecordType(bare); rt != nil && rt.Descriptor != nil {
+		fields := rt.Descriptor.Fields()
+		for _, set := range updOp.Sets {
+			found := false
+			for i := 0; i < fields.Len(); i++ {
+				if strings.EqualFold(string(fields.Get(i).Name()), set.Column) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
+					"column %q not found in table %q", set.Column, bare)
+			}
+		}
+	}
+
 	// Resolve each SET RHS expression to a real Value against the target
 	// table (e.g. `price / 2` → Divide(FieldValue(PRICE), 2)) so the
 	// executor evaluates it per row instead of choking on raw text. The
