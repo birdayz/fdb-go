@@ -57,6 +57,7 @@ go_test(
         "dml_predicate_probe_test.go",
         "dml_probe_test.go",
         "dml_update_delete_probe_test.go",
+        "double_oracle_consistency_test.go",
         "driver_test.go",
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",
