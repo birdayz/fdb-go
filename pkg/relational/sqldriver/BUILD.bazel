@@ -26,6 +26,7 @@ go_test(
         "agg_null_semantics_probe_test.go",
         "aggregate_edge_probe_test.go",
         "ambiguous_column_star_test.go",
+        "arithmetic_edge_probe_test.go",
         "array_cardinality_fdb_test.go",
         "array_cardinality_index_fdb_test.go",
         "array_unnest_ordinality_fdb_test.go",
