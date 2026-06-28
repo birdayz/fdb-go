@@ -939,6 +939,24 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
+### [ ] executor: UPDATE of a PRIMARY KEY column surfaces a leaky XXXXX error (found 2026-06-28)
+
+`UPDATE t SET id = <new> WHERE id = <old>` (id is the PK) fails with SQLSTATE XXXXX
+(ErrCodeUnknown), message "record does not exist: executor: updating record: record
+does not exist". Root cause: executor.go ~2474 applies the SET to the proto message
+(including the PK field), then calls `SaveRecordWithOptions(msg,
+RecordExistenceCheckErrorIfNotExistsOrTypeChanged)`, which computes the record key
+from the NEW pk and fails the existence check (no record at the new pk). The code's
+own comment (~2461) assumes "an UPDATE does not change the PK" — an assumption the
+SET clause can violate. It is fail-CLOSED: the table is left UNCHANGED (no
+corruption; verified). Right end-state: either a clean user-facing rejection
+("cannot update primary key", proper 42-class SQLSTATE) or record relocation
+(delete-old + insert-new), whichever matches Java — needs a Java-behavior check
+(no PK-update handling found in fdb-relational's UPDATE visitor on a quick grep) and
+an executor/builder change + review. Low severity (uncommon op, fail-closed) but a
+leaky internal error. Sentinel: update_primary_key_probe_test.go (pins: rejected +
+no data corruption + non-PK UPDATE still works).
+
 ### [ ] query-engine: GROUP BY ignores SELECT-list COLUMN ORDER — emits keys-then-aggregates (Go-extension bug, Graefe design, found 2026-06-28)
 
 A standalone `SELECT <aggregate>, <key> … GROUP BY <key>` returns its output columns
