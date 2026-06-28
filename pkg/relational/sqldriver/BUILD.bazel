@@ -55,6 +55,7 @@ go_test(
         "column_metadata_probe_test.go",
         "comparison_operators_probe_test.go",
         "comparison_typecheck_probe_test.go",
+        "composite_index_sarg_probe_test.go",
         "composite_pk_probe_test.go",
         "compound_index_oracle_test.go",
         "conditional_aggregation_probe_test.go",
