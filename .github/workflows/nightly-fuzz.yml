@@ -19,7 +19,7 @@ on:
 jobs:
   diff-fuzz:
     name: Differential Serialization Fuzzer
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 45
 
     steps:
@@ -97,7 +97,7 @@ jobs:
 
   race-detector:
     name: Race Detector
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 30
 
     steps:
@@ -122,7 +122,7 @@ jobs:
 
   binding-stress:
     name: Binding Tester Stress (50 seeds)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
@@ -144,7 +144,7 @@ jobs:
 
   client-fuzz:
     name: Pure-Go Client Fuzz (//pkg/fdbgo)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:
@@ -217,7 +217,7 @@ jobs:
 
   engine-fuzz:
     name: SQL Engine + Record Layer Fuzz (//pkg/relational + //pkg/recordlayer + //pkg/rabitq)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 75
 
     steps:

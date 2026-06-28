@@ -34,7 +34,7 @@ concurrency:
 jobs:
   libfdbc-differential:
     name: Cross-client wire differential (-tags libfdbc)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 40
     env:
       GOWORK: "off"

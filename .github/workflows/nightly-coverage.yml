@@ -14,7 +14,7 @@ permissions:
 jobs:
   coverage:
     name: Coverage + Race + Bench
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 60
 
     steps:

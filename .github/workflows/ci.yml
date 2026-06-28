@@ -18,7 +18,7 @@ concurrency:
 jobs:
   ci:
     name: Build, Lint & Test
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -112,7 +112,7 @@ jobs:
     # divergences unrelated to the change. (It did exactly that here: it surfaced the
     # latent IPAddress variant-marshal wire bug — real, but pre-existing — fixed in this
     # RFC §7.) Active fuzzing is the (revived) nightly net's job (nightly-fuzz.yml §7).
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -150,7 +150,7 @@ jobs:
 
   govulncheck:
     name: Vulnerability scan
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -172,7 +172,7 @@ jobs:
 
   race:
     name: Race detector (SQL layer + client)
-    runs-on: [self-hosted, linux, x64, hetzner]
+    runs-on: hetzner-fdb
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
