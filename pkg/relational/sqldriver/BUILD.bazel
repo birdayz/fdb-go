@@ -123,6 +123,7 @@ go_test(
         "index_oracle_consistency_test.go",
         "index_sarg_probe_test.go",
         "indexable_types_probe_test.go",
+        "indexed_float_sarg_probe_test.go",
         "inlist_index_probe_test.go",
         "insert_atomicity_probe_test.go",
         "insert_coercion_probe_test.go",

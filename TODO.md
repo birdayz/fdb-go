@@ -799,7 +799,17 @@ broader MaximumType+PromoteValue design that SUBSUMES this special case, not a p
 - DOUBLE/FLOAT literal vs INT/LONG column (the narrowing direction): `n_bigint = 5.0` / `n > 6.0` → `[]`. Needs
   per-operator float→int exactness (floor/ceil + integral check), so it was NOT folded into the safe int→double fix.
 - col-vs-col cross-type join: `a.xbig(BIGINT) = bd.ydbl(DOUBLE)` (both non-constant) → still empty.
-- FLOAT (not DOUBLE) columns — only DOUBLE handled.
+- FLOAT (not DOUBLE) columns — only DOUBLE handled. **SEVERE + now pinned
+  (indexed_float_sarg_probe_test.go, 2026-06-28):** an INDEXED FLOAT(32-bit) column
+  returns ZERO rows for EVERY equality/range comparison — even `f = 1.5` where 1.5 is
+  exactly representable in float32 (so it is NOT a precision edge; the SARG is wholly
+  cross-type-broken for FLOAT cols). The float64 literal is packed into the float32
+  index with a mismatched FDB tuple type code → matches nothing. Non-indexed FLOAT and
+  indexed DOUBLE are both correct. Note `promoteConstant`
+  (value_constant_object.go:150) has no `float64→TypeCodeFloat` case. The fix is a
+  cross-WIDTH SARG decision (compare in float32-space, or widen the float32 scan +
+  residual-filter in double-space) — part of the MaximumType/PromoteValue design
+  below, Graefe-gated.
 Original detail below (the equality `ydbl = 5` case is now fixed; the rest stands):
 
 `SELECT id FROM bd WHERE ydbl = 5` (ydbl DOUBLE, indexed) returns 0 rows instead of 1 (5 promotes to 5.0,
