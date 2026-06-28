@@ -209,6 +209,7 @@ go_test(
         "resource_limits_fdb_test.go",
         "rfc087_swallow_sort_fdb_test.go",
         "rfc153_matrix_fdb_test.go",
+        "row_value_constructor_probe_test.go",
         "rows_affected_probe_test.go",
         "scalar_math_probe_test.go",
         "scalar_subquery_correlation_probe_test.go",
