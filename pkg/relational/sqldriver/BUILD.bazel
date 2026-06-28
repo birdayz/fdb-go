@@ -36,6 +36,7 @@ go_test(
         "case_null_branch_type_test.go",
         "correlated_exists_crossjoin_test.go",
         "correlated_exists_probe_test.go",
+        "correlated_null_key_probe_test.go",
         "covering_index_test.go",
         "cross_table_predicate_probe_test.go",
         "derived_limit_rfc128_test.go",

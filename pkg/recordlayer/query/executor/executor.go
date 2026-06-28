@@ -486,6 +486,23 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		if err != nil {
 			return recordlayer.TupleRange{}, err
 		}
+		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
+		// NOT `IS NULL`, handled above): SQL `NULL = x` is UNKNOWN for every row,
+		// so the probe matches NOTHING. Appending nil here would instead seek the
+		// [.., null] index entries and WRONGLY match NULL-keyed rows — e.g. a
+		// correlated index-nested-loop probe `A.K = B.K` where the outer B.K is
+		// NULL would match A's NULL-keyed rows (NULL=NULL must not match). Return
+		// an explicit empty range (begin == end), mirroring the inequality
+		// NULL-comparand handling below. IS NULL and IS NOT DISTINCT FROM
+		// (null-safe equality) intentionally still seek the null entry.
+		if val == nil && comp.Type == predicates.ComparisonEquals {
+			return recordlayer.TupleRange{
+				Low:          prefix,
+				High:         prefix,
+				LowEndpoint:  recordlayer.EndpointTypeRangeInclusive,
+				HighEndpoint: recordlayer.EndpointTypeRangeExclusive,
+			}, nil
+		}
 		prefix = append(prefix, val)
 	}
 
