@@ -49,6 +49,11 @@ jobs:
           OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
           GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
+            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          fi
+          if [ -z "$GO_BIN" ]; then
             echo "Bazel Go SDK not found — trying system go"
             GO_BIN=go
           fi
