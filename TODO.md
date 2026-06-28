@@ -958,7 +958,12 @@ alias name for a 1-level LogicalProject body but does not propagate it when that
 body is itself a derived table wrapped in another (the middle Project re-projects
 the alias column, but the outer level can't resolve it). Sentinel:
 nested_derived_table_probe_test.go (pins 1-level + 2-level-no-alias work, 2-level-
-inner-alias → 42703; flip when fixed). Needs query-engine review.
+inner-alias → 42703; flip when fixed). Needs query-engine review. WORKAROUND: the gap
+is specific to INLINE derived tables — the structurally-identical CTE chain
+(`WITH c1 AS (SELECT a AS x FROM t), c2 AS (SELECT x FROM c1) SELECT x FROM c2`)
+propagates the alias correctly (translateCTE registers the body under the CTE name),
+pinned in cte_alias_propagation_probe_test.go. So the fix likely is to give the inline
+derived body the same named-anchoring treatment translateCTE uses.
 
 ### [ ] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — follow-up to the SET-column fix (found 2026-06-28)
 
