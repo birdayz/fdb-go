@@ -75,6 +75,13 @@ func TestFDB_DryRunOptionRejectedProbe(t *testing.T) {
 			t.Errorf("after rejected INSERT DRY RUN, count = %d, want 3 (no mutation)", c)
 		}
 	})
+	// Multi-option list: DRY RUN mixed with a harmless option must still be caught
+	// (the helper walks AllQueryOption(), so position/combination doesn't matter).
+	rejects("multi_option_nocache_then_dry_run", "DELETE FROM t WHERE a > 0 OPTIONS (NOCACHE, DRY RUN)", func() {
+		if c := count(); c != 3 {
+			t.Errorf("after rejected mixed-option DRY RUN, count = %d, want 3 (no data loss)", c)
+		}
+	})
 	t.Run("nocache_option_harmless_still_executes", func(t *testing.T) {
 		reset()
 		res, err := db.ExecContext(ctx, "DELETE FROM t WHERE id = 1 OPTIONS (NOCACHE)")

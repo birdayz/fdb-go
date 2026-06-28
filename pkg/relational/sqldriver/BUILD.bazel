@@ -92,6 +92,7 @@ go_test(
         "double_oracle_consistency_test.go",
         "double_precision_probe_test.go",
         "driver_test.go",
+        "drop_schema_ifexists_conformance_probe_test.go",
         "dryrun_option_rejected_probe_test.go",
         "embedded_fdb_errors_test.go",
         "embedded_fdb_test.go",

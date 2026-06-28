@@ -965,6 +965,11 @@ the executor onto the EXISTING store primitives DryRunSaveRecord / DryRunDeleteR
 (store_api.go:233/353, already ported from Java's dryRun*Async) and return the
 would-be-affected count WITHOUT committing. Flip the reject + the sentinel when done.
 
+Note (Graefe): the reject sits in planDML (the exec path), so EXPLAIN-only mode
+(`EXPLAIN <DML> ... OPTIONS (DRY RUN)`, no DB) bypasses it and renders a plan rather
+than 0AF00. Harmless (EXPLAIN never mutates), slightly inconsistent — when wiring DRY
+RUN, surface it on the explain path too (or reject there) for consistency.
+
 ### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
 
 The shared grammar carries `(RETURNING selectElements)?` on `deleteStatement` and

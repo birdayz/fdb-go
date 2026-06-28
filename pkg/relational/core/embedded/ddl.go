@@ -84,6 +84,14 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 }
 
 func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.DropSchemaStatementContext) (int64, error) {
+	// DROP SCHEMA deliberately does NOT honor IF EXISTS — this matches Java exactly.
+	// Java's DdlVisitor.visitDropSchemaStatement (DdlVisitor.java:472) never reads
+	// ctx.ifExists(): it builds getDropSchemaConstantAction(db, schema, Options.NONE),
+	// so `DROP SCHEMA IF EXISTS <nonexistent>` errors (schema does not exist) just like
+	// the bare form. Only DROP DATABASE (visitDropDatabaseStatement:466) and DROP SCHEMA
+	// TEMPLATE (visitDropSchemaTemplateStatement:483) thread throwIfDoesNotExist from
+	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
+	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
 	schemaText := s.Uid().GetText()
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
