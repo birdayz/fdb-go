@@ -360,25 +360,36 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 		return fmt.Errorf("context cancelled: %w", err)
 	}
 
-	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	initCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-
-	// Give FDB a moment to stabilize after "FDBD joined cluster".
-	time.Sleep(1 * time.Second)
 
 	cmd := fmt.Sprintf("configure new %s %s tenant_mode=%s",
 		c.config.redundancyMode, c.config.storageEngine, c.config.tenantMode)
 
-	output, err := c.FDBCLIExec(initCtx, cmd)
-	if err != nil {
-		// "Database already exists" is fine — idempotent.
-		if strings.Contains(output, "already exists") {
+	// `configure new` on a freshly-started cluster is timing- and
+	// resource-fragile, especially multi-node: the coordinator's fdbserver may
+	// not be reachable yet, and fdbcli can be SIGKILLed under transient memory
+	// pressure on a loaded CI runner (exit 137). A single attempt flakes there.
+	// Retry with backoff; "already exists" means an earlier attempt took, so it
+	// is success (configure is idempotent, same as the original guard).
+	var lastErr error
+	for attempt := 1; attempt <= 6; attempt++ {
+		if err := initCtx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("configure new: %w (last attempt: %v)", err, lastErr)
+			}
+			return fmt.Errorf("context cancelled: %w", err)
+		}
+		// Backoff also gives FDB time to stabilize after "FDBD joined cluster".
+		time.Sleep(time.Duration(attempt) * time.Second)
+
+		output, err := c.FDBCLIExec(initCtx, cmd)
+		if err == nil || strings.Contains(output, "already exists") {
 			return nil
 		}
-		return fmt.Errorf("fdbcli configure: %w (output: %s)", err, output)
+		lastErr = fmt.Errorf("fdbcli configure (attempt %d/6): %w (output: %s)", attempt, err, output)
 	}
-
-	return nil
+	return lastErr
 }
 
 // startAdditionalProcesses starts extra fdbserver processes on ports 4501..4500+n-1.

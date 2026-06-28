@@ -555,19 +555,22 @@ func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *
 		g.Expect(len(points)).To(gomega.BeNumerically(">", 2),
 			"a %d-shard range must yield internal shard boundaries, not just [begin,end]", env.numShards)
 	}
-	// Ascending and in range. NOTE: the STRICT (`<`) check is valid only because
-	// this env's chunkSize (100KB) exceeds the shard size (~27KB), so every shard
-	// returns ZERO per-shard chunk splits and the result is just distinct shard
-	// boundaries. Across a real shard SEAM with per-shard splits, FDB can emit a
-	// split point equal to the next inserted boundary (StorageMetrics.actor.cpp:533
-	// breaks on strict `>`), so strict-ascending is NOT a general invariant — if
-	// chunkSize is ever lowered below the shard size, relax this to `<=`.
+	// In range and NON-DECREASING. Equal consecutive points are valid: at a shard
+	// seam the last per-shard chunk split of one shard can coincide with the next
+	// shard's boundary, so FDB emits the same key twice and we match it byte for byte
+	// (NativeAPI.actor.cpp:8164-8191 framing; StorageMetrics.actor.cpp:533 breaks on
+	// strict `>`, i.e. treats an equal key as a valid stop). Whether per-shard splits
+	// happen at all depends on the data distributor, which is non-deterministic —
+	// shards are not guaranteed to stay under the 100KB chunk size — so a strict
+	// `<` is NOT an invariant and flakes when a seam duplicate appears. The real
+	// invariant is ordering: split points never go backwards. (Exact equality with
+	// libfdb_c is pinned by the go-vs-cgo differential; here we pin order.)
 	for i, p := range points {
 		g.Expect(bytes.Compare(p, begin)).To(gomega.BeNumerically(">=", 0), "split point %d below range: %x", i, p)
 		g.Expect(bytes.Compare(p, end)).To(gomega.BeNumerically("<=", 0), "split point %d above range: %x", i, p)
 		if i > 0 {
-			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<", 0),
-				"split points must be strictly ascending (chunkSize>shard ⇒ no per-shard splits): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
+			g.Expect(bytes.Compare(points[i-1], p)).To(gomega.BeNumerically("<=", 0),
+				"split points must be non-decreasing (equal is valid at a shard seam with per-shard splits): [%d]=%x [%d]=%x", i-1, points[i-1], i, p)
 		}
 	}
 }
