@@ -97,6 +97,7 @@ go_test(
         "large_value_split_probe_test.go",
         "like_escape_probe_test.go",
         "like_pattern_probe_test.go",
+        "limit_offset_paging_probe_test.go",
         "limit_zero_fdb_test.go",
         "materialized_nlj_null_test.go",
         "memory_budget_fdb_test.go",
