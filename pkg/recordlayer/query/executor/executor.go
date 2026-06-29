@@ -361,27 +361,27 @@ func executeVectorIndexScan(
 	}
 
 	var scanRange recordlayer.TupleRange
+	scanType := recordlayer.IndexScanByDistance
 	if p.IsOrderedStream() {
-		// RFC-156 Phase B — VBASE distance-ordered mode: do NOT self-limit to k.
-		// Stream the bounded re-ranked HORIZON in ascending distance order so the
-		// Filter ABOVE culls non-matching rows and the Limit(k) ABOVE takes the
-		// true k nearest MATCHING rows.
+		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
+		// rows in ascending distance order so the Filter ABOVE culls non-matching
+		// rows and the Limit(k) ABOVE takes the true k nearest MATCHING rows.
 		//
-		// The horizon is the RE-RANK BUDGET (how many exact-re-ranked rows to
-		// emit) — NOT the probe width. It is threaded as the re-rank budget c
-		// (SPFresh's High-tuple c slot) so the index re-ranks ~horizon candidates
-		// while its TUNED probe width stays untouched (SPFresh kc=64, HNSW ef).
-		// Forcing efSearch up to the horizon (the prior approach) overrode
-		// SPFresh's kc AND triggered the c = 4·k inflation, re-ranking ~4×horizon
-		// — the spfresh-reviewer / Torvalds Phase B NAK. Probing kc=64 cells
-		// yields hundreds of candidates; re-ranking the top-`horizon` of them is
-		// correct and cheap. efSearch is passed UNCHANGED as the probe width.
+		// Phase C: dispatch through the STREAMING scan type. For SPFresh this is a
+		// demand-driven cursor that widens its scanned horizon in batches as the
+		// consumer pulls — admitting the next ε-pruned cells in d2 order, then
+		// re-routing with a larger w up to a budget cap — so a rare residual whose
+		// matches lie beyond the initial probe still returns the true k nearest
+		// matching rows (or an honest ScanLimitReached if the budget is exhausted
+		// first). HNSW has no posting cells to widen, so the dispatch falls back to
+		// the fixed-horizon ScanByDistance (Phase B, unchanged).
 		//
-		// Phase B uses a FIXED horizon (the ef-default-derived re-rank budget).
-		// An adaptive per-index horizon and demand-driven widening until k
-		// survivors for rare/very-selective predicates are Phase C (not built
-		// here) — for a residual whose matches lie within this horizon the result
-		// is exactly the k nearest matching rows.
+		// The High tuple still carries the re-rank budget c (the Phase B decoupling
+		// from the probe width: efSearch passes UNCHANGED as the probe width, never
+		// forced up to the horizon — the spfresh-reviewer / Torvalds Phase B NAK).
+		// SPFresh's streaming path ignores k/c and uses the budget cap; the HNSW
+		// fallback reads (k=horizon, efSearch) as before.
+		scanType = recordlayer.IndexScanByDistanceOrderedStream
 		horizon := defaultVectorEfSearch
 		scanRange = recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
 	} else {
@@ -407,7 +407,7 @@ func executeVectorIndexScan(
 		ExecuteProperties:   props,
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
-	indexCursor := store.ScanIndexByType(idx, recordlayer.IndexScanByDistance, scanRange, continuation, scanProps)
+	indexCursor := store.ScanIndexByType(idx, scanType, scanRange, continuation, scanProps)
 	return &indexFetchCursor{inner: indexCursor, store: store}, nil
 }
 

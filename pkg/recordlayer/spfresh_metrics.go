@@ -37,6 +37,18 @@ var (
 	// Split tasks re-filed from the read path after a capped read found an
 	// over-envelope posting with no pending split.
 	CountSPFreshReadPathSplitFiles = Event{"spfresh_readpath_split_files", "SPFresh Read-Path Split Files"}
+	// Stream widen batches: each demand-driven widening step of the RFC-156
+	// Phase C ordered-stream cursor (a batch of ε-pruned/re-routed cells admitted
+	// in d2 order because the consumer above drained the finalized prefix and
+	// pulled for more). Batched, never one-cell-serial.
+	CountSPFreshStreamWiden = Event{"spfresh_stream_widenings", "SPFresh Stream Widenings"}
+	// Filtered truncation: the RFC-156 Phase C ordered-stream cursor hit its
+	// budget cap (max cells probed / max candidates) BEFORE the consumer was
+	// satisfied, and returned NoNextReason.ScanLimitReached + a positional
+	// continuation rather than a silent < k. This is telemetry IN ADDITION to the
+	// reason (RFC-156 §C / Torvalds #2) — the reason is the contract, this counts
+	// how often the budget bound a filtered KNN.
+	CountSPFreshFilteredTruncated = Event{"spfresh_filtered_truncated", "SPFresh Filtered Truncations"}
 
 	// Write path.
 	EventSPFreshInsert           = Event{"spfresh_insert", "SPFresh Insert"}

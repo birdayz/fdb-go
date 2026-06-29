@@ -159,9 +159,12 @@ type spfreshFrontier struct {
 	// last w traversed estimates → M_q^s is its median; smallestQueue keeps the
 	// E=k smallest estimates → R_q is its max (the current k-th best). Phase 2
 	// ⟺ M_q^s > R_q: the recently-traversed cells no longer beat the running
-	// k-th best, so further widening is unlikely to help. recentQueue is sized
-	// at init (w = probe width); smallestQueue at the first searchNext, when the
-	// caller's demand (k) is known, then seeded from the probe estimates in best.
+	// k-th best. These are PHASE-A TELEMETRY ONLY (CountSPFreshPhase2Reached) —
+	// neither the one-shot wrapper nor the Phase C streaming cursor early-stops on
+	// phase2: the wrapper always scans its full conditional horizon, and the
+	// streaming cursor terminates on the emission barrier + budget/exhaustion (see
+	// spfresh_stream.go). recentQueue is sized at init (w = probe width);
+	// smallestQueue at the first searchNext, then seeded from the probe estimates.
 	recent   *spfreshRecentQueue
 	smallest *spfreshSmallestQueue
 	phase2   bool
@@ -178,6 +181,77 @@ type spfreshFrontier struct {
 	done      bool
 
 	empty bool // route returned nothing — nothing to emit, exhausted immediately
+
+	// ---- RFC-156 Phase C streaming-cursor state (unused by the one-shot wrapper) ----
+	// All of this stays O(budget): bounded by the candidate/cell budget caps, never
+	// O(corpus). scoredCells dedups posting reads across the probe set, the ε-pruned
+	// tail, and the all-cells re-route so widening never re-scores a cell.
+	scoredCells map[int64]struct{} // fineIDs whose posting list has been scored
+
+	// reranked caches each candidate's EXACT (sidecar) distance so re-rank fires
+	// once per span across the whole stream (total reads ≤ candidate budget);
+	// deleted holds spans whose sidecar vanished between bursts; emittedSpans holds
+	// spans already yielded (positional dedup + never-drop-a-later-closer-row).
+	reranked     map[string]float64
+	deleted      map[string]struct{}
+	emittedSpans map[string]struct{}
+
+	// spanCent maps each candidate span to the (shared, read-only) centroid vector
+	// of the min-estimate replica that scored it — so the emission barrier can
+	// compute that member's residual ‖v−c‖ at re-rank time. maxResidual is the
+	// largest residual seen; the Euclidean barrier B = nextCentroidDist −
+	// maxResidual corrects for NEAR-SIDE members (closer to the query than their
+	// own centroid) that a pure-centroid barrier emits out of order. This is NOT an
+	// unconditional triangle bound (maxResidual is a running max over already-scored
+	// members); its soundness rests on SPANN's (1+ε) closure replication — a
+	// boundary member is replicated into its near centroid and scored early, so
+	// maxResidual has converged before far cells admit — plus LIRE's roughly-uniform
+	// cell radii. See nextCellBarrier for the full argument. Populated
+	// unconditionally (searchInit) so the probe set is covered; the wrapper ignores it.
+	spanCent    map[string][]float64
+	maxResidual float64
+
+	// The all-cells re-route admitted in d2 order once the ε-pruned tail drains.
+	widenRouted        []spfreshRouted
+	widenPos           int
+	widenRerouted      bool
+	widenRouteComplete bool // the re-route returned the COMPLETE centroid set (not budget-capped)
+
+	cellsProbed   int
+	maxCells      int // budget: max posting cells probed
+	maxCandidates int // budget: max distinct candidates retained
+	widenBatch    int // cells admitted per widen step
+	budgetHit     bool
+	streamExhaust bool
+
+	// streamFinalized is the current un-emitted, exact-distance-sorted prefix; it
+	// is rebuilt from (best \ emitted \ deleted) after each widen and drained
+	// positionally. peakBest tracks the high-water dedup-map size (the memory
+	// assertion: it must stay ≤ candidate budget + one batch, never grow with the
+	// corpus).
+	streamFinalized []spfreshStreamHit
+	streamPos       int
+	streamStarted   bool // the probe's finalized prefix has been built+drained at least once
+	streamFlushed   bool // the final B=+inf flush has run (all held candidates released in order)
+	peakBest        int
+
+	// barrierEnabled gates the early-streaming emission barrier to metrics where
+	// the residual-margin (reverse-triangle) bound is valid — EUCLIDEAN only (see
+	// streamInit). For every other metric the cursor holds ALL candidates until the
+	// terminal and flushes the full sorted scanned set (materialize-then-emit),
+	// which is EXACT for any metric. disableNearSide forces the pure-centroid
+	// barrier (maxResidual treated as 0) — test-only, for the ablation proving the
+	// −maxResidual near-side correction is load-bearing.
+	barrierEnabled  bool
+	disableNearSide bool
+}
+
+// spfreshStreamHit is one entry of the streaming cursor's un-emitted, sorted
+// finalized prefix: the pk span (decoded to a tuple only when actually yielded)
+// and its exact (re-ranked) distance.
+type spfreshStreamHit struct {
+	span string
+	dist float64
 }
 
 // searchInit routes, applies SPANN Eq. (3) ε-pruning, and fetches & scores the
@@ -187,12 +261,14 @@ type spfreshFrontier struct {
 // E=k smallest queue.
 func (s *spfreshSearcher) searchInit(tx fdb.ReadTransaction, query []float64) (*spfreshFrontier, error) {
 	f := &spfreshFrontier{
-		s:        s,
-		tx:       tx,
-		query:    query,
-		best:     make(map[string]float64),
-		residual: make([]float64, len(query)),
-		recent:   newSPFreshRecentQueue(s.w),
+		s:           s,
+		tx:          tx,
+		query:       query,
+		best:        make(map[string]float64),
+		residual:    make([]float64, len(query)),
+		recent:      newSPFreshRecentQueue(s.w),
+		scoredCells: make(map[int64]struct{}),
+		spanCent:    make(map[string][]float64),
 	}
 	routed, err := s.cache.route(tx, s.storage, query, s.w, s.kc)
 	if err != nil {
@@ -301,17 +377,15 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 // once on the post-probe best size; cf. the comment below), and the starved-widen
 // fetches the whole pruned tail in ONE parallel burst — byte-for-byte the one-shot
 // spfreshPruneRouted + fetch-all (best is a min-est dedup map; a cell pruned at a
-// tighter R_q stays pruned — invariant 1). Phase 2 (M_q^s > R_q) is
-// tracked as the search advances but does NOT truncate this exact horizon —
-// two distinct reasons, don't conflate them: (a) Phase A MUST stay byte-for-byte
-// identical to the one-shot (invariant 4), so the wrapper always scans the full
-// conditional horizon regardless of Phase 2; (b) for THIS index's bounded scan
-// (w cells + conditional pruned tail + depth-1 forwards), Phase 2 — WHEN it fires
-// — fires near horizon exhaustion, an instantiation property of the topology, not
-// a claim that Phase 2 is meaningless. The recall-trading EARLY stop that consults
-// f.phase2 is the resumable Phase B/C cursor's job; that cursor OVERRIDES this
-// all-exact behavior. (TODO: confirm on VECTOR_BENCHMARK_RESULTS that
-// CountSPFreshPhase2Reached fires only near scan end, validating (b).)
+// tighter R_q stays pruned). The relaxed-monotonicity queues (refreshPhase2) are
+// fed here but are PHASE-A TELEMETRY ONLY — they never truncate this exact
+// horizon (the wrapper must stay byte-for-byte identical to the one-shot,
+// invariant 4). The Phase C streaming cursor does NOT consult f.phase2 either: it
+// emits exact-distance-ordered results gated by the relaxed-monotonicity EMISSION
+// BARRIER (B = nextCentroidDist − maxResidual; see spfresh_stream.go), holding
+// candidates ≥ B and flushing all at B=+inf on budget/exhaustion — there is no
+// phase2-driven early stop anywhere. CountSPFreshPhase2Reached remains a pure
+// observability counter.
 func (f *spfreshFrontier) advance(demand int) error {
 	s := f.s
 	// cTop = max(s.c, k): gating widening on s.c alone skipped the pruned tail
@@ -340,10 +414,10 @@ func (f *spfreshFrontier) advance(demand int) error {
 	// post-probe best size (one-shot semantics: it fetched the WHOLE pruned tail
 	// when starved, not "until best ≥ cTop"). The wrapper widens the whole tail in
 	// ONE parallel burst — byte-for-byte the pre-refactor fetchAndScore(pruned),
-	// one RTT not one-per-cell. True per-step, demand-driven widening with phase-2
-	// early-stop is the Phase B/C resumable cursor's job (it pulls the tail
-	// incrementally across searchNext calls); Phase A scans the full horizon up
-	// front to guarantee wrapper parity (invariant 4).
+	// one RTT not one-per-cell. True per-step, demand-driven widening is the Phase C
+	// streaming cursor's job (it pulls the tail incrementally across OnNext calls,
+	// gated by the emission barrier — not by phase2); Phase A scans the full horizon
+	// up front to guarantee wrapper parity (invariant 4).
 	if f.tailPos < len(f.pruned) && len(f.best) < cTop {
 		s.timer.Increment(CountSPFreshStarvationWiden)
 		if err := f.scoreCells(f.pruned[f.tailPos:]); err != nil {
@@ -386,6 +460,9 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 		r, rerr := s.storage.postingRange(rt.fineID)
 		if rerr != nil {
 			return rerr
+		}
+		if f.scoredCells != nil {
+			f.scoredCells[rt.fineID] = struct{}{}
 		}
 		fetches = append(fetches, postingFetch{
 			routed: rt,
@@ -434,8 +511,12 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 				return derr
 			}
 			f.observe(est)
-			if cur, ok := f.best[string(span)]; !ok || est < cur {
-				f.best[string(span)] = est
+			key := string(span)
+			if cur, ok := f.best[key]; !ok || est < cur {
+				f.best[key] = est
+				if f.spanCent != nil {
+					f.spanCent[key] = ft.routed.vec // min-estimate replica's centroid
+				}
 			}
 		}
 	}
@@ -464,6 +545,9 @@ func (f *spfreshFrontier) resolveForwardPostings() error {
 		if rerr != nil {
 			return rerr
 		}
+		if f.scoredCells != nil {
+			f.scoredCells[rt.fineID] = struct{}{}
+		}
 		ff = append(ff, fwdFetch{routed: rt, future: f.tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})})
 	}
 	for _, ft := range ff {
@@ -490,8 +574,12 @@ func (f *spfreshFrontier) resolveForwardPostings() error {
 				return derr
 			}
 			f.observe(est)
-			if cur, ok := f.best[string(span)]; !ok || est < cur {
-				f.best[string(span)] = est
+			key := string(span)
+			if cur, ok := f.best[key]; !ok || est < cur {
+				f.best[key] = est
+				if f.spanCent != nil {
+					f.spanCent[key] = ft.routed.vec // min-estimate replica's centroid
+				}
 			}
 		}
 	}
@@ -586,9 +674,10 @@ func (f *spfreshFrontier) observe(est float64) {
 
 // refreshPhase2 latches Phase 2 (VBASE Eq. 3: M_q^s > R_q) once both queues are
 // full — the median of recently-traversed estimates exceeds the current k-th
-// best, so further widening is unlikely to improve the result. Telemetry only
-// in Phase A (it does not truncate the wrapper's exact horizon); it is the stop
-// signal the resumable Phase B/C cursor consults.
+// best. TELEMETRY ONLY (CountSPFreshPhase2Reached): nothing consults f.phase2 as
+// a stop signal. The one-shot wrapper always scans its full conditional horizon;
+// the Phase C streaming cursor terminates on the relaxed-monotonicity EMISSION
+// BARRIER plus the budget/exhaustion caps (spfresh_stream.go), NOT on phase2.
 func (f *spfreshFrontier) refreshPhase2() {
 	if f.phase2 || f.smallest == nil || !f.smallest.full() || !f.recent.full() {
 		return
