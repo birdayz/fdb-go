@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "spfresh-maintainer_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/spfresh-maintainer",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+    ],
+)
+
+go_binary(
+    name = "spfresh-maintainer",
+    embed = [":spfresh-maintainer_lib"],
+    visibility = ["//visibility:public"],
+)

@@ -275,4 +275,42 @@ func TestSPFreshChurnSoak(t *testing.T) {
 			t.Errorf("wave %d: recall %.4f decayed >5pp below post-build %.4f — topology rot under churn", wave, r, base)
 		}
 	}
+
+	// Structural integrity at scale (RFC-156 chaos-gate invariants applied to a
+	// real SIFT topology, not just chaos-test scale): membership ⊆ postings,
+	// every membership target ACTIVE/SEALED, and no ACTIVE posting over the
+	// 4×Lmax envelope. SPFreshCheckIntegrity scans every active fine in ONE
+	// transaction, so it is only single-tx-safe up to a few hundred k fines'
+	// worth of postings; above that the recall-stability assertions above are
+	// the scale signal and the batched integrity variant (RFC-156 §4 follow-up)
+	// is needed.
+	if n <= 200000 {
+		_, ierr := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			rep, serr := recordlayer.SPFreshCheckIntegrity(rtx, store, "spf_soak", 20000)
+			if serr != nil {
+				return nil, serr
+			}
+			t.Logf("SOAK integrity @N=%d: members=%d sampled=%d activeFines=%d maxPostingLen=%d oversized=%d oversizedHard=%d badTargets=%d membershipWithoutEntry=%d",
+				n, rep.Members, rep.Sampled, rep.ActiveFines, rep.MaxPostingLen, rep.Oversized, rep.OversizedHard, rep.BadTargets, rep.MembershipWithoutEntry)
+			if rep.OversizedHard > 0 {
+				t.Errorf("SOAK: %d posting(s) over 4×Lmax at scale — a LIRE split failed to drain", rep.OversizedHard)
+			}
+			if rep.BadTargets > 0 {
+				t.Errorf("SOAK: %d membership target(s) forward/dead/absent at scale", rep.BadTargets)
+			}
+			if rep.MembershipWithoutEntry > 0 {
+				t.Errorf("SOAK: %d membership⊄postings violation(s) at scale", rep.MembershipWithoutEntry)
+			}
+			return nil, nil
+		})
+		if ierr != nil {
+			t.Fatalf("scale integrity check: %v", ierr)
+		}
+	} else {
+		t.Logf("SOAK integrity check skipped at N=%d (single-tx scan limit; recall-stability above is the scale signal)", n)
+	}
 }

@@ -791,3 +791,59 @@ short-bench budget). Recall-neutral; split path bit-identical. The earlier desig
 (Hamerly bound pruning) was rejected — its bit-identical form needs the RFC-101
 roundoff machinery + tie-break handling to *preserve* a tail the A/B proves is
 worthless; stopping the tail is simpler and strictly better.
+
+### SPFresh structural-integrity scale validation (RFC-156 §4.3, SIFT churn soak)
+
+The churn soak (`TestSPFreshChurnSoak`) now asserts the RFC-156 chaos-gate
+*structural* invariants at scale via `SPFreshCheckIntegrity`, alongside the
+existing recall-stability check — validating that the invariants proven at
+chaos-test scale (~hundreds of records) hold on a real SIFT topology under
+sustained churn. SIFT-100k, 6 churn waves (10% delete+reinsert/wave):
+
+| metric | value |
+|---|---|
+| recall@10 post-build | 0.9940 |
+| recall@10 after 6 waves | **0.9920** (−0.2pp; no decay, far inside the 5pp gate) |
+| members / live records | 100,000 / 100,000 (exactly one membership row per record) |
+| active fines | 1,133 |
+| max posting length | **234 ≤ Lmax=256** (LIRE split holds the envelope) |
+| oversized (>Lmax) / oversizedHard (>4·Lmax) | **0 / 0** |
+| badTargets (forward/dead/absent) | **0** |
+| membership⊄postings | **0** |
+
+So at 100k on real SIFT data, under churn: every membership target is
+ACTIVE/SEALED, membership ⊆ postings, every posting is within the balanced-posting
+envelope, and recall is flat. This is the §4.3 *structural* dimension; the
+recall-at-fixed-probe ladder vs the papers is the separate §4.3 recall dimension
+(needs the per-scale kc/w freeze, tracked in RFC-156 §4.3). Run:
+
+```sh
+SPFRESH_BENCH=1 SIFT_N=100000 SOAK_WAVES=6 bazelisk test \
+  //pkg/recordlayer/bench:bench_test --test_arg="--test.run=^TestSPFreshChurnSoak$" \
+  --test_output=streamed --test_env=SPFRESH_BENCH --test_env=SIFT_N --test_env=SOAK_WAVES \
+  --test_timeout=3600
+```
+
+The integrity assertion runs at N ≤ 200k (it scans every active fine in one
+transaction); above that, recall-stability is the scale signal and the batched
+integrity variant is the RFC-156 §4 follow-up. (Runtime: ~110s at 100k.)
+
+**SIFT-1M, 4 churn waves (10% delete+reinsert/wave) — the ceiling:**
+
+| metric | value |
+|---|---|
+| recall@10 post-build | 0.9620 |
+| recall@10 after 4 waves | **0.9620** (flat — zero decay across every wave) |
+| live records | 1,000,000 |
+| rebalance actions/wave | 57 / 8 / 0 / 0 (lifecycle fired, then quiesced) |
+| runtime | ~18.5 min |
+
+Recall holds dead flat at the 1M ceiling under sustained churn — the SPFresh §5.2
+recall-stability-under-updates property at scale (a topology that quiesced
+oversized or orphaned would decay; it does not). The structural integrity
+assertion auto-skips at 1M (single-tx scan limit), so recall-stability is the
+scale signal here; pairing it with the batched integrity variant (RFC-156 §4) is
+the way to also assert structure at the ceiling. The 0.962 fixed-probe recall
+matches the bulk-build 1M figure in the foreground-fill tables above; lifting it
+further at 1M is the per-scale kc/w freeze (RFC-156 §4.3 recall dimension), not a
+stability problem.
