@@ -115,185 +115,404 @@ type spfreshApproxHit struct {
 	est  float64
 }
 
-// search returns the k nearest neighbors of query. The routing cache must be
-// loaded (the maintainer refreshes it off the query path).
-func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int) ([]spfreshSearchResult, error) {
-	if k <= 0 {
-		return nil, nil
+// spfreshFrontier is the resumable, in-memory state of one SPFresh search
+// (RFC-156 Phase A). It reframes the index as a distance-*ordering* provider
+// with an Open/Next iterator rather than a one-shot top-k black box, mapping
+// onto VBASE's partition-index instantiation (docs/vbase-osdi-2023.md §3.1):
+// E = k, w = the vectors in the probed clusters; Phase 1 = choosing the m
+// nearest cells, Phase 2 = scanning them.
+//
+// State retained (and ONLY this — memory is O(best + cTop), never O(corpus),
+// RFC-156 invariant 5): the ε-pruned tail (d2-ascending) plus the position
+// widening has reached in it; the min-estimate dedup map keyed by pk span; the
+// forwarded-child queue; the relaxed-monotonicity queues (recentQueue M_q^s,
+// smallestQueue R_q); and the finalized (exact re-ranked, distance-ordered)
+// prefix streamed out so far. Lives for one query's lifecycle only — never
+// serialized into a continuation (mirrors Java's ListCursor; wire-format
+// untouched, RFC-156 §1).
+type spfreshFrontier struct {
+	s     *spfreshSearcher
+	tx    fdb.ReadTransaction
+	query []float64
+
+	// pruned is the ε-pruned tail (d2-ascending) the probe set left behind;
+	// tailPos is how far widening has admitted it. The probe set was scored at
+	// init and is not retained as a list — its candidates live in best.
+	pruned  []spfreshRouted
+	tailPos int
+
+	// best is the residual-estimate dedup map keyed by the raw pk span (the
+	// flat-packed pk suffix, see postingPKSpan): min-estimate across closure
+	// replicas (RFC-094 §4/§7). Lookups with the string(span) conversion never
+	// allocate; assignments copy the span to an owned string. Nothing in the
+	// hot loop decodes a tuple. Bounded by distinct candidates seen.
+	best     map[string]float64
+	residual []float64 // scratch, reused per posting
+
+	// forwards are stale-cache HDR redirects (SEALED→FORWARD) discovered while
+	// scanning; their child centroids are point-read inline (resolveForward,
+	// +1 RT) and their postings fetched in one burst at finalize time.
+	forwards         []spfreshRouted
+	forwardsResolved bool
+
+	// Relaxed-monotonicity queues (VBASE §4.1, Eq. 3). recentQueue holds the
+	// last w traversed estimates → M_q^s is its median; smallestQueue keeps the
+	// E=k smallest estimates → R_q is its max (the current k-th best). Phase 2
+	// ⟺ M_q^s > R_q: the recently-traversed cells no longer beat the running
+	// k-th best, so further widening is unlikely to help. recentQueue is sized
+	// at init (w = probe width); smallestQueue at the first searchNext, when the
+	// caller's demand (k) is known, then seeded from the probe estimates in best.
+	recent   *spfreshRecentQueue
+	smallest *spfreshSmallestQueue
+	phase2   bool
+
+	// Finalization. cTop = max(c, demand) is the top-C budget; finalized is the
+	// exact re-ranked, distance-ordered winners; emitPos streams them across
+	// searchNext calls. done is set once the conditional horizon the one-shot
+	// path scans (probe + widen-if-starved + forwards) is exhausted and
+	// finalized is built — only then is a result guaranteed in true distance
+	// order (RFC-156 invariant 2: emit only exact-re-ranked finalized prefixes).
+	cTop      int
+	finalized []spfreshSearchResult
+	emitPos   int
+	done      bool
+
+	empty bool // route returned nothing — nothing to emit, exhausted immediately
+}
+
+// searchInit routes, applies SPANN Eq. (3) ε-pruning, and fetches & scores the
+// PROBE set, leaving the ε-pruned tail for incremental widening (RFC-156 Phase
+// A). It performs no widening, forward resolution, or re-rank — those happen in
+// searchNext, which knows the caller's demand (k) and so can size cTop and the
+// E=k smallest queue.
+func (s *spfreshSearcher) searchInit(tx fdb.ReadTransaction, query []float64) (*spfreshFrontier, error) {
+	f := &spfreshFrontier{
+		s:        s,
+		tx:       tx,
+		query:    query,
+		best:     make(map[string]float64),
+		residual: make([]float64, len(query)),
+		recent:   newSPFreshRecentQueue(s.w),
 	}
-	defer s.timer.RecordSince(EventSPFreshSearch, time.Now())
 	routed, err := s.cache.route(tx, s.storage, query, s.w, s.kc)
 	if err != nil {
 		return nil, err
 	}
 	if len(routed) == 0 {
-		return nil, nil
+		f.empty = true
+		f.done = true
+		return f, nil
 	}
 
 	// SPANN Eq. (3) query-aware dynamic pruning: probe only the routed lists
 	// whose centroid distance is within (1+ε) of the nearest one — easy
 	// queries pay a handful of range reads, hard ones the full kc cap. The
-	// pruned tail is refetched below if the probed set starves the re-rank
-	// budget (RFC-094 §4 adaptive widening).
+	// pruned tail is admitted by widening below if the probed set starves the
+	// re-rank budget (RFC-094 §4 adaptive widening).
 	probe, pruned := spfreshPruneRouted(routed, s.epsilon)
 	s.timer.IncrementBy(CountSPFreshPostingsProbed, int64(len(probe)))
 	s.timer.IncrementBy(CountSPFreshPostingsPruned, int64(len(pruned)))
+	f.pruned = pruned
 
-	// One parallel burst: all posting range reads issued before any resolves.
-	// The fetch cap (4×Lmax+1 rows) bounds an unmaintained posting's cost to
-	// THIS query (metered, never unbounded — RFC-094 §4).
+	// One parallel burst over the probe set (all range reads issued before any
+	// resolves). The fetch cap (4×Lmax+1 rows) bounds an unmaintained posting's
+	// cost to THIS query (metered, never unbounded — RFC-094 §4).
+	if err := f.scoreCells(probe); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// searchNext emits the next exact-re-ranked, distance-ordered candidates, up to
+// demand of them. On the first call it advances the search to the conditional
+// horizon the one-shot path scans (widen the ε-pruned tail iff the probe set
+// starved the re-rank budget, then resolve forwarded children) and builds the
+// finalized prefix; subsequent calls stream from it. exhausted reports that the
+// finalized prefix is fully drained (the routed horizon is exhausted).
+//
+// RFC-156 invariant 2 — re-rank only finalized prefixes: nothing is emitted
+// until it is exact-sidecar-re-ranked AND the conditional horizon is exhausted
+// (no un-probed cell in that horizon can contain a closer vector). No RaBitQ-
+// estimate-order emission. For the wrapper (demand = k) this is byte-for-byte
+// identical to the pre-refactor one-shot search.
+func (s *spfreshSearcher) searchNext(f *spfreshFrontier, demand int) ([]spfreshSearchResult, bool, error) {
+	if demand <= 0 {
+		return nil, f.done && f.emitPos >= len(f.finalized), nil
+	}
+	if f.empty {
+		return nil, true, nil
+	}
+	if !f.done {
+		if err := f.advance(demand); err != nil {
+			return nil, false, err
+		}
+	}
+	end := f.emitPos + demand
+	if end > len(f.finalized) {
+		end = len(f.finalized)
+	}
+	batch := f.finalized[f.emitPos:end]
+	f.emitPos = end
+	return batch, f.emitPos >= len(f.finalized), nil
+}
+
+// search returns the k nearest neighbors of query. The routing cache must be
+// loaded (the maintainer refreshes it off the query path).
+//
+// RFC-156 Phase A: search is now a thin wrapper over the resumable iterator —
+// searchInit then loop searchNext until k finalized results or exhausted. It is
+// the safety net: byte-for-byte identical to the pre-refactor one-shot for every
+// k (RFC-156 invariant 4), proven by the parity + ε-pruning-equivalence tests.
+func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int) ([]spfreshSearchResult, error) {
+	if k <= 0 {
+		return nil, nil
+	}
+	defer s.timer.RecordSince(EventSPFreshSearch, time.Now())
+	f, err := s.searchInit(tx, query)
+	if err != nil {
+		return nil, err
+	}
+	var out []spfreshSearchResult
+	for len(out) < k {
+		batch, exhausted, nerr := s.searchNext(f, k-len(out))
+		if nerr != nil {
+			return nil, nerr
+		}
+		out = append(out, batch...)
+		if exhausted {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	if k < len(out) {
+		out = out[:k]
+	}
+	return out, nil
+}
+
+// advance scans the conditional horizon the one-shot path scans — probe (done
+// at init) + the ε-pruned tail iff the probe set starved the re-rank budget +
+// forwarded children — then builds the exact re-ranked, distance-ordered
+// finalized prefix. Called once per frontier (guarded by done).
+//
+// RFC-156 invariants: the widen DECISION mirrors the one-shot exactly (checked
+// once on the post-probe best size; cf. the comment below), and the starved-widen
+// fetches the whole pruned tail in ONE parallel burst — byte-for-byte the one-shot
+// spfreshPruneRouted + fetch-all (best is a min-est dedup map; a cell pruned at a
+// tighter R_q stays pruned — invariant 1). Phase 2 (M_q^s > R_q) is
+// tracked as the search advances but does NOT truncate this exact horizon —
+// two distinct reasons, don't conflate them: (a) Phase A MUST stay byte-for-byte
+// identical to the one-shot (invariant 4), so the wrapper always scans the full
+// conditional horizon regardless of Phase 2; (b) for THIS index's bounded scan
+// (w cells + conditional pruned tail + depth-1 forwards), Phase 2 — WHEN it fires
+// — fires near horizon exhaustion, an instantiation property of the topology, not
+// a claim that Phase 2 is meaningless. The recall-trading EARLY stop that consults
+// f.phase2 is the resumable Phase B/C cursor's job; that cursor OVERRIDES this
+// all-exact behavior. (TODO: confirm on VECTOR_BENCHMARK_RESULTS that
+// CountSPFreshPhase2Reached fires only near scan end, validating (b).)
+func (f *spfreshFrontier) advance(demand int) error {
+	s := f.s
+	// cTop = max(s.c, k): gating widening on s.c alone skipped the pruned tail
+	// once the probe set hit the rerank budget, so a k > s.c scan could return
+	// fewer than k rows even with enough records in the pruned postings (codex).
+	// cTop is reused at the top-C cut in finalize.
+	cTop := s.c
+	if cTop < demand {
+		cTop = demand
+	}
+	f.cTop = cTop
+
+	// Size the E=k smallest queue now that the demand is known, and seed it from
+	// the probe estimates already deduped into best (it keeps only the E
+	// smallest, so seeding from best is equivalent to having fed every probe
+	// estimate). recentQueue was fed during the probe scan at init.
+	f.smallest = newSPFreshSmallestQueue(demand)
+	for _, est := range f.best {
+		f.smallest.push(est)
+	}
+	f.refreshPhase2()
+
+	// ε-pruning starvation widening (RFC-094 §4): if the pruned probe set can't
+	// fill the re-rank budget, admit the pruned tail too — only on starved
+	// queries, never beyond the kc cap. The decision is made ONCE on the
+	// post-probe best size (one-shot semantics: it fetched the WHOLE pruned tail
+	// when starved, not "until best ≥ cTop"). The wrapper widens the whole tail in
+	// ONE parallel burst — byte-for-byte the pre-refactor fetchAndScore(pruned),
+	// one RTT not one-per-cell. True per-step, demand-driven widening with phase-2
+	// early-stop is the Phase B/C resumable cursor's job (it pulls the tail
+	// incrementally across searchNext calls); Phase A scans the full horizon up
+	// front to guarantee wrapper parity (invariant 4).
+	if f.tailPos < len(f.pruned) && len(f.best) < cTop {
+		s.timer.Increment(CountSPFreshStarvationWiden)
+		if err := f.scoreCells(f.pruned[f.tailPos:]); err != nil {
+			return err
+		}
+		f.tailPos = len(f.pruned)
+		f.refreshPhase2()
+	}
+
+	// Resolve forwarded children: one more parallel burst (depth 1; deeper
+	// chains are the caller's refresh signal — we treat children's own HDRs as
+	// absent entries there and rely on the next refresh, bounded per spec).
+	if !f.forwardsResolved {
+		if err := f.resolveForwardPostings(); err != nil {
+			return err
+		}
+		f.forwardsResolved = true
+	}
+
+	if err := f.finalize(); err != nil {
+		return err
+	}
+	f.done = true
+	return nil
+}
+
+// scoreCells fetches each cell's posting list in one parallel burst (all range
+// reads issued before any resolves) and scores its entries into best, queuing
+// forwarded children and feeding the relaxed-monotonicity queues. The fetch cap
+// (4×Lmax+1 rows) bounds an unmaintained posting's cost to THIS query.
+func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
+	s := f.s
 	limit := 4*s.config.Lmax + 1
 	type postingFetch struct {
 		routed spfreshRouted
 		future fdb.RangeResult
 	}
+	fetches := make([]postingFetch, 0, len(cells))
+	for _, rt := range cells {
+		r, rerr := s.storage.postingRange(rt.fineID)
+		if rerr != nil {
+			return rerr
+		}
+		fetches = append(fetches, postingFetch{
+			routed: rt,
+			future: f.tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
+		})
+	}
+	for _, ft := range fetches {
+		kvs, kerr := ft.future.GetSliceWithError()
+		if kerr != nil {
+			return fmt.Errorf("spfresh search: posting %d: %w", ft.routed.fineID, kerr)
+		}
+		s.timer.IncrementBy(CountSPFreshEntriesScanned, int64(len(kvs)))
+		if len(kvs) == limit {
+			s.timer.Increment(CountSPFreshCappedPostingReads)
+			s.capped = append(s.capped, ft.routed)
+		}
+		for d := range f.query {
+			f.residual[d] = f.query[d] - ft.routed.vec[d]
+		}
+		// One scorer per posting: the residual query's self-dot and the code
+		// buffer are computed once and reused across the posting's codes (the
+		// per-code allocation path dominated estimate CPU — 094.4).
+		score := s.quant.scorer(f.residual, s.config.NumDimensions)
+		prefixLen := len(s.storage.postings.Pack(tuple.Tuple{ft.routed.fineID}))
+		for _, kv := range kvs {
+			span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
+			if perr != nil {
+				return perr
+			}
+			if !isEntry {
+				// Forwarded posting (split landed inside our staleness window):
+				// queue the children, resolved before finalize (+2 RT bounded).
+				cellID, childA, childB, herr := decodePostingHDR(kv.Value)
+				if herr != nil {
+					return herr
+				}
+				fwd, ferr := s.resolveForward(f.tx, cellID, childA, childB)
+				if ferr != nil {
+					return ferr
+				}
+				f.forwards = append(f.forwards, fwd...)
+				continue
+			}
+			est, derr := score(kv.Value)
+			if derr != nil {
+				return derr
+			}
+			f.observe(est)
+			if cur, ok := f.best[string(span)]; !ok || est < cur {
+				f.best[string(span)] = est
+			}
+		}
+	}
+	return nil
+}
 
-	// Residual distance estimation per posting; min-estimate dedup across
-	// closure replicas (RFC-094 §4/§7). best is keyed by the raw pk span —
-	// lookups with the string(span) conversion never allocate; assignments
-	// (first insert AND min-improvement updates, bounded by the replica
-	// count per pk) copy the span to an owned string. Nothing in the hot
-	// loop decodes a tuple.
-	best := make(map[string]float64)
-	residual := make([]float64, len(query))
-	var forwards []spfreshRouted // stale-cache HDR redirects, resolved after the burst
-	fetchAndScore := func(rts []spfreshRouted) error {
-		fetches := make([]postingFetch, 0, len(rts))
-		for _, rt := range rts {
-			r, rerr := s.storage.postingRange(rt.fineID)
-			if rerr != nil {
-				return rerr
-			}
-			fetches = append(fetches, postingFetch{
-				routed: rt,
-				future: tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}),
-			})
-		}
-		for _, f := range fetches {
-			kvs, kerr := f.future.GetSliceWithError()
-			if kerr != nil {
-				return fmt.Errorf("spfresh search: posting %d: %w", f.routed.fineID, kerr)
-			}
-			s.timer.IncrementBy(CountSPFreshEntriesScanned, int64(len(kvs)))
-			if len(kvs) == limit {
-				s.timer.Increment(CountSPFreshCappedPostingReads)
-				s.capped = append(s.capped, f.routed)
-			}
-			for d := range query {
-				residual[d] = query[d] - f.routed.vec[d]
-			}
-			// One scorer per posting: the residual query's self-dot and the
-			// code buffer are computed once and reused across the posting's
-			// codes (the per-code allocation path dominated estimate CPU —
-			// 094.4).
-			score := s.quant.scorer(residual, s.config.NumDimensions)
-			prefixLen := len(s.storage.postings.Pack(tuple.Tuple{f.routed.fineID}))
-			for _, kv := range kvs {
-				span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
-				if perr != nil {
-					return perr
-				}
-				if !isEntry {
-					// Forwarded posting (split landed inside our staleness
-					// window): queue the children, resolved below (+2 RT
-					// bounded).
-					cellID, childA, childB, herr := decodePostingHDR(kv.Value)
-					if herr != nil {
-						return herr
-					}
-					fwd, ferr := s.resolveForward(tx, cellID, childA, childB)
-					if ferr != nil {
-						return ferr
-					}
-					forwards = append(forwards, fwd...)
-					continue
-				}
-				est, derr := score(kv.Value)
-				if derr != nil {
-					return derr
-				}
-				if cur, ok := best[string(span)]; !ok || est < cur {
-					best[string(span)] = est
-				}
-			}
-		}
+// resolveForwardPostings fetches the postings of the forwarded children queued
+// during scanning, in one parallel burst, scoring them into best (RFC-156
+// invariant 3 — HDR / forwarded-child handling, identical to the one-shot path:
+// the parent contributes no entries post-FORWARD, depth-2 chains defer to the
+// next cache refresh).
+func (f *spfreshFrontier) resolveForwardPostings() error {
+	s := f.s
+	s.timer.IncrementBy(CountSPFreshForwardFollows, int64(len(f.forwards)))
+	if len(f.forwards) == 0 {
 		return nil
 	}
-	if err := fetchAndScore(probe); err != nil {
-		return nil, err
+	limit := 4*s.config.Lmax + 1
+	type fwdFetch struct {
+		routed spfreshRouted
+		future fdb.RangeResult
 	}
-	// ε-pruning starvation widening (RFC-094 §4): if the pruned probe set
-	// can't fill the re-rank budget, fetch the pruned tail too — one extra
-	// burst, only on starved queries, never beyond the kc cap. The budget is
-	// the SAME cTop the re-rank keeps below (max(s.c, k)): gating on s.c alone
-	// skipped the pruned tail once the probe set hit the rerank budget, so a
-	// k > s.c scan could return fewer than k rows even with enough records in
-	// the pruned postings (codex). cTop is reused at the top-C cut below.
-	cTop := s.c
-	if cTop < k {
-		cTop = k
+	ff := make([]fwdFetch, 0, len(f.forwards))
+	for _, rt := range f.forwards {
+		r, rerr := s.storage.postingRange(rt.fineID)
+		if rerr != nil {
+			return rerr
+		}
+		ff = append(ff, fwdFetch{routed: rt, future: f.tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})})
 	}
-	if len(pruned) > 0 && len(best) < cTop {
-		s.timer.Increment(CountSPFreshStarvationWiden)
-		if err := fetchAndScore(pruned); err != nil {
-			return nil, err
+	for _, ft := range ff {
+		kvs, kerr := ft.future.GetSliceWithError()
+		if kerr != nil {
+			return fmt.Errorf("spfresh search: forwarded posting %d: %w", ft.routed.fineID, kerr)
+		}
+		if len(kvs) == limit {
+			s.timer.Increment(CountSPFreshCappedPostingReads)
+			s.capped = append(s.capped, ft.routed)
+		}
+		for d := range f.query {
+			f.residual[d] = f.query[d] - ft.routed.vec[d]
+		}
+		score := s.quant.scorer(f.residual, s.config.NumDimensions)
+		prefixLen := len(s.storage.postings.Pack(tuple.Tuple{ft.routed.fineID}))
+		for _, kv := range kvs {
+			span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
+			if perr != nil || !isEntry {
+				continue // chain depth 2: next refresh handles it
+			}
+			est, derr := score(kv.Value)
+			if derr != nil {
+				return derr
+			}
+			f.observe(est)
+			if cur, ok := f.best[string(span)]; !ok || est < cur {
+				f.best[string(span)] = est
+			}
 		}
 	}
+	return nil
+}
 
-	// Resolve forwarded children: one more parallel burst (depth 1; deeper
-	// chains are the caller's refresh signal — we treat children's own HDRs
-	// as absent entries here and rely on the next refresh, bounded per spec).
-	s.timer.IncrementBy(CountSPFreshForwardFollows, int64(len(forwards)))
-	if len(forwards) > 0 {
-		type fwdFetch struct {
-			routed spfreshRouted
-			future fdb.RangeResult
-		}
-		ff := make([]fwdFetch, 0, len(forwards))
-		for _, rt := range forwards {
-			r, rerr := s.storage.postingRange(rt.fineID)
-			if rerr != nil {
-				return nil, rerr
-			}
-			ff = append(ff, fwdFetch{routed: rt, future: tx.Snapshot().GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})})
-		}
-		for _, f := range ff {
-			kvs, kerr := f.future.GetSliceWithError()
-			if kerr != nil {
-				return nil, fmt.Errorf("spfresh search: forwarded posting %d: %w", f.routed.fineID, kerr)
-			}
-			if len(kvs) == limit {
-				s.timer.Increment(CountSPFreshCappedPostingReads)
-				s.capped = append(s.capped, f.routed)
-			}
-			for d := range query {
-				residual[d] = query[d] - f.routed.vec[d]
-			}
-			score := s.quant.scorer(residual, s.config.NumDimensions)
-			prefixLen := len(s.storage.postings.Pack(tuple.Tuple{f.routed.fineID}))
-			for _, kv := range kvs {
-				span, isEntry, perr := s.storage.postingPKSpan(kv.Key, prefixLen)
-				if perr != nil || !isEntry {
-					continue // chain depth 2: next refresh handles it
-				}
-				est, derr := score(kv.Value)
-				if derr != nil {
-					return nil, derr
-				}
-				if cur, ok := best[string(span)]; !ok || est < cur {
-					best[string(span)] = est
-				}
-			}
-		}
+// finalize builds the exact re-ranked, distance-ordered prefix over the scored
+// horizon: top-C by RaBitQ estimate (deterministic span tie-break), then exact
+// re-rank from the fp16 sidecar, then re-sort by true distance. This is the
+// re-rank-only-finalized-prefix step (RFC-156 invariant 2) — it runs once the
+// conditional horizon is exhausted, so the emitted order is true distance order,
+// never RaBitQ-estimate order.
+func (f *spfreshFrontier) finalize() error {
+	s := f.s
+	if len(f.best) == 0 {
+		f.finalized = nil
+		return nil
 	}
-
-	if len(best) == 0 {
-		return nil, nil
-	}
-
 	// Top-C by estimate; deterministic span tie-break.
-	hits := make([]spfreshApproxHit, 0, len(best))
-	for span, est := range best {
+	hits := make([]spfreshApproxHit, 0, len(f.best))
+	for span, est := range f.best {
 		hits = append(hits, spfreshApproxHit{span: span, est: est})
 	}
 	slices.SortFunc(hits, func(a, b spfreshApproxHit) int {
@@ -302,9 +521,8 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		}
 		return strings.Compare(a.span, b.span)
 	})
-	// cTop = max(s.c, k), computed above for the starvation budget.
-	if cTop < len(hits) {
-		hits = hits[:cTop]
+	if f.cTop < len(hits) {
+		hits = hits[:f.cTop]
 	}
 
 	// Exact re-rank from the fp16 sidecar (parallel point reads; the sidecar
@@ -315,22 +533,22 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 		s.timer.IncrementBy(CountSPFreshRerankReads, int64(len(hits)))
 		futures := make([]fdb.FutureByteSlice, len(hits))
 		for i, h := range hits {
-			futures[i] = tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(h.span))
+			futures[i] = f.tx.Snapshot().Get(s.storage.sidecarKeyFromSpan(h.span))
 		}
 		kept := hits[:0]
 		for i, h := range hits {
 			data, gerr := futures[i].Get()
 			if gerr != nil {
-				return nil, fmt.Errorf("spfresh search: sidecar read: %w", gerr)
+				return fmt.Errorf("spfresh search: sidecar read: %w", gerr)
 			}
 			if data == nil {
 				continue // deleted between bursts: skip
 			}
 			vec, derr := vectorcodec.Deserialize(data)
 			if derr != nil {
-				return nil, derr
+				return derr
 			}
-			h.est = spfreshMetricDistance(s.config.Metric, query, vec)
+			h.est = spfreshMetricDistance(s.config.Metric, f.query, vec)
 			kept = append(kept, h)
 		}
 		hits = kept
@@ -341,22 +559,108 @@ func (s *spfreshSearcher) search(tx fdb.ReadTransaction, query []float64, k int)
 			return strings.Compare(a.span, b.span)
 		})
 	}
-	if k < len(hits) {
-		hits = hits[:k]
-	}
 
-	// Decode pk tuples for the k winners only (~k decodes per query vs one
-	// per scanned posting entry before the span rewrite).
+	// Decode pk tuples for the finalized winners (the span is the flat-packed
+	// pk; ~cTop decodes per query vs one per scanned posting entry).
 	results := make([]spfreshSearchResult, 0, len(hits))
 	for _, h := range hits {
 		pk, derr := tuple.Unpack([]byte(h.span))
 		if derr != nil {
-			return nil, fmt.Errorf("spfresh search: decode winner pk: %w", derr)
+			return fmt.Errorf("spfresh search: decode winner pk: %w", derr)
 		}
 		results = append(results, spfreshSearchResult{PrimaryKey: pk, Distance: h.est})
 	}
-	return results, nil
+	f.finalized = results
+	return nil
 }
+
+// observe feeds one residual-estimate observation into the relaxed-monotonicity
+// queues (VBASE §4.1): recentQueue (the last w traversed estimates) and, once
+// sized at the first searchNext, smallestQueue (the E=k smallest).
+func (f *spfreshFrontier) observe(est float64) {
+	f.recent.push(est)
+	if f.smallest != nil {
+		f.smallest.push(est)
+	}
+}
+
+// refreshPhase2 latches Phase 2 (VBASE Eq. 3: M_q^s > R_q) once both queues are
+// full — the median of recently-traversed estimates exceeds the current k-th
+// best, so further widening is unlikely to improve the result. Telemetry only
+// in Phase A (it does not truncate the wrapper's exact horizon); it is the stop
+// signal the resumable Phase B/C cursor consults.
+func (f *spfreshFrontier) refreshPhase2() {
+	if f.phase2 || f.smallest == nil || !f.smallest.full() || !f.recent.full() {
+		return
+	}
+	if f.recent.median() > f.smallest.rq() {
+		f.phase2 = true
+		f.s.timer.Increment(CountSPFreshPhase2Reached)
+	}
+}
+
+// spfreshRecentQueue is a ring buffer of the last w traversed residual estimates
+// (VBASE §4.1): M_q^s = its median once full.
+type spfreshRecentQueue struct {
+	buf  []float64
+	w    int
+	n    int
+	head int
+}
+
+func newSPFreshRecentQueue(w int) *spfreshRecentQueue {
+	if w < 1 {
+		w = 1
+	}
+	return &spfreshRecentQueue{buf: make([]float64, w), w: w}
+}
+
+func (q *spfreshRecentQueue) push(v float64) {
+	q.buf[q.head] = v
+	q.head = (q.head + 1) % q.w
+	if q.n < q.w {
+		q.n++
+	}
+}
+
+func (q *spfreshRecentQueue) full() bool { return q.n == q.w }
+
+func (q *spfreshRecentQueue) median() float64 {
+	tmp := append([]float64(nil), q.buf[:q.n]...)
+	slices.Sort(tmp)
+	return tmp[q.n/2]
+}
+
+// spfreshSmallestQueue keeps the E=k smallest residual estimates seen (VBASE
+// §4.1): R_q = its max (the E-th smallest, i.e. the running k-th best) once full.
+type spfreshSmallestQueue struct {
+	e    int
+	vals []float64 // ascending, len ≤ e
+}
+
+func newSPFreshSmallestQueue(e int) *spfreshSmallestQueue {
+	if e < 1 {
+		e = 1
+	}
+	return &spfreshSmallestQueue{e: e, vals: make([]float64, 0, e)}
+}
+
+func (q *spfreshSmallestQueue) push(v float64) {
+	if len(q.vals) == q.e && v >= q.vals[len(q.vals)-1] {
+		return // not among the E smallest
+	}
+	i, _ := slices.BinarySearch(q.vals, v)
+	q.vals = append(q.vals, 0)
+	copy(q.vals[i+1:], q.vals[i:])
+	q.vals[i] = v
+	if len(q.vals) > q.e {
+		q.vals = q.vals[:q.e]
+	}
+}
+
+func (q *spfreshSmallestQueue) full() bool { return len(q.vals) == q.e }
+
+func (q *spfreshSmallestQueue) rq() float64 { return q.vals[len(q.vals)-1] }
 
 // resolveForward point-reads the children's centroid rows using the cellID
 // CARRIED IN THE HDR — never the cell the client routed through (the parent

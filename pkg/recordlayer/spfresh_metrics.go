@@ -23,6 +23,12 @@ var (
 	CountSPFreshRerankReads     = Event{"spfresh_rerank_reads", "SPFresh Rerank Reads"}
 	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings"}
 	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows"}
+	// Phase 2 reached: the VBASE relaxed-monotonicity termination (M_q^s > R_q)
+	// latched during a search's traversal — the recently-traversed cells no
+	// longer beat the running k-th best (RFC-156 Phase A). Telemetry only on the
+	// one-shot wrapper path (it does not truncate the exact horizon); it is the
+	// stop signal the resumable Phase B/C cursor consults.
+	CountSPFreshPhase2Reached = Event{"spfresh_phase2_reached", "SPFresh Phase 2 Reached"}
 	// Capped posting reads: a search's posting fetch returned exactly the
 	// 4×Lmax+1 cap — the posting is PAST the split-dispatch envelope and its
 	// tail is invisible to queries. Nonzero means a split trigger was lost
