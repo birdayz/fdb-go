@@ -168,6 +168,8 @@ func withChildren(v Value, newChildren []Value) Value {
 		return vt.WithChildren(newChildren)
 	case *FirstOrDefaultStreamingValue:
 		return vt.WithChildren(newChildren)
+	case *StrictRankLimitValue:
+		return vt.WithChildren(newChildren)
 
 	// --- values.go types without WithChildren ---
 	case *ArithmeticValue:

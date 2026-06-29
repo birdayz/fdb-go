@@ -357,11 +357,12 @@ func globalRankVectorLimit(p predicates.QueryPredicate) (int64, values.Value, bo
 		if adjust == 0 {
 			limitValue = operand
 		} else {
-			limitValue = &values.ArithmeticValue{
-				Op:    values.OpSub,
-				Left:  operand,
-				Right: values.LiteralValue(int64(1)),
-			}
+			// Strict `< K`: the cap is max(0, K-1). A plain CHECKED subtraction
+			// (ArithmeticValue{Sub, K, 1}) errors at K = math.MinInt64, where K-1
+			// underflows — aborting a query that semantically selects no rows.
+			// StrictRankLimitValue saturates that case to 0, mirroring the
+			// executor's scan-side rank-cap guard (codex delta P2-A, limit half).
+			limitValue = &values.StrictRankLimitValue{K: operand}
 		}
 		found = true
 		return false

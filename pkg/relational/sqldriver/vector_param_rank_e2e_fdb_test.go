@@ -2,6 +2,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -378,6 +379,158 @@ func TestFDB_VectorSearch_ParamRankExact(t *testing.T) {
 			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 			if !reflect.DeepEqual(ids, tc.want) {
 				t.Fatalf("param-rank K-NN ids = %v, want %v (runtime-K nearest matching)", ids, tc.want)
+			}
+		})
+	}
+}
+
+// runVecQueryIDs plans + executes sql with the given bound params and returns
+// the result ids in emission order. Unlike runParamRankQuery it does NOT assert
+// the P1 global-rank planner shape (always Limit-bounded, never a sunk `rank<`):
+// a LITERAL positive-K no-residual query LEGITIMATELY folds into a self-limiting
+// `rank<K` scan via SinkLimitIntoVectorScanRule (RFC-156 Phase B), so the P1
+// "rank< is forbidden" pin does not apply to the literal cases this exercises.
+// It still confirms the query planned to a vector scan.
+func runVecQueryIDs(t *testing.T, ctx context.Context, db *recordlayer.FDBDatabase, ks subspace.Subspace, md *recordlayer.RecordMetaData, sql string, params []any) []int64 {
+	t.Helper()
+	plan, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err != nil {
+		t.Fatalf("plan: %v\nsql=%s", err, sql)
+	}
+	if exp := plan.Explain(); !strings.Contains(exp, "VectorIndexScan") {
+		t.Fatalf("query did not plan to a vector scan:\n%s", exp)
+	}
+	evalCtx := executor.EmptyEvaluationContext()
+	if len(params) > 0 {
+		evalCtx = evalCtx.WithParams(params)
+	}
+	var ids []int64
+	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+		if sErr != nil {
+			return nil, sErr
+		}
+		cursor, cErr := executor.ExecutePlan(ctx, plan, store, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if cErr != nil {
+			return nil, cErr
+		}
+		defer cursor.Close()
+		results, rErr := executor.CollectAll(ctx, cursor)
+		if rErr != nil {
+			return nil, rErr
+		}
+		for _, r := range results {
+			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("execute: %v\nsql=%s", err, sql)
+	}
+	return ids
+}
+
+// TestFDB_VectorSearch_MinInt64CapEmpty pins the RFC-156 codex-delta P2-A
+// overflow fix: a GLOBAL-rank vector K-NN whose STRICT rank cap K is
+// math.MinInt64 (literal `< -9223372036854775808`, or a parameter bound to it)
+// MUST return EMPTY — it must NOT wrap K-1 to a huge POSITIVE and escape into an
+// enormous HNSW horizon.
+//
+// The bug: the executor adjusted a strict `< K` rank to `K-1` UNCONDITIONALLY.
+// For K = math.MinInt64, `K-1` wraps to math.MaxInt64 (a huge POSITIVE), slips
+// past the `adjusted ≤ 0 ⇒ EMPTY` guard, and becomes the scan horizon → the HNSW
+// search allocates a math.MaxInt64-capacity candidate heap (`make(distHeap, 0,
+// ef)`), which panics "makeslice: cap out of range". The fix returns EMPTY when
+// K ≤ 1 BEFORE subtracting, so the wrap is impossible.
+//
+// Both spine shapes are exercised: "no residual" (the literal K folds into a
+// self-limiting `rank<K` scan; the runtime/param K stays an ordered stream under
+// a runtime Limit) and "residual" (the Filter blocks the sink, leaving an
+// ordered stream). All four reach the SAME executor rank-cap eval — the single
+// guard site under test — which short-circuits BEFORE the ordered/self-limiting
+// split. Sanity cases pin the boundary: `< 1` is still EMPTY (adjusted cap 0)
+// and `< 2` returns exactly the 1 nearest (adjusted cap 1) — proving the guard
+// culls ONLY the wrap, never a legitimate small strict cap.
+func TestFDB_VectorSearch_MinInt64CapEmpty(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	md := setupParamRankStore(t, ctx, db, ks, paramRankCorpus())
+
+	const minI64 = `-9223372036854775808` // math.MinInt64, the overflow comparand
+	const knn = `ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0]))`
+	cases := []struct {
+		name   string
+		sql    string
+		params []any
+		want   []int64 // nil ⇒ EMPTY
+	}{
+		// K = math.MinInt64 ⇒ EMPTY (the overflow case — literal and parameter).
+		{
+			"literal < MinInt64, no residual",
+			`SELECT id FROM docs QUALIFY ` + knn + ` < ` + minI64, nil, nil,
+		},
+		{
+			"literal < MinInt64, residual",
+			`SELECT id FROM docs WHERE category = 'target' QUALIFY ` + knn + ` < ` + minI64, nil, nil,
+		},
+		{
+			"param < MinInt64, no residual",
+			`SELECT id FROM docs QUALIFY ` + knn + ` < ?`,
+			[]any{int64(math.MinInt64)},
+			nil,
+		},
+		{
+			"param < MinInt64, residual",
+			`SELECT id FROM docs WHERE category = 'target' QUALIFY ` + knn + ` < ?`,
+			[]any{int64(math.MinInt64)},
+			nil,
+		},
+		// Sanity: < 1 ⇒ adjusted cap 0 ⇒ EMPTY (still, the small-strict-cap floor).
+		{
+			"literal < 1, no residual",
+			`SELECT id FROM docs QUALIFY ` + knn + ` < 1`, nil, nil,
+		},
+		{
+			"literal < 1, residual",
+			`SELECT id FROM docs WHERE category = 'target' QUALIFY ` + knn + ` < 1`, nil, nil,
+		},
+		// Sanity: < 2 ⇒ adjusted cap 1 ⇒ exactly the 1 nearest. No residual ⇒ the
+		// GLOBAL nearest (id 1, a decoy); residual ⇒ the nearest MATCHING row (id 2).
+		{
+			"literal < 2, no residual",
+			`SELECT id FROM docs QUALIFY ` + knn + ` < 2`, nil,
+			[]int64{1},
+		},
+		{
+			"literal < 2, residual",
+			`SELECT id FROM docs WHERE category = 'target' QUALIFY ` + knn + ` < 2`, nil,
+			[]int64{2},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ids := runVecQueryIDs(t, ctx, db, ks, md, tc.sql, tc.params)
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+			if len(tc.want) == 0 {
+				if len(ids) != 0 {
+					t.Fatalf("%s: got %v, want EMPTY (math.MinInt64 strict cap must not wrap into a huge horizon)", tc.name, ids)
+				}
+				return
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("%s: got %v, want %v", tc.name, ids, tc.want)
 			}
 		})
 	}

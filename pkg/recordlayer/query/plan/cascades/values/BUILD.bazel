@@ -59,6 +59,7 @@ go_library(
         "value_row_number.go",
         "value_row_number_high_order.go",
         "value_scalar_subquery.go",
+        "value_strict_rank_limit.go",
         "value_subscript.go",
         "value_throws.go",
         "value_udf.go",

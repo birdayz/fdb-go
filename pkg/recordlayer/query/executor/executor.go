@@ -358,9 +358,16 @@ func executeVectorIndexScan(
 	}
 	rankCap := k
 	if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
+		// `< K` selects the top K-1. K ≤ 1 ⇒ no rows; test BEFORE subtracting so a
+		// K = math.MinInt64 (literal `< -9223372036854775808`, or a bound param)
+		// cannot wrap k-1 to a huge POSITIVE and slip past the ≤0 guard into an
+		// enormous horizon (codex delta P2-A). K ≥ 2 here ⇒ k-1 cannot overflow.
+		if k <= 1 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
 		rankCap = k - 1
 	}
-	if rankCap <= 0 {
+	if rankCap <= 0 { // `<= K` with K ≤ 0
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
