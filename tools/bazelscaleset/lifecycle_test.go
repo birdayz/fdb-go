@@ -98,6 +98,134 @@ func startStrayRunner(t *testing.T, runnerDir string) *exec.Cmd {
 
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 
+// TestSlotPoolPerSlotRunnerDirs pins the codex-P2 fix: at maxRunners>1 each slot gets
+// its OWN cloned runner dir (distinct from the base and from each other, each with
+// run.sh), so concurrent runners can't clobber each other's .runner/.credentials.
+func TestSlotPoolPerSlotRunnerDirs(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	p, err := newSlotPool(t.TempDir(), base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, s := range p.all {
+		if s.runnerDir == base {
+			t.Fatalf("slot %d shares the base runner dir %q", s.index, base)
+		}
+		if seen[s.runnerDir] {
+			t.Fatalf("slot %d has a duplicate runner dir %q", s.index, s.runnerDir)
+		}
+		seen[s.runnerDir] = true
+		if _, err := os.Stat(filepath.Join(s.runnerDir, "run.sh")); err != nil {
+			t.Fatalf("slot %d runner dir not cloned (no run.sh): %v", s.index, err)
+		}
+	}
+}
+
+// TestSlotPoolTrailingSlashBase pins codex P2 #1: a trailing slash on --runner-dir must
+// still yield a SIBLING clone dir (".../actions-runner-slot0"), never a child inside the
+// template (".../actions-runner/-slot0"), which would make the clone recurse into itself.
+func TestSlotPoolTrailingSlashBase(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	p, err := newSlotPool(t.TempDir(), base+"/", 1) // trailing slash
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := base + "-slot0"; p.all[0].runnerDir != want {
+		t.Fatalf("runnerDir = %q, want sibling %q (not a child of the template)", p.all[0].runnerDir, want)
+	}
+}
+
+// TestSlotPoolResyncPropagatesTemplateChange pins codex P2 #2: cloning runs on every
+// startup (not skipped when run.sh already exists), so a template update (e.g. a pinned-
+// runner upgrade) propagates into an existing slot clone instead of leaving it stale.
+func TestSlotPoolResyncPropagatesTemplateChange(t *testing.T) {
+	t.Parallel()
+
+	base := templateRunner(t)
+	workBase := t.TempDir()
+	p1, err := newSlotPool(workBase, base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := p1.all[0].runnerDir // clone exists now (has run.sh)
+
+	// Change the template AFTER the first clone, then rebuild the pool (supervisor restart).
+	if err := os.WriteFile(filepath.Join(base, "bin-version"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newSlotPool(workBase, base, 1); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "bin-version")); err != nil || string(b) != "v2" {
+		t.Fatalf("re-sync did not propagate template update: read %q, err %v", b, err)
+	}
+}
+
+// TestCloneRunnerDirSymlinkedSource pins codex P2: a symlinked --runner-dir must still
+// produce a populated clone (run.sh present) — the walk must resolve the symlink root.
+func TestCloneRunnerDirSymlinkedSource(t *testing.T) {
+	t.Parallel()
+
+	real := templateRunner(t)
+	link := filepath.Join(t.TempDir(), "runner-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "clone")
+	if err := cloneRunnerDir(link, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "run.sh")); err != nil {
+		t.Fatalf("clone from symlinked source missing run.sh: %v", err)
+	}
+}
+
+// TestCopyFileReplacesContentAndMode pins codex P3 + the umask fix: re-copying onto an
+// existing file applies the new content AND the exact mode. The 0o775 group-write bit is
+// dropped by the common umask 022 unless copyFile chmods explicitly, so this catches both
+// the stale-perms-on-resync bug and the umask masking.
+func TestCopyFileReplacesContentAndMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("new"), 0o775); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(dst, []byte("old"), 0o600); err != nil { // pre-existing, different mode
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(dst); err != nil || string(b) != "new" {
+		t.Fatalf("content = %q, err %v; want \"new\"", b, err)
+	}
+	if info, err := os.Stat(dst); err != nil || info.Mode().Perm() != 0o775 {
+		t.Fatalf("mode = %v, err %v; want 0775 (umask must not mask it)", info.Mode().Perm(), err)
+	}
+}
+
+// templateRunner creates a minimal template actions/runner dir (just run.sh) that
+// newSlotPool clones per-slot.
+func templateRunner(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "actions-runner")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(d)
@@ -113,19 +241,20 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 func TestReconcileStrayRunnersKillsGroup(t *testing.T) {
 	t.Parallel()
 
-	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
-	cmd := startStrayRunner(t, runnerDir)
-	pid := cmd.Process.Pid
-	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
-
-	pool, err := newSlotPool(t.TempDir(), 1)
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Stray runner running from THIS slot's own runner dir (so its cmdline contains
+	// sl.runnerDir, which is what reconcile's per-slot guard matches).
+	cmd := startStrayRunner(t, pool.all[0].runnerDir)
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 	// Record the stray runner against the slot, as a live supervisor would.
 	writeRunnerPID(discardLogger(), pool.all[0].path, pid)
 
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	// Process group must be dead, and the pid file removed.
 	done := make(chan struct{})
@@ -150,11 +279,11 @@ func TestReconcileScopedToOurPidFiles(t *testing.T) {
 	otherPID := other.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-otherPID, syscall.SIGKILL); _, _ = other.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), 1) // no pid files written
-	if err != nil {
+	wb, base := t.TempDir(), templateRunner(t)
+	if _, err := newSlotPool(wb, base, 1); err != nil { // slot dirs, no pid files written
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	if !alive(otherPID) {
 		t.Fatal("reconcile killed an unrecorded process (not scoped to our pid files)")
@@ -175,14 +304,15 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 
-	pool, err := newSlotPool(t.TempDir(), 1)
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(pool.all[0].path, runnerPIDFile), []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reconcileStrayRunners(discardLogger(), pool, "/home/runner/actions-runner")
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	if _, err := os.Stat(filepath.Join(pool.all[0].path, runnerPIDFile)); !os.IsNotExist(err) {
 		t.Fatal("reconcile did not clear the stale pid file")
@@ -199,10 +329,12 @@ func TestReconcileSkipsReusedNonRunnerPID(t *testing.T) {
 func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
-	runnerDir := filepath.Join(t.TempDir(), "actions-runner")
-	if err := os.MkdirAll(runnerDir, 0o755); err != nil {
+	wb, base := t.TempDir(), templateRunner(t)
+	pool, err := newSlotPool(wb, base, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
+	runnerDir := pool.all[0].runnerDir // this slot's own runner dir
 	worker := filepath.Join(runnerDir, "Runner.Worker")
 	if err := os.WriteFile(worker, []byte("while true; do sleep 1; done\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -227,16 +359,46 @@ func TestReconcileKillsGroupAfterLeaderExit(t *testing.T) {
 	// Worker is now an orphan whose process group is still the (dead) leader's pid.
 	waitFor(t, 3*time.Second, func() bool { return groupHasRunnerMember(pgid, runnerDir) })
 
-	pool, err := newSlotPool(t.TempDir(), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	writeRunnerPID(discardLogger(), pool.all[0].path, pgid)
 
-	reconcileStrayRunners(discardLogger(), pool, runnerDir)
+	reconcileStrayRunners(discardLogger(), wb, base)
 
 	// The whole group (the orphaned worker) must be gone.
 	waitFor(t, 5*time.Second, func() bool { return syscall.Kill(-pgid, 0) != nil })
+}
+
+// TestReconcileCoversPriorHigherMaxSlots pins codex P2: a restart with a LOWER
+// --max-runners than a prior run must still reap a stray runner left in a now-out-of-pool
+// higher slot. reconcile scans all slot dirs on disk, not just the current pool.
+func TestReconcileCoversPriorHigherMaxSlots(t *testing.T) {
+	t.Parallel()
+
+	wb, base := t.TempDir(), templateRunner(t)
+	// Prior maxRunners=2 run: slot-0 + slot-1 (+ their runner clones) exist on disk.
+	pool2, err := newSlotPool(wb, base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A stray runner left in slot-1, running from slot-1's own runner dir.
+	stray := startStrayRunner(t, pool2.all[1].runnerDir)
+	pid := stray.Process.Pid
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
+	writeRunnerPID(discardLogger(), pool2.all[1].path, pid)
+
+	// Supervisor restarts with maxRunners=1 (downgrade): the new pool has only slot-0,
+	// but reconcile must still find + kill the slot-1 stray by scanning every slot dir.
+	if _, err := newSlotPool(wb, base, 1); err != nil {
+		t.Fatal(err)
+	}
+	reconcileStrayRunners(discardLogger(), wb, base)
+
+	done := make(chan struct{})
+	go func() { _, _ = stray.Process.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconcile did not reap the stray in a prior-higher-max (out-of-pool) slot")
+	}
 }
 
 // fakeClient implements listener.Client for fault-injection tests.
@@ -293,7 +455,7 @@ func TestListenerRunReturnsOnGetMessageError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listener.New: %v", err)
 	}
-	pool, err := newSlotPool(t.TempDir(), 1)
+	pool, err := newSlotPool(t.TempDir(), templateRunner(t), 1)
 	if err != nil {
 		t.Fatal(err)
 	}

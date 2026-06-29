@@ -40,7 +40,7 @@ func TestConfigValidate(t *testing.T) {
 		{"empty name", func(c *config) { c.name = "" }, true},
 		{"maxRunners zero", func(c *config) { c.maxRunners = 0 }, true},
 		{"maxRunners negative", func(c *config) { c.maxRunners = -1 }, true},
-		{"maxRunners above one rejected", func(c *config) { c.maxRunners = 2 }, true},
+		{"maxRunners two ok (per-slot runner roots)", func(c *config) { c.maxRunners = 2 }, false},
 		{"minRunners negative", func(c *config) { c.minRunners = -1 }, true},
 		{"minRunners exceeds max", func(c *config) { c.maxRunners, c.minRunners = 1, 2 }, true},
 		{"minRunners equals max ok", func(c *config) { c.maxRunners, c.minRunners = 1, 1 }, false},
@@ -152,12 +152,12 @@ func TestEnvHelpers(t *testing.T) {
 func TestSlotPool(t *testing.T) {
 	t.Parallel()
 
-	if _, err := newSlotPool(t.TempDir(), 0); err == nil {
+	if _, err := newSlotPool(t.TempDir(), templateRunner(t), 0); err == nil {
 		t.Fatal("newSlotPool(0) should error")
 	}
 
 	dir := t.TempDir()
-	p, err := newSlotPool(dir, 3)
+	p, err := newSlotPool(dir, templateRunner(t), 3)
 	if err != nil {
 		t.Fatalf("newSlotPool: %v", err)
 	}

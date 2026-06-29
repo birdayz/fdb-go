@@ -103,18 +103,20 @@ func run() error {
 	}
 	defer session.Close(context.WithoutCancel(ctx))
 
-	pool, err := newSlotPool(cfg.workBase, cfg.maxRunners)
+	// A previous incarnation that crashed (rather than shutting down cleanly) may have
+	// left a runner still executing from its per-slot clone. Reap it BEFORE building the
+	// pool: newSlotPool re-copies into the clones, and truncating a still-running runner
+	// binary would fail with ETXTBSY and crash startup before the stray is ever reaped
+	// (codex). Reconcile is filesystem-based (scans workBase/slot-*), so it needs no pool.
+	// Scoped to our own slot pid files (never touches a classic/other runner) and leaves
+	// warm bazel servers alone — a new runner reconnects to them.
+	reconcileStrayRunners(logger, cfg.workBase, cfg.runnerDir)
+
+	pool, err := newSlotPool(cfg.workBase, cfg.runnerDir, cfg.maxRunners)
 	if err != nil {
 		return fmt.Errorf("creating slot pool: %w", err)
 	}
 	logger.Info("warm slot pool ready", slog.Int("slots", pool.size()), slog.String("base", cfg.workBase))
-
-	// A previous incarnation that crashed (rather than shutting down cleanly) may
-	// have left a runner still writing a slot's work dir. Kill its process group
-	// before accepting work so we never launch a new runner into an occupied slot.
-	// Scoped to our own slot pid files (never touches a classic/other runner) and
-	// leaves warm bazel servers alone — a new runner reconnects to them.
-	reconcileStrayRunners(logger, pool, cfg.runnerDir)
 
 	// Initial heartbeat so the watchdog sees a healthy start before the first poll.
 	writeHeartbeat(cfg.heartbeatFile)
@@ -195,7 +197,7 @@ func parseConfig() (*config, error) {
 	fs.StringVar(&c.runnerGroup, "runner-group", envOr("BAZELSCALESET_RUNNER_GROUP", scaleset.DefaultRunnerGroup), "runner group name")
 	fs.IntVar(&c.maxRunners, "max-runners", envIntOr("BAZELSCALESET_MAX_RUNNERS", 1), "max concurrent runners (= number of warm slots)")
 	fs.IntVar(&c.minRunners, "min-runners", envIntOr("BAZELSCALESET_MIN_RUNNERS", 0), "min pre-warmed idle runners")
-	fs.StringVar(&c.runnerDir, "runner-dir", envOr("BAZELSCALESET_RUNNER_DIR", "/home/runner/actions-runner"), "directory of the extracted actions/runner (contains run.sh)")
+	fs.StringVar(&c.runnerDir, "runner-dir", envOr("BAZELSCALESET_RUNNER_DIR", "/home/runner/actions-runner"), "base/template actions/runner dir (contains run.sh); each slot gets its own clone <runner-dir>-slot<N> so concurrent runners don't share .runner/.credentials")
 	fs.StringVar(&c.workBase, "work-base", envOr("BAZELSCALESET_WORK_BASE", "/mnt/ci-data/bazelwork"), "base directory for warm per-slot work folders (keep on the CI data volume, same filesystem as the bazel output_base, not the root disk)")
 	fs.BoolVar(&c.sweepFDB, "sweep-fdb", envBoolOr("BAZELSCALESET_SWEEP_FDB", true), "remove orphaned foundationdb/foundationdb containers when the box goes idle")
 	fs.DurationVar(&c.grace, "grace-period", envDurOr("BAZELSCALESET_GRACE_PERIOD", 60*time.Second), "shutdown grace period before SIGKILLing in-flight runners")
@@ -248,13 +250,6 @@ func (c *config) validate() error {
 	}
 	if c.maxRunners < 1 {
 		return fmt.Errorf("--max-runners must be >= 1, got %d", c.maxRunners)
-	}
-	if c.maxRunners > 1 {
-		// All slots would launch run.sh from the same --runner-dir, where the stock
-		// runner writes/removes .runner/.credentials per ephemeral runner — concurrent
-		// runners corrupt each other. Lifting this needs a per-slot runner root (plus
-		// the RAM for N resident bazel servers, §3). Fail loud rather than corrupt.
-		return fmt.Errorf("--max-runners > 1 is not yet supported (needs a per-slot runner root; see RFC-155 §3), got %d", c.maxRunners)
 	}
 	if c.minRunners < 0 || c.minRunners > c.maxRunners {
 		return fmt.Errorf("--min-runners must be in [0, max-runners], got %d", c.minRunners)
