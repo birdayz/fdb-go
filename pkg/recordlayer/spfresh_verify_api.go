@@ -23,6 +23,13 @@ import (
 // (vector_index_maintainer.go), which type-asserts the HNSW maintainer and
 // rejects SPFresh. Callers needing per-query probe knobs (k, kc, w, c, ε) drive
 // ScanByDistance through the executor instead.
+//
+// Returns *IndexNotReadableError if the index is not scannable (matching the
+// HNSW SearchVectorIndex contract). NOT purely read-only: like the SPFresh read
+// path it shares (searchCurrentGeneration), a probe that reads a posting at the
+// 4×Lmax+1 cap re-files that posting's split task (the read-path envelope
+// repair) — a write the surrounding transaction commits. On a maintained index
+// no posting is over the cap, so the common path performs no writes.
 func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []float64, k int) ([]VectorSearchResult, error) {
 	idx := store.GetMetaData().GetIndex(indexName)
 	if idx == nil {
@@ -30,6 +37,9 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	}
 	if idx.Type != IndexTypeVectorSPFresh {
 		return nil, fmt.Errorf("spfresh search: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
+	}
+	if !store.IsIndexScannable(indexName) {
+		return nil, &IndexNotReadableError{IndexName: indexName, CurrentState: store.GetIndexState(indexName)}
 	}
 	maintainer, err := store.getIndexMaintainer(idx)
 	if err != nil {
@@ -222,11 +232,16 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	for i := 0; i < len(pks); i += step {
 		pk := pks[i]
 		mem, merr := spfreshReadMembership(tx, s, pk)
-		if merr != nil {
+		if errors.Is(merr, errSPFreshNotFound) {
 			// Raced a concurrent delete between the scan and this read — the pk
-			// is gone, not a violation. (Snapshot-consistent within the tx, but
-			// belt-and-suspenders for the diagnostic path.)
+			// is gone, not a violation.
 			continue
+		}
+		if merr != nil {
+			// A real read failure (e.g. transaction_too_old on a large scan)
+			// must surface, not be silently dropped from the sample — otherwise
+			// the report is computed over an incomplete set and reads as clean.
+			return report, fmt.Errorf("spfresh integrity: read membership (pk %v): %w", pk, merr)
 		}
 		report.Sampled++
 		allPresent := true

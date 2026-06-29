@@ -23,11 +23,16 @@ import (
 // ingest-rate recall trade is in effect, or (with the integrity check also
 // failing) real corruption.
 
-// spfreshMaxRecallCorpus bounds the in-memory ground-truth corpus. Beyond this,
-// full brute-force ground truth is too expensive to be a periodic check; sample
-// the corpus upstream (e.g. a dedicated sampling index) instead of silently
-// degrading to approximate ground truth.
-const spfreshMaxRecallCorpus = 500_000
+// spfreshMaxRecallCorpus bounds the in-memory ground-truth corpus. The whole
+// measurement runs inside the caller's SINGLE transaction (the corpus scan plus
+// every query search), so it is bounded by FDB's 5s / size transaction limits —
+// this cap keeps a typical-record index inside that envelope. For larger indexes
+// the corpus scan alone blows the 5s limit (the failure spfreshScanRecordBatches
+// exists to avoid); measure a sampled subset, or use a future db-based variant
+// that batches the corpus scan across transactions and runs each query in its
+// own snapshot tx (RFC-156 §4 follow-up). Exceeding the cap errors rather than
+// silently degrading to a partial corpus.
+const spfreshMaxRecallCorpus = 50_000
 
 // SPFreshRecallReport summarizes a recall measurement.
 type SPFreshRecallReport struct {
@@ -42,8 +47,12 @@ type SPFreshRecallReport struct {
 // MeasureSPFreshRecall measures recall@k of a readable SPFresh index against
 // brute-force ground truth over `querySamples` query vectors drawn from the
 // index's own records (deterministic by seed). Returns a zero-query report when
-// the index is empty. The store must be bound to a read transaction (call
-// inside db.Run). Distances use the index's configured metric, so the
+// the index is empty. The store must be bound to a transaction (call inside
+// db.Run); the whole scan+queries run in that one tx, so keep the corpus under
+// spfreshMaxRecallCorpus (see its doc for the scale limit). Mostly read-only,
+// but it can inherit SearchSPFreshIndex's read-path split-repair write for any
+// over-envelope posting (none on a maintained index). Distances use the index's
+// configured metric, so the
 // ground-truth ranking matches what the index optimizes, and recall is scored
 // with the SPANN §4.2.1 tie correction (a result within the k-th true distance
 // counts, so equidistant/duplicate vectors don't under-report).
@@ -126,30 +135,38 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 	}
 	perm := rng.Perm(len(corpus))[:q]
 
+	// pk -> true (corpus) vector. An index result is scored by its TRUE fp64
+	// corpus distance, NOT the index's r.Distance: r.Distance is re-ranked from
+	// the fp16 sidecar and carries half-precision error (~1e-3 relative for real
+	// embeddings), which would corrupt the boundary comparison below (e.g. a
+	// self-query's fp16 distance ~1e-3 > the fp64 k-th distance 0). Scoring both
+	// sides from the fp64 corpus keeps the tie band meaningful.
+	corpusVec := make(map[string][]float64, len(corpus))
+	for i := range corpus {
+		corpusVec[string(corpus[i].pk.Pack())] = corpus[i].vec
+	}
+
 	report.MinRecall = 1.0
 	sumRecall := 0.0
 	perfect := 0
-	scratch := make([]int, len(corpus)) // reused index buffer for the sort
+	dists := make([]float64, len(corpus)) // reused per-query distance buffer
 
 	for _, qi := range perm {
 		query := corpus[qi].vec
 
-		// True top-k: rank the whole corpus by the index's metric (ascending =
-		// nearest). Take the k-th nearest distance as the boundary.
-		for i := range scratch {
-			scratch[i] = i
+		// True k-th distance: compute every corpus distance ONCE (the index's
+		// metric, smaller = nearer), then select the k-th smallest by sorting
+		// the float slice — no vectorDistance call inside the sort comparator.
+		for i := range corpus {
+			dists[i] = vectorDistance(query, corpus[i].vec, config.Metric)
 		}
-		sort.Slice(scratch, func(a, b int) bool {
-			return vectorDistance(query, corpus[scratch[a]].vec, config.Metric) <
-				vectorDistance(query, corpus[scratch[b]].vec, config.Metric)
-		})
-		kthDist := vectorDistance(query, corpus[scratch[k-1]].vec, config.Metric)
-		// SPANN §4.2.1 tie correction: credit a returned id as a hit if it lies
-		// within the k-th true distance, not only if it matches an arbitrarily-
-		// chosen true top-k id. r.Distance is the index's exact re-ranked
-		// distance in the same metric, so it equals that pk's true distance —
-		// comparing against the boundary makes ties (duplicate / equidistant
-		// vectors) count, which a set-membership match would under-report.
+		sort.Float64s(dists)
+		kthDist := dists[k-1]
+		// SPANN §4.2.1 tie correction on TRUE (fp64) distances: credit a
+		// returned id if its true distance is within the k-th true distance,
+		// not only if it matches an arbitrarily-chosen true top-k id. Both sides
+		// are fp64 from the corpus, so ties (duplicate / equidistant vectors)
+		// count and the fp16 sidecar error never reaches the comparison.
 		tol := 1e-9 + 1e-9*math.Abs(kthDist)
 
 		// Index top-k.
@@ -159,7 +176,11 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 		}
 		hits := 0
 		for _, r := range results {
-			if r.Distance <= kthDist+tol {
+			v, ok := corpusVec[string(r.PrimaryKey.Pack())]
+			if !ok {
+				continue // result is not a live indexed record (orphan) — not a true hit
+			}
+			if vectorDistance(query, v, config.Metric) <= kthDist+tol {
 				hits++
 			}
 		}
