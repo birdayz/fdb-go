@@ -18,11 +18,14 @@ import (
 //     self-search on its own vector — the quiet-corruption detector a vector
 //     index uniquely needs (it fails with wrong answers, not a crash).
 //  2. No orphans: every pk a search returns exists in the model.
-//  3. Structural integrity (SPFreshCheckIntegrity): membership ⊆ postings and
-//     every membership target ACTIVE — the LIRE invariant. Strict here, so the
-//     caller MUST drain the maintenance queue to quiescence before Verify (a
-//     mid-lifecycle SEALED/FORWARD target is transient, not a defect); the
-//     chaos scenario drains via the clean DB before each checkpoint.
+//  3. Structural integrity (SPFreshCheckIntegrity): membership ⊆ postings,
+//     every membership target ACTIVE-or-SEALED (sealed postings are still
+//     searched and hold valid membership mid-split — only FORWARD/DEAD/absent
+//     are bad), and no ACTIVE posting over the 4×Lmax hard envelope (the SPANN
+//     balanced-postings / LIRE split guarantee — a split that failed to drain
+//     grows a posting unboundedly past it). Strict here, so the caller MUST
+//     drain the maintenance queue to quiescence before Verify; the chaos
+//     scenario drains via the clean DB before each checkpoint.
 //
 // These hold under the foreground write path AND after a fault-injected
 // rebalance/refine drain: a commit_unknown replay or conflict retry that
@@ -183,8 +186,20 @@ func verifyVectorSPFreshIndexes(store *recordlayer.FDBRecordStore, model *StoreM
 		if report.BadTargets > 0 {
 			violations = append(violations, Violation{
 				Invariant: "spfresh_index_bad_targets",
-				Expected:  fmt.Sprintf("index %q: every membership target ACTIVE (post-drain)", idx.Name),
+				Expected:  fmt.Sprintf("index %q: every membership target ACTIVE-or-SEALED (post-drain)", idx.Name),
 				Actual:    fmt.Sprintf("%d bad targets (forward/dead/absent); states=%v; e.g. %v", report.BadTargets, report.TargetStates, report.Violations),
+			})
+		}
+		// SPANN §3.2.1 balanced-postings / LIRE split guarantee: no ACTIVE
+		// posting may exceed the 4×Lmax hard envelope. The <=4Lmax band is the
+		// legitimate operating envelope (just-split children, unsampled
+		// Lmax..2Lmax postings, closure overcount), so only >4Lmax is a
+		// violation — that is a split the lifecycle failed to drain.
+		if report.OversizedHard > 0 {
+			violations = append(violations, Violation{
+				Invariant: "spfresh_index_posting_over_envelope",
+				Expected:  fmt.Sprintf("index %q: no ACTIVE posting over 4×Lmax", idx.Name),
+				Actual:    fmt.Sprintf("%d posting(s) over 4×Lmax (maxLen=%d, Lmax band exceeded by %d); e.g. %v", report.OversizedHard, report.MaxPostingLen, report.Oversized, report.Violations),
 			})
 		}
 	}

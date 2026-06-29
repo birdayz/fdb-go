@@ -26,6 +26,16 @@ import (
 // each Verify: that both makes the strict integrity invariant valid AND proves
 // the post-fault state is recoverable — whatever a commit_unknown / conflict
 // left mid-lifecycle, a clean pass completes it.
+//
+// NOTE on `-count`: the chaos harness derives the store subspace from t.Name()
+// (NewScenario), which is constant across `go test -count=N` reruns within one
+// process/container. So the MODEL-BASED tests here (which build the model from
+// the operations they issue) are NOT `-count`-safe: a rerun sees the prior
+// iteration's leftover store records and reports them as record_orphan. To
+// stress-repeat, run separate `go test -count=1` invocations (each spins a
+// fresh container via TestMain). The CONCURRENT test below IS `-count`-safe —
+// it verifies via VerifySnapshot (model rebuilt from store state) over reused
+// pk bands — so it is the right target for repeated rare-interleaving hunts.
 
 const spfreshChaosIndex = "spf_chaos"
 

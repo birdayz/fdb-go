@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"sort"
 
@@ -43,7 +44,15 @@ type SPFreshRecallReport struct {
 // index's own records (deterministic by seed). Returns a zero-query report when
 // the index is empty. The store must be bound to a read transaction (call
 // inside db.Run). Distances use the index's configured metric, so the
-// ground-truth ranking matches what the index optimizes.
+// ground-truth ranking matches what the index optimizes, and recall is scored
+// with the SPANN §4.2.1 tie correction (a result within the k-th true distance
+// counts, so equidistant/duplicate vectors don't under-report).
+//
+// Queries are drawn from the corpus itself (not a held-out set as in the SPANN
+// SIFT benchmark), so absolute numbers run slightly optimistic — the self-match
+// is a guaranteed hit. That is fine for the intended use as a relative drift
+// signal: alert on MeanRecall falling below YOUR measured baseline, not on an
+// absolute target.
 func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName string, k, querySamples int, seed int64) (SPFreshRecallReport, error) {
 	report := SPFreshRecallReport{K: k}
 	if k <= 0 {
@@ -126,7 +135,7 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 		query := corpus[qi].vec
 
 		// True top-k: rank the whole corpus by the index's metric (ascending =
-		// nearest), take the first k pks.
+		// nearest). Take the k-th nearest distance as the boundary.
 		for i := range scratch {
 			scratch[i] = i
 		}
@@ -134,10 +143,14 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 			return vectorDistance(query, corpus[scratch[a]].vec, config.Metric) <
 				vectorDistance(query, corpus[scratch[b]].vec, config.Metric)
 		})
-		truth := make(map[string]bool, k)
-		for i := 0; i < k; i++ {
-			truth[string(corpus[scratch[i]].pk.Pack())] = true
-		}
+		kthDist := vectorDistance(query, corpus[scratch[k-1]].vec, config.Metric)
+		// SPANN §4.2.1 tie correction: credit a returned id as a hit if it lies
+		// within the k-th true distance, not only if it matches an arbitrarily-
+		// chosen true top-k id. r.Distance is the index's exact re-ranked
+		// distance in the same metric, so it equals that pk's true distance —
+		// comparing against the boundary makes ties (duplicate / equidistant
+		// vectors) count, which a set-membership match would under-report.
+		tol := 1e-9 + 1e-9*math.Abs(kthDist)
 
 		// Index top-k.
 		results, err := SearchSPFreshIndex(store, indexName, query, k)
@@ -146,7 +159,7 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 		}
 		hits := 0
 		for _, r := range results {
-			if truth[string(r.PrimaryKey.Pack())] {
+			if r.Distance <= kthDist+tol {
 				hits++
 			}
 		}

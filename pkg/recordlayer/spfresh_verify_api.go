@@ -72,9 +72,11 @@ func (v SPFreshIntegrityViolation) String() string {
 // the same membership⊆postings + target-state invariants SPFreshDebugIntegrity
 // formats as a string, returned as data for programmatic assertions. The
 // report is descriptive; the caller sets policy. After the maintenance queue is
-// drained to quiescence the strict invariant is MembershipWithoutEntry == 0 AND
-// BadTargets == 0 (every membership target ACTIVE, every posting entry present);
-// mid-flight, transient SEALED targets and in-progress forwards are expected.
+// drained to quiescence the strict invariant is MembershipWithoutEntry == 0,
+// BadTargets == 0, and OversizedHard == 0 (every membership target ACTIVE-or-
+// SEALED with its posting entry present, no posting over the 4×Lmax envelope).
+// SEALED targets are valid — sealed postings are still searched mid-split; only
+// FORWARD/DEAD/absent count as BadTargets.
 type SPFreshIntegrityReport struct {
 	Members                int            // total membership rows in the index
 	Sampled                int            // pks actually checked
@@ -82,7 +84,20 @@ type SPFreshIntegrityReport struct {
 	MembershipWithoutEntry int            // sampled pks with >=1 membership target missing its posting entry
 	TargetStates           map[string]int // membership-target references by centroid state: active/sealed/forward/dead/absent
 	BadTargets             int            // target references in forward/dead/absent state (unambiguously bad post-drain)
-	Violations             []SPFreshIntegrityViolation
+
+	// Posting-size accounting (SPANN §3.2.1 balanced-postings / SPFresh LIRE
+	// split-merge bounds). The papers' defining property is length-limited
+	// postings; LIRE's split exists to hold the ceiling. Post-drain the normal
+	// envelope is mostly <=Lmax with some <=4*Lmax (just-split children,
+	// unsampled Lmax..2Lmax postings, closure overcount), and NEVER >4*Lmax —
+	// the chunked-drain hard guarantee. A split that fails to drain grows a
+	// posting unboundedly past the envelope, which OversizedHard catches.
+	ActiveFines   int // ACTIVE fine centroids scanned
+	Oversized     int // ACTIVE postings with > Lmax entries (soft: includes the legitimate <=4Lmax band)
+	OversizedHard int // ACTIVE postings with > 4*Lmax entries (the LIRE hard-envelope violation)
+	MaxPostingLen int // largest ACTIVE posting observed
+
+	Violations []SPFreshIntegrityViolation
 }
 
 // spfreshStateName maps a centroid lifecycle-state byte to a stable label.
@@ -122,6 +137,7 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 		return report, fmt.Errorf("spfresh integrity: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
 
+	config := parseSPFreshConfig(idx)
 	tx := rtx.Transaction()
 	metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
 	gen, err := spfreshReadGenerationSnapshot(tx, metaStorage)
@@ -134,11 +150,13 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 	s := newSPFreshStorage(store.indexSubspace(idx), gen)
 
 	// Map every fineID to its centroid lifecycle state. A target absent from
-	// this map points at a centroid in no cell (orphaned membership).
+	// this map points at a centroid in no cell (orphaned membership). For
+	// ACTIVE fines, also tally posting size against the LIRE bounds.
 	ids, _, lerr := spfreshLoadAllCoarse(tx, s)
 	if lerr != nil {
 		return report, fmt.Errorf("spfresh integrity: load coarse: %w", lerr)
 	}
+	hardCap := 4*config.Lmax + 2 // read just past the envelope so >4Lmax is detectable
 	fineState := map[int64]byte{}
 	for _, cellID := range ids {
 		rows, _, _, cerr := spfreshLoadCell(tx, s, cellID)
@@ -147,6 +165,27 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 		}
 		for _, r := range rows {
 			fineState[r.fineID] = r.row.state
+			if r.row.state != spfreshStateActive {
+				continue
+			}
+			report.ActiveFines++
+			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, r.fineID, hardCap)
+			if perr != nil {
+				return report, fmt.Errorf("spfresh integrity: load posting (fine=%d): %w", r.fineID, perr)
+			}
+			n := len(entries)
+			if n > report.MaxPostingLen {
+				report.MaxPostingLen = n
+			}
+			if n > config.Lmax {
+				report.Oversized++
+			}
+			if n > 4*config.Lmax {
+				report.OversizedHard++
+				if len(report.Violations) < maxRecordedViolations {
+					report.Violations = append(report.Violations, SPFreshIntegrityViolation{FineID: r.fineID, Kind: "posting_over_4lmax"})
+				}
+			}
 		}
 	}
 

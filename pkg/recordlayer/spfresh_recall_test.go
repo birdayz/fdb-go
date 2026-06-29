@@ -252,4 +252,106 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			"recall monitor must detect the silent drop (healthy %.4f -> corrupted %.4f)",
 			healthy.MeanRecall, corrupted.MeanRecall)
 	})
+
+	// spfresh-reviewer (RFC-156) finding 1: SPANN §3.2.1 balanced-postings /
+	// LIRE split guarantee — no ACTIVE posting may exceed the 4xLmax hard
+	// envelope. SPFreshCheckIntegrity must catch an over-envelope posting (the
+	// precise failure LIRE's split exists to prevent: a split that never drained).
+	It("flags a posting over the 4xLmax hard envelope", func() {
+		ks := specSubspace()
+		idx := recallIndex("spf_oversize") // Lmax=32 -> 4xLmax=128
+		b := recallMetadata()
+		b.AddIndex("Order", idx)
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			if _, serr := store.MarkIndexDisabled("spf_oversize"); serr != nil {
+				return nil, serr
+			}
+			for id := int64(1); id <= 30; id++ {
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id % 6)), Quantity: proto.Int32(int32(id / 6))}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_oversize", 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			_, serr = store.MarkIndexReadable("spf_oversize")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		check := func() SPFreshIntegrityReport {
+			var rep SPFreshIntegrityReport
+			_, cerr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := storeBuilder(rtx)
+				if serr != nil {
+					return nil, serr
+				}
+				rep, serr = SPFreshCheckIntegrity(rtx, store, "spf_oversize", 1<<30)
+				return nil, serr
+			})
+			Expect(cerr).NotTo(HaveOccurred())
+			return rep
+		}
+
+		// Healthy: the field is populated and nothing is over the envelope.
+		healthy := check()
+		Expect(healthy.ActiveFines).To(BeNumerically(">", 0))
+		Expect(healthy.OversizedHard).To(BeZero(), "a balanced index has no over-envelope postings")
+		Expect(healthy.MaxPostingLen).To(BeNumerically("<=", 4*32))
+
+		// Inflate one ACTIVE fine's posting past 4xLmax=128 by writing bogus
+		// entries (valid posting keys; the size scan counts keys, not values) —
+		// simulating a split that failed to drain.
+		var idxSub subspace.Subspace
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			idxSub = store.indexSubspace(idx)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			g, gerr := spfreshReadGenerationSnapshot(tx, newSPFreshStorage(idxSub, 0))
+			if gerr != nil {
+				return nil, gerr
+			}
+			s := newSPFreshStorage(idxSub, g)
+			mem, merr := spfreshReadMembership(tx, s, tuple.Tuple{int64(1)})
+			if merr != nil {
+				return nil, merr
+			}
+			Expect(mem).NotTo(BeEmpty())
+			fineID := mem[0]
+			for i := 0; i < 4*32+5; i++ { // push total over 128
+				tx.Set(s.postingKey(fineID, tuple.Tuple{int64(900000 + i)}), []byte{1})
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Now the integrity check must flag the over-envelope posting.
+		bad := check()
+		Expect(bad.OversizedHard).To(BeNumerically(">=", 1),
+			"SPFreshCheckIntegrity must flag the posting over 4xLmax")
+		Expect(bad.MaxPostingLen).To(BeNumerically(">", 4*32))
+	})
 })
