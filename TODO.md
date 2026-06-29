@@ -185,10 +185,11 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      (`allow{Field,DeprecatedFieldRenames,Undeprecating}` + `RenameFieldsVisitor`) vs Java
      `MetaDataEvolutionValidator`. Landed in the same change as the RFC-135 4.12 upgrade —
      `rename_fields_visitor.go` + all three flags + the `validateField`/`comparePrimaryKeys`/index rewrite.
-     RFC-136 was just never flipped from Draft (now corrected). **Small residual follow-up:** port the
-     missing `RenameFieldsVisitorTest` shapes (Grouping/Function/Split/Dimensions/KeyWithValue/List/nested
-     RecordType + the two source-side error paths) — ~150-250 LOC unit tests, no FDB. See RFC-136 §8. Gate:
-     Torvalds + codex + @claude.
+     RFC-136 was just never flipped from Draft (now corrected). **Small residual follow-up — DONE (RFC-157).**
+     The per-node-type shapes + error paths the follow-up named were already ported (stale TODO); RFC-157
+     closed the only genuinely-missing axis: the `messageTypeForField` re-derivation at depth ≥ 2 + the
+     dead `childSource==childTarget` short-circuit (6 specs; re-derivation behaviorally revert-proof,
+     short-circuit branch-coverage). Gate: Torvalds + codex + @claude (all ACK / no findings).
    - **[x] R2 — DONE** — indexer 4.12 changes. **(a) DONE (RFC-137):** erase-indexing-metadata-after-readable —
      `markReadable` now erases scanned-records(1)/type-stamp(2)/heartbeat(7) per Java
      `eraseAllIndexingDataButTheLockAndRangeSet`; added `SetMarkReadable(bool)` (Java `buildIndex(markReadable)`

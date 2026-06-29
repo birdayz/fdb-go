@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -1820,6 +1821,130 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("not supported"))
+		})
+
+		// --- Depth-≥2 nested re-derivation (ports Java renameMiddleRecord / renameMergedRecord /
+		// renameSplitRecord / the 3-level renameOuterRecord shapes). The single-Nest tests above
+		// never exercise messageTypeForField recursion past one level, never prove the rename
+		// follows the descriptor TYPE rather than the global field name, and never reach the
+		// childSource==childTarget short-circuit (rename_fields_visitor.go:58, which is dead across
+		// two independently-built files). These close that axis. --------------------------------
+
+		It("rewrites a leaf field at nesting depth 2 (re-derives the descriptor at each level)", func() {
+			oldD := buildFile("o.proto",
+				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
+				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
+				msg("Inner", strField("foo", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
+				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
+				msg("Inner", strField("foo_z", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			got, err := renameFields(Nest("middle", Nest("inner", Field("foo"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Nest("middle", Nest("inner", Field("foo_z"))).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("rewrites a mid-chain parent field while leaving the deeper leaf intact", func() {
+			oldD := buildFile("o.proto",
+				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
+				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
+				msg("Inner", strField("foo", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
+				msg("Middle", messageField("inner_2b", 1, ".test.Inner"), strField("mid", 2)),
+				msg("Inner", strField("foo", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			got, err := renameFields(Nest("middle", Nest("inner", Field("foo"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Nest("middle", Nest("inner_2b", Field("foo"))).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("follows the descriptor type, not the field name, when the same name lives in two types", func() {
+			// A.val and B.val share the name "val"; only A.val is renamed. A name-keyed
+			// implementation would also rename b.val — this pins per-parent re-derivation.
+			oldD := buildFile("o.proto",
+				msg("Top", messageField("a", 1, ".test.A"), messageField("b", 2, ".test.B")),
+				msg("A", strField("val", 1)),
+				msg("B", strField("val", 1)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("Top", messageField("a", 1, ".test.A"), messageField("b", 2, ".test.B")),
+				msg("A", strField("val_a", 1)),
+				msg("B", strField("val", 1)),
+			).Messages().Get(0)
+			got, err := renameFields(Concat(Nest("a", Field("val")), Nest("b", Field("val"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Concat(Nest("a", Field("val_a")), Nest("b", Field("val"))).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("rewrites every path that reaches a shared nested descriptor (merged-record shape)", func() {
+			// Both a and b point at the same Nested type; one nested rename rewrites both paths.
+			oldD := buildFile("o.proto",
+				msg("My", messageField("a", 1, ".test.Nested"), messageField("b", 2, ".test.Nested")),
+				msg("Nested", strField("x", 1), strField("y", 2)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("My", messageField("a", 1, ".test.Nested"), messageField("b", 2, ".test.Nested")),
+				msg("Nested", strField("x_2", 1), strField("y", 2)),
+			).Messages().Get(0)
+			got, err := renameFields(Concat(Nest("a", Field("x")), Nest("b", Field("x"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Concat(Nest("a", Field("x_2")), Nest("b", Field("x_2"))).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("resolves each parent's rename by NUMBER within its own type (asymmetric merge/split)", func() {
+			// The strongest type-follow probe (Java renameSplitRecord). The field "x" lives at a
+			// DIFFERENT number in each source type — NestedA.x=1, NestedB.x=2 — and both parents
+			// merge into one target type OneTrueNested{p=1, q=2}. So a.x must become a.p (via
+			// NestedA's number 1) and b.x must become b.q (via NestedB's number 2): same name,
+			// different result, because the rename strictly follows (source type → number →
+			// target type by number) at each parent independently.
+			oldD := buildFile("o.proto",
+				msg("My", messageField("a", 1, ".test.NestedA"), messageField("b", 2, ".test.NestedB")),
+				msg("NestedA", strField("x", 1), strField("y", 2)),
+				msg("NestedB", strField("y", 1), strField("x", 2)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("My", messageField("a", 1, ".test.OneTrueNested"), messageField("b", 2, ".test.OneTrueNested")),
+				msg("OneTrueNested", strField("p", 1), strField("q", 2)),
+			).Messages().Get(0)
+			got, err := renameFields(Concat(Nest("a", Field("x")), Nest("b", Field("x"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Concat(Nest("a", Field("p")), Nest("b", Field("q"))).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("skips the nested recursion when the parent's message type is unchanged (shared descriptor)", func() {
+			// Import a shared dependency from BOTH the old and new outer files so the nested
+			// descriptor is the SAME object on both sides — the only way the
+			// childSource==childTarget short-circuit (rename_fields_visitor.go:58) fires (Java's
+			// avoidRewritingIfNestedDescriptorIsTheSame). The parent is renamed; the child is not.
+			pkg, syntax, depName := "test", "proto2", "dep.proto"
+			depFDP := &descriptorpb.FileDescriptorProto{
+				Name: &depName, Package: &pkg, Syntax: &syntax,
+				MessageType: []*descriptorpb.DescriptorProto{msg("Shared", strField("foo", 1), strField("bar", 2))},
+			}
+			depFD, err := protodesc.NewFile(depFDP, nil)
+			Expect(err).NotTo(HaveOccurred())
+			files := new(protoregistry.Files)
+			Expect(files.RegisterFile(depFD)).To(Succeed())
+			buildOuter := func(fileName, parentField string) protoreflect.MessageDescriptor {
+				fdp := &descriptorpb.FileDescriptorProto{
+					Name: &fileName, Package: &pkg, Syntax: &syntax,
+					Dependency:  []string{depName},
+					MessageType: []*descriptorpb.DescriptorProto{msg("Outer", messageField(parentField, 1, ".test.Shared"))},
+				}
+				fd, ferr := protodesc.NewFile(fdp, files)
+				Expect(ferr).NotTo(HaveOccurred())
+				return fd.Messages().Get(0)
+			}
+			oldD := buildOuter("o.proto", "inner")
+			newD := buildOuter("n.proto", "wrapper")
+			got, err := renameFields(Nest("inner", Field("foo")), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(got.ToKeyExpression(), Nest("wrapper", Field("foo")).ToKeyExpression())).To(BeTrue())
 		})
 	})
 
