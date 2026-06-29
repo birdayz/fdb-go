@@ -261,15 +261,27 @@ real finding, not a tuning footnote.
 
 ### 4.3 Scale validation 10M → 100M
 
-We are validated to 1M (the churn soak holds recall 1.0 through 6 waves at SIFT-20k;
-the 1M foreground fill is measured). 10M is "pending" and 100M is untouched. Lance
-markets 10B; we don't need 10B, but **1M is not a credible production ceiling** and
-the doc says so.
+**Status (done):** the SIFT churn soak now asserts BOTH recall-stability and the
+chaos-gate **structural** invariants at scale (via `SPFreshCheckIntegrity`), and
+both hold on real SIFT data (`VECTOR_BENCHMARK_RESULTS.md` → "structural-integrity
+scale validation"):
+- **SIFT-100k, 6 churn waves:** recall@10 flat 0.994→0.992; members==live (one row
+  per record); maxPostingLen 234 ≤ Lmax; oversizedHard=0, badTargets=0,
+  membership⊄postings=0 — every chaos-gate invariant holds at 100× the chaos-test
+  scale under churn.
+- **SIFT-1M, 4 churn waves (the ceiling):** recall@10 dead flat at 0.962 across all
+  waves (zero decay) — the SPFresh §5.2 recall-stability property at the ceiling.
 
-**Plan:** extend the existing churn-soak + fill harness (`SIFT_N`/`SOAK_*`) to 10M,
-then 100M. Track per-wave recall@10 vs brute force, the topology histogram (no
-posting > 4×Lmax), lifecycle-action counts, and sampled integrity (membership ⊆
-postings, targets ACTIVE). **Recall floors are spfresh-reviewer-owned** — fixed
+So **1M is now a *validated* ceiling** (recall-stable under churn), and the
+structural invariants are proven to 100k. **Remaining:** (a) the structural
+assertion runs in ONE tx so it auto-skips >200k — asserting structure at 1M+ needs
+the batched-scan integrity variant (the recall-monitor §3.1/§4 follow-up applies
+here too); (b) >1M (10M/100M) needs a larger dataset than SIFT-1M and the build-cap
+work below.
+
+**Plan for >1M:** extend the harness past SIFT-1M (a larger/synthetic-clustered
+base set), and add the batched integrity scan so structure is asserted at the
+ceiling, not just recall. **Recall floors are spfresh-reviewer-owned** — fixed
 probes cover a shrinking list fraction as N grows (kc=64 covers 64/11,336 fines at
 1M; far less at 100M), so the kc/w defaults likely need a per-scale freeze, exactly
 as 094.5 re-tuned for the 1M+ regime. That re-tune is in scope.

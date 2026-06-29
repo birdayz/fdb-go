@@ -827,3 +827,23 @@ SPFRESH_BENCH=1 SIFT_N=100000 SOAK_WAVES=6 bazelisk test \
 The integrity assertion runs at N ≤ 200k (it scans every active fine in one
 transaction); above that, recall-stability is the scale signal and the batched
 integrity variant is the RFC-156 §4 follow-up. (Runtime: ~110s at 100k.)
+
+**SIFT-1M, 4 churn waves (10% delete+reinsert/wave) — the ceiling:**
+
+| metric | value |
+|---|---|
+| recall@10 post-build | 0.9620 |
+| recall@10 after 4 waves | **0.9620** (flat — zero decay across every wave) |
+| live records | 1,000,000 |
+| rebalance actions/wave | 57 / 8 / 0 / 0 (lifecycle fired, then quiesced) |
+| runtime | ~18.5 min |
+
+Recall holds dead flat at the 1M ceiling under sustained churn — the SPFresh §5.2
+recall-stability-under-updates property at scale (a topology that quiesced
+oversized or orphaned would decay; it does not). The structural integrity
+assertion auto-skips at 1M (single-tx scan limit), so recall-stability is the
+scale signal here; pairing it with the batched integrity variant (RFC-156 §4) is
+the way to also assert structure at the ceiling. The 0.962 fixed-probe recall
+matches the bulk-build 1M figure in the foreground-fill tables above; lifting it
+further at 1M is the per-scale kc/w freeze (RFC-156 §4.3 recall dimension), not a
+stability problem.
