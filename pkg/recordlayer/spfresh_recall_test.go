@@ -354,4 +354,95 @@ var _ = Describe("SPFresh recall monitor (RFC-156 ground-truth)", func() {
 			"SPFreshCheckIntegrity must flag the posting over 4xLmax")
 		Expect(bad.MaxPostingLen).To(BeNumerically(">", 4*32))
 	})
+
+	// codex-review findings (PR #388): the recall monitor must work on the
+	// SERIALIZED-vector index shape (vector_data []byte — what the SPFresh
+	// benchmarks and real deployments use), the search wrapper must reject
+	// wrong-dimensional queries instead of panicking, and the integrity sample
+	// must honor its cap. All three were missed by the 2D-int-vector tests above.
+	It("works on a serialized-vector index, rejects wrong-dim queries, caps the integrity sample", func() {
+		const n = 40
+		const dims = 8
+		ks := specSubspace()
+		idx := NewIndex("spf_recall_serialized", KeyWithValue(Field("vector_data"), 0))
+		idx.Type = IndexTypeVectorSPFresh
+		idx.Options = map[string]string{
+			IndexOptionSPFreshNumDimensions: "8",
+			IndexOptionSPFreshLmax:          "32",
+			IndexOptionSPFreshCellTarget:    "4",
+			IndexOptionSPFreshCellMax:       "8",
+		}
+		b := recallMetadata()
+		b.AddIndex("Order", idx)
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		storeBuilder := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		}
+		mkVec := func(i int) []float64 {
+			v := make([]float64, dims)
+			v[0] = float64(i) // distinct lead component => unambiguous ground truth
+			for j := 1; j < dims; j++ {
+				v[j] = float64((i*7 + j) % 13)
+			}
+			return v
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			if _, serr := store.MarkIndexDisabled("spf_recall_serialized"); serr != nil {
+				return nil, serr
+			}
+			for i := 1; i <= n; i++ {
+				if _, serr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), VectorData: SerializeVector(mkVec(i))}); serr != nil {
+					return nil, serr
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(BuildSPFreshIndex(ctx, sharedDB, storeBuilder, "spf_recall_serialized", 42)).To(Succeed())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			_, serr = store.MarkIndexReadable("spf_recall_serialized")
+			return nil, serr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			// codex P1: the corpus must populate on a serialized-vector index
+			// (previously CorpusSize=0 — the monitor silently did nothing).
+			rep, serr := MeasureSPFreshRecall(ctx, store, "spf_recall_serialized", 5, 30, 7)
+			if serr != nil {
+				return nil, serr
+			}
+			Expect(rep.CorpusSize).To(Equal(n), "serialized-vector corpus must populate (codex P1)")
+			Expect(rep.QueriesRun).To(Equal(30))
+			Expect(rep.MeanRecall).To(BeNumerically(">=", 0.90))
+
+			// codex P2: a wrong-dimensional query returns an error, not a panic.
+			_, derr := SearchSPFreshIndex(store, "spf_recall_serialized", []float64{1, 2, 3}, 5)
+			Expect(derr).To(HaveOccurred(), "wrong-dim query must error, not panic (codex P2)")
+			Expect(derr.Error()).To(ContainSubstring("dimensions"))
+
+			// codex P3: the integrity sample never exceeds the requested cap.
+			irep, serr := SPFreshCheckIntegrity(rtx, store, "spf_recall_serialized", 10)
+			if serr != nil {
+				return nil, serr
+			}
+			Expect(irep.Members).To(Equal(n))
+			Expect(irep.Sampled).To(BeNumerically("<=", 10), "integrity sample must honor the cap (codex P3)")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

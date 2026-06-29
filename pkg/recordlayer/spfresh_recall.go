@@ -107,8 +107,18 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 			continue // expression doesn't apply to this record — skip
 		}
 		for _, values := range tuples {
-			vec := spfreshValuesToFloat64(values)
-			if len(vec) != config.NumDimensions {
+			// tupleToVector (the maintainer's decoder) handles BOTH numeric
+			// tuple elements AND a serialized-vector []byte (the
+			// KeyWithValue(Field("vector_data"), 0) shape the SPFresh benchmarks
+			// and real deployments use). A plain numeric-only conversion would
+			// drop the []byte and silently report an empty corpus on the common
+			// index shape (codex P1).
+			t := make(tuple.Tuple, len(values))
+			for i, v := range values {
+				t[i] = v
+			}
+			vec, verr := tupleToVector(t)
+			if verr != nil || len(vec) != config.NumDimensions {
 				continue
 			}
 			corpus = append(corpus, corpusEntry{pk: rec.PrimaryKey, vec: vec})
@@ -198,28 +208,4 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 	report.MeanRecall = sumRecall / float64(q)
 	report.PerfectFraction = float64(perfect) / float64(q)
 	return report, nil
-}
-
-// spfreshValuesToFloat64 converts an evaluated index key tuple to a float64
-// vector, returning nil if any component is non-numeric. Mirrors the chaos
-// harness's valuesToFloat64 (kept package-local to avoid a test-only import).
-func spfreshValuesToFloat64(values []any) []float64 {
-	vec := make([]float64, 0, len(values))
-	for _, v := range values {
-		switch n := v.(type) {
-		case float64:
-			vec = append(vec, n)
-		case float32:
-			vec = append(vec, float64(n))
-		case int64:
-			vec = append(vec, float64(n))
-		case int32:
-			vec = append(vec, float64(n))
-		case int:
-			vec = append(vec, float64(n))
-		default:
-			return nil
-		}
-	}
-	return vec
 }
