@@ -1,9 +1,14 @@
 # RFC-155: bazelscaleset — a bazel-warm, dependency-isolated runner scale set for the single CI box
 
-**Status:** DRAFT (revised per bazel-pro-from-google + Torvalds review) — pending re-review before
-implementation. CI/infra item — no query-engine or client/wire behaviour change (no Graefe /
-FDB-C++ gate). Supersedes the classic register-and-listen runner in `infra/` for the self-hosted
-box; leaves the PR gates (`ci.yml`) and the nightlies unchanged.
+**Status:** IMPLEMENTED + cutting over. The supervisor (`tools/bazelscaleset/`) is built, reviewed
+(bazel-pro-from-google + Torvalds + codex), and merged (PR #384); it is deployed on the live box
+as a GitHub App–authenticated scale set named `hetzner-fdb` (App + repo secrets created;
+`--disk_cache`/`--repository_cache` wired in the box's `/etc/bazel.bazelrc`). The cutover — flipping
+`runs-on: [self-hosted, linux, x64, hetzner]` → `hetzner-fdb` across `ci.yml` + nightlies — is in
+PR #385 (its own CI runs on the scale set as the gate). The classic runner is kept resurrectable
+(break-glass, `runner_mode=classic`). The `infra/` change is source-of-truth only — the box has
+`prevent_destroy` + a grandfathered price tier, so it was deployed out-of-band, never `tofu apply`.
+CI/infra item — no query-engine or client/wire behaviour change (no Graefe / FDB-C++ gate).
 
 **Trigger:** On 2026-06-28 a 7-PR merge flurry wedged the self-hosted runner. Each master push
 fires `ci.yml` (concurrency `cancel-in-progress: true`) + `nightly-libfdbc`, so the rapid
@@ -186,9 +191,23 @@ FDB-from-source build; (b) bazel hardlinks inputs into its sandbox and externals
 cache — *across* filesystems those hardlinks silently fall back to **copies** (slower sandbox
 setup, extra I/O). Same-volume keeps hardlinks working and the bulk off the root disk.
 
-**Decision (locked): Option A + C now; B deferred.** Warm per-slot `output_base` (durability tuned
-in §7) + shared `repository_cache`, **no** `disk_cache`, all on `/mnt/ci-data`. Scaling = add a
-slot (+ RAM, §3).
+**Decision (revised): Option A + C, plus a CI-box-only local `disk_cache`.** Warm per-slot
+`output_base` (durability tuned in §7) + shared `repository_cache`, all on `/mnt/ci-data`. The
+original "no `disk_cache`" was relaxed: a `--disk_cache` is added, but **only on the runner box**
+via its system rc (`/etc/bazel.bazelrc`), never in the committed repo `.bazelrc`. That cleanly
+preserves RFC-108 for the canonical/shipped config (every developer + fresh checkout still builds
+from source, no cache) — the cache is a property of *one machine's environment*, not of the build
+the project ships. It is **local-only** (this box's own from-source, content-addressed outputs;
+never remote/imported), so even on the box it stays in RFC-108's trust domain — the same
+action-key-hermeticity window as the per-`output_base` action cache, just a wider reuse window,
+hardened by `--incompatible_strict_action_env`.
+
+Honest value (bazel-pro): server restart / OOM / box-replace do **not** cold the `output_base`
+(its on-disk action cache + `bazel-out` survive on the CI volume), so `disk_cache` adds nothing
+there. Its real wins are (a) a fresh slot's genuinely cold `output_base` once `maxRunners>1`, and
+(b) backstopping a §5 `--expunge` / action-cache corruption with action-level hits instead of
+re-paying the FDB-from-source compile — at the cost of continuous double-disk, bounded by the
+built-in lease GC (`--experimental_disk_cache_gc_max_size=20G --max_age=14d`).
 
 ### 3. Concurrency on one box (RAM-bound)
 
@@ -356,12 +375,16 @@ fresh provisions only:
 
 These were open questions in the draft; the maintainer has now locked them.
 
-1. **Cache strategy: A + C now, B deferred.** Warm per-slot `output_base` + shared
-   `repository_cache` (both on `/mnt/ci-data`), **no** `disk_cache`. The disk parts of `output_base`
-   are durable; the server + analysis are memory-resident and need `--max_idle_secs` + OOM
-   protection to stay warm (§2/§7). B (fresh-room + `disk_cache`) is deferred — at `maxRunners=1`
-   slot-miss can't occur, and B reintroduces the RFC-108 trust boundary; it would also rescue
-   cold-*server* starts, the trade we knowingly defer. See §2.
+1. **Cache strategy: A + C + a CI-box-only local `disk_cache`.** Warm per-slot `output_base` +
+   shared `repository_cache` + `--disk_cache`, all on `/mnt/ci-data`. The disk parts of
+   `output_base` are durable; the server + analysis are memory-resident and need `--max_idle_secs`
+   + OOM protection to stay warm (§2/§7). The `disk_cache` is added **only on the runner box** (its
+   system `/etc/bazel.bazelrc`), never the committed repo `.bazelrc` — so the canonical/shipped
+   build stays "from source, no cache" (RFC-108) for every dev + fresh checkout, and the cache is a
+   box-environment property, local-only (same trust domain as the action cache, wider reuse window).
+   Honest value at `maxRunners=1` is narrow (backstops a §5 `--expunge`/corruption, not restart/OOM
+   which the surviving on-disk action cache already covers); the real payoff is a fresh slot's cold
+   `output_base` once `maxRunners>1`. GC-bounded (20G / 14d lease GC). See §2.
 2. **Directory/module: `tools/bazelscaleset/`** as a **separate Go module** (its own
    `go.mod`/`go.sum`). `cmd/` was rejected — it reads as "part of the main module". The separate
    module is the load-bearing dependency-isolation property.
