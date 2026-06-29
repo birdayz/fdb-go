@@ -46,6 +46,14 @@ func (r *SinkLimitIntoVectorScanRule) OnMatch(call *ImplementationRuleCall) {
 	if limitW == nil || limitW.plan == nil {
 		return
 	}
+	// A runtime cap (parameterized RFC-156 rank limit `... <= ?`) cannot be
+	// folded: K is unknown at plan time, so the scan can't be put into
+	// self-limiting top-k(K) mode. It MUST stay an explicit Limit(?) over the
+	// ordered stream, which the executor evaluates at run time. (The -1 sentinel
+	// also trips the GetLimit() <= 0 guard below, but be explicit.)
+	if limitW.plan.GetLimitValue() != nil {
+		return
+	}
 	// An OFFSET cannot be folded into the scan (the scan has no skip), and a
 	// non-positive cap is not a real top-k. Leave those as the explicit Limit
 	// over the ordered scan.

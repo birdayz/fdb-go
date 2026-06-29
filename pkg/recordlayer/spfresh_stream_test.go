@@ -380,6 +380,74 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 		}
 	})
 
+	It("Sidecar=false disables the early-streaming barrier — residual stream == exhaustive one-shot (sidecar guard)", func() {
+		// The relaxed-monotonicity emission barrier B = nextCentroidDist −
+		// maxResidual is only sound when maxResidual (the max member-to-centroid
+		// residual) is actually accumulated — which happens ONLY in the sidecar
+		// re-rank loop (streamRebuildFinalized). With Sidecar=false the re-rank is
+		// skipped, maxResidual stays 0, and B degrades to the PURE-CENTROID barrier
+		// (centroid-d2 admission order, NOT exact-distance) → out-of-order early
+		// emission, the SAME failure the disableNearSide ablation forces. streamInit's
+		// guard DISABLES the barrier when Sidecar=false (mirroring the non-Euclidean
+		// guard) and falls back to materialize-then-emit — exact for any metric. This
+		// is the EUCLIDEAN index (where the barrier would otherwise be ON), so the
+		// guard is the only thing keeping the stream exact.
+		//
+		// Same 8×8 grid + corner query as the ablation/oracle specs: kmeans cells hold
+		// near-side members and all 64 distances are distinct, so a pure-centroid
+		// barrier demonstrably reorders emission (the red proof when the guard is
+		// reverted), while the guarded materialize-then-emit equals the one-shot.
+		cfg := DefaultSPFreshConfig(2)
+		cfg.Lmax = 8
+		cfg.Sidecar = false // the guard's trigger (config-valid only via the white-box builder)
+		Expect(cfg.Metric).To(Equal(VectorMetricEuclidean))
+		var inputs []spfreshBuildInput
+		id := int64(1)
+		for i := 0; i < 8; i++ {
+			for j := 0; j < 8; j++ {
+				inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i), float64(j)}})
+				id++
+			}
+		}
+		base := specSubspace().Sub("sidecar-off")
+		storage := newSPFreshStorage(base, 1)
+		builder := newSPFreshBuilder(sharedDB, storage, cfg, "builder-sidecar-off")
+		Expect(builder.build(ctx, inputs, 7)).To(Succeed())
+		idx := NewIndex("sidecar-off", Concat(Field("a"), Field("b")))
+		idx.Type = IndexTypeVectorSPFresh
+		query := []float64{-0.41, -0.73}
+
+		// Oracle: the exhaustive one-shot (Sidecar=false → RaBitQ-estimate order).
+		oneShot := oneShotTopK(base, cfg, idx, query, 64)
+		Expect(oneShot).To(HaveLen(64))
+
+		// GREEN — full exhaustive stream: the guard DISABLES the barrier and the
+		// materialize-then-emit emission equals the one-shot, exactly.
+		full := drive(base, cfg, idx, query, defaultSPFreshStreamBudget(), nil, 0,
+			func(sc *spfreshStreamCursor) {
+				Expect(sc.f.barrierEnabled).To(BeFalse(),
+					"Sidecar=false must DISABLE the early-streaming barrier (maxResidual stays 0 → pure-centroid)")
+			})
+		Expect(full.ids).To(Equal(oneShot),
+			"Sidecar=false full streaming (barrier disabled, materialize-then-emit) == exhaustive one-shot")
+
+		// RESIDUAL K-NN — a non-trivial filter (every 3rd id, interleaved across
+		// distance) + Limit: the streamed residual top-k equals the one-shot's k
+		// nearest matching, proving the guarded stream is exact under a residual too.
+		isMatch3 := func(x int64) bool { return x%3 == 0 }
+		var oracleMatches []int64
+		for _, x := range oneShot {
+			if isMatch3(x) {
+				oracleMatches = append(oracleMatches, x)
+			}
+		}
+		Expect(len(oracleMatches)).To(BeNumerically(">=", 6))
+		res := drive(base, cfg, idx, query, defaultSPFreshStreamBudget(), isMatch3, 6)
+		Expect(res.satisfied).To(BeTrue(), "6 matching rows are reachable within budget")
+		Expect(res.ids).To(Equal(oracleMatches[:6]),
+			"Sidecar=false residual streaming == exhaustive one-shot top-6 matching (the streamInit guard)")
+	})
+
 	It("widens beyond the fixed horizon to return the true k nearest MATCHING rows (rare predicate)", func() {
 		base, cfg, idx := buildStreamIdx("rare-widen", 16, 2, rareCorpus())
 		query := []float64{0, 0}

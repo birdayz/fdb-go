@@ -245,9 +245,15 @@ func wrapGlobalRankVectorLimit(op logical.LogicalOperator, qualPred predicates.Q
 	if op == nil || qualPred == nil {
 		return op
 	}
-	limit, ok := globalRankVectorLimit(qualPred)
+	limit, limitValue, ok := globalRankVectorLimit(qualPred)
 	if !ok {
 		return op
+	}
+	makeLimit := func(child logical.LogicalOperator) logical.LogicalOperator {
+		if limitValue != nil {
+			return logical.NewRuntimeLimit(child, limitValue, 0)
+		}
+		return logical.NewLimit(child, limit, 0)
 	}
 	// Insert the Limit directly above the FIRST LogicalFilter on the unary spine
 	// (where the QUALIFY predicate was just attached). Keeps any SELECT
@@ -255,7 +261,7 @@ func wrapGlobalRankVectorLimit(op logical.LogicalOperator, qualPred predicates.Q
 	var parent logical.LogicalOperator
 	for cur := op; cur != nil; {
 		if _, isFilter := cur.(*logical.LogicalFilter); isFilter {
-			wrapped := logical.NewLimit(cur, limit, 0)
+			wrapped := makeLimit(cur)
 			if parent == nil {
 				return wrapped
 			}
@@ -271,16 +277,34 @@ func wrapGlobalRankVectorLimit(op logical.LogicalOperator, qualPred predicates.Q
 	}
 	// No filter on the spine (should not happen for a QUALIFY query) — wrap the
 	// whole plan so the rank limit is never silently dropped.
-	return logical.NewLimit(op, limit, 0)
+	return makeLimit(op)
 }
 
-// globalRankVectorLimit returns the adjusted row limit (K for ROW_NUMBER() <= K,
-// K-1 for < K) when the predicate contains a GLOBAL-rank (empty PARTITION BY)
-// vector DistanceRank comparison with a literal positive K, else ok=false. A
-// PARTITION BY (non-empty partitioning) or a non-literal K declines — the legacy
-// in-scan limit path is kept for those.
-func globalRankVectorLimit(p predicates.QueryPredicate) (int64, bool) {
+// globalRankVectorLimit lowers a GLOBAL-rank (empty PARTITION BY) vector
+// DistanceRank comparison into a faithful row Limit above the (distance-ordered)
+// vector scan. It ALWAYS produces a Limit for an un-partitioned rank so the
+// ordered scan is never left to stream unbounded (codex correctness blocker):
+//
+//   - literal positive K (K for rank<=K, K-1 for rank<K) → static limit, ok.
+//   - adjusted-zero / negative cap (e.g. ROW_NUMBER() < 1) → static Limit(0),
+//     ok: SinkLimitIntoVectorScanRule declines on limit<=0 so the Limit(0) stays
+//     above the ordered scan and yields the correct EMPTY result.
+//   - NON-LITERAL / parameterized K (`<= ?`) → a RUNTIME limit Value (the second
+//     return), ok: the K Value itself for rank<=K, or a K-1 arithmetic Value for
+//     rank<K. The executor evaluates it against the bound parameters; the ordered
+//     scan + Filter + Limit(?) compose the true K nearest MATCHING rows. (For a
+//     self-limiting fold the runtime cap can't be sunk, so SinkLimit declines and
+//     the Limit(?) stays above the ordered scan — still bounded, never unbounded.)
+//
+// A PARTITION BY (non-empty partitioning) is per-partition and a single global
+// Limit cannot express it, so it declines (ok=false) and keeps the legacy
+// self-limiting per-partition fan-out (RFC-046).
+//
+// Returns (staticLimit, runtimeLimitValue, ok). Exactly one of staticLimit /
+// runtimeLimitValue is meaningful: runtimeLimitValue!=nil ⇒ runtime cap.
+func globalRankVectorLimit(p predicates.QueryPredicate) (int64, values.Value, bool) {
 	var limit int64
+	var limitValue values.Value
 	found := false
 	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
 		if found {
@@ -303,25 +327,46 @@ func globalRankVectorLimit(p predicates.QueryPredicate) (int64, bool) {
 		default:
 			return true // EQUALS is rejected upstream; nothing else is a top-k rank
 		}
-		if cp.Comparison.Operand == nil {
+		operand := cp.Comparison.Operand
+		if operand == nil {
 			return true
 		}
-		kv, err := cp.Comparison.Operand.Evaluate(nil)
-		if err != nil {
-			return true // non-literal K: keep the legacy path
+		kv, err := operand.Evaluate(nil)
+		if err == nil && kv != nil {
+			k, ok := asInt64Literal(kv)
+			if !ok {
+				return true // a non-integer literal K is not a top-k rank
+			}
+			// Literal K. An adjusted-zero / negative cap clamps to Limit(0) (EMPTY)
+			// rather than declining — declining would leave the ordered scan
+			// unbounded.
+			adjusted := k + adjust
+			if adjusted < 0 {
+				adjusted = 0
+			}
+			limit = adjusted
+			found = true
+			return false
 		}
-		k, ok := asInt64Literal(kv)
-		if !ok {
-			return true
+		// Non-literal (parameterized / runtime) K — emit a RUNTIME cap: K for
+		// rank<=K, K-1 (a runtime arithmetic Value) for rank<K. Evaluate(nil)
+		// returns (nil, nil) for an unbound parameter or an error for a value that
+		// cannot fold at plan time — both mean "not a plan-time literal", so the
+		// cap must be carried as a Value and evaluated against the bound params at
+		// execution (never left as an unbounded ordered scan).
+		if adjust == 0 {
+			limitValue = operand
+		} else {
+			limitValue = &values.ArithmeticValue{
+				Op:    values.OpSub,
+				Left:  operand,
+				Right: values.LiteralValue(int64(1)),
+			}
 		}
-		if k+adjust <= 0 {
-			return true
-		}
-		limit = k + adjust
 		found = true
 		return false
 	})
-	return limit, found
+	return limit, limitValue, found
 }
 
 // distanceRowNumberPartitioning returns the PARTITION BY values of a

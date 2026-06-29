@@ -141,7 +141,18 @@ func (f *spfreshFrontier) streamInit(budget spfreshStreamBudget) {
 	// full sorted scanned set at the terminal — EXACT for any metric (it is the
 	// one-shot's behaviour, just without early streaming). The early-streaming
 	// barrier is the Euclidean fast path; correctness never depends on it.
-	f.barrierEnabled = f.s.config.Metric == VectorMetricEuclidean
+	//
+	// SIDECAR guard. The barrier margin maxResidual (the max cell residual
+	// ‖vec−centroid‖) is accumulated ONLY in the sidecar re-rank loop
+	// (streamRebuildFinalized). With Sidecar=false (or noRerank) it stays 0, so
+	// B = nextCentroidDist − maxResidual degrades to the PURE-CENTROID barrier —
+	// which admits in centroid (d2) order, NOT exact-distance order, so early
+	// emission can be out of order (recall blip). Gate the barrier on Sidecar too
+	// and fall back to the same materialize-then-emit path the non-Euclidean
+	// metrics use (B=−inf through widening, +inf at the terminal): exact, just no
+	// early streaming. (Mirrors the accumulation guard at streamRebuildFinalized.)
+	f.barrierEnabled = f.s.config.Metric == VectorMetricEuclidean &&
+		f.s.config.Sidecar && !f.s.noRerank
 	f.cellsProbed = len(f.scoredCells)
 	if len(f.best) > f.peakBest {
 		f.peakBest = len(f.best)

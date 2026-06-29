@@ -24,10 +24,16 @@ var (
 	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings"}
 	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows"}
 	// Phase 2 reached: the VBASE relaxed-monotonicity termination (M_q^s > R_q)
-	// latched during a search's traversal — the recently-traversed cells no
-	// longer beat the running k-th best (RFC-156 Phase A). Telemetry only on the
-	// one-shot wrapper path (it does not truncate the exact horizon); it is the
-	// stop signal the resumable Phase B/C cursor consults.
+	// latched during a one-shot search's traversal — the recently-traversed cells
+	// no longer beat the running k-th best (RFC-156 Phase A). PURE TELEMETRY on
+	// the one-shot wrapper path: nothing consults f.phase2 as a stop signal (it
+	// does not truncate the exact horizon). The resumable Phase B/C streaming
+	// cursor does NOT consult phase2 — it terminates on the relaxed-monotonicity
+	// EMISSION BARRIER plus the budget/exhaustion caps (spfresh_stream.go), and
+	// it never calls refreshPhase2, so this counter NEVER increments on a streaming
+	// query (the SHARED searchInit probe still feeds observe(), but the streaming
+	// WIDEN bursts gate it off — scoreCells, f.reranked==nil — since those queues
+	// are dead weight once nothing will read phase2).
 	CountSPFreshPhase2Reached = Event{"spfresh_phase2_reached", "SPFresh Phase 2 Reached"}
 	// Capped posting reads: a search's posting fetch returned exactly the
 	// 4×Lmax+1 cap — the posting is PAST the split-dispatch envelope and its

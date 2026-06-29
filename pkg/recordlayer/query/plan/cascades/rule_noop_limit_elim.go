@@ -29,6 +29,12 @@ func (r *NoOpLimitElimRule) Matcher() matching.BindingMatcher { return r.matcher
 
 func (r *NoOpLimitElimRule) OnMatch(call *ExpressionRuleCall) {
 	lim := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
+	// A runtime cap (parameterized RFC-156 rank limit) is never a no-op — it
+	// bounds rows at execution. Its static limit is the -1 sentinel, which would
+	// otherwise read here as "no cap" and wrongly eliminate the LIMIT.
+	if lim.GetLimitValue() != nil {
+		return
+	}
 	if lim.GetLimit() >= 0 || lim.GetOffset() != 0 {
 		return
 	}

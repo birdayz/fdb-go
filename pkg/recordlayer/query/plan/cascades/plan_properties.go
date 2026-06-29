@@ -416,7 +416,12 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 			}
 		}
 		if limit < 0 {
-			// Negative limit = no cap (OFFSET-only stream).
+			// Negative limit = no cap (OFFSET-only stream). A RUNTIME-Value limit
+			// (GetLimitValue()!=nil) is also stored as limit=-1 and DELIBERATELY
+			// lands here: its real cap is only known at execution, so reading it as
+			// conservative no-cap (over-estimating cardinality) is the sound choice —
+			// over-estimation never enables an unsound rewrite (matching the explicit
+			// HintCost conservative choice). Do not "fix" this into reducing to -1.
 			return child
 		}
 		maxCard := child.GetMaxCardinality()

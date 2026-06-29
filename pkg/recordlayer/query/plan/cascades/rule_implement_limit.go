@@ -52,7 +52,12 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		if !ok {
 			continue
 		}
-		limitPlan := plans.NewRecordQueryLimitPlan(ph.GetRecordQueryPlan(), lim.GetLimit(), lim.GetOffset())
+		var limitPlan *plans.RecordQueryLimitPlan
+		if lv := lim.GetLimitValue(); lv != nil {
+			limitPlan = plans.NewRecordQueryLimitPlanWithValue(ph.GetRecordQueryPlan(), lv, lim.GetOffset())
+		} else {
+			limitPlan = plans.NewRecordQueryLimitPlan(ph.GetRecordQueryPlan(), lim.GetLimit(), lim.GetOffset())
+		}
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 		call.Yield(newPhysicalLimitWrapper(limitPlan, innerQ))
 	}

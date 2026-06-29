@@ -510,7 +510,16 @@ func (f *spfreshFrontier) scoreCells(cells []spfreshRouted) error {
 			if derr != nil {
 				return derr
 			}
-			f.observe(est)
+			// observe() feeds the relaxed-monotonicity queues that ONLY the one-shot
+			// path's refreshPhase2 telemetry consults. The streaming cursor never
+			// calls refreshPhase2 (it terminates on the emission barrier + budget), so
+			// feeding the queues during a streaming WIDEN burst is dead work.
+			// f.reranked is allocated only by streamInit (nil through searchInit's
+			// probe and the one-shot finalize widen), so it is the precise "streaming,
+			// post-init" gate — behaviour-preserving (phase2 never latched here).
+			if f.reranked == nil {
+				f.observe(est)
+			}
 			key := string(span)
 			if cur, ok := f.best[key]; !ok || est < cur {
 				f.best[key] = est
@@ -573,7 +582,11 @@ func (f *spfreshFrontier) resolveForwardPostings() error {
 			if derr != nil {
 				return derr
 			}
-			f.observe(est)
+			// Streaming-widen observe() is dead work — see scoreCells (the gate is
+			// f.reranked==nil ⟺ not a post-streamInit streaming burst).
+			if f.reranked == nil {
+				f.observe(est)
+			}
 			key := string(span)
 			if cur, ok := f.best[key]; !ok || est < cur {
 				f.best[key] = est

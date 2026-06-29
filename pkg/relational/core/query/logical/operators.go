@@ -239,14 +239,25 @@ func (s *LogicalSort) Explain(indent string) string {
 
 // LogicalLimit caps the row count, optionally after skipping Offset.
 // Negative Limit means "no limit" (pure offset).
+//
+// LimitValue is an OPTIONAL runtime row cap (RFC-156 parameterized vector rank
+// limit `... <= ?`): when non-nil the cap is evaluated at execution against the
+// bound parameters and Limit is the no-cap sentinel (-1).
 type LogicalLimit struct {
-	Input  LogicalOperator
-	Limit  int64
-	Offset int64
+	Input      LogicalOperator
+	Limit      int64
+	Offset     int64
+	LimitValue values.Value
 }
 
 func NewLimit(input LogicalOperator, limit, offset int64) *LogicalLimit {
 	return &LogicalLimit{Input: input, Limit: limit, Offset: offset}
+}
+
+// NewRuntimeLimit builds a LIMIT whose row cap is a runtime Value (evaluated at
+// execution). The static Limit is the no-cap sentinel (-1).
+func NewRuntimeLimit(input LogicalOperator, limitValue values.Value, offset int64) *LogicalLimit {
+	return &LogicalLimit{Input: input, Limit: -1, Offset: offset, LimitValue: limitValue}
 }
 
 // FoldTransparentUnaryInput returns (input, true) when op is a fold-transparent
@@ -271,6 +282,9 @@ func FoldTransparentUnaryInput(op LogicalOperator) (LogicalOperator, bool) {
 
 func (l *LogicalLimit) Children() []LogicalOperator { return []LogicalOperator{l.Input} }
 func (l *LogicalLimit) Explain(indent string) string {
+	if l.LimitValue != nil {
+		return fmt.Sprintf("%sLimit(%s)\n%s", indent, values.ExplainValue(l.LimitValue), l.Input.Explain(indent+"  "))
+	}
 	// Negative Limit means "no cap" — plan output reads better as
 	// Offset(N) than as Limit(-1 offset N).
 	if l.Limit < 0 {
