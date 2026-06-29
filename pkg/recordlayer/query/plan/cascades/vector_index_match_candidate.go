@@ -130,6 +130,14 @@ func NewVectorIndexScanMatchCandidate(
 // CandidateName returns the index name.
 func (c *VectorIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
+// EmitsOrderedStream reports whether this candidate's ToScanPlan emits the
+// VBASE distance-ordered (non-self-limiting) form — true for an un-partitioned
+// index (global rank, RFC-156 Phase B). Such a scan must NOT be folded into a
+// primary-key intersection: the residual composes as a Filter ABOVE the ordered
+// stream (Limit → Filter → ordered scan), not as an intersection arm (which
+// would reintroduce the predicate-subset-of-global-top-k wrong answer).
+func (c *VectorIndexScanMatchCandidate) EmitsOrderedStream() bool { return c.partitionCount == 0 }
+
 // GetTraversal returns the Traversal of this candidate's expression
 // tree, built lazily on first access.
 func (c *VectorIndexScanMatchCandidate) GetTraversal() *Traversal {
@@ -270,7 +278,7 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		}
 	}
 
-	return plans.NewRecordQueryVectorIndexPlan(
+	plan := plans.NewRecordQueryVectorIndexPlan(
 		c.indexName,
 		prefixComps,
 		queryVector,
@@ -281,6 +289,29 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		c.recordTypes,
 		c.flowedType,
 	)
+
+	// RFC-156 Phase B — canonical form for a GLOBAL-rank vector query (no
+	// PARTITION BY ⇔ an un-partitioned index, partitionCount == 0, e.g. the
+	// un-partitioned SPFresh case in §1): emit the scan in VBASE distance-
+	// ordered mode. It does NOT sink k as a scan-internal limit; instead it
+	// streams its bounded re-ranked horizon in distance order so a residual
+	// Filter and a Limit(k) ABOVE compose the true k nearest MATCHING rows
+	// (Limit(k) → Filter(residual) → ordered scan). SinkLimitIntoVectorScanRule
+	// folds a Limit(k) sitting directly above (no residual) back into the
+	// legacy self-limiting search(k) path. ToScanPlan never introspects the
+	// residual predicates and never emits a DistanceRowNumberValue as a residual
+	// — the index-only distance marker lives ONLY inside this plan's binding
+	// (queryVector/k), never as a free-floating residual the executor cannot
+	// evaluate.
+	//
+	// A PARTITIONED index (partitionCount > 0) keeps the legacy self-limiting
+	// per-partition fan-out (RFC-046): its QUALIFY rank is PER PARTITION, which a
+	// single global Limit cannot express, so extending VBASE ordered-stream to
+	// the multi-partition fan-out is deferred (RFC §4 Phase E generalization).
+	if c.partitionCount == 0 {
+		plan = plan.WithOrderedStream()
+	}
+	return plan
 }
 
 // extractDistanceRankComparison pulls the DistanceRank comparison out of a

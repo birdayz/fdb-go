@@ -2,6 +2,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -115,6 +116,143 @@ func TestFDB_VectorSearch_SPFreshE2E(t *testing.T) {
 		// arrive [1 2] exactly (Graefe merge-HEAD F3).
 		if ids[0] != 1 || ids[1] != 2 {
 			t.Errorf("K-NN ids = %v, want [1 2] IN DISTANCE ORDER (nearest to (0.9,0.1,0.0))", ids)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+}
+
+// TestFDB_VectorSearch_ResidualBugPin is the RFC-156 Phase B wrong-answer
+// regression (§1). An un-partitioned SPFresh vector index + a NON-partition
+// residual (CATEGORY='target') with QUALIFY ROW_NUMBER() OVER (ORDER BY
+// distance) <= K. The corpus is built so the GLOBAL top-K nearest rows are
+// DECOYS that FAIL the predicate, while the true K-nearest MATCHING rows sit
+// just behind them within the scan's re-ranked horizon:
+//
+//	query q = (1,0,0), K = 2
+//	decoys  (CATEGORY='other') : id 1 (1,0,0) d²=0 · id 2 (0.99,0.01,0) d²≈0
+//	matches (CATEGORY='target'): id 10 (0.9,0.1,0) d²=0.02 · id 11 (0.8,0.2,0)
+//	                              d²=0.08 · id 12 (0.7,0.3,0) d²=0.18
+//
+// Correct answer = the 2 nearest MATCHING rows in distance order: [10, 11].
+//
+// On Phase A HEAD this is the latent bug: k is sunk BELOW the residual, so the
+// scan returns the global top-2 {1,2} (decoys) and the residual filters them
+// out → ∅ (or the query fails to plan, since a residual over a self-limiting
+// vector scan is rejected). Phase B plans Limit(2) → Filter(CATEGORY) →
+// VectorIndexScan(ordered): the ordered scan streams its re-ranked horizon, the
+// Filter culls the decoys, and the Limit takes the true 2 nearest matching.
+func TestFDB_VectorSearch_ResidualBugPin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	// DOCS(ID, CATEGORY, EMBEDDING vector(3)) — un-partitioned SPFresh index on
+	// EMBEDDING; CATEGORY is a plain (un-indexed) residual column.
+	b := metadata.NewSchemaTemplateBuilder().SetName("vt")
+	b.AddTable("DOCS", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("CATEGORY", api.NewStringType(false), 2),
+		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 3),
+	}, []string{"ID"})
+	b.AddVectorIndexUsing("SPFRESH", "DOCS", "VEC_IDX", "EMBEDDING", nil,
+		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	desc := md.GetRecordType("DOCS").Descriptor
+
+	makeRec := func(id int64, category string, vec []float64) proto.Message {
+		m := dynamicpb.NewMessage(desc)
+		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(category))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		return m
+	}
+	type rec struct {
+		id       int64
+		category string
+		vec      []float64
+	}
+	corpus := []rec{
+		{1, "other", []float64{1, 0, 0}},       // global nearest — DECOY (fails predicate)
+		{2, "other", []float64{0.99, 0.01, 0}}, // 2nd nearest    — DECOY
+		{10, "target", []float64{0.9, 0.1, 0}}, // nearest MATCH
+		{11, "target", []float64{0.8, 0.2, 0}}, // 2nd nearest MATCH
+		{12, "target", []float64{0.7, 0.3, 0}}, // 3rd nearest MATCH (excluded by K=2)
+	}
+	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		if sErr != nil {
+			return nil, sErr
+		}
+		for _, r := range corpus {
+			if _, e := store.SaveRecord(makeRec(r.id, r.category, r.vec)); e != nil {
+				return nil, e
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	sql := `SELECT id FROM docs WHERE category = 'target'
+		QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 2`
+	plan, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err != nil {
+		t.Fatalf("plan (RFC-156 Phase B should make this plannable): %v", err)
+	}
+	exp := plan.Explain()
+	// Canonical Phase B shape: Limit ABOVE Filter ABOVE an ORDERED vector scan;
+	// k is NOT sunk into the scan (no rank<).
+	if !strings.Contains(exp, "VectorIndexScan") || !strings.Contains(exp, "ordered") {
+		t.Fatalf("expected an ordered VectorIndexScan; explain:\n%s", exp)
+	}
+	if strings.Contains(exp, "rank<") {
+		t.Fatalf("k was sunk into the scan instead of a Limit above the filter:\n%s", exp)
+	}
+
+	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, sErr := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+		if sErr != nil {
+			return nil, sErr
+		}
+		cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+			executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+		if cErr != nil {
+			return nil, cErr
+		}
+		defer cursor.Close()
+		results, rErr := executor.CollectAll(ctx, cursor)
+		if rErr != nil {
+			return nil, rErr
+		}
+		ids := make([]int64, 0, len(results))
+		for _, r := range results {
+			ids = append(ids, r.Datum.(map[string]any)["ID"].(int64))
+		}
+		// The true 2 nearest MATCHING rows in distance order — decoys 1 & 2
+		// (nearer, CATEGORY='other') excluded; id 12 (farther) excluded by K=2.
+		want := []int64{10, 11}
+		if !reflect.DeepEqual(ids, want) {
+			t.Errorf("residual K-NN ids = %v, want %v (true 2 nearest CATEGORY='target', "+
+				"decoys excluded, in distance order — the §1 wrong-answer bug)", ids, want)
 		}
 		return nil, nil
 	})

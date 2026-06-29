@@ -86,12 +86,27 @@ func (w *physicalVectorIndexScanWrapper) HintCost(_ []properties.Cost, _ propert
 	return properties.Cost{Cardinality: card * physicalWrapperCostMultiplier, CPU: 0}
 }
 
+// defaultVectorHorizon is the bounded re-ranked horizon an ordered-stream scan
+// is costed at when ef_search is unspecified (mirrors the executor's
+// defaultVectorEfSearch). It is deliberately >> any reasonable k so that, for a
+// no-residual query, SinkLimitIntoVectorScanRule's folded self-limiting scan
+// (cardinality k) out-costs the un-folded Limit-over-ordered-scan (cardinality
+// horizon) and wins — restoring the legacy one-shot fast path.
+const defaultVectorHorizon = 200.0
+
 // vectorScanCardinality returns the plan-time top-K when it is a literal int,
-// else a small default.
+// else a small default. An ORDERED-STREAM scan (RFC-156 Phase B) is NOT self-
+// limited to k — it streams its fixed re-ranked horizon (the re-rank budget,
+// decoupled from the probe width) — so it is costed at the horizon, not k. This
+// makes a residual-bearing ordered scan correctly more expensive than a folded
+// top-k scan, and lets the SinkLimit fold win whenever it is applicable.
 func vectorScanCardinality(plan *plans.RecordQueryVectorIndexPlan) float64 {
 	const defaultK = 10.0
 	if plan == nil || plan.GetK() == nil {
 		return defaultK
+	}
+	if plan.IsOrderedStream() {
+		return defaultVectorHorizon
 	}
 	// Plan-time cost estimation: a non-constant or erroring K declines to the
 	// default cardinality rather than failing planning.

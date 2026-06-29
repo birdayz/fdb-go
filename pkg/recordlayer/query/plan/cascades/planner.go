@@ -617,6 +617,17 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
 		var restrictedMatches []PartialMatch
 		for _, m := range allMatches {
+			// RFC-156 Phase B: an ordered-stream vector scan must not be an
+			// intersection arm. Intersection is a SELF-LIMITING combinator — it
+			// merges its intersecting cursors into a single bounded (top-k)
+			// result — so folding an ordered-stream scan into it would self-limit
+			// the scan BELOW the residual, the very thing this phase forbids. This
+			// is the same root invariant as the compensationSafeForYield
+			// relaxation: a residual must compose ABOVE the un-limited ordered
+			// stream (Limit → Filter → ordered scan), never collapse it.
+			if vc, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok && vc.EmitsOrderedStream() {
+				continue
+			}
 			if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
 				restrictedMatches = append(restrictedMatches, m)
 			}
@@ -707,8 +718,23 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			continue
 		}
 		for _, m := range cref.AllMembers() {
-			switch m.(type) {
-			case *physicalVectorIndexScanWrapper, *physicalAggregateIndexWrapper:
+			switch v := m.(type) {
+			case *physicalVectorIndexScanWrapper:
+				// A residual applied AFTER a self-limiting top-k vector scan
+				// changes the result (you would post-filter the K rows, not the
+				// underlying set) — UNSAFE, keep on the OLD InsertFinal path.
+				// But a residual over an ORDERED-STREAM scan (RFC-156 Phase B) is
+				// SAFE and CORRECT: the scan emits its full re-ranked horizon in
+				// distance order, so a Filter culls non-matching rows BEFORE the
+				// Limit(k) above takes k — the VBASE "filter-during-traversal"
+				// shape (Limit → Filter → ordered scan). Route it through
+				// yieldUnknown so ImplementFilterRule realizes the physical Filter
+				// over the ordered scan (the residual is non-index-only; the
+				// index-only distance marker lives only inside the scan binding).
+				if v.plan == nil || !v.plan.IsOrderedStream() {
+					return false
+				}
+			case *physicalAggregateIndexWrapper:
 				return false
 			}
 		}

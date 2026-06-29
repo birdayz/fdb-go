@@ -348,20 +348,6 @@ func executeVectorIndexScan(
 		return nil, fmt.Errorf("executor: vector index %q top-K: %w", p.GetIndexName(), err)
 	}
 
-	// Derive the scan limit from the rank operator, matching Java's
-	// VectorIndexScanBounds.getAdjustedLimit: ROW_NUMBER() < K returns the top
-	// K-1, ROW_NUMBER() <= K returns the top K. (= K is rejected upstream at the
-	// DistanceRank comparison, so only < / <= reach here.) k is already ≥ 1
-	// (evalPositiveInt), so limit ≥ 0; limit == 0 (ROW_NUMBER() < 1) selects no
-	// rows.
-	limit := k
-	if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
-		limit = k - 1
-	}
-	if limit <= 0 {
-		return recordlayer.Empty[QueryResult](), nil
-	}
-
 	// The default is the INDEX METHOD's own (HNSW efSearch=200; SPFresh's
 	// tuned kc=64 — passing 200 here silently overrode it for every SQL
 	// query, Torvalds 094.4 nit). 0 = "use the maintainer's default"; only
@@ -373,11 +359,50 @@ func executeVectorIndexScan(
 	if p.GetEfSearch() != nil {
 		efSearch = *p.GetEfSearch()
 	}
-	if efSearch != 0 && efSearch < limit {
-		efSearch = limit
-	}
 
-	scanRange := recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+	var scanRange recordlayer.TupleRange
+	if p.IsOrderedStream() {
+		// RFC-156 Phase B — VBASE distance-ordered mode: do NOT self-limit to k.
+		// Stream the bounded re-ranked HORIZON in ascending distance order so the
+		// Filter ABOVE culls non-matching rows and the Limit(k) ABOVE takes the
+		// true k nearest MATCHING rows.
+		//
+		// The horizon is the RE-RANK BUDGET (how many exact-re-ranked rows to
+		// emit) — NOT the probe width. It is threaded as the re-rank budget c
+		// (SPFresh's High-tuple c slot) so the index re-ranks ~horizon candidates
+		// while its TUNED probe width stays untouched (SPFresh kc=64, HNSW ef).
+		// Forcing efSearch up to the horizon (the prior approach) overrode
+		// SPFresh's kc AND triggered the c = 4·k inflation, re-ranking ~4×horizon
+		// — the spfresh-reviewer / Torvalds Phase B NAK. Probing kc=64 cells
+		// yields hundreds of candidates; re-ranking the top-`horizon` of them is
+		// correct and cheap. efSearch is passed UNCHANGED as the probe width.
+		//
+		// Phase B uses a FIXED horizon (the ef-default-derived re-rank budget).
+		// An adaptive per-index horizon and demand-driven widening until k
+		// survivors for rare/very-selective predicates are Phase C (not built
+		// here) — for a residual whose matches lie within this horizon the result
+		// is exactly the k nearest matching rows.
+		horizon := defaultVectorEfSearch
+		scanRange = recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
+	} else {
+		// Self-limiting (top-k) mode. Derive the scan limit from the rank
+		// operator, matching Java's VectorIndexScanBounds.getAdjustedLimit:
+		// ROW_NUMBER() < K returns the top K-1, ROW_NUMBER() <= K returns the top
+		// K. (= K is rejected upstream at the DistanceRank comparison, so only
+		// < / <= reach here.) k is already ≥ 1 (evalPositiveInt), so limit ≥ 0;
+		// limit == 0 (ROW_NUMBER() < 1) selects no rows.
+		limit := k
+		if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
+			limit = k - 1
+		}
+		if limit <= 0 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
+		if efSearch != 0 && efSearch < limit {
+			efSearch = limit
+		}
+		scanRange = recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+	}
 	scanProps := recordlayer.ScanProperties{
 		ExecuteProperties:   props,
 		CursorStreamingMode: recordlayer.StreamingModeIterator,

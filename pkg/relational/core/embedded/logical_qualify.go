@@ -223,6 +223,140 @@ func applyDistanceRankTransform(p predicates.QueryPredicate) predicates.QueryPre
 	}
 }
 
+// wrapGlobalRankVectorLimit implements the RFC-156 Phase B canonical lowering
+// for a GLOBAL-rank vector K-NN query (a QUALIFY ROW_NUMBER() <op> K with NO
+// PARTITION BY — the un-partitioned §1 shape). It inserts a LogicalLimit(K)
+// DIRECTLY above the LogicalFilter that carries the (just-attached) DistanceRank
+// predicate, producing the property-driven shape
+//
+//	Limit(K) → Filter(residual) → VectorIndexScan(distance-ordered)
+//
+// where a residual WHERE is present, and `Limit(K) → VectorIndexScan` otherwise
+// (which SinkLimitIntoVectorScanRule folds back into the scan's self-limiting
+// top-k). The distance ranking stays as the index-only DistanceRank predicate so
+// the vector match candidate consumes it (the ordering is intrinsic to the
+// scan); the rank LIMIT becomes a plain row Limit over the order-preserving
+// filtered stream — exactly "the K nearest rows that satisfy the predicate".
+//
+// PARTITIONED ranks (non-empty PARTITION BY) are left UNCHANGED: their rank is
+// per-partition and a single global Limit cannot express it, so the legacy
+// self-limiting per-partition fan-out (RFC-046) is retained.
+func wrapGlobalRankVectorLimit(op logical.LogicalOperator, qualPred predicates.QueryPredicate) logical.LogicalOperator {
+	if op == nil || qualPred == nil {
+		return op
+	}
+	limit, ok := globalRankVectorLimit(qualPred)
+	if !ok {
+		return op
+	}
+	// Insert the Limit directly above the FIRST LogicalFilter on the unary spine
+	// (where the QUALIFY predicate was just attached). Keeps any SELECT
+	// projection above the Limit (Project → Limit → Filter → Scan).
+	var parent logical.LogicalOperator
+	for cur := op; cur != nil; {
+		if _, isFilter := cur.(*logical.LogicalFilter); isFilter {
+			wrapped := logical.NewLimit(cur, limit, 0)
+			if parent == nil {
+				return wrapped
+			}
+			setUnaryInput(parent, wrapped)
+			return op
+		}
+		child, isUnary := unaryInput(cur)
+		if !isUnary {
+			break
+		}
+		parent = cur
+		cur = child
+	}
+	// No filter on the spine (should not happen for a QUALIFY query) — wrap the
+	// whole plan so the rank limit is never silently dropped.
+	return logical.NewLimit(op, limit, 0)
+}
+
+// globalRankVectorLimit returns the adjusted row limit (K for ROW_NUMBER() <= K,
+// K-1 for < K) when the predicate contains a GLOBAL-rank (empty PARTITION BY)
+// vector DistanceRank comparison with a literal positive K, else ok=false. A
+// PARTITION BY (non-empty partitioning) or a non-literal K declines — the legacy
+// in-scan limit path is kept for those.
+func globalRankVectorLimit(p predicates.QueryPredicate) (int64, bool) {
+	var limit int64
+	found := false
+	predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
+		if found {
+			return false
+		}
+		cp, ok := node.(*predicates.ComparisonPredicate)
+		if !ok {
+			return true
+		}
+		partitioning, isDist := distanceRowNumberPartitioning(cp.Operand)
+		if !isDist || len(partitioning) != 0 {
+			return true // not a distance rank, or a PARTITION BY (per-partition) rank
+		}
+		var adjust int64
+		switch cp.Comparison.Type {
+		case predicates.ComparisonDistanceRankLessThanOrEq:
+			adjust = 0
+		case predicates.ComparisonDistanceRankLessThan:
+			adjust = -1
+		default:
+			return true // EQUALS is rejected upstream; nothing else is a top-k rank
+		}
+		if cp.Comparison.Operand == nil {
+			return true
+		}
+		kv, err := cp.Comparison.Operand.Evaluate(nil)
+		if err != nil {
+			return true // non-literal K: keep the legacy path
+		}
+		k, ok := asInt64Literal(kv)
+		if !ok {
+			return true
+		}
+		if k+adjust <= 0 {
+			return true
+		}
+		limit = k + adjust
+		found = true
+		return false
+	})
+	return limit, found
+}
+
+// distanceRowNumberPartitioning returns the PARTITION BY values of a
+// metric-specific DistanceRowNumberValue (the LHS a global/partitioned vector
+// rank lowers to), or ok=false for any other value.
+func distanceRowNumberPartitioning(v values.Value) ([]values.Value, bool) {
+	switch t := v.(type) {
+	case *values.EuclideanDistanceRowNumberValue:
+		return t.PartitioningValues, true
+	case *values.EuclideanSquareDistanceRowNumberValue:
+		return t.PartitioningValues, true
+	case *values.CosineDistanceRowNumberValue:
+		return t.PartitioningValues, true
+	case *values.DotProductDistanceRowNumberValue:
+		return t.PartitioningValues, true
+	default:
+		return nil, false
+	}
+}
+
+// asInt64Literal coerces an evaluated comparand to int64 (the K of a distance
+// rank). Returns ok=false for non-integer kinds.
+func asInt64Literal(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
 // invertRowNumberComparison maps `K <op> ROW_NUMBER()` to the equivalent
 // `ROW_NUMBER() <op'> K` comparison type. Only =, <, <=, >, >= invert to a
 // supported DistanceRank form; others return false.

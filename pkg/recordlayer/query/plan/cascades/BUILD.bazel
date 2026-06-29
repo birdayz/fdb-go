@@ -181,6 +181,7 @@ go_library(
         "rule_select_merge.go",
         "rule_set_op_singleton.go",
         "rule_simplify.go",
+        "rule_sink_limit_into_vector_scan.go",
         "rule_sort_constant_keys_elim.go",
         "rule_sort_dedup_keys.go",
         "rule_sort_merge.go",
