@@ -329,6 +329,77 @@ func TestSPFreshChaos_ConcurrentRefineRebalanceFaults(t *testing.T) {
 	t.Logf("concurrent done: %d records written, %d faults injected", writers*perWriter+8, len(s.FaultLog()))
 }
 
+// The bulk-build path under faults — BuildSPFreshIndex is a multi-transaction
+// process whose crash-safety rests on a build token + a cellfin state machine
+// that "resumes idempotently" on rerun. The foreground/maintenance tests above
+// never exercise it. Here: disable the index, load records, then build THROUGH
+// the fault transactor (commit_unknown / conflict / too_old landing mid-build),
+// rerunning until it completes (the designed recovery), then verify the built
+// index matches the model exactly.
+func TestSPFreshChaos_BulkBuildUnderFault(t *testing.T) {
+	t.Parallel()
+	md := spfreshChaosMetadata(t)
+	// Very heavy commit_unknown (20%) so many build sub-transactions double-
+	// commit — the strongest stress on the build's per-step idempotence.
+	s := NewScenario(t, testRealDB, md, WithSeed(0x5907), WithFaults(FaultsRetryVeryHeavy))
+	ctx := context.Background()
+
+	markDisabled := func() {
+		_, err := s.CleanDB().Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, e := s.OpenStore(rtx)
+			if e != nil {
+				return nil, e
+			}
+			_, e = store.MarkIndexDisabled(spfreshChaosIndex)
+			return nil, e
+		})
+		if err != nil {
+			t.Fatalf("disable index: %v", err)
+		}
+	}
+	markReadable := func() {
+		_, err := s.CleanDB().Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, e := s.OpenStore(rtx)
+			if e != nil {
+				return nil, e
+			}
+			_, e = store.MarkIndexReadable(spfreshChaosIndex)
+			return nil, e
+		})
+		if err != nil {
+			t.Fatalf("mark readable: %v", err)
+		}
+	}
+
+	// Build-then-read: disable so the inserts don't maintain the index.
+	markDisabled()
+	for id := int64(1); id <= 90; id++ {
+		s.SaveRecord(spfOrder(id, int32(id%8), int32((id/8)%8)))
+	}
+
+	// Build THROUGH the fault transactor; rerun until it completes (each rerun
+	// must take over the token + resume the cellfin machine idempotently).
+	built := false
+	for attempt := 0; attempt < 10 && !built; attempt++ {
+		if err := recordlayer.BuildSPFreshIndex(ctx, s.ChaosDB(), s.OpenStore, spfreshChaosIndex, 42); err == nil {
+			built = true
+		}
+	}
+	if !built {
+		// Faults kept interrupting — finish cleanly. A clean rerun MUST resume
+		// the interrupted build to completion (the crash-safety contract); if
+		// it can't, that's the bug.
+		if err := recordlayer.BuildSPFreshIndex(ctx, s.CleanDB(), s.OpenStore, spfreshChaosIndex, 42); err != nil {
+			t.Fatalf("clean build rerun after fault attempts failed to resume: %v", err)
+		}
+	}
+
+	markReadable()
+	s.DrainSPFresh(spfreshChaosIndex)
+	s.Verify()
+	t.Logf("bulk build under faults: built=%v, %d faults injected", built, len(s.FaultLog()))
+}
+
 // itoa renders a uint64 seed for subtest names without importing strconv at
 // every call site.
 func itoa(v uint64) string {
