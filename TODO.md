@@ -950,26 +950,31 @@ normalizeString/isCaseSensitive model so quoting consistently selects case-sensi
 star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
 (threads through the catalog + semantic analyzer).
 
-### [ ] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity; found 2026-06-28)
+### [x] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity) — DONE (RFC-158)
 
-`<DML> ... OPTIONS (DRY RUN)` is currently REJECTED (0AF00 "DRY RUN is not supported",
-planDML in cascades_generator.go) — a fail-closed stopgap for what was a SEVERE
-data-loss bug: the option was silently ignored and the statement ran the REAL mutation
-(`DELETE WHERE a>0 OPTIONS (DRY RUN)` wiped every matching row — the opposite of DRY
-RUN's intent). Regression: dryrun_option_rejected_probe_test.go.
+`<DML> ... OPTIONS (DRY RUN)` now PREVIEWS the would-be-affected rows without committing, matching
+Java (AstNormalizer.visitQueryOptions → Options.DRY_RUN → ExecuteProperties.setDryRun → the DML plans
+branch to dryRunSave/DeleteRecordAsync). Replaces the former fail-closed reject (the data-loss
+stopgap). Threading is STATEMENT-scoped (Torvalds NAK on the v1 connection-options design — that
+would have gone sticky / never-fired, resurrecting the data-loss bug): `dmlHasDryRunOption` →
+`cascadesPlan.dryRun` → `paginatingRows.dryRun` → `ExecuteProperties.DryRun`, where
+executeInsert/Update/Delete branch onto `DryRunSaveRecord`/`DryRunDeleteRecord`. Existence checks
+still fire (INSERT of an existing PK under DRY RUN → 23505, parity). EXPLAIN renders the plan (never
+executes). Pinned by `dml_dry_run_fdb_test.go` (11 subtests incl. the no-sticky data-loss sentinel +
+BeginTx). Graefe + Torvalds ACK (RFC).
 
-To reach Java parity (Java honors DRY RUN: AstNormalizer.visitQueryOptions sets
-Options.Name.DRY_RUN → QueryPlan.setDryRun → previews without committing): (1) parse the
-queryOptions clause into api.Options (OptDryRun already exists, api/options.go:80;
-NOCACHE/LOG QUERY/EF_SEARCH too); (2) thread OptDryRun to the DML executor; (3) branch
-the executor onto the EXISTING store primitives DryRunSaveRecord / DryRunDeleteRecord
-(store_api.go:233/353, already ported from Java's dryRun*Async) and return the
-would-be-affected count WITHOUT committing. Flip the reject + the sentinel when done.
+### [x] dml: DryRunSaveRecord secondary-UNIQUE / intra-statement-PK preview scope — RESOLVED (matches Java, NOT a bug)
 
-Note (Graefe): the reject sits in planDML (the exec path), so EXPLAIN-only mode
-(`EXPLAIN <DML> ... OPTIONS (DRY RUN)`, no DB) bypasses it and renders a plan rather
-than 0AF00. Harmless (EXPLAIN never mutates), slightly inconsistent — when wiring DRY
-RUN, surface it on the explain path too (or reject there) for consistency.
+Graefe (RFC-158 review) + codex flagged that `DryRunSaveRecord` previews success for an INSERT that
+the real path rejects on a secondary UNIQUE index, and (codex) for an intra-statement duplicate PK.
+**Reading Java settled it as Java-faithful, not a divergence:** `FDBRecordStore.saveTypedRecord(isDryRun
+=true)` EARLY-RETURNS at FDBRecordStore.java:578 — BEFORE `serializeAndSaveRecord` (staging) and
+`updateSecondaryIndexes` (line 594). So Java's dry-run also validates only the PK existence check
+against pre-statement state and skips secondary-index validation + intra-statement staging. Go matches
+Java exactly. Adding secondary-index validation would make Go STRICTER than Java — a conformance
+divergence (Go rejecting a DRY RUN that Java previews as success), forbidden by the conformance
+principle. Pinned Java-faithful by `dml_dry_run_fdb_test.go::TestFDB_DmlDryRun_MatchesJavaLightweightValidation`
++ documented at `DryRunSaveRecord` (store_api.go). No action — do NOT "fix" it into a divergence.
 
 ### [ ] dml: DELETE/UPDATE ... RETURNING silently ignored — Java supports it (divergence, found 2026-06-28)
 

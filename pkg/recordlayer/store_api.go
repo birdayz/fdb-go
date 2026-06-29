@@ -226,9 +226,23 @@ func (store *FDBRecordStore) GetSubspace() subspace.Subspace {
 	return store.subspace
 }
 
-// DryRunSaveRecord performs all save validation (existence checks, type checks,
-// lock state) without actually writing data. Returns what the stored record
-// would look like if saved, or an error if validation fails.
+// DryRunSaveRecord validates a save and returns what the stored record would look
+// like if saved, without actually writing data.
+//
+// Scope — matches Java's FDBRecordStore.saveTypedRecord(isDryRun=true), which early-returns
+// at FDBRecordStore.java:578 BEFORE serializeAndSaveRecord (staging) and
+// updateSecondaryIndexes (line 594): this validates the PRIMARY-KEY existence/type check
+// against the current transaction state only. It deliberately does NOT stage the write and
+// does NOT run secondary-index maintenance. Consequences, both Java-faithful:
+//   - a secondary-UNIQUE conflict is NOT detected in dry-run (only the real save's
+//     updateSecondaryIndexes catches it), and
+//   - a duplicate PK introduced WITHIN the same statement is not seen by a later row (no
+//     write is staged between rows).
+//
+// Detecting either would make Go's preview STRICTER than Java's — a conformance divergence
+// (Go rejecting a DRY RUN that Java previews as success). Pinned by
+// TestFDB_DmlDryRun_MatchesJavaLightweightValidation.
+//
 // Matches Java's FDBRecordStore.dryRunSaveRecordAsync().
 func (store *FDBRecordStore) DryRunSaveRecord(
 	record proto.Message,

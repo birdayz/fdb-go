@@ -2199,7 +2199,17 @@ func executeDelete(
 		if qr.PrimaryKey == nil {
 			continue
 		}
-		deleted, err := store.DeleteRecord(qr.PrimaryKey)
+		var deleted bool
+		var err error
+		if props.DryRun {
+			// DRY RUN: validate + preview the delete without staging a write
+			// (Java RecordQueryDeletePlan + dryRunDeleteRecordAsync). The
+			// `if deleted` echo filter below is preserved (Java's
+			// .filter(isDeleted -> isDeleted)) so only would-be-deleted PKs echo.
+			deleted, err = store.DryRunDeleteRecord(qr.PrimaryKey)
+		} else {
+			deleted, err = store.DeleteRecord(qr.PrimaryKey)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("executor: deleting record pk=%v: %w", qr.PrimaryKey, err)
 		}
@@ -2308,7 +2318,17 @@ func executeInsert(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	for _, msg := range built {
-		stored, serr := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+		var stored *recordlayer.FDBStoredRecord[proto.Message]
+		var serr error
+		if props.DryRun {
+			// DRY RUN: validate (incl. the existence check → 23505 on an existing
+			// PK, parity with the real path) and preview the insert without
+			// staging a write; echo from the returned would-be-stored record
+			// (Java RecordQueryInsertPlan + dryRunSaveRecordAsync), not a real save.
+			stored, serr = store.DryRunSaveRecord(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+		} else {
+			stored, serr = store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+		}
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)
 		}
@@ -2471,7 +2491,16 @@ func executeUpdate(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	for _, msg := range built {
-		stored, err := store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+		var stored *recordlayer.FDBStoredRecord[proto.Message]
+		var err error
+		if props.DryRun {
+			// DRY RUN: validate + preview the update without staging a write; echo
+			// from the returned would-be-stored record (Java RecordQueryUpdatePlan
+			// + dryRunSaveRecordAsync), not a real save.
+			stored, err = store.DryRunSaveRecord(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+		} else {
+			stored, err = store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("executor: updating record: %w", err)
 		}
