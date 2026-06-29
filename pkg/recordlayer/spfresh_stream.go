@@ -195,10 +195,19 @@ func (f *spfreshFrontier) streamWidenBatch() error {
 	}
 
 	if len(batch) == 0 {
-		// Nothing left to admit: exhausted iff the re-route returned the COMPLETE
-		// centroid set; otherwise we stopped at the routed budget (more cells exist
-		// beyond our maxCells-nearest re-route → honest budget truncation).
-		if f.widenRouteComplete {
+		// Nothing left to admit. Claiming exhaustion (SourceExhausted — "the index
+		// is complete, this is the whole answer") requires BOTH the re-route
+		// returned the COMPLETE centroid set AND no posting was read-capped this
+		// scan. A capped posting (fetch hit the 4×Lmax+1 read cap — RFC-094 §4)
+		// is an oversized, unmaintained list whose larger-PK tail was INVISIBLE to
+		// scoreCells: rows we never examined. Claiming completeness with capped
+		// postings outstanding is a silent under-return — a residual matching only
+		// an invisible-tail row would return SourceExhausted with the wrong/empty
+		// set and no truncation signal. Report budget truncation instead →
+		// ScanLimitReached, and refileCapped (at the terminal) re-files the split
+		// so a retry after the rebalancer maintains the posting sees the true rows.
+		// Mirrors the coarse-route conservatism (streamReroute: len(routed) < maxCells).
+		if f.widenRouteComplete && len(f.s.capped) == 0 {
 			f.streamExhaust = true
 		} else {
 			f.budgetHit = true

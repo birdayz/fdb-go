@@ -330,6 +330,56 @@ var _ = Describe("SPFresh ordered-stream cursor (RFC-156 Phase C)", func() {
 			"cosine streaming (barrier disabled, materialize-then-emit) == exhaustive one-shot — exact for a non-L2 metric")
 	})
 
+	It("non-Euclidean inner-product (dot) metric streams correctly via materialize-then-emit (metric guard)", func() {
+		// Companion to the cosine spec above, on the OTHER non-metric: unnormalized
+		// inner-product (−dot). Like cosine it fails the triangle inequality AND is
+		// not preserved under translation, so the residual-margin barrier is unsound
+		// — streamInit DISABLES it (barrierEnabled is true ONLY for EUCLIDEAN) and
+		// the cursor falls back to materialize-then-emit. For inner product the
+		// d2-admission order can even DISAGREE with the metric order (magnitude
+		// matters), so this is the metric whose early-streaming barrier would be most
+		// wrong — proving the guard, the streamed top-k must still equal the
+		// exhaustive one-shot. Magnitudes VARY across the grid (j scales the second
+		// coordinate) so −dot is not a monotone function of either axis alone; the
+		// query has a non-trivial best-dot ordering.
+		var inputs []spfreshBuildInput
+		id := int64(1)
+		for i := 0; i < 8; i++ {
+			for j := 0; j < 8; j++ {
+				inputs = append(inputs, spfreshBuildInput{pk: tuple.Tuple{id}, vec: []float64{float64(i) + 1, float64(j)*0.5 + 1}})
+				id++
+			}
+		}
+		base, cfg, idx := buildStreamIdx("noneuclid-ip", 8, 2, inputs, VectorMetricInnerProduct)
+		Expect(cfg.Metric).To(Equal(VectorMetricInnerProduct))
+		query := []float64{0.3, 1.0}
+
+		oneShot := oneShotTopK(base, cfg, idx, query, 64)
+		Expect(oneShot).To(HaveLen(64))
+		out := drive(base, cfg, idx, query, defaultSPFreshStreamBudget(), nil, 0)
+		Expect(out.reason).To(Equal(SourceExhausted),
+			"the inner-product index exhausts within budget (materialize-then-emit)")
+		Expect(out.timer.GetCount(CountSPFreshStreamWiden)).To(BeNumerically(">", 0),
+			"the grid spans multiple widen batches — the cross-batch materialize-then-emit path is exercised")
+		Expect(out.ids).To(Equal(oneShot),
+			"inner-product streaming (barrier disabled, materialize-then-emit) == exhaustive one-shot — exact for the −dot non-metric")
+		// Direct emission-order check against the fp16-roundtripped −dot oracle: the
+		// flushed order is metric-monotone (it equals a sort over the scanned set).
+		var ids []int64
+		var vecs [][]float64
+		for _, in := range inputs {
+			ids = append(ids, in.pk[0].(int64))
+			vecs = append(vecs, in.vec)
+		}
+		ipOracle, ipDist := bruteForce(ids, vecs, query, cfg.Metric)
+		Expect(out.ids).To(Equal(ipOracle),
+			"inner-product streamed order == fp16 −dot brute-force order over the full scanned set")
+		for i := 1; i < len(out.ids); i++ {
+			Expect(ipDist[out.ids[i]]).To(BeNumerically(">=", ipDist[out.ids[i-1]]),
+				"materialize-then-emit flushes in metric (−dot) order — no out-of-order emission")
+		}
+	})
+
 	It("widens beyond the fixed horizon to return the true k nearest MATCHING rows (rare predicate)", func() {
 		base, cfg, idx := buildStreamIdx("rare-widen", 16, 2, rareCorpus())
 		query := []float64{0, 0}

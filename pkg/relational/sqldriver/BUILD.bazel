@@ -272,6 +272,7 @@ go_test(
         "vector_multipartition_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",
         "vector_spfresh_e2e_fdb_test.go",
+        "vector_spfresh_filter_combos_fdb_test.go",
         "w2_metamorphic_test.go",
         "w3_5_plan_diversity_test.go",
         "windowed_aggregate_probe_test.go",
