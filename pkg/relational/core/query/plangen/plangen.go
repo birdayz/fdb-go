@@ -825,6 +825,15 @@ func convertLimit(l *logical.LogicalLimit) (expressions.RelationalExpression, er
 		return nil, fmt.Errorf("limit input: %w", err)
 	}
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	// Preserve a runtime (parameterized) row cap. A logical.NewRuntimeLimit
+	// (RFC-156 vector rank limit `... <= ?`) carries the cap as a non-nil
+	// LimitValue with Limit == -1, the no-cap sentinel. Dropping LimitValue here
+	// would translate that sentinel into an UNBOUNDED limit — a silent no-cap.
+	// Mirror the live cascades path (cascades_translator.newLimitExprFromLogical):
+	// emit the runtime form so the cap is evaluated at execution.
+	if l.LimitValue != nil {
+		return expressions.NewRuntimeLogicalLimitExpression(l.LimitValue, l.Offset, q), nil
+	}
 	return expressions.NewLogicalLimitExpression(l.Limit, l.Offset, q), nil
 }
 

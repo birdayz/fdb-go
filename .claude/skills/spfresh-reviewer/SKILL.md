@@ -13,6 +13,10 @@ spec: the SPANN and SPFresh papers**, both in this folder:
 | `spann-paper.pdf` | SPANN (NeurIPS'21, arXiv:2111.08566) | The static index: centroid+posting-list layout, hierarchical balanced clustering, **closure replication**, **query-aware dynamic (ε) pruning** |
 | `spfresh-paper.pdf` | SPFresh (SOSP'23, arXiv:2410.14452) | Fresh updates on SPANN: **LIRE** (Lightweight Incremental REbalancing) — in-place append, split, **NPA-bounded reassignment**, merge; the update/rebalance cost and recall-stability arguments |
 
+Citations and licenses for both PDFs (and the related VBASE/Graefe summaries) are
+in [`SOURCES.md`](SOURCES.md). The PDFs are CC-licensed and included verbatim — do
+not modify them (SPFresh is No-Derivatives).
+
 Read the papers with the Read tool (`pages` ranges). This is the SPFresh analog
 of the `query-engine` skill (Graefe) and `fdb-client-review` (FDB C++ dev):
 **the paper authors' word is final on algorithmic fidelity.** Where our design

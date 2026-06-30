@@ -496,6 +496,10 @@ func ExplainValue(v Value) string {
 		return cv.Field
 	case *ArithmeticValue:
 		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
+	case *StrictRankLimitValue:
+		// Renders as the strict adjustment it computes (max(0, K-1)); matches the
+		// prior ArithmeticValue "(K - 1)" form so plan output is unchanged.
+		return "(" + ExplainValue(cv.K) + " - 1)"
 	case *BooleanValue:
 		if cv.Value == nil {
 			return "NULL"

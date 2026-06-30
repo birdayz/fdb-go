@@ -39,6 +39,11 @@ func (r *PushLimitThroughUnionRule) Matcher() matching.BindingMatcher { return r
 
 func (r *PushLimitThroughUnionRule) OnMatch(call *ExpressionRuleCall) {
 	limit := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
+	// A runtime cap (parameterized RFC-156 rank limit) carries a Value the
+	// int64-only rebuild below would drop — leave it in place.
+	if limit.GetLimitValue() != nil {
+		return
+	}
 	innerExpr := limit.GetInner().GetRangesOver().Get()
 	union, ok := innerExpr.(*expressions.LogicalUnionExpression)
 	if !ok {

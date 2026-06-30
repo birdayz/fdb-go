@@ -1720,6 +1720,43 @@ func TestConvert_LimitWithOffset(t *testing.T) {
 	}
 }
 
+// TestConvert_RuntimeLimit pins the codex-delta P2-B fix: a runtime
+// (parameterized) LIMIT — logical.NewRuntimeLimit, which carries the row cap as
+// a Value and sets the static Limit to the -1 no-cap sentinel (RFC-156 vector
+// rank limit `... <= ?`) — MUST be threaded through convertLimit, not dropped.
+// On the buggy path convertLimit called NewLogicalLimitExpression(l.Limit, ...)
+// unconditionally, so the -1 sentinel became an UNBOUNDED limit and the runtime
+// cap vanished silently.
+func TestConvert_RuntimeLimit(t *testing.T) {
+	t.Parallel()
+	limVal := values.LiteralValue(int64(7))
+	src := logical.NewRuntimeLimit(logical.NewScan("T", ""), limVal, 0)
+	expr, err := plangen.Convert(src)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	lim, ok := expr.(*expressions.LogicalLimitExpression)
+	if !ok {
+		t.Fatalf("expected *LogicalLimitExpression, got %T", expr)
+	}
+	if lim.GetLimitValue() == nil {
+		t.Fatalf("runtime LimitValue dropped: GetLimitValue() == nil (the -1 sentinel became an unbounded limit)")
+	}
+	if lim.GetLimitValue() != limVal {
+		t.Fatalf("runtime LimitValue = %v, want the threaded Value %v", lim.GetLimitValue(), limVal)
+	}
+	if got, evErr := lim.GetLimitValue().Evaluate(nil); evErr != nil || got != int64(7) {
+		t.Fatalf("runtime cap evaluated to (%v, %v), want (7, nil)", got, evErr)
+	}
+	// The static limit stays the -1 no-cap sentinel; the cap is the runtime Value.
+	if lim.GetLimit() != -1 {
+		t.Fatalf("static limit = %d, want -1 (the no-cap sentinel for a runtime cap)", lim.GetLimit())
+	}
+	if lim.GetOffset() != 0 {
+		t.Fatalf("offset = %d, want 0", lim.GetOffset())
+	}
+}
+
 func TestConvert_LimitOverSort(t *testing.T) {
 	t.Parallel()
 	sorted := logical.NewSort(logical.NewScan("T", ""), []logical.SortKey{{Expr: "name", Dir: logical.SortAsc}})

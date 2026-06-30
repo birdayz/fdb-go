@@ -343,22 +343,31 @@ func executeVectorIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: vector index %q query vector: %w", p.GetIndexName(), err)
 	}
-	k, err := evalPositiveInt(p.GetK(), evalCtx)
+	// The scan's rank cap. A top-k whose ADJUSTED cap is ≤ 0 — ROW_NUMBER() <= 0,
+	// < 1, or a parameter `<= ?` / `< ?` bound to 0 or a negative — selects NO
+	// rows, so return EMPTY rather than erroring. An eager positive-only eval
+	// rejected k ≤ 0, which made `<= 0` / `<= ?`(=0) error out BEFORE the
+	// Limit(0)/Limit(?) above could cull to empty (RFC-156 correctness-hunt bug:
+	// only `< 1`, where the comparand K=1 survives the positive check, was
+	// handled). Evaluate tolerantly and
+	// short-circuit the non-positive adjusted cap here, once, for BOTH the
+	// ordered-stream and self-limiting branches below.
+	k, err := evalRankCap(p.GetK(), evalCtx)
 	if err != nil {
 		return nil, fmt.Errorf("executor: vector index %q top-K: %w", p.GetIndexName(), err)
 	}
-
-	// Derive the scan limit from the rank operator, matching Java's
-	// VectorIndexScanBounds.getAdjustedLimit: ROW_NUMBER() < K returns the top
-	// K-1, ROW_NUMBER() <= K returns the top K. (= K is rejected upstream at the
-	// DistanceRank comparison, so only < / <= reach here.) k is already ≥ 1
-	// (evalPositiveInt), so limit ≥ 0; limit == 0 (ROW_NUMBER() < 1) selects no
-	// rows.
-	limit := k
+	rankCap := k
 	if p.GetRankType() == predicates.ComparisonDistanceRankLessThan {
-		limit = k - 1
+		// `< K` selects the top K-1. K ≤ 1 ⇒ no rows; test BEFORE subtracting so a
+		// K = math.MinInt64 (literal `< -9223372036854775808`, or a bound param)
+		// cannot wrap k-1 to a huge POSITIVE and slip past the ≤0 guard into an
+		// enormous horizon (codex delta P2-A). K ≥ 2 here ⇒ k-1 cannot overflow.
+		if k <= 1 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
+		rankCap = k - 1
 	}
-	if limit <= 0 {
+	if rankCap <= 0 { // `<= K` with K ≤ 0
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
@@ -373,16 +382,68 @@ func executeVectorIndexScan(
 	if p.GetEfSearch() != nil {
 		efSearch = *p.GetEfSearch()
 	}
-	if efSearch != 0 && efSearch < limit {
-		efSearch = limit
-	}
 
-	scanRange := recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+	var scanRange recordlayer.TupleRange
+	scanType := recordlayer.IndexScanByDistance
+	if p.IsOrderedStream() {
+		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
+		// rows in ascending distance order so the Filter ABOVE culls non-matching
+		// rows and the Limit(k) ABOVE takes the true k nearest MATCHING rows.
+		//
+		// Phase C: dispatch through the STREAMING scan type. For SPFresh this is a
+		// demand-driven cursor that widens its scanned horizon in batches as the
+		// consumer pulls — admitting the next ε-pruned cells in d2 order, then
+		// re-routing with a larger w up to a budget cap — so a rare residual whose
+		// matches lie beyond the initial probe still returns the true k nearest
+		// matching rows (or an honest ScanLimitReached if the budget is exhausted
+		// first). HNSW has no posting cells to widen, so the dispatch falls back to
+		// the fixed-horizon ScanByDistance (Phase B, unchanged).
+		//
+		// The High tuple still carries the re-rank budget c (the Phase B decoupling
+		// from the probe width: efSearch passes UNCHANGED as the probe width, never
+		// forced up to the horizon — the spfresh-reviewer / Torvalds Phase B NAK).
+		// SPFresh's streaming path ignores k/c and uses the budget cap; the HNSW
+		// fallback reads (k=horizon, efSearch) as before.
+		scanType = recordlayer.IndexScanByDistanceOrderedStream
+		// Horizon = the scan budget for the ordered stream. It MUST be at least
+		// the rank cap k: an un-partitioned HNSW index has no posting cells to
+		// widen, so IndexScanByDistanceOrderedStream falls back to the
+		// non-widening ScanByDistance where this horizon IS the hard k cap. A
+		// fixed defaultVectorEfSearch (200) would then scan only 200 rows and
+		// silently drop matches for a query whose rank cap exceeds it (e.g.
+		// QUALIFY ROW_NUMBER() ... <= 300). rankCap (computed above) is the adjusted
+		// cap (k for rank<=k, k-1 for rank<k), ≥ 1 after the ≤0 short-circuit.
+		//
+		// TRUNCATION CONTRACT (HNSW): the un-partitioned HNSW ordered stream is
+		// FIXED-HORIZON — it does NOT widen on demand and never raises
+		// ScanLimitReached (that demand-driven widening is SPFresh-only). This fix
+		// makes the horizon ≥ k so the rank cap itself is never the truncator, but
+		// a SELECTIVE residual Filter above can still exhaust the horizon before k
+		// matching rows are found (a known HNSW limitation; SPFresh widens past
+		// it). For SPFresh streaming this horizon is only a higher budget FLOOR —
+		// the demand-driven cursor still widens beyond it as the consumer pulls.
+		horizon := defaultVectorEfSearch
+		if rankCap > horizon {
+			horizon = rankCap
+		}
+		scanRange = recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
+	} else {
+		// Self-limiting (top-k) mode. The scan limit IS the adjusted rank cap
+		// (Java's VectorIndexScanBounds.getAdjustedLimit: K for <=K, K-1 for <K) —
+		// already computed as rankCap above and proven ≥ 1 by the ≤0 short-circuit
+		// (a non-positive adjusted cap returned EMPTY there). No re-derive, and no
+		// dead ≤0 check (Torvalds + Graefe convergence nits).
+		limit := rankCap
+		if efSearch != 0 && efSearch < limit {
+			efSearch = limit
+		}
+		scanRange = recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
+	}
 	scanProps := recordlayer.ScanProperties{
 		ExecuteProperties:   props,
 		CursorStreamingMode: recordlayer.StreamingModeIterator,
 	}
-	indexCursor := store.ScanIndexByType(idx, recordlayer.IndexScanByDistance, scanRange, continuation, scanProps)
+	indexCursor := store.ScanIndexByType(idx, scanType, scanRange, continuation, scanProps)
 	return &indexFetchCursor{inner: indexCursor, store: store}, nil
 }
 
@@ -420,30 +481,40 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 	}
 }
 
-// evalPositiveInt evaluates a Value to a positive int (the top-K comparand).
-func evalPositiveInt(v values.Value, binder values.ParameterBinder) (int, error) {
+// toLimitInt coerces an evaluated runtime LIMIT cap to int. Unlike
+// evalPositiveInt it tolerates non-positive values (a 0/negative cap is a valid
+// "no rows" LIMIT, not an error).
+func toLimitInt(ev any) (int, bool) {
+	switch n := ev.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// evalRankCap evaluates a vector-scan rank cap (the ROW_NUMBER() comparand, which
+// may be a bound parameter) to int, TOLERATING ≤ 0 — unlike evalPositiveInt. A
+// non-positive adjusted cap means "select no rows", which the caller turns into an
+// EMPTY result, not an error (`<= 0`, `< 1`, `<= ?`(=0)). Errors only on a nil
+// value, an evaluation error, or a non-integer comparand.
+func evalRankCap(v values.Value, binder values.ParameterBinder) (int, error) {
 	if v == nil {
 		return 0, fmt.Errorf("nil value")
 	}
-	var k int
 	ev, err := v.Evaluate(binder)
 	if err != nil {
 		return 0, err
 	}
-	switch n := ev.(type) {
-	case int:
-		k = n
-	case int32:
-		k = int(n)
-	case int64:
-		k = int(n)
-	default:
+	n, ok := toLimitInt(ev)
+	if !ok {
 		return 0, fmt.Errorf("not an integer (%T)", ev)
 	}
-	if k <= 0 {
-		return 0, fmt.Errorf("must be positive, got %d", k)
-	}
-	return k, nil
+	return n, nil
 }
 
 func toFloat64Scalar(v any) (float64, bool) {
@@ -835,6 +906,26 @@ func executeLimit(
 
 	limit := int(p.GetLimit())
 	offset := int(p.GetOffset())
+
+	// Runtime row cap (RFC-156 parameterized vector rank limit `... <= ?`):
+	// evaluate the Value against the bound parameters. The Value already carries
+	// the rank adjustment (K for rank<=K, K-1 for rank<K), so its result is the
+	// final cap. A non-positive cap (e.g. K-1 with K=1, i.e. ROW_NUMBER() < 1)
+	// yields 0 rows — the same EMPTY result a literal Limit(0) gives.
+	if lv := p.GetLimitValue(); lv != nil {
+		ev, err := lv.Evaluate(evalCtx)
+		if err != nil {
+			return nil, fmt.Errorf("limit value: %w", err)
+		}
+		n, ok := toLimitInt(ev)
+		if !ok {
+			return nil, fmt.Errorf("limit value is not an integer (%T)", ev)
+		}
+		if n < 0 {
+			n = 0
+		}
+		limit = n
+	}
 
 	// RFC-128 §3.3: envelope the LIMIT continuation so the skip/limit state
 	// survives the per-page transaction rollover that paginatingRows does.

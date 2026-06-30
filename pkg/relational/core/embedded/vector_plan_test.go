@@ -246,6 +246,202 @@ func TestVectorPlan_MetricMismatchDoesNotMatchVector(t *testing.T) {
 	}
 }
 
+// TestVectorPlan_GlobalRankResidualCanonicalShape is the RFC-156 Phase B landing
+// condition (Graefe): a GLOBAL-rank vector K-NN with a NON-partition residual
+// must plan to the property-driven canonical shape
+//
+//	Limit(k) → Filter(residual) → VectorIndexScan(distance-ordered)
+//
+// — the Limit and Filter ABOVE the scan, k NOT consumed into the scan (the scan
+// is "ordered", never "rank<=k"), and NO index-only DistanceRank surviving as a
+// residual (the query plans cleanly; the index-only distance marker lives only
+// inside the scan's binding, per the match-candidate comment). On Phase A HEAD
+// this query either failed to plan (no residual index) or produced an
+// Intersection of the global top-k with the residual (the predicate-subset-of-
+// global-top-k wrong answer) — never this shape.
+func TestVectorPlan_GlobalRankResidualCanonicalShape(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			doc_id string, category string, embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	sql := `SELECT doc_id FROM docs WHERE category = 'x'
+		QUALIFY ROW_NUMBER() OVER (
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	explain, err := PlanQueryForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatalf("global-rank residual vector query should plan (RFC-156 Phase B): %v", err)
+	}
+
+	iLimit := strings.Index(explain, "Limit(3")
+	iFilter := strings.Index(explain, "PredicatesFilter(")
+	iScan := strings.Index(explain, "VectorIndexScan(")
+	if iLimit < 0 || iFilter < 0 || iScan < 0 {
+		t.Fatalf("expected Limit → PredicatesFilter → VectorIndexScan; explain:\n%s", explain)
+	}
+	// Limit ABOVE Filter ABOVE the scan (string order = top-down nesting).
+	if !(iLimit < iFilter && iFilter < iScan) {
+		t.Fatalf("expected Limit ABOVE Filter ABOVE VectorIndexScan; explain:\n%s", explain)
+	}
+	// The scan is distance-ORDERED — k is NOT sunk into it.
+	if !strings.Contains(explain, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], ordered") {
+		t.Fatalf("vector scan is not in ordered-stream mode (k must not be consumed into the scan):\n%s", explain)
+	}
+	if strings.Contains(explain, "rank<") {
+		t.Fatalf("k was consumed into the scan (rank<...) instead of a Limit above the filter:\n%s", explain)
+	}
+}
+
+// TestVectorPlan_GlobalRankResidualDeterministic pins planner stability
+// (query-engine skill): the canonical plan for a fixed global-rank residual
+// query must be byte-identical across repeated planning runs.
+func TestVectorPlan_GlobalRankResidualDeterministic(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			doc_id string, category string, embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+	sql := `SELECT doc_id FROM docs WHERE category = 'x'
+		QUALIFY ROW_NUMBER() OVER (
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+
+	first, err := PlanQueryForTest(sql, schema, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		got, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("plan run %d: %v", i, err)
+		}
+		if got != first {
+			t.Fatalf("plan run %d diverged:\nfirst=%s\ngot=%s", i, first, got)
+		}
+	}
+}
+
+// TestVectorPlan_NoResidualFoldsToSelfLimiting pins the Phase B fast-path
+// regression: a GLOBAL-rank vector query with NO residual (and the partition-
+// only case) must NOT keep a Limit over an ordered scan — SinkLimitIntoVector-
+// ScanRule folds the Limit(k) back into the scan's self-limiting top-k (k IS in
+// the scan as rank<=k), restoring the legacy one-shot path byte-for-byte.
+func TestVectorPlan_NoResidualFoldsToSelfLimiting(t *testing.T) {
+	t.Parallel()
+
+	// (a) un-partitioned, no residual.
+	schemaA := `CREATE TABLE docs (
+			doc_id string, embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+	sqlA := `SELECT doc_id FROM docs
+		QUALIFY ROW_NUMBER() OVER (
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 3`
+	eA, err := PlanQueryForTest(sqlA, schemaA, nil)
+	if err != nil {
+		t.Fatalf("no-residual global-rank plan: %v", err)
+	}
+	if !strings.Contains(eA, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], rank<=3") {
+		t.Fatalf("no-residual query did not fold k into the scan (rank<=3):\n%s", eA)
+	}
+	if strings.Contains(eA, "Limit(") || strings.Contains(eA, "ordered") {
+		t.Fatalf("no-residual query left an un-folded Limit over an ordered scan:\n%s", eA)
+	}
+
+	// (b) partition-only residual (WHERE on the partition column): the partition
+	// equality is consumed into the prefix, leaving NO residual filter — also
+	// folds to the self-limiting per-partition scan.
+	schemaB := `CREATE TABLE docs2 (
+			zone string, doc_id string, embedding vector(3, half),
+			PRIMARY KEY (zone, doc_id))
+		CREATE VECTOR INDEX doc_idx2 USING HNSW ON docs2(embedding)
+			PARTITION BY (zone) OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+	sqlB := `SELECT doc_id FROM docs2 WHERE zone = 'z1'
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 3`
+	eB, err := PlanQueryForTest(sqlB, schemaB, nil)
+	if err != nil {
+		t.Fatalf("partition-only plan: %v", err)
+	}
+	if !strings.Contains(eB, "VectorIndexScan(DOC_IDX2, BY_DISTANCE, prefix=[=], rank<=3") {
+		t.Fatalf("partition-only query is not the self-limiting per-partition scan:\n%s", eB)
+	}
+	if strings.Contains(eB, "Limit(") {
+		t.Fatalf("partition-only query left an un-folded Limit:\n%s", eB)
+	}
+}
+
+// TestVectorPlan_TighterOuterLimitDoesNotFold pins the SinkLimitIntoVectorScanRule
+// DECLINE gate (@claude F3): a QUALIFY rank cap that is LOOSER than an explicit
+// outer LIMIT must NOT be folded into the scan — the tighter outer LIMIT has to
+// survive as an explicit Limit ABOVE the ordered scan, never silently widened up
+// to the scan's k. Concretely, `QUALIFY ROW_NUMBER()<=10 LIMIT 3` on an
+// un-partitioned vector index must plan to Limit(3) over an "ordered" scan — NOT
+// a self-limiting `rank<=` scan, and NOT a widened Limit(10)/rank<=10. The
+// converse (no outer LIMIT, no residual) still folds to the self-limiting fast
+// path. Together they pin: the fold fires IFF the cap equals the scan's adjusted
+// k, so a divergent (tighter) cap is honoured rather than lost.
+func TestVectorPlan_TighterOuterLimitDoesNotFold(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			doc_id string, embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	// (a) DECLINE: QUALIFY rank<=10 with a tighter outer LIMIT 3.
+	sqlDecline := `SELECT doc_id FROM docs
+		QUALIFY ROW_NUMBER() OVER (
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 10 LIMIT 3`
+	eDecline, err := PlanQueryForTest(sqlDecline, schema, nil)
+	if err != nil {
+		t.Fatalf("tighter-outer-LIMIT plan: %v", err)
+	}
+	// The scan stays distance-ORDERED (k NOT sunk into it).
+	if !strings.Contains(eDecline, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], ordered") {
+		t.Fatalf("scan was not left in ordered-stream mode (SinkLimit should have declined):\n%s", eDecline)
+	}
+	// The tighter outer LIMIT survives ABOVE the ordered scan.
+	iLimit := strings.Index(eDecline, "Limit(3")
+	iScan := strings.Index(eDecline, "VectorIndexScan(")
+	if iLimit < 0 || iScan < 0 || iLimit > iScan {
+		t.Fatalf("expected explicit Limit(3) ABOVE the ordered VectorIndexScan:\n%s", eDecline)
+	}
+	// NOT folded into a self-limiting scan, and NOT widened to the scan's k=10.
+	if strings.Contains(eDecline, "rank<") {
+		t.Fatalf("k was sunk into the scan (rank<...) — the tighter outer LIMIT must stay an explicit Limit:\n%s", eDecline)
+	}
+	if strings.Contains(eDecline, "Limit(10") {
+		t.Fatalf("outer LIMIT was widened to the scan's k=10 instead of honouring LIMIT 3:\n%s", eDecline)
+	}
+
+	// (b) FOLD (converse fast path): same QUALIFY rank<=10, NO outer LIMIT, NO
+	// residual — SinkLimit folds k into the scan's self-limiting top-k (rank<=10),
+	// no Limit survives, no ordered stream.
+	sqlFold := `SELECT doc_id FROM docs
+		QUALIFY ROW_NUMBER() OVER (
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])
+		) <= 10`
+	eFold, err := PlanQueryForTest(sqlFold, schema, nil)
+	if err != nil {
+		t.Fatalf("no-outer-LIMIT fold plan: %v", err)
+	}
+	if !strings.Contains(eFold, "VectorIndexScan(DOC_IDX, BY_DISTANCE, prefix=[], rank<=10") {
+		t.Fatalf("no-residual query did not fold k into the scan (rank<=10):\n%s", eFold)
+	}
+	if strings.Contains(eFold, "Limit(") || strings.Contains(eFold, "ordered") {
+		t.Fatalf("converse fast path left an un-folded Limit over an ordered scan:\n%s", eFold)
+	}
+}
+
 // TestVectorPlan_MetricMismatchInJoinDoesNotLeak pins the JOIN dimension of the
 // metric-mismatch case — the shape Graefe + Torvalds both reproduced as a
 // regression when validateNoIndexOnlyResidual was prematurely retired. Here the
@@ -277,5 +473,100 @@ func TestVectorPlan_MetricMismatchInJoinDoesNotLeak(t *testing.T) {
 	var uerr *cascades.UnplannableIndexOnlyResidualError
 	if !errors.As(err, &uerr) {
 		t.Fatalf("expected UnplannableIndexOnlyResidualError for metric mismatch in a join, got err=%v\nexplain=%s", err, explain)
+	}
+}
+
+// TestVectorPlan_ZeroCapAndParamRankAreBounded pins the codex P1 correctness
+// blocker: a GLOBAL-rank vector query whose K is an adjusted-zero cap
+// (ROW_NUMBER() < 1) or a NON-LITERAL parameter (`<= ?`) MUST still bound the
+// distance-ordered scan. On HEAD globalRankVectorLimit DECLINED both (no Limit
+// added), and the un-partitioned match candidate STILL emits the ordered-stream
+// form — so the ordered executor (which ignores the scan's k) streamed unbounded:
+// `< 1` returned rows (must be EMPTY) and `<= ?` returned the whole horizon (must
+// be exactly the runtime K). The fix lowers a FAITHFUL Limit in every case —
+// Limit(0) for the zero cap, a RUNTIME Limit(?) (or Limit((?-1)) for `<`) for a
+// parameter — so the plan is always self-limiting OR Limit-bounded, never an
+// unbounded ordered scan. (Execution correctness is pinned by the FDB e2e tests
+// TestFDB_VectorSearch_ZeroCapEmpty / _ParamRankExact.)
+func TestVectorPlan_ZeroCapAndParamRankAreBounded(t *testing.T) {
+	t.Parallel()
+	schema := `CREATE TABLE docs (
+			doc_id string, category string, embedding vector(3, half),
+			PRIMARY KEY (doc_id))
+		CREATE VECTOR INDEX doc_idx USING HNSW ON docs(embedding)
+			OPTIONS (METRIC = EUCLIDEAN_METRIC)`
+
+	cases := []struct {
+		name string
+		sql  string
+		// wantLimitToken is a substring that must appear as the cap of the Limit
+		// directly bounding the scan (e.g. "Limit(0", "Limit(?1", "Limit((?1 - 1)").
+		wantLimitToken string
+	}{
+		{
+			"zero cap, no residual",
+			`SELECT doc_id FROM docs
+				QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) < 1`,
+			"Limit(0",
+		},
+		{
+			"zero cap, residual",
+			`SELECT doc_id FROM docs WHERE category = 'x'
+				QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) < 1`,
+			"Limit(0",
+		},
+		{
+			"param K (<=), no residual",
+			`SELECT doc_id FROM docs
+				QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) <= ?`,
+			"Limit(?1",
+		},
+		{
+			"param K (<=), residual",
+			`SELECT doc_id FROM docs WHERE category = 'x'
+				QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) <= ?`,
+			"Limit(?1",
+		},
+		{
+			"param K (<), no residual — runtime K-1 arithmetic",
+			`SELECT doc_id FROM docs
+				QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [1.0,0.0,0.0])) < ?`,
+			"Limit((?1 - 1)",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			explain, err := PlanQueryForTest(tc.sql, schema, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			iScan := strings.Index(explain, "VectorIndexScan(")
+			if iScan < 0 {
+				t.Fatalf("expected a vector scan; explain:\n%s", explain)
+			}
+			// The cap must bound the scan: a Limit with the expected token appears
+			// ABOVE the scan (string order = top-down nesting).
+			iLimit := strings.Index(explain, tc.wantLimitToken)
+			if iLimit < 0 || iLimit > iScan {
+				t.Fatalf("expected %q bounding the scan ABOVE it; explain:\n%s", tc.wantLimitToken, explain)
+			}
+			// REGRESSION pin: an un-partitioned vector scan is emitted "ordered" and
+			// the ordered executor ignores the scan's own k — so it MUST NOT be left
+			// without a Limit above it. There must be NO "ordered" token that is not
+			// preceded by a Limit (i.e. every ordered scan is Limit-bounded).
+			if i := strings.Index(explain, "ordered"); i >= 0 {
+				if first := strings.Index(explain, "Limit("); first < 0 || first > i {
+					t.Fatalf("ordered scan is not bounded by a Limit above it (unbounded stream):\n%s", explain)
+				}
+			}
+			// k must NOT be sunk into the scan as a self-limiting rank<… (that fold
+			// is only sound for a literal positive K with no residual; here the cap
+			// is either 0 or a runtime param, neither of which folds).
+			if strings.Contains(explain, "rank<") {
+				t.Fatalf("k was consumed into the scan (rank<...) instead of a Limit above:\n%s", explain)
+			}
+		})
 	}
 }

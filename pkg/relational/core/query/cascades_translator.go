@@ -1610,6 +1610,17 @@ func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentif
 	return values.NamedCorrelationIdentifier(corr)
 }
 
+// newLimitExprFromLogical builds the Cascades LogicalLimitExpression for a
+// logical LIMIT, preserving a runtime (parameterized) row cap when present
+// (RFC-156 `... <= ?` vector rank limit). The single source of truth for the
+// static-vs-runtime split so every LIMIT translation site is identical.
+func newLimitExprFromLogical(o *logical.LogicalLimit, q expressions.Quantifier) *expressions.LogicalLimitExpression {
+	if o.LimitValue != nil {
+		return expressions.NewRuntimeLogicalLimitExpression(o.LimitValue, o.Offset, q)
+	}
+	return expressions.NewLogicalLimitExpression(o.Limit, o.Offset, q)
+}
+
 func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions.RelationalExpression {
 	if op == nil {
 		return nil
@@ -1620,6 +1631,7 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	case *logical.LogicalFilter:
 		return t.translateFilter(o)
 	case *logical.LogicalLimit:
+		// (helper below threads o.LimitValue for parameterized RFC-156 rank caps)
 		// Every LIMIT — top-level and nested alike — is translated to a
 		// LogicalLimitExpression (→ RecordQueryLimitPlan) so it is applied
 		// at its correct pipeline position by the operator. There is no
@@ -1633,7 +1645,7 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 			return nil
 		}
 		limitQ := t.namedQuantifier(sourceAlias(o.Input), innerRef)
-		return expressions.NewLogicalLimitExpression(o.Limit, o.Offset, limitQ)
+		return newLimitExprFromLogical(o, limitQ)
 	case *logical.LogicalUnion:
 		return t.translateUnion(o)
 	case *logical.LogicalSort:
@@ -2338,7 +2350,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		case *logical.LogicalSort:
 			expr = t.applySortOverRef(op, ref, fields, src)
 		case *logical.LogicalLimit:
-			expr = expressions.NewLogicalLimitExpression(op.Limit, op.Offset, expressions.ForEachQuantifier(ref))
+			expr = newLimitExprFromLogical(op, expressions.ForEachQuantifier(ref))
 		default:
 			// findExistsFilterUnderUnaryChain only collects Sort/Limit; any
 			// other operator here is a bug — bail to the ordinary path.
@@ -3012,7 +3024,7 @@ func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.Log
 	if innerLimit != nil {
 		innerAlias := sourceAlias(innerPlan)
 		limitQ := t.namedQuantifier(innerAlias, innerRef)
-		limitExpr := expressions.NewLogicalLimitExpression(innerLimit.Limit, innerLimit.Offset, limitQ)
+		limitExpr := newLimitExprFromLogical(innerLimit, limitQ)
 		innerRef = expressions.InitialOf(limitExpr)
 	}
 

@@ -1499,6 +1499,8 @@ asserts post-quiescence that every ACTIVE posting is within the 4×Lmax envelope
 search-visibility bound) and its failure diag includes posting size vs cap + sidecar
 presence, so either silent-miss shape self-diagnoses on any recurrence.
 
+- [ ] **RFC-156 budget-exhaustion 5s-deadline stress is unverified programmatically.** `spfreshDefaultStreamCellBudget=512` / `spfreshDefaultStreamCandidateBudget=4000` are calibrated-by-comment, not pinned by a test asserting that ordered-stream search+materialize stays within the FDB 5s tx deadline on a large index + a pathologically selective residual filter (the heap/stream tests verify memory bounds and truncation honesty, not the wall-clock deadline).
+
 ### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 
 **Symptom (fixed).** A 3-way *indexed chain* join planned through the RFC-042 L3

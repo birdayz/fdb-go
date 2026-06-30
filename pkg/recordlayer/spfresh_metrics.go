@@ -23,6 +23,18 @@ var (
 	CountSPFreshRerankReads     = Event{"spfresh_rerank_reads", "SPFresh Rerank Reads"}
 	CountSPFreshStarvationWiden = Event{"spfresh_starvation_widenings", "SPFresh Starvation Widenings"}
 	CountSPFreshForwardFollows  = Event{"spfresh_forward_follows", "SPFresh Forward Follows"}
+	// Phase 2 reached: the VBASE relaxed-monotonicity termination (M_q^s > R_q)
+	// latched during a one-shot search's traversal — the recently-traversed cells
+	// no longer beat the running k-th best (RFC-156 Phase A). PURE TELEMETRY on
+	// the one-shot wrapper path: nothing consults f.phase2 as a stop signal (it
+	// does not truncate the exact horizon). The resumable Phase B/C streaming
+	// cursor does NOT consult phase2 — it terminates on the relaxed-monotonicity
+	// EMISSION BARRIER plus the budget/exhaustion caps (spfresh_stream.go), and
+	// it never calls refreshPhase2, so this counter NEVER increments on a streaming
+	// query (the SHARED searchInit probe still feeds observe(), but the streaming
+	// WIDEN bursts gate it off — scoreCells, f.reranked==nil — since those queues
+	// are dead weight once nothing will read phase2).
+	CountSPFreshPhase2Reached = Event{"spfresh_phase2_reached", "SPFresh Phase 2 Reached"}
 	// Capped posting reads: a search's posting fetch returned exactly the
 	// 4×Lmax+1 cap — the posting is PAST the split-dispatch envelope and its
 	// tail is invisible to queries. Nonzero means a split trigger was lost
@@ -31,6 +43,18 @@ var (
 	// Split tasks re-filed from the read path after a capped read found an
 	// over-envelope posting with no pending split.
 	CountSPFreshReadPathSplitFiles = Event{"spfresh_readpath_split_files", "SPFresh Read-Path Split Files"}
+	// Stream widen batches: each demand-driven widening step of the RFC-156
+	// Phase C ordered-stream cursor (a batch of ε-pruned/re-routed cells admitted
+	// in d2 order because the consumer above drained the finalized prefix and
+	// pulled for more). Batched, never one-cell-serial.
+	CountSPFreshStreamWiden = Event{"spfresh_stream_widenings", "SPFresh Stream Widenings"}
+	// Filtered truncation: the RFC-156 Phase C ordered-stream cursor hit its
+	// budget cap (max cells probed / max candidates) BEFORE the consumer was
+	// satisfied, and returned NoNextReason.ScanLimitReached + a positional
+	// continuation rather than a silent < k. This is telemetry IN ADDITION to the
+	// reason (RFC-156 §C / Torvalds #2) — the reason is the contract, this counts
+	// how often the budget bound a filtered KNN.
+	CountSPFreshFilteredTruncated = Event{"spfresh_filtered_truncated", "SPFresh Filtered Truncations"}
 
 	// Write path.
 	EventSPFreshInsert           = Event{"spfresh_insert", "SPFresh Insert"}

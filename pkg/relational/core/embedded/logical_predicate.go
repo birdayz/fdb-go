@@ -1603,6 +1603,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 		if qualPred != nil {
 			op = attachOrSynthesizeFilter(op, qualPred)
+			op = wrapGlobalRankVectorLimit(op, qualPred)
 		}
 		return op, nil
 	}
@@ -1731,6 +1732,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		return op, nil
 	}
 	_ = upgradeFirstFilter(op, pred)
+	op = wrapGlobalRankVectorLimit(op, pred)
 	return op, nil
 }
 

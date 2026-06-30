@@ -60,6 +60,11 @@ func MapFieldValues(v Value, transform func(*FieldValue) Value) Value {
 	switch cv := v.(type) {
 	case *ArithmeticValue:
 		return &ArithmeticValue{Op: cv.Op, Left: newChildren[0], Right: newChildren[1]}
+	case *StrictRankLimitValue:
+		// Same rebuild-switch coverage the ArithmeticValue it replaced had: a
+		// transform on the K child must not fall to the default (which discards
+		// newChildren). Currently latent (K is always const/param) but symmetric.
+		return cv.WithChildren(newChildren)
 	case *CastValue:
 		return &CastValue{Child: newChildren[0], Target: cv.Target}
 	case *PromoteValue:

@@ -48,6 +48,19 @@ type RecordQueryVectorIndexPlan struct {
 	isReturningVectors *bool
 	recordTypes        []string
 	flowedType         values.Type
+	// orderedStream selects the VBASE distance-ordered mode (RFC-156 Phase B).
+	// When true the scan does NOT self-limit to k: it emits its bounded
+	// re-ranked horizon (the engine's candidate pool / re-rank budget c) in
+	// ascending distance order, and a Filter + Limit ABOVE the scan compose the
+	// final "k nearest matching rows" (Limit(k) → Filter(residual) → ordered
+	// scan). Distance ordering is INTRINSIC to this node — it is parameter-
+	// dependent on the query vector and is NOT a generic Cascades Ordering
+	// property (RemoveSortRule is untouched) and NOT a generic sort operator.
+	// When false (the default) the scan is self-limiting: it performs search(k)
+	// and returns the top-k, exactly as before — restored for the no-residual /
+	// partition-only cases by SinkLimitIntoVectorScanRule folding a Limit(k)
+	// directly above the scan into this mode (byte-for-byte the legacy path).
+	orderedStream bool
 }
 
 // NewRecordQueryVectorIndexPlan constructs a BY_DISTANCE vector index scan.
@@ -91,6 +104,36 @@ func (p *RecordQueryVectorIndexPlan) GetRankType() predicates.ComparisonType {
 	return p.rankType
 }
 
+// IsOrderedStream reports whether the scan runs in VBASE distance-ordered mode
+// (emits its re-ranked horizon in distance order, does NOT self-limit to k).
+// See the orderedStream field doc. RFC-156 Phase B.
+func (p *RecordQueryVectorIndexPlan) IsOrderedStream() bool { return p.orderedStream }
+
+// WithOrderedStream returns a copy of the plan in distance-ordered (non-self-
+// limiting) mode. The k binding is retained for the SinkLimitIntoVectorScanRule
+// fold and cost estimation, but the executor ignores it in this mode.
+func (p *RecordQueryVectorIndexPlan) WithOrderedStream() *RecordQueryVectorIndexPlan {
+	if p.orderedStream {
+		return p
+	}
+	c := *p
+	c.orderedStream = true
+	return &c
+}
+
+// WithSelfLimiting returns a copy of the plan in self-limiting (top-k) mode.
+// SinkLimitIntoVectorScanRule produces this when a Limit(k) sits DIRECTLY above
+// an ordered-stream scan with no intervening residual Filter — restoring the
+// legacy one-shot search(k) path.
+func (p *RecordQueryVectorIndexPlan) WithSelfLimiting() *RecordQueryVectorIndexPlan {
+	if !p.orderedStream {
+		return p
+	}
+	c := *p
+	c.orderedStream = false
+	return &c
+}
+
 // GetIndexName returns the vector index name.
 func (p *RecordQueryVectorIndexPlan) GetIndexName() string { return p.indexName }
 
@@ -132,6 +175,9 @@ func (p *RecordQueryVectorIndexPlan) EqualsWithoutChildren(other RecordQueryPlan
 	if p.rankType != o.rankType {
 		return false
 	}
+	if p.orderedStream != o.orderedStream {
+		return false
+	}
 	if !typeEquals(p.flowedType, o.flowedType) {
 		return false
 	}
@@ -165,6 +211,11 @@ func (p *RecordQueryVectorIndexPlan) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte(p.indexName))
 	h.Write([]byte{0})
 	h.Write([]byte{byte(p.rankType)})
+	if p.orderedStream {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	for _, cr := range p.prefixComparisons {
 		h.Write([]byte{byte(cr.GetRangeType())})
 	}
@@ -190,12 +241,20 @@ func (p *RecordQueryVectorIndexPlan) Explain() string {
 		}
 	}
 	b.WriteString("], ")
-	if p.rankType == predicates.ComparisonDistanceRankLessThan {
-		b.WriteString("rank<")
+	if p.orderedStream {
+		// Distance-ordered mode: the scan emits its re-ranked horizon in
+		// distance order and does NOT consume k — a Limit ABOVE applies k. The
+		// "ordered" token (no "rank<="/"rank<") is the EXPLAIN-pin that k is not
+		// sunk into the scan.
+		b.WriteString("ordered")
 	} else {
-		b.WriteString("rank<=")
+		if p.rankType == predicates.ComparisonDistanceRankLessThan {
+			b.WriteString("rank<")
+		} else {
+			b.WriteString("rank<=")
+		}
+		b.WriteString(values.ExplainValue(p.k))
 	}
-	b.WriteString(values.ExplainValue(p.k))
 	if p.efSearch != nil {
 		b.WriteString(fmt.Sprintf(", ef_search=%d", *p.efSearch))
 	}

@@ -35,6 +35,11 @@ func (r *PushLimitThroughProjectionRule) Matcher() matching.BindingMatcher { ret
 
 func (r *PushLimitThroughProjectionRule) OnMatch(call *ExpressionRuleCall) {
 	limit := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
+	// A runtime cap (parameterized RFC-156 rank limit) carries a Value the
+	// int64-only rebuild below would drop — leave it in place.
+	if limit.GetLimitValue() != nil {
+		return
+	}
 	innerExpr := limit.GetInner().GetRangesOver().Get()
 	proj, ok := innerExpr.(*expressions.LogicalProjectionExpression)
 	if !ok {

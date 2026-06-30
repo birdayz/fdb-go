@@ -1065,6 +1065,39 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 	}
 }
 
+// VectorDistanceScanRangeOrdered builds a BY_DISTANCE scan range for the RFC-156
+// Phase B distance-ORDERED stream. It DECOUPLES the re-rank budget from the
+// probe width: cRerank (the re-rank budget c) rides the High-tuple's c slot
+// (index 3 of the SPFresh (k, kc, w, c, ε) contract), while efSearch stays the
+// index's TUNED probe width (SPFresh kc=64, HNSW ef) rather than being forced up
+// to the horizon. Threading c directly avoids the efSearch>0 path's 4×k re-rank
+// inflation and kc override (spfresh-reviewer / Torvalds Phase B NAK). The
+// intermediate w slot is 0 ("use the index default fine-probe width"). HNSW
+// reads only (k, efSearch) and ignores the extra slots.
+//
+// Who reads cRerank: ONLY the legacy self-limiting one-shot SPFresh path
+// (ScanByDistance → searchCurrentGeneration, where c bounds the finalize
+// re-rank). The STREAMING ordered path (IndexScanByDistanceOrderedStream →
+// newOrderedStreamCursor) does NOT read slot 3 at all — its re-rank/candidate cap
+// is the demand-driven stream budget (spfreshDefaultStreamCandidateBudget=4000 in
+// defaultSPFreshStreamBudget), NOT this High-tuple slot. So cRerank/slot-3 is
+// currently UNUSED by the streaming path; it is honoured only when this range
+// feeds the one-shot reader, and is otherwise inert (carried for shape symmetry).
+// Kept in the signature so the one-shot path stays expressible without a second
+// builder; do not remove it just because the streaming path ignores it.
+func VectorDistanceScanRangeOrdered(queryVector []float64, k, efSearch, cRerank int, prefix tuple.Tuple) TupleRange {
+	low := tuple.Tuple{serializeVector(queryVector)}
+	for _, elem := range prefix {
+		low = append(low, elem)
+	}
+	return TupleRange{
+		Low:          low,
+		High:         tuple.Tuple{int64(k), int64(efSearch), int64(0), int64(cRerank)},
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeInclusive,
+	}
+}
+
 // SearchKNN performs a k-nearest-neighbor search on the HNSW graph.
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
 // Returns results sorted by distance (closest first).

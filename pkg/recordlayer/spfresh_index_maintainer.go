@@ -516,9 +516,14 @@ func (m *spfreshIndexMaintainer) ScanByDistance(
 	return FromListWithContinuation(entries, continuation)
 }
 
-// searchCurrentGeneration resolves the readable generation, refreshes/loads
-// the per-process cache, and runs the search in the maintainer's transaction.
-func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
+// resolveSearcher resolves the readable generation, refreshes/loads the
+// per-process routing cache, and constructs a searcher (timer wired) bound to
+// the maintainer's transaction — the shared front half of every SPFresh query
+// path (one-shot top-k AND the RFC-156 Phase C ordered stream). It applies NO
+// per-query knobs (efSearch/w/c/ε); the caller does. A (nil, nil, nil) return
+// means the index is empty (no generation, no in-flight build) — the caller
+// reports zero results.
+func (m *spfreshIndexMaintainer) resolveSearcher() (*spfreshSearcher, *spfreshStorage, error) {
 	// Resolve the generation (snapshot — queries never conflict).
 	metaStorage := newSPFreshStorage(m.indexSubspace, 0) // gen 0: META access only
 	gen, err := spfreshReadGenerationSnapshot(m.tx, metaStorage)
@@ -532,14 +537,14 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 			// take no conflict ranges.
 			tok, terr := m.tx.Snapshot().Get(metaStorage.metaKey(spfreshMetaBuild)).Get()
 			if terr != nil {
-				return nil, terr
+				return nil, nil, terr
 			}
 			if tok != nil {
-				return nil, fmt.Errorf("spfresh index %q: a bulk build is in flight (or died before flipping) — retry after it completes, or rerun BuildSPFreshIndex", m.index.Name)
+				return nil, nil, fmt.Errorf("spfresh index %q: a bulk build is in flight (or died before flipping) — retry after it completes, or rerun BuildSPFreshIndex", m.index.Name)
 			}
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)
+		return nil, nil, fmt.Errorf("spfresh index %q: read generation: %w", m.index.Name, err)
 	}
 	storage := newSPFreshStorage(m.indexSubspace, gen)
 	var cache *spfreshRoutingCache
@@ -569,15 +574,28 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 		// tolerance.
 		if !cache.ready(gen) {
 			if frerr := cache.fullReload(m.tx, storage, gen); frerr != nil {
-				return nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
+				return nil, nil, fmt.Errorf("spfresh index %q: routing reload: %w", m.index.Name, frerr)
 			}
 		} else if rerr := cache.maybeRefresh(m.tx, storage, gen); rerr != nil {
-			return nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
+			return nil, nil, fmt.Errorf("spfresh index %q: routing refresh: %w", m.index.Name, rerr)
 		}
 	}
 
 	searcher := newSPFreshSearcher(storage, m.config, cache)
 	searcher.timer = m.timer
+	return searcher, storage, nil
+}
+
+// searchCurrentGeneration resolves the readable generation, refreshes/loads
+// the per-process cache, and runs the search in the maintainer's transaction.
+func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efSearch, wProbe, cRerank int, epsilon float64, epsilonSet bool) ([]spfreshSearchResult, error) {
+	searcher, storage, err := m.resolveSearcher()
+	if err != nil {
+		return nil, err
+	}
+	if searcher == nil {
+		return nil, nil // empty index
+	}
 	if efSearch > 0 {
 		// The HNSW-style efSearch slot sets the fine-probe width DIRECTLY
 		// (094.4: sweeps need to tune DOWN as well as up).
@@ -609,6 +627,95 @@ func (m *spfreshIndexMaintainer) searchCurrentGeneration(query []float64, k, efS
 		return nil, fmt.Errorf("spfresh index %q: read-path split re-file: %w", m.index.Name, ferr)
 	}
 	return results, nil
+}
+
+// ScanByDistanceOrderedStream is the RFC-156 Phase C distance-ordered STREAMING
+// scan: a demand-driven cursor that widens in batches as the consumer drains it,
+// bounded by the default budget cap. It shares the BY_DISTANCE TupleRange/
+// IndexEntry contract with ScanByDistance — Low = (query vector), High =
+// (k, kc, w, c[, ε]) — but ignores the k/c top-k caps (the budget replaces them)
+// and honours only the probe knobs (kc = efSearch, w, ε). The executor routes
+// an ordered-stream SPFresh plan here; HNSW (no posting cells to widen) keeps the
+// fixed-horizon ScanByDistance path.
+func (m *spfreshIndexMaintainer) ScanByDistanceOrderedStream(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+	return m.newOrderedStreamCursor(scanRange, defaultSPFreshStreamBudget(), continuation, scanProperties)
+}
+
+// newOrderedStreamCursor builds the streaming cursor with an explicit budget.
+// ScanByDistanceOrderedStream supplies the calibrated default; white-box tests
+// pass a small budget to force/observe truncation and the bounded-memory cap
+// without a huge corpus.
+func (m *spfreshIndexMaintainer) newOrderedStreamCursor(scanRange TupleRange, budget spfreshStreamBudget, continuation []byte, _ ScanProperties) RecordCursor[*IndexEntry] {
+	if scanRange.Low == nil || len(scanRange.Low) < 1 {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("SPFresh BY_DISTANCE stream requires query vector in TupleRange.Low")}
+	}
+	vecBytes, ok := scanRange.Low[0].([]byte)
+	if !ok {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("SPFresh BY_DISTANCE stream: TupleRange.Low[0] must be []byte")}
+	}
+	queryVector, derr := deserializeVector(vecBytes)
+	if derr != nil {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("SPFresh BY_DISTANCE stream: invalid query vector: %w", derr)}
+	}
+	if len(queryVector) != m.config.NumDimensions {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: query vector has %d dimensions, index has %d", m.index.Name, len(queryVector), m.config.NumDimensions)}
+	}
+	if len(scanRange.Low) > 1 {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: prefixed (grouped) scans not supported in 094.1", m.index.Name)}
+	}
+
+	// High = (k, kc, w, c[, ε]). Streaming ignores k (index 0) and c (index 3) —
+	// the budget cap replaces the top-k/re-rank limits — and honours only the
+	// probe knobs: kc (= efSearch, index 1), w (index 2), and ε (index 4).
+	efSearch, wProbe := 0, 0
+	if len(scanRange.High) > 1 {
+		if v, ok := asInt64(scanRange.High[1]); ok && v > 0 {
+			efSearch = int(v)
+		}
+	}
+	if len(scanRange.High) > 2 {
+		if v, ok := asInt64(scanRange.High[2]); ok && v > 0 {
+			wProbe = int(v)
+		}
+	}
+	epsilon, epsilonSet := 0.0, false
+	if len(scanRange.High) > 4 {
+		switch v := scanRange.High[4].(type) {
+		case float64:
+			epsilon, epsilonSet = v, true
+		case int64:
+			epsilon, epsilonSet = float64(v), true
+		}
+	}
+
+	skip, perr := parseStreamPosition(continuation)
+	if perr != nil {
+		return &errorCursor[*IndexEntry]{err: perr}
+	}
+
+	searcher, storage, rerr := m.resolveSearcher()
+	if rerr != nil {
+		return &errorCursor[*IndexEntry]{err: rerr}
+	}
+	if searcher == nil {
+		return Empty[*IndexEntry]() // empty index
+	}
+	if efSearch > 0 {
+		searcher.kc = efSearch
+	}
+	if wProbe > 0 {
+		searcher.w = wProbe
+	}
+	if epsilonSet {
+		searcher.epsilon = epsilon // ≤ 0 disables pruning
+	}
+
+	f, ferr := searcher.searchInit(m.tx, queryVector)
+	if ferr != nil {
+		return &errorCursor[*IndexEntry]{err: ferr}
+	}
+	f.streamInit(budget)
+	return &spfreshStreamCursor{m: m, f: f, storage: storage, skip: skip}
 }
 
 // spfreshFileSplitsForCapped re-files split tasks for postings whose search

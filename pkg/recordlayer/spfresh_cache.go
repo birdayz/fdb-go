@@ -219,6 +219,15 @@ func (c *spfreshRoutingCache) ready(currentGeneration int64) bool {
 	return c.cursor != nil && c.generation == currentGeneration && len(c.coarseIDs) > 0
 }
 
+// coarseCount returns the number of L1 coarse cells. The RFC-156 Phase C stream
+// cursor re-routes with w = coarseCount() (all cells) once the ε-pruned tail
+// drains, so it can widen beyond the original w-nearest set up to the budget cap.
+func (c *spfreshRoutingCache) coarseCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.coarseIDs)
+}
+
 // spfreshRefreshIntervalMs is the amortized refresh cadence: between
 // refreshes, queries ride the searcher's ≤depth-1 posting-HDR tolerance and
 // inserts the write fence's forward-follow.

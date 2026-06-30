@@ -45,6 +45,12 @@ func (r *LimitMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if !ok {
 		return
 	}
+	// A runtime cap (parameterized RFC-156 rank limit) can't be min-merged with a
+	// static cap at plan time — the merged limit reads the -1 sentinel and would
+	// silently drop the runtime bound. Leave the two LIMITs stacked.
+	if outer.GetLimitValue() != nil || inner.GetLimitValue() != nil {
+		return
+	}
 
 	oLimit := outer.GetLimit()
 	oOffset := outer.GetOffset()

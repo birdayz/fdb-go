@@ -772,6 +772,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 		if qualPred != nil {
 			op = attachOrSynthesizeFilter(op, qualPred)
+			op = wrapGlobalRankVectorLimit(op, qualPred)
 		}
 		return op, nil
 	}
@@ -878,6 +879,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		if len(existsPlanner.scalarSubqueries) > 0 {
 			upgradeFirstFilterScalarSubqueries(op, existsPlanner.scalarSubqueries)
 		}
+		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
 	}
 
@@ -888,6 +890,7 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 			return nil, qErr
 		}
 		_ = upgradeFirstFilter(op, combined)
+		op = wrapGlobalRankVectorLimit(op, combined)
 		return op, nil
 	}
 
