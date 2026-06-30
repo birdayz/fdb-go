@@ -1089,11 +1089,18 @@ something; UUID must flow as `tuple.UUID` end-to-end, string only at the driver 
 - **A — field read.** `query_result.go protoFieldToGo` (~:107) currently renders a UUID field via
   `uuidMessageToString`; change it to return the 16-byte `tuple.UUID` (reuse `uuidMessageToTuple`'s msb‖lsb
   layout) so the FILTER path compares `tuple.UUID == tuple.UUID`.
-- **B — comparand.** A scoped UUID coercion Value (Type=UUID, Evaluate: parse the inner string →
-  `tuple.UUID`) inserted at the predicate where a UUID column meets a STRING literal (the planner already
-  has `{String,Uuid}` in `promotionMap`, type.go:896 — it's recognized-but-not-applied; this is the
-  single `PromoteValue.Coercion` arm Graefe approved, NOT all of RFC-083). Makes the index/PK probe,
-  range/IN, and INL key all pack `tuple.UUID` from the type.
+- **B — comparand. THE CRUX (substantial; Graefe impl review).** Two parts, both needed:
+  - **B1 (insertion):** wrap the comparand in `PromoteValue(literal, NotNullUuid)` where a UUID column
+    meets a STRING literal. NOTE: Go currently inserts NO comparison promotes at all — numeric promotion
+    (`int_col = 5.0`) is handled by `cmpAny` at runtime, and `PromoteValue` is only ever built by
+    tree-rebuild ops (map_field_values/replace/simplifier), never originally inserted for a comparison.
+    So B1 is a NEW pattern in the predicate builder (the comparand evaluated as STRING-typed today — that
+    is why the index probe packs a tuple string). `IsPromotable(String,Uuid)` already returns true
+    (promotionMap, type.go:896), so the lattice agrees; the gap is the missing insertion.
+  - **B2 (eval arm):** `PromoteValue.Evaluate` (values.go:2380) is a NO-OP today (delegates to Child).
+    Give it the single String→UUID arm Graefe approved: when `Target` IsUuid and the child evaluates to a
+    string, `uuid.Parse` → 16-byte `tuple.UUID`. With B1+B2 the index/PK probe, range/IN, and INL key all
+    pack `tuple.UUID` from the value's type (no out-of-band masks).
 - **C — materialization.** `cascades_generator.go paginatingRows` row build (~:1618) converts a
   `tuple.UUID` column value → canonical string at the driver boundary (the ONE place string appears),
   also covering the covering-index `tuple.UUID` from `IndexEntryObjectValue` — which stays a pure ordinal
@@ -1101,7 +1108,18 @@ something; UUID must flow as `tuple.UUID` end-to-end, string only at the driver 
 A without C regresses every `SELECT v`; B without A regresses the working full-scan `WHERE v=`. Land
 together + Graefe IMPL review. Then flip the `indexable_types_probe` transitional sentinel to the full
 round-trip + add the INL-join-key + MIN/MAX-ever + UUID-PK regressions. Until then, a UUID index must NOT
-be queried by `WHERE v='…'`. Original design notes below.
+be queried by `WHERE v='…'`.
+
+**OPEN ARCHITECTURAL QUESTION FOR GRAEFE (decide before implementing B):** what representation does a
+UUID flow as *inside the Cascades value layer*? The `values` package currently imports no `tuple`, so
+making `PromoteValue.Evaluate` / `protoFieldToGo` produce a `fdbgo/fdb/tuple.UUID` would couple the
+abstract value layer to the FDB WIRE type — the same layering concern Graefe raised for
+`IndexEntryObjectValue` (keep it a pure ordinal extractor). Options: (a) values carry `tuple.UUID`
+directly (simplest, but couples values→wire); (b) values carry a neutral `[16]byte`/`uuid.UUID` and the
+`tuple.UUID` conversion happens only at the scan-range packing (`scanComparisonsToTupleRange`) + the
+index-entry write (already in `recordlayer`, which legitimately knows `tuple`). (b) keeps the value layer
+wire-agnostic and is probably what Graefe wants — but it's his call. This decision drives A and B's
+concrete types. Original design notes below.
 
 **DESIGN READY — see RFC-162.** Prototyped end-to-end and PROVED the
 approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
