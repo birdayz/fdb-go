@@ -180,12 +180,41 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 	if !ok {
 		return -1
 	}
+	// The comparand (RHS) must be a constant the scan can bind to — a literal or
+	// parameter — NOT a value that reads a record field. `region = status`
+	// correlates two columns of the SAME record and can never be an index bound;
+	// it must stay a residual (decline -> StreamingAgg). Without this, the field
+	// comparand makes buildAggScanPrefix.Merge fail to bind while the guard still
+	// marks the predicate "consumed", silently dropping it (wrong rows). A rare
+	// genuinely-correlated bound is conservatively declined too.
+	if comparandReadsField(cp.Comparison.Operand) {
+		return -1
+	}
 	for i, col := range groupCols {
 		if eqFold(fv.Field, col) || eqFold(fieldNameOnly(fv.Field), col) {
 			return i
 		}
 	}
 	return -1
+}
+
+// comparandReadsField reports whether v references a record field anywhere in
+// its tree (i.e. it is not a pure literal/parameter constant the index scan can
+// bind to). A bare literal, a parameter, or a cast/arithmetic over constants
+// returns false; anything containing a FieldValue returns true.
+func comparandReadsField(v values.Value) bool {
+	if v == nil {
+		return false
+	}
+	if _, ok := v.(*values.FieldValue); ok {
+		return true
+	}
+	for _, c := range v.Children() {
+		if comparandReadsField(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractInnerFilterPredicates returns ComparisonPredicates from the

@@ -36,6 +36,9 @@ CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 		{"non_group_col", "SELECT region, SUM(amount) FROM orders WHERE status = 'paid' GROUP BY region"},
 		{"non_equality_on_group_col", "SELECT region, SUM(amount) FROM orders WHERE region > 'm' GROUP BY region"},
 		{"non_group_range", "SELECT region, SUM(amount) FROM orders WHERE amount > 100 GROUP BY region"},
+		// RHS is another column, not a constant — `region = status` correlates
+		// two columns of the same record; it can never be a scan bound.
+		{"non_constant_rhs", "SELECT region, SUM(amount) FROM orders WHERE region = status GROUP BY region"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -175,12 +178,24 @@ CREATE INDEX idx_amount ON ORDERS(amount)`
 		t.Errorf("COUNT(col) over an index lacking col must not be COVERING: %s", plan)
 	}
 
-	// Control: COUNT(*) may still use a covering index scan.
-	star, err := PlanQueryForTest("SELECT COUNT(*) FROM orders WHERE amount > 5", schema, nil)
-	if err != nil {
-		t.Fatalf("count star: %v", err)
+	// Controls: COUNT(*) and COUNT(<constant>) read no base-record field, so they
+	// MAY still use a covering index scan (no Fetch). COUNT(1)/COUNT(TRUE) must
+	// not regress to Fetch (the covering decision is about field access, not
+	// count-star semantics).
+	for _, q := range []string{
+		"SELECT COUNT(*) FROM orders WHERE amount > 5",
+		"SELECT COUNT(1) FROM orders WHERE amount > 5",
+		"SELECT COUNT(TRUE) FROM orders WHERE amount > 5",
+	} {
+		p, err := PlanQueryForTest(q, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		t.Logf("%s => %s", q, p)
+		if strings.Contains(p, "Fetch") {
+			t.Errorf("%s reads no field and should stay covering (no Fetch), got %s", q, p)
+		}
 	}
-	t.Logf("COUNT(*): %s", star)
 }
 
 // IN-LIMIT-NIL: an IN-list query with a top-level LIMIT (no ORDER BY) must not

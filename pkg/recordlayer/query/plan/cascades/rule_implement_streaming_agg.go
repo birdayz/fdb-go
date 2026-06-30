@@ -218,15 +218,16 @@ func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper 
 	return nil
 }
 
-// isCountOnlyAggregation reports whether all aggregates are COUNT(*)
-// (no field access needed from the base record). When true, an index
-// scan feeding this aggregation can be marked covering — the index
-// entries alone provide the count without PK fetch.
+// isCountOnlyAggregation reports whether every aggregate is a COUNT that reads
+// NO base-record field. When true, an index scan feeding this aggregation can be
+// marked covering — the index entries alone provide the count without a PK fetch.
 //
-// Only a TRUE COUNT(*) qualifies: COUNT(col) must read col to honor SQL
-// NULL semantics (it counts only non-NULL values), so it cannot be served
-// by a zero-column covering scan — doing so makes col evaluate to NULL for
-// every row and returns 0. Mirror the executor's isCountStar predicate.
+// The covering decision is about FIELD ACCESS, not count-star semantics: a true
+// COUNT(*) (nil operand) and a COUNT over a constant (COUNT(1), COUNT(TRUE),
+// COUNT(NULL)) read no field, so a zero-column covering scan serves them (the
+// executor evaluates the constant operand per row without the record). Only
+// COUNT(col) / COUNT(expr-over-col) actually reads a field — covering it would
+// make col evaluate to NULL for every row and return 0.
 func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
 	if len(aggs) == 0 {
 		return false
@@ -236,12 +237,12 @@ func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
 			return false
 		}
 		if a.Operand == nil {
-			continue
+			continue // COUNT(*)
 		}
-		if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-			continue
+		if comparandReadsField(a.Operand) {
+			return false // COUNT(col) / COUNT(expr-over-col) needs the field
 		}
-		return false
+		// COUNT(<constant>) reads no base-record field — covering is safe.
 	}
 	return true
 }

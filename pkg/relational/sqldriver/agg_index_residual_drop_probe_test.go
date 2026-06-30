@@ -97,6 +97,23 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 		}
 	})
 
+	// Case C: equality whose RHS is another COLUMN (g = f), not a constant — can
+	// never be a scan bound. Correct answer: only the row where g==f (row 2:
+	// g=1,f=1,v=30) => g=1 SUM 30. Not all groups.
+	t.Run("non_constant_rhs_residual", func(t *testing.T) {
+		q := "SELECT g, SUM(v) FROM ga WHERE g = f GROUP BY g"
+		plan := dump(q)
+		got := run(q)
+		t.Logf("PLAN: %s", plan)
+		t.Logf("ROWS: %v", got)
+		if _, leaked := got[2]; leaked {
+			t.Errorf("group g=2 leaked despite WHERE g=f (RHS-column residual dropped). got=%v plan=%s", got, plan)
+		}
+		if len(got) != 1 || got[1] != 30 {
+			t.Errorf("WHERE g=f: got %v, want {1:30}. plan=%s", got, plan)
+		}
+	})
+
 	// Case B: inequality on the GROUP column. buildAggScanPrefix only handles
 	// equality, so g>1 is dropped. Correct answer: only g=2 => 45.
 	t.Run("group_inequality_residual", func(t *testing.T) {

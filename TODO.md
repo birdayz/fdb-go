@@ -65,20 +65,33 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 > dropping an invariant — and CI stayed green because the test gap is *dimensional* (each feature tested alone,
 > never in the combination that breaks it) and one test even pinned a bug. The deepest issue: port fidelity
 > isn't enforced by anything automated; the one net that could catch drift (the differential) is hand-fed.
-> Full analysis + acceptance criteria in `rfcs/164-port-fidelity-drift-detection.md`. Ranked by leverage:
-> - **[ ] WS-1 — Generative Go-vs-Java row-level differential.** DST generator over the feature×condition
->   matrix → diff rows vs the live Java conformance server. Catches 7/9 (all wrong-rows drift), forever.
->   Acceptance: a re-introduced AGG-RESIDUAL/DISTINCT/NULLS bug is caught by the generator. Torvalds + /code-review.
-> - **[ ] WS-2 — Structural plan invariants in the planner.** Post-extraction asserts (no `<nil>` child;
->   COVERING⊇referenced-fields; DistinctRecords⇒dedups; ordering-claim⇒provided-incl-NULLs). The no-`<nil>`-child
->   check alone makes the per-wrapper relink bug class (IN-LIMIT) un-shippable. Graefe + Torvalds.
-> - **[ ] WS-3 — Single source of truth.** Plan properties as methods on plan types (retire the
->   `plan_properties.go` type-switches); one shared `isCountStar`; guard==consumer audit. Graefe + Torvalds.
-> - **[ ] WS-4 — Property/metamorphic tests for Go-only paths.** Cost monotonicity invariant (equality ≤ range);
->   determinism under cost-tied ties; nogo lint banning bare `range someMap` in plan code. Graefe + Torvalds.
-> - **[ ] WS-5 — Audit & enumerate Go-only divergences in `DIVERGENCES.md`** with "what Java invariant does this
->   drop?" The 3 open hunt bugs (NULLS-ORDER, COST-SELECTIVITY, NONDETERMINISM) close *through* WS-3/4/5, which
->   is the test that the workstream works. Graefe.
+> Full analysis + acceptance criteria in `rfcs/164-port-fidelity-drift-detection.md` (v2, Graefe+Torvalds
+> reviewed). **Execution order = ships × leverage** (cheap always-on class-killers first, then the heavy net);
+> every found bug gets a committed minimized seed. Owner: query-engine cycle per WS.
+> - **[ ] WS-2 — Structural plan invariants** (highest ROI; always-on, Go-only CI). Each must run clean across
+>   the WHOLE existing corpus with ZERO runtime skip-lists (exemptions only as compile-time optional slots).
+>   - [ ] no `<nil>` child in the FINAL extracted plan (NOT memo members) — kills the ~20-wrapper relink class (IN-LIMIT). Land first.
+>   - [ ] `WithChildren(GetQuantifiers())` round-trip identity — most direct relink-class catch.
+>   - [ ] correlation/quantifier-binding completeness (no dangling correlation).
+>   - [ ] set-op comparison-key correctness; result-type/schema consistency; COVERING⊇referenced-fields (→ COUNT-COL).
+>   - NOT "DistinctRecords⇒has-dedup-node" (unsound — unique/PK/agg/streaming-agg/intersection are distinct w/o a node) → runtime no-dup or WS-3.
+> - **[ ] WS-3 — Single source of truth.** [ ] shared `isCountStar` + guard==consumer audit (cheap, first);
+>   [ ] port Java's `RecordQueryPlanVisitor` for plan properties (compile-time exhaustiveness) retiring the
+>   `plan_properties.go` switches; reconcile wrapper-held `unique`/`covering`. Graefe + Torvalds.
+> - **[ ] WS-1 — Generative Go-vs-Java row-level differential** (highest coverage; heavy-infra, nightly lane).
+>   ROW-drift only (plan-shape is WS-2/4); catches 7/10. Acceptance: [ ] schema engineered per bug (multi-key agg
+>   index, nullable+NULL sort cols, covering/non-covering pair); [ ] engine-acceptance skew classification;
+>   [ ] verify LIMIT path (JDBC setMaxRows? else IN-LIMIT drops to 6/10); [ ] corpus persistence + named lane +
+>   budget; [ ] mutation proof. Honest effort ~1-2wk (or narrow first cut 2-3d) — NOT 1 day. Torvalds + /code-review.
+> - **[ ] WS-4 — Property/metamorphic tests for Go-only paths.** [ ] cost monotonicity invariant (equality ≤ range);
+>   [ ] determinism via a COMMITTED deterministic cost-tie seed (not random fuzz); [ ] CI grep banning bare
+>   `range someMap` in plan code (defer the nogo analyzer). Graefe + Torvalds.
+> - **[ ] WS-5 — Audit & enumerate Go-only divergences in `DIVERGENCES.md`** ("what Java invariant does this drop?").
+>   Means "known reservoirs documented", not "all found". Graefe.
+>
+> Open hunt bugs: **NULLS-ORDER** is wrong-rows → fix DIRECTLY (extend `RequestedSortOrder` NULLS axis + thread
+> through `Ordering.Satisfies`), pinned by WS-2/WS-1 — not "through" the audit. COST-SELECTIVITY + NONDETERMINISM
+> ride WS-4 (pin-then-fix). Closing them WITH the nets that would have caught them is the test the workstream works.
 
 > **[ ] BUG (query-engine, wrong results, Graefe-gated) — local residual silently DROPPED on GROUP-BY over a
 > correlated join.** `SELECT o.id, COUNT(*) FROM o, t WHERE t.fk = o.id AND t.k = 5 GROUP BY o.id` plans
