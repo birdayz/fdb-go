@@ -10,12 +10,50 @@ type RequestedSortOrder int
 
 const (
 	RequestedSortOrderAny RequestedSortOrder = iota
+	// RequestedSortOrderAscending is ascending with the NATURAL null placement
+	// (NULLS FIRST — the FDB forward-scan tuple order). Mirrors Java's ASCENDING.
 	RequestedSortOrderAscending
+	// RequestedSortOrderDescending is descending with the NATURAL null placement
+	// (NULLS LAST). Mirrors Java's DESCENDING.
 	RequestedSortOrderDescending
+	// RequestedSortOrderAscendingNullsLast is ascending with the NON-natural
+	// NULLS LAST placement (an explicit `ORDER BY x ASC NULLS LAST`). A forward
+	// index scan provides ASC NULLS FIRST, so it does NOT satisfy this — the sort
+	// must be retained. Mirrors Java's ASCENDING_NULLS_LAST.
+	RequestedSortOrderAscendingNullsLast
+	// RequestedSortOrderDescendingNullsFirst is descending with the non-natural
+	// NULLS FIRST placement (`ORDER BY x DESC NULLS FIRST`). Mirrors Java's
+	// DESCENDING_NULLS_FIRST.
+	RequestedSortOrderDescendingNullsFirst
 )
 
 func (s RequestedSortOrder) IsDirectional() bool {
-	return s == RequestedSortOrderAscending || s == RequestedSortOrderDescending
+	return s == RequestedSortOrderAscending || s == RequestedSortOrderDescending ||
+		s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
+}
+
+// IsAscending reports whether s is any ascending variant (natural or NULLS LAST).
+func (s RequestedSortOrder) IsAscending() bool {
+	return s == RequestedSortOrderAscending || s == RequestedSortOrderAscendingNullsLast
+}
+
+// IsDescending reports whether s is any descending variant (natural or NULLS FIRST).
+func (s RequestedSortOrder) IsDescending() bool {
+	return s == RequestedSortOrderDescending || s == RequestedSortOrderDescendingNullsFirst
+}
+
+// NullsFirst reports the requested NULL placement for a directional order: the
+// natural placement is ASC→NULLS FIRST and DESC→NULLS LAST; the *NullsLast /
+// *NullsFirst variants invert it. For Any / non-directional orders the result is
+// unconstrained (reported as natural true); callers gate on IsDirectional first.
+func (s RequestedSortOrder) NullsFirst() bool {
+	switch s {
+	case RequestedSortOrderAscending, RequestedSortOrderDescendingNullsFirst:
+		return true
+	case RequestedSortOrderDescending, RequestedSortOrderAscendingNullsLast:
+		return false
+	}
+	return true
 }
 
 // RequestedOrderingPart is a (Value, RequestedSortOrder) pair specifying

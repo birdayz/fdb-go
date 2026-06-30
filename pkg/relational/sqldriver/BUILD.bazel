@@ -177,6 +177,7 @@ go_test(
         "null_join_agg_probe_test.go",
         "null_ordering_probe_test.go",
         "null_safe_join_probe_test.go",
+        "nulls_order_probe_test.go",
         "offset_empty_agg_probe_test.go",
         "on_clause_shapes_probe_test.go",
         "or_and_index_probe_test.go",

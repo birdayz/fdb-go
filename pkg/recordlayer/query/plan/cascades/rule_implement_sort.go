@@ -146,9 +146,21 @@ func sortExpressionToRequestedOrdering(s *expressions.LogicalSortExpression) *Re
 	}
 	parts := make([]RequestedOrderingPart, len(keys))
 	for i, k := range keys {
-		sortOrder := RequestedSortOrderAscending
-		if k.Reverse {
+		// Carry the explicit NULL placement (k.NullsFirst, nil = natural:
+		// ASC→FIRST, DESC→LAST). An explicit non-natural placement maps to the
+		// *NullsLast/*NullsFirst variant so the satisfaction check retains the
+		// sort instead of eliding it against an opposite-null-placement scan.
+		var sortOrder RequestedSortOrder
+		if !k.Reverse {
+			sortOrder = RequestedSortOrderAscending
+			if k.NullsFirst != nil && !*k.NullsFirst {
+				sortOrder = RequestedSortOrderAscendingNullsLast
+			}
+		} else {
 			sortOrder = RequestedSortOrderDescending
+			if k.NullsFirst != nil && *k.NullsFirst {
+				sortOrder = RequestedSortOrderDescendingNullsFirst
+			}
 		}
 		parts[i] = RequestedOrderingPart{
 			Value:     k.Value,

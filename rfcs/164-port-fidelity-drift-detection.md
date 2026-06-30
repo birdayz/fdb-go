@@ -211,12 +211,18 @@ by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs do
 
 ## 5. The 3 open hunt bugs — sequencing
 
-- **NULLS-ORDER** is a live wrong-*rows* bug → **fix it DIRECTLY and first**: extend
-  `RequestedSortOrder` with the NULLS axis (port Java `OrderingPart.RequestedSortOrder`:
-  `ASCENDING=ASC_NULLS_FIRST`, `DESCENDING=DESC_NULLS_LAST`, `ASCENDING_NULLS_LAST`,
-  `DESCENDING_NULLS_FIRST`, `ANY`) and thread NULL placement through `Ordering.Satisfies`.
-  This is a concrete ordering-model fix — *enumerated* by WS-5 and *pinned* by WS-2's
-  ordering check + WS-1's order-sensitive diff, but **not** "fixed through" an audit.
+- **[x] NULLS-ORDER — FIXED.** Restored the NULLS axis to `RequestedSortOrder`
+  (`AscendingNullsLast`, `DescendingNullsFirst` added; the existing `Ascending`/`Descending`
+  are the natural placements — Java `OrderingPart.RequestedSortOrder`), populated it from the
+  SQL `SortKey.NullsFirst`, and made the satisfaction path null-aware:
+  `IsCompatibleWithRequestedSortOrder` and the data-access `SatisfiesRequestedOrdering` now
+  require NULL placement to match, and the direction-reading sites use `IsAscending()`/
+  `IsDescending()`. An explicit non-natural `ORDER BY x NULLS LAST/FIRST` now RETAINS the
+  InMemorySort instead of being elided against an opposite-null-placement index. Pinned by
+  `TestNullsOrder_ExplicitPlacementRetainsSort` (plan) + `TestFDB_OrderByNullsLast` (rows
+  come back NULL-last). Surgical: natural placements still elide; full embedded + sqldriver
+  green; a 7-dimension adversarial verification (multi-key mixed NULLS, IN-join, set-ops,
+  GROUP BY, reverse-scan, over-fix regression, completeness audit) found nothing.
 - **COST-SELECTIVITY** and **NONDETERMINISM** are perf/stability (same rows) → ride WS-4
   (pin-then-fix): land the monotonicity invariant / the deterministic-tie seed, then flip
   the constants / make candidate iteration deterministic.

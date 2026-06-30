@@ -285,9 +285,29 @@ func (p ProvidedSortOrder) IsCompatibleWithRequestedSortOrder(req RequestedSortO
 		return true
 	}
 	if req.IsDirectional() && p.IsDirectional() {
-		reqAsc := req == RequestedSortOrderAscending
-		provAsc := !p.IsAnyDescending()
-		return reqAsc == provAsc
+		// Direction must match...
+		if req.IsDescending() != p.IsAnyDescending() {
+			return false
+		}
+		// ...AND so must the NULL placement. A forward index scan provides ASC
+		// NULLS FIRST; it does not satisfy a requested ASC NULLS LAST, so the sort
+		// is retained. Without this check the sort was wrongly elided (RFC-164 §5).
+		return req.NullsFirst() == p.nullsFirst()
+	}
+	return true
+}
+
+// nullsFirst reports the NULL placement a directional provided ordering yields.
+// The natural FDB tuple placement is ascending→NULLS FIRST, descending→NULLS
+// LAST; the explicit *NullsFirst/*NullsLast provided variants agree with that
+// (a forward scan is ascending-nulls-first, a reverse scan is descending-nulls-
+// last), so both the plain and explicit variants map to the natural placement.
+func (p ProvidedSortOrder) nullsFirst() bool {
+	switch p {
+	case ProvidedSortOrderAscending, ProvidedSortOrderAscendingNullsFirst:
+		return true
+	case ProvidedSortOrderDescending, ProvidedSortOrderDescendingNullsLast:
+		return false
 	}
 	return true
 }
@@ -452,7 +472,7 @@ func (o *RichOrdering) DirectionalOrderingParts(
 
 		if !sortOrder.IsDirectional() {
 			if reqSort, ok := reqMap[key]; ok && reqSort.IsDirectional() {
-				if reqSort == RequestedSortOrderAscending {
+				if reqSort.IsAscending() {
 					sortOrder = ProvidedSortOrderAscending
 				} else {
 					sortOrder = ProvidedSortOrderDescending
