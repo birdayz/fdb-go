@@ -290,20 +290,27 @@ func assertOrderedResidualPlan(t *testing.T, exp, where string) {
 	}
 }
 
-// TestFDB_VectorSearch_StreamingHeapBounded is the end-to-end heap-bytes proof
-// the user asked for ("stress, and prove memory doesn't explode") — the SQL-path
-// companion to the white-box O(budget) candidate-count assertion in the
-// "retains O(budget) candidates" Phase C spec. A sizable corpus with a
-// PATHOLOGICAL never-matching residual forces the ordered-stream scan to widen
-// all the way to the budget cap. Run through the executor at TWO corpus sizes
-// (5k vs 20k) and prove with runtime.ReadMemStats that:
+// TestFDB_VectorSearch_StreamingHeapBounded is the per-PR REDUCED variant of the
+// streaming-budget memory proof ("stress, and prove memory doesn't explode"). A
+// single budget-SATURATING corpus with a PATHOLOGICAL never-matching residual
+// forces the ordered-stream scan to widen all the way to the budget cap, and we
+// pin the honest-truncation contract plus an absolute O(budget) memory ceiling
+// end-to-end:
 //
-//	(a) the peak heap GROWTH attributable to the query is O(budget) — corpus
-//	    INDEPENDENT. A 4× larger corpus does NOT 4× the peak heap; the streaming
-//	    working set is bounded by the candidate/cell budget, never the corpus.
 //	(b) the query completes within the FDB 5 s tx and the budget cap surfaces as
 //	    a ScanLimitReached (→ *ScanLimitReachedError out of CollectAll), NEVER a
-//	    tx timeout and NEVER a silently-swallowed SourceExhausted.
+//	    tx timeout and NEVER a silently-swallowed SourceExhausted; 0 rows returned.
+//	(a) the peak heap GROWTH attributable to the query stays under an absolute
+//	    O(budget) ceiling — a memory-explosion smoke check at the saturating size.
+//
+// The streaming budget (maxCandidates=4000 / maxCells=512 cells) is a FIXED
+// production constant; this index is tuned small (Lmax/CellTarget) only so that
+// budget SATURATES at a few thousand rows instead of tens of thousands — the same
+// code path and the same bound, reached with far fewer inserts so it fits per-PR
+// CI (standard + race) under the sqldriver_test timeout. The heavy cross-corpus
+// memory-INDEPENDENCE proof (10k vs 40k, 4× apart, flat peak heap) lives in the
+// stress target: //pkg/relational/sqldriver/stress,
+// TestFDB_VectorSearch_StreamingHeapBounded.
 //
 // Measured peak heap numbers are logged for the record.
 func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
@@ -325,8 +332,18 @@ func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
 		metadata.NewColumnSpec("CATEGORY", api.NewStringType(false), 2),
 		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 3),
 	}, []string{"ID"})
+	// Small Lmax/CellTarget: postings split early and coarse cells stay tight, so
+	// the ordered stream probes the maxCells=512 cell budget (and the
+	// maxCandidates=4000 candidate budget) after only a few thousand rows rather
+	// than tens of thousands. The budget being asserted is unchanged — only the
+	// corpus needed to reach it shrinks.
 	b.AddVectorIndexUsing("SPFRESH", "DOCS", "VEC_IDX", "EMBEDDING", nil,
-		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+		map[string]string{
+			recordlayer.IndexOptionSPFreshMetric:     "EUCLIDEAN_METRIC",
+			recordlayer.IndexOptionSPFreshLmax:       "16",
+			recordlayer.IndexOptionSPFreshCellTarget: "4",
+			recordlayer.IndexOptionSPFreshCellMax:    "8",
+		})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -496,75 +513,61 @@ func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
 	const mb = 1024 * 1024
 	growth := func(r heapResult) int64 { return int64(r.peakInuse) - int64(r.baseInuse) }
 
-	// Two corpus sizes that BOTH saturate the O(budget) ceiling. The default
-	// streaming budget admits up to widenBatch (64) postings per widen burst, each
-	// read-capped at 4·Lmax+1 entries, so the peak retained candidate set is
-	// bounded by maxCandidates + widenBatch·(4·Lmax+1) — a corpus-INDEPENDENT
-	// constant (the same bound the white-box "retains O(budget)" spec asserts on
-	// the count). Saturation needs ≥ widenBatch postings; with the default Lmax a
-	// rebalanced corpus yields ~n/CellTarget postings, so both sizes here clear it
-	// comfortably (a 4× smaller corpus would merely UNDER-saturate and read flat-
-	// low, never higher — so two saturated sizes is the honest comparator). 4×
-	// apart: if the working set were O(corpus) the larger would ~4× the smaller.
-	const sizeA, sizeB = 10000, 40000
-	rA := runAt(sizeA)
-	rB := runAt(sizeB)
+	// One budget-SATURATING corpus. With Lmax=16 / CellTarget=4 a rebalanced corpus
+	// of this size yields well over maxCells (512) reachable postings and over
+	// maxCandidates (4000) reachable entries, so the never-matching residual's
+	// widening is guaranteed to hit the budget cap (a smaller corpus would merely
+	// EXHAUST and read SourceExhausted — see the truncation assertion below, which
+	// fails loudly if the budget did NOT bind). The full 4×-apart cross-corpus
+	// memory-INDEPENDENCE proof lives in the stress target.
+	const sizeSat = 6000
+	r := runAt(sizeSat)
+	t.Logf("n=%5d  baseInuse=%4dMB peakInuse=%4dMB growth=%5.1fMB  baseAlloc=%4dMB peakAlloc=%4dMB  rows=%d truncated=%v elapsed=%s",
+		r.n, r.baseInuse/mb, r.peakInuse/mb, float64(growth(r))/float64(mb),
+		r.baseAlloc/mb, r.peakAlloc/mb, r.rows, r.truncated, r.elapsed)
 
-	for _, r := range []heapResult{rA, rB} {
-		t.Logf("n=%5d  baseInuse=%4dMB peakInuse=%4dMB growth=%5.1fMB  baseAlloc=%4dMB peakAlloc=%4dMB  rows=%d truncated=%v elapsed=%s",
-			r.n, r.baseInuse/mb, r.peakInuse/mb, float64(growth(r))/float64(mb),
-			r.baseAlloc/mb, r.peakAlloc/mb, r.rows, r.truncated, r.elapsed)
+	// (b) Honest truncation — the budget binds (corpus > candidate cap), surfacing
+	// as ScanLimitReached, never a timeout, never a silent SourceExhausted. The
+	// never-matching residual returns 0 rows.
+	if !r.truncated {
+		t.Errorf("n=%d: expected ScanLimitReached truncation (budget cap), got none "+
+			"(rows=%d) — the budget did NOT bind or the reason was swallowed", r.n, r.rows)
 	}
-
-	// (b) Honest truncation at BOTH sizes — the budget binds (corpus > candidate
-	// cap), surfacing as ScanLimitReached, never a timeout, never a silent
-	// SourceExhausted. The never-matching residual returns 0 rows.
-	for _, r := range []heapResult{rA, rB} {
-		if !r.truncated {
-			t.Errorf("n=%d: expected ScanLimitReached truncation (budget cap), got none "+
-				"(rows=%d) — the budget did NOT bind or the reason was swallowed", r.n, r.rows)
-		}
-		if r.rows != 0 {
-			t.Errorf("n=%d: never-matching residual returned %d rows, want 0", r.n, r.rows)
-		}
-		if r.elapsed >= 5*time.Second {
-			t.Errorf("n=%d: query took %s — at/over the FDB 5s tx limit (should be budget-bounded well under)", r.n, r.elapsed)
-		}
+	if r.rows != 0 {
+		t.Errorf("n=%d: never-matching residual returned %d rows, want 0", r.n, r.rows)
+	}
+	if r.elapsed >= 5*time.Second {
+		t.Errorf("n=%d: query took %s — at/over the FDB 5s tx limit (should be budget-bounded well under)", r.n, r.elapsed)
 	}
 
-	// (a) Corpus-INDEPENDENCE of the peak heap. The corpus is 4× larger at sizeB,
-	// yet both saturate the SAME O(budget) ceiling, so the peak heap GROWTH must be
-	// essentially flat — within a small additive slack (measurement/GC jitter +
-	// the modest routing-list growth with more cells), NOT scaling with corpus. A
-	// working set that materialized the corpus would be ~4× larger at sizeB.
-	gA, gB := growth(rA), growth(rB)
-	slack := int64(40 * mb)
-	if gB > gA+slack {
-		t.Errorf("peak heap GREW with the corpus: n=%d growth=%.1fMB, n=%d growth=%.1fMB, delta=%.1fMB > slack=%dMB "+
-			"— the streaming working set is NOT O(budget) (memory scales with corpus)",
-			sizeA, float64(gA)/float64(mb), sizeB, float64(gB)/float64(mb),
-			float64(gB-gA)/float64(mb), slack/mb)
-	}
-	// Sub-linearity guard: a true O(corpus) working set would 4× from sizeA→sizeB.
-	// O(budget) stays within a constant, so the larger growth is FAR below 4×.
-	if gA > 4*mb && gB > 3*gA {
-		t.Errorf("peak heap scaled ~linearly with corpus: n=%d growth=%.1fMB vs n=%d growth=%.1fMB (>3×) "+
-			"— working set is O(corpus), not O(budget)", sizeA, float64(gA)/float64(mb), sizeB, float64(gB)/float64(mb))
-	}
-	// Absolute O(budget) ceiling: the peak growth is bounded by maxCandidates +
+	// (a) Absolute O(budget) ceiling — a memory-explosion smoke check at the
+	// saturating size. The peak growth is bounded by maxCandidates +
 	// widenBatch·(4·Lmax+1) candidates' worth of maps + transient posting reads —
-	// modest and constant. A corpus-materializing implementation would blow past.
-	const ceiling = 160 * mb
-	if gB > ceiling {
+	// modest and constant, independent of corpus. A corpus-materializing
+	// implementation (holding every scanned vector / rerank entry unboundedly)
+	// would blow past this ceiling even at this size. (The 4×-corpus flatness proof
+	// is the stronger sibling in the stress target.)
+	const ceiling = 96 * mb
+	g := growth(r)
+	if g > ceiling {
 		t.Errorf("n=%d peak heap growth=%.1fMB exceeds the O(budget) ceiling %dMB — memory explosion",
-			sizeB, float64(gB)/float64(mb), ceiling/mb)
+			r.n, float64(g)/float64(mb), ceiling/mb)
 	}
 }
 
-// TestFDB_VectorSearch_ColdStartCappedHonestTruncation is the red→green pin for
-// the honest-truncation bug RFC-156 stress coverage surfaced — a SILENT WRONG
+// TestFDB_VectorSearch_ColdStartCappedHonestTruncation is the per-PR REDUCED pin
+// for the honest-truncation bug RFC-156 stress coverage surfaced — a SILENT WRONG
 // ANSWER, the exact "never a silent < k" violation Phase C forbids — and proves
 // the fix end-to-end.
+//
+// The capped-posting bug is config-INDEPENDENT: the read-path reads only the
+// 4·Lmax+1 ENVELOPE of an oversized cold-start posting, so any corpus with more
+// than 4·Lmax+1 rows in one posting hides its larger-PK tail. This variant tunes
+// Lmax DOWN to 16 (envelope = 65) so a few hundred cold-start rows reproduce the
+// IDENTICAL code path at a fraction of the inserts, keeping it inside the per-PR
+// sqldriver_test timeout (standard + race). The production-scale (20k, default
+// Lmax) version lives in the stress target:
+// //pkg/relational/sqldriver/stress, TestFDB_VectorSearch_ColdStartCappedHonestTruncation.
 //
 // ROOT CAUSE (now fixed). Cold-start SaveRecord inserts pile every row into ONE
 // coarse cell with a single oversized posting (>4*Lmax entries) and a
@@ -588,7 +591,7 @@ func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
 //  2. AFTER MAINTENANCE: the first query's terminal re-filed the split
 //     (refileCapped); the rebalancer processes it and the oversized posting splits
 //     into <=Lmax pieces (no longer capped). Re-running the SAME query now returns
-//     the true nearest match [20000] with SourceExhausted (genuinely complete).
+//     the true nearest match [nW] with SourceExhausted (genuinely complete).
 //
 // Together this proves the fix: no silent under-return, and the read-path re-file
 // heals it.
@@ -612,8 +615,17 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 		metadata.NewColumnSpec("CATEGORY", api.NewStringType(false), 2),
 		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 3),
 	}, []string{"ID"})
+	// Lmax=16 → the read-path envelope is 4·Lmax+1 = 65 entries, so a cold-start
+	// corpus of nW=400 rows in one oversized posting hides PKs 66..400 in the
+	// invisible tail — the exact capped-posting condition, reached with ~400 rows
+	// instead of the 20k the default Lmax (256, envelope 1025) would require.
 	b.AddVectorIndexUsing("SPFRESH", "DOCS", "VEC_IDX", "EMBEDDING", nil,
-		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+		map[string]string{
+			recordlayer.IndexOptionSPFreshMetric:     "EUCLIDEAN_METRIC",
+			recordlayer.IndexOptionSPFreshLmax:       "16",
+			recordlayer.IndexOptionSPFreshCellTarget: "4",
+			recordlayer.IndexOptionSPFreshCellMax:    "8",
+		})
 	tmpl, err := b.Build()
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
@@ -633,10 +645,11 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 		return m
 	}
 
-	// 20k rows, cold-start (NO rebalance) → one oversized capped posting. The
-	// matching row has the LARGEST PK (so it lands in the invisible posting tail)
-	// AND is the nearest (at the origin query). Every other row is a far decoy.
-	const nW = 20000
+	// nW rows, cold-start (NO rebalance) → one oversized capped posting (nW well
+	// over the 4·Lmax+1 = 65 read envelope). The matching row has the LARGEST PK
+	// (so it lands in the invisible posting tail) AND is the nearest (at the origin
+	// query). Every other row is a far decoy.
+	const nW = 400
 	for start := 0; start < nW; start += 500 {
 		end := start + 500
 		if end > nW {
@@ -730,7 +743,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 
 	// Phase 2 — AFTER MAINTENANCE: the posting is no longer capped, so the true
 	// nearest match is now visible and the index is genuinely complete: the SAME
-	// query returns [20000] with SourceExhausted. The re-file path healed the
+	// query returns [nW] with SourceExhausted. The re-file path healed the
 	// under-return — no permanent data loss, just an honest signal in the interim.
 	ids2, reason2 := runQuery()
 	t.Logf("post-rebalance residual K-NN: ids=%v reason=%v (isOutOfBand=%v); true answer=[%d]",

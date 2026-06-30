@@ -7,6 +7,7 @@ go_test(
         "raw_fdb_bench_test.go",
         "recordlayer_bench_test.go",
         "stress_test.go",
+        "vector_stress_test.go",
     ],
     tags = [
         "manual",
@@ -19,8 +20,14 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/metadata",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
