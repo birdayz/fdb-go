@@ -1292,7 +1292,13 @@ func (tx *Transaction) Clear(key []byte) {
 	// C++ clear(KeyRef) drops an oversized single-key clear entirely
 	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write —
 	// but the no-conflict flag is still consumed (RYW :2407, above the size check).
-	if len(key) > getMaxClearKeySize(key) {
+	// BUT C++ RYW clear() checks the legal-range FIRST (ReadYourWrites.actor.cpp:2419-2424): an
+	// out-of-legal-range key (e.g. an oversized \xff system key on a non-system txn) is
+	// key_outside_legal_range (2004), NOT silently dropped by the size-clamp. So only size-drop a
+	// key WITHIN the legal range; an illegal key falls through and is buffered, so the commit gate's
+	// legal-range check reports 2004 (mirroring Set/ClearRange).
+	legal := bytes.Compare(key, tx.maxWriteKey()) < 0 || bytes.Equal(key, metadataVersionKeyBytes)
+	if legal && len(key) > getMaxClearKeySize(key) {
 		tx.consumeNextWriteNoConflict()
 		return
 	}
@@ -1375,7 +1381,18 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	// mutation, but the transaction object is otherwise usable until the commit gate rejects it).
 	if !isAtomicOp(op) {
 		if tx.invalidAtomicOpErr == nil {
-			tx.invalidAtomicOpErr = &wire.FDBError{Code: ErrInvalidMutationType}
+			// C++ atomicOp checks metadataVersionKey (2000) / legal-range (2004) BEFORE the
+			// op-validity check (2018) — ReadYourWrites.actor.cpp:2226-2234. Surface the same
+			// precedence eagerly so Atomic(invalidOp, systemKey) reports key_outside_legal_range,
+			// and Atomic(invalidOp, metadataVersionKey) reports client_invalid_operation — not 2018.
+			switch {
+			case bytes.Equal(key, metadataVersionKeyBytes):
+				tx.invalidAtomicOpErr = &wire.FDBError{Code: 2000} // client_invalid_operation
+			case bytes.Compare(key, tx.maxWriteKey()) >= 0:
+				tx.invalidAtomicOpErr = &wire.FDBError{Code: 2004} // key_outside_legal_range
+			default:
+				tx.invalidAtomicOpErr = &wire.FDBError{Code: ErrInvalidMutationType} // 2018
+			}
 		}
 		return
 	}

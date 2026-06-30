@@ -63,6 +63,7 @@ go_test(
         "clusterfile_test.go",
         "commit_dummy_regression_test.go",
         "commit_path_grv_ctx_test.go",
+        "commitpath_legalrange_test.go",
         "commitpath_test.go",
         "commitpath_unit_test.go",
         "concurrent_stress_test.go",

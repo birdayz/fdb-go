@@ -167,6 +167,18 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    with the API version threaded into `client.database` (mandatory-set → `api_version_unset` 2200). Pinned by
    a cgo in-txn-RYW + committed red→green differential + the 509/510 boundary. FDB-C-dev + Torvalds + codex +
    @claude all green. Next axes: option `defaultFor` matrix, versionstamp-offset edges (RFC-063 still Draft).
+   **Full-surface hunt (2026-06-30, PR #403, branch `hunt/fdbgo-client-bughunt`):** two multi-agent
+   discovery sweeps over 22 axes → adversarial verify (3 refuted) → **11 fixed red→green** (getKey
+   system-key clamp HIGH; watch goroutine race+leak HIGH; RYW more-on-exactly-limit + spurious-1020;
+   atomic invalid-opcode incl. silent ClearRange delete; AddReadConflict over-conflict; OnError-honors-
+   timeout; Iterator Limit=-1; hedge QueueModel leak; watch legal-range/key-size; too_many_watches;
+   StreamingModeExact-no-limit→2210). **Open (in the PR's severity table + `shifts/2026-06-30-fdbgo-client-
+   bughunt.md`):** 3 architectural → **RFC-165** (watch-at-committed-version), **RFC-166** (reset() must
+   clear non-persistent options — also closes snapshot-ryw-survives-reset), **RFC-167** (getKey isBackward
+   shard-location, needs multi-SS/SimTransport) — all Draft, need FDB-C-dev ACK; plus bounded LOWs (atomic
+   op-code precedence, oversized system-key Clear drop, buffer-pool sync.Pool race on SendFrame-error,
+   SYSTEM_IMMEDIATE+GRV-cache [Go-intentional, needs FDB-C-dev adjudication], dummy-txn jitter law,
+   api<520 versionstamp suffix, sendGetValue fallback error-masking). Review gauntlet owed before merge.
 3. **[ ] C2-followup — confirm RFC-057's lazy iterator closed the go-vs-cgo 1007-rate** near the 5s
    MVCC edge (profiling, not a fix). Detail: conformance section, "C2-followup".
 4. **[ ] Query-engine "one query path" unification.** Route `buildSelectShell`/SimpleTable builder +

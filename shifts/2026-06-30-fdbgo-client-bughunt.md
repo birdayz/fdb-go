@@ -106,6 +106,21 @@ oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by 
     (fdb_c.cpp:996-998). Fix: `Iterator()` guard. Pin:
     `TestRangeIterator_RowLimitUnlimitedAndInvalid` (Exact sub-cases).
 
+## Done — round 6 (committed, red→green proven)
+
+12. **Atomic invalid op-code precedence** (LOW). The round-1 fix poisoned with invalid_mutation_type
+    (2018) eagerly, preempting C++'s legal-range/metadataVersionKey checks. C++ atomicOp order
+    (ReadYourWrites.actor.cpp:2226-2234): metadataVersionKey (2000) / legal-range (2004) BEFORE
+    op-validity (2018). Fix: Atomic() sets the poison matching that precedence. Pin:
+    `TestAtomic_InvalidOpCodePrecedence`.
+13. **Oversized system-key Clear silently dropped** (LOW). `Clear()` size-clamped (dropped) an
+    oversized key BEFORE the legal-range check, so an oversized `\xff` system key was swallowed
+    instead of `key_outside_legal_range` (2004). C++ checks legal-range first (RYW:2419-2424). Fix:
+    only size-drop a key WITHIN the legal range; an illegal one is buffered → commit reports 2004.
+    Pin: `TestClear_OversizedSystemKey` (key must exceed SYSTEM_KEY_SIZE_LIMIT=30000 to exercise it).
+
+Also written: **RFC-167** (getKey isBackward shard-location, Draft — needs multi-SS/SimTransport proof).
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)
