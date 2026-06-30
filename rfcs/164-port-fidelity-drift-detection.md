@@ -126,10 +126,15 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   It walks the *plan* tree, not the expression tree, because the malformed node is an
   eagerly-embedded plan snapshot with no live expression member. Genuine leaves (the 10
   scan-/value-producing plan types) are exempted via a compile-time type set (WS-3's
-  visitor would make this exhaustive). Wired ALWAYS-ON into the `PlanQueryForTest` family;
-  runs clean across the entire embedded corpus with ZERO skip-lists; mutation-proven
-  (revert the IN-LIMIT relink fix → `non-leaf plan *RecordQueryFetchFromPartialRecordPlan
-  has no children ... Fetch(<nil>)`); pinned by `TestValidatePlanInvariants_NilInnerChild`
+  visitor would make this exhaustive); empty n-ary set ops are also exempted (never
+  emitted in practice, executor-tolerated). Two detectors: empty-children (unary
+  inner-drop) + nil-in-slice (fixed-arity join/recursive drop). Wired ALWAYS-ON into the
+  `PlanQueryForTest` family AND the PRODUCTION generator (SELECT / scalar-subquery / DML
+  extraction in cascades_generator.go) — so a dropped child fails loudly in production,
+  not only tests; runs clean across the entire embedded + full sqldriver corpus with ZERO
+  skip-lists; mutation-proven (revert the IN-LIMIT relink fix → `non-leaf plan
+  *RecordQueryFetchFromPartialRecordPlan has no children ... Fetch(<nil>)`); pinned by
+  `TestValidatePlanInvariants_NilInnerChild` + `TestPlanInvariants_ChildlessClassification`
   + `FuzzPlanner_Invariants` (1M+ execs, 0 failures). Catches every future per-wrapper
   relink bug across all ~20 wrappers at once.
 - [ ] **`WithChildren(GetQuantifiers())` round-trip identity.** Re-linking a node with its

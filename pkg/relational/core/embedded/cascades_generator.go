@@ -416,6 +416,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
 	}
+	// RFC-164 WS-2: structural plan invariants on the PRODUCTION path — a relink
+	// that dropped a child fails loudly here rather than executing to wrong/zero
+	// rows (the IN-LIMIT symptom).
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed query plan: "+err.Error())
+	}
 	// Plan scalar subqueries independently through the Cascades pipeline.
 	var scalarSubs []scalarSubqueryBinding
 	for _, ssq := range scalarSubqueryPlans {
@@ -447,6 +453,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		if subPlan == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"scalar subquery physical plan nil")
+		}
+		if err := cascades.ValidatePlanInvariants(subPlan); err != nil {
+			return nil, api.NewError(api.ErrCodeInternalError, "malformed scalar-subquery plan: "+err.Error())
 		}
 		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
 			alias: ssq.Alias,
@@ -907,6 +916,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML physical plan nil")
+	}
+	// RFC-164 WS-2: structural plan invariants on the production DML path.
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
 
 	ls.setPlan(physPlan)

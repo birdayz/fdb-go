@@ -36,6 +36,29 @@ func TestValidatePlanInvariants_NilInnerChild(t *testing.T) {
 	}
 }
 
+// TestPlanInvariants_ChildlessClassification pins the childless-allowed set
+// (genuine leaves + empty n-ary set ops) against the plans package, so a future
+// change to a plan type's child shape can't silently slip the invariant. An
+// interim guard until RFC-164 WS-3's RecordQueryPlanVisitor makes leaf-ness
+// type-encoded / compile-time.
+func TestPlanInvariants_ChildlessClassification(t *testing.T) {
+	t.Parallel()
+	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	// Genuine leaves and empty n-ary set ops legitimately have zero children.
+	for _, p := range []plans.RecordQueryPlan{
+		scan,
+		plans.NewRecordQueryUnionPlan(nil), // empty set-op — exempted (codex/Graefe)
+	} {
+		if err := ValidatePlanInvariants(p); err != nil {
+			t.Errorf("%T must be allowed childless: %v", p, err)
+		}
+	}
+	// A unary operator must NOT be childless.
+	if err := ValidatePlanInvariants(plans.NewRecordQueryLimitPlan(nil, 1, 0)); err == nil {
+		t.Error("a childless unary operator (Limit) must be rejected")
+	}
+}
+
 // FuzzPlanner_Invariants asserts that EVERY successfully-planned random query
 // satisfies the WS-2 structural invariants — a relink that drops a child on any
 // input shape is caught here, always-on, with no Java/FDB dependency.
