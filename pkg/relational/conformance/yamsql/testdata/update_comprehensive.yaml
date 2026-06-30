@@ -10,6 +10,7 @@ setup:
 tests:
   # UPDATE single column
   - query: UPDATE t SET score = 95 WHERE id = 1
+    ansi: [E101-03]
     rows: []
   - query: SELECT score FROM t WHERE id = 1
     rows:
@@ -38,6 +39,3 @@ tests:
   - query: SELECT COUNT(*) FROM t WHERE score = 0
     rows:
       - [0]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: E101-03

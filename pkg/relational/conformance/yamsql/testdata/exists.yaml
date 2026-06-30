@@ -65,6 +65,4 @@ tests:
       - [1]
       - [2]
       - [3]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: E061-08
+    ansi: [E061-08]

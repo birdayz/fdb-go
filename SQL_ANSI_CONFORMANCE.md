@@ -3,13 +3,13 @@
 <!-- GENERATED FILE — DO NOT EDIT BY HAND.
      Regenerate with `just sql-coverage` (or `go run ./cmd/gen-sql-coverage`).
      The roster (Identifier/Core?/Name/Java?) is the hand-authored PINNED-FACT source
-     in ansi_roster.go; the Go? column + completeness are DERIVED from `# ansi:` tags
+     in ansi_roster.go; the Go? column + completeness are DERIVED from `ansi:` tags
      on the yamsql corpus. Drift guards: TestAnsiLedgerUpToDate + TestAnsiLedgerEvidenceExists. -->
 
 Ledger A of RFC-165 — the ANSI-standard scorecard, modeled on PostgreSQL Appendix D.
 The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; the
 frozen fdb-relational 4.12.11.0 reference). **`Go?` and completeness are derived** by
-walking `# ansi:`-tagged corpus scenarios — a claim of support traces to a named,
+walking `ansi:`-tagged corpus scenarios — a claim of support traces to a named,
 passing case, never a hand-typed status. For the measured corpus number see `SQL_COVERAGE.md`.
 
 **Axes** (RFC-165 §4.2): `Java?` × `Go?`. The headline is keyed on **`Go?` only** —

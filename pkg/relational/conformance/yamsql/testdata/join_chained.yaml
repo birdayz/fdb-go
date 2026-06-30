@@ -41,6 +41,4 @@ tests:
       - ['Alice', 'Engineering']
       - ['Bob', 'Sales']
       - ['Carol', 'Engineering']
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: F041-01
+    ansi: [F041-01]

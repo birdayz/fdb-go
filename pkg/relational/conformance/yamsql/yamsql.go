@@ -61,6 +61,17 @@ type Test struct {
 	// PlanNotContains, if set, asserts the plan does NOT contain this
 	// substring. Useful for negative assertions (no InMemorySort, no Fetch).
 	PlanNotContains string `yaml:"plan_not_contains"`
+	// Ansi lists the SQL:2023 Core feature IDs this specific test provides
+	// POSITIVE evidence for (RFC-165 Ledger A). The ANSI ledger credits each ID
+	// only when THIS test passes (classifyTest == OutcomeSupported), binding the
+	// evidence to the exact test that exercises the feature — so a positive tag
+	// can never be credited off a sibling test in the same file (the F261-01
+	// "Simple CASE credited off searched-CASE" class the audit caught).
+	Ansi []string `yaml:"ansi"`
+	// AnsiGap lists feature IDs this test pins as UNSUPPORTED (an explicit
+	// rejection). Credited only when THIS test is an unsupported-feature pin
+	// (classifyTest == OutcomeUnsupported).
+	AnsiGap []string `yaml:"ansi_gap"`
 }
 
 // EffectiveErrorCode returns the asserted error SQLSTATE, preferring the modern

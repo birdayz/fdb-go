@@ -93,12 +93,12 @@ The first draft's single `parity/ext/gap/partial` enum collapsed *who supports i
 
 That last row is the signal the whole program exists to surface, and the collapsed enum erased it. A `partial` is now always qualified by *which engine* misses the subfeature.
 
-### 4.3 Evidence = exercised, not present (per both reviewers)
+### 4.3 Evidence = exercised, not present (per-test binding)
 
-yamsql scenarios today carry no ANSI tag (`featurematrix.go` buckets by filename substring only). So:
-- Extend the corpus with a `# ansi: <ID>[ subfeature]` leading-comment tag (the parser already extracts leading-comment tags — `featurematrix.go:205 extractDescription`).
-- The drift guard `TestAnsiLedgerEvidenceExists` verifies, for every `Go?=yes/partial` row, that the cited scenario **exists, carries the matching `# ansi:` tag, and asserts a positive result (or the specific operator via `plan_contains`)** — so "evidence" means the feature is *exercised*, not that a file resolves. The live FDB/A3 lanes then prove those exact cases pass.
-- The 6 hunt-bug regression scenarios get tagged, becoming the evidence pins of §2.1.3.
+A tag is a **per-test yaml field**, not a scenario-level comment: each test that exercises a Core feature carries `ansi: [<ID>]` (or `ansi_gap: [<ID>]` for a rejection) as a sibling of `rows:`/`error_code:`. So:
+- The tag is **bound to its own test's outcome**: `collectAnsiEvidence` credits an `ansi:` ID only when THAT test passes (`OutcomeSupported`), and an `ansi_gap:` ID only when THAT test is an unsupported pin. A tag on a wrong-outcome test is a violation. This makes "evidence = exercised" **structural** — a positive tag can NEVER be credited off a *sibling* test in the same file (the F261-01 "Simple CASE credited off searched-CASE" class the audit caught; the old scenario-level cross-feature guard is therefore gone).
+- The drift guard `TestAnsiLedgerEvidenceExists` runs this over the whole corpus; `TestAnsiEvidenceGuardBites` / `TestAnsiGapWrongOutcomeBites` are red fixtures proving the wrong-outcome guard fires, and `TestAnsiPerTestMixedScenarioClean` proves a mixed scenario credits each feature off its own test. The live FDB/A3 lanes then prove those exact cases pass.
+- The 6 hunt-bug regression scenarios are tagged, becoming the evidence pins of §2.1.3.
 
 ### 4.4 The `ext` rule, made concrete (resolves Graefe #1 / Torvalds #5)
 
@@ -124,7 +124,7 @@ The headline answers "how much does *this engine* (Go) do," so it is keyed on **
 
 - **Library** (`pkg/relational/conformance/yamsql`): `GenerateCoverageReport(dir) (string,error)` (Ledger B) and `GenerateAnsiLedger(dir, roster) (string,error)` (Ledger A — joins the hand-authored ISO roster + `Java?` facts against the derived corpus tags). Rendering deterministic (sorted), pure/static, no Docker.
 - **Roster source**: a Go data table `ansiCoreFeatures` (Identifier, Core, Name, Java? fact) — the only hand-authored input; reviewed as facts.
-- **Tag extension**: `# ansi: <ID>` leading-comment convention on yamsql scenarios + a helper that maps scenario→IDs.
+- **Tag extension**: per-test `ansi: [<ID>]` / `ansi_gap: [<ID>]` yaml fields on yamsql tests (bound to each test's outcome — see §4.3).
 - **Generator**: `cmd/gen-sql-coverage` thin wrapper emitting both docs (model: `cmd/gen-feature-matrix/main.go`).
 - **justfile**: `sql-coverage: go run ./cmd/gen-sql-coverage` (plain `go run`, like `feature-matrix`).
 - **Drift guards** (peers of `featurematrix_test.go`, reuse `repoRootForMatrix`): `TestSQLCoverageUpToDate`, `TestAnsiLedgerUpToDate`, `TestAnsiLedgerEvidenceExists` (the exercised-not-exists check).
@@ -136,7 +136,7 @@ The headline answers "how much does *this engine* (Go) do," so it is keyed on **
 
 ## 6. Phased plan (Phase 0/1 overlap fixed per Graefe)
 
-- **Phase 0 — Ledger B + denominator + retire rot.** `GenerateCoverageReport` over the corpus (measured number today, honestly), the ISO roster denominator + `Java?` facts, the `# ansi:` tag infra and guard, `cmd`/justfile/Bazel wiring + drift guards, retire `SQL_CONFORMANCE.md`'s stale numbers. Ledger A renders with whatever is tagged so far (honest partial).
+- **Phase 0 — Ledger B + denominator + retire rot.** `GenerateCoverageReport` over the corpus (measured number today, honestly), the ISO roster denominator + `Java?` facts, the `ansi:` tag infra and guard, `cmd`/justfile/Bazel wiring + drift guards, retire `SQL_CONFORMANCE.md`'s stale numbers. Ledger A renders with whatever is tagged so far (honest partial).
 - **Phase 1 — tag the corpus + emit honest Ledger A.** Walk the 176 Core rows: tag existing yamsql scenarios with their ANSI IDs; the derived `Go?`/completeness then populate. File `Java?=no,Go?=no` rows as the ANSI read-side backlog in TODO.md (prioritized by Core-ness); file any `Java?=yes,Go?=no` rows as **RFC-164 port-fidelity bugs**. This is the roadmap output.
 
 Each phase ships independently, CI green. (sqllogictest reach driver = RFC-166, Phase 2+, not in this RFC's scope.)
@@ -144,7 +144,7 @@ Each phase ships independently, CI green. (sqllogictest reach driver = RFC-166, 
 ## 7. Test plan / proof obligations
 
 - Ledger B + Ledger A generators: unit tests over a fixture corpus (classification buckets; roster×tag join; completeness/who-supports derivation; divergence detection).
-- Drift guards regenerate byte-identically; `TestAnsiLedgerEvidenceExists` fails on a `Go?=yes` row whose cited scenario lacks the `# ansi:` tag or asserts no positive result (prove the exercised-not-exists check actually bites — a deliberate red fixture).
+- Drift guards regenerate byte-identically; `TestAnsiLedgerEvidenceExists` fails on a `Go?=yes` row whose cited scenario lacks the `ansi:` tag or asserts no positive result (prove the exercised-not-exists check actually bites — a deliberate red fixture).
 - The classification is from typed fields (`Rows`/`ErrorCode`/`PlanContains`), never SQL text (CLAUDE.md NO-TEXT-MATCHING).
 - No `t.Skip` except the sanctioned Docker-absent guard. The generators need no Docker.
 
@@ -158,4 +158,4 @@ Each phase ships independently, CI green. (sqllogictest reach driver = RFC-166, 
 
 ## 9. Decision requested
 
-Approve **Phases 0–1 only**: (a) generated, drift-guarded **Ledger B** (measured corpus coverage); (b) **Ledger A** with `Go?`/completeness **derived** from `# ansi:`-tagged corpus + the A3 oracle, only the ISO roster + frozen-Java facts hand-authored, evidence guarded as *exercised*; (c) two-axis who-supports model that routes shared gaps to the RFC-165 backlog and Java-only-missing rows to RFC-164; (d) retire `SQL_CONFORMANCE.md`'s hand-typed numbers. **The sqllogictest format program is severed to RFC-166 and not approved here.**
+Approve **Phases 0–1 only**: (a) generated, drift-guarded **Ledger B** (measured corpus coverage); (b) **Ledger A** with `Go?`/completeness **derived** from `ansi:`-tagged corpus + the A3 oracle, only the ISO roster + frozen-Java facts hand-authored, evidence guarded as *exercised*; (c) two-axis who-supports model that routes shared gaps to the RFC-165 backlog and Java-only-missing rows to RFC-164; (d) retire `SQL_CONFORMANCE.md`'s hand-typed numbers. **The sqllogictest format program is severed to RFC-166 and not approved here.**
