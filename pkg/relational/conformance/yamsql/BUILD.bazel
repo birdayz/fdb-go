@@ -1,5 +1,15 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: the ANSI-tagged yamsql corpus, exported so the cross-engine Java?-fact
+# verification (//conformance:java_facts_conformance_test) can stage it into
+# runfiles and walk the `ansi:`/`ansi_gap:` tags. (The yamsql_test below globs the
+# same files directly via `data`.)
+filegroup(
+    name = "testdata",
+    srcs = glob(["testdata/**"]),
+    visibility = ["//visibility:public"],
+)
+
 go_library(
     name = "yamsql",
     srcs = [

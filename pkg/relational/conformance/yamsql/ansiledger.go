@@ -502,3 +502,72 @@ func GenerateAnsiLedger(dir string) (string, error) {
 	}
 	return RenderAnsiLedger(l), nil
 }
+
+// AnsiCoreRoster exposes the hand-authored SQL:2023 Core roster (read-only) so a
+// cross-engine test outside this package can verify the `Java?` facts against the
+// live Java server. The slice is the package var; callers must not mutate it.
+func AnsiCoreRoster() []AnsiFeature { return ansiCoreRoster }
+
+// JavaSupported reports whether the roster fact counts as "Java supports it"
+// (Full or Partial). Used by the A3 Java?-verification lane.
+func (s Support) JavaSupported() bool { return s.supported() }
+
+// AnsiTaggedCase is one ANSI-tagged test joined to the roster's Java fact —
+// everything the A3 lane needs to re-run the test against Java and check the fact.
+type AnsiTaggedCase struct {
+	Scenario       string  // scenario name (diagnostics)
+	FeatureID      string  // the tagged ANSI feature ID
+	Gap            bool    // true if tagged `ansi_gap:` (a rejection), false if `ansi:`
+	Java           Support // the roster's hand-authored Java fact for FeatureID
+	SchemaTemplate string  // CREATE SCHEMA TEMPLATE body
+	Setup          []string
+	Query          string
+	IsQuery        bool // Query is a SELECT/WITH/VALUES (runnable as a cross-engine query)
+}
+
+// AnsiTaggedCases walks the corpus and returns one case per `ansi:`/`ansi_gap:`
+// tag, joined to the roster's Java fact for that feature. The A3 Java?-verification
+// lane runs each query against the live Java 4.12.11.0 server and asserts the
+// roster fact matches Java's real supported/rejected behaviour (the NULLIF episode
+// showed `*_java.yaml` testdata files are not a reliable Java reference).
+func AnsiTaggedCases(dir string) ([]AnsiTaggedCase, error) {
+	javaByID := make(map[string]Support, len(ansiCoreRoster))
+	for _, f := range ansiCoreRoster {
+		javaByID[f.ID] = f.Java
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	var cases []AnsiTaggedCase
+	for _, path := range matches {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		var s Scenario
+		if err := yaml.Unmarshal(raw, &s); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		name := s.Name
+		if name == "" {
+			name = strings.TrimSuffix(filepath.Base(path), ".yaml")
+		}
+		for _, t := range s.Tests {
+			add := func(id string, gap bool) {
+				cases = append(cases, AnsiTaggedCase{
+					Scenario: name, FeatureID: id, Gap: gap, Java: javaByID[id],
+					SchemaTemplate: s.SchemaTemplate, Setup: s.Setup, Query: t.Query, IsQuery: IsQuery(t.Query),
+				})
+			}
+			for _, id := range normalizeAnsiIDs(t.Ansi) {
+				add(id, false)
+			}
+			for _, id := range normalizeAnsiIDs(t.AnsiGap) {
+				add(id, true)
+			}
+		}
+	}
+	return cases, nil
+}

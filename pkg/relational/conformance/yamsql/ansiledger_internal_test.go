@@ -264,3 +264,35 @@ func containsSubstr(ss []string, sub string) bool {
 	}
 	return false
 }
+
+// TestAnsiTaggedCases pins the extractor the A3 Java?-verification lane consumes:
+// it joins each per-test tag to the roster's Java fact and flags query-ness.
+func TestAnsiTaggedCases(t *testing.T) {
+	t.Parallel()
+	cases, err := AnsiTaggedCases("testdata")
+	if err != nil {
+		t.Fatalf("AnsiTaggedCases: %v", err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("no tagged cases extracted")
+	}
+	byID := map[string]AnsiTaggedCase{}
+	for _, c := range cases {
+		byID[c.FeatureID] = c
+		if c.Java == SupportUntested {
+			t.Errorf("%s (%s): tagged feature has no roster Java fact (phantom?)", c.FeatureID, c.Scenario)
+		}
+		if c.Query == "" || c.SchemaTemplate == "" {
+			t.Errorf("%s (%s): missing query or schema", c.FeatureID, c.Scenario)
+		}
+	}
+	// NULLIF: gap-tagged, roster Java=None (both engines reject) — the case the
+	// A3 lane would run against Java to confirm it really rejects.
+	if c, ok := byID["F261-03"]; !ok || !c.Gap || c.Java != SupportNone {
+		t.Errorf("F261-03 (NULLIF) expected gap-tagged with Java=None; got %+v ok=%v", c, ok)
+	}
+	// COALESCE: positive, Java=Full.
+	if c, ok := byID["F261-04"]; !ok || c.Gap || c.Java != SupportFull {
+		t.Errorf("F261-04 (COALESCE) expected positive with Java=Full; got %+v ok=%v", c, ok)
+	}
+}

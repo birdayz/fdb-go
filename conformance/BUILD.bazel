@@ -90,6 +90,7 @@ go_test(
         "index_continuation_conformance_test.go",
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
+        "java_facts_conformance_test.go",
         "java_invoker_test.go",
         "java_planner_warmth_proof_test.go",
         "max_ever_version_index_conformance_test.go",
@@ -126,7 +127,13 @@ go_test(
         "version_index_conformance_test.go",
         "yamsql_cross_engine_conformance_test.go",
     ],
-    data = [":conformance_server"],
+    data = [
+        ":conformance_server",
+        # keep: the ANSI-tagged yamsql corpus, staged so
+        # java_facts_conformance_test resolves it via runfiles and verifies each
+        # tagged feature's roster Java? fact against the live Java server.
+        "//pkg/relational/conformance/yamsql:testdata",
+    ],
     tags = ["conformance_java"],
     deps = [
         "//gen",
