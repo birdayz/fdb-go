@@ -944,11 +944,29 @@ mishandled:
 Root cause: an identifier-normalization mismatch across DDL storage, SELECT-* expansion, and explicit-reference
 resolution for quoted identifiers. Java has a consistent case-sensitivity model — `SemanticAnalyzer.normalizeString
 (string, caseSensitive)` ("taken as-is if caseSensitive, upper-cased otherwise") with an `isCaseSensitive` flag set
-per-identifier by quoting — so quoted identifiers round-trip (created and queried by the same quoted name). Go folds
-quoted identifiers in DDL but treats them case-sensitively in resolution → the mismatch. Fix = port Java's
-normalizeString/isCaseSensitive model so quoting consistently selects case-sensitive handling in DDL + resolution +
-star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence; deferred
-(threads through the catalog + semantic analyzer).
+per-identifier by quoting — so quoted identifiers round-trip (created and queried by the same quoted name). Fix =
+port Java's normalizeString/isCaseSensitive model so quoting consistently selects case-sensitive handling in DDL +
+resolution + star-expansion. Niche (mixed-case / reserved-word column names are uncommon) but a real divergence;
+deferred (threads through the catalog + semantic analyzer).
+
+**Empirical diagnosis (CORRECTS the earlier framing — verify the real symptom before fixing):**
+- The `SELECT *` "shows KEEPCASE" observation is a RED HERRING — that is the JDBC result-set *display* name
+  (`jdbcColumnName`, select_helpers.go:29, upper-cases unquoted-looking labels; Java does the same). It is NOT the
+  stored column name and not the bug.
+- DDL does NOT fold the quoted case: `DOUBLE_QUOTE_ID` (RelationalLexer.g4:1332 = `'"' ~'"'+ '"'`) keeps the quotes,
+  so `parseTableDefinition` → `StripIdentifierQuotes(Uid().GetText())` (ddl.go:677) yields `"KeepCase"`→`KeepCase`
+  (preserved), and `builder.go:485` writes the proto field as `col.name` = `KeepCase`. So the on-disk proto field
+  IS `KeepCase` (case preserved) — and that should be wire-faithful, but VERIFY what Java's descriptor names it.
+- The real bug is in RESOLUTION: a `Fields().ByName(...)` lookup never matches the preserved-case field. Smoking gun
+  = INCONSISTENT normalization across the lookup sites: `ByName(parseColRef(name).bare())` (preserved) at
+  cascades_generator.go:2552/2627/2889 vs `ByName(strings.ToLower(name))` at :3493 vs the upper-folding SELECT
+  column-ref path. Empirically `SELECT "KeepCase"`, `KeepCase`, `KEEPCASE`, `keepcase`, AND `"KEEPCASE"` ALL →
+  42703 — i.e. no reference form (not even the exact stored/displayed name) resolves, which rules out a simple
+  one-sided case fold and points at the scope/column-registration step, not the reference normalizer alone.
+- Next-session fix: unify ALL column-resolution lookups on ONE Java-faithful `normalizeString` (quoted→as-is,
+  unquoted→upper) AND ensure the record-type→semantic-scope column registration keys columns by that same form;
+  then `SELECT "KeepCase"` resolves and `SELECT KeepCase` (unquoted→KEEPCASE) correctly does not. Add the e2e probe
+  + verify the proto field name matches Java (wire) before landing.
 
 ### [x] dml: wire DML DRY RUN through to the dry-run store primitives (Java parity) — DONE (RFC-158)
 
