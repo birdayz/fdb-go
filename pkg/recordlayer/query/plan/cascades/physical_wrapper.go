@@ -504,10 +504,12 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 	comps := w.plan.GetScanComparisons()
 	numBound := 0
 	allEquality := true
-	// Per-comparison selectivity: an open RANGE bound (RangeSelectivity) is less selective
-	// than an EQUALITY bound (FilterSelectivity). The flat-per-bound FilterSelectivity costed
-	// `id<10` like a point lookup, so a range-driven and a full-scan-driven join order cost the
-	// same and the cheaper order could not be preferred (RFC-069 / Graefe).
+	// Per-comparison selectivity: an open RANGE bound (RangeSelectivity=0.33) is LESS
+	// selective than an EQUALITY bound (EqualityBoundSelectivity=0.1). Using the generic
+	// FilterSelectivity (0.5) for equality made an equality probe look LESS selective than a
+	// range probe — inverting index choice (RFC-164 COST-SELECTIVITY); and the flat-per-bound
+	// estimate costed `id<10` like a point lookup, so a range-driven and a full-scan-driven
+	// join order cost the same and the cheaper order could not be preferred (RFC-069 / Graefe).
 	sel := 1.0
 	for _, cr := range comps {
 		if cr.IsEmpty() {
@@ -515,7 +517,7 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 		}
 		numBound++
 		if cr.IsEquality() {
-			sel *= properties.FilterSelectivity
+			sel *= properties.EqualityBoundSelectivity
 		} else {
 			allEquality = false
 			sel *= properties.RangeSelectivity
@@ -697,7 +699,7 @@ func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats propertie
 			}
 			numBound++
 			if cr.IsEquality() {
-				sel *= properties.FilterSelectivity
+				sel *= properties.EqualityBoundSelectivity
 			} else {
 				allEquality = false
 				sel *= properties.RangeSelectivity

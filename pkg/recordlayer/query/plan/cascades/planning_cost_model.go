@@ -1123,7 +1123,7 @@ func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, sta
 		}
 		numBound++
 		if cr.IsEquality() {
-			sel *= properties.FilterSelectivity
+			sel *= properties.EqualityBoundSelectivity
 		} else {
 			allEquality = false
 			sel *= properties.RangeSelectivity

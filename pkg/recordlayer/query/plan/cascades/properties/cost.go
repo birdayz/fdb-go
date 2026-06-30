@@ -66,6 +66,17 @@ const (
 	// one-third of the value domain is selected.
 	RangeSelectivity = 0.33
 
+	// EqualityBoundSelectivity is the fraction of rows an EQUALITY index-scan
+	// bound (col = X) retains. A point match selects far fewer rows than a range,
+	// so this MUST be < RangeSelectivity — otherwise the cost model treats an
+	// equality probe as less selective than a range probe and picks the wrong
+	// index (RFC-164 COST-SELECTIVITY). It is deliberately distinct from
+	// FilterSelectivity (0.5, the generic residual-Filter heuristic): a residual
+	// filter of unknown form may keep half the rows, but an indexed equality bound
+	// is a point lookup. The invariant EqualityBoundSelectivity < RangeSelectivity
+	// is pinned by TestCostSelectivity_EqualityBeatsRange.
+	EqualityBoundSelectivity = 0.1
+
 	// DistinctSelectivity is the fraction of rows Distinct retains
 	// (i.e. the assumed unique rate). 0.7 means 30% of input rows are
 	// duplicates of an earlier row.
