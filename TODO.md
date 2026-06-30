@@ -1084,10 +1084,24 @@ metadata change + Java-alignment; sentinel pins the current XX000 (flip when fix
 tuple_fields.UUID message (`isTupleField`) and the maintainer writes the entry as a `tuple.UUID`
 (`scalarToInterface`→`uuidMessageToTuple`), byte-identical to Java — pinned by
 `recordlayer/uuid_key_encoding_test.go` (unit, wire format) + `indexable_types_probe` (CREATE INDEX +
-INSERT succeed). REMAINING = the read side (sites 3-5): scoped typed-UUID comparand coercion at the
-predicate + the materialization-boundary `tuple.UUID`→string conversion. Until that lands, a UUID index
-must NOT be queried by `WHERE v = '…'` (would mis-match) — the transitional sentinel pins only the
-write/validate half. Original design notes below.
+INSERT succeed). REMAINING = the read side. Mapped to exact sites — it is ONE ATOMIC change (each piece alone regresses
+something; UUID must flow as `tuple.UUID` end-to-end, string only at the driver boundary, per Graefe):
+- **A — field read.** `query_result.go protoFieldToGo` (~:107) currently renders a UUID field via
+  `uuidMessageToString`; change it to return the 16-byte `tuple.UUID` (reuse `uuidMessageToTuple`'s msb‖lsb
+  layout) so the FILTER path compares `tuple.UUID == tuple.UUID`.
+- **B — comparand.** A scoped UUID coercion Value (Type=UUID, Evaluate: parse the inner string →
+  `tuple.UUID`) inserted at the predicate where a UUID column meets a STRING literal (the planner already
+  has `{String,Uuid}` in `promotionMap`, type.go:896 — it's recognized-but-not-applied; this is the
+  single `PromoteValue.Coercion` arm Graefe approved, NOT all of RFC-083). Makes the index/PK probe,
+  range/IN, and INL key all pack `tuple.UUID` from the type.
+- **C — materialization.** `cascades_generator.go paginatingRows` row build (~:1618) converts a
+  `tuple.UUID` column value → canonical string at the driver boundary (the ONE place string appears),
+  also covering the covering-index `tuple.UUID` from `IndexEntryObjectValue` — which stays a pure ordinal
+  extractor (Graefe).
+A without C regresses every `SELECT v`; B without A regresses the working full-scan `WHERE v=`. Land
+together + Graefe IMPL review. Then flip the `indexable_types_probe` transitional sentinel to the full
+round-trip + add the INL-join-key + MIN/MAX-ever + UUID-PK regressions. Until then, a UUID index must NOT
+be queried by `WHERE v='…'`. Original design notes below.
 
 **DESIGN READY — see RFC-162.** Prototyped end-to-end and PROVED the
 approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
