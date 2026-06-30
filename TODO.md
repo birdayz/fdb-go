@@ -38,11 +38,14 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   `values/values.go`. Pin: `TestBugHunt_CastDoubleToIntJavaRounding`.
 >
 > **OPEN (riskier — separate Graefe cycles; repros in PR):**
-> - **[ ] COST-SELECTIVITY (high, wrong index chosen).** `properties/cost.go`: `FilterSelectivity(equality)=0.5`
->   > `RangeSelectivity=0.33` is inverted vs the code's own comment — a broad range index is costed cheaper than
->   a selective equality index, so `WHERE customer_id=42 AND amount>100` drives off `IDX_AMOUNT([<>])` not
->   `IDX_CUSTOMER([=])`. Fix is a constant swap but changes index selection broadly → needs 1M stress before/after
->   + plan-test updates. Repro: `embedded.PlanQueryForTest`.
+> - **[x] COST-SELECTIVITY — FIXED (PR pending).** The equality bound was costed at `FilterSelectivity=0.5`
+>   > `RangeSelectivity=0.33` — inverted, so a broad range index was costed cheaper than a selective equality
+>   index. Introduced a distinct `EqualityBoundSelectivity=0.1` (< `RangeSelectivity`, kept separate from the
+>   generic residual-`FilterSelectivity`) and wired it into the 3 equality-vs-range scan-cost sites
+>   (`physical_wrapper.go` ×2, `planning_cost_model.go` scanLikeCost). `WHERE a=5 AND b>10` now drives off
+>   `IDX_A([=])` not `IDX_B([<>])` (master proven to pick the wrong index). Pins: `TestCostSelectivity_EqualityBeatsRange`
+>   (constant invariant sentinel) + `TestCostSelectivity_PrefersEqualityIndex` (plan). 1M stress before/after +
+>   FuzzCostMonotonicity 1.3M green; only 1 cost-assertion test churned.
 > - **[x] NULLS-ORDER — FIXED (PR pending).** Restored the NULLS axis to `RequestedSortOrder`
 >   (`AscendingNullsLast`/`DescendingNullsFirst`), populated it from `SortKey.NullsFirst`, and made
 >   `IsCompatibleWithRequestedSortOrder` + data-access `SatisfiesRequestedOrdering` null-aware (+ direction

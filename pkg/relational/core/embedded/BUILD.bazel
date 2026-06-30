@@ -76,6 +76,7 @@ go_test(
         "cardinality_ddl_test.go",
         "cascades_generator_pagination_test.go",
         "connection_recover_test.go",
+        "cost_selectivity_test.go",
         "embedded_test.go",
         "exists_in_on_plan_test.go",
         "logical_builder_test.go",

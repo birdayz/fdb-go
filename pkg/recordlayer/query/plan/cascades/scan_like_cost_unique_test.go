@@ -34,9 +34,11 @@ func TestScanLikeCost_UniqueGating(t *testing.T) {
 		t.Fatalf("non-unique full-equality bind: cardinality=%v, want >1 (bucket)", nonUniq)
 	}
 
-	// Sanity: the bucket is the table cardinality scaled by equality selectivity
-	// and the physical-wrapper discount — far larger than a point probe.
-	want := 1_000_000.0 * properties.FilterSelectivity * physicalWrapperCostMultiplier
+	// Sanity: the bucket is the table cardinality scaled by the EQUALITY-bound
+	// selectivity and the physical-wrapper discount — far larger than a point probe.
+	// (Uses EqualityBoundSelectivity, not FilterSelectivity: an indexed equality
+	// bound is a point lookup, not a generic residual filter — RFC-164 COST-SELECTIVITY.)
+	want := 1_000_000.0 * properties.EqualityBoundSelectivity * physicalWrapperCostMultiplier
 	if nonUniq != want {
 		t.Fatalf("non-unique bucket cardinality=%v, want %v", nonUniq, want)
 	}
