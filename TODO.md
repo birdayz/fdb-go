@@ -1002,7 +1002,17 @@ mutated rows as a cursor (`recordlayer.FromList(results)`), so the executor grou
 work is the logical Project-over-DML + its physical wrapper + `IsUpdate()` routing. Its own RFC +
 Graefe ACK.
 
-### [ ] ddl: in-template index/column errors wrap to 42F59, burying the specific SQLSTATE (found 2026-06-28)
+### [x] ddl: in-template index/column errors wrap to 42F59, burying the specific SQLSTATE — DONE (RFC-161)
+
+`createSchemaTemplate` (ddl.go) now PROPAGATES a structured `*api.Error` from
+parseTableDefinition/parseIndexDefinition (42701 duplicate column, 42703 PK over unknown column,
+0A000 unsupported INCLUDE, …) as its own SQLSTATE instead of masking it under the generic 42F59
+(ErrCodeInvalidSchemaTemplate — the wrong code for a duplicate column). Confirmed real vs Java: its
+`DdlVisitor` does not wrap in-template errors; `ExceptionUtil` maps each per type. A non-structured
+parse error still wraps. Duplicate-template-NAME 42F59 (different path) unchanged. Pinned by
+`include_clause_rejected_probe_test.go` (now 0A000, not 42F59) + `ddl_errors_probe_test.go` (42701/42703
+now the outer code). Per-type Java code may still drift (acceptable DDL drift); the specific code is
+strictly more correct than the false 42F59 wrapper.
 
 Every error raised while parsing an index/column inside a `CREATE SCHEMA TEMPLATE` is
 re-wrapped to outer SQLSTATE **42F59** with the specific code embedded in the message,
