@@ -117,6 +117,7 @@ go_test(
         "groupby_over_join_fdb_test.go",
         "groupby_select_order_probe_test.go",
         "groupby_validation_probe_test.go",
+        "having_const_test.go",
         "having_groupby_probe_test.go",
         "having_no_groupby_probe_test.go",
         "having_probe_test.go",

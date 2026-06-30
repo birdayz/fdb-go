@@ -88,9 +88,13 @@ func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 func predicateReferencesOnlyKeys(p predicates.QueryPredicate, keySet map[string]struct{}) bool {
 	cp, ok := p.(*predicates.ComparisonPredicate)
 	if !ok {
-		if _, isConst := p.(*predicates.ConstantPredicate); isConst {
-			return true
-		}
+		// A ConstantPredicate (e.g. HAVING FALSE / HAVING NULL after folding)
+		// references NO grouping column, so it is NOT a grouping-key predicate
+		// and must stay ABOVE the GroupBy. Pushing a row-eliminating constant
+		// below a SCALAR (zero-grouping-key) aggregate is WRONG: the scalar
+		// aggregate emits one row even over empty input, so `SELECT COUNT(*)
+		// FROM t HAVING FALSE` would return 1 row {0} instead of 0 rows. Only a
+		// ComparisonPredicate on a grouping column is pushable (RFC-166).
 		return false
 	}
 	fv, ok := cp.Operand.(*values.FieldValue)
