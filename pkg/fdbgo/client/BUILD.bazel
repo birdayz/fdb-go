@@ -133,6 +133,7 @@ go_test(
         "transaction_options_test.go",
         "transaction_unit_test.go",
         "unreadable_test.go",
+        "watch_limit_test.go",
         "watch_validation_test.go",
     ],
     args = [

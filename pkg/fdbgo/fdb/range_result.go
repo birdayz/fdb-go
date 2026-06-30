@@ -130,6 +130,14 @@ func (rr goRangeResult) Iterator() RangeIterator {
 	if rr.options.Limit < -1 {
 		return &goRangeIterator{err: Error{Code: client.ErrRangeLimitsInvalid}}
 	}
+	// StreamingModeExact requires a row limit (or a byte target, which the pure-Go client doesn't
+	// support): EXACT with no limit is exact_mode_without_limits (2210), matching libfdb_c
+	// validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998). Only the explicit-Exact
+	// Iterator path is affected — GetSliceWithError ignores Mode. Limit<=0 here means unlimited
+	// (0 or -1; a Limit < -1 already returned range_limits_invalid above).
+	if rr.options.Mode == StreamingModeExact && rr.options.Limit <= 0 {
+		return &goRangeIterator{err: Error{Code: 2210}} // exact_mode_without_limits
+	}
 	return &goRangeIterator{
 		rr:        rr,
 		begin:     begin,

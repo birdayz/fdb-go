@@ -305,6 +305,14 @@ type database struct {
 	// at >=510). Read-only after open.
 	apiVersion int
 
+	// outstandingWatches/maxWatches: per-Database cap on concurrently-outstanding (not-yet-fired,
+	// not-yet-cancelled) watches — C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:5694)
+	// throws too_many_watches (1032) once outstandingWatches >= maxWatches. maxWatches defaults to
+	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
+	// max_watches database option (SetMaxWatches). 0 means unlimited.
+	outstandingWatches atomic.Int64
+	maxWatches         atomic.Int64
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -312,6 +320,24 @@ type database struct {
 	connected chan struct{}
 	wg        sync.WaitGroup
 }
+
+// defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
+const defaultMaxOutstandingWatches = 10000
+
+// tryAcquireWatch reserves an outstanding-watch slot, returning too_many_watches (1032) when the
+// cap is exceeded — C++ increaseWatchCounter (NativeAPI.actor.cpp:2175-2179, called from
+// Transaction::watch :5694). Each successful acquire MUST be matched by exactly one releaseWatch.
+func (db *database) tryAcquireWatch() error {
+	n := db.outstandingWatches.Add(1)
+	if max := db.maxWatches.Load(); max > 0 && n > max {
+		db.outstandingWatches.Add(-1)
+		return &wire.FDBError{Code: ErrTooManyWatches}
+	}
+	return nil
+}
+
+// releaseWatch frees an outstanding-watch slot (C++ decreaseWatchCounter).
+func (db *database) releaseWatch() { db.outstandingWatches.Add(-1) }
 
 // apiVersionAtLeast reports whether the selected API version is >= v. Mirrors
 // C++ DatabaseContext::apiVersionAtLeast (Transaction::apiVersionAtLeast →
@@ -783,7 +809,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		},
 	}
 
-	db.hedgeEnabled.Store(true) // default: hedge on (matches C++)
+	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
+	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 
 	if err := db.bootstrap(ctx); err != nil {
 		cancel()
@@ -955,6 +982,16 @@ func (d *Database) SetDefaultReadSystemKeys() {
 // SetAccessSystemKeys(), allowing reads AND writes of \xff-prefixed system keys.
 func (d *Database) SetDefaultAccessSystemKeys() {
 	d.db.txDefaults.AccessSysKeys = true
+}
+
+// SetMaxWatches sets the cap on concurrently-outstanding watches for this Database
+// (FDB_DB_OPTION_MAX_WATCHES). Once exceeded, a new watch fails with too_many_watches (1032).
+// Matches C++ DatabaseContext maxOutstandingWatches; default 10000. A value <= 0 disables the cap.
+func (d *Database) SetMaxWatches(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	d.db.maxWatches.Store(n)
 }
 
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches

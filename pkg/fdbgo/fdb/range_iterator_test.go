@@ -63,6 +63,28 @@ func TestRangeIterator_RowLimitUnlimitedAndInvalid(t *testing.T) {
 		if !errors.As(e2, &fe) || fe.Code != 2012 {
 			t.Fatalf("Iterator(Limit:-2) must surface range_limits_invalid (2012), got %v", e2)
 		}
+
+		// StreamingModeExact with NO limit → exact_mode_without_limits (2210), matching libfdb_c.
+		it3 := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeExact}).Iterator()
+		it3.Advance()
+		_, e3 := it3.Get()
+		var fe3 gofdb.Error
+		if !errors.As(e3, &fe3) || fe3.Code != 2210 {
+			t.Fatalf("Iterator(StreamingModeExact, no limit) must surface exact_mode_without_limits (2210), got %v", e3)
+		}
+		// EXACT *with* a limit is fine (positive control).
+		it4 := rtr.GetRange(kr, gofdb.RangeOptions{Mode: gofdb.StreamingModeExact, Limit: n}).Iterator()
+		c4 := 0
+		for it4.Advance() {
+			it4.MustGet()
+			c4++
+		}
+		if _, e := it4.Get(); e != nil {
+			return nil, e
+		}
+		if c4 != n {
+			t.Fatalf("Iterator(Exact, Limit:%d) must return %d rows, got %d", n, n, c4)
+		}
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("read: %v", err)

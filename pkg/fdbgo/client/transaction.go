@@ -34,6 +34,7 @@ const (
 	ErrAccessedUnreadable        = 1036 // accessed_unreadable — read of a pending versionstamped key (NOT retryable; RFC-098)
 	ErrProcessBehind             = 1037 // process_behind
 	ErrWatchCancelled            = 1029 // watch_cancelled — SS watch limit exceeded; client polls instead
+	ErrTooManyWatches            = 1032 // too_many_watches — outstanding-watch cap exceeded (client-side)
 	ErrTimedOut                  = 1004 // timed_out — the SS occasionally times out a watch; re-arm
 	ErrDatabaseLocked            = 1038 // database_locked
 	ErrClusterVersionChanged     = 1039 // cluster_version_changed (MAYBE_COMMITTED)

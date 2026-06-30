@@ -92,6 +92,20 @@ preservation (HIGH, RFC-166), buffer-pool `sync.Pool` race on SendFrame error (L
 +GRV-cache (LOW), atomic op-code precedence (LOW — the edge flagged in the round-1 atomic fix),
 oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by the adversarial verify.
 
+## Done — round 5 (committed, red→green proven)
+
+10. **`too_many_watches` (1032) enforcement** (MEDIUM). `SetMaxWatches` was a no-op and no
+    outstanding-watch counter existed, so a Go app could register unlimited pending watches.
+    Added a per-Database `outstandingWatches`/`maxWatches` counter (default 10000 =
+    DEFAULT_MAX_OUTSTANDING_WATCHES); `WatchPoll` acquires a slot (1032 over the cap) and releases
+    on every exit path; `Database.SetMaxWatches` + the facade `DatabaseOptions.SetMaxWatches` are
+    wired. C++ increaseWatchCounter (NativeAPI.actor.cpp:5694,2175). Pin:
+    `TestDatabase_OutstandingWatchLimit`.
+11. **`StreamingModeExact` + no row limit → `exact_mode_without_limits` (2210)** (LOW, facade). The
+    explicit-Exact Iterator returned all rows; libfdb_c rejects EXACT with no limit/byte-target
+    (fdb_c.cpp:996-998). Fix: `Iterator()` guard. Pin:
+    `TestRangeIterator_RowLimitUnlimitedAndInvalid` (Exact sub-cases).
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)
