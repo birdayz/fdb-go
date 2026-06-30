@@ -15,7 +15,7 @@ package embedded
 // order per range, so repeated in-process plannings expose order-dependence) and
 // requires ONE distinct plan.
 //
-// RFC-167 Phase 1 (inner-aware shell hash) additionally fixes the multi-equality
+// RFC-167 Phase 1a (inner-aware shell hash) additionally fixes the multi-equality
 // tie over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` with
 // idx_a/idx_b/idx_c). Those three competing plans are SAME-TYPE nil-inner shells
 // (Fetch(PredicatesFilter(IndexScan))) whose embedded plan has GetChildren()==[],
@@ -27,7 +27,7 @@ package embedded
 // tie-resolution — no plan-shape re-ranking (the cheapest member, a single-index
 // shell, still wins, now deterministically).
 //
-// DECOUPLED FOLLOW-ON (RFC-167 Phases 2-4): making shells stop winning over real
+// DECOUPLED FOLLOW-ON (RFC-167 Phase 1b + 4): making shells stop winning over real
 // plans (the guard generalization) re-ranks the all-equality case to a 3-way
 // Intersection, which requires the primary-key ordering-gate (Phase 4) to be
 // correct — and that gate must use the full ordering machinery (a crude
@@ -36,8 +36,74 @@ package embedded
 // exprConcreteHash) get explicit nets there. Those are NOT in this change.
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
+
+const multiEqSchema = `
+CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_a ON T(a)
+CREATE INDEX idx_b ON T(b)
+CREATE INDEX idx_c ON T(c)`
+
+const multiEqQuery = "SELECT id FROM t WHERE a = 5 AND b = 7 AND c = 9"
+
+// TestPlanDeterminism_MultiEqualityShellTie_CrossProcess pins determinism ACROSS
+// PROCESSES (RFC-167 §7 mandatory harness), not just within one. Go re-seeds map
+// iteration per process, so the in-process loop above catches map-range bugs; but a
+// slice whose order is pointer/seed-stable WITHIN a process yet flips ACROSS
+// processes (the dimension Phase 0's bug lived on, and which firstPhysicalChild's
+// AllMembers()-order resolution rests on) needs a fresh process per sample. Each
+// child process plans once and prints the plan; the parent requires all identical.
+func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
+	t.Parallel()
+	const marker = "XPROCPLAN:"
+
+	// Child mode: plan once in this fresh process, print the plan, return.
+	if os.Getenv("FDB_DET_CHILD") == "1" {
+		plan, err := PlanQueryForTest(multiEqQuery, multiEqSchema, nil)
+		if err != nil {
+			fmt.Printf("%sERROR:%v\n", marker, err)
+			return
+		}
+		fmt.Printf("%s%s\n", marker, plan)
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("cross-process harness unavailable (os.Executable: %v)", err)
+	}
+	const procs = 5
+	seen := make(map[string]int)
+	for i := 0; i < procs; i++ {
+		cmd := exec.Command(exe, "-test.run", "^TestPlanDeterminism_MultiEqualityShellTie_CrossProcess$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "FDB_DET_CHILD=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// Harness couldn't re-exec the test binary (e.g. restricted sandbox) —
+			// skip rather than fail spuriously; the in-process test still pins the fix.
+			t.Skipf("cross-process harness could not run (subprocess %d: %v)\n%s", i, err, out)
+		}
+		plan := ""
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, marker) {
+				plan = strings.TrimPrefix(line, marker)
+				break
+			}
+		}
+		if plan == "" {
+			t.Fatalf("subprocess %d produced no plan marker:\n%s", i, out)
+		}
+		seen[plan]++
+	}
+	if len(seen) != 1 {
+		t.Errorf("plan is NONDETERMINISTIC across %d processes — %d distinct: %v", procs, len(seen), seen)
+	}
+}
 
 func TestPlanDeterminism_EqualCostIndexTie(t *testing.T) {
 	t.Parallel()
@@ -56,14 +122,9 @@ func TestPlanDeterminism_MultiEqualityShellTie(t *testing.T) {
 	// Three single-column indexes, three equality predicates: the competing plans
 	// are same-type nil-inner shells whose buried index the #17 tie-break couldn't
 	// see — the canonical RFC-167 multi-equality leak. The inner-aware shell hash
-	// (Phase 1) makes it deterministic.
-	const schema = `
-CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
-CREATE INDEX idx_a ON T(a)
-CREATE INDEX idx_b ON T(b)
-CREATE INDEX idx_c ON T(c)`
-
-	assertSinglePlan(t, "SELECT id FROM t WHERE a = 5 AND b = 7 AND c = 9", schema, 200)
+	// (Phase 1a) makes it deterministic. (Cross-process pin: see the _CrossProcess
+	// variant above.)
+	assertSinglePlan(t, multiEqQuery, multiEqSchema, 200)
 }
 
 func assertSinglePlan(t *testing.T, sql, schema string, runs int) {

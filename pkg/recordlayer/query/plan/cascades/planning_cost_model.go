@@ -1848,10 +1848,20 @@ func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressio
 			childHash = concretePlanHash(planKids[i])
 		} else if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
 			visited[ref] = true
+			// firstPhysicalChild (structural, AllMembers-order) — NOT bestPhysicalChild
+			// (cost). This matches what extraction relinks to for every shell type via
+			// findPhysicalPlan, so the hash equals concretePlanHash(the plan extraction
+			// emits). The lone exception is InMemorySort, which extracts via
+			// findBestPhysicalPlan (cost-best); harmless here because the sort-count
+			// discriminator (#~9) fires before #17, but a Phase-1b net should pin it.
 			if child := firstPhysicalChild(ref); child != nil {
 				childHash = exprConcreteHash(child, visited)
 			}
 		}
+		// Unlike exprConcreteCostRec's last-resort branch (ref nil/visited → fold the
+		// concrete child as-is), an unresolvable child folds a constant (childHash==0):
+		// deterministic, and that branch is DAG-unreachable for a genuine nil-inner
+		// shell (its inner ref resolves down to a physical scan that never points back up).
 		h ^= childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142
 	}
 	return h
