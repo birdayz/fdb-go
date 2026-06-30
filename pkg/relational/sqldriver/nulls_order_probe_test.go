@@ -31,7 +31,10 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	// a=5 rows: b = NULL, 10, 20. (id=4 has a=9, excluded.)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,5,NULL),(2,5,10),(3,5,20),(4,9,1)")
+	// a=5 group: b ∈ {NULL,10,20}. a=9 group: b ∈ {1,NULL} — a SECOND group with a
+	// NULL so the multi-key case below genuinely varies the leading key AND tests
+	// NULLS-last within each group (not collapsed to single-key by an a= filter).
+	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,5,NULL),(2,5,10),(3,5,20),(4,9,1),(5,9,NULL)")
 
 	order := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -67,12 +70,13 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 		t.Errorf("ORDER BY b DESC (NULLS LAST): got %v, want [3 2 1]", got)
 	}
 
-	// Multi-key with a non-natural NULL placement on the trailing key. With a=5
-	// fixed (the leading key a is constant here), the trailing key b is ASC NULLS
-	// LAST, so the NULL-b row (id=1) must sort last.
-	multi := order("SELECT id FROM t WHERE a = 5 ORDER BY a, b ASC NULLS LAST")
-	if !eqIDs(multi, []int64{2, 3, 1}) {
-		t.Errorf("ORDER BY a, b ASC NULLS LAST: got %v, want [2 3 1] (NULL b last)", multi)
+	// Genuine multi-key (no a= filter, so the leading key a VARIES): ORDER BY a
+	// ASC, then b ASC NULLS LAST within each a group. a=5 → 10,20,NULL = ids 2,3,1;
+	// a=9 → 1,NULL = ids 4,5. So [2 3 1 4 5] — proving NULLS-last on the trailing
+	// key within BOTH groups while the leading key orders the groups.
+	multi := order("SELECT id FROM t ORDER BY a, b ASC NULLS LAST")
+	if !eqIDs(multi, []int64{2, 3, 1, 4, 5}) {
+		t.Errorf("ORDER BY a, b ASC NULLS LAST: got %v, want [2 3 1 4 5] (NULL b last per a-group)", multi)
 	}
 }
 
