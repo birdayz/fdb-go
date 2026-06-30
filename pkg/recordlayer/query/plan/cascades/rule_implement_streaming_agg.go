@@ -222,6 +222,11 @@ func findIndexScanWrapper(ref *expressions.Reference) *physicalIndexScanWrapper 
 // (no field access needed from the base record). When true, an index
 // scan feeding this aggregation can be marked covering — the index
 // entries alone provide the count without PK fetch.
+//
+// Only a TRUE COUNT(*) qualifies: COUNT(col) must read col to honor SQL
+// NULL semantics (it counts only non-NULL values), so it cannot be served
+// by a zero-column covering scan — doing so makes col evaluate to NULL for
+// every row and returns 0. Mirror the executor's isCountStar predicate.
 func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
 	if len(aggs) == 0 {
 		return false
@@ -230,6 +235,13 @@ func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
 		if a.Function != expressions.AggCount {
 			return false
 		}
+		if a.Operand == nil {
+			continue
+		}
+		if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
+			continue
+		}
+		return false
 	}
 	return true
 }

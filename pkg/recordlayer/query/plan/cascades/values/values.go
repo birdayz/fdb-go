@@ -2037,6 +2037,43 @@ func (c *CastValue) Type() Type {
 	return WithNullability(c.Target, true)
 }
 
+// javaMathRound mirrors java.lang.Math.round(double) on Java 7+ (post
+// JDK-6430675): round to nearest, ties toward positive infinity. It corrects
+// the pre-Java-7 floor(x+0.5) algorithm at the boundary where x+0.5 rounds up
+// purely due to floating-point error — e.g. the largest double below 0.5
+// (0.49999999999999994) must round to 0, not 1. Go's math.Round differs (it
+// rounds half AWAY from zero, so -0.5 → -1 vs Java's 0), so it cannot be used.
+func javaMathRound(a float64) float64 {
+	// Integer bit-ops on the IEEE-754 representation, exactly as Java does —
+	// floor(a+0.5) can't be patched up in float (the correcting subtraction
+	// rounds too).
+	const (
+		significandWidth = 53
+		expBias          = 1023
+		expBitMask       = int64(0x7FF0000000000000)
+		signifBitMask    = int64(0x000FFFFFFFFFFFFF)
+	)
+	longBits := int64(math.Float64bits(a))
+	biasedExp := (longBits & expBitMask) >> (significandWidth - 1)
+	shift := (significandWidth - 2 + expBias) - biasedExp
+	if (shift & -64) == 0 { // 0 <= shift < 64
+		r := (longBits & signifBitMask) | (signifBitMask + 1)
+		if longBits < 0 {
+			r = -r
+		}
+		return float64(((r >> uint(shift)) + 1) >> 1)
+	}
+	if shift < 0 {
+		// |a| >= 2^52 — already an exact integer; rounding is the identity.
+		// Return a unchanged so a caller's overflow range-check sees the true
+		// magnitude. (Java's Math.round saturates to Long.MAX/MIN here, but that
+		// would mask CAST overflow detection, e.g. CAST(1e20 AS BIGINT).)
+		return a
+	}
+	// shift >= 64 — |a| < 2^-12, far below 0.5, so it rounds to 0.
+	return 0
+}
+
 func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 	v, err := c.Child.Evaluate(evalCtx)
 	if err != nil {
@@ -2065,7 +2102,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			if val != val || math.IsInf(val, 0) {
 				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"}
 			}
-			rounded := math.Floor(val + 0.5)
+			rounded := javaMathRound(val)
 			if rounded > math.MaxInt32 || rounded < math.MinInt32 {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)}
 			}
@@ -2090,7 +2127,7 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			if val != val || math.IsInf(val, 0) {
 				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"}
 			}
-			rounded := math.Floor(val + 0.5)
+			rounded := javaMathRound(val)
 			if !float64FitsInt64(rounded) {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)}
 			}

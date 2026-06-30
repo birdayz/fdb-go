@@ -89,13 +89,18 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
-		*plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryInUnionPlan:
 		return true
-	case *plans.RecordQueryUnorderedUnionPlan:
+	case *plans.RecordQueryUnorderedUnionPlan,
+		// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant (union.go:
+		// "UNION ALL with no dedup"; executeUnion concatenates branches). It
+		// does NOT remove duplicates, so it must NOT report distinct records —
+		// otherwise ImplementDistinctFinalRule treats its partition as already
+		// distinct and elides an enclosing SELECT DISTINCT, returning dups.
+		*plans.RecordQueryUnionPlan:
 		return false
 	default:
 		return false
