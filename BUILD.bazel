@@ -17,6 +17,10 @@ exports_files([
     # Generated SQL feature inventory; staged for the TestFeatureMatrixUpToDate
     # drift guard in //pkg/relational/conformance/yamsql:yamsql_test.
     "FEATURE_MATRIX.md",
+    # Generated SQL conformance ledgers (RFC-165); staged for the
+    # TestSQLCoverageUpToDate / TestAnsiLedger* drift guards in the same target.
+    "SQL_COVERAGE.md",
+    "SQL_ANSI_CONFORMANCE.md",
 ])
 
 # gazelle:prefix fdb.dev

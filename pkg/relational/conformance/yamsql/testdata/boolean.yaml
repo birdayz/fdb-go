@@ -171,3 +171,6 @@ tests:
       - [false]
       - [true]
       - [~]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E131

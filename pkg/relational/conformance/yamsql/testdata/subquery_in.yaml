@@ -68,3 +68,6 @@ tests:
   - query: SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
     rows:
       - [2]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi-gap: E061-11

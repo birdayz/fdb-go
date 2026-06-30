@@ -104,3 +104,6 @@ tests:
   # recover's `keep=false` default arm dropped rows on an unexpected eval panic).
   - query: SELECT a FROM t WHERE a / 0 > 0
     error_code: "22012"
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E011-04

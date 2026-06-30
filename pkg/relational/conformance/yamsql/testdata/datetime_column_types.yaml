@@ -204,3 +204,7 @@ tests:
   - query: SELECT COUNT(*) FROM Events
     rows:
       - [3]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: F051-01
+# ansi: F051-03

@@ -104,7 +104,7 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 | ORDER BY (no index) | N | Ext | Y | Go extension: in-memory sort |
 | ORDER BY aggregate | N | Ext | Y | Go extension |
 | NULLS FIRST / LAST | Y | Y | Y | |
-| LIMIT / OFFSET (clause) | N | N | Y | Both reject at parse time |
+| LIMIT / OFFSET (outer SELECT) | Y | Y | Y | Wired via `limitClause`→`LogicalLimit`; rejected only inside subqueries (0AF00) and DELETE |
 | SELECT DISTINCT | P | Ext | Y | Java rejects most DISTINCT; Go has ImplementDistinctFinalRule (D-3 aligned) |
 | DISTINCT + ORDER BY | N | Ext | Y | Go extension |
 
@@ -147,7 +147,13 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 
 ## Summary
 
-| Category | Java 4.12.11.0 | Go | ANSI coverage |
+> **Measured numbers live in the generated, drift-guarded ledgers (RFC-165), not here:**
+> - `SQL_COVERAGE.md` (Ledger B) — measured corpus coverage (% of test cases that pass), regenerated from the corpus.
+> - `SQL_ANSI_CONFORMANCE.md` (Ledger A) — ANSI SQL:2023 Core scorecard, with Go support *derived* from `# ansi:` corpus tags.
+>
+> The `ANSI coverage` column below is a **rough legacy estimate** (hand-typed, not computed) kept only as narrative; defer to the ledgers for any real number. Regenerate both with `just sql-coverage`.
+
+| Category | Java 4.12.11.0 | Go | ANSI coverage (legacy estimate) |
 |---|---|---|---|
 | Core DML | Full | Full | Full |
 | Expressions | Partial (no scalar fns) | Partial + datetime ext | ~60% |
@@ -165,7 +171,11 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 
 ## Yamsql Conformance
 
-115 scenario test suite. Current: **115/115 pass (100%)**.
+The yamsql corpus is the conformance harness. **Do not hand-type the counts here** — they rot
+(this line previously read "115/115" long after the corpus passed 300 files). The current,
+measured numbers are generated into `SQL_COVERAGE.md` (corpus pass rate) and
+`SQL_ANSI_CONFORMANCE.md` (ANSI Core scorecard), each guarded by a drift test that fails CI if
+stale. Run `just sql-coverage` to regenerate; see `FEATURE_MATRIX.md` for the scenario inventory.
 
 ## Cascades Divergence Status
 
