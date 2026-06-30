@@ -116,14 +116,31 @@ func TestWithKnob_AppliedToProcess(t *testing.T) {
 	}
 	defer container.Terminate(ctx)
 
-	// Check that the knob appears in the fdbserver process args.
-	_, reader, err := container.Exec(ctx, []string{"ps", "aux"}, tcexec.Multiplexed())
-	if err != nil {
-		t.Fatalf("exec: %v", err)
-	}
-	out, _ := io.ReadAll(reader)
-	if !strings.Contains(string(out), "knob_min_shard_bytes") {
-		t.Fatalf("knob not found in process args:\n%s", out)
+	// Poll the knob check instead of a one-shot snapshot. `configure new` (InitializeDatabase)
+	// triggers a cluster recovery that can restart the single, fdbmonitor-managed fdbserver; on a
+	// contended CI box the snapshot taken right after Run() returns can catch the process
+	// momentarily absent during that restart window, so a one-shot `ps aux` flaked. Poll until the
+	// knob-bearing fdbserver is visible; if it never settles within the deadline, THAT is a real
+	// "process died" bug and fails loudly. Mirrors TestWithKnob_AppliedToAllProcesses, hardened the
+	// same way — and reads /proc/PID/cmdline for actual fdbserver PIDs (not the bash/ps wrapper).
+	deadline := time.Now().Add(30 * time.Second)
+	var lastOut []byte
+	for {
+		_, reader, err := container.Exec(ctx, []string{
+			"/bin/bash", "-c",
+			`pgrep fdbserver | while read pid; do tr '\0' ' ' < /proc/$pid/cmdline; echo; done`,
+		}, tcexec.Multiplexed())
+		if err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+		lastOut, _ = io.ReadAll(reader)
+		if strings.Contains(string(lastOut), "knob_min_shard_bytes") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("knob not found in fdbserver process args within 30s:\n%s", lastOut)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Logf("knob found in fdbserver args")
 }
