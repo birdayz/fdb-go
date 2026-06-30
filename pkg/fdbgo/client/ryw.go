@@ -551,7 +551,7 @@ func (c *rywCache) getRange(
 			if reached(len(kvs)) {
 				return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
 			}
-			return kvs, computeMore(cachedKVs, limit) || unreadableCap != nil, nil
+			return kvs, computeMore(cachedKVs, limit) || limitReached(limit, len(kvs)) || unreadableCap != nil, nil
 		}
 		kvs, more, err := serverGetRange(ctx, begin, end, limit, reverse)
 		if err != nil {
@@ -610,9 +610,14 @@ func (c *rywCache) getRange(
 		remaining -= take
 
 		if remaining <= 0 {
-			// Hit limit. More data exists if we truncated batch or server had
-			// more — or the window was capped by an unreadable segment.
-			return result, take < len(batch) || serverMore || unreadableCap != nil, nil
+			// Limit reached (remaining hit 0 ⟺ exactly `limit` rows consumed). FDB forces
+			// more=true whenever the row limit was the stop reason — limits.isReached()
+			// (ReadYourWrites.actor.cpp:799) — even when no further data exists. Previously
+			// this returned `take < len(batch) || serverMore || unreadableCap != nil`, which
+			// was FALSE at the exactly-limit==total boundary (take==len(batch), no serverMore),
+			// diverging from libfdb_c and over-conflicting via rangeConflictExtent (which keys
+			// off `more`: a false more=false widens the read-conflict to the full [begin,end)).
+			return result, true, nil
 		}
 
 		if !serverMore {
@@ -729,6 +734,18 @@ func applyLimitAndDirection(kvs []KeyValue, limit int, reverse bool) []KeyValue 
 // computeMore returns true if applying the limit would leave remaining KVs.
 func computeMore(kvs []KeyValue, limit int) bool {
 	return limit > 0 && len(kvs) > limit
+}
+
+// limitReached ports C++ GetRangeLimits::isReached() for a row-only limit: the
+// requested row limit was fully consumed (rows==0). FDB forces more=true in this
+// case — ReadYourWrites.actor.cpp:799 `result.more = result.more || limits.isReached()` —
+// the canonical "the limit was the stop reason" contract that continuation-based
+// iteration relies on, INDEPENDENT of whether further data actually exists. `returned`
+// is the count after the limit was applied, so returned==limit ⟺ the limit was reached.
+// (Go's merge already clamps results to [begin,end), so C++'s subsequent
+// resize-clears-more branch — which only fires for items BEYOND end — never applies here.)
+func limitReached(limit, returned int) bool {
+	return limit > 0 && returned >= limit
 }
 
 // mergeBatch merges a batch of server results with local writes and clears.

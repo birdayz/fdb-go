@@ -50,6 +50,7 @@ const (
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2 (NOT C++ 1200=recruitment_failed)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
+	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -147,6 +148,21 @@ const (
 	MutAndV2                  MutationType = 19 // C++: AndV2
 	MutCompareAndClear        MutationType = 20 // C++: CompareAndClear
 )
+
+// atomicOpMask mirrors C++ MutationRef::ATOMIC_MASK (CommitTransaction.h:570-572): the bitset of
+// op-codes that are valid atomic operations. Any op outside it (SetValue=0, ClearRange=1, the
+// reserved/debug codes 3,4,5,10,11, or >=21) is NOT a valid argument to atomicOp.
+const atomicOpMask uint32 = (1 << MutAddValue) | (1 << MutAnd) | (1 << MutOr) | (1 << MutXor) |
+	(1 << MutAppendIfFits) | (1 << MutMax) | (1 << MutMin) | (1 << MutSetVersionstampedKey) |
+	(1 << MutSetVersionstampedValue) | (1 << MutByteMin) | (1 << MutByteMax) | (1 << MutMinV2) |
+	(1 << MutAndV2) | (1 << MutCompareAndClear)
+
+// isAtomicOp reports whether op is a valid atomic operation — C++ isValidMutationType &&
+// isAtomicOp (CommitTransaction.h:603-611). op-codes >= 32 cannot be in the mask (a non-atomic,
+// out-of-range type). atomicOp() rejects anything this returns false for with invalid_mutation_type.
+func isAtomicOp(op MutationType) bool {
+	return op < 32 && atomicOpMask&(1<<op) != 0
+}
 
 // KeyRange represents a range [Begin, End).
 type KeyRange struct {
@@ -303,6 +319,12 @@ type Transaction struct {
 	// poison; 2000 is non-retryable, so a poisoned commit kills the txn). Read lock-free,
 	// like rywDisabled (FDB transactions are not for concurrent use).
 	rywPoisonErr error
+
+	// invalidAtomicOpErr: set when Atomic() is called with a non-atomic / out-of-range op-code
+	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad mutation
+	// is NOT buffered; this deferred error fails the next Commit (2018). Lock-free like rywPoisonErr.
+	// Cleared on reset.
+	invalidAtomicOpErr error
 
 	// readErr: the first error returned by a TRACKED read of this transaction —
 	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
@@ -970,6 +992,18 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if !isSpecialKey(selectorKey) {
 		tx.addGetKeyConflictRange(selectorKey, orEqual, offset, resolved)
 	}
+	// rywDisabled clamp: the RYW-enabled path resolves through getKeyRYW (hi=maxReadKey,
+	// already clamped via readThroughEnd). The disabled path bypasses the RYW layer and
+	// resolves against storage, which can return a system key (> maxReadKey) for a selector
+	// that walks off the end of the user keyspace. C++ readThrough(GetKeyReq) clamps the
+	// RETURNED key to getMaxReadKey (ReadYourWrites.actor.cpp:182-183 — "Filter out results
+	// in the system keys if they are not accessible", since NativeAPI doesn't clip). The
+	// conflict range above stays on the UNCLAMPED resolved key, matching NativeAPI
+	// getKeyAndConflictRange (NativeAPI.actor.cpp:5767), which conflicts on the real resolved
+	// key before readThrough clamps the return value.
+	if tx.rywDisabled && bytes.Compare(resolved, tx.maxReadKey()) > 0 {
+		resolved = tx.maxReadKey()
+	}
 	return resolved, nil
 }
 
@@ -1324,6 +1358,20 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 			op = MutAndV2
 		}
 	}
+	// C++ ReadYourWritesTransaction::atomicOp (ReadYourWrites.actor.cpp:2234) rejects any op that is
+	// not isValidMutationType && isAtomicOp with invalid_mutation_type, BEFORE adding it to the write
+	// map; libfdb_c's CATCH_AND_DIE (fdb_c.cpp:1149) then aborts the client. Go's Atomic() is void, so
+	// we record a deferred error surfaced at Commit and — critically — do NOT buffer the mutation, so
+	// a misused op-code (e.g. Atomic(MutClearRange,...), indistinguishable from a real Clear at commit
+	// time) can never reach the shared cluster. The eager record matches "first invalid op wins" call
+	// ordering. Reads are left intact (the non-aborting analog: the failed atomicOp didn't add a
+	// mutation, but the transaction object is otherwise usable until the commit gate rejects it).
+	if !isAtomicOp(op) {
+		if tx.invalidAtomicOpErr == nil {
+			tx.invalidAtomicOpErr = &wire.FDBError{Code: ErrInvalidMutationType}
+		}
+		return
+	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  op,
@@ -1441,6 +1489,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// resetting (2000 is non-retryable). codex, RFC-059.
 	if tx.rywPoisonErr != nil {
 		return tx.rywPoisonErr
+	}
+	// A non-atomic op-code passed to Atomic() poisons the commit with invalid_mutation_type (2018),
+	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
+	// buffered, so nothing reaches the cluster. Non-retryable; returns without resetting.
+	if tx.invalidAtomicOpErr != nil {
+		return tx.invalidAtomicOpErr
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
@@ -2620,7 +2674,8 @@ func (tx *Transaction) postCommitReset() {
 	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.rywPoisonErr = nil       // RFC-059: a fresh layer reapplies the option with no poison
+	tx.invalidAtomicOpErr = nil // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
@@ -2668,7 +2723,8 @@ func (tx *Transaction) reset() {
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil // RFC-059: a fresh layer reapplies the option with no poison
+	tx.rywPoisonErr = nil       // RFC-059: a fresh layer reapplies the option with no poison
+	tx.invalidAtomicOpErr = nil // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
