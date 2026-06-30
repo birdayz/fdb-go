@@ -177,6 +177,14 @@ type ExecuteProperties struct {
 	// no-oping. None of the WithX helpers below clear it: they copy the value
 	// struct, which copies the pointer.
 	State *ExecuteState
+
+	// DryRun, when true, makes data-modification execution validate and PREVIEW
+	// each mutation via the store's DryRun* primitives instead of staging a real
+	// write — Java's ExecuteProperties.setDryRun / isDryRun(). Statement-scoped:
+	// it is sourced from the SQL OPTIONS (DRY RUN) clause carried on
+	// paginatingRows, never from a connection option (a connection-scoped flag
+	// would go sticky across pooled statements).
+	DryRun bool
 }
 
 const DefaultMaterializationLimit = 100_000
@@ -215,6 +223,13 @@ func (e ExecuteProperties) WithIsolationLevel(level IsolationLevel) ExecutePrope
 // WithScannedRecordsLimit returns a copy with the specified scanned records limit.
 func (e ExecuteProperties) WithScannedRecordsLimit(limit int) ExecuteProperties {
 	e.ScannedRecordsLimit = limit
+	return e
+}
+
+// WithDryRun returns a copy with the dry-run flag set. Java's
+// ExecuteProperties.setDryRun.
+func (e ExecuteProperties) WithDryRun(dryRun bool) ExecuteProperties {
+	e.DryRun = dryRun
 	return e
 }
 

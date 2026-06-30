@@ -226,9 +226,27 @@ func (store *FDBRecordStore) GetSubspace() subspace.Subspace {
 	return store.subspace
 }
 
-// DryRunSaveRecord performs all save validation (existence checks, type checks,
-// lock state) without actually writing data. Returns what the stored record
-// would look like if saved, or an error if validation fails.
+// DryRunSaveRecord validates a save and returns what the stored record would look
+// like if saved, without actually writing data.
+//
+// Scope — matches Java's FDBRecordStore.saveTypedRecord(isDryRun=true), which early-returns
+// at FDBRecordStore.java:578 BEFORE the store-lock check (validateRecordUpdateAllowed, line
+// 584), serializeAndSaveRecord (staging, line 586) and updateSecondaryIndexes (line 594).
+// The PRIMARY-KEY existence/type checks run EARLIER (Java lines 561-577, before the isDryRun
+// branch), so this keeps them. It deliberately does NOT validate store-lock state, does NOT
+// stage the write, and does NOT run secondary-index maintenance. Consequences, all
+// Java-faithful:
+//   - a DRY RUN on a FORBID_RECORD_UPDATE-locked store previews SUCCESS (the lock check is
+//     skipped — Java's early-return precedes it), and
+//   - a secondary-UNIQUE conflict is NOT detected in dry-run (only the real save's
+//     updateSecondaryIndexes catches it), and
+//   - a duplicate PK introduced WITHIN the same statement is not seen by a later row (no
+//     write is staged between rows).
+//
+// Doing any of these would make Go's preview STRICTER than Java's — a conformance divergence
+// (Go rejecting a DRY RUN that Java previews as success). Pinned by
+// TestFDB_DmlDryRun_MatchesJavaLightweightValidation and TestFDB_DmlDryRun_LockedStorePreviews.
+//
 // Matches Java's FDBRecordStore.dryRunSaveRecordAsync().
 func (store *FDBRecordStore) DryRunSaveRecord(
 	record proto.Message,
@@ -307,9 +325,13 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		}
 	}
 
-	if err := store.validateRecordUpdateAllowed(); err != nil {
-		return nil, err
-	}
+	// NOTE: deliberately NO validateRecordUpdateAllowed() here. Java's
+	// saveTypedRecord(isDryRun=true) early-returns at FDBRecordStore.java:578 — BEFORE the
+	// store-lock check validateRecordUpdateAllowed(recordStoreState) at line 584, which lives
+	// only in the non-dry-run continuation. So on a FORBID_RECORD_UPDATE-locked store Java's
+	// DRY RUN INSERT/UPDATE previews SUCCESS; calling the lock check here would make Go
+	// STRICTER than Java (rejecting a preview Java allows). DryRunDeleteRecord already skips it
+	// for the same reason (Java line 1735). Pinned by TestFDB_DmlDryRun_LockedStorePreviews.
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
 	data, err := serializeUnion(record, recordType)

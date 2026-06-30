@@ -79,6 +79,72 @@ var _ = Describe("Store state management", func() {
 			Expect(errors.As(err, &lockErr)).To(BeTrue())
 		})
 
+		// Graefe (RFC-158): a DRY RUN must PREVIEW success on a FORBID_RECORD_UPDATE-locked
+		// store — Java's saveTypedRecord(isDryRun=true) early-returns at FDBRecordStore.java:578,
+		// BEFORE validateRecordUpdateAllowed (line 584). Calling the lock check in
+		// DryRunSaveRecord made Go stricter than Java (rejecting a preview Java allows). This
+		// pins that the real save is rejected (lock works) while the dry-run save AND dry-run
+		// delete are NOT — they never touch the lock check, matching DryRunDeleteRecord/Java.
+		It("previews a DRY RUN save/delete on a FORBID_RECORD_UPDATE-locked store (not stricter than Java)", func() {
+			ss := specSubspace()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			id := int64(7)
+			price := int32(700)
+			rec := &gen.Order{OrderId: &id, Price: &price}
+
+			// Control: a REAL save is rejected by the lock.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, oerr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if oerr != nil {
+					return nil, oerr
+				}
+				_, serr := store.SaveRecord(rec)
+				return nil, serr
+			})
+			var lockErr *StoreIsLockedForRecordUpdatesError
+			Expect(errors.As(err, &lockErr)).To(BeTrue(), "real save must be rejected on a locked store")
+
+			// DRY RUN save PREVIEWS success on the locked store (no lock check), Java-faithful.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, oerr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if oerr != nil {
+					return nil, oerr
+				}
+				stored, derr := store.DryRunSaveRecord(rec, RecordExistenceCheckNone)
+				if derr != nil {
+					return nil, derr
+				}
+				Expect(stored).NotTo(BeNil())
+				Expect(stored.PrimaryKey).To(Equal(tuple.Tuple{id}))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred(), "DRY RUN save must preview success on a locked store (Java early-returns before the lock check)")
+
+			// DRY RUN delete likewise previews (already correct; pin it against regression).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, oerr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if oerr != nil {
+					return nil, oerr
+				}
+				_, derr := store.DryRunDeleteRecord(tuple.Tuple{id})
+				return nil, derr
+			})
+			Expect(err).NotTo(HaveOccurred(), "DRY RUN delete must not check the lock either")
+		})
+
 		It("unlocks store by clearing lock state", func() {
 			ss := specSubspace()
 

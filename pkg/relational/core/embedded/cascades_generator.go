@@ -621,15 +621,34 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 	}, nil
 }
 
-// dmlHasDryRunOption reports whether a DML statement's OPTIONS(...) clause requests
-// DRY RUN. The grammar's queryOption is `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n`;
-// DRY RUN is the only one whose silent omission changes whether data is mutated.
-func dmlHasDryRunOption(qo antlrgen.IQueryOptionsContext) bool {
-	if qo == nil {
+// dmlHasDryRunOption reports whether a DML statement carries OPTIONS (DRY RUN) ANYWHERE in
+// its parse subtree. DRY RUN is a statement-level directive, but depending on the spelling
+// the grammar attaches the trailing OPTIONS clause to different nodes: a VALUES insert puts
+// it on insertStatement.queryOptions, while an `INSERT … SELECT … OPTIONS (DRY RUN)` is
+// consumed by the inner SELECT's queryTerm.queryOptions (#simpleTable), leaving
+// insertStatement.queryOptions nil. Checking only the statement-level clause therefore
+// MISSES the INSERT…SELECT spelling — and a missed DRY RUN COMMITS the mutation, the exact
+// data-loss the option exists to prevent.
+//
+// So this walks the whole DML subtree, matching Java's AstNormalizer, which visits every
+// queryOptions node and accumulates them into one statement-level Options (DRY_RUN set at
+// AstNormalizer.java:281). Over-detection only ever previews (no mutation), so a tree-wide
+// walk fails safe; the grammar's queryOption alternatives are
+// `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n` and DRY RUN is the only one whose omission
+// changes whether data is mutated.
+func dmlHasDryRunOption(tree antlr.Tree) bool {
+	if tree == nil {
 		return false
 	}
-	for _, opt := range qo.AllQueryOption() {
-		if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
+	if qo, ok := tree.(antlrgen.IQueryOptionsContext); ok {
+		for _, opt := range qo.AllQueryOption() {
+			if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
+				return true
+			}
+		}
+	}
+	for i := 0; i < tree.GetChildCount(); i++ {
+		if dmlHasDryRunOption(tree.GetChild(i)) {
 			return true
 		}
 	}
@@ -673,25 +692,18 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "no schema metadata available")
 	}
 
-	// DML … OPTIONS (DRY RUN) is rejected. Go does not yet wire the SQL DRY RUN option
-	// through to the dry-run store primitives (DryRunSaveRecord/DryRunDeleteRecord exist,
-	// store_api.go, but the executor never branches on OptDryRun), so the statement would
-	// run the REAL mutation. Silently ignoring DRY RUN is DATA LOSS — the statement
-	// mutates when the user explicitly asked for a no-op preview, the exact opposite of
-	// intent. Java honors it (AstNormalizer.visitQueryOptions → QueryPlan.setDryRun).
-	// Until DRY RUN is ported (TODO.md), fail closed rather than mutate. NOCACHE/LOG QUERY
-	// are harmless to ignore (cache/log hints) so they are left accepted-and-ignored.
-	var dmlOpts antlrgen.IQueryOptionsContext
-	if del := dml.DeleteStatement(); del != nil {
-		dmlOpts = del.QueryOptions()
-	} else if upd := dml.UpdateStatement(); upd != nil {
-		dmlOpts = upd.QueryOptions()
-	} else if ins := dml.InsertStatement(); ins != nil {
-		dmlOpts = ins.QueryOptions()
-	}
-	if dmlHasDryRunOption(dmlOpts) {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DRY RUN is not supported")
-	}
+	// DML … OPTIONS (DRY RUN): preview the would-be-affected rows without committing.
+	// Java honors it — AstNormalizer.visitQueryOptions → Options.DRY_RUN →
+	// ExecuteProperties.setDryRun (QueryPlan.java:435) → the DML plans branch to
+	// dryRunSave/DeleteRecordAsync. The flag is STATEMENT-scoped: parsed from the typed
+	// OPTIONS clause here, carried on the cascadesPlan → paginatingRows.dryRun →
+	// ExecuteProperties.DryRun, where executeInsert/Update/Delete branch onto the store
+	// DryRun* primitives. It must NEVER ride a connection option — that would go sticky
+	// across pooled statements (the next plain DML would silently no-op). NOCACHE/LOG
+	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
+	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
+	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
+	dryRun := dmlHasDryRunOption(dml)
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
@@ -885,6 +897,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		md:           md,
 		physicalPlan: physPlan,
 		explain:      logicalOp.Explain(""),
+		dryRun:       dryRun,
 	}, nil
 }
 
@@ -957,6 +970,12 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []scalarSubqueryBinding
+
+	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
+	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
+	// → ExecuteProperties.DryRun, so the DML executor previews via the store
+	// DryRun* primitives instead of mutating. Never a connection option.
+	dryRun bool
 }
 
 // IsUpdate reports whether this is a DML plan (INSERT/UPDATE/DELETE),
@@ -1041,6 +1060,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		maxResultBytes:   c.maxResultBytes,
 		cols:             cols,
 		respectActiveTx:  p.IsUpdate(),
+		dryRun:           p.dryRun,
 		// RFC-130: mint the statement-wide ExecuteState ONCE here (never nil),
 		// with the memory byte budget from OptMaxStatementMemoryBytes (0/unset
 		// → unlimited). It is held on paginatingRows so it survives across the
@@ -1129,6 +1149,12 @@ type paginatingRows struct {
 	// would exceed maxResultBytes the next emit errors (54F01).
 	maxResultBytes int64
 	resultBytes    int64
+
+	// dryRun is the statement-scoped SQL OPTIONS (DRY RUN) flag, propagated from
+	// the cascadesPlan at construction and read in executeProps() into
+	// ExecuteProperties.DryRun. A fresh paginatingRows per statement means it can
+	// never leak to a subsequent plain DML on the same (pooled) connection.
+	dryRun bool
 
 	// execState is the statement-wide RFC-130 ExecuteState (the memory byte
 	// budget counter). Minted ONCE in Execute and shared across all pages —
@@ -1407,6 +1433,11 @@ func (r *paginatingRows) pageRowBudget() int {
 
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	props := recordlayer.DefaultExecuteProperties()
+
+	// DRY RUN is statement-scoped (carried on paginatingRows from the
+	// cascadesPlan), NOT a connection option — read the field, never
+	// r.conn.Options(), so it can't leak to a later plain statement.
+	props = props.WithDryRun(r.dryRun)
 
 	opts := r.conn.Options()
 
