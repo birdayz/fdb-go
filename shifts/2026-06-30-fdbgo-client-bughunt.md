@@ -121,6 +121,44 @@ oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by 
 
 Also written: **RFC-167** (getKey isBackward shard-location, Draft — needs multi-SS/SimTransport proof).
 
+## Final disposition of the remaining low-value findings (engineering judgment)
+
+- **#19 commitDummyTransaction jitter ±10% vs C++ U[0,1) — ACCEPTED (not a bug to fix).** Pure
+  internal-timing of the `commit_unknown_result` synchronization barrier; **zero wire/data effect**.
+  The Go ±10% jitter (`jitterBackoff`) is a deliberate thundering-herd design (spreads coordinated
+  retries). "Wire compat is the hard line; query reach is not" — a non-wire internal timing
+  distribution is an acceptable divergence; forcing the C++ law would churn 3 funcs + 2 tests for no
+  observable benefit. Leave as-is.
+- **#16 SYSTEM_IMMEDIATE + USE_GRV_CACHE — NEEDS FDB-C-DEV ADJUDICATION, do not rush.** Go
+  INTENTIONALLY makes IMMEDIATE bypass the GRV cache (`grv.go` "SYSTEM_IMMEDIATE must always contact
+  proxy", documented). The finder says C++ NativeAPI:7484/7504 serves cached for IMMEDIATE+useGrvCache.
+  Don't "fix" a documented intentional deviation without the FDB-C-dev confirming C++ is right here.
+- **#21 api<520 versionstamp suffix — REAL wire divergence but ~zero blast radius** (only API 13-519,
+  FDB < 6.0). Recipe: in `Atomic()`, for SVK/SVV when `apiVersion < 520`, append `\x00\x00` (key) /
+  `\x00\x00\x00\x00` (value) BEFORE offset parsing (C++ RYW:2251-2261), then the existing offset path
+  works. Delicate (threads through versionstampKeyRange + validateVersionstampOffset); test by opening
+  at API 510. Focused follow-up — wire-compat hard line says fix it, but no real app runs API<520.
+- **#22 sendGetValue fallback error-masking — UNCERTAIN, re-verify** before any change.
+
+## Precise recipe — #15 buffer-pool race (LOW, ROOT-CAUSED, ready for a focused change)
+
+`SendFrame` (`transport/conn.go:431`) has TWO return paths: (a) via `errCh` (line 451) — the
+writeLoop ran `WriteFrame`, which **copies `body` into `c.wbuf`**, so `body` is safe to reuse
+afterwards; (b) via `<-c.ctx.Done()` (line 442/455, returns `errConnClosed`) — the writeLoop **may
+still hold `req.body`** (the enqueued slice) and write it AFTER `SendFrame` returns. Callers that
+own a POOLED `body` and `Put` it back **on the error path** (`commitpath.go:57`
+`marshalBufPool.Put`, and `readpath.go` `sendGetValueToServer`/the `makeSender` closures
+`getValueBufPool.Put` etc. on SendFrame error) hand the buffer back to the pool while the writeLoop
+may still reference it → a concurrent commit/read draws the same buffer, overwrites it, and the
+writeLoop writes corrupted bytes. **Data race**, `-race`-detectable.
+
+**Fix:** on a SendFrame ERROR, do NOT return the pooled buffer to the pool — drop it (GC reclaims it
+once the writeLoop's reference, if any, is gone). The SUCCESS-path `Put` stays (body was copied).
+Conservative: at worst one un-pooled buffer per (rare) send-error. Sites: `commitpath.go` commit
+(error branch) + every `readpath.go` SendFrame caller that `Put`s on error. **Test:** a loopback
+fake server + a goroutine that cancels the conn ctx mid-send, run under `-race`, asserting no race
+on the pooled backing array. Multi-site + a fake-transport `-race` test → its own focused commit.
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)
