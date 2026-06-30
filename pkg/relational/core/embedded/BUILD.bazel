@@ -86,6 +86,7 @@ go_test(
         "parse_decimal_test.go",
         "plan_cache_planner_bench_test.go",
         "plan_cache_test.go",
+        "plan_determinism_test.go",
         "plan_harness_test.go",
         "plan_logging_test.go",
         "query_hash_test.go",

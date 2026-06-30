@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -1867,10 +1868,22 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 		))
 	}
 
-	// Register secondary index candidates.
+	// Register secondary index candidates. Iterate in a deterministic
+	// (name-sorted) order: GetAllIndexes returns a Go map, and ranging it directly
+	// made the match-candidate order — and thus equal-cost tie resolution — depend
+	// on Go's randomised map iteration, producing 2-3 distinct plans for one query
+	// (RFC-164 NONDETERMINISM). Java keeps indexes in a stable order; sorting by
+	// index name restores that. (The partialMatchMap insertion-order fix in
+	// reference.go is downstream of this; both are needed.)
 	allIndexes := c.md.GetAllIndexes()
+	indexNames := make([]string, 0, len(allIndexes))
+	for name := range allIndexes {
+		indexNames = append(indexNames, name)
+	}
+	sort.Strings(indexNames)
 	defs := make([]cascades.IndexDef, 0, len(allIndexes))
-	for _, idx := range allIndexes {
+	for _, name := range indexNames {
+		idx := allIndexes[name]
 		if idx.RootExpression == nil {
 			continue
 		}
