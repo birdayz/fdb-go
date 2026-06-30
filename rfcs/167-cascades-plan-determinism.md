@@ -48,7 +48,23 @@ Go already has the port of the tie-break (`costExprHash`/`concretePlanHash`, cri
 - Make the shell's structural hash **inner-aware** via a **template-aware `exprConcreteHash`** (mirroring the existing `exprConcreteCost`/`exprConcreteCounts` resolvers that already walk `innerQuant` to the pruned member), called from `costExprHash` in place of the inner-blind `concretePlanHash(w.plan)` — so criterion #17 distinguishes idx_a/idx_b/idx_c **structurally — no cost-in-hash, no recursion into the comparator.** (Critique-driven: the "cost-aware `deepHashCode`" was rejected as circular/Java-unfaithful. **Graefe correction:** the fix is NOT the wrapper's `HashCodeWithoutChildren` — #17 never calls it for a physical shell.)
 - Generalize the Fetch-only guard to **all** nil-inner shell types at **every** selection site. The two `OptimizeGroup` implementations are NOT redundant-dead: `planner.go OptimizeGroup`/`OptimizeReferenceTask` is dead for `Plan()` (production) but **live under `Explore()`**, which `FuzzPlanner_Determinism`/`FuzzPlanner_Confluence` + several tests drive — so it must be made shell-aware (or its optimize tail migrated to the unified path), **not blindly deleted** (Graefe correction).
 - Fix the foundational scalar-tie primitive (`bestPhysicalChild`→`Reference.GetBest`, `planning_cost_model.go:479-487`) with a structural tiebreak; relink and #17 reuse it.
-- **Land the intersection ordering-gate (§2a) FIRST / atomically** — port Java's common-ordering gate so the invalid `a=5 AND b>10` intersection is gone from *generation* before any shell-exclusion changes selection.
+- **Land the intersection ordering-gate (§2a) FIRST / atomically with the guard-generalization.** Port Java's common-ordering gate so the invalid `a=5 AND b>10` intersection is gone from *generation* before any shell-exclusion changes selection.
+
+> **IMPLEMENTATION FINDING (Phase-1a landed; refines the atomicity above).** The
+> inner-aware shell hash ALONE makes the headline multi-equality tie deterministic
+> — as *pure tie-resolution*: it surfaces the buried index into criterion #17 so the
+> comparator is a true total order, but it does NOT change which member wins (the
+> cheapest, a single-index shell, still wins, now deterministically). It does **not**
+> exclude shells, so it does **not** expose the intersection — meaning Phase 4's gate
+> is **not** required to land with the hash fix. The gate is required only with the
+> *guard-generalization* (Phase 1b, which makes shells stop winning → exposes the
+> intersection → re-ranking). So the safe decomposition is: **Phase 1a = the hash fix
+> (determinism, no plan change, no stress needed); Phase 1b+4 = guard-generalization +
+> ordering-gate together (the re-ranking, mandatory 1M stress).** A crude
+> "all-columns-equality-bound" gate is INSUFFICIENT for Phase 4 — it breaks
+> vector/partition-inequality intersections (`TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`);
+> Phase 4 must use the full ordering machinery (`MergeOrderingsForIntersection`, which
+> exists at `rich_ordering.go:680` but is currently unused).
 
 **Explicitly DEFER** the full Java end-state ("eliminate shells, adopt eager `memoizePlan`") to a separate gated RFC (Phase 5). It is the north star but a large, deliberate-per-RFC-070 refactor (8 rule sites, ~15 relink wrappers) with no wire impact — low urgency once Phases 1–4 make behavior deterministic. **The Phase 1–3 helpers are Phase-5-deletable debt and must be marked as such** (code + DIVERGENCES.md) with a tracked expiry, not an indefinite "north star" (per CLAUDE.md "the simplified version rots").
 
