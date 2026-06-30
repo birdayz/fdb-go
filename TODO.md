@@ -66,7 +66,15 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   as RFC-167 Phase 4): the Java common-ordering gate in `WithPrimaryKeyIntersector` (drops this invalid intersection)
 >   + refine `compensationSafeForYield` so a PARTITION-key-column residual over a per-partition vector top-k is safe
 >   (selects whole partitions, never within-partition rows) → yields the correct `Filter`. PIN with a K>1 partition-
->   residual FDB rows test FIRST (currently only the explain shape + K=1 rows are covered).
+>   residual FDB rows test FIRST. **CONFIRMED empirically** (probe, dropped during cleanup): `WHERE zone='z1' AND
+>   region>'r1' … <=2` plans to `Intersection(VectorIndexScan(rank<=2), Scan(DOCS,[=,<>]))` and returns `{22}` —
+>   DROPS id 21 (correct is `{21,22}`; in r2 the nearest vector is id 22 (dist 1.20) but id 21 (dist 1.41) sorts
+>   first by pk → the pk-merge advances past 21). **Implementation detail (both pieces needed together — a gate-only
+>   fix makes the vector query UNPLANNABLE, a feature regression):** piece 2 needs the vector index's PARTITION
+>   columns, which the `RecordQueryVectorIndexPlan` does NOT carry (only the bound `prefixComparisons` = `[zone=]`,
+>   not the fanned-out `region`), and `compensationSafeForYield` (planner.go:692) is a free function with no ctx —
+>   so thread `PlanContext` in + look the candidate up by index name for its partition-column list (or add a
+>   partition-column-names field to the plan), then check the residual's correlated columns ⊆ partition columns.
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
