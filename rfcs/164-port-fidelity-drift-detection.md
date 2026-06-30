@@ -234,7 +234,18 @@ by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs do
   (`TestCostSelectivity_PrefersEqualityIndex`: master picks the wrong range index, the fix
   picks the equality index). Validated by 1M stress before/after and `FuzzCostMonotonicity`
   (1.3M execs). The general cost-monotonicity net (`FuzzCostMonotonicity`) already existed;
-  the missing dimension was the equality<range *ordering* invariant, now pinned.
+  the missing dimension was the equality<range *ordering* invariant, now pinned. The three
+  scan-cost sites were de-duplicated into one `boundSelectivity` helper (the copy-paste was
+  how a dead inverted twin, `IndexColumnSelectivity`, survived the original fix — now deleted).
+  **Open follow-ups (Graefe, deferred — not blocking the fix, but tracked so they don't evaporate):**
+  - **Covering-vs-non-covering crossover pin.** Dropping equality to 0.1 shifts the boundary
+    where a non-covering equality index (0.1 leaf + Fetch I/O) beats a covering range index
+    (0.33 leaf, no Fetch). Outcome depends on `FetchCPU` magnitudes; add a targeted plan pin
+    once the crossover is characterised (a fragile hand-built one now would be worse).
+  - **Low-NDV equality.** Statless, `EqualityBoundSelectivity=0.1` assumes a high-cardinality
+    point (NDV≈10); a low-NDV equality (`status = ?`, a boolean) retains far more and is
+    under-costed. Fixing it correctly needs per-column NDV statistics (not yet available);
+    documented at `boundSelectivity`.
 - **NONDETERMINISM** is perf/stability (same rows) → ride WS-4 (pin-then-fix): land the
   deterministic-tie seed, then make candidate iteration deterministic.
 
