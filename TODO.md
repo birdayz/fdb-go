@@ -993,6 +993,15 @@ path (the path that currently rejects all DML with 0A000). Feature port, follow-
 scope. Pinned by returning_clause_probe_test.go (flip when implemented). INSERT
 RETURNING is a 42601 — not in the INSERT grammar — so it's a separate, larger gap.
 
+**Scope note (RFC-159 investigation):** this is a Graefe-gated **Cascades** change, not a small
+fix. Java models RETURNING as a `generateSelect` (a logical SELECT / projection) wrapping the
+mutation operator's output — so Go needs a `Project`-over-DML the Cascades planner can plan
+(`Map`/`Project` over `RecordQueryDelete/UpdatePlan`), plus driver routing to send a DML-with-RETURNING
+through the Query (rows) path rather than Exec (count). The Go DML executor already returns the
+mutated rows as a cursor (`recordlayer.FromList(results)`), so the executor groundwork exists; the
+work is the logical Project-over-DML + its physical wrapper + `IsUpdate()` routing. Its own RFC +
+Graefe ACK.
+
 ### [ ] ddl: in-template index/column errors wrap to 42F59, burying the specific SQLSTATE (found 2026-06-28)
 
 Every error raised while parsing an index/column inside a `CREATE SCHEMA TEMPLATE` is
@@ -1069,7 +1078,14 @@ propagates the alias correctly (translateCTE registers the body under the CTE na
 pinned in cte_alias_propagation_probe_test.go. So the fix likely is to give the inline
 derived body the same named-anchoring treatment translateCTE uses.
 
-### [ ] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — follow-up to the SET-column fix (found 2026-06-28)
+### [x] dml: UPDATE/DELETE with a nonexistent WHERE-column or table give generic 0AF00 (vs SELECT/INSERT's cleaner 42703/42F01) — DONE (RFC-159)
+
+Fixed: (1) `buildWherePredicateForTableE` classifies the WHERE walk error via `mapPredicateWalkError`
+(bare `ColumnNotFoundError` → 42703), matching SELECT; (2) explicit target-table existence check
+(42F01) in `buildLogicalPlanForDelete/UpdateWithCatalog`, independent of WHERE. Verified real (red
+probe: all 4 cases were 0AF00), pinned by `dml_where_undefined_probe_test.go` (6 subtests). Original
+description below.
+
 
 Sibling to the now-fixed "UPDATE SET undefined column → 42703" leak. Remaining DML
 error-classification asymmetries (all have a SQLSTATE, so lower severity than the SET

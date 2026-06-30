@@ -90,6 +90,7 @@ go_test(
         "dml_probe_test.go",
         "dml_subquery_where_probe_test.go",
         "dml_update_delete_probe_test.go",
+        "dml_where_undefined_probe_test.go",
         "double_oracle_consistency_test.go",
         "double_precision_probe_test.go",
         "driver_test.go",

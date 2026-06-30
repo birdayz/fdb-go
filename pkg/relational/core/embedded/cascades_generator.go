@@ -774,6 +774,25 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, err
 	}
 
+	// DML target-table existence: surface a clean 42F01 (matching INSERT INTO <missing>
+	// and the SELECT path), not a downstream generic 0AF00 "DML Cascades translation
+	// failed". Run AFTER resolveQualifiedTableNames so (a) a BAD schema qualifier's 42F00
+	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
+	// been stripped to the bare Target, which is checked here — so `DELETE FROM
+	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
+	// `DELETE FROM badschema.missing` keeps its 42F00 (codex/Torvalds). recordTypeCI
+	// resolves case-insensitively, matching the WHERE/SELECT analyzer.
+	var dmlTarget string
+	switch dop := logicalOp.(type) {
+	case *logical.LogicalDelete:
+		dmlTarget = dop.Target
+	case *logical.LogicalUpdate:
+		dmlTarget = dop.Target
+	}
+	if dmlTarget != "" && recordTypeCI(md, bareTableName(dmlTarget)) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
+	}
+
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
 	// alias (earlier OR later) in the same scope — the DML twin of the SELECT-path
 	// guard. An `INSERT INTO dst SELECT V FROM T1, T1.arr AS V, U AS V` reaches the
@@ -3669,18 +3688,9 @@ func schemaQualifiedUnnestTable(u *logical.LogicalUnnest, schemaName string, md 
 // case-insensitively (SQL identifiers are case-folded; proto names may be mixed
 // case). Mirrors cascadesTranslator.resolveRecordType's fallback. RFC-142.
 func recordTypeExistsFold(md *recordlayer.RecordMetaData, name string) bool {
-	if md == nil {
-		return false
-	}
-	if md.GetRecordType(name) != nil {
-		return true
-	}
-	for n := range md.RecordTypes() {
-		if strings.EqualFold(n, name) {
-			return true
-		}
-	}
-	return false
+	// Delegates to recordTypeCI (the value-returning form) so the case-insensitive
+	// record-type resolution lives in exactly one place (Graefe review).
+	return recordTypeCI(md, name) != nil
 }
 
 // defaultEmbeddedSchema is the schema name the embedded planner uses when no
