@@ -1085,6 +1085,13 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
 	}
 
+	// transaction_cancelled (1025) out-ranks watch-setup work: check cancellation BEFORE charging the
+	// cap, so a Watch() on an already-Cancel()ed transaction returns 1025, NOT too_many_watches (1032)
+	// when MAX_WATCHES is 0/full (codex). Matches the contract that a cancelled txn rejects new work.
+	if cerr := tx.checkCancelled(); cerr != nil {
+		return nil, 0, types.SpanContext{}, nil, cerr // transaction_cancelled (1025)
+	}
+
 	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++
 	// Transaction::watch, which calls increaseWatchCounter at watch() time (NativeAPI.actor.cpp:5694),
 	// NOT in the async poll. Charging it inside the async WatchPoll goroutine let two Watch() calls
@@ -1103,7 +1110,10 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// on a fresh, never-cancelled context, long-polling until the key changed and HOLDING the slot, so
 	// a low MAX_WATCHES could reject later watches even though the txn was cancelled. The async
 	// WatchPoll USES this context, never a lazy fetch (which races Cancel/reset — RFC-115 §4).
-	watchCtx := tx.getWatchCtx(ctx)
+	// watchCtxCreated is true iff THIS call minted watchCtx: a setup failure below then clears it (so
+	// a later watch doesn't reuse a context this call's cancelled/expired ctx poisoned), while leaving
+	// a pre-existing active watch's context alone (codex).
+	watchCtx, watchCtxCreated := tx.getWatchCtx(ctx)
 
 	// ensureReadVersion checks cancelled FIRST (transaction.go:622), so a Cancel that ran before the
 	// bind above (its cancelWatches was a no-op, leaving the just-bound watchCtx live) is caught here
@@ -1112,6 +1122,9 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// guard needed (it would duplicate this one).
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		tx.db.releaseWatch()
+		if watchCtxCreated {
+			tx.cancelWatches() // setup failed; clear the context THIS call minted so no later watch reuses it
+		}
 		return nil, 0, types.SpanContext{}, nil, err
 	}
 	tx.readVersionMu.Lock()
@@ -1139,6 +1152,9 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
 	if err != nil {
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
+		if watchCtxCreated {
+			tx.cancelWatches() // clear the context THIS call minted so a later watch doesn't reuse it
+		}
 		return value, readVersion, span, nil, err
 	}
 	// watchCtx was bound synchronously above (right after the acquire, before this blocking read) so a

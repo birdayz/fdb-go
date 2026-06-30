@@ -249,7 +249,28 @@ Pinned deterministically: `TestWatchSetup_CancelledTxnDoesNotLeakSlot` (round-11
    (filtered into ≥2 sub-ranges) vs a Commit snapshot; assert the shipped read-conflict set is
    all-or-none. Needs a Commit-snapshot injection point.
 
-**Codex caught 10 real issues across 6 review rounds the persona reviewers missed** — critical-gate
+**Round 13 — codex's 6th `--supersede` re-review found two MORE** (P2 + P3), both on the round-12
+watch-ctx change, both fixed red→green (deterministically — no fault injection needed):
+- **Stale watchCtx poisons the next watch (P2, readpath.go):** round 12 bound `getWatchCtx` before
+  the read, but a setup that FAILS (per-call ctx cancelled/timed-out during GRV/value read) left the
+  per-txn `watchCtx` pointing at that cancelled child → a later watch on the same active txn reused
+  it → `context.Canceled`. `getWatchCtx` now returns `created`; a failed setup that MINTED the ctx
+  clears it (cancelWatches), leaving a pre-existing active watch's ctx alone. Pin:
+  `TestWatchSetup_FailedSetupDoesNotPoisonNextWatch` (pre-cancelled per-call ctx → next watch's ctx
+  is live).
+- **Cap masks cancellation (P3, readpath.go):** the slot acquire ran before ensureReadVersion's
+  checkCancelled, so a Cancel()ed txn with a full/0 cap returned 1032 instead of 1025. Added a
+  pre-acquire `checkCancelled` (1025 out-ranks the cap). Pin:
+  `TestWatchSetup_CancellationOutranksWatchCap`.
+
+**⚠ ARCHITECTURAL FLAG — watch-ctx design:** rounds 11, 12, 13 ALL surfaced edges in the ONE-shared-
+`watchCtx`-per-txn design (round 4/7). Each fix is correct, but the shared context is the root
+fragility — a per-WATCH cancellable context (with cancelWatches iterating a list) would close the
+whole class (failed/cancelled-watch cross-poisoning, concurrent-setup clear races). Deferred as a
+focused redesign (risk: it underpins the round-4/7 watch-race fix); flagged for the next watch-area
+change. If codex round 14 surfaces another watch-ctx edge, do the redesign.
+
+**Codex caught 12 real issues across 7 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

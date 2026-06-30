@@ -624,7 +624,7 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	parent := context.Background()
-	wctx := tx.getWatchCtx(parent)
+	wctx, _ := tx.getWatchCtx(parent)
 	if err := wctx.Err(); err != nil {
 		t.Fatalf("setup: watch ctx should be live, got %v", err)
 	}
@@ -644,8 +644,14 @@ func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
 	if tx.watchCtx != nil {
 		t.Fatal("setup: watchCtx must start nil")
 	}
-	a := tx.getWatchCtx(context.Background())
-	b := tx.getWatchCtx(context.Background())
+	a, createdA := tx.getWatchCtx(context.Background())
+	if !createdA {
+		t.Error("first getWatchCtx must report created=true (it minted the context)")
+	}
+	b, createdB := tx.getWatchCtx(context.Background())
+	if createdB {
+		t.Error("second getWatchCtx must report created=false (it reused the context)")
+	}
 	if a != b {
 		t.Error("repeated getWatchCtx must return the same context until reset")
 	}
@@ -663,7 +669,7 @@ func TestWatch_GetWatchCtxCancelRaceFree(t *testing.T) {
 		tx := newTestTx()
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _ = tx.getWatchCtx(context.Background()) }()
+		go func() { defer wg.Done(); _, _ = tx.getWatchCtx(context.Background()) }()
 		go func() { defer wg.Done(); tx.Cancel() }()
 		wg.Wait()
 	}

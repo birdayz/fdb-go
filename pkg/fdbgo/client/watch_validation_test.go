@@ -77,6 +77,61 @@ func TestWatchSetup_CancelledTxnDoesNotLeakSlot(t *testing.T) {
 	db.db.releaseWatch() // free tx2's slot (no WatchPoll runs in this test)
 }
 
+// TestWatchSetup_CancellationOutranksWatchCap pins that transaction_cancelled (1025) out-ranks
+// too_many_watches (1032): a Watch() on an already-Cancel()ed txn must report 1025 even when the cap
+// is full/zero, because the cancellation check runs BEFORE the slot acquire (codex). Revert-proof:
+// with the acquire first, a 0-cap returns 1032 for the cancelled txn.
+func TestWatchSetup_CancellationOutranksWatchCap(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	if err := db.SetMaxWatches(0); err != nil { // 0-cap: any acquire would be 1032
+		t.Fatalf("SetMaxWatches(0): %v", err)
+	}
+	tx := db.CreateTransaction()
+	tx.Cancel()
+	if _, _, _, _, err := tx.WatchSetup(ctx, []byte(t.Name()+"_k")); fdbCodeOf(err) != 1025 {
+		t.Fatalf("Watch on a cancelled txn (cap 0) must be transaction_cancelled (1025), not 1032, got %v", err)
+	}
+}
+
+// TestWatchSetup_FailedSetupDoesNotPoisonNextWatch pins that a WatchSetup which mints the per-txn
+// watchCtx and then fails (here: a pre-cancelled per-call context fails the GRV) CLEARS that context,
+// so a later watch on the same active transaction does not reuse a now-cancelled child and fail with
+// context.Canceled (codex). Revert-proof: without the clear, the second watch's context is already
+// cancelled.
+func TestWatchSetup_FailedSetupDoesNotPoisonNextWatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	tx := db.CreateTransaction()
+
+	// First watch: a pre-cancelled per-call ctx fails setup at the GRV. THIS call minted watchCtx
+	// (from the cancelled ctx → itself cancelled), so the failure must clear it.
+	cctx, ccancel := context.WithCancel(ctx)
+	ccancel()
+	if _, _, _, _, err := tx.WatchSetup(cctx, []byte(t.Name()+"_k1")); err == nil {
+		t.Fatal("WatchSetup with a pre-cancelled per-call ctx must fail")
+	}
+
+	// Second watch on the SAME active txn with a LIVE ctx must mint a fresh (live) context.
+	_, _, _, watchCtx2, err := tx.WatchSetup(ctx, []byte(t.Name()+"_k2"))
+	if err != nil {
+		t.Fatalf("the failed first setup must not poison the next watch, got %v", err)
+	}
+	if watchCtx2 == nil {
+		t.Fatal("the next watch must return a non-nil context")
+	}
+	if watchCtx2.Err() != nil {
+		t.Fatalf("the next watch's context must be LIVE (not the poisoned cancelled one), got %v", watchCtx2.Err())
+	}
+	db.db.releaseWatch() // free the slot the second watch took (no WatchPoll runs here)
+}
+
 // TestWatchSetup_RejectsSystemAndOversizedKeys pins the eager legal-range + key-size validation
 // C++ RYW watch performs before registering (ReadYourWrites.actor.cpp:2450-2456). A normal
 // (non-system) transaction must not be able to register a watch on a \xff system key

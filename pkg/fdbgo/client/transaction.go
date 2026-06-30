@@ -1933,13 +1933,18 @@ func (tx *Transaction) cancelWatches() {
 // getWatchCtx returns a context for Watch() calls that is cancelled on
 // reset/Reset. Created lazily — if no Watch is ever called, no context
 // is allocated.
-func (tx *Transaction) getWatchCtx(parent context.Context) context.Context {
+// getWatchCtx returns the per-transaction watch context, creating it (from parent) on first use.
+// The second return is true iff THIS call created it — a failing WatchSetup uses that to clear a
+// context IT minted (so a later watch on the same txn doesn't reuse a now-cancelled child) while
+// leaving a pre-existing active watch's context untouched (codex).
+func (tx *Transaction) getWatchCtx(parent context.Context) (context.Context, bool) {
 	tx.watchMu.Lock()
 	defer tx.watchMu.Unlock()
 	if tx.watchCtx == nil {
 		tx.watchCtx, tx.watchCancel = context.WithCancel(parent)
+		return tx.watchCtx, true
 	}
-	return tx.watchCtx
+	return tx.watchCtx, false
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
