@@ -693,6 +693,20 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	if elapsed > 100*time.Millisecond {
 		t.Fatalf("OnError past the deadline must not sleep a backoff, took %v", elapsed)
 	}
+
+	// Isolate the ENTRY GATE (Torvalds): a NON-retryable error past the deadline must ALSO become
+	// 1031. This is the gate's unique contribution — a non-retryable code never reaches
+	// backoffSleepBounded (it returns the original error at the !onErrorRetryable branch), so only
+	// the entry checkTimeout turns it into 1031. C++ onError throws transaction_timed_out at ENTRY,
+	// before classifying the error (ReadYourWrites.actor.cpp:1506). Revert-proof of the gate ALONE.
+	tx2 := newTestTx()
+	tx2.creationTime = time.Now().Add(-1 * time.Second)
+	tx2.SetTimeout(500)                                                   // deadline 500ms in the PAST
+	err2 := tx2.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — NOT retryable
+	var fe2 *wire.FDBError
+	if !errors.As(err2, &fe2) || fe2.Code != ErrTransactionTimedOut {
+		t.Fatalf("entry gate: a NON-retryable error past the deadline must become 1031, got %v", err2)
+	}
 }
 
 // TestBackoffSleepBounded_CapsAtDeadline pins the timebomb-race half (ReadYourWrites.actor.cpp:1517):

@@ -328,8 +328,13 @@ const defaultMaxOutstandingWatches = 10000
 // cap is exceeded — C++ increaseWatchCounter (NativeAPI.actor.cpp:2175-2179, called from
 // Transaction::watch :5694). Each successful acquire MUST be matched by exactly one releaseWatch.
 func (db *database) tryAcquireWatch() error {
+	// C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:2175-2177) throws when
+	// `outstandingWatches >= maxOutstandingWatches`. n is the post-increment count
+	// (outstandingWatches+1), so `n > max` is exactly `outstandingWatches >= max`. maxWatches is
+	// NOT an unlimited sentinel: MAX_WATCHES=0 (and any negative, which SetMaxWatches/C++
+	// extractIntOption clamp to 0 — NativeAPI:2139) is a HARD 0-cap, so the FIRST watch fails 1032.
 	n := db.outstandingWatches.Add(1)
-	if max := db.maxWatches.Load(); max > 0 && n > max {
+	if n > db.maxWatches.Load() {
 		db.outstandingWatches.Add(-1)
 		return &wire.FDBError{Code: ErrTooManyWatches}
 	}
@@ -985,8 +990,10 @@ func (d *Database) SetDefaultAccessSystemKeys() {
 }
 
 // SetMaxWatches sets the cap on concurrently-outstanding watches for this Database
-// (FDB_DB_OPTION_MAX_WATCHES). Once exceeded, a new watch fails with too_many_watches (1032).
-// Matches C++ DatabaseContext maxOutstandingWatches; default 10000. A value <= 0 disables the cap.
+// (FDB_DB_OPTION_MAX_WATCHES). Once the count would exceed it, a new watch fails with
+// too_many_watches (1032). Matches C++ DatabaseContext maxOutstandingWatches; default 10000.
+// 0 is a REAL cap (no watches allowed — the first fails), NOT "unlimited"; a negative value is
+// clamped to 0, matching C++ extractIntOption(value, 0, ABSOLUTE_MAX_WATCHES) (NativeAPI:2139).
 func (d *Database) SetMaxWatches(n int64) {
 	if n < 0 {
 		n = 0

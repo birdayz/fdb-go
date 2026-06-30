@@ -33,12 +33,26 @@ func TestDatabase_OutstandingWatchLimit(t *testing.T) {
 		}
 	})
 
-	t.Run("unlimited_when_zero", func(t *testing.T) {
+	t.Run("zero_is_a_hard_cap", func(t *testing.T) {
 		t.Parallel()
-		db := &database{} // maxWatches zero value = 0 = unlimited
-		for i := 0; i < 100; i++ {
+		// C++ MAX_WATCHES=0 is a 0-cap, not "unlimited": the FIRST watch fails 1032
+		// (NativeAPI:2139 clamps to >=0, :2176 `outstandingWatches >= 0` throws immediately).
+		db := &database{} // maxWatches zero value = 0
+		err := db.tryAcquireWatch()
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) || fe.Code != ErrTooManyWatches {
+			t.Fatalf("max=0 must be a HARD 0-cap (first watch → too_many_watches 1032), got %v", err)
+		}
+	})
+
+	t.Run("default_allows_watches", func(t *testing.T) {
+		t.Parallel()
+		// A constructor-initialized Database has maxWatches=10000; well under it must succeed.
+		db := &database{}
+		db.maxWatches.Store(defaultMaxOutstandingWatches)
+		for i := 0; i < 50; i++ {
 			if err := db.tryAcquireWatch(); err != nil {
-				t.Fatalf("max=0 must be unlimited, got %v at %d", err, i)
+				t.Fatalf("under the default cap must succeed, got %v at %d", err, i)
 			}
 		}
 	})

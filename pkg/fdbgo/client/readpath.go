@@ -1140,14 +1140,13 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, key, value []byte, re
 	// concurrent commit/reset's regenerateSpan, RFC-115 §4).
 
 	// Outstanding-watch cap (C++ increaseWatchCounter, NativeAPI.actor.cpp:5694/2175): reserve a
-	// slot before polling; over the cap surfaces too_many_watches (1032) via this watch's future.
-	// Released on every exit path (fire / error / cancel) so the cap reflects live watches.
-	if tx.db != nil {
-		if err := tx.db.tryAcquireWatch(); err != nil {
-			return err // too_many_watches (1032); not acquired, so no release
-		}
-		defer tx.db.releaseWatch()
+	// slot before polling; over the cap surfaces too_many_watches (1032) via this watch's future,
+	// released on every exit path (fire / error / cancel). tx.db is always set on a WatchPoll (the
+	// locate/sendWatch below dereference it unconditionally), so no nil guard.
+	if err := tx.db.tryAcquireWatch(); err != nil {
+		return err // too_many_watches (1032); not acquired, so no release
 	}
+	defer tx.db.releaseWatch()
 
 	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
 	// reused across the wrong-shard retry loop — matching C++ watchValue's single
