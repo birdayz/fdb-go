@@ -1098,6 +1098,41 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	}
 }
 
+// boundSelectivity computes the combined selectivity of a set of scan-comparison
+// bounds: each equality bound multiplies in EqualityBoundSelectivity and each open
+// range multiplies in RangeSelectivity. A point probe is more selective than a
+// range, so EqualityBoundSelectivity < RangeSelectivity (RFC-164 COST-SELECTIVITY);
+// using the generic residual FilterSelectivity (0.5) for an equality bound inverted
+// that and mis-picked the index. Empty/nil bounds are skipped. It also reports the
+// number of non-empty bounds and whether they are all equality, so each caller can
+// apply its own unique / point-lookup short-circuit.
+//
+// This is the SINGLE source for equality-vs-range bound costing, shared by
+// physicalScanWrapper.HintCost, physicalIndexScanWrapper.HintCost, and scanLikeCost.
+// It is centralised deliberately: the same loop duplicated across those sites is how
+// the inverted equality cost survived (in dead code) past the original fix.
+// LOW-NDV CAVEAT: statless, this assumes every equality is a high-cardinality point
+// (NDV≈10). A low-NDV equality (e.g. `status = ?`, a boolean) actually retains far
+// more than 10% — costing it cheaper than it is. Distinguishing that needs per-column
+// NDV statistics (not yet available here); see scanLikeCost's fullBindUnique note.
+func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBound int, allEquality bool) {
+	sel = 1.0
+	allEquality = true
+	for _, cr := range comps {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		numBound++
+		if cr.IsEquality() {
+			sel *= properties.EqualityBoundSelectivity
+		} else {
+			allEquality = false
+			sel *= properties.RangeSelectivity
+		}
+	}
+	return sel, numBound, allEquality
+}
+
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
 // recursion (provably-unique full-equality bind → 1 row; else table cardinality ×
 // per-comparison selectivity × the physical-wrapper discount). The scan/index
@@ -1114,21 +1149,7 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
-	numBound := 0
-	allEquality := true
-	sel := 1.0
-	for _, cr := range comps {
-		if cr == nil || cr.IsEmpty() {
-			continue
-		}
-		numBound++
-		if cr.IsEquality() {
-			sel *= properties.EqualityBoundSelectivity
-		} else {
-			allEquality = false
-			sel *= properties.RangeSelectivity
-		}
-	}
+	sel, numBound, allEquality := boundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}

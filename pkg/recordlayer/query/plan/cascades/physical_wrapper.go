@@ -502,27 +502,8 @@ func (w *physicalScanWrapper) HintCost(_ []properties.Cost, stats properties.Sta
 		return properties.Cost{Cardinality: card, CPU: card * properties.ScanCPU}
 	}
 	comps := w.plan.GetScanComparisons()
-	numBound := 0
-	allEquality := true
-	// Per-comparison selectivity: an open RANGE bound (RangeSelectivity=0.33) is LESS
-	// selective than an EQUALITY bound (EqualityBoundSelectivity=0.1). Using the generic
-	// FilterSelectivity (0.5) for equality made an equality probe look LESS selective than a
-	// range probe — inverting index choice (RFC-164 COST-SELECTIVITY); and the flat-per-bound
-	// estimate costed `id<10` like a point lookup, so a range-driven and a full-scan-driven
-	// join order cost the same and the cheaper order could not be preferred (RFC-069 / Graefe).
-	sel := 1.0
-	for _, cr := range comps {
-		if cr.IsEmpty() {
-			continue
-		}
-		numBound++
-		if cr.IsEquality() {
-			sel *= properties.EqualityBoundSelectivity
-		} else {
-			allEquality = false
-			sel *= properties.RangeSelectivity
-		}
-	}
+	// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
+	sel, numBound, allEquality := boundSelectivity(comps)
 	if numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
@@ -687,24 +668,9 @@ func (w *physicalIndexScanWrapper) HintRichOrdering() *RichOrdering {
 // covering scans.
 func (w *physicalIndexScanWrapper) HintCost(_ []properties.Cost, stats properties.StatisticsProvider) properties.Cost {
 	base := indexBaseCardinality(w.plan, stats) * physicalWrapperCostMultiplier
-	numBound := 0
-	allEquality := true
 	if w.plan != nil {
-		// Per-comparison selectivity (RFC-069 / Graefe): equality vs open range, matching
-		// the primary-scan wrapper so a range index probe isn't costed as a point lookup.
-		sel := 1.0
-		for _, cr := range w.plan.GetScanComparisons() {
-			if cr.IsEmpty() {
-				continue
-			}
-			numBound++
-			if cr.IsEquality() {
-				sel *= properties.EqualityBoundSelectivity
-			} else {
-				allEquality = false
-				sel *= properties.RangeSelectivity
-			}
-		}
+		// Equality-vs-range bound selectivity (RFC-164 COST-SELECTIVITY); see boundSelectivity.
+		sel, numBound, allEquality := boundSelectivity(w.plan.GetScanComparisons())
 		if w.unique && allEquality && numBound == len(w.columnNames) {
 			return properties.Cost{Cardinality: physicalWrapperCostMultiplier, CPU: 0}
 		}
