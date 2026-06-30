@@ -17,6 +17,7 @@ setup:
   - INSERT INTO t VALUES (1, 5, '5'), (2, 10, '10'), (3, 5, '5'), (4, null, null)
 tests:
   - query: SELECT COUNT(DISTINCT n) FROM t
+    ansi_gap: [E091-07]
     error_code: "0A000"
   - query: SELECT COUNT(DISTINCT s) FROM t
     error_code: "0A000"
@@ -24,6 +25,3 @@ tests:
   - query: SELECT COUNT(*) FROM t
     rows:
       - [4]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi-gap: E091-07

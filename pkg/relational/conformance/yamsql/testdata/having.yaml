@@ -203,6 +203,4 @@ tests:
     rows:
       - ['b']
       - ['a']
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: E051-06
+    ansi: [E051-06]

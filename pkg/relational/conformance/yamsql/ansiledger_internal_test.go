@@ -57,10 +57,8 @@ func TestAnsiRosterIntegrity(t *testing.T) {
 }
 
 // TestAnsiLedgerEvidenceExists is the exercised-not-exists guard against the real
-// corpus: every `# ansi:` tag must sit on a scenario with a passing test and
-// every `# ansi-gap:` on a scenario with an unsupported pin (and a positive tag
-// coexisting with an unsupported pin must declare the gap — the cross-feature
-// guard). A mis-tag here is a fake checkbox and fails the build.
+// corpus: every `ansi:` tag sits on a test that passes and every `ansi_gap:` on a
+// test that is an unsupported pin (per-test binding — §4.3). A mis-tag here is a fake checkbox and fails the build.
 func TestAnsiLedgerEvidenceExists(t *testing.T) {
 	t.Parallel()
 	_, violations, err := collectAnsiEvidence("testdata", ansiCoreRoster)
@@ -68,8 +66,8 @@ func TestAnsiLedgerEvidenceExists(t *testing.T) {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
 	if len(violations) > 0 {
-		t.Fatalf("ANSI tag evidence violations (a `# ansi:` tag without a passing test, a "+
-			"`# ansi-gap:` without an unsupported pin, or an unknown/typo'd ID):\n%s", strings.Join(violations, "\n"))
+		t.Fatalf("ANSI tag evidence violations (a `ansi:` tag without a passing test, a "+
+			"`ansi_gap:` without an unsupported pin, or an unknown/typo'd ID):\n%s", strings.Join(violations, "\n"))
 	}
 }
 
@@ -84,8 +82,8 @@ func TestAnsiPhantomIDBites(t *testing.T) {
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT id FROM t\n" +
-		"    rows: [[1]]\n" +
-		"# ansi: E0511\n" // typo: extra digit — not a real roster ID
+		"    ansi: [E0511]\n" + // typo: extra digit — not a real roster ID
+		"    rows: [[1]]\n"
 	if err := os.WriteFile(filepath.Join(dir, "phantom.yaml"), []byte(phantom), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -94,25 +92,25 @@ func TestAnsiPhantomIDBites(t *testing.T) {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
 	if !containsSubstr(violations, "unknown ANSI ID") {
-		t.Fatalf("phantom-ID guard did not fire on `# ansi: E0511`; got %v", violations)
+		t.Fatalf("phantom-ID guard did not fire on `ansi: [E0511]`; got %v", violations)
 	}
 }
 
-// TestAnsiEvidenceGuardBites proves the guard actually catches a fake checkbox
-// (RFC-165 §7): a scenario tagged `# ansi:` whose only test is an unsupported
-// pin (no positive result) MUST be reported. Without this, "evidence" could
-// silently decay to "a file exists" — the exact rot this ledger replaces.
+// TestAnsiEvidenceGuardBites proves the per-test binding catches a fake checkbox
+// (RFC-165 §7): a positive `ansi:` tag placed on a test that does NOT pass (it
+// asserts an error) MUST be reported. "Evidence" can't decay to "a tag exists" —
+// the tag is bound to its own test's outcome.
 func TestAnsiEvidenceGuardBites(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// Tagged positive for E051 but the only test is an unsupported-feature pin.
+	// E051 tagged positive ON a test whose outcome is a rejection (0A000).
 	bad := "name: badtag\n" +
 		"schema_template: |\n" +
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT COUNT(DISTINCT id) FROM t\n" +
-		"    error_code: \"0A000\"\n" +
-		"# ansi: E051\n"
+		"    ansi: [E051]\n" +
+		"    error_code: \"0A000\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "badtag.yaml"), []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +118,42 @@ func TestAnsiEvidenceGuardBites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
-	if len(violations) == 0 {
-		t.Fatal("evidence guard did not bite: `# ansi: E051` on a scenario with no passing test produced no violation")
+	if !containsSubstr(violations, "does not pass") {
+		t.Fatalf("evidence guard did not bite: `ansi: [E051]` on a rejection test produced no violation; got %v", violations)
 	}
 }
 
-// TestAnsiCrossFeatureGuard pins the cross-feature rule (the "NULLIF credited by
-// COALESCE" trap codex caught): a scenario with a positive `# ansi:` tag AND an
-// unsupported-feature pin, but no `# ansi-gap:` tag, must be flagged — the
-// passing test might exercise a sibling feature, not the tagged one.
-func TestAnsiCrossFeatureGuard(t *testing.T) {
+// TestAnsiGapWrongOutcomeBites is the gap-side mirror: an `ansi_gap:` tag placed
+// on a test that PASSES (not a rejection) must be flagged.
+func TestAnsiGapWrongOutcomeBites(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bad := "name: gapbad\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT id FROM t\n" +
+		"    ansi_gap: [E051]\n" +
+		"    rows: [[1]]\n"
+	if err := os.WriteFile(filepath.Join(dir, "gapbad.yaml"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
+	if err != nil {
+		t.Fatalf("collect ANSI evidence: %v", err)
+	}
+	if !containsSubstr(violations, "not an unsupported-feature pin") {
+		t.Fatalf("gap guard did not fire on `ansi_gap: [E051]` on a passing test; got %v", violations)
+	}
+}
+
+// TestAnsiPerTestMixedScenarioClean is the regression for the F261-01 class: a
+// scenario that exercises one feature positively AND rejects another feature in
+// the same file is now SOUND — because each tag is bound to its own test, the
+// positive tag is credited only off its passing test and the gap tag only off
+// its rejection, with NO violation and NO sibling-crediting (the exact case that
+// produced the shipped fake-checkbox under the old scenario-level model).
+func TestAnsiPerTestMixedScenarioClean(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	mixed := "name: mixed\n" +
@@ -137,29 +161,39 @@ func TestAnsiCrossFeatureGuard(t *testing.T) {
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT COALESCE(id, 0) FROM t\n" +
+		"    ansi: [F261-04]\n" +
 		"    rows: [[0]]\n" +
 		"  - query: SELECT NULLIF(id, 0) FROM t\n" +
-		"    error_code: \"42883\"\n" +
-		"# ansi: F261-04\n" // positive tag, but the scenario also rejects NULLIF and declares no gap
+		"    ansi_gap: [F261-03]\n" +
+		"    error_code: \"42883\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "mixed.yaml"), []byte(mixed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
+	ev, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
-	if !containsSubstr(violations, "no `# ansi-gap:`") {
-		t.Fatalf("cross-feature guard did not fire on positive tag + unsupported pin with no gap tag; got %v", violations)
+	if len(violations) != 0 {
+		t.Fatalf("a correctly per-test-tagged mixed scenario should produce no violations; got %v", violations)
 	}
-	// The cross-feature guard (not the phantom-ID guard) must be the trigger:
-	// F261-04 is a real roster ID, so no "unknown ANSI ID" violation should fire.
-	if containsSubstr(violations, "unknown ANSI ID") {
-		t.Fatalf("unexpected phantom-ID violation — F261-04 should be a valid roster ID; got %v", violations)
+	if ev["F261-04"] == nil || len(ev["F261-04"].positive) == 0 {
+		t.Fatal("COALESCE (F261-04) should be credited positive off its own passing test")
+	}
+	if ev["F261-03"] == nil || len(ev["F261-03"].gaps) == 0 {
+		t.Fatal("NULLIF (F261-03) should be credited as a gap off its own rejection test")
+	}
+	// F261-04 must NOT have been credited off the NULLIF rejection, and F261-03
+	// must NOT be credited positive off the COALESCE pass.
+	if ev["F261-04"] != nil && len(ev["F261-04"].gaps) != 0 {
+		t.Fatal("F261-04 wrongly credited as a gap")
+	}
+	if ev["F261-03"] != nil && len(ev["F261-03"].positive) != 0 {
+		t.Fatal("F261-03 wrongly credited positive (the old sibling-crediting bug)")
 	}
 }
 
 // TestAnsiConflictGuard pins the conflict rule: the same feature ID cannot be
-// tagged both `# ansi:` (supported) and `# ansi-gap:` (unsupported).
+// tagged both `ansi:` (supported) and `ansi_gap:` (unsupported).
 func TestAnsiConflictGuard(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -168,11 +202,11 @@ func TestAnsiConflictGuard(t *testing.T) {
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT id FROM t\n" +
+		"    ansi: [E051]\n" +
 		"    rows: [[1]]\n" +
 		"  - query: SELECT bad FROM t\n" +
-		"    error_code: \"0A000\"\n" +
-		"# ansi: E051\n" +
-		"# ansi-gap: E051\n"
+		"    ansi_gap: [E051]\n" +
+		"    error_code: \"0A000\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "conflict.yaml"), []byte(conflict), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +220,7 @@ func TestAnsiConflictGuard(t *testing.T) {
 }
 
 // TestAnsiCrossFileConflictGuard pins the GLOBAL conflict guard (audit finding):
-// the same atomic ID tagged `# ansi:` in one scenario and `# ansi-gap:` in
+// the same atomic ID tagged `ansi:` in one scenario and `ansi_gap:` in
 // ANOTHER must be flagged. The earlier per-file conflict check could not see this
 // (its gapSet was rebuilt per file), so a Go rejection pin in file B could
 // silently render as shared parity for a positive tag in file A. The global pass
@@ -199,15 +233,15 @@ func TestAnsiCrossFileConflictGuard(t *testing.T) {
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 5\n" +
-		"    rows: [[1]]\n" +
-		"# ansi: E061-02\n"
+		"    ansi: [E061-02]\n" +
+		"    rows: [[1]]\n"
 	gap := "name: gapfile\n" +
 		"schema_template: |\n" +
 		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
 		"tests:\n" +
 		"  - query: SELECT bad FROM t\n" +
-		"    error_code: \"0A000\"\n" +
-		"# ansi-gap: E061-02\n"
+		"    ansi_gap: [E061-02]\n" +
+		"    error_code: \"0A000\"\n"
 	for n, body := range map[string]string{"posfile.yaml": pos, "gapfile.yaml": gap} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte(body), 0o644); err != nil {
 			t.Fatal(err)

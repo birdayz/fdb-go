@@ -124,6 +124,4 @@ tests:
   - query: SELECT COUNT(*) FROM t WHERE v NOT BETWEEN NULL AND 2
     rows:
       - [4]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: E061-02
+    ansi: [E061-02]

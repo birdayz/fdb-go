@@ -18,8 +18,8 @@ import (
 //   - HAND-AUTHORED = pinned facts only: the ISO roster (Identifier|Core?|Name,
 //     pinned to SQL:2023 Core) and the `Java?` column (a fact about the FROZEN
 //     fdb-relational 4.12.11.0 reference). Both live in ansi_roster.go.
-//   - DERIVED from the corpus: `Go?` and completeness come from `# ansi:` /
-//     `# ansi-gap:` tags on yamsql scenarios + each scenario's typed outcome
+//   - DERIVED from the corpus: `Go?` and completeness come from `ansi:` /
+//     `ansi_gap:` tags on yamsql scenarios + each scenario's typed outcome
 //     (reusing classifyTest). A "supported" claim therefore traces to a named,
 //     tagged, *passing* corpus case — never a hand-typed status. The live FDB/A3
 //     lanes prove those cases actually pass.
@@ -91,54 +91,25 @@ type ansiTagEvidence struct {
 	gaps     []string // scenario names tagged `# ansi-gap: ID` with an unsupported pin
 }
 
-// parseAnsiTags scans a scenario file's comment lines for `# ansi: <ID>` and
-// `# ansi-gap: <ID>` markers (comma-separated IDs allowed) and returns the two
-// ID lists. Comment lines only (a line whose first non-space rune is '#') so a
-// tag never matches inside SQL text — CLAUDE.md NO-TEXT-MATCHING: we read our own
-// typed tag convention, not the SQL.
-func parseAnsiTags(raw []byte) (positive, gaps []string) {
-	for _, ln := range strings.Split(string(raw), "\n") {
-		t := strings.TrimSpace(strings.TrimRight(ln, "\r"))
-		if !strings.HasPrefix(t, "#") {
-			continue
-		}
-		body := strings.TrimSpace(strings.TrimPrefix(t, "#"))
-		switch {
-		case strings.HasPrefix(body, "ansi-gap:"):
-			gaps = append(gaps, splitIDs(strings.TrimPrefix(body, "ansi-gap:"))...)
-		case strings.HasPrefix(body, "ansi:"):
-			positive = append(positive, splitIDs(strings.TrimPrefix(body, "ansi:"))...)
-		}
-	}
-	return positive, gaps
-}
-
-func splitIDs(s string) []string {
-	var out []string
-	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
-		if f != "" {
-			out = append(out, strings.ToUpper(f))
+// normalizeAnsiIDs upper-cases and trims the IDs from a test's `ansi:` /
+// `ansi_gap:` yaml field, dropping blanks. IDs match the roster case-insensitively.
+func normalizeAnsiIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id = strings.ToUpper(strings.TrimSpace(id)); id != "" {
+			out = append(out, id)
 		}
 	}
 	return out
 }
 
-// scenarioHasOutcome reports whether any of a scenario's tests classify to want.
-func scenarioHasOutcome(s Scenario, want Outcome) bool {
-	for _, t := range s.Tests {
-		if classifyTest(t) == want {
-			return true
-		}
-	}
-	return false
-}
-
-// collectAnsiEvidence walks testdata/*.yaml and builds per-ID evidence. A
-// `# ansi: ID` tag contributes positive evidence iff the scenario actually has a
-// supported test; a `# ansi-gap: ID` tag contributes gap evidence iff the
-// scenario actually has an unsupported pin. This is the exercised-not-exists
-// guard (RFC-165 §4.3): a tag with no matching outcome is reported as an error,
-// not silently accepted.
+// collectAnsiEvidence walks testdata/*.yaml and builds per-ID evidence from the
+// PER-TEST `ansi:` / `ansi_gap:` yaml fields (RFC-165 §4.3). A test's `ansi: [ID]`
+// contributes positive evidence iff THAT test passes (OutcomeSupported); its
+// `ansi_gap: [ID]` contributes gap evidence iff THAT test is an unsupported pin.
+// Binding each tag to its own test (not the scenario) is the exercised-not-exists
+// guarantee made structural: a positive tag can't be credited off a sibling
+// test. A tag whose own test has the wrong outcome is reported as a violation.
 func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagEvidence, []string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
@@ -171,10 +142,6 @@ func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagE
 		if err != nil {
 			return nil, nil, fmt.Errorf("read %s: %w", path, err)
 		}
-		pos, gaps := parseAnsiTags(raw)
-		if len(pos) == 0 && len(gaps) == 0 {
-			continue
-		}
 		var s Scenario
 		if err := yaml.Unmarshal(raw, &s); err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
@@ -183,50 +150,40 @@ func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagE
 		if name == "" {
 			name = strings.TrimSuffix(filepath.Base(path), ".yaml")
 		}
-		hasPos := scenarioHasOutcome(s, OutcomeSupported)
-		hasGap := scenarioHasOutcome(s, OutcomeUnsupported)
-		// Cross-feature guard (the "NULLIF credited by COALESCE" trap): when a
-		// scenario carries a positive `# ansi:` tag AND pins an unsupported
-		// feature, it MUST also declare an `# ansi-gap:` tag, forcing the author
-		// to identify which feature is rejected (else a rejected feature gets
-		// silently credited by a sibling feature's passing test).
-		//
-		// LIMITATION (do not overstate): a scenario-level positive tag credits the
-		// ID off ANY passing test in the scenario — it does NOT bind the tag to the
-		// specific test that exercises that feature. The guard only forces
-		// gap-declaration in the hasGap sub-case. The author is responsible for
-		// ensuring each tagged scenario genuinely exercises each positive feature
-		// (this is test intent, not structurally verifiable without SQL semantics).
-		if len(pos) > 0 && hasGap && len(gaps) == 0 {
-			violations = append(violations, fmt.Sprintf("%s: carries a positive `# ansi:` tag and an "+
-				"unsupported-feature pin but no `# ansi-gap:` tag — declare which feature is rejected "+
-				"(a positive tag must not be credited by a different feature's passing test)", name))
-		}
-		for _, id := range pos {
-			if !known[id] {
-				violations = append(violations, fmt.Sprintf("%s: `# ansi: %s` — unknown ANSI ID, not in the roster (typo?)", name, id))
-				continue
+		// Per-test binding (RFC-165 §4.3): each `ansi:` / `ansi_gap:` tag lives ON a
+		// specific test and is credited only when THAT test has the matching
+		// outcome — a positive `ansi:` tag's test must pass, a gap tag's test must
+		// be an unsupported-feature pin. Binding evidence to the exact exercising
+		// test means a positive tag can NEVER be credited off a sibling test in the
+		// same file (the F261-01 fake-checkbox class the audit caught), so the old
+		// scenario-level cross-feature guard is gone — the binding is structural.
+		for i, t := range s.Tests {
+			for _, id := range normalizeAnsiIDs(t.Ansi) {
+				if !known[id] {
+					violations = append(violations, fmt.Sprintf("%s test #%d: `ansi: %s` — unknown ANSI ID, not in the roster (typo?)", name, i, id))
+					continue
+				}
+				if classifyTest(t) != OutcomeSupported {
+					violations = append(violations, fmt.Sprintf("%s test #%d: `ansi: %s` on a test that does not pass (it asserts an error) — a positive tag must sit on a passing test", name, i, id))
+					continue
+				}
+				get(id).positive = append(get(id).positive, name)
 			}
-			if !hasPos {
-				violations = append(violations, fmt.Sprintf("%s: `# ansi: %s` but scenario has no supported (positive) test", name, id))
-				continue
+			for _, id := range normalizeAnsiIDs(t.AnsiGap) {
+				if !known[id] {
+					violations = append(violations, fmt.Sprintf("%s test #%d: `ansi_gap: %s` — unknown ANSI ID, not in the roster (typo?)", name, i, id))
+					continue
+				}
+				if classifyTest(t) != OutcomeUnsupported {
+					violations = append(violations, fmt.Sprintf("%s test #%d: `ansi_gap: %s` on a test that is not an unsupported-feature pin (0A000/0AF00/0AF01/42883)", name, i, id))
+					continue
+				}
+				get(id).gaps = append(get(id).gaps, name)
 			}
-			get(id).positive = append(get(id).positive, name)
-		}
-		for _, id := range gaps {
-			if !known[id] {
-				violations = append(violations, fmt.Sprintf("%s: `# ansi-gap: %s` — unknown ANSI ID, not in the roster (typo?)", name, id))
-				continue
-			}
-			if !hasGap {
-				violations = append(violations, fmt.Sprintf("%s: `# ansi-gap: %s` but scenario has no unsupported-feature pin", name, id))
-				continue
-			}
-			get(id).gaps = append(get(id).gaps, name)
 		}
 	}
 	// Global conflict guard: the same feature ID must not be tagged both
-	// `# ansi:` (supported) and `# ansi-gap:` (rejected) ANYWHERE in the corpus —
+	// `ansi:` (supported) and `ansi_gap:` (rejected) ANYWHERE in the corpus —
 	// not just within one file. `ev` accumulates across files, so a same-ID
 	// positive-in-A / gap-in-B pair would otherwise slip a per-file scope and
 	// deriveGo would silently return Partial → population() could mis-credit a Go
@@ -236,8 +193,8 @@ func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagE
 	// genuinely unreachable, same-file AND cross-file).
 	for id, e := range ev {
 		if len(e.positive) > 0 && len(e.gaps) > 0 {
-			violations = append(violations, fmt.Sprintf("%s: tagged both `# ansi:` (%s) and `# ansi-gap:` (%s) — an ID cannot be both supported and a gap",
-				id, strings.Join(e.positive, ","), strings.Join(e.gaps, ",")))
+			violations = append(violations, fmt.Sprintf("%s: tagged both `ansi:` (%s) and `ansi_gap:` (%s) — an ID cannot be both supported and a gap",
+				id, strings.Join(e.positive, ", "), strings.Join(e.gaps, ", ")))
 		}
 	}
 	sort.Strings(violations)
@@ -351,10 +308,10 @@ const (
 // (their Partial is a rollup). An *atomic subfeature* carrying both a positive
 // and a gap tag (Go=Partial) under Java=Full would be misrouted to parity rather
 // than flagged — but that can't reach here: the GLOBAL conflict guard in
-// collectAnsiEvidence rejects the same ID tagged `# ansi:`+`# ansi-gap:` anywhere
-// in the corpus (same-file OR cross-file), so a clean ledger never renders an
-// atomic Partial; the cross-feature guard additionally rejects a positive tag
-// coexisting with an undeclared unsupported pin.
+// collectAnsiEvidence rejects the same ID tagged `ansi:`+`ansi_gap:` anywhere in
+// the corpus (same-file OR cross-file), so a clean ledger never renders an atomic
+// Partial. (Per-test binding also means a positive tag is credited only off its
+// own passing test, so it can't be mis-credited by a sibling.)
 func (r AnsiRow) population() ansiPopulation {
 	if r.Go == SupportUntested {
 		return popUntested
@@ -378,7 +335,7 @@ type AnsiLedger struct {
 }
 
 // BuildAnsiLedger resolves the hand-authored roster against the corpus-derived
-// `# ansi:` evidence under dir.
+// `ansi:` evidence under dir.
 func BuildAnsiLedger(dir string, roster []AnsiFeature) (*AnsiLedger, error) {
 	ev, violations, err := collectAnsiEvidence(dir, roster)
 	if err != nil {
@@ -461,12 +418,12 @@ func RenderAnsiLedger(l *AnsiLedger) string {
 	b.WriteString("<!-- GENERATED FILE — DO NOT EDIT BY HAND.\n")
 	b.WriteString("     Regenerate with `just sql-coverage` (or `go run ./cmd/gen-sql-coverage`).\n")
 	b.WriteString("     The roster (Identifier/Core?/Name/Java?) is the hand-authored PINNED-FACT source\n")
-	b.WriteString("     in ansi_roster.go; the Go? column + completeness are DERIVED from `# ansi:` tags\n")
+	b.WriteString("     in ansi_roster.go; the Go? column + completeness are DERIVED from `ansi:` tags\n")
 	b.WriteString("     on the yamsql corpus. Drift guards: TestAnsiLedgerUpToDate + TestAnsiLedgerEvidenceExists. -->\n\n")
 	b.WriteString("Ledger A of RFC-165 — the ANSI-standard scorecard, modeled on PostgreSQL Appendix D.\n")
 	b.WriteString("The `Java?`/`Core?`/`Identifier`/`Name` columns are pinned facts (SQL:2023 Core; the\n")
 	b.WriteString("frozen fdb-relational 4.12.11.0 reference). **`Go?` and completeness are derived** by\n")
-	b.WriteString("walking `# ansi:`-tagged corpus scenarios — a claim of support traces to a named,\n")
+	b.WriteString("walking `ansi:`-tagged corpus scenarios — a claim of support traces to a named,\n")
 	b.WriteString("passing case, never a hand-typed status. For the measured corpus number see `SQL_COVERAGE.md`.\n\n")
 	b.WriteString("**Axes** (RFC-165 §4.2): `Java?` × `Go?`. The headline is keyed on **`Go?` only** —\n")
 	b.WriteString("a feature only Java has is never counted as Go-supported.\n\n")
@@ -490,8 +447,8 @@ func RenderAnsiLedger(l *AnsiLedger) string {
 		naCount, applicable, goSupported, sharedParity, goExt, sharedGap, divergence, untested)
 
 	if len(l.Violations) > 0 {
-		b.WriteString("> ⚠️ EVIDENCE VIOLATIONS (drift-guard failures): a `# ansi:` tag without a matching\n")
-		b.WriteString("> passing test, or a `# ansi-gap:` tag without an unsupported pin. Fix the tag or the test.\n")
+		b.WriteString("> ⚠️ EVIDENCE VIOLATIONS (drift-guard failures): a `ansi:` tag without a matching\n")
+		b.WriteString("> passing test, or a `ansi_gap:` tag without an unsupported pin. Fix the tag or the test.\n")
 		for _, v := range l.Violations {
 			fmt.Fprintf(&b, "> - %s\n", v)
 		}

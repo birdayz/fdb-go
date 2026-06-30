@@ -59,6 +59,4 @@ tests:
   - query: SELECT COUNT(*) FROM emp WHERE id IN (1, 2, 3, 4, 5)
     rows:
       - [5]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: E061-03
+    ansi: [E061-03]

@@ -20,9 +20,11 @@ tests:
   # Round-trip: stored values come back correctly.
   # ---------------------------------------------------------------
   - query: SELECT d FROM Events WHERE id = 1
+    ansi: [F051-01]
     rows:
       - ['2024-03-15']
   - query: SELECT ts FROM Events WHERE id = 1
+    ansi: [F051-03]
     rows:
       - ['2024-03-15 10:30:00']
   - query: SELECT d FROM Events WHERE id = 3
@@ -204,7 +206,3 @@ tests:
   - query: SELECT COUNT(*) FROM Events
     rows:
       - [3]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: F051-01
-# ansi: F051-03

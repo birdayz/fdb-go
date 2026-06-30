@@ -47,6 +47,4 @@ tests:
   - query: SELECT id, v, (SELECT SUM(v) FROM t WHERE id > 2) AS total FROM t WHERE id = 1
     rows:
       - [1, 10, 70]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: F471
+    ansi: [F471]
