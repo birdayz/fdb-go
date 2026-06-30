@@ -69,12 +69,22 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   residual FDB rows test FIRST. **CONFIRMED empirically** (probe, dropped during cleanup): `WHERE zone='z1' AND
 >   region>'r1' … <=2` plans to `Intersection(VectorIndexScan(rank<=2), Scan(DOCS,[=,<>]))` and returns `{22}` —
 >   DROPS id 21 (correct is `{21,22}`; in r2 the nearest vector is id 22 (dist 1.20) but id 21 (dist 1.41) sorts
->   first by pk → the pk-merge advances past 21). **Implementation detail (both pieces needed together — a gate-only
->   fix makes the vector query UNPLANNABLE, a feature regression):** piece 2 needs the vector index's PARTITION
->   columns, which the `RecordQueryVectorIndexPlan` does NOT carry (only the bound `prefixComparisons` = `[zone=]`,
->   not the fanned-out `region`), and `compensationSafeForYield` (planner.go:692) is a free function with no ctx —
->   so thread `PlanContext` in + look the candidate up by index name for its partition-column list (or add a
->   partition-column-names field to the plan), then check the residual's correlated columns ⊆ partition columns.
+>   first by pk → the pk-merge advances past 21). **FIX ATTEMPTED (reverted) — it is THREE pieces, not two:**
+>   (1) the pk-order gate in `WithPrimaryKeyIntersector` (per-leg `computeWrapperRichOrdering(leg).Satisfies(pkReq)`)
+>   correctly drops the invalid vector intersection — VERIFIED; (2) the `compensationSafeForYield` partition-residual
+>   exception (with a CONTIGUITY check: the residual columns must be exactly the partition columns immediately after
+>   the bound equality prefix `len(prefixComparisons)` — else a leading partition col like `zone` is left unbound,
+>   which must stay unplannable per `TrailingEqualityResidual`) — VERIFIED via the plan field
+>   `RecordQueryVectorIndexPlan.partitionColumns` set in `ToScanPlan` from `columnNames[:partitionCount]`. BUT pieces
+>   1+2 alone make BOTH the K=1 and K>1 inequality queries UNPLANNABLE ("index-only predicate … cannot be a residual
+>   filter") — because **(3) the standalone `Filter(region>r1, VectorTopK)` plan is never GENERATED**: a partitioned
+>   vector scan (`partitionCount>0`) returns `EmitsOrderedStream()==false` (vector_index_match_candidate.go:139), so
+>   it is NOT excluded from the intersection (planner.go:628 RFC-156 guard) AND its only residual-bearing shape is the
+>   intersection — there is no ordered-stream `Limit→Filter→ordered-scan` (RFC-156 Phase B) composition for the
+>   partitioned case. **The real fix:** extend the un-partitioned ordered-stream + Filter composition to the
+>   partitioned-WITH-partition-residual case (so the partition-inequality vector query plans to `Limit(k) →
+>   Filter(region>r1) → VectorScan(ordered, fanout)`), THEN gate the intersection (pieces 1+2). This is an RFC-046/156
+>   vector-planning change — substantial, needs the K>1 FDB rows pin + the existing vector suite green + 1M stress.
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
