@@ -1,25 +1,26 @@
 package sqldriver_test
 
-// KNOWN-ISSUE sentinel — UPDATE of a PRIMARY KEY column (TODO.md "UPDATE of PK
-// column surfaces a leaky XXXXX error").
+// CONFORMANCE pin — UPDATE of a PRIMARY KEY column returns XXXXX in BOTH engines (RFC-160).
 //
-// `UPDATE t SET id = <new> WHERE id = <old>` does not relocate the record; the
-// executor applies the SET to the proto (including the PK field) then calls
-// SaveRecordWithOptions(..., ErrorIfNotExists), which targets the NEW pk and fails
-// the existence check → a LEAKY internal error (SQLSTATE XXXXX / ErrCodeUnknown,
-// "record does not exist"; executor.go:2474, whose comment even assumes "an UPDATE
-// does not change the PK"). It is fail-CLOSED — the table is left UNCHANGED, no
-// corruption. The right end-state is either a clean user-facing rejection (proper
-// SQLSTATE, "cannot update primary key") or record relocation (delete+insert),
-// matching Java — pending a Java-behavior check + executor review. This test pins
-// the two invariants that matter now: (1) the operation is rejected (not silently
-// applied), and (2) NO data is corrupted.
+// `UPDATE t SET id = <new> WHERE id = <old>` does not relocate the record; the executor
+// applies the SET to the proto (including the PK field) then calls SaveRecordWithOptions(
+// .., ErrorIfNotExistsOrTypeChanged), which targets the NEW pk and fails the existence
+// check. JAVA IS IDENTICAL: RecordQueryUpdatePlan.saveRecordAsync saves with
+// ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED, and ExceptionUtil.recordCoreToRelationalException
+// does NOT special-case the resulting RecordDoesNotExistException → it falls to the DEFAULT
+// ErrorCode.UNKNOWN, which is "XXXXX" — byte-identical to Go's ErrCodeUnknown ("XXXXX").
+// So the SQLSTATE matches Java; neither engine relocates and both fail-CLOSED (table
+// UNCHANGED). The original TODO (item 1085) framed the XXXXX as a Go "leak to fix" with a
+// clean "cannot update primary key" code — but that would DIVERGE from Java; XXXXX is the
+// conformant result. This test pins: (1) XXXXX AND the "record does not exist" path message
+// (Java-faithful, not the leaky `executor:` prefix), (2) no corruption, (3) non-PK UPDATE works.
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -59,14 +60,25 @@ func TestFDB_UpdatePrimaryKeyProbe(t *testing.T) {
 	}
 	before := snapshot()
 
-	t.Run("pk_update_rejected", func(t *testing.T) {
-		// Currently rejected with the leaky XXXXX error. Pin that it does NOT
-		// succeed; do not over-pin the exact (leaky) wording beyond "record does not
-		// exist", so a future clean-error fix only needs to update this assertion.
+	t.Run("pk_update_rejected_xxxxx_matches_java", func(t *testing.T) {
+		// Changing the PK retargets the save to the NEW pk (no record) → the existence
+		// check fails. Java is IDENTICAL: RecordQueryUpdatePlan saves with
+		// ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED and ExceptionUtil maps the resulting
+		// RecordDoesNotExistException to the DEFAULT ErrorCode.UNKNOWN = "XXXXX" (it is not
+		// in Java's RecordCoreException switch). Go's ErrCodeUnknown is also "XXXXX", so the
+		// SQLSTATE matches Java. A clean Go-only "cannot update primary key" code would
+		// DIVERGE — so XXXXX is the conformant result, pinned here (RFC-160).
 		_, err := db.ExecContext(ctx, "UPDATE t SET id = 99 WHERE id = 1")
 		if err == nil {
-			t.Errorf("UPDATE SET id (PK) unexpectedly succeeded; want a rejection " +
-				"(today leaky XXXXX 'record does not exist'; ideally a clean SQLSTATE or relocation)")
+			t.Fatalf("UPDATE SET id (PK) unexpectedly succeeded; want XXXXX rejection (fail-closed)")
+		}
+		// Anchor BOTH axes (Torvalds): the SQLSTATE (XXXXX) AND the specific path message.
+		// XXXXX is the catch-all default, so asserting it alone would stay green if some
+		// OTHER failure (a planner blowup, a different RecordCoreException) regressed into
+		// XXXXX. "record does not exist" is RecordDoesNotExistException's own message — the
+		// Java-faithful one (not the leaky `executor:` prefix) — pinning THIS path.
+		if !strings.Contains(err.Error(), "XXXXX") || !strings.Contains(err.Error(), "record does not exist") {
+			t.Errorf("UPDATE SET id (PK) error = %v\n  want SQLSTATE XXXXX + \"record does not exist\" (matches Java's RecordDoesNotExistException → ErrorCode.UNKNOWN)", err)
 		}
 	})
 	t.Run("no_data_corruption", func(t *testing.T) {

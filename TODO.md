@@ -1104,7 +1104,19 @@ produce. Fix = thread the specific undefined-column / unknown-table error out of
 DML WHERE/table resolver (matching SELECT/INSERT), rather than mapping any failure to
 "DML Cascades translation failed". Check Java's wording/SQLSTATE for parity.
 
-### [ ] executor: UPDATE of a PRIMARY KEY column surfaces a leaky XXXXX error (found 2026-06-28)
+### [x] executor: UPDATE of a PRIMARY KEY column → XXXXX is JAVA-FAITHFUL, not a bug — RESOLVED (RFC-160)
+
+**Misframed (like the secondary-UNIQUE dry-run item).** `UPDATE t SET id=99 WHERE id=1` retargets the
+save to the new PK (no record) → existence check fails → XXXXX. **Java is IDENTICAL:**
+`RecordQueryUpdatePlan.saveRecordAsync` saves with `ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED`, and
+`ExceptionUtil.recordCoreToRelationalException` maps the resulting `RecordDoesNotExistException` to the
+DEFAULT `ErrorCode.UNKNOWN` (not in its RecordCoreException switch) — and `ErrorCode.UNKNOWN("XXXXX")`
+== Go's `ErrCodeUnknown ("XXXXX")`. So the SQLSTATE matches Java byte-for-byte; a clean Go-only
+"cannot update primary key" code (or relocation) would DIVERGE from Java, forbidden by the conformance
+principle. No production change. Pinned Java-faithful by `update_primary_key_probe_test.go`
+(`pk_update_rejected_xxxxx_matches_java` + no-corruption + non-PK-works). Do NOT "fix" it. Original
+description below.
+
 
 `UPDATE t SET id = <new> WHERE id = <old>` (id is the PK) fails with SQLSTATE XXXXX
 (ErrCodeUnknown), message "record does not exist: executor: updating record: record
