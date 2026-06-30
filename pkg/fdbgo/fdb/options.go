@@ -395,7 +395,9 @@ func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
 // (2006), leaving the cap unchanged — C++ extractIntOption throws on out-of-range, not clamps.
 func (o DatabaseOptions) SetMaxWatches(n int64) error {
 	if o.db != nil {
-		return o.db.inner.SetMaxWatches(n)
+		// convertError maps the internal *wire.FDBError → public fdb.Error, like every other facade
+		// method, so callers' fdb.Error code handling matches the invalid_option_value (2006) path.
+		return convertError(o.db.inner.SetMaxWatches(n))
 	}
 	return nil
 }

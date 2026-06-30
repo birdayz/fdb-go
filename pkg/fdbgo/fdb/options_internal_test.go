@@ -5,7 +5,36 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 )
+
+// TestSetMaxWatches_FacadeConvertsError pins that the public DatabaseOptions.SetMaxWatches returns a
+// converted fdb.Error (not the internal *wire.FDBError) for an out-of-range cap, like every other
+// facade setter (codex). A bare &client.Database{} suffices: SetMaxWatches(-1) returns 2006 before
+// it touches the (nil) inner database.
+func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
+	t.Parallel()
+	opts := DatabaseOptions{db: &internalDB{inner: &client.Database{}}}
+
+	err := opts.SetMaxWatches(-1)
+	var fe Error
+	if !errors.As(err, &fe) || fe.Code != 2006 {
+		t.Fatalf("facade SetMaxWatches(-1) must return fdb.Error{2006}, got %T %v", err, err)
+	}
+	// It must NOT leak the internal *wire.FDBError through the public API.
+	var we *wire.FDBError
+	if errors.As(err, &we) {
+		t.Fatalf("facade must convert, not leak *wire.FDBError, got %T %v", err, err)
+	}
+	// The over-max bound converts the same way. (The valid-cap path stores into the inner database
+	// and is covered by client.TestSetMaxWatches_RejectsOutOfRange; the bare facade db here has no
+	// inner store, so we only exercise the reject-and-convert path the codex finding is about.)
+	if c := opts.SetMaxWatches(absoluteMaxWatchesFacade + 1); c == nil {
+		t.Fatal("facade SetMaxWatches(>1e6) must reject")
+	}
+}
+
+const absoluteMaxWatchesFacade = 1_000_000
 
 // newBareOptionsTx builds a facade transaction over a bare client transaction.
 // The option setters only mutate the inner transaction's fields, so no database

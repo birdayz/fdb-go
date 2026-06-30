@@ -194,7 +194,22 @@ too_many_watches 0-cap, fixed round 7). On the **delta re-review codex found two
 (the sibling multi-process test was already fixed this way). NOT an fdbgo-code failure (all client
 tests were green in CI).
 
-**Codex caught 5 real issues across 3 review rounds the persona reviewers missed** — critical-gate
+**Round 10 — codex's 3rd `--supersede` re-review found two MORE** (both P2), both addressed:
+- **Facade error-type leak (options.go):** `DatabaseOptions.SetMaxWatches` returned the internal
+  `*wire.FDBError` for the 2006 reject path instead of a public `fdb.Error` like every sibling
+  setter. Wrapped in `convertError`. Pin: `TestSetMaxWatches_FacadeConvertsError`.
+- **Poison re-check race (transaction.go):** the invalid-Atomic poison was read (lock-free) at Commit
+  ENTRY, before the `conflictMu` mutation snapshot — a concurrent `Atomic(badOp)` that stores the
+  poison (under `conflictMu`) AFTER that entry load but BEFORE the snapshot was missed, so the commit
+  could succeed despite the invalid atomic. Fix: re-read the poison UNDER the same `conflictMu` as
+  the `muts` snapshot, linearizing poison-vs-commit with mutation-vs-commit. **Correct by
+  construction** (the re-check and the bad-op Store share `conflictMu`); a deterministic regression
+  needs read-barrier-park fault injection (hold a pipelined GetValue reply via the simDialer
+  intercept so Commit parks in the barrier past the entry check, inject `Atomic(badOp)`, release,
+  assert 2018; revert-prove by removing the re-check). **FOLLOW-UP: write that fault test** — the fix
+  is landed + commented, this pins it against a future snapshot refactor dropping the re-check.
+
+**Codex caught 7 real issues across 4 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

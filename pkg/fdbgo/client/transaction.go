@@ -1653,7 +1653,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	tx.conflictMu.Lock()
 	muts := tx.mutations
 	nWriteConflicts := len(tx.writeConflicts)
+	// Re-read the invalid-atomic poison UNDER the snapshot lock, linearized with `muts` (codex): the
+	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
+	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
+	// critical section as the mutation snapshot, makes the poison-vs-commit order consistent with the
+	// mutation-vs-commit order: a bad Atomic ordered before this snapshot poisons the commit; one
+	// ordered after is not in `muts` either, so the commit linearizes before it.
+	poison := tx.invalidAtomicOpErr.Load()
 	tx.conflictMu.Unlock()
+	if poison != nil {
+		tx.state.Store(int32(txStateErrored))
+		return poison
+	}
 
 	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
 	// - set(): if key == metadataVersionKey → client_invalid_operation
