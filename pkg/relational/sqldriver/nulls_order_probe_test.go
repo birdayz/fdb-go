@@ -68,8 +68,8 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 	}
 
 	// Multi-key with a non-natural NULL placement on the trailing key. With a=5
-	// duplicated across c, the leading key is natural and the trailing key b is
-	// ASC NULLS LAST. Rows (id,a,b): the NULL-b row must sort last within its a.
+	// fixed (the leading key a is constant here), the trailing key b is ASC NULLS
+	// LAST, so the NULL-b row (id=1) must sort last.
 	multi := order("SELECT id FROM t WHERE a = 5 ORDER BY a, b ASC NULLS LAST")
 	if !eqIDs(multi, []int64{2, 3, 1}) {
 		t.Errorf("ORDER BY a, b ASC NULLS LAST: got %v, want [2 3 1] (NULL b last)", multi)

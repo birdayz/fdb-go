@@ -7,17 +7,21 @@ import (
 // RequestedSortOrder specifies the desired sort direction for one
 // ordering part. Mirrors Java's OrderingPart.RequestedSortOrder.
 //
-// Cross-enum NULL-variant asymmetry (intentional, faithful to Java): the three
-// sort-order enums each carry only the TWO null variants they need, and the
-// "extra two" are mirror-flips of each other —
+// Cross-enum NULL-variant asymmetry — a Go-specific SIMPLIFICATION (NOT a literal
+// port: Java's three sort-order enums are symmetric, all carrying ASC_NULLS_LAST /
+// DESC_NULLS_FIRST). In Go:
 //   - RequestedSortOrder / MatchedSortOrder carry the NON-natural explicit
 //     variants: AscendingNullsLast, DescendingNullsFirst.
-//   - ProvidedSortOrder (ordering_part.go) carries the NATURAL-explicit pair:
-//     AscendingNullsFirst, DescendingNullsLast.
+//   - ProvidedSortOrder (ordering_part.go) instead carries the NATURAL-explicit
+//     pair AscendingNullsFirst / DescendingNullsLast and OMITS the non-natural
+//     variants entirely.
 //
-// So a provided AscendingNullsFirst mapping to nullsFirst()==true is correct, not
-// a bug; the requested side only ever names a placement when it differs from the
-// natural one (a plain Ascending already means ASC NULLS FIRST).
+// This is sound ONLY because Go index matching produces exclusively natural
+// provided orders (ValueIndexScanMatchCandidate emits only the natural Matched
+// variants), so a provided AscendingNullsFirst→nullsFirst()==true is correct and
+// a non-natural request fails compat in both scan directions (sort retained). If
+// a NULLS-LAST-keyed index ever feeds elision, ProvidedSortOrder must regain the
+// non-natural variants first (see matched_ordering_part.go ToProvidedSortOrder).
 type RequestedSortOrder int
 
 const (

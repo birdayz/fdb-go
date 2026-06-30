@@ -50,6 +50,11 @@ CREATE INDEX idx_ab ON T(a, b)`
 			if !strings.Contains(plan, "InMemorySort") {
 				t.Errorf("explicit non-natural NULL placement must retain the sort (InMemorySort), got: %s\n  sql: %s", plan, tc.sql)
 			}
+			// ...and the index must still serve the WHERE a=5 (the fix retains the
+			// sort, it does not over-correct to a full-table-scan + sort).
+			if !strings.Contains(plan, "IDX_AB") {
+				t.Errorf("retained-sort plan must still use the index for the predicate, got: %s\n  sql: %s", plan, tc.sql)
+			}
 		})
 	}
 
