@@ -51,6 +51,7 @@ go_test(
         "approxsize_accounting_test.go",
         "atomic_conflictrange_test.go",
         "atomic_invalid_opcode_test.go",
+        "atomic_poison_race_test.go",
         "atomic_roundtrip_test.go",
         "atomic_test.go",
         "atomicops_workload_test.go",

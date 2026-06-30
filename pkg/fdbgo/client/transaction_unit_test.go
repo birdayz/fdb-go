@@ -705,7 +705,18 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	err2 := tx2.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — NOT retryable
 	var fe2 *wire.FDBError
 	if !errors.As(err2, &fe2) || fe2.Code != ErrTransactionTimedOut {
-		t.Fatalf("entry gate: a NON-retryable error past the deadline must become 1031, got %v", err2)
+		t.Fatalf("entry gate: a NON-retryable FDB error past the deadline must become 1031, got %v", err2)
+	}
+
+	// codex: a NON-FDB application error past the deadline must ESCAPE unchanged — the timeout gate
+	// is for FDB errors (the retry path) only, not the caller's own error. Revert-proof of the gate
+	// POSITION (after errors.As): pre-fix the gate ran first and replaced this with 1031.
+	tx3 := newTestTx()
+	tx3.creationTime = time.Now().Add(-1 * time.Second)
+	tx3.SetTimeout(500) // expired
+	appErr := errors.New("business logic failed")
+	if got := tx3.OnError(context.Background(), appErr); got != appErr {
+		t.Fatalf("a non-FDB application error past the deadline must escape unchanged, got %v", got)
 	}
 }
 

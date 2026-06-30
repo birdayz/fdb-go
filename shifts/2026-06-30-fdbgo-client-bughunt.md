@@ -159,6 +159,22 @@ Conservative: at worst one un-pooled buffer per (rare) send-error. Sites: `commi
 fake server + a goroutine that cancels the conn ctx mid-send, run under `-race`, asserting no race
 on the pooled backing array. Multi-site + a fake-transport `-race` test → its own focused commit.
 
+## Review gauntlet — RAN + ITERATED (2026-06-30)
+
+All three reviewers ran on `master..HEAD`. **Outcome: ACK on 11/13, converged NAK on one** (the
+too_many_watches 0-cap, fixed round 7). On the **delta re-review codex found two MORE real P2s**
+(round 8) — the critical-gate value:
+1. **OnError entry-gate position (transaction.go:2016):** the timeout gate ran BEFORE the
+   `errors.As(*wire.FDBError)` branch, so a non-FDB application error (a `Transact` callback's
+   `errors.New(...)`) past the deadline was replaced by 1031. Moved the gate AFTER the non-FDB
+   return (FDB errors only). Pin: the non-FDB-escape assertion in `TestOnError_RespectsTimeoutDeadline`
+   (red-proven: gate-before → 1031). A non-retryable FDB error past deadline still → 1031.
+2. **invalidAtomicOpErr data race (transaction.go):** the fix-#3 poison field was a plain `error`
+   written by `Atomic()` (a concurrent-safe data op) and read by `Commit` → race. Converted to
+   `atomic.Pointer[wire.FDBError]` (CAS keeps the first invalid op). Pin:
+   `TestAtomic_InvalidOpPoison_RaceFree` under `-race`.
+   FDB C++ dev re-confirmed the 0-cap fix → **full ACK**; Torvalds' two conditions addressed.
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)

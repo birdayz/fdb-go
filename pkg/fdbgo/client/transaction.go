@@ -323,9 +323,10 @@ type Transaction struct {
 
 	// invalidAtomicOpErr: set when Atomic() is called with a non-atomic / out-of-range op-code
 	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad mutation
-	// is NOT buffered; this deferred error fails the next Commit (2018). Lock-free like rywPoisonErr.
-	// Cleared on reset.
-	invalidAtomicOpErr error
+	// is NOT buffered; this deferred error fails the next Commit (2018/2004/2000). An atomic.Pointer
+	// (not a plain field) because Atomic() — a data op the published contract allows concurrently
+	// with Commit — writes it while Commit reads it (codex). CAS keeps the FIRST invalid op.
+	invalidAtomicOpErr atomic.Pointer[wire.FDBError]
 
 	// readErr: the first error returned by a TRACKED read of this transaction —
 	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
@@ -1380,20 +1381,21 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	// ordering. Reads are left intact (the non-aborting analog: the failed atomicOp didn't add a
 	// mutation, but the transaction object is otherwise usable until the commit gate rejects it).
 	if !isAtomicOp(op) {
-		if tx.invalidAtomicOpErr == nil {
-			// C++ atomicOp checks metadataVersionKey (2000) / legal-range (2004) BEFORE the
-			// op-validity check (2018) — ReadYourWrites.actor.cpp:2226-2234. Surface the same
-			// precedence eagerly so Atomic(invalidOp, systemKey) reports key_outside_legal_range,
-			// and Atomic(invalidOp, metadataVersionKey) reports client_invalid_operation — not 2018.
-			switch {
-			case bytes.Equal(key, metadataVersionKeyBytes):
-				tx.invalidAtomicOpErr = &wire.FDBError{Code: 2000} // client_invalid_operation
-			case bytes.Compare(key, tx.maxWriteKey()) >= 0:
-				tx.invalidAtomicOpErr = &wire.FDBError{Code: 2004} // key_outside_legal_range
-			default:
-				tx.invalidAtomicOpErr = &wire.FDBError{Code: ErrInvalidMutationType} // 2018
-			}
+		// C++ atomicOp checks metadataVersionKey (2000) / legal-range (2004) BEFORE the op-validity
+		// check (2018) — ReadYourWrites.actor.cpp:2226-2234. Surface the same precedence eagerly so
+		// Atomic(invalidOp, systemKey) reports key_outside_legal_range and Atomic(invalidOp,
+		// metadataVersionKey) reports client_invalid_operation — not 2018.
+		var code int
+		switch {
+		case bytes.Equal(key, metadataVersionKeyBytes):
+			code = 2000 // client_invalid_operation
+		case bytes.Compare(key, tx.maxWriteKey()) >= 0:
+			code = 2004 // key_outside_legal_range
+		default:
+			code = ErrInvalidMutationType // 2018
 		}
+		// CAS so the FIRST invalid op wins (matching C++ "first eager throw"); race-free vs Commit.
+		tx.invalidAtomicOpErr.CompareAndSwap(nil, &wire.FDBError{Code: code})
 		return
 	}
 	tx.conflictMu.Lock()
@@ -1517,8 +1519,8 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// A non-atomic op-code passed to Atomic() poisons the commit with invalid_mutation_type (2018),
 	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
 	// buffered, so nothing reaches the cluster. Non-retryable; returns without resetting.
-	if tx.invalidAtomicOpErr != nil {
-		return tx.invalidAtomicOpErr
+	if e := tx.invalidAtomicOpErr.Load(); e != nil {
+		return e
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
@@ -2011,19 +2013,24 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 	if cerr := tx.checkCancelled(); cerr != nil {
 		return cerr // transaction_cancelled (1025)
 	}
-	// The SetTimeout deadline out-ranks the retry: C++ RYWImpl::onError throws transaction_timed_out
-	// at entry if the timebomb already fired (ReadYourWrites.actor.cpp:1506) — BEFORE classifying the
-	// input error. Without this, a SetTimeout txn under contention sleeps a full (growing) backoff and
-	// does one extra reset+retry before the NEXT op's checkTimeout surfaces 1031, overshooting the
-	// declared timeout. Non-retryable; mark errored and return.
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		// A non-FDB application error (e.g. a Database.Transact callback returning errors.New(...))
+		// is the caller's own, NOT an FDB retry concern — it escapes unchanged, even past the
+		// deadline. The timeout gate below applies ONLY to FDB errors (the retry path), so it must
+		// sit AFTER this branch (codex: otherwise an expired deadline would replace the application
+		// error with 1031). Pre-bug-hunt behavior, restored.
+		tx.state.Store(int32(txStateErrored))
+		return err
+	}
+	// The SetTimeout deadline out-ranks the retry for an FDB error: C++ RYWImpl::onError throws
+	// transaction_timed_out at entry if the timebomb already fired (ReadYourWrites.actor.cpp:1506) —
+	// before classifying the FDB error and before any backoff. Without this, a SetTimeout txn under
+	// contention sleeps a full (growing) backoff and does one extra reset+retry before the NEXT op's
+	// checkTimeout surfaces 1031, overshooting the declared timeout. Non-retryable; mark errored.
 	if cerr := tx.checkTimeout(); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
 		return cerr // transaction_timed_out (1031)
-	}
-	var fdbErr *wire.FDBError
-	if !errors.As(err, &fdbErr) {
-		tx.state.Store(int32(txStateErrored))
-		return err
 	}
 
 	// Transaction timeout is NEVER retryable — matches C++ behavior where
@@ -2749,8 +2756,8 @@ func (tx *Transaction) postCommitReset() {
 	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil       // RFC-059: a fresh layer reapplies the option with no poison
-	tx.invalidAtomicOpErr = nil // a fresh transaction can issue valid atomic ops again
+	tx.rywPoisonErr = nil            // RFC-059: a fresh layer reapplies the option with no poison
+	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
@@ -2798,8 +2805,8 @@ func (tx *Transaction) reset() {
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil       // RFC-059: a fresh layer reapplies the option with no poison
-	tx.invalidAtomicOpErr = nil // a fresh transaction can issue valid atomic ops again
+	tx.rywPoisonErr = nil            // RFC-059: a fresh layer reapplies the option with no poison
+	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
