@@ -99,7 +99,11 @@ func sendFrameWithHedge(
 	case <-ctx.Done():
 		pResult.replyHandle.Cancel()
 		pResult.replyHandle.Release()
-		return hedgeResult{err: ctx.Err()}
+		// Return the primary's accounting so the caller endRequests its startRequest delta — like
+		// waitForReply's ctx.Done branch. Dropping it (returning a bare {err}) leaked the started
+		// request's QueueModel delta permanently, biasing server selection (RFC-010 #5; C++
+		// LoadBalance's ModelHolder RAII releases on cancel too).
+		return hedgeResult{addr: pResult.addr, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
 	}
 }
 

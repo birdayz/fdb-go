@@ -1072,6 +1072,18 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if tx.rywDisabled {
 		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
+	// Eager legal-range + key-size validation, BEFORE the read — C++ RYW watch
+	// (ReadYourWrites.actor.cpp:2450-2456): a key >= getMaxReadKey() (and != metadataVersionKey) is
+	// key_outside_legal_range (2004), an oversized key is key_too_large (2102). Without this a normal
+	// (non-system) transaction could register a watch on a \xff system key or an oversized key that
+	// libfdb_c rejects. Mirrors the Get/Set legal-range + commit key-size gates.
+	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
+	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
+	if len(key) > getMaxWriteKeySize(key, rawAccess) {
+		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
+	}
 
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, 0, types.SpanContext{}, nil, err

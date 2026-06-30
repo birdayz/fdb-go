@@ -71,6 +71,27 @@ One commit, three independent libfdb_c divergences (all pinned, full pre-commit 
 
 Also written: **RFC-165** (watch-at-committed-version design, Draft — needs FDB-C-dev ACK).
 
+## Done — round 4 (committed, red→green proven)
+
+8. **Hedged read leaks the primary's QueueModel `startRequest` delta on `ctx.Done()`** (MEDIUM,
+   two finders confirmed). The top-level `ctx.Done()` branch of `sendFrameWithHedge` returned a bare
+   `{err}` (no addr/delta), so the caller's `if result.addr != ""` skipped `endRequest` → permanent
+   LB skew. Fix: return the primary's accounting like `waitForReply`'s `ctx.Done`. Pin:
+   `TestHedge_ContextCancellation_AccountsPrimary` (red→green; needs a non-nil secondary to reach
+   the buggy branch — the existing test passed a nil secondary, hence the gap).
+9. **`Watch()` skips legal-range + key-size validation** (MEDIUM). A normal (non-system) txn could
+   register a watch on a `\xff` system key (C++ 2004) or an oversized key (2102). Fix: `WatchSetup`
+   applies the same maxReadKey/key-size gates as Get, BEFORE the read (C++ RYW watch,
+   ReadYourWrites.actor.cpp:2450-2456). Pin: `TestWatchSetup_RejectsSystemAndOversizedKeys`.
+
+Also written: **RFC-166** (reset() must clear non-persistent options — closes the `txn-options-lifecycle`
+HIGH + `snapshot-ryw` MEDIUM findings; Draft, needs FDB-C-dev ACK).
+
+The 2026-06-30 clean discovery re-run also CONFIRMED (still open, in the PR table): Reset() option
+preservation (HIGH, RFC-166), buffer-pool `sync.Pool` race on SendFrame error (LOW), SYSTEM_IMMEDIATE
++GRV-cache (LOW), atomic op-code precedence (LOW — the edge flagged in the round-1 atomic fix),
+oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by the adversarial verify.
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)

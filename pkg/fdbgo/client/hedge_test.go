@@ -144,6 +144,48 @@ func TestHedge_ContextCancellation(t *testing.T) {
 	g.Expect(result.err).To(gomega.MatchError(context.Canceled))
 }
 
+// TestHedge_ContextCancellation_AccountsPrimary pins RFC-010 #5 for the top-level ctx.Done branch:
+// when the caller's ctx is cancelled DURING the primary-wait (before the hedge timer / secondary),
+// the started primary request must still be recoverable for endRequest — else its QueueModel
+// startRequest delta leaks permanently and biases server selection. Pre-fix the ctx.Done branch
+// returned a bare hedgeResult{err}, dropping addr/delta/start, so applyCallerAccounting could not
+// balance the primary (the leak sentinel totalOf stays elevated). Mirrors waitForReply's ctx.Done.
+func TestHedge_ContextCancellation_AccountsPrimary(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately, before the primary reply
+
+	const primaryDelta = 1.5
+	primary := func() inFlightRPC {
+		return inFlightRPC{
+			replyCh:     make(chan transport.Response), // never replies
+			replyHandle: &transport.ReplyHandle{},
+			addr:        "primary",
+			delta:       primaryDelta,
+			start:       time.Now(),
+		}
+	}
+	// A non-nil secondary is REQUIRED to reach the top-level select's ctx.Done branch (with a nil
+	// secondary, sendFrameWithHedge returns via waitForReply, whose ctx.Done already accounts). The
+	// secondary is never actually sent: ctx is already cancelled and hedgeDelay is large, so the
+	// select takes ctx.Done before the hedge timer. (This is why the existing
+	// TestHedge_ContextCancellation, which passes a nil secondary, never exercised the leak.)
+	secondary := func() inFlightRPC {
+		t.Error("secondary must not be sent: ctx is cancelled before the hedge timer")
+		return inFlightRPC{replyHandle: &transport.ReplyHandle{}, addr: "secondary"}
+	}
+	result := sendFrameWithHedge(ctx, 1*time.Second, primary, secondary, 5*time.Second)
+	g.Expect(result.err).To(gomega.MatchError(context.Canceled))
+	// The result MUST carry the primary's accounting so the readpath caller endRequests its
+	// startRequest delta (RFC-010 #5) — exactly as waitForReply's ctx.Done branch does. Pre-fix the
+	// top-level ctx.Done branch returned a bare {err} (addr==""), so the caller's
+	// `if result.addr != ""` guard skipped endRequest → the started request's QueueModel delta leaked.
+	g.Expect(result.addr).To(gomega.Equal("primary"), "ctx.Done must return the primary addr for endRequest")
+	g.Expect(result.delta).To(gomega.Equal(primaryDelta), "ctx.Done must return the primary delta for endRequest")
+}
+
 // mkInflight builds an inFlightRPC for hedge tests. If ready, its reply channel
 // is pre-filled so it wins any race it enters.
 func mkInflight(addr string, delta float64, ready bool) inFlightRPC {
