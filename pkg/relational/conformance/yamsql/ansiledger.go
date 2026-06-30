@@ -185,27 +185,22 @@ func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagE
 		}
 		hasPos := scenarioHasOutcome(s, OutcomeSupported)
 		hasGap := scenarioHasOutcome(s, OutcomeUnsupported)
-		// Cross-feature guard (the "NULLIF credited by COALESCE" trap): a
-		// scenario-level positive tag only proves the scenario has *some* passing
-		// test — that test might exercise a DIFFERENT feature than the tagged one.
-		// So when a scenario both carries a positive `# ansi:` tag AND pins an
-		// unsupported feature, it MUST also declare an `# ansi-gap:` tag, forcing
-		// the author to identify which feature is rejected (else a rejected
-		// feature gets silently credited by a sibling feature's passing test).
+		// Cross-feature guard (the "NULLIF credited by COALESCE" trap): when a
+		// scenario carries a positive `# ansi:` tag AND pins an unsupported
+		// feature, it MUST also declare an `# ansi-gap:` tag, forcing the author
+		// to identify which feature is rejected (else a rejected feature gets
+		// silently credited by a sibling feature's passing test).
+		//
+		// LIMITATION (do not overstate): a scenario-level positive tag credits the
+		// ID off ANY passing test in the scenario — it does NOT bind the tag to the
+		// specific test that exercises that feature. The guard only forces
+		// gap-declaration in the hasGap sub-case. The author is responsible for
+		// ensuring each tagged scenario genuinely exercises each positive feature
+		// (this is test intent, not structurally verifiable without SQL semantics).
 		if len(pos) > 0 && hasGap && len(gaps) == 0 {
 			violations = append(violations, fmt.Sprintf("%s: carries a positive `# ansi:` tag and an "+
 				"unsupported-feature pin but no `# ansi-gap:` tag — declare which feature is rejected "+
 				"(a positive tag must not be credited by a different feature's passing test)", name))
-		}
-		// Conflict guard: the same ID cannot be both supported and a gap.
-		gapSet := make(map[string]bool, len(gaps))
-		for _, id := range gaps {
-			gapSet[id] = true
-		}
-		for _, id := range pos {
-			if gapSet[id] {
-				violations = append(violations, fmt.Sprintf("%s: `%s` is tagged both `# ansi:` and `# ansi-gap:`", name, id))
-			}
 		}
 		for _, id := range pos {
 			if !known[id] {
@@ -230,7 +225,30 @@ func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagE
 			get(id).gaps = append(get(id).gaps, name)
 		}
 	}
+	// Global conflict guard: the same feature ID must not be tagged both
+	// `# ansi:` (supported) and `# ansi-gap:` (rejected) ANYWHERE in the corpus —
+	// not just within one file. `ev` accumulates across files, so a same-ID
+	// positive-in-A / gap-in-B pair would otherwise slip a per-file scope and
+	// deriveGo would silently return Partial → population() could mis-credit a Go
+	// rejection pin as shared parity. An atomic feature can't be "partially"
+	// supported, so any positive+gap on one ID is an authoring conflict, flagged
+	// here (this is also what makes the atomic-subfeature edge in population()
+	// genuinely unreachable, same-file AND cross-file).
+	for id, e := range ev {
+		if len(e.positive) > 0 && len(e.gaps) > 0 {
+			violations = append(violations, fmt.Sprintf("%s: tagged both `# ansi:` (%s) and `# ansi-gap:` (%s) — an ID cannot be both supported and a gap",
+				id, strings.Join(e.positive, ","), strings.Join(e.gaps, ",")))
+		}
+	}
 	sort.Strings(violations)
+	// CAVEAT (the testdata-vs-mirror seam): this guard checks the OUTCOME SHAPE
+	// declared in the testdata yaml; it does not RUN the tagged scenario. Tag
+	// evidence is therefore only as strong as the lane that actually executes the
+	// tagged scenario (the sqldriver probe tests / the cross-engine harness). The
+	// yamsql corpus walk is t.Skip'd, and some `*_java.yaml` files carry
+	// unvalidated declared outcomes — so a tag must sit on a scenario whose
+	// behaviour is genuinely exercised elsewhere. The A3 `Java?` cross-check
+	// follow-up (TODO.md) closes the Java side of this seam.
 	return ev, violations, nil
 }
 
@@ -332,9 +350,11 @@ const (
 // the row comment rather than the headline. That is correct for PARENT rows
 // (their Partial is a rollup). An *atomic subfeature* carrying both a positive
 // and a gap tag (Go=Partial) under Java=Full would be misrouted to parity rather
-// than flagged — but that can't reach here: the conflict guard rejects the same
-// ID tagged `# ansi:`+`# ansi-gap:`, and the cross-feature guard rejects a
-// positive tag coexisting with an undeclared unsupported pin.
+// than flagged — but that can't reach here: the GLOBAL conflict guard in
+// collectAnsiEvidence rejects the same ID tagged `# ansi:`+`# ansi-gap:` anywhere
+// in the corpus (same-file OR cross-file), so a clean ledger never renders an
+// atomic Partial; the cross-feature guard additionally rejects a positive tag
+// coexisting with an undeclared unsupported pin.
 func (r AnsiRow) population() ansiPopulation {
 	if r.Go == SupportUntested {
 		return popUntested

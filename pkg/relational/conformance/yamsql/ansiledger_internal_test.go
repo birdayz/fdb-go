@@ -151,6 +151,11 @@ func TestAnsiCrossFeatureGuard(t *testing.T) {
 	if !containsSubstr(violations, "no `# ansi-gap:`") {
 		t.Fatalf("cross-feature guard did not fire on positive tag + unsupported pin with no gap tag; got %v", violations)
 	}
+	// The cross-feature guard (not the phantom-ID guard) must be the trigger:
+	// F261-04 is a real roster ID, so no "unknown ANSI ID" violation should fire.
+	if containsSubstr(violations, "unknown ANSI ID") {
+		t.Fatalf("unexpected phantom-ID violation — F261-04 should be a valid roster ID; got %v", violations)
+	}
 }
 
 // TestAnsiConflictGuard pins the conflict rule: the same feature ID cannot be
@@ -177,6 +182,43 @@ func TestAnsiConflictGuard(t *testing.T) {
 	}
 	if !containsSubstr(violations, "tagged both") {
 		t.Fatalf("conflict guard did not fire on same-ID pos+gap; got %v", violations)
+	}
+}
+
+// TestAnsiCrossFileConflictGuard pins the GLOBAL conflict guard (audit finding):
+// the same atomic ID tagged `# ansi:` in one scenario and `# ansi-gap:` in
+// ANOTHER must be flagged. The earlier per-file conflict check could not see this
+// (its gapSet was rebuilt per file), so a Go rejection pin in file B could
+// silently render as shared parity for a positive tag in file A. The global pass
+// over the accumulated evidence catches it.
+func TestAnsiCrossFileConflictGuard(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pos := "name: posfile\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT id FROM t WHERE id BETWEEN 1 AND 5\n" +
+		"    rows: [[1]]\n" +
+		"# ansi: E061-02\n"
+	gap := "name: gapfile\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT bad FROM t\n" +
+		"    error_code: \"0A000\"\n" +
+		"# ansi-gap: E061-02\n"
+	for n, body := range map[string]string{"posfile.yaml": pos, "gapfile.yaml": gap} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
+	if err != nil {
+		t.Fatalf("collect ANSI evidence: %v", err)
+	}
+	if !containsSubstr(violations, "tagged both") {
+		t.Fatalf("global conflict guard did not fire on CROSS-FILE pos+gap for E061-02; got %v", violations)
 	}
 }
 

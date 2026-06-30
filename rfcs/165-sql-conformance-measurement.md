@@ -74,7 +74,7 @@ This is the artifact the reviews reshaped most. The fatal first-draft mistake wa
 ### 4.1 What is hand-authored vs derived
 
 - **Hand-authored = pinned facts only:**
-  - The **ISO roster**: `Identifier | Core? | Name`, pinned to **SQL:2023 Core (177 mandatory features)**. Feature IDs/names are facts (not copyrightable; reproduced from PostgreSQL Appendix D, permissive). They don't rot.
+  - The **ISO roster**: `Identifier | Core? | Name`, pinned to **SQL:2023 Core (176 mandatory features per PostgreSQL 18; was 177 in PG13–15 before `F812` lost Core status in PG16)**. Feature IDs/names are facts (not copyrightable; reproduced from PostgreSQL Appendix D, permissive). They don't rot.
   - The **`Java?` column** is a fact about the **frozen 4.12.11.0 reference** — it only changes on a deliberate, tracked Java-pin bump (the `upgrade-versions` skill), never silently. Where the A3 cross-engine lane covers a tagged feature, `Java?` is **derived** from real Java results and the lane catches any mislabel; elsewhere it is a pinned fact cross-checked as A3 coverage grows.
 - **Derived from the corpus (cannot be hand-faked):**
   - **`Go?`** — derived from ANSI-tagged yamsql cases: a feature with a tagged case asserting a **positive** outcome ⇒ `yes`; only `0A000/0AF00/42883` pins ⇒ `no`; mix across subfeatures ⇒ `partial`. This *changes as we implement features*, computed by walking the corpus.
@@ -110,13 +110,13 @@ The first draft labeled **E091 (Set functions)** three different ways. Correct: 
 
 ### 4.6 Headline numbers (never one blended %)
 
-The headline answers "how much does *this engine* (Go) do," so it is keyed on **`Go?` only** — *never* `(Java?=yes ∨ Go?=yes)`, which would count Java-only features as Go-supported (the exact "marketing, not measurement" failure §1 exists to kill). Over the 177 Core denominator the populations **partition by `Go?`**:
+The headline answers "how much does *this engine* (Go) do," so it is keyed on **`Go?` only** — *never* `(Java?=yes ∨ Go?=yes)`, which would count Java-only features as Go-supported (the exact "marketing, not measurement" failure §1 exists to kill). Over the 176 Core denominator the populations **partition by `Go?`**:
 - **Go-supported** = `Go? ∈ {full, partial}` — the headline. Sub-split for context: **shared-parity** (`Java?` supports it too) vs **Go-`ext`** (`Java?=no`).
 - **Not in Go** (`Go?=none`), routed by `Java?`:
   - **Shared gap** (`Java?=none`) → the ANSI roadmap size.
   - **Divergence** (`Java?=yes`) → a whole feature Java has and Go dropped → RFC-164 bug (should trend to 0).
 
-`Go-full + Go-partial + shared-gap + divergence = 177` (every feature in exactly one bucket). A `Go?=partial` feature whose *missing subfeatures* Java does support also flags a **subfeature-level** divergence — surfaced in that row's comment, **not** double-counted in the headline. Report each population separately; never average them. Go-`ext` features also appear in a separate "Optional features beyond Core" table so reach gets credit without distorting the Core picture.
+`Go-supported (shared-parity + ext) + shared-gap + divergence + untested + N/A = 176` (every Core row in exactly one bucket), where **untested** = not-yet-tagged rows pending Phase 1 (unknown, not gaps) and **N/A** = features structurally outside an embedded record-layer SQL surface (cursors, privileges, host-language binding, modules, routines). A `Go?=partial` feature whose *missing subfeatures* Java does support also flags a **subfeature-level** divergence — surfaced in that row's comment, **not** double-counted in the headline. Report each population separately; never average them. Go-`ext` features also appear in a separate "Optional features beyond Core" table so reach gets credit without distorting the Core picture.
 
 ---
 
@@ -137,7 +137,7 @@ The headline answers "how much does *this engine* (Go) do," so it is keyed on **
 ## 6. Phased plan (Phase 0/1 overlap fixed per Graefe)
 
 - **Phase 0 — Ledger B + denominator + retire rot.** `GenerateCoverageReport` over the corpus (measured number today, honestly), the ISO roster denominator + `Java?` facts, the `# ansi:` tag infra and guard, `cmd`/justfile/Bazel wiring + drift guards, retire `SQL_CONFORMANCE.md`'s stale numbers. Ledger A renders with whatever is tagged so far (honest partial).
-- **Phase 1 — tag the corpus + emit honest Ledger A.** Walk the 177 Core rows: tag existing yamsql scenarios with their ANSI IDs; the derived `Go?`/completeness then populate. File `Java?=no,Go?=no` rows as the ANSI read-side backlog in TODO.md (prioritized by Core-ness); file any `Java?=yes,Go?=no` rows as **RFC-164 port-fidelity bugs**. This is the roadmap output.
+- **Phase 1 — tag the corpus + emit honest Ledger A.** Walk the 176 Core rows: tag existing yamsql scenarios with their ANSI IDs; the derived `Go?`/completeness then populate. File `Java?=no,Go?=no` rows as the ANSI read-side backlog in TODO.md (prioritized by Core-ness); file any `Java?=yes,Go?=no` rows as **RFC-164 port-fidelity bugs**. This is the roadmap output.
 
 Each phase ships independently, CI green. (sqllogictest reach driver = RFC-166, Phase 2+, not in this RFC's scope.)
 
@@ -154,7 +154,7 @@ Each phase ships independently, CI green. (sqllogictest reach driver = RFC-166, 
 - **Mislabeled `Java?`** → derived + A3-cross-checked where covered; pinned-fact-with-tracked-bump elsewhere.
 - **Tag drift (scenario repurposed)** → the cited scenario is a live FDB/A3 test; a broken/repurposed case fails there, and the tag-match guard fails statically.
 - **Over-claiming "measured" in Phase 0** → Ledger A is honest-partial until Phase 1 tagging completes; the *measured* number is Ledger B (fully corpus-derived) from day one.
-- **Denominator gaming** → pinned edition (SQL:2023 Core, 177), subfeature-fails-parent, three populations never blended, `ext` in a separate table.
+- **Denominator gaming** → pinned edition (SQL:2023 Core, 176 per PG18), subfeature-fails-parent, populations never blended, `ext` in a separate table.
 
 ## 9. Decision requested
 
