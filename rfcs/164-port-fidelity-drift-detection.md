@@ -120,11 +120,25 @@ fuzz target). **Hard acceptance for every invariant below:** the pass runs clean
 the ENTIRE existing plan-test + conformance corpus with **zero runtime skip-lists**; any
 unavoidable exemption must be a *compile-time* type distinction (a structurally-optional
 slot), never a runtime mute — otherwise the first false positive hollows the check out.
-- [ ] **No `<nil>` child in the FINAL extracted plan.** Walk the fully-relinked root
-  *post-extraction* only — explicitly **not** memo members, where a nil inner is the
-  legitimate pre-relink snapshot (the RFC-070 / IN-LIMIT pattern). Catches IN-LIMIT and
-  every future per-wrapper relink bug across all ~20 wrappers at once. Highest-ROI single
-  check; land it first.
+- [x] **No `<nil>` child in the FINAL extracted plan.** LANDED: `ValidatePlanInvariants`
+  walks the materialized plan tree (`physPlan`), flagging any non-leaf node with zero
+  children — a nil inner that `GetChildren()` masks as childless (the IN-LIMIT shape).
+  It walks the *plan* tree, not the expression tree, because the malformed node is an
+  eagerly-embedded plan snapshot with no live expression member. Genuine leaves (the 10
+  scan-/value-producing plan types) are exempted via a compile-time type set (WS-3's
+  visitor would make this exhaustive). Two detectors: empty-children (catches a unary
+  inner-drop AND a zero-leg n-ary set op — the n-ary analog, a true positive since the
+  planner never emits a legitimate 0-leg set op) + nil-in-slice (fixed-arity
+  join/recursive drop). Empirically confirmed: removing nothing, the full embedded +
+  sqldriver + fuzz suites stay green, so no legitimate childless non-leaf exists. Wired ALWAYS-ON into the
+  `PlanQueryForTest` family AND the PRODUCTION generator (SELECT / scalar-subquery / DML
+  extraction in cascades_generator.go) — so a dropped child fails loudly in production,
+  not only tests; runs clean across the entire embedded + full sqldriver corpus with ZERO
+  skip-lists; mutation-proven (revert the IN-LIMIT relink fix → `non-leaf plan
+  *RecordQueryFetchFromPartialRecordPlan has no children ... Fetch(<nil>)`); pinned by
+  `TestValidatePlanInvariants_NilInnerChild` + `TestPlanInvariants_ChildlessClassification`
+  + `FuzzPlanner_Invariants` (1M+ execs, 0 failures). Catches every future per-wrapper
+  relink bug across all ~20 wrappers at once.
 - [ ] **`WithChildren(GetQuantifiers())` round-trip identity.** Re-linking a node with its
   own quantifiers must reproduce the node — by **semantic** equality
   (`EqualsWithoutChildren` + same children), NOT pointer identity, so a node that

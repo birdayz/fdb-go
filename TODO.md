@@ -70,7 +70,9 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 > every found bug gets a committed minimized seed. Owner: query-engine cycle per WS.
 > - **[ ] WS-2 — Structural plan invariants** (highest ROI; always-on, Go-only CI). Each must run clean across
 >   the WHOLE existing corpus with ZERO runtime skip-lists (exemptions only as compile-time optional slots).
->   - [ ] no `<nil>` child in the FINAL extracted plan (NOT memo members) — kills the ~20-wrapper relink class (IN-LIMIT). Land first.
+>   - [x] no `<nil>` child in the FINAL extracted plan — LANDED (`ValidatePlanInvariants`, plan-tree walk via
+>     genuine-leaf classification; always-on in `PlanQueryForTest`; corpus-clean zero-skip-list; mutation-proven
+>     vs IN-LIMIT; `FuzzPlanner_Invariants` 1M+ execs). Kills the ~20-wrapper relink class.
 >   - [ ] `WithChildren(GetQuantifiers())` round-trip identity — most direct relink-class catch.
 >   - [ ] correlation/quantifier-binding completeness (no dangling correlation).
 >   - [ ] set-op comparison-key correctness; result-type/schema consistency; COVERING⊇referenced-fields (→ COUNT-COL).
