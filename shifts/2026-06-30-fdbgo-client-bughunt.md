@@ -209,7 +209,18 @@ tests were green in CI).
   assert 2018; revert-prove by removing the re-check). **FOLLOW-UP: write that fault test** — the fix
   is landed + commented, this pins it against a future snapshot refactor dropping the re-check.
 
-**Codex caught 7 real issues across 4 review rounds the persona reviewers missed** — critical-gate
+**Round 11 — codex's 4th `--supersede` re-review found one more** (P2), fixed red→green:
+- **Watch cap charged in the async poll (readpath.go):** `tryAcquireWatch` ran inside the async
+  `WatchPoll` goroutine, so two `Watch()` calls under `MAX_WATCHES=1` raced — the first-registered
+  watch could lose the slot to the second. C++ `Transaction::watch` charges `increaseWatchCounter`
+  SYNCHRONOUSLY at watch() time (NativeAPI:5694), releasing via `decreaseWatchCounter` in the async
+  actor (catch on setup error :5679, completion :5683). Moved the acquire to `WatchSetup` (sync,
+  registration order, after the malformed-key rejects); release on a post-acquire setup error there
+  (matching the C++ catch) and in `WatchPoll`'s defer on the success path (eager future → always
+  runs). Pin: `TestWatchSetup_ChargesSlotAtRegistrationOrder` (second setup → 1032 deterministically
+  — only satisfiable if WatchSetup charges; pre-fix it returned nil).
+
+**Codex caught 8 real issues across 5 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

@@ -4,9 +4,48 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
+
+// TestWatchSetup_ChargesSlotAtRegistrationOrder pins that the outstanding-watch cap is charged
+// SYNCHRONOUSLY in WatchSetup (registration order), matching C++ Transaction::watch's
+// increaseWatchCounter at watch() time (NativeAPI.actor.cpp:5694) — NOT in the async WatchPoll
+// goroutine. Charging it in the async poll let two Watch() calls under MAX_WATCHES=1 race for the
+// slot, so the first-registered watch could lose to the second (codex). Revert-proof: with the
+// charge back in WatchPoll, the second WatchSetup below returns nil instead of too_many_watches.
+func TestWatchSetup_ChargesSlotAtRegistrationOrder(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	if err := db.SetMaxWatches(1); err != nil { // cap = 1
+		t.Fatalf("SetMaxWatches(1): %v", err)
+	}
+
+	// First WatchSetup takes the only slot synchronously, before any async poll.
+	tx1 := db.CreateTransaction()
+	if _, _, _, _, err := tx1.WatchSetup(ctx, []byte(t.Name()+"_k1")); err != nil {
+		t.Fatalf("first WatchSetup must get the only slot, got %v", err)
+	}
+
+	// Second WatchSetup (next in registration order) must fail with too_many_watches (1032) — at
+	// SETUP, not later in the poll. This is the deterministic, registration-ordered behavior.
+	tx2 := db.CreateTransaction()
+	if _, _, _, _, err := tx2.WatchSetup(ctx, []byte(t.Name()+"_k2")); fdbCodeOf(err) != ErrTooManyWatches {
+		t.Fatalf("second WatchSetup must be too_many_watches (1032) at registration, got %v", err)
+	}
+
+	// Releasing the first slot (as WatchPoll does on completion) frees it for the next registration.
+	db.db.releaseWatch()
+	tx3 := db.CreateTransaction()
+	if _, _, _, _, err := tx3.WatchSetup(ctx, []byte(t.Name()+"_k3")); err != nil {
+		t.Fatalf("after release a slot is free; third WatchSetup must succeed, got %v", err)
+	}
+	db.db.releaseWatch() // free the slot tx3 took (no WatchPoll runs in this test)
+}
 
 // TestWatchSetup_RejectsSystemAndOversizedKeys pins the eager legal-range + key-size validation
 // C++ RYW watch performs before registering (ReadYourWrites.actor.cpp:2450-2456). A normal

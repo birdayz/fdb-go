@@ -1085,7 +1085,19 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
 	}
 
+	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++
+	// Transaction::watch, which calls increaseWatchCounter at watch() time (NativeAPI.actor.cpp:5694),
+	// NOT in the async poll. Charging it inside the async WatchPoll goroutine let two Watch() calls
+	// under MAX_WATCHES=1 race for the slot, so the first-registered watch could lose to the second
+	// (codex). Released by WatchPoll on the success path, or on a setup error below (matching C++'s
+	// catch → decreaseWatchCounter, NativeAPI:5679). Charged AFTER the malformed-key rejections above
+	// so an illegal/oversized-key watch never holds a slot.
+	if err := tx.db.tryAcquireWatch(); err != nil {
+		return nil, 0, types.SpanContext{}, nil, err // too_many_watches (1032)
+	}
+
 	if err := tx.ensureReadVersion(ctx); err != nil {
+		tx.db.releaseWatch()
 		return nil, 0, types.SpanContext{}, nil, err
 	}
 	tx.readVersionMu.Lock()
@@ -1112,6 +1124,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// watch errors are deliberately excluded).
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
 	if err != nil {
+		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
 		return value, readVersion, span, nil, err
 	}
 	// Capture the watch context SYNCHRONOUSLY — same reason as readVersion/span above. The async
@@ -1139,13 +1152,10 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, key, value []byte, re
 	// is likewise captured synchronously by WatchSetup (re-reading tx.spanContext here would race a
 	// concurrent commit/reset's regenerateSpan, RFC-115 §4).
 
-	// Outstanding-watch cap (C++ increaseWatchCounter, NativeAPI.actor.cpp:5694/2175): reserve a
-	// slot before polling; over the cap surfaces too_many_watches (1032) via this watch's future,
-	// released on every exit path (fire / error / cancel). tx.db is always set on a WatchPoll (the
-	// locate/sendWatch below dereference it unconditionally), so no nil guard.
-	if err := tx.db.tryAcquireWatch(); err != nil {
-		return err // too_many_watches (1032); not acquired, so no release
-	}
+	// The outstanding-watch slot was reserved SYNCHRONOUSLY in WatchSetup (registration order, C++
+	// increaseWatchCounter at watch() time). Release it on EVERY exit path of this poll — fire /
+	// error / cancel — matching C++ decreaseWatchCounter in the async watch actor (NativeAPI:5679).
+	// tx.db is always set on a WatchPoll (the locate/sendWatch below dereference it), so no nil guard.
 	defer tx.db.releaseWatch()
 
 	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
