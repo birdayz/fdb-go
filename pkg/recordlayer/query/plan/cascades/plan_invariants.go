@@ -40,7 +40,7 @@ func validatePlanNode(plan plans.RecordQueryPlan, seen map[plans.RecordQueryPlan
 	seen[plan] = struct{}{}
 
 	children := plan.GetChildren()
-	if len(children) == 0 && !childlessAllowed(plan) {
+	if len(children) == 0 && !isGenuineLeafPlan(plan) {
 		// %T (not Explain) — Explain on a malformed plan can itself panic (some
 		// impls dereference a nil inner), and the type pinpoints the node.
 		return fmt.Errorf("plan-invariant: non-leaf plan %T has no children — a relink dropped its inner (a nil child masked by GetChildren)", plan)
@@ -54,11 +54,6 @@ func validatePlanNode(plan plans.RecordQueryPlan, seen map[plans.RecordQueryPlan
 		}
 	}
 	return nil
-}
-
-// childlessAllowed reports whether plan may legitimately have zero children.
-func childlessAllowed(plan plans.RecordQueryPlan) bool {
-	return isGenuineLeafPlan(plan) || isNArySetOpPlan(plan)
 }
 
 // isGenuineLeafPlan reports whether plan is a scan-/value-producing leaf that
@@ -89,23 +84,12 @@ func isGenuineLeafPlan(plan plans.RecordQueryPlan) bool {
 	return false
 }
 
-// isNArySetOpPlan reports whether plan is an n-ary set operation. These hold
-// their legs in a slice, so a leg drop shows as a nil ELEMENT (caught by the
-// per-child check), not as zero children. A genuinely EMPTY (zero-leg) set op is
-// exempted from the empty-children check: the planner never emits one (a 1-leg
-// set op is simplified to its leg, never to a 0-leg shell — Graefe), and the
-// executor returns an empty cursor for zero inputs anyway (codex), so flagging it
-// would risk a production false positive for no real coverage.
-func isNArySetOpPlan(plan plans.RecordQueryPlan) bool {
-	switch plan.(type) {
-	case *plans.RecordQueryUnionPlan,
-		*plans.RecordQueryUnorderedUnionPlan,
-		*plans.RecordQueryIntersectionPlan,
-		*plans.RecordQueryMergeSortUnionPlan,
-		*plans.RecordQueryMultiIntersectionOnValuesPlan,
-		*plans.RecordQuerySelectorPlan,
-		*plans.RecordQueryComparatorPlan:
-		return true
-	}
-	return false
-}
+// NOTE: n-ary set ops (Union/Intersection/MergeSortUnion/MultiIntersection/…)
+// are deliberately NOT exempted. A dropped leg most often shows as a nil ELEMENT
+// (caught by the per-child check), but a relink that empties the whole leg slice
+// yields zero children — and that is a TRUE positive, the n-ary analog of the
+// IN-LIMIT unary inner-drop. The planner never emits a legitimate 0-leg set op
+// (a 1-leg op is simplified to its leg), so flagging it cannot false-positive;
+// and several set-op wrappers (e.g. physicalMergeSortUnionWrapper.WithChildren)
+// ride entirely on a build-time plan snapshot, so the empty-children check is the
+// ONLY net for a zero-length leg slice there.

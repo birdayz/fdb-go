@@ -126,9 +126,11 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   It walks the *plan* tree, not the expression tree, because the malformed node is an
   eagerly-embedded plan snapshot with no live expression member. Genuine leaves (the 10
   scan-/value-producing plan types) are exempted via a compile-time type set (WS-3's
-  visitor would make this exhaustive); empty n-ary set ops are also exempted (never
-  emitted in practice, executor-tolerated). Two detectors: empty-children (unary
-  inner-drop) + nil-in-slice (fixed-arity join/recursive drop). Wired ALWAYS-ON into the
+  visitor would make this exhaustive). Two detectors: empty-children (catches a unary
+  inner-drop AND a zero-leg n-ary set op — the n-ary analog, a true positive since the
+  planner never emits a legitimate 0-leg set op) + nil-in-slice (fixed-arity
+  join/recursive drop). Empirically confirmed: removing nothing, the full embedded +
+  sqldriver + fuzz suites stay green, so no legitimate childless non-leaf exists. Wired ALWAYS-ON into the
   `PlanQueryForTest` family AND the PRODUCTION generator (SELECT / scalar-subquery / DML
   extraction in cascades_generator.go) — so a dropped child fails loudly in production,
   not only tests; runs clean across the entire embedded + full sqldriver corpus with ZERO

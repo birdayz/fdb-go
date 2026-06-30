@@ -44,18 +44,20 @@ func TestValidatePlanInvariants_NilInnerChild(t *testing.T) {
 func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 	t.Parallel()
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	// Genuine leaves and empty n-ary set ops legitimately have zero children.
-	for _, p := range []plans.RecordQueryPlan{
-		scan,
-		plans.NewRecordQueryUnionPlan(nil), // empty set-op — exempted (codex/Graefe)
-	} {
-		if err := ValidatePlanInvariants(p); err != nil {
-			t.Errorf("%T must be allowed childless: %v", p, err)
-		}
+	// Genuine leaves legitimately have zero children.
+	if err := ValidatePlanInvariants(scan); err != nil {
+		t.Errorf("genuine leaf %T must be allowed childless: %v", scan, err)
 	}
-	// A unary operator must NOT be childless.
-	if err := ValidatePlanInvariants(plans.NewRecordQueryLimitPlan(nil, 1, 0)); err == nil {
-		t.Error("a childless unary operator (Limit) must be rejected")
+	// Childless NON-leaf operators must be rejected — both a unary inner-drop and
+	// a zero-leg n-ary set op (the n-ary analog: degenerate, never legitimately
+	// emitted, so flagging it is a true positive, not a false one).
+	for _, p := range []plans.RecordQueryPlan{
+		plans.NewRecordQueryLimitPlan(nil, 1, 0),
+		plans.NewRecordQueryUnionPlan(nil),
+	} {
+		if err := ValidatePlanInvariants(p); err == nil {
+			t.Errorf("childless non-leaf %T must be rejected", p)
+		}
 	}
 }
 
