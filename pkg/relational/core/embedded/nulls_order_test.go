@@ -52,4 +52,28 @@ CREATE INDEX idx_ab ON T(a, b)`
 			}
 		})
 	}
+
+	// Multi-key: a non-natural NULL placement on ANY key (here the trailing b)
+	// must retain the sort, while an all-natural multi-key request still elides.
+	// Exercises the per-part null-placement check in rich_ordering.Satisfies.
+	t.Run("multikey_trailing_nulls_last_retained", func(t *testing.T) {
+		plan, err := PlanQueryForTest("SELECT id FROM t ORDER BY a, b ASC NULLS LAST", schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "InMemorySort") {
+			t.Errorf("multi-key with trailing NULLS LAST must retain the sort, got: %s", plan)
+		}
+	})
+	t.Run("multikey_all_natural_elided", func(t *testing.T) {
+		plan, err := PlanQueryForTest("SELECT id FROM t ORDER BY a, b", schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Errorf("all-natural multi-key should be satisfied by the index (no InMemorySort), got: %s", plan)
+		}
+	})
 }

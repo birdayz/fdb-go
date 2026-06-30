@@ -47,8 +47,9 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   (`AscendingNullsLast`/`DescendingNullsFirst`), populated it from `SortKey.NullsFirst`, and made
 >   `IsCompatibleWithRequestedSortOrder` + data-access `SatisfiesRequestedOrdering` null-aware (+ direction
 >   sites use `IsAscending()`/`IsDescending()`). `ORDER BY b ASC NULLS LAST` now retains the InMemorySort.
->   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan) + `TestFDB_OrderByNullsLast` (rows). 7-dim
->   adversarial verification clean; full embedded + sqldriver green.
+>   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
+>   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
+>   review sweep (not committed regressions) found nothing.
 > - **[ ] PLAN-NONDETERMINISM (medium, flaky plans / cache churn).** `expressions/reference.go`
 >   `GetPartialMatchCandidates`/`GetAllPartialMatches` range over a Go map; equal-cost index ties (and the
 >   `GetBest` first-wins NLJ join-order tie) resolve by map-iteration order → 2–3 distinct plans across 200 runs

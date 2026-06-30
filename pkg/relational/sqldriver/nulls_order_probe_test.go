@@ -58,6 +58,22 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 	if got := order("SELECT id FROM t WHERE a = 5 ORDER BY b"); !eqIDs(got, []int64{1, 2, 3}) {
 		t.Errorf("ORDER BY b (NULLS FIRST): got %v, want [1 2 3]", got)
 	}
+	// DESC NULLS FIRST → NULL, 20, 10 → ids 1, 3, 2 (the other non-natural direction).
+	if got := order("SELECT id FROM t WHERE a = 5 ORDER BY b DESC NULLS FIRST"); !eqIDs(got, []int64{1, 3, 2}) {
+		t.Errorf("ORDER BY b DESC NULLS FIRST: got %v, want [1 3 2] (NULL row id=1 must be first)", got)
+	}
+	// DESC default (NULLS LAST) → 20, 10, NULL → ids 3, 2, 1.
+	if got := order("SELECT id FROM t WHERE a = 5 ORDER BY b DESC"); !eqIDs(got, []int64{3, 2, 1}) {
+		t.Errorf("ORDER BY b DESC (NULLS LAST): got %v, want [3 2 1]", got)
+	}
+
+	// Multi-key with a non-natural NULL placement on the trailing key. With a=5
+	// duplicated across c, the leading key is natural and the trailing key b is
+	// ASC NULLS LAST. Rows (id,a,b): the NULL-b row must sort last within its a.
+	multi := order("SELECT id FROM t WHERE a = 5 ORDER BY a, b ASC NULLS LAST")
+	if !eqIDs(multi, []int64{2, 3, 1}) {
+		t.Errorf("ORDER BY a, b ASC NULLS LAST: got %v, want [2 3 1] (NULL b last)", multi)
+	}
 }
 
 func eqIDs(a, b []int64) bool {

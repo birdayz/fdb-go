@@ -218,11 +218,15 @@ by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs do
   `IsCompatibleWithRequestedSortOrder` and the data-access `SatisfiesRequestedOrdering` now
   require NULL placement to match, and the direction-reading sites use `IsAscending()`/
   `IsDescending()`. An explicit non-natural `ORDER BY x NULLS LAST/FIRST` now RETAINS the
-  InMemorySort instead of being elided against an opposite-null-placement index. Pinned by
-  `TestNullsOrder_ExplicitPlacementRetainsSort` (plan) + `TestFDB_OrderByNullsLast` (rows
-  come back NULL-last). Surgical: natural placements still elide; full embedded + sqldriver
-  green; a 7-dimension adversarial verification (multi-key mixed NULLS, IN-join, set-ops,
-  GROUP BY, reverse-scan, over-fix regression, completeness audit) found nothing.
+  InMemorySort instead of being elided against an opposite-null-placement index. Surgical:
+  natural placements still elide. **Committed regressions:** `TestNullsOrder_ExplicitPlacementRetainsSort`
+  (plan: single- AND multi-key non-natural placements retain; natural placements elide) +
+  `TestFDB_OrderByNullsLast` (rows for BOTH non-natural directions — ASC NULLS LAST → NULL
+  last, DESC NULLS FIRST → NULL first — plus a multi-key case). Full embedded + sqldriver
+  green. Additionally, an *ad-hoc adversarial review sweep* (ephemeral agents over multi-key,
+  IN-join, set-ops, GROUP BY, reverse-scan, over-fix, and a completeness audit of every
+  RequestedSortOrder branch site) surfaced no defect — that was a review activity, not
+  committed regressions; the committed pins above are what guard the fix.
 - **COST-SELECTIVITY** and **NONDETERMINISM** are perf/stability (same rows) → ride WS-4
   (pin-then-fix): land the monotonicity invariant / the deterministic-tie seed, then flip
   the constants / make candidate iteration deterministic.

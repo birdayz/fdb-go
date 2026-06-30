@@ -6,6 +6,18 @@ import (
 
 // RequestedSortOrder specifies the desired sort direction for one
 // ordering part. Mirrors Java's OrderingPart.RequestedSortOrder.
+//
+// Cross-enum NULL-variant asymmetry (intentional, faithful to Java): the three
+// sort-order enums each carry only the TWO null variants they need, and the
+// "extra two" are mirror-flips of each other —
+//   - RequestedSortOrder / MatchedSortOrder carry the NON-natural explicit
+//     variants: AscendingNullsLast, DescendingNullsFirst.
+//   - ProvidedSortOrder (ordering_part.go) carries the NATURAL-explicit pair:
+//     AscendingNullsFirst, DescendingNullsLast.
+//
+// So a provided AscendingNullsFirst mapping to nullsFirst()==true is correct, not
+// a bug; the requested side only ever names a placement when it differs from the
+// natural one (a plain Ascending already means ASC NULLS FIRST).
 type RequestedSortOrder int
 
 const (
