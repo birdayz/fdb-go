@@ -1110,16 +1110,21 @@ together + Graefe IMPL review. Then flip the `indexable_types_probe` transitiona
 round-trip + add the INL-join-key + MIN/MAX-ever + UUID-PK regressions. Until then, a UUID index must NOT
 be queried by `WHERE v='…'`.
 
-**OPEN ARCHITECTURAL QUESTION FOR GRAEFE (decide before implementing B):** what representation does a
-UUID flow as *inside the Cascades value layer*? The `values` package currently imports no `tuple`, so
-making `PromoteValue.Evaluate` / `protoFieldToGo` produce a `fdbgo/fdb/tuple.UUID` would couple the
-abstract value layer to the FDB WIRE type — the same layering concern Graefe raised for
-`IndexEntryObjectValue` (keep it a pure ordinal extractor). Options: (a) values carry `tuple.UUID`
-directly (simplest, but couples values→wire); (b) values carry a neutral `[16]byte`/`uuid.UUID` and the
-`tuple.UUID` conversion happens only at the scan-range packing (`scanComparisonsToTupleRange`) + the
-index-entry write (already in `recordlayer`, which legitimately knows `tuple`). (b) keeps the value layer
-wire-agnostic and is probably what Graefe wants — but it's his call. This decision drives A and B's
-concrete types. Original design notes below.
+**ARCHITECTURE RESOLVED — Graefe DECISION: (b).** A UUID flows as a neutral `[16]byte` inside the
+Cascades value layer (`values` stays wire-agnostic — NO `tuple` import there). The `tuple.UUID`
+conversion lives ONLY at the wire boundaries that already import `tuple`: the scan-range packing
+(`scanComparisonsToTupleRange`, executor) and the index-entry write (`scalarToInterface`, recordlayer —
+already landed). Rationale: matches the `IndexEntryObjectValue` no-wire-coupling precedent + Java's
+neutral `java.util.UUID`; `[16]byte` and `tuple.UUID` compare identically (unsigned big-endian) in
+`cmpAny`, so zero semantic cost. CONCRETE TYPES this fixes:
+- A: `protoFieldToGo` UUID field → `[16]byte` (parse from the msb/lsb message; reuse the msb‖lsb layout).
+- B2: `PromoteValue.Evaluate` (values.go:2380) String→`[16]byte` via `uuid.Parse` (google/uuid is a
+  NEUTRAL lib — allowed in values; only `fdbgo/fdb/tuple` is the banned wire dep).
+- Executor scan-range packing: when the equality comparand evaluates to a `[16]byte`, append
+  `tuple.UUID(that)` to the probe tuple (the [16]byte→tuple.UUID conversion at the wire boundary).
+- C: `paginatingRows` materialization (cascades_generator.go ~:1618) `[16]byte` → canonical string.
+- `cmpAny`: ensure `[16]byte == [16]byte` (filter path) — likely already byte-compares; verify.
+Original design notes below.
 
 **DESIGN READY — see RFC-162.** Prototyped end-to-end and PROVED the
 approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
