@@ -52,6 +52,12 @@ generate-frl: ensure-buf
 feature-matrix:
     go run ./cmd/gen-feature-matrix
 
+# Regenerate the RFC-165 SQL conformance ledgers (SQL_COVERAGE.md, and later
+# SQL_ANSI_CONFORMANCE.md) from the yamsql corpus. The TestSQLCoverageUpToDate /
+# TestAnsiLedger* guards fail the build if this is not run after corpus changes.
+sql-coverage:
+    go run ./cmd/gen-sql-coverage
+
 # Regenerate gomock mocks for api.* interfaces. Cleans mocks_*.go
 # first so removed interfaces / renamed files don't leave stale
 # mocks behind. Same-package output so tests elsewhere write

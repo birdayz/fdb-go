@@ -117,7 +117,7 @@ func teardown(ctx context.Context, db *sql.DB, dbPath, schema, tmpl string) {
 }
 
 func runTest(ctx context.Context, db *sql.DB, t *Test) string {
-	if t.ErrorCode != "" {
+	if t.EffectiveErrorCode() != "" {
 		return runErrorTest(ctx, db, t)
 	}
 	// Non-query statements (UPDATE/DELETE/INSERT) go through Exec and
@@ -186,7 +186,7 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 			_, err = scanAll(rows)
 			rows.Close()
 			if err == nil {
-				return fmt.Sprintf("expected error %s, got nil", t.ErrorCode)
+				return fmt.Sprintf("expected error %s, got nil", t.EffectiveErrorCode())
 			}
 		} else {
 			err = qerr
@@ -194,15 +194,15 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 	} else {
 		_, err = db.ExecContext(ctx, t.Query)
 		if err == nil {
-			return fmt.Sprintf("expected error %s, got nil", t.ErrorCode)
+			return fmt.Sprintf("expected error %s, got nil", t.EffectiveErrorCode())
 		}
 	}
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) {
-		return fmt.Sprintf("expected *api.Error with code %s, got %T: %v", t.ErrorCode, err, err)
+		return fmt.Sprintf("expected *api.Error with code %s, got %T: %v", t.EffectiveErrorCode(), err, err)
 	}
 	gotCode := strings.TrimSpace(string(apiErr.Code))
-	wantCode := strings.TrimSpace(t.ErrorCode)
+	wantCode := strings.TrimSpace(t.EffectiveErrorCode())
 	if gotCode != wantCode {
 		return fmt.Sprintf("expected error code %q, got %q (msg: %s)", wantCode, gotCode, apiErr.Message)
 	}

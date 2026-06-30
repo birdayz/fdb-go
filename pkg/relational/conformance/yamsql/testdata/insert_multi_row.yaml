@@ -35,3 +35,6 @@ tests:
       - [2, "Bob"]
       - [3, "Charlie"]
       - [4, "Dave"]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E101-01

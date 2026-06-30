@@ -38,3 +38,6 @@ tests:
   - query: SELECT COUNT(*) FROM t WHERE score = 0
     rows:
       - [0]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E101-03

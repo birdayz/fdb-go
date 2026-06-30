@@ -48,6 +48,12 @@ type Test struct {
 	// ErrorCode, if set, asserts that the query fails with an api.Error
 	// whose Code matches. When non-empty, Rows is ignored.
 	ErrorCode string `yaml:"error_code"`
+	// Error is the legacy alias for ErrorCode used by the Java-derived
+	// `*_java.yaml` scenarios (`error: "<SQLSTATE>"`). Same SQLSTATE format;
+	// EffectiveErrorCode unifies the two so the runner and the coverage
+	// classifier treat both key forms identically. Without this, an `error:`
+	// pin leaves ErrorCode empty and is mis-classified as a positive result.
+	Error string `yaml:"error"`
 	// PlanContains, if set, runs EXPLAIN on the query and asserts that
 	// the plan output contains this substring. Useful for verifying
 	// index scan, covering, sort elimination, etc.
@@ -55,6 +61,17 @@ type Test struct {
 	// PlanNotContains, if set, asserts the plan does NOT contain this
 	// substring. Useful for negative assertions (no InMemorySort, no Fetch).
 	PlanNotContains string `yaml:"plan_not_contains"`
+}
+
+// EffectiveErrorCode returns the asserted error SQLSTATE, preferring the modern
+// `error_code:` key and falling back to the legacy Java `error:` alias. Both the
+// runner and the coverage classifier MUST go through this so an `error:` pin is
+// never silently treated as a passing result.
+func (t Test) EffectiveErrorCode() string {
+	if t.ErrorCode != "" {
+		return t.ErrorCode
+	}
+	return t.Error
 }
 
 // Load parses a scenario from a YAML file.

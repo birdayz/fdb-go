@@ -38,3 +38,6 @@ tests:
     rows:
       - ["non-null", 2, 2, 1]
       - ["null", 2, 0, 1]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E091-02

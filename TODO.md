@@ -2577,3 +2577,37 @@ Open work (detail + file:line in the RFC):
   a cadence (today they're library entry points a deployment must wire).
 - **SQL nice-to-haves:** yamsql vector port, `ef_search` FDB behavioral test,
   OR-of-two-KNN execution test, window-in-`WHERE` `42F21` rejection.
+
+## RFC-165 — ANSI SQL Core conformance backlog (read-side reach beyond the Java port)
+
+Generated scorecard: `SQL_ANSI_CONFORMANCE.md` (Ledger A) tracks SQL:2023 Core (176 features per
+PostgreSQL 18). `Go?` is derived from `# ansi:` corpus tags — never hand-typed. The **shared-gap**
+rows (Java and Go both lack the feature) are this backlog; each is a wire-safe **read-side**
+extension and ships under the full query-engine gate (Graefe + deep coverage). The **divergence**
+rows (Java has it, Go rejects it) are RFC-164 port-fidelity bugs, not this list.
+
+Shared ANSI gaps surfaced so far (extend by tagging more corpus + completing the roster, Phase 1):
+- [ ] **E091-07 `COUNT(DISTINCT)` / DISTINCT quantifier** — rejected 0A000 in both engines. The
+      single highest-value Core gap. (Pinned today as `# ansi-gap: E091-07` on `count_distinct.yaml`.)
+- [ ] **E071-01 / E071-03 `UNION DISTINCT` / `EXCEPT DISTINCT`** — only `UNION ALL` works (E071-02).
+      No Cascades dedup rule. (`# ansi-gap: E071-01` on `union.yaml`.)
+- [ ] **E061-11 subqueries in `IN` predicate** — rejected 0AF00 in both. (`# ansi-gap: E061-11` on `subquery_in.yaml`.)
+- [ ] **E021-04/05/06/08/09/11 string functions** (`CHARACTER_LENGTH`, `OCTET_LENGTH`, `SUBSTRING`,
+      `UPPER`/`LOWER`, `TRIM`, `POSITION`) + **E021-07** string concatenation — no function-catalog
+      entry in either engine (42883). A whole Core subfeature family.
+- [ ] **E011-03 `DECIMAL`/`NUMERIC`** — no exact-decimal type; BIGINT division truncates.
+- [ ] **E141-04/06/07 `FOREIGN KEY` / `CHECK` / column defaults** — only NOT NULL/UNIQUE/PK today.
+
+**Phase 1 (continuing): tag the rest of the corpus.** Each `# ansi:`/`# ansi-gap:` tag on a yamsql
+scenario moves a row from `untested` to a real status. The drift guard
+(`TestAnsiLedgerEvidenceExists`) rejects a tag whose scenario lacks the matching outcome, so the
+scoreboard can't lie. As Go closes a gap, flip happens automatically when the new feature's scenario
+is tagged — never by hand-editing the doc.
+
+**RFC-165 follow-ups (tracked, non-blocking):**
+- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+      `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
+      SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
+      but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
+      conformance server so the fact becomes *verified*, not asserted, and flag any mismatch. Per
+      Torvalds + Graefe review of PR #400.

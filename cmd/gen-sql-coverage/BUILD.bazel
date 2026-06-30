@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "gen-sql-coverage_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/gen-sql-coverage",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/relational/conformance/yamsql"],
+)
+
+go_binary(
+    name = "gen-sql-coverage",
+    embed = [":gen-sql-coverage_lib"],
+    visibility = ["//visibility:public"],
+)

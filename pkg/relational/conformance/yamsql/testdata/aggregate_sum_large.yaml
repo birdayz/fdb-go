@@ -21,3 +21,6 @@ tests:
     rows:
       - ["first", 3000000000]
       - ["second", 7000000000]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E091-05

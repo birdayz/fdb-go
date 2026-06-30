@@ -11,7 +11,7 @@ yamsql conformance corpus — one row per scenario, generated directly from the 
 it never drifts. For the curated high-level summary see the SQL section of `README.md`;
 for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.md`.
 
-**319 scenarios · 2512 query/assertion cases** across 18 feature areas.
+**319 scenarios · 2513 query/assertion cases** across 18 feature areas.
 
 | Feature area | Scenarios | Cases |
 |---|--:|--:|
@@ -22,7 +22,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | Set operations (UNION / INTERSECT / EXCEPT) | 8 | 47 |
 | DML (INSERT / UPDATE / DELETE) | 25 | 194 |
 | Ordering & pagination | 13 | 114 |
-| Scalar functions & expressions | 32 | 346 |
+| Scalar functions & expressions | 32 | 347 |
 | Predicates & WHERE | 12 | 104 |
 | Column resolution & aliasing | 6 | 55 |
 | NULL handling | 5 | 26 |
@@ -285,7 +285,7 @@ for known gaps, Go-only extensions, and Java-divergence detail see `DIVERGENCES.
 | `arithmetic` | 22 | swingshift-35 commit ad249d55: applyMathOp and applyArithmeticOp |
 | `bitwise` | 7 | Bitwise operators: &, \|, ^, <<, >>. |
 | `case_insensitive_keywords` | 9 | SQL standard says keywords are case-insensitive. |
-| `case_when` | 10 | CASE WHEN ... |
+| `case_when` | 11 | CASE WHEN ... |
 | `case_when_in_java` | 5 | CASE WHEN with IN predicate from Java's |
 | `cast` | 16 | swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance. |
 | `cast_scalar_java` | 11 | Scalar CAST patterns from Java's cast-tests.yamsql. |

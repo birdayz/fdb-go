@@ -24,3 +24,6 @@ tests:
   - query: SELECT AVG(v) FROM t WHERE v > 100
     rows:
       - [~]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E091-01

@@ -29,3 +29,6 @@ tests:
   - query: SELECT * FROM t
     rows:
       - [10, "new"]
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: E101-04

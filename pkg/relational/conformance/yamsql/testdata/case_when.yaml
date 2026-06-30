@@ -116,3 +116,22 @@ tests:
       - [2, 16]
       - [3, 0]
       - [4, 31]
+  # SIMPLE CASE (`CASE <expr> WHEN <value>`) — distinct from the searched
+  # form above; this is the F261-01 evidence. NULL never matches a WHEN
+  # (NULL = 5 is UNKNOWN), so the null row falls to ELSE. Go evaluates
+  # simple CASE correctly (validated by sqldriver/case_types_probe_test.go);
+  # Java's visitCaseExpressionFunctionCall is a no-op that falls through to
+  # ELSE (the case_simple_int_match divergence) — hence F261-01 is a Go-only
+  # extension.
+  - query: |-
+      SELECT id, CASE v WHEN 5 THEN 'five' WHEN 15 THEN 'fifteen' ELSE 'other' END
+      FROM t ORDER BY id
+    rows:
+      - [1, 'five']
+      - [2, 'fifteen']
+      - [3, 'other']
+      - [4, 'other']
+
+# ANSI conformance tags (RFC-165 Ledger A):
+# ansi: F261-01
+# ansi: F261-02
