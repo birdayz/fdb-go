@@ -82,41 +82,33 @@ func (s MatchedSortOrder) ArrowIndicator() string {
 // The mapping is by direction (Java's Direction enum), not by Go
 // constant name. Both enums use the same iota ordering that maps to
 // the same underlying Direction values.
-//
-// LANDMINE (RFC-164 §5, currently DEAD code): the non-natural inputs
-// (MatchedSortOrderAscendingNullsLast / DescendingNullsFirst) are mapped to the
-// NATURAL provided variants (…NullsFirst / …NullsLast), i.e. NULL placement is
-// silently FLIPPED — because Go's ProvidedSortOrder omits the non-natural
-// variants (see requested_ordering.go's cross-enum note). This is safe ONLY
-// because no producer ever emits a non-natural MatchedSortOrder today
-// (ValueIndexScanMatchCandidate emits only natural orders). The moment index
-// matching learns to emit non-natural matched orders — e.g. to elide a sort
-// against a NULLS-LAST-keyed index — this mapping would produce a WRONG elision
-// (claiming a NULLS-FIRST order the scan does not provide). Before enabling that:
-// add the non-natural variants to ProvidedSortOrder and make this mapping
-// PLACEMENT-PRESERVING (as Java's is).
 func (s MatchedSortOrder) ToProvidedSortOrder(isReverse bool) ProvidedSortOrder {
+	// Map by TupleOrdering.Direction. Forward uses the same Direction;
+	// reverse uses reverseDirection() (ASC_NULLS_FIRST<->DESC_NULLS_LAST,
+	// ASC_NULLS_LAST<->DESC_NULLS_FIRST). Mirrors Java
+	// MatchedSortOrder.toProvidedSortOrder(isReverse) via
+	// mapToSortOrder / mapToReverseSortOrder.
 	if isReverse {
 		switch s {
-		case MatchedSortOrderAscending:
+		case MatchedSortOrderAscending: // ASC_NULLS_FIRST -> DESC_NULLS_LAST
 			return ProvidedSortOrderDescending
-		case MatchedSortOrderDescending:
+		case MatchedSortOrderDescending: // DESC_NULLS_LAST -> ASC_NULLS_FIRST
 			return ProvidedSortOrderAscending
-		case MatchedSortOrderAscendingNullsLast:
-			return ProvidedSortOrderDescendingNullsLast
-		case MatchedSortOrderDescendingNullsFirst:
-			return ProvidedSortOrderAscendingNullsFirst
+		case MatchedSortOrderAscendingNullsLast: // ASC_NULLS_LAST -> DESC_NULLS_FIRST
+			return ProvidedSortOrderDescendingNullsFirst
+		case MatchedSortOrderDescendingNullsFirst: // DESC_NULLS_FIRST -> ASC_NULLS_LAST
+			return ProvidedSortOrderAscendingNullsLast
 		}
 	}
 	switch s {
-	case MatchedSortOrderAscending:
+	case MatchedSortOrderAscending: // ASC_NULLS_FIRST
 		return ProvidedSortOrderAscending
-	case MatchedSortOrderDescending:
+	case MatchedSortOrderDescending: // DESC_NULLS_LAST
 		return ProvidedSortOrderDescending
-	case MatchedSortOrderAscendingNullsLast:
-		return ProvidedSortOrderAscendingNullsFirst
-	case MatchedSortOrderDescendingNullsFirst:
-		return ProvidedSortOrderDescendingNullsLast
+	case MatchedSortOrderAscendingNullsLast: // ASC_NULLS_LAST
+		return ProvidedSortOrderAscendingNullsLast
+	case MatchedSortOrderDescendingNullsFirst: // DESC_NULLS_FIRST
+		return ProvidedSortOrderDescendingNullsFirst
 	}
 	return ProvidedSortOrderAscending
 }

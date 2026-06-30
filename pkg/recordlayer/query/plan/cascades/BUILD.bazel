@@ -300,6 +300,7 @@ go_test(
         "rfc152_outer_join_materialization_test.go",
         "rfc153_failclosed_verifier_test.go",
         "rfc153_p2_correlation_test.go",
+        "rfc165_nulls_ordering_test.go",
         "rich_ordering_fuzz_test.go",
         "rich_ordering_test.go",
         "rule_adjust_match_test.go",

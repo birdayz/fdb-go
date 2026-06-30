@@ -620,27 +620,19 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 				reqSort := reqPart.SortOrder
 				if reqSort != RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
-					// A forward scan provides matchedSort's natural order; a reverse
-					// scan provides its flip. The index satisfies the request only in
-					// a direction whose provided order — INCLUDING NULL placement — is
-					// compatible. A non-natural NULLS request (e.g. ASC NULLS LAST) is
-					// served by neither direction, so this returns nil and the sort is
-					// retained instead of wrongly elided (RFC-164 §5).
-					switch {
-					case matchedSort.ToProvidedSortOrder(false).IsCompatibleWithRequestedSortOrder(reqSort):
+					reqDesc := reqSort.IsAnyDescending()
+					if matchedSort.IsAnyDescending() == reqDesc {
 						if resolved == ScanDirectionBoth {
 							resolved = ScanDirectionForward
 						} else if resolved != ScanDirectionForward {
 							return nil
 						}
-					case matchedSort.ToProvidedSortOrder(true).IsCompatibleWithRequestedSortOrder(reqSort):
+					} else {
 						if resolved == ScanDirectionBoth {
 							resolved = ScanDirectionReverse
 						} else if resolved != ScanDirectionReverse {
 							return nil
 						}
-					default:
-						return nil
 					}
 				}
 				found = true

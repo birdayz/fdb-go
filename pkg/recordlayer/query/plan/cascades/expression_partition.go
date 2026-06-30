@@ -207,9 +207,14 @@ func toPartitionsFromMap(pm *PlanPropertiesMap) []*PlanPartition {
 }
 
 // orderingPartitionHash produces a hash of the ordering keys and their
-// directions so that ASC and DESC orderings of the same columns fall into
-// separate partitions. Matches Java where Ordering.equals includes
-// ProvidedSortOrder direction in the bindingMap.
+// directions (and NULL placement) so that ASC vs DESC — and natural vs
+// counterflow NULL placement (ASC_NULLS_FIRST vs ASC_NULLS_LAST) — of the
+// same columns fall into separate partitions. Matches Java where
+// Ordering.equals includes the full ProvidedSortOrder (direction AND
+// counterflow nulls) in the bindingMap. Hashing only the direction would
+// collide a counterflow in-memory sort with the natural ordering of the
+// same column+direction, re-opening the "counterflow == natural" elision
+// bug on the set-op / data-access merge path (RollUpPlanPartitions).
 func orderingPartitionHash(o properties.Ordering) uint64 {
 	if !o.IsKnown || len(o.Keys) == 0 {
 		return 0
@@ -221,7 +226,12 @@ func orderingPartitionHash(o properties.Ordering) uint64 {
 		} else {
 			h.Write([]byte(values.ExplainValue(k)))
 		}
-		if i < len(o.Descending) && o.Descending[i] {
+		if o.DescendingAt(i) {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+		if o.NullsFirstAt(i) {
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
