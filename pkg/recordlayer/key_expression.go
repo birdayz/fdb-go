@@ -265,17 +265,25 @@ type DirectPacker interface {
 	PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool
 }
 
-// getNullResult returns the appropriate result for a nil message based on FanType.
-// Matches Java's FieldKeyExpression.getNullResult():
-//   - FanOut → empty (no index entries)
-//   - Concatenate → [[emptyList]]
-//   - None → [[nil]]
+// getNullResult returns the index-key result for an ABSENT field or a nil
+// message (NOT a present-but-empty repeated field — that goes through
+// evaluateRepeated). Matches Java FieldKeyExpression.getNullResult()
+// (FieldKeyExpression.java:229-240) for the default NullStandin.NULL that
+// Key.field(name, fanType) uses (Go does not model NullStandin, so the
+// default is always in effect):
+//   - FanOut → empty (no index entries; Collections.emptyList())
+//   - Concatenate → [[null]] (scalar(nullStandin) → tuple null 0x00). NOTE:
+//     the empty-NESTED-tuple form (0x05 0x00) is Java's NOT_NULL branch
+//     (scalar(emptyList())) and the present-but-empty repeated case — NOT
+//     the absent-field default. Returning an empty nested tuple here writes
+//     wire-divergent index bytes vs Java.
+//   - None → [[null]]
 func (f *FieldKeyExpression) getNullResult() [][]any {
 	switch f.fanType {
 	case FanTypeFanOut:
 		return nil // No entries — matching Java's Collections.emptyList()
 	case FanTypeConcatenate:
-		return [][]any{{tuple.Tuple{}}} // One entry containing an empty nested tuple (packable; a raw []any panics)
+		return [][]any{{nil}} // tuple null (Java scalar(nullStandin) for default NullStandin.NULL)
 	default:
 		return [][]any{{nil}} // One entry with null
 	}

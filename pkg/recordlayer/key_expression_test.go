@@ -99,12 +99,15 @@ var _ = Describe("KeyExpression unit tests", func() {
 				Expect(result).To(BeNil())
 			})
 
-			It("FanTypeConcatenate on nil message returns [[empty nested tuple]]", func() {
+			It("FanTypeConcatenate on nil message returns [[null]] (tuple null, Java default)", func() {
 				expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 				result, err := expr.Evaluate(nil, nil)
 				Expect(err).NotTo(HaveOccurred())
-				// Empty nested tuple.Tuple (packable), not a bare []any (which panics in Pack).
-				Expect(result).To(Equal([][]any{{tuple.Tuple{}}}))
+				// ABSENT field / nil message -> Java getNullResult() default
+				// NullStandin.NULL -> scalar(nullStandin) -> tuple null (0x00),
+				// NOT an empty nested tuple (0x05 0x00). The empty-nested-tuple
+				// form is the present-but-empty repeated case below (evaluateRepeated).
+				Expect(result).To(Equal([][]any{{nil}}))
 			})
 		})
 
