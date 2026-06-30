@@ -47,6 +47,36 @@ func TestWatchSetup_ChargesSlotAtRegistrationOrder(t *testing.T) {
 	db.db.releaseWatch() // free the slot tx3 took (no WatchPoll runs in this test)
 }
 
+// TestWatchSetup_CancelledTxnDoesNotLeakSlot pins that a watch whose setup fails (here: a cancelled
+// transaction, caught by ensureReadVersion's leading checkCancelled) RELEASES the outstanding-watch
+// slot it reserved, rather than leaking it. WatchSetup acquires the slot synchronously (round 11),
+// so every setup-error path must release it (the C++ catch → decreaseWatchCounter analogue).
+// Revert-proof: drop the release on the setup-error path and the cancelled watch holds the only slot,
+// so the second WatchSetup below fails 1032 instead of succeeding.
+func TestWatchSetup_CancelledTxnDoesNotLeakSlot(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	if err := db.SetMaxWatches(1); err != nil {
+		t.Fatalf("SetMaxWatches(1): %v", err)
+	}
+
+	tx1 := db.CreateTransaction()
+	tx1.Cancel()
+	if _, _, _, _, err := tx1.WatchSetup(ctx, []byte(t.Name()+"_k1")); fdbCodeOf(err) != 1025 {
+		t.Fatalf("WatchSetup on a cancelled txn must return transaction_cancelled (1025), got %v", err)
+	}
+
+	// The slot the cancelled watch briefly reserved must be freed — a fresh watch under cap=1 succeeds.
+	tx2 := db.CreateTransaction()
+	if _, _, _, _, err := tx2.WatchSetup(ctx, []byte(t.Name()+"_k2")); err != nil {
+		t.Fatalf("the cancelled watch must not leak its slot; fresh WatchSetup must succeed, got %v", err)
+	}
+	db.db.releaseWatch() // free tx2's slot (no WatchPoll runs in this test)
+}
+
 // TestWatchSetup_RejectsSystemAndOversizedKeys pins the eager legal-range + key-size validation
 // C++ RYW watch performs before registering (ReadYourWrites.actor.cpp:2450-2456). A normal
 // (non-system) transaction must not be able to register a watch on a \xff system key

@@ -220,7 +220,36 @@ tests were green in CI).
   runs). Pin: `TestWatchSetup_ChargesSlotAtRegistrationOrder` (second setup → 1032 deterministically
   — only satisfiable if WatchSetup charges; pre-fix it returned nil).
 
-**Codex caught 8 real issues across 5 review rounds the persona reviewers missed** — critical-gate
+**Round 12 — codex's 5th `--supersede` re-review found two MORE** (both P2 concurrent-single-txn
+contract edges, both second-order effects of earlier gauntlet fixes), both fixed:
+- **Watch-ctx cancellation leak (readpath.go):** round-11 moved the slot acquire to WatchSetup but
+  bound `getWatchCtx` AFTER the blocking GRV/value read. A `Cancel()` during that read was missed by
+  `cancelWatches` (no watchCancel yet) → WatchPoll polled a fresh never-cancelled ctx and HELD the
+  slot. Moved the bind to right after the acquire, BEFORE the read (C++ binds the watch's cancellable
+  future at registration); a Cancel during the read now cancels the bound ctx → WatchPoll drains +
+  releases. Removed a redundant explicit `checkCancelled` (ensureReadVersion's leading check at :622
+  already covers the before-bind case).
+- **Non-atomic filtered conflict append (transaction.go):** the round-2 RYW filter splits an explicit
+  `AddReadConflictRange` into sub-ranges appended under SEPARATE `conflictMu` acquisitions — a
+  concurrent `Commit` could snapshot a prefix and drop the rest of the caller's conflict. Added
+  `addReadConflicts` (one lock, all-or-none) and used it in all three filter loops
+  (AddReadConflictRange, addGetKeyConflictRange, getRange).
+
+Pinned deterministically: `TestWatchSetup_CancelledTxnDoesNotLeakSlot` (round-11 release-on-cancel).
+
+**CONCURRENCY TEST-DEBT (3 correct-by-construction linearizations needing fault-injection regressions
+— a focused follow-up; the fixes are landed + commented, these PIN them against future regressions):**
+1. **Poison re-check (round 10, transaction.go Commit snapshot):** block the read barrier (hold a
+   pipelined GetValue reply via the simDialer intercept so Commit parks past the entry poison check),
+   inject `Atomic(badOp)`, release → assert Commit returns 2018; revert-prove by removing the re-read.
+2. **Watch-ctx-early (round 12, readpath.go):** hold the WatchSetup value-read reply (sim intercept),
+   `Cancel()` mid-read, release → assert the slot is released (a second watch under cap=1 succeeds);
+   revert-prove by binding getWatchCtx late.
+3. **Conflict atomicity (round 12, transaction.go):** drive a concurrent `AddReadConflictRange`
+   (filtered into ≥2 sub-ranges) vs a Commit snapshot; assert the shipped read-conflict set is
+   all-or-none. Needs a Commit-snapshot injection point.
+
+**Codex caught 10 real issues across 6 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

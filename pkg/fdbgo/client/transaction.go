@@ -1060,9 +1060,7 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 	tx.ryw.mu.Lock()
 	ranges := tx.ryw.conflictRangesLocked(begin, end)
 	tx.ryw.mu.Unlock()
-	for _, r := range ranges {
-		tx.addReadConflict(r[0], r[1])
-	}
+	tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges (codex)
 }
 
 // addReadConflictForKeyRYW records the read-conflict for a single-key Get, routed through the
@@ -1248,9 +1246,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 				tx.ryw.mu.Lock()
 				ranges := tx.ryw.conflictRangesLocked(cBegin, cEnd)
 				tx.ryw.mu.Unlock()
-				for _, r := range ranges {
-					tx.addReadConflict(r[0], r[1])
-				}
+				tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges (codex)
 			}
 		}
 	}
@@ -2383,6 +2379,28 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 	tx.conflictMu.Unlock()
 }
 
+// addReadConflicts appends ALL of `ranges` under a SINGLE conflictMu acquisition. When the RYW
+// write-map filter (conflictRangesLocked) splits one logical read conflict into several sub-ranges,
+// they must land atomically: the published contract makes conflict-range adders and Commit safe to
+// use concurrently, so a concurrent Commit snapshotting `readConflicts` mid-append would otherwise
+// ship a transaction carrying only a PREFIX of the sub-ranges and silently drop the rest of the
+// caller's read-conflict protection (codex). One lock → the snapshot sees all sub-ranges or none.
+func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
+	if len(ranges) == 0 {
+		return
+	}
+	tx.conflictMu.Lock()
+	for _, r := range ranges {
+		begin, end := r[0], r[1]
+		buf := tx.conflictBufAlloc(len(begin) + len(end))
+		nb := len(begin)
+		copy(buf, begin)
+		copy(buf[nb:], end)
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
+	}
+	tx.conflictMu.Unlock()
+}
+
 // conflictBufAlloc reserves n bytes from the shared conflict buffer.
 // Must be called with conflictMu held.
 func (tx *Transaction) conflictBufAlloc(n int) []byte {
@@ -2688,9 +2706,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	tx.ryw.mu.Lock()
 	ranges := tx.ryw.conflictRangesLocked(begin, end)
 	tx.ryw.mu.Unlock()
-	for _, r := range ranges {
-		tx.addReadConflict(r[0], r[1])
-	}
+	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none (codex)
 	return nil
 }
 

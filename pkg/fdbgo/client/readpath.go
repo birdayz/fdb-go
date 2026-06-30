@@ -1096,6 +1096,20 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		return nil, 0, types.SpanContext{}, nil, err // too_many_watches (1032)
 	}
 
+	// Bind the cancellable watch context HERE — right after the acquire and BEFORE the blocking GRV /
+	// value read below (codex). A Cancel()/reset() during that blocking setup cancels THIS context,
+	// so WatchPoll observes it and drains, releasing the slot. Binding it AFTER the read (as before)
+	// let a Cancel during the read be missed by cancelWatches (no watchCancel set yet) → WatchPoll ran
+	// on a fresh, never-cancelled context, long-polling until the key changed and HOLDING the slot, so
+	// a low MAX_WATCHES could reject later watches even though the txn was cancelled. The async
+	// WatchPoll USES this context, never a lazy fetch (which races Cancel/reset — RFC-115 §4).
+	watchCtx := tx.getWatchCtx(ctx)
+
+	// ensureReadVersion checks cancelled FIRST (transaction.go:622), so a Cancel that ran before the
+	// bind above (its cancelWatches was a no-op, leaving the just-bound watchCtx live) is caught here
+	// → the slot is released by the error path below. A Cancel DURING this GRV / the value read
+	// cancels the early-bound watchCtx, so WatchPoll drains and releases it. No extra cancelled-state
+	// guard needed (it would duplicate this one).
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		tx.db.releaseWatch()
 		return nil, 0, types.SpanContext{}, nil, err
@@ -1127,13 +1141,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
 		return value, readVersion, span, nil, err
 	}
-	// Capture the watch context SYNCHRONOUSLY — same reason as readVersion/span above. The async
-	// WatchPoll must USE this context, not lazily fetch it in the future goroutine: a lazy
-	// getWatchCtx there races Cancel()/reset() (which nil watchCtx/watchCancel), and if cancelWatches
-	// runs first the poll mints a fresh, never-cancelled context → the watch goroutine + its storage
-	// reply handle leak. Binding it here (before the future goroutine spawns) guarantees a later
-	// Cancel/reset cancels the very context the poll holds, so it drains.
-	watchCtx := tx.getWatchCtx(ctx)
+	// watchCtx was bound synchronously above (right after the acquire, before this blocking read) so a
+	// Cancel/reset during setup cancels the very context WatchPoll holds — see the comment there.
 	return value, readVersion, span, watchCtx, nil
 }
 
