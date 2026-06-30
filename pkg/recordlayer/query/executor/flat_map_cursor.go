@@ -216,10 +216,12 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 	return QueryResult{Datum: computed}, nil
 }
 
-// buildContinuation creates a FlatMapContinuation proto. When innerTimeLimited
-// is true, the inner cursor hit the time limit mid-row — encode the prior outer
-// position + inner position for resume. Otherwise encode the current outer
-// position (inner exhausted, next outer row on resume).
+// buildContinuation creates a FlatMapContinuation proto. The decision is purely
+// on the inner cursor's state (matching Java FlatMapPipelinedCursor.toByteString,
+// :413-430): if the inner has a resumable position (not END) — a value emit or an
+// inner out-of-band stop mid-row — encode the prior outer position + inner
+// position so resume continues THIS outer's inner. If the inner is exhausted
+// (END), encode the advanced outer position with no inner (next outer on resume).
 func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
 	if innerCont != nil && innerCont.IsEnd() && c.lastOuterContinuation != nil && c.lastOuterContinuation.IsEnd() {
 		return &recordlayer.EndContinuation{}
