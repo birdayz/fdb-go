@@ -17,8 +17,8 @@ package sqldriver_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -46,19 +46,29 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 	indexable("integer", "INTEGER")
 	indexable("boolean", "BOOLEAN")
 
-	t.Run("uuid_index_currently_xx000_KNOWN_GAP", func(t *testing.T) {
-		_, err := db.ExecContext(ctx,
+	// RFC-162 sites 1-2 DONE: the index validator accepts the tuple_fields.UUID
+	// message (isTupleField) and the maintainer writes the entry as a tuple.UUID
+	// (scalarToInterface → uuidMessageToTuple, byte-identical to Java — pinned by
+	// recordlayer/uuid_key_encoding_test.go). So CREATE INDEX + INSERT now succeed.
+	//
+	// The READ side (RFC-162 sites 3-5: typed-UUID comparand coercion + the
+	// materialization-boundary conversion) is the Graefe-ACK'd follow-up. Until it
+	// lands, `SELECT … WHERE v = '<uuid>'` via the index would mis-match (string
+	// probe vs tuple.UUID entry), so this transitional sentinel pins ONLY the
+	// write/validate half and does NOT query by UUID yet. Replace with the full
+	// `uuid_indexable_and_roundtrips` round-trip when the read side lands.
+	t.Run("uuid_index_create_and_insert_sites1_2", func(t *testing.T) {
+		mwjoMustExec(t, db, ctx,
 			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
-		if err == nil {
-			t.Errorf("CREATE INDEX on UUID unexpectedly succeeded — the UUID-index gap may be FIXED; " +
-				"flip this sentinel + update TODO.md")
-			return
+		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
+		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_idxty?cluster_file=%s&schema=suuid", clusterFilePath))
+		if err != nil {
+			t.Fatalf("sql.Open: %v", err)
 		}
-		// CURRENT (leaky) behavior: internal XX000 "message type". When fixed, this is
-		// either no error (indexable, matching Java) or a clean user SQLSTATE.
-		if !strings.Contains(err.Error(), "XX000") {
-			t.Errorf("UUID index error = %v; was the leaky XX000 replaced with a clean error? "+
-				"update this sentinel + TODO.md", err)
-		}
+		t.Cleanup(func() { udb.Close() })
+		// INSERT must succeed (the maintainer writes the UUID index entry without the
+		// old leaky XX000 "message type" rejection).
+		mwjoMustExec(t, udb, ctx,
+			"INSERT INTO t (id, v) VALUES (1, '550e8400-e29b-41d4-a716-446655440000')")
 	})
 }

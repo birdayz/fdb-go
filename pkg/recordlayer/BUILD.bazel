@@ -336,6 +336,7 @@ go_test(
         "typed_api_test.go",
         "typed_store_conformance_test.go",
         "unique_index_concurrent_test.go",
+        "uuid_key_encoding_test.go",
         "vec_math_test.go",
         "vector_index_test.go",
         "vector_index_tuple_test.go",

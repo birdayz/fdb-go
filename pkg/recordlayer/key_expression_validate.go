@@ -103,11 +103,21 @@ func validateFieldKeyExpression(f *FieldKeyExpression, desc protoreflect.Message
 	return nil
 }
 
-// isTupleField returns true if the field is a special TupleFieldsProto.UUID type
-// that Java treats as a scalar for key expression purposes.
-// Most projects won't use this, so we return false by default.
-func isTupleField(_ protoreflect.FieldDescriptor) bool {
-	return false
+// uuidProtoFullName is the fully-qualified name of TupleFieldsProto.UUID — the
+// proto message fdb-relational uses to store SQL UUID column values (it has no
+// native proto primitive). Comparing by full name avoids a recordlayer→gen
+// import and works across descriptor instances.
+const uuidProtoFullName = "com.apple.foundationdb.record.UUID"
+
+// isTupleField reports whether a message-typed field is one of the special
+// "tuple field" messages Java's TupleFieldsHelper.isTupleField treats as a
+// SCALAR tuple element rather than a nested message (so it's a valid leaf in a
+// key/index expression without Nest()). Java's set is UUID + the Nullable*
+// wrappers; Go's DDL only emits the UUID wrapper (native proto primitives cover
+// the Nullable* cases — FLOAT/INT/STRING/… index directly), so UUID is the only
+// one we need to recognize. The runtime extraction lives in scalarToInterface.
+func isTupleField(fd protoreflect.FieldDescriptor) bool {
+	return fd.Kind() == protoreflect.MessageKind && fd.Message().FullName() == uuidProtoFullName
 }
 
 // validateNestingKeyExpression validates the parent field is a message type

@@ -1080,7 +1080,16 @@ primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
 replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
 metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
 
-**DESIGN READY — see RFC-162 (needs Graefe ACK before impl).** Prototyped end-to-end and PROVED the
+**IN PROGRESS — RFC-162 (Graefe design ACK'd).** Sites 1-2 LANDED: the validator accepts the
+tuple_fields.UUID message (`isTupleField`) and the maintainer writes the entry as a `tuple.UUID`
+(`scalarToInterface`→`uuidMessageToTuple`), byte-identical to Java — pinned by
+`recordlayer/uuid_key_encoding_test.go` (unit, wire format) + `indexable_types_probe` (CREATE INDEX +
+INSERT succeed). REMAINING = the read side (sites 3-5): scoped typed-UUID comparand coercion at the
+predicate + the materialization-boundary `tuple.UUID`→string conversion. Until that lands, a UUID index
+must NOT be queried by `WHERE v = '…'` (would mis-match) — the transitional sentinel pins only the
+write/validate half. Original design notes below.
+
+**DESIGN READY — see RFC-162.** Prototyped end-to-end and PROVED the
 approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
 sensitive Cascades `values` file) and touches the **wire format** — so it needs a Graefe design review
 first, not a rushed multi-site landing. WIRE VERIFIED: `tuple.UUID = msb‖lsb big-endian` =
