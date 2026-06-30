@@ -7,6 +7,28 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// TestMatchedSortOrder_IsCounterflowNulls pins the counterflow truth table for
+// MatchedSortOrder, which gates AbstractDataAccessRule.satisfiesRequestedOrdering
+// (Java AbstractDataAccessRule.java:820): a data-access match must not report a
+// counterflow request as satisfied by a natural matched order.
+func TestMatchedSortOrder_IsCounterflowNulls(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		m    MatchedSortOrder
+		want bool
+	}{
+		{MatchedSortOrderAscending, false},           // ASC_NULLS_FIRST
+		{MatchedSortOrderDescending, false},          // DESC_NULLS_LAST
+		{MatchedSortOrderAscendingNullsLast, true},   // ASC_NULLS_LAST  (counterflow)
+		{MatchedSortOrderDescendingNullsFirst, true}, // DESC_NULLS_FIRST (counterflow)
+	}
+	for _, c := range cases {
+		if got := c.m.IsCounterflowNulls(); got != c.want {
+			t.Errorf("%s.IsCounterflowNulls() = %v, want %v", c.m, got, c.want)
+		}
+	}
+}
+
 // TestOrderingPartitionHash_CounterflowDistinct pins the codex/Torvalds catch:
 // orderingPartitionHash must distinguish a counterflow (ASC NULLS LAST) ordering
 // from the natural (ASC NULLS FIRST) ordering of the same column+direction, else

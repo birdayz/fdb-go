@@ -620,6 +620,15 @@ func SatisfiesRequestedOrdering(pm PartialMatch, ro *RequestedOrdering) *ScanDir
 				reqSort := reqPart.SortOrder
 				if reqSort != RequestedSortOrderAny {
 					matchedSort := op.GetMatchedSortOrder()
+					// Java AbstractDataAccessRule.satisfiesRequestedOrdering
+					// (:820): the matched and requested NULL placement must
+					// agree before the direction pick — a counterflow request
+					// is not satisfied by a natural matched order (and vice
+					// versa). Dropping this gate would let a data-access match
+					// wrongly report "satisfied" for a counterflow request.
+					if matchedSort.IsCounterflowNulls() != reqSort.IsCounterflowNulls() {
+						return nil
+					}
 					reqDesc := reqSort.IsAnyDescending()
 					if matchedSort.IsAnyDescending() == reqDesc {
 						if resolved == ScanDirectionBoth {

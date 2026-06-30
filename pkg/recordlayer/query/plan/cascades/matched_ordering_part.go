@@ -41,6 +41,14 @@ func (s MatchedSortOrder) IsAnyDescending() bool {
 	return s == MatchedSortOrderDescending || s == MatchedSortOrderDescendingNullsFirst
 }
 
+// IsCounterflowNulls reports whether the NULL placement runs against the
+// natural tuple order for this direction (ASC_NULLS_LAST / DESC_NULLS_FIRST).
+// Mirrors Java TupleOrdering.Direction.isCounterflowNulls() via
+// MatchedSortOrder's Direction.
+func (s MatchedSortOrder) IsCounterflowNulls() bool {
+	return s == MatchedSortOrderAscendingNullsLast || s == MatchedSortOrderDescendingNullsFirst
+}
+
 // String returns a human-readable label for the sort order.
 func (s MatchedSortOrder) String() string {
 	switch s {
