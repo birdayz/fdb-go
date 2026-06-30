@@ -391,9 +391,11 @@ func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
 
 // SetMaxWatches caps the number of concurrently-outstanding watches for this Database; a new watch
 // over the cap fails with too_many_watches (1032). Matches FDB_DB_OPTION_MAX_WATCHES (default 10000).
+// An out-of-range value (< 0 or > ABSOLUTE_MAX_WATCHES=1e6) is rejected with invalid_option_value
+// (2006), leaving the cap unchanged — C++ extractIntOption throws on out-of-range, not clamps.
 func (o DatabaseOptions) SetMaxWatches(n int64) error {
 	if o.db != nil {
-		o.db.inner.SetMaxWatches(n)
+		return o.db.inner.SetMaxWatches(n)
 	}
 	return nil
 }

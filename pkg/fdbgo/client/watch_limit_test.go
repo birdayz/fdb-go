@@ -57,3 +57,30 @@ func TestDatabase_OutstandingWatchLimit(t *testing.T) {
 		}
 	})
 }
+
+// TestSetMaxWatches_RejectsOutOfRange pins C++ extractIntOption(v, 0, ABSOLUTE_MAX_WATCHES=1e6)
+// (NativeAPI.actor.cpp:2092-2102 / :2139): an out-of-range MAX_WATCHES THROWS invalid_option_value
+// (2006) and leaves the cap UNCHANGED — it does NOT clamp. Previously SetMaxWatches clamped a
+// negative to 0, so SetMaxWatches(-1) "succeeded" then failed every watch with 1032 (codex).
+func TestSetMaxWatches_RejectsOutOfRange(t *testing.T) {
+	t.Parallel()
+	d := &Database{db: &database{}}
+	d.db.maxWatches.Store(defaultMaxOutstandingWatches)
+
+	for _, n := range []int64{-1, absoluteMaxWatches + 1, 5_000_000} {
+		var fe *wire.FDBError
+		if err := d.SetMaxWatches(n); !errors.As(err, &fe) || fe.Code != 2006 {
+			t.Fatalf("SetMaxWatches(%d) must be invalid_option_value (2006), got %v", n, err)
+		}
+	}
+	// The cap is UNCHANGED by the rejected calls — still the default, so a watch acquires.
+	if err := d.db.tryAcquireWatch(); err != nil {
+		t.Fatalf("after rejected SetMaxWatches the cap must stay the default, got %v", err)
+	}
+	// Valid values are accepted: 0 (hard 0-cap), a small cap, and the absolute max.
+	for _, n := range []int64{0, 5, absoluteMaxWatches} {
+		if err := d.SetMaxWatches(n); err != nil {
+			t.Fatalf("SetMaxWatches(%d) must succeed, got %v", n, err)
+		}
+	}
+}

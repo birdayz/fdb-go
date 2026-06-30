@@ -1394,8 +1394,27 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		default:
 			code = ErrInvalidMutationType // 2018
 		}
-		// CAS so the FIRST invalid op wins (matching C++ "first eager throw"); race-free vs Commit.
-		tx.invalidAtomicOpErr.CompareAndSwap(nil, &wire.FDBError{Code: code})
+		// C++ throws the FIRST illegal op EAGERLY (ReadYourWrites.actor.cpp:2226-2234). A mutation
+		// buffered BEFORE this bad Atomic that is itself illegal came first and out-ranks the bad-op
+		// code (codex); only if every preceding mutation is legal is THIS bad op the first illegal
+		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
+		// keeps the first bad Atomic's verdict (race-free vs Commit's lock-free Load).
+		tx.conflictMu.Lock()
+		if tx.invalidAtomicOpErr.Load() == nil {
+			poison := &wire.FDBError{Code: code}
+			maxWrite := tx.maxWriteKey()
+			for _, m := range tx.mutations {
+				if e := tx.validateMutation(m, maxWrite); e != nil {
+					var fe *wire.FDBError
+					if errors.As(e, &fe) {
+						poison = fe
+					}
+					break
+				}
+			}
+			tx.invalidAtomicOpErr.Store(poison)
+		}
+		tx.conflictMu.Unlock()
 		return
 	}
 	tx.conflictMu.Lock()
@@ -1494,6 +1513,70 @@ func placeVersionstamp(dst []byte, version int64, txnNumber uint16) {
 	binary.BigEndian.PutUint16(dst[8:10], txnNumber)
 }
 
+// validateMutation returns the eager-validation error a buffered mutation would throw, or nil if it
+// is legal. C++ set()/atomicOp()/clear() throw these EAGERLY at the call (ReadYourWrites.actor.cpp);
+// our Set/Clear/Atomic are void, so we defer to commit — but the per-mutation checks and their order
+// match libfdb_c, and the commit loop walks mutations in call order so the FIRST illegal op wins.
+// Pure (no tx.state mutation): callers mark the txn errored. maxWrite is tx.maxWriteKey(), hoisted.
+// Shared by the commit-time loop AND Atomic()'s invalid-op poison (which must defer to an earlier
+// illegal buffered mutation — codex).
+func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
+	if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
+		// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
+		// metadataVersionKey is SetVersionstampedValue with operand == metadataVersionRequiredValue.
+		// A plain Set, any other atomic op (Add, SVK, …), or SVV with a different operand →
+		// client_invalid_operation (2000), BEFORE the size/offset checks. The legal write is exempt
+		// from the legal-range check (system key) but still subject to the size/versionstamp checks
+		// below, which metadataVersionRequiredValue passes. clear()/clear(range) (C++ :2357, :2406)
+		// have NO metadataVersionKey gate — a clear of metadataVersionKey falls to the legal-range
+		// check (metadataVersionKey >= maxWriteKey → 2004). Hence the `!= MutClearRange` guard.
+		if m.Type != MutSetVersionstampedValue || !bytes.Equal(m.Value, metadataVersionRequiredValue) {
+			return &wire.FDBError{Code: 2000} // client_invalid_operation
+		}
+	} else if bytes.Compare(m.Key, maxWrite) >= 0 {
+		return &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
+	if m.Type == MutClearRange {
+		// ClearRange: also check end key (stored in Value). C++ clear(range): if (range.begin >
+		// maxKey || range.end > maxKey) → reject. Clear key SIZES are clamped at build time
+		// (Clear/ClearRange), matching C++ clear()'s translate-not-reject — so no key_too_large here.
+		if bytes.Compare(m.Value, maxWrite) > 0 {
+			return &wire.FDBError{Code: 2004}
+		}
+		return nil
+	}
+	// set()/atomicOp() reject oversized keys/values (the C binding aborts the process on the throw;
+	// we reject the commit so the oversized data never reaches the shared cluster — see sizelimits.go).
+	// hasRawAccess: C++ sets options.rawAccess for RAW_ACCESS/ACCESS_SYSTEM_KEYS/READ_SYSTEM_KEYS
+	// (NativeAPI.actor.cpp:7159-7170); ACCESS==writeSystemKeys, READ==readSystemKeys, either raising
+	// the non-system key limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). But that +8 slack is the
+	// tenant-prefix allowance (getMaxWriteKeySize, NativeAPI:11630): when THIS client prepends the
+	// prefix itself (tenantId >= 0), the user key must stay within KEY_SIZE_LIMIT, so the slack is
+	// gated on the no-tenant case (C++ forbids raw-access options on tenant transactions for this).
+	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
+	if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
+		return &wire.FDBError{Code: 2102} // key_too_large
+	}
+	if len(m.Value) > valueSizeLimit {
+		return &wire.FDBError{Code: 2103} // value_too_large
+	}
+	// Versionstamp offset validation → client_invalid_operation (2000). C++ atomicOp validates this
+	// EAGERLY; deferred here but kept AFTER the size checks (an oversized versionstamp key/value
+	// reports 2102/2103, not 2000) and walked in call order so the FIRST eagerly-invalid op wins
+	// (TestDifferential_VersionstampValidationOrder). Precedes the deferred transaction-size 2101.
+	switch m.Type {
+	case MutSetVersionstampedKey:
+		if err := validateVersionstampOffset(m.Key); err != nil {
+			return err
+		}
+	case MutSetVersionstampedValue:
+		if err := validateVersionstampOffset(m.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Commit sends mutations to a commit proxy.
 // After successful commit, the transaction is automatically reset for reuse
 // (mutations and conflict ranges cleared, read version invalidated).
@@ -1581,96 +1664,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	//               if key >= maxWriteKey → key_outside_legal_range
 	maxWrite := tx.maxWriteKey()
 	for _, m := range muts {
-		if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
-			// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
-			// metadataVersionKey is SetVersionstampedValue with operand ==
-			// metadataVersionRequiredValue. A plain Set, any other atomic op (Add, SVK, …), or
-			// SVV with a different operand → client_invalid_operation (2000). This gate runs
-			// BEFORE the size/offset checks (it is the metadataVersionKey arm of the same
-			// if/else-if as the legal-range check). The legal write is exempt from the
-			// legal-range check (system key) but still subject to the key/value-size and
-			// versionstamp-offset checks below, which metadataVersionRequiredValue passes.
-			//
-			// clear()/clear(range) (C++ :2357, :2406) have NO metadataVersionKey gate — a clear
-			// whose begin is metadataVersionKey falls to the legal-range check below and reports
-			// key_outside_legal_range (2004), since metadataVersionKey >= maxWriteKey. Hence the
-			// `m.Type != MutClearRange` guard (Go models a single-key Clear as MutClearRange).
-			if m.Type != MutSetVersionstampedValue || !bytes.Equal(m.Value, metadataVersionRequiredValue) {
-				tx.state.Store(int32(txStateErrored))
-				return &wire.FDBError{Code: 2000} // client_invalid_operation
-			}
-		} else if bytes.Compare(m.Key, maxWrite) >= 0 {
+		if err := tx.validateMutation(m, maxWrite); err != nil {
 			tx.state.Store(int32(txStateErrored))
-			return &wire.FDBError{Code: 2004} // key_outside_legal_range
-		}
-		if m.Type == MutClearRange {
-			// ClearRange: also check end key (stored in Value).
-			// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
-			if bytes.Compare(m.Value, maxWrite) > 0 {
-				tx.state.Store(int32(txStateErrored))
-				return &wire.FDBError{Code: 2004}
-			}
-			// Clear key SIZES are clamped at build time (Clear/ClearRange), matching
-			// C++ clear() which translates an oversized range rather than rejecting —
-			// so no key_too_large check here.
-			continue
-		}
-		// set()/atomicOp() reject oversized keys/values. The C binding aborts the
-		// process (CATCH_AND_DIE on the key_too_large/value_too_large throw); we
-		// reject the commit instead so the oversized data never reaches the shared
-		// cluster. See sizelimits.go.
-		//
-		// hasRawAccess: C++ sets options.rawAccess = true for ANY of RAW_ACCESS,
-		// ACCESS_SYSTEM_KEYS, or READ_SYSTEM_KEYS (NativeAPI.actor.cpp:7159-7170 —
-		// the three cases fall through to one assignment). We don't model the bare
-		// RAW_ACCESS option, but ACCESS_SYSTEM_KEYS == writeSystemKeys and
-		// READ_SYSTEM_KEYS == readSystemKeys, and either raises the non-system key
-		// limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). Passing false here
-		// would reject 10001-10008-byte keys that libfdb_c accepts.
-		//
-		// BUT the +8 slack IS the tenant-prefix allowance (getMaxWriteKeySize's
-		// `tenantSize = hasRawAccess ? PREFIX_SIZE : 0`, NativeAPI.actor.cpp:11630):
-		// it exists for raw access where the CALLER already included the 8-byte
-		// prefix. When THIS client will prepend the prefix itself (tenantId >= 0,
-		// commitpath.go), the user key must stay within KEY_SIZE_LIMIT so the
-		// prefixed physical key is ≤ KEY_SIZE_LIMIT+8 — otherwise a 10001-10008-byte
-		// user key serializes to a 10009-10016-byte physical key. C++ forbids
-		// raw-access options on tenant transactions for exactly this reason; we gate
-		// the slack on the no-tenant case to the same effect.
-		rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
-		if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
-			tx.state.Store(int32(txStateErrored))
-			return &wire.FDBError{Code: 2102} // key_too_large
-		}
-		if len(m.Value) > valueSizeLimit {
-			tx.state.Store(int32(txStateErrored))
-			return &wire.FDBError{Code: 2103} // value_too_large
-		}
-		// Versionstamp offset validation -- client_invalid_operation (2000). C++
-		// ReadYourWritesTransaction::atomicOp validates this EAGERLY at the atomicOp()
-		// call; our Atomic() is void so we defer to commit, but it must stay in THIS
-		// per-mutation loop (mutation order = call order) so the eager semantics match
-		// libfdb_c. Two ordering facts pinned by the differential
-		// (TestDifferential_VersionstampValidationOrder):
-		//   - ACROSS mutations the FIRST eagerly-invalid op wins, so a bad versionstamp
-		//     earlier in the buffer out-ranks a later oversized key/value (and
-		//     vice-versa); a fixed loop order in mutation order reproduces "first wins".
-		//   - WITHIN one op the key/value SIZE checks above run BEFORE this offset
-		//     check, so an oversized versionstamp key/value reports 2102/2103, not 2000
-		//     -- hence this sits after the size checks.
-		// It must also precede the transaction-size check below: 2101 is DEFERRED
-		// (commit-time) in libfdb_c and never pre-empts an eager 2000.
-		switch m.Type {
-		case MutSetVersionstampedKey:
-			if err := validateVersionstampOffset(m.Key); err != nil {
-				tx.state.Store(int32(txStateErrored))
-				return err
-			}
-		case MutSetVersionstampedValue:
-			if err := validateVersionstampOffset(m.Value); err != nil {
-				tx.state.Store(int32(txStateErrored))
-				return err
-			}
+			return err
 		}
 	}
 

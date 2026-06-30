@@ -82,3 +82,37 @@ func TestClear_OversizedSystemKey(t *testing.T) {
 		t.Fatalf("Clear(oversized LEGAL key) must be silently dropped (no error), got %v", err)
 	}
 }
+
+// TestAtomic_InvalidOp_DefersToEarlierIllegalMutation pins C++ "the FIRST illegal op throws"
+// (ReadYourWrites.actor.cpp:2226-2234, eager). Go defers Set/Atomic validation to Commit, so the
+// bad-Atomic poison must defer to an EARLIER illegal buffered mutation (codex delta-review): a
+// system-key Set BEFORE an invalid-op Atomic surfaces the Set's key_outside_legal_range (2004), not
+// the Atomic's invalid_mutation_type (2018); the reverse order surfaces 2018. Revert-proof: a poison
+// that out-ranks the buffered-mutation loop returns 2018 for the first (Set-before-Atomic) case.
+func TestAtomic_InvalidOp_DefersToEarlierIllegalMutation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Set(systemKey) [defers 2004] THEN Atomic(badOp) → the Set is the first illegal op → 2004.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("\xff\x05"), []byte("v"))            // out-of-legal-range system key (non-system txn)
+		tx.Atomic(MutClearRange, []byte("k"), []byte("v")) // invalid atomic op-code → 2018
+		return nil, nil
+	})
+	if c := fdbCodeOf(err); c != 2004 {
+		t.Fatalf("Set(systemKey) BEFORE Atomic(badOp): first illegal op (the Set) wins → 2004, got %d (%v)", c, err)
+	}
+
+	// Reverse: Atomic(badOp) FIRST (no preceding mutation) → the Atomic is the first illegal op → 2018.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Atomic(MutClearRange, []byte("k"), []byte("v"))
+		tx.Set([]byte("\xff\x05"), []byte("v"))
+		return nil, nil
+	})
+	if c := fdbCodeOf(err); c != ErrInvalidMutationType {
+		t.Fatalf("Atomic(badOp) BEFORE Set(systemKey): the Atomic is first → 2018, got %d (%v)", c, err)
+	}
+}

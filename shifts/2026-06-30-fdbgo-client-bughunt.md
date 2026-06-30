@@ -175,6 +175,28 @@ too_many_watches 0-cap, fixed round 7). On the **delta re-review codex found two
    `TestAtomic_InvalidOpPoison_RaceFree` under `-race`.
    FDB C++ dev re-confirmed the 0-cap fix → **full ACK**; Torvalds' two conditions addressed.
 
+**Round 9 — codex's 2nd `--supersede` re-review found two MORE** (P2 + P3), both fixed red→green:
+- **P2 SetMaxWatches out-of-range (options.go/database.go):** clamped a negative to 0, so
+  `SetMaxWatches(-1)` "succeeded" then failed every watch with 1032. C++ `extractIntOption(v, 0,
+  ABSOLUTE_MAX_WATCHES=1e6)` THROWS `invalid_option_value` (2006) on out-of-range and leaves the cap
+  UNCHANGED — it does NOT clamp (NativeAPI:2092-2102; the FDB-C-dev's earlier "clamps" was the
+  approximation, codex read the source). `SetMaxWatches` now returns 2006 for `<0`/`>1e6`, cap
+  untouched. Pin: `TestSetMaxWatches_RejectsOutOfRange`.
+- **P3 invalid-Atomic precedence (transaction.go):** the fix-#3 poison was checked at Commit entry
+  before the buffered-mutation loop, so a bad Atomic AFTER a system-key `Set` masked the Set's 2004
+  with 2018. C++ throws the FIRST illegal op eagerly — extracted the per-mutation validation into a
+  pure `validateMutation`, and the bad-op poison now defers to an earlier illegal buffered mutation.
+  Pin: `TestAtomic_InvalidOp_DefersToEarlierIllegalMutation` (Set-before-Atomic → 2004;
+  Atomic-before-Set → 2018; red-proven). Extraction verified by the versionstamp-order differential.
+
+**CI flake (a396d8cc): `TestWithKnob_AppliedToProcess`** — pre-existing testcontainers one-shot
+`ps aux` knob check raced `configure new`'s recovery restart; hardened to poll `/proc/PID/cmdline`
+(the sibling multi-process test was already fixed this way). NOT an fdbgo-code failure (all client
+tests were green in CI).
+
+**Codex caught 5 real issues across 3 review rounds the persona reviewers missed** — critical-gate
+value, fully borne out.
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)

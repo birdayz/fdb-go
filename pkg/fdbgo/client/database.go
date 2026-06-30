@@ -324,6 +324,10 @@ type database struct {
 // defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
 const defaultMaxOutstandingWatches = 10000
 
+// absoluteMaxWatches mirrors CLIENT_KNOBS->ABSOLUTE_MAX_WATCHES (ClientKnobs.cpp:121) — the upper
+// bound MAX_WATCHES accepts; a higher (or negative) value is rejected with invalid_option_value.
+const absoluteMaxWatches = 1_000_000
+
 // tryAcquireWatch reserves an outstanding-watch slot, returning too_many_watches (1032) when the
 // cap is exceeded — C++ increaseWatchCounter (NativeAPI.actor.cpp:2175-2179, called from
 // Transaction::watch :5694). Each successful acquire MUST be matched by exactly one releaseWatch.
@@ -992,13 +996,16 @@ func (d *Database) SetDefaultAccessSystemKeys() {
 // SetMaxWatches sets the cap on concurrently-outstanding watches for this Database
 // (FDB_DB_OPTION_MAX_WATCHES). Once the count would exceed it, a new watch fails with
 // too_many_watches (1032). Matches C++ DatabaseContext maxOutstandingWatches; default 10000.
-// 0 is a REAL cap (no watches allowed — the first fails), NOT "unlimited"; a negative value is
-// clamped to 0, matching C++ extractIntOption(value, 0, ABSOLUTE_MAX_WATCHES) (NativeAPI:2139).
-func (d *Database) SetMaxWatches(n int64) {
-	if n < 0 {
-		n = 0
+// 0 is a REAL cap (no watches allowed — the first fails), NOT "unlimited". An out-of-range value
+// (< 0 or > ABSOLUTE_MAX_WATCHES) is REJECTED with invalid_option_value (2006) and the cap is left
+// UNCHANGED — C++ extractIntOption(value, 0, ABSOLUTE_MAX_WATCHES) throws on out-of-range, it does
+// NOT clamp (NativeAPI.actor.cpp:2092-2102 / :2139).
+func (d *Database) SetMaxWatches(n int64) error {
+	if n < 0 || n > absoluteMaxWatches {
+		return &wire.FDBError{Code: 2006} // invalid_option_value; cap unchanged
 	}
 	d.db.maxWatches.Store(n)
+	return nil
 }
 
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
