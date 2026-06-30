@@ -98,6 +98,11 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 	if !ok {
 		return "", fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
 	}
+	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
+	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
+	if err := cascades.ValidatePlanInvariants(ph.GetRecordQueryPlan()); err != nil {
+		return "", fmt.Errorf("plan invariant violated: %w", err)
+	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
 		return "", fmt.Errorf("physical plan is nil")
@@ -176,6 +181,11 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
 		return "", fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+	}
+	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
+	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
+	if err := cascades.ValidatePlanInvariants(ph.GetRecordQueryPlan()); err != nil {
+		return "", fmt.Errorf("plan invariant violated: %w", err)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
@@ -288,6 +298,10 @@ func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaDat
 	ph, ok := bestExpr.(planExtractor)
 	if !ok {
 		return nil, fmt.Errorf("best expression is not a physical plan: %T", bestExpr)
+	}
+	// RFC-164 WS-2: structural plan invariants (see ValidatePlanInvariants).
+	if err := cascades.ValidatePlanInvariants(ph.GetRecordQueryPlan()); err != nil {
+		return nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
