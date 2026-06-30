@@ -126,11 +126,15 @@ func buildWherePredicateForTableE(
 	resolver := expr.New(analyzer, scope)
 	pred, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil {
-		// Surface a structured SQL error (e.g. 42804 DATATYPE_MISMATCH) so the
-		// DML caller returns it; an unstructured shape failure soft-falls-back.
-		var apiErr *api.Error
-		if errors.As(err, &apiErr) {
-			return nil, false, apiErr
+		// Classify with the shared mapper (the same the SELECT WHERE / JOIN-ON paths
+		// use) so a bare semantic failure — undefined column (ColumnNotFoundError →
+		// 42703), ambiguous column, bad source — surfaces the specific SQLSTATE the
+		// SELECT path gives, plus structured *api.Error (e.g. 42804 DATATYPE_MISMATCH).
+		// The DML caller returns it instead of swallowing it into a generic 0AF00 "DML
+		// Cascades translation failed". An unclassifiable shape failure (mapped == nil)
+		// still soft-falls-back, preserving existing behaviour.
+		if mapped := mapPredicateWalkError(err); mapped != nil {
+			return nil, false, mapped
 		}
 		return nil, false, nil
 	}
@@ -3061,6 +3065,18 @@ func buildLogicalPlanForDeleteWithCatalog(
 	if tn := del.TableName(); tn != nil && tn.FullId() != nil {
 		tableName = functions.FullIdToName(tn.FullId())
 	}
+	// Validate the schema qualifier (if any) BEFORE classifying WHERE-column errors: a bad
+	// qualifier's 42F00 (Unknown database) must take precedence over a WHERE-column 42703
+	// when the bare table happens to exist in the active schema (codex). For a valid/absent
+	// qualifier this strips to the bare name used below. (Missing-but-valid-qualifier target
+	// tables are caught with 42F01 in planDML after resolveQualifiedTableNames.)
+	if tableName != "" {
+		resolved, qErr := functions.ResolveQualifiedTableName(tableName, schemaName)
+		if qErr != nil {
+			return nil, qErr
+		}
+		tableName = resolved
+	}
 	w := del.WhereExpr()
 	if w == nil || tableName == "" {
 		return op, nil
@@ -3090,6 +3106,27 @@ func buildLogicalPlanForDeleteWithCatalog(
 	}
 	_ = upgradeFirstFilter(op, pred) // invariant: text builder always emits a Filter for a WHERE clause
 	return op, nil
+}
+
+// recordTypeCI resolves a record type by name CASE-INSENSITIVELY. SQL table names arrive
+// upper-cased (functions.FullIdToName), but a proto-derived record type keeps its proto
+// message-name case (e.g. "Order"), and the catalog/analyzer the WHERE/SELECT path uses
+// resolves case-insensitively — so a raw, case-sensitive md.GetRecordType would wrongly
+// miss a real table (e.g. SQL "ORDER" vs record type "Order"). The fast path tries the
+// exact key first (the common CREATE TABLE case, where the type is already upper-cased).
+func recordTypeCI(md *recordlayer.RecordMetaData, name string) *recordlayer.RecordType {
+	if md == nil {
+		return nil
+	}
+	if rt := md.GetRecordType(name); rt != nil {
+		return rt
+	}
+	for n, rt := range md.RecordTypes() {
+		if strings.EqualFold(n, name) {
+			return rt
+		}
+	}
+	return nil
 }
 
 // bareTableName strips a leading schema qualifier ("s1.T" → "T"). Used so
@@ -3149,14 +3186,25 @@ func upgradeDMLWhereWithCatalog(
 	resolver.SetSubqueryPlanner(existsPlanner)
 	walked, err := resolver.WalkPredicate(whereExpr.Expression())
 	if err != nil || walked == nil {
-		// A specific carried SQLSTATE from a subquery PLAN failure (the EXISTS
-		// inner build returned an *api.Error, e.g. WRONG_OBJECT_TYPE for an
-		// AT-on-a-table source) takes precedence over the text fallback — surface
-		// it so the DML rejection matches the SELECT path's faithful code. Gate on
-		// the WHERE actually containing an EXISTS atom: that is the one shape the
-		// plain text builder (buildWherePredicateForTable) cannot plan AT ALL, so
-		// the catalog path's error is authoritative — for a plain comparison WHERE
-		// the text fallback may still succeed, and swallowing here preserves that.
+		// Surface an AUTHORITATIVE semantic classification from this subquery-aware walk —
+		// an undefined / ambiguous column or bad source. This walk (with a SubqueryPlanner),
+		// unlike the plain text fallback, can see PAST an EXISTS atom to a LATER bad column,
+		// so dropping its ColumnNotFoundError would leave `… WHERE EXISTS(…) AND nope = 1`
+		// falling through to a generic 0AF00 (codex). The column genuinely doesn't exist for
+		// the text fallback either, so surfacing it here never masks a fallback-resolvable
+		// WHERE. mapPredicateWalkError maps these to the same 42703/42702 the SELECT path gives.
+		var colNF *semantic.ColumnNotFoundError
+		var ambig *semantic.AmbiguousColumnError
+		var srcNF *semantic.SourceNotFoundError
+		if errors.As(err, &colNF) || errors.As(err, &ambig) || errors.As(err, &srcNF) {
+			return false, mapPredicateWalkError(err)
+		}
+		// A specific carried SQLSTATE from a subquery PLAN failure (the EXISTS inner build
+		// returned an *api.Error, e.g. WRONG_OBJECT_TYPE for an AT-on-a-table source) takes
+		// precedence over the text fallback. Gate on the WHERE actually containing an EXISTS
+		// atom: that is the one shape the plain text builder cannot plan AT ALL, so the
+		// catalog path's error is authoritative — for a plain comparison WHERE the text
+		// fallback may still succeed, and swallowing a generic api error here preserves that.
 		var apiErr *api.Error
 		if errors.As(err, &apiErr) && expr.ContainsExistsAtom(whereExpr.Expression()) {
 			return false, apiErr
@@ -3198,7 +3246,20 @@ func buildLogicalPlanForUpdateWithCatalog(
 	if tableName == "" {
 		return op, nil
 	}
+	// Validate the schema qualifier (if any) BEFORE the SET-column / WHERE classification: a
+	// bad qualifier's 42F00 must take precedence over a 42703/42F01 when the bare table
+	// exists in the active schema (codex). Valid/absent qualifier → strips to the bare name.
+	resolved, qErr := functions.ResolveQualifiedTableName(tableName, schemaName)
+	if qErr != nil {
+		return nil, qErr
+	}
+	tableName = resolved
 	bare := bareTableName(tableName)
+
+	// Resolve the target type case-insensitively for the SET-column check below. (Missing
+	// target tables are rejected with 42F01 in planDML after resolveQualifiedTableNames;
+	// rt stays nil here for a missing/qualified target and the SET check is then skipped.)
+	rt := recordTypeCI(md, bare)
 
 	// Validate each SET target column exists in the table, mirroring INSERT's
 	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
@@ -3207,8 +3268,9 @@ func buildLogicalPlanForUpdateWithCatalog(
 	// a clean 42703 — the same condition INSERT and SELECT already report as 42703.
 	// The check is case-insensitive (EqualFold over the descriptor field names) so it
 	// is exactly as permissive as the executor's lookup (ByName(lower) →
-	// fieldByNameFold) and never rejects a column the executor would accept.
-	if rt := md.GetRecordType(bare); rt != nil && rt.Descriptor != nil {
+	// fieldByNameFold) and never rejects a column the executor would accept. rt may be
+	// nil for a schema-qualified target (validated downstream); skip the check then.
+	if rt != nil && rt.Descriptor != nil {
 		fields := rt.Descriptor.Fields()
 		for _, set := range updOp.Sets {
 			found := false
