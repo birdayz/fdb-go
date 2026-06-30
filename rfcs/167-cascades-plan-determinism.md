@@ -29,7 +29,7 @@ Net: on a multi-equality tie the winning index is chosen by Go's per-process sli
 
 ### 2a. Orthogonal correctness bug exposed by the obvious fix
 
-`WithPrimaryKeyIntersector` (`intersector_primary_key.go:20-23`) **discards its `requestedOrderings` argument** and pairs any two different-candidate matches keyed on the raw primary key, with **no common-ordering gate**. Java's `WithPrimaryKeyDataAccessRule.createIntersectionAndCompensation` (lines 112-200) gates emission on a merged INTERSECTION ordering and rejects leg-pairs lacking a common pk ordering (`noViableIntersection`). So Go **over-generates** `Intersection(idx_a[a=5], idx_b[b>10])`; the `b>10` range leg emits `(b,pk)`-order, violating the pk-sorted-merge precondition (`merge_cursor.go:170-195`) — a **plausible wrong-rows risk** (not yet runtime-confirmed; see Open Questions), and a definite plan-shape regression vs the single index. For the legitimate **all-equality** case every leg is pk-ordered, the intersection is valid, and criterion #3 (residual count) correctly prefers it — matching Java.
+`WithPrimaryKeyIntersector` (`intersector_primary_key.go:20-23`) **discards its `requestedOrderings` argument** and pairs any two different-candidate matches keyed on the raw primary key, with **no common-ordering gate**. Java's `WithPrimaryKeyDataAccessRule.createIntersectionAndCompensation` (lines 112-200) gates emission on a merged INTERSECTION ordering and rejects leg-pairs lacking a common pk ordering (`noViableIntersection`). So Go **over-generates** `Intersection(idx_a[a=5], idx_b[b>10])`; the `b>10` range leg emits `(b,pk)`-order, violating the intersection sorted-merge precondition (the max-key/advance loop `merge_cursor.go:405-467`) — a wrong-rows risk (latent: not selected on master until Phase 1b; see OQ#2), and a definite plan-shape regression vs the single index. For the legitimate **all-equality** case every leg is pk-ordered, the intersection is valid, and criterion #3 (residual count) correctly prefers it — matching Java.
 
 **Why this matters for the determinism fix:** the moment shells stop winning artificially, criterion #3 (residual-predicate count, `planning_cost_model.go:224-228`, which runs *before* the #17 hash) makes the **0-residual intersection** the winner — including the invalid `a=5 AND b>10` one. So **the determinism fix is unsafe without the intersection ordering-gate**, and the naive "exclude shells at selection" attempt (already tried and reverted) regressed exactly this.
 
@@ -95,20 +95,26 @@ Java tie-breaks with `planHash(PlanHashable.CURRENT_FOR_CONTINUATION)` — the *
 
 **Phase 4 — Ordering-gate the primary-key intersector (CORRECTNESS — land with Phase 1b).** Port Java's common-ordering gate into `WithPrimaryKeyIntersector`: stop discarding `requestedOrderings`; compute the merged INTERSECTION ordering (`Ordering.merge(...,INTERSECTION)` + `enumerateSatisfyingComparisonKeyValues` + `isCompatibleComparisonKey`, `WithPrimaryKeyDataAccessRule.java:112-200`) and emit only when all legs share a common pk ordering. Drops `Intersection(idx_a[=], idx_b[>])`; keeps the all-equality intersection.
 
-> **IMPLEMENTATION BLOCKER (found while attempting Phase 4 — see OQ#6).** Two leg-level gate
-> formulations were tried and reverted, both breaking `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`:
-> (a) a crude "every index column equality-bound" check; (b) the *proper* per-leg check
-> `computeWrapperRichOrdering(leg).Satisfies(pkRequested)`. Both correctly drop the value-range
-> leg (`idx_b[b>10]` → `(b,pk)` order) but ALSO drop the **vector leg** of a partition-inequality
-> vector intersection (RFC-046): the vector scan's `HintRichOrdering` reports *distance-rank*
-> order, not pk order, so any pk-order leg gate excludes it → the query becomes unplannable. Yet
-> on master that intersection plans (and presumably executes correctly). So **a vector leg validly
-> participates in a pk-keyed intersection despite its static ordering ≠ pk** — the execution
-> (vector cursor / RFC-046 partition merge) must reconcile it. The correct gate cannot be a blanket
-> per-leg pk-order check; it needs Java's `enumerateSatisfyingComparisonKeyValues` semantics, which
-> account for how each candidate type participates, AND resolution of OQ#6 (does the vector leg's
-> records actually arrive pk-ordered at the merge, or does the intersection plan re-sort?). **Phase 4
-> is blocked on OQ#6; do not ship a leg-level pk-order gate.**
+> **OQ#6 RESOLVED (Graefe), and Phase 4 is UNBLOCKED — it just has two pieces.** An earlier draft of this
+> note had the finding backwards. The facts (Graefe, code+Java-verified):
+> - The per-leg pk-order gate that drops the **vector** leg of `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`
+>   is a **TRUE POSITIVE, not a false positive.** The vector leg does NOT validly participate in a pk-keyed
+>   sorted-merge: the multi-partition cursor delivers `(region, distance)` order, not pk order
+>   (`vector_index_maintainer.go:779-790,1103`), and `executeIntersection` feeds it straight into the pk-keyed merge
+>   with no re-sort (`executor.go:1710` → `merge_cursor.go:405-467`). Java's common-ordering gate
+>   (`WithPrimaryKeyDataAccessRule.java:150-201`, `isCompatibleComparisonKey` `AbstractDataAccessRule.java:1145-1152`)
+>   **rejects** it (`noViableIntersection`). So the partitioned-vector pk-intersection is itself an over-generation bug.
+> - The query became "unplannable" with the gate **only because of a SEPARATE gap**: `compensationSafeForYield`
+>   (`planner.go:734`) over-conservatively blocks ALL residuals over a non-ordered-stream vector scan, so the safe
+>   alternative `Filter(region>m, VectorTopK)` is never realized → dropping the (invalid) intersection leaves no plan.
+>
+> **Correct Phase 4 = two independent pieces:** (1) implement the Java common-ordering gate in `WithPrimaryKeyIntersector`
+> (`Ordering.merge(...,INTERSECTION)` → Go already has `MergeOrderingsForIntersection` at `rich_ordering.go:680`, unused;
+> + `enumerateSatisfyingComparisonKeyValues`/`isCompatibleComparisonKey` — the comparison key must contain every
+> non-equality-bound pk column) — this drops BOTH the value-range AND the partitioned-vector intersections; and
+> (2) refine `compensationSafeForYield` to distinguish a **partition-key-column** residual (selects whole partitions,
+> never within-partition rows → SAFE over a per-partition vector top-k) from a non-partition-column residual, so the
+> `Filter` alternative is available once the intersection is dropped. Phase 4 lands with Phase 1b + 1M stress.
 
 **Phase 5 — North star (separate gated RFC, tracked with an expiry).** Eliminate shells: migrate the 8 push-through sites to eager `memoizePlan` and delete the relink machinery. Pure-internal (no wire impact). Documented in DIVERGENCES.md.
 
@@ -132,7 +138,7 @@ The synthesized design claimed "1M stress NOT required for Phases 1–3 — tie 
 3. **Does Go have `Ordering.merge(INTERSECTION)` / `enumerateSatisfyingComparisonKeyValues`?** If not, building it 1:1 from Java is a Phase-4 prerequisite.
 4. **Set-op staleness:** verify set-op `WithChildren` rebuilds children from the fresh quantifiers rather than retaining the stale eager `w.plan` (`physical_wrapper.go:1351/1450`, `physical_unordered_union_wrapper.go:62`); the stale-children retention is a latent correctness smell independent of determinism.
 5. **Cross-engine:** confirm no continuation is expected to be re-planned across Go/Java engines (decides §5 (i) vs (ii)).
-6. **Vector-leg participation in a pk-keyed intersection (BLOCKS Phase 4).** `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix` (RFC-046) plans an intersection whose **vector** leg reports *distance-rank* order from `HintRichOrdering`, not pk order — yet the pk-keyed `RecordQueryIntersectionPlan` is emitted and (apparently) correct. Both a crude and a proper per-leg pk-order gate were tried and reverted because they drop this vector leg → unplannable. Resolve: does the vector cursor actually yield pk-ordered records at the merge (so the gate should consult execution-order, not `HintRichOrdering`), or does the intersection plan re-sort, or is the vector intersection a different (non-sorted-merge) shape that should be exempt from the pk-order gate entirely? Until this is answered, **no leg-level pk-order gate is correct** — the fix must follow Java's `enumerateSatisfyingComparisonKeyValues`, which encodes per-candidate-type participation. (OQ#2 — whether the value-range pk-merge is even reachable / wrong-rows — should be confirmed first; if `MaximumCoverageMatches` already prevents it, Phase 4 may reduce to an optimality gate, not a correctness one.)
+6. **Vector-leg participation — RESOLVED (Graefe).** The vector leg does NOT validly participate in a pk-keyed intersection; the per-leg gate that drops it is a TRUE POSITIVE. Java's common-ordering gate rejects it. The query's "unplannable" symptom is a separate `compensationSafeForYield` over-block, not a gate problem. Phase 4 = the Java common-ordering gate + the partition-residual `compensationSafeForYield` refinement (see §6 Phase 4). No longer blocking.
 
 ## 10. Status of the already-landed work
 

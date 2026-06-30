@@ -53,6 +53,20 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
 >   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
 >   review sweep (not committed regressions) found nothing.
+> - **[ ] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — ACTIVE on master, pre-existing).** Found by Graefe
+>   during RFC-167 Phase 4 review (PR #411). For a partitioned vector index with a partition-key inequality (e.g.
+>   `WHERE zone='z1' AND region>'m' AND <distance> <= K`, `PARTITION BY (zone,region)`), `WithPrimaryKeyIntersector`
+>   emits `Intersection(VectorTopK, PrimaryRange)` keyed on the full pk — and it is the ONLY physical plan (the safe
+>   `Filter(region>m, VectorTopK)` is blocked by `compensationSafeForYield` planner.go:734), so it is SELECTED. But the
+>   multi-partition vector cursor delivers `(region, distance)` order, NOT pk order (`vector_index_maintainer.go:779-790,1103`),
+>   and `executeIntersection` (executor.go:1710) feeds it into the pk-keyed sorted-merge (merge_cursor.go:405-467) with
+>   no re-sort → for K>1 rows per partition whose distance-order ≠ doc_id-order, the merge DROPS rows. Worked example:
+>   partition (z1,n) rows aaa(d=5),bbb(d=1),ccc(d=3): vector emits bbb,ccc,aaa; pk-range emits aaa,bbb,ccc; merge drops
+>   aaa. Latent because only K=1 is tested (`vector_multipartition_e2e_fdb_test.go:140`, `<=1`). FIX (same two pieces
+>   as RFC-167 Phase 4): the Java common-ordering gate in `WithPrimaryKeyIntersector` (drops this invalid intersection)
+>   + refine `compensationSafeForYield` so a PARTITION-key-column residual over a per-partition vector top-k is safe
+>   (selects whole partitions, never within-partition rows) → yields the correct `Filter`. PIN with a K>1 partition-
+>   residual FDB rows test FIRST (currently only the explain shape + K=1 rows are covered).
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
