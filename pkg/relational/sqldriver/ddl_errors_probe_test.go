@@ -1,13 +1,14 @@
 package sqldriver_test
 
 // Probes DDL error paths — every invalid DDL is REJECTED (fail-closed; no bad
-// schema/database created). Clean SQLSTATEs: CREATE DATABASE that exists → 42F04,
-// DROP DATABASE that doesn't → 42F63, table without a PRIMARY KEY → 42601,
-// duplicate schema-template name → 42F59. A duplicate column name and a PK over an
-// unknown column are also rejected, but currently surface a leaky internal error
-// (XX000 + raw protodesc message) rather than a clean 42-class user error — see
-// TODO.md "DDL error classification". This test pins the rejection (the fail-closed
-// behavior); tighten the code assertions when the messages are cleaned up.
+// schema/database created) with a clean, SPECIFIC SQLSTATE: CREATE DATABASE that exists →
+// 42F04, DROP DATABASE that doesn't → 42F63, table without a PRIMARY KEY → 42601,
+// duplicate column name → 42701, PRIMARY KEY over an unknown column → 42703,
+// duplicate schema-template NAME → 42F59. The in-template object errors (42701/42703)
+// surface their specific code as the OUTER SQLSTATE — the rejectsCode helper additionally
+// asserts they do NOT carry the generic 42F59 "invalid schema template" wrapper (RFC-161:
+// in-template index/column errors propagate their own code, matching Java's per-exception
+// ExceptionUtil mapping rather than a blanket wrap).
 
 import (
 	"context"
@@ -32,6 +33,16 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), code) {
 				t.Errorf("%s error = %v, want %s", name, err, code)
+			}
+			// The specific code must be the OUTER SQLSTATE, NOT buried under the generic
+			// 42F59 "invalid schema template" wrapper (RFC-161 — in-template index/column
+			// errors propagate their own code). None of these rejections is an
+			// invalid-template error, so 42F59 must not appear. Before the fix, the
+			// duplicate-column / PK-over-unknown cases rendered as `42F59: table "T":
+			// 42701: …` and a Contains("42701") check passed vacuously — this pins the
+			// dimension that actually changed.
+			if strings.Contains(err.Error(), "42F59") {
+				t.Errorf("%s error = %v\n  must NOT carry the generic 42F59 wrapper; %s should be the outer SQLSTATE", name, err, code)
 			}
 		})
 	}

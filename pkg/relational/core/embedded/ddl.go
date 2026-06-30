@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -129,6 +130,16 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
 		cols, pkCols, err := parseTableDefinition(td)
 		if err != nil {
+			// Propagate a specific *api.Error (e.g. 42701 duplicate column, 42703 PK over an
+			// unknown column) as its OWN SQLSTATE instead of masking it under 42F59
+			// (ErrCodeInvalidSchemaTemplate) — 42F59 means "invalid schema template", the
+			// wrong code for a duplicate column. Java's DdlVisitor does not wrap in-template
+			// errors either; ExceptionUtil maps each exception to its specific ErrorCode. A
+			// non-structured parse error still wraps (it carries no SQLSTATE to surface).
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				return 0, err
+			}
 			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"table %q: %v", tableName, err)
 		}
@@ -142,6 +153,13 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			continue
 		}
 		if err := parseIndexDefinition(idxDef, b); err != nil {
+			// Propagate a specific *api.Error (e.g. 0A000 for an unsupported INCLUDE /
+			// covering index) as its OWN SQLSTATE instead of masking it under 42F59. Java
+			// does not wrap in-template index errors either. A non-structured error wraps.
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				return 0, err
+			}
 			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
 		}
 	}

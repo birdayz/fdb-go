@@ -31,18 +31,18 @@ func TestFDB_IncludeClauseRejectedProbe(t *testing.T) {
 		if err == nil {
 			t.Fatalf("CREATE INDEX ... INCLUDE unexpectedly succeeded (must reject, not silently build a plain index)")
 		}
-		// In-template DDL errors are wrapped: the OUTER SQLSTATE is 42F59 (invalid
-		// schema-template object), with the specific cause (0A000 UNSUPPORTED_OPERATION)
-		// embedded in the message — e.g. `42F59: index: 0A000: index "T_A": INCLUDE
-		// clause (covering index) is not yet supported`. The 42F59 wrapping of every
-		// in-template index/column error (burying the specific code) is pre-existing and
-		// tracked in TODO.md. Pin BOTH the outer wrapper and the embedded cause.
+		// In-template index errors now PROPAGATE their specific SQLSTATE (RFC-161): the
+		// OUTER SQLSTATE is the cause's own code — 0A000 (UNSUPPORTED_OPERATION) for an
+		// unsupported INCLUDE / covering index — not the generic 42F59 "invalid schema
+		// template" wrapper. Java does the same (its DdlVisitor doesn't wrap; ExceptionUtil
+		// maps each exception to its specific ErrorCode). A `database/sql` caller doing
+		// SQLSTATE extraction now sees the real cause.
 		msg := err.Error()
-		if !strings.Contains(msg, "42F59") {
-			t.Errorf("INCLUDE error outer SQLSTATE = %v, want 42F59 (in-template wrapper)", err)
-		}
 		if !strings.Contains(msg, "0A000") {
-			t.Errorf("INCLUDE error embedded cause = %v, want 0A000 (covering not yet supported)", err)
+			t.Errorf("INCLUDE error SQLSTATE = %v, want 0A000 (covering not yet supported, propagated — not the 42F59 wrapper)", err)
+		}
+		if strings.Contains(msg, "42F59") {
+			t.Errorf("INCLUDE error should no longer carry the generic 42F59 wrapper: %v", err)
 		}
 		if !strings.Contains(strings.ToUpper(msg), "INCLUDE") {
 			t.Errorf("error should mention INCLUDE: %v", err)
