@@ -187,7 +187,7 @@ func executeScan(
 	// scan only that range. Mirrors Java's RecordQueryScanPlan.executePlan()
 	// which calls comparisons.toTupleRange() → store.scanRecords(range).
 	if comps := p.GetScanComparisons(); len(comps) > 0 {
-		tupleRange, err := scanComparisonsToTupleRange(comps, evalCtx)
+		tupleRange, err := scanComparisonsToTupleRange(comps, scanBindContext(evalCtx))
 		if err != nil {
 			return nil, fmt.Errorf("executor: building scan range for PK comparisons: %w", err)
 		}
@@ -268,7 +268,7 @@ func executeIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons(), evalCtx)
+	scanRange, err := scanComparisonsToTupleRange(p.GetScanComparisons(), scanBindContext(evalCtx))
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan range for %q: %w", p.GetIndexName(), err)
 	}
@@ -532,6 +532,22 @@ func toFloat64Scalar(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// scanBindContext returns the binder for evaluating scan-range comparands. It
+// must be a *RowEvalContext (via RowContext), NOT the bare *EvaluationContext:
+// an uncorrelated scalar subquery pushed as a scan bound is a ScalarSubqueryValue,
+// and ScalarSubqueryValue.Evaluate only reads its pre-computed result from a
+// *RowEvalContext's ScalarSubqueries map. Passing the bare *EvaluationContext made
+// it resolve to nil → an `id = NULL` bound → an empty scan (e.g.
+// `WHERE id = (SELECT MIN(id) FROM t)` returned 0 rows). RowContext still binds
+// parameters (BindParameter) and correlations, so this is a strict superset.
+// nil-safe (a nil evalCtx keeps the prior nil binder for the param-free unit path).
+func scanBindContext(evalCtx *EvaluationContext) values.ParameterBinder {
+	if evalCtx == nil {
+		return nil
+	}
+	return evalCtx.RowContext(nil)
 }
 
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {

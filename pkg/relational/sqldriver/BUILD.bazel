@@ -231,6 +231,7 @@ go_test(
         "scalar_subquery_correlation_probe_test.go",
         "scalar_subquery_cte_test.go",
         "scalar_subquery_noncorrelated_probe_test.go",
+        "scalar_subquery_scan_bound_fdb_test.go",
         "select_distinct_null_probe_test.go",
         "selfjoin_chain_probe_test.go",
         "selfjoin_having_probe_test.go",
