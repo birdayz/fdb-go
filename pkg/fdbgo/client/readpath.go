@@ -1042,11 +1042,11 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
-	value, readVersion, span, err := tx.WatchSetup(ctx, key)
+	value, readVersion, span, watchCtx, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		return err
 	}
-	return tx.WatchPoll(ctx, key, value, readVersion, span)
+	return tx.WatchPoll(watchCtx, key, value, readVersion, span)
 }
 
 // WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
@@ -1066,15 +1066,15 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 //     future goroutine runs — sending the watch at version 0, which can error or
 //     register incorrectly. So the read version is captured synchronously here and
 //     threaded through to sendWatch.
-func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, error) {
+func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, context.Context, error) {
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
-		return nil, 0, types.SpanContext{}, &wire.FDBError{Code: 1034} // watches_disabled
+		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
 
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, 0, types.SpanContext{}, err
+		return nil, 0, types.SpanContext{}, nil, err
 	}
 	tx.readVersionMu.Lock()
 	readVersion := tx.readVersion
@@ -1099,7 +1099,17 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// resolved the opposite way the finding suggested: the C++ source shows
 	// watch errors are deliberately excluded).
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
-	return value, readVersion, span, err
+	if err != nil {
+		return value, readVersion, span, nil, err
+	}
+	// Capture the watch context SYNCHRONOUSLY — same reason as readVersion/span above. The async
+	// WatchPoll must USE this context, not lazily fetch it in the future goroutine: a lazy
+	// getWatchCtx there races Cancel()/reset() (which nil watchCtx/watchCancel), and if cancelWatches
+	// runs first the poll mints a fresh, never-cancelled context → the watch goroutine + its storage
+	// reply handle leak. Binding it here (before the future goroutine spawns) guarantees a later
+	// Cancel/reset cancels the very context the poll holds, so it drains.
+	watchCtx := tx.getWatchCtx(ctx)
+	return value, readVersion, span, watchCtx, nil
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
@@ -1108,13 +1118,14 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 // (also captured by WatchSetup — NOT re-read from the possibly-reset transaction).
 // Retries on wrong_shard_server with cache invalidation. Intended to run in the
 // watch future's goroutine.
-func (tx *Transaction) WatchPoll(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext) error {
-	// Use the transaction's watch context so Reset()/Cancel() cancels in-flight watches.
-	// Matches C++ resetRyow() → resetPromise.sendError(transaction_cancelled).
-	// span is captured synchronously by WatchSetup and passed in (NOT re-read here): this
-	// runs in the async watch future, and re-reading tx.spanContext would race a concurrent
-	// commit/reset's regenerateSpan (RFC-115 §4 — same reason readVersion is passed in).
-	watchCtx := tx.getWatchCtx(ctx)
+func (tx *Transaction) WatchPoll(watchCtx context.Context, key, value []byte, readVersion int64, span types.SpanContext) error {
+	// watchCtx is captured SYNCHRONOUSLY by WatchSetup and passed in (NOT fetched here via
+	// getWatchCtx): this runs in the async watch future, so a lazy fetch would race
+	// Cancel()/reset()'s cancelWatches on watchCtx/watchCancel AND, if cancelWatches won, leak a
+	// never-cancelled poll. Binding at setup makes Reset()/Cancel() cancel the very context this
+	// loop holds — matching C++ resetRyow() → resetPromise.sendError(transaction_cancelled). span
+	// is likewise captured synchronously by WatchSetup (re-reading tx.spanContext here would race a
+	// concurrent commit/reset's regenerateSpan, RFC-115 §4).
 
 	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
 	// reused across the wrong-shard retry loop — matching C++ watchValue's single

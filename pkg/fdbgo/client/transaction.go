@@ -419,6 +419,12 @@ type Transaction struct {
 	// watchCtx/watchCancel: cancellable context for in-flight Watch calls.
 	// Created lazily on first Watch(). Cancelled on Reset()/reset() to match
 	// C++ resetRyow() which sends transaction_cancelled to pending watches.
+	// watchMu guards both fields: getWatchCtx (the synchronous WatchSetup capture)
+	// can run concurrently with cancelWatches (Cancel()/reset(), incl. the OnError
+	// retry path). The async WatchPoll no longer touches these — it uses the context
+	// captured synchronously by WatchSetup (threaded through), so a Cancel/reset
+	// always cancels the very context the poll holds (no lost-cancellation leak).
+	watchMu     sync.Mutex
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
 
@@ -1892,6 +1898,8 @@ func (tx *Transaction) SetSpanParent(b []byte) error {
 // watch context. Matches C++ resetRyow() which sends transaction_cancelled
 // through resetPromise to cancel pending watches.
 func (tx *Transaction) cancelWatches() {
+	tx.watchMu.Lock()
+	defer tx.watchMu.Unlock()
 	if tx.watchCancel != nil {
 		tx.watchCancel()
 		tx.watchCtx = nil
@@ -1903,6 +1911,8 @@ func (tx *Transaction) cancelWatches() {
 // reset/Reset. Created lazily — if no Watch is ever called, no context
 // is allocated.
 func (tx *Transaction) getWatchCtx(parent context.Context) context.Context {
+	tx.watchMu.Lock()
+	defer tx.watchMu.Unlock()
 	if tx.watchCtx == nil {
 		tx.watchCtx, tx.watchCancel = context.WithCancel(parent)
 	}
@@ -2604,13 +2614,30 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
-	tx.addReadConflict(begin, end)
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1977-1986): when RYW is DISABLED, add the
+	// full range directly (tr.addReadConflictRange, :1979); otherwise run updateConflictMap (:1986) —
+	// the write-map filter that SUBTRACTS locally-written independent segments (a plain Set before
+	// this explicit add was satisfied with no DB read, so it must not conflict). Mirrors the read
+	// path (getRangeDir) and addGetKeyConflictRange; without it Go over-conflicts → spurious 1020.
+	if tx.rywDisabled {
+		tx.addReadConflict(begin, end)
+		return nil
+	}
+	tx.ryw.mu.Lock()
+	ranges := tx.ryw.conflictRangesLocked(begin, end)
+	tx.ryw.mu.Unlock()
+	for _, r := range ranges {
+		tx.addReadConflict(r[0], r[1])
+	}
 	return nil
 }
 
-// AddReadConflictKey adds a read conflict on a single key.
+// AddReadConflictKey adds a read conflict on a single key. Like AddReadConflictRange it is filtered
+// through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
+// ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
+// the full single-key conflict directly (:1979). Identical to the Get-path helper, so delegate.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.addReadConflictForKey(key)
+	tx.addReadConflictForKeyRYW(key)
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).

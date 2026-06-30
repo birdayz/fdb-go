@@ -46,6 +46,7 @@ go_test(
     name = "client_test",
     timeout = "eternal",
     srcs = [
+        "addreadconflict_filter_test.go",
         "apiversion_atomic_test.go",
         "approxsize_accounting_test.go",
         "atomic_conflictrange_test.go",

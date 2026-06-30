@@ -281,7 +281,7 @@ func TestWatch_ValueCapturedSyncFiresAfterModify(t *testing.T) {
 	var captured []byte
 	var capturedRV int64
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		v, rv, _, err := tx.WatchSetup(ctx, key)
+		v, rv, _, _, err := tx.WatchSetup(ctx, key)
 		captured, capturedRV = v, rv
 		return nil, err
 	}); err != nil {
@@ -346,7 +346,7 @@ func TestWatch_ReadVersionSurvivesReset(t *testing.T) {
 
 	// Watch setup on a manual transaction; capture value + read version.
 	tx := db.CreateTransaction()
-	value, rv, _, err := tx.WatchSetup(ctx, key)
+	value, rv, _, _, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		t.Fatalf("WatchSetup: %v", err)
 	}

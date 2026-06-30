@@ -43,6 +43,20 @@ One commit, three independent libfdb_c divergences (all pinned, full pre-commit 
    - **For review (Torvalds):** `applyAtomic`'s `case MutSetValue` (ryw.go:1201-1202) is now DEAD —
      it was only reachable via `Atomic(MutSetValue)`. Left in as defensive code; candidate for removal.
 
+## Done — round 2 (committed, red→green proven)
+
+4. **Watch goroutine vs Cancel/Reset data race + lost-cancellation leak** (HIGH). `watchCtx`/
+   `watchCancel` accessed unsynchronized while the async WatchPoll fetched the context lazily in
+   the goroutine (racing Cancel/reset; if cancelWatches won, the poll minted a never-cancelled
+   context → leak). Fix: bind the watch context SYNCHRONOUSLY in WatchSetup (like readVersion/span)
+   and thread it through WatchPoll, so cancelWatches always cancels the ctx the poll holds; guard
+   both fields with `watchMu`. Pin: `TestWatch_GetWatchCtxCancelRaceFree` under `-race` (red→green:
+   WARNING: DATA RACE pre-fix). Touches the fdb facade Watch signature.
+5. **AddReadConflictRange/Key skip the RYW write-map filter** (MEDIUM, over-conflict → spurious
+   1020). Both APIs now route through `conflictRangesLocked` / `addReadConflictForKeyRYW` when RYW
+   is enabled (C++ updateConflictMap, ReadYourWrites.actor.cpp:1986); rywDisabled adds directly
+   (:1979). Pin: `TestAddReadConflict_FiltersSelfWrite` (white-box, red→green).
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)

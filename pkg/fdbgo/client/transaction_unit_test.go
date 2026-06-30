@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -647,6 +648,24 @@ func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
 	b := tx.getWatchCtx(context.Background())
 	if a != b {
 		t.Error("repeated getWatchCtx must return the same context until reset")
+	}
+}
+
+// TestWatch_GetWatchCtxCancelRaceFree pins the watchMu fix. getWatchCtx (the synchronous
+// WatchSetup capture) and cancelWatches (Cancel()/reset(), incl. the OnError retry path) touch
+// watchCtx/watchCancel, and the watch future runs concurrently with Cancel/reset by design.
+// Pre-fix these were plain unsynchronized field accesses → `go test -race` reported a data race.
+// MUST be run under -race to catch a regression. (The production race was additionally removed by
+// binding the watch context at WatchSetup so WatchPoll no longer fetches it in the goroutine.)
+func TestWatch_GetWatchCtxCancelRaceFree(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 200; i++ {
+		tx := newTestTx()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = tx.getWatchCtx(context.Background()) }()
+		go func() { defer wg.Done(); tx.Cancel() }()
+		wg.Wait()
 	}
 }
 
