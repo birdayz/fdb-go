@@ -81,6 +81,7 @@ go_test(
         "logical_builder_test.go",
         "logical_predicate_test.go",
         "logical_qualify_test.go",
+        "nulls_order_test.go",
         "parse_decimal_test.go",
         "plan_cache_planner_bench_test.go",
         "plan_cache_test.go",

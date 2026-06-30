@@ -211,12 +211,22 @@ by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs do
 
 ## 5. The 3 open hunt bugs — sequencing
 
-- **NULLS-ORDER** is a live wrong-*rows* bug → **fix it DIRECTLY and first**: extend
-  `RequestedSortOrder` with the NULLS axis (port Java `OrderingPart.RequestedSortOrder`:
-  `ASCENDING=ASC_NULLS_FIRST`, `DESCENDING=DESC_NULLS_LAST`, `ASCENDING_NULLS_LAST`,
-  `DESCENDING_NULLS_FIRST`, `ANY`) and thread NULL placement through `Ordering.Satisfies`.
-  This is a concrete ordering-model fix — *enumerated* by WS-5 and *pinned* by WS-2's
-  ordering check + WS-1's order-sensitive diff, but **not** "fixed through" an audit.
+- **[x] NULLS-ORDER — FIXED.** Restored the NULLS axis to `RequestedSortOrder`
+  (`AscendingNullsLast`, `DescendingNullsFirst` added; the existing `Ascending`/`Descending`
+  are the natural placements — Java `OrderingPart.RequestedSortOrder`), populated it from the
+  SQL `SortKey.NullsFirst`, and made the satisfaction path null-aware:
+  `IsCompatibleWithRequestedSortOrder` and the data-access `SatisfiesRequestedOrdering` now
+  require NULL placement to match, and the direction-reading sites use `IsAscending()`/
+  `IsDescending()`. An explicit non-natural `ORDER BY x NULLS LAST/FIRST` now RETAINS the
+  InMemorySort instead of being elided against an opposite-null-placement index. Surgical:
+  natural placements still elide. **Committed regressions:** `TestNullsOrder_ExplicitPlacementRetainsSort`
+  (plan: single- AND multi-key non-natural placements retain; natural placements elide) +
+  `TestFDB_OrderByNullsLast` (rows for BOTH non-natural directions — ASC NULLS LAST → NULL
+  last, DESC NULLS FIRST → NULL first — plus a multi-key case). Full embedded + sqldriver
+  green. Additionally, an *ad-hoc adversarial review sweep* (ephemeral agents over multi-key,
+  IN-join, set-ops, GROUP BY, reverse-scan, over-fix, and a completeness audit of every
+  RequestedSortOrder branch site) surfaced no defect — that was a review activity, not
+  committed regressions; the committed pins above are what guard the fix.
 - **COST-SELECTIVITY** and **NONDETERMINISM** are perf/stability (same rows) → ride WS-4
   (pin-then-fix): land the monotonicity invariant / the deterministic-tie seed, then flip
   the constants / make candidate iteration deterministic.

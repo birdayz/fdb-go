@@ -251,7 +251,7 @@ func (r *ImplementInJoinRule) enumerateSourceOrderingsForRequestedOrdering(
 
 		sorted := true
 		reverse := false
-		if part.SortOrder == RequestedSortOrderDescending {
+		if part.SortOrder.IsDescending() {
 			reverse = true
 		}
 

@@ -43,11 +43,13 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   a selective equality index, so `WHERE customer_id=42 AND amount>100` drives off `IDX_AMOUNT([<>])` not
 >   `IDX_CUSTOMER([=])`. Fix is a constant swap but changes index selection broadly → needs 1M stress before/after
 >   + plan-test updates. Repro: `embedded.PlanQueryForTest`.
-> - **[ ] NULLS-ORDER (high, wrong row order).** `rule_implement_sort.go` `sortExpressionToRequestedOrdering`
->   collapses each sort key to ASC/DESC and discards `NullsFirst`; `RequestedSortOrder` (`requested_ordering.go`)
->   has no NULLS variants, so `ORDER BY b ASC NULLS LAST` is satisfied by an ASC_NULLS_FIRST index → sort elided →
->   NULLs come first. Confirmed for ASC NULLS LAST (DESC NULLS FIRST is fine — keeps its sort). Fix: extend the
->   enum + `Satisfies` counterflow-nulls check (Java `OrderingPart.ProvidedSortOrder.isCompatibleWithRequestedSortOrder`).
+> - **[x] NULLS-ORDER — FIXED (PR pending).** Restored the NULLS axis to `RequestedSortOrder`
+>   (`AscendingNullsLast`/`DescendingNullsFirst`), populated it from `SortKey.NullsFirst`, and made
+>   `IsCompatibleWithRequestedSortOrder` + data-access `SatisfiesRequestedOrdering` null-aware (+ direction
+>   sites use `IsAscending()`/`IsDescending()`). `ORDER BY b ASC NULLS LAST` now retains the InMemorySort.
+>   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
+>   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
+>   review sweep (not committed regressions) found nothing.
 > - **[ ] PLAN-NONDETERMINISM (medium, flaky plans / cache churn).** `expressions/reference.go`
 >   `GetPartialMatchCandidates`/`GetAllPartialMatches` range over a Go map; equal-cost index ties (and the
 >   `GetBest` first-wins NLJ join-order tie) resolve by map-iteration order → 2–3 distinct plans across 200 runs
