@@ -101,7 +101,16 @@ func (w *physicalLimitWrapper) WithChildren(qs []expressions.Quantifier) (expres
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("physicalLimitWrapper.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil && isLeafReplaceable(innerPlan) {
+	// Always relink to the extracted inner — do NOT gate on isLeafReplaceable.
+	// LIMIT is a transparent unary cap; like the fetch/projection/in-memory-sort
+	// wrappers, WithChildren runs only at extraction where qs[0] resolves to the
+	// fully-formed winner. Gating on isLeafReplaceable (which excludes Projection,
+	// InJoin, etc.) left the eagerly-snapshotted nil-inner plan in place for a
+	// top-level `LIMIT` over a `Projection` over an IN-join data access, so
+	// `... WHERE c IN (...) LIMIT k` extracted `Limit(Project(Fetch(<nil>)))` /
+	// `Limit(Project(InJoin(<nil>)))` → 0 rows or an execution error. Same bug
+	// class the fetch wrapper fixed under RFC-070.
+	if innerPlan := findPhysicalPlan(qs[0].GetRangesOver()); innerPlan != nil {
 		// WithInner preserves the static OR runtime cap (limitValue) — rebuilding
 		// via NewRecordQueryLimitPlan(GetLimit,...) would silently drop a runtime
 		// parameterized cap and read the -1 sentinel as the literal limit.

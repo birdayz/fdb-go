@@ -92,8 +92,11 @@ func TestComputeDistinctRecords_DistinctPlanIsTrue(t *testing.T) {
 	}
 }
 
-func TestComputeDistinctRecords_UnionPlanIsTrue(t *testing.T) {
+func TestComputeDistinctRecords_UnionPlanIsFalse(t *testing.T) {
 	t.Parallel()
+	// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant — it must report
+	// non-distinct records, else an enclosing SELECT DISTINCT is wrongly elided
+	// and duplicates leak through.
 	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
 	up := plans.NewRecordQueryUnionPlan([]plans.RecordQueryPlan{scan})
 	scanW := &physicalScanWrapper{plan: scan}
@@ -101,8 +104,8 @@ func TestComputeDistinctRecords_UnionPlanIsTrue(t *testing.T) {
 	qs := []expressions.Quantifier{expressions.ForEachQuantifier(innerRef)}
 	uw := NewPhysicalUnionWrapper(up, qs)
 	got := computeDistinctRecords(uw, up)
-	if !got {
-		t.Fatal("union plan should produce distinct records")
+	if got {
+		t.Fatal("no-dedup UNION ALL plan must NOT report distinct records")
 	}
 }
 

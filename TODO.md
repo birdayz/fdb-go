@@ -8,6 +8,91 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 # NEXT
 
+> ## Cascades bug hunt (branch `hunt/cascades-bug-hunt`) — 9 confirmed bugs
+>
+> Multi-agent + differential hunt across the Cascades engine. 6 FIXED in this PR (red→green tests,
+> full `sqldriver` suite green); 3 OPEN below (riskier — own focused Graefe cycle each).
+>
+> **FIXED (this PR):**
+> - **[x] AGG-RESIDUAL (critical, wrong results).** `AggregateDataAccessRule` dropped any input filter
+>   predicate that wasn't a grouping-key equality (non-group column, or inequality) — aggregate read over
+>   ALL rows. `SELECT g,SUM(v) FROM ga WHERE f=1 GROUP BY g` returned the unfiltered sum. Fix: decline the
+>   aggregate-index match when a residual isn't a grouping-key equality (Java compensation = impossible) →
+>   StreamingAgg fallback. `rule_aggregate_data_access.go`. Pins: `TestFDB_AggIndexResidualDrop`,
+>   `TestBugHunt_AggregateIndexResidualNotDropped`.
+> - **[x] IN-LIMIT-NIL (critical, 0 rows / exec error).** `physicalLimitWrapper.WithChildren` gated relink on
+>   `isLeafReplaceable`, so `… WHERE c IN (…) LIMIT k` over a Projection kept the eager nil-inner snapshot →
+>   `Limit(Project(Fetch(<nil>)))` → 0 rows. Fix: always relink (the fetch wrapper's RFC-070 fix, applied to
+>   limit). `physical_limit_wrapper.go`. Pins: `TestFDB_InListLimitReturnsRows`, `TestBugHunt_InListLimitNoNilInner`.
+> - **[x] HAVING-PUSHDOWN (high, wrong results).** `predicateReferencesOnlyKeys` checked only the LHS, so
+>   `HAVING g > SUM(v)` was pushed below the GroupBy onto the raw scan. Fix: also require the RHS comparand to
+>   be key-only/constant. `rule_push_filter_through_groupby.go`. Pin: `TestBugHunt_HavingAggregateNotPushedBelowGroupBy`.
+> - **[x] COUNT-COL-COVERING (high, COUNT returns 0).** scalar `COUNT(col)` force-marked the index scan COVERING
+>   with zero columns → col read as NULL → COUNT=0. Fix: gate on a true COUNT(*) (mirror executor `isCountStar`).
+>   `rule_implement_streaming_agg.go`. Pin: `TestBugHunt_CountColumnNotForcedCovering`.
+> - **[x] DISTINCT-UNIONALL (high, duplicate rows).** `computeDistinctRecords` reported the no-dedup UNION ALL plan
+>   (`RecordQueryUnionPlan`) as distinct → `SELECT DISTINCT` over UNION ALL elided the dedup. Fix: report it
+>   non-distinct. `plan_properties.go`. Pin: `TestBugHunt_DistinctOverUnionAllKeepsDedup`.
+> - **[x] CAST-ROUND (low, Java parity).** `CAST(double AS INT/BIGINT)` used pre-Java-7 `floor(x+0.5)` →
+>   `0.49999999999999994` rounded to 1, `-0.5` to -1. Fix: faithful `java.lang.Math.round` bit-port.
+>   `values/values.go`. Pin: `TestBugHunt_CastDoubleToIntJavaRounding`.
+>
+> **OPEN (riskier — separate Graefe cycles; repros in PR):**
+> - **[ ] COST-SELECTIVITY (high, wrong index chosen).** `properties/cost.go`: `FilterSelectivity(equality)=0.5`
+>   > `RangeSelectivity=0.33` is inverted vs the code's own comment — a broad range index is costed cheaper than
+>   a selective equality index, so `WHERE customer_id=42 AND amount>100` drives off `IDX_AMOUNT([<>])` not
+>   `IDX_CUSTOMER([=])`. Fix is a constant swap but changes index selection broadly → needs 1M stress before/after
+>   + plan-test updates. Repro: `embedded.PlanQueryForTest`.
+> - **[ ] NULLS-ORDER (high, wrong row order).** `rule_implement_sort.go` `sortExpressionToRequestedOrdering`
+>   collapses each sort key to ASC/DESC and discards `NullsFirst`; `RequestedSortOrder` (`requested_ordering.go`)
+>   has no NULLS variants, so `ORDER BY b ASC NULLS LAST` is satisfied by an ASC_NULLS_FIRST index → sort elided →
+>   NULLs come first. Confirmed for ASC NULLS LAST (DESC NULLS FIRST is fine — keeps its sort). Fix: extend the
+>   enum + `Satisfies` counterflow-nulls check (Java `OrderingPart.ProvidedSortOrder.isCompatibleWithRequestedSortOrder`).
+> - **[ ] PLAN-NONDETERMINISM (medium, flaky plans / cache churn).** `expressions/reference.go`
+>   `GetPartialMatchCandidates`/`GetAllPartialMatches` range over a Go map; equal-cost index ties (and the
+>   `GetBest` first-wins NLJ join-order tie) resolve by map-iteration order → 2–3 distinct plans across 200 runs
+>   of the same query. Java uses an insertion-ordered `LinkedHashMultimap`. Fix: deterministic candidate order.
+>   `FuzzPlanner_Determinism` misses it (doesn't exercise equal-index ties). Rows are correct → medium.
+>
+> **Latent (not reachable today):** `ValueIndexScanMatchCandidate.createsDuplicates` is a dead field (always
+> false) so fan-out value-index access never emits the per-leg PK Distinct Java applies — but the embedded
+> metadata builder never emits a `FanType.FanOut` value index, so no SQL query reaches it. Wire a guard if/when
+> FanOut value indexes become expressible.
+>
+> ## RFC-164 — Port-fidelity drift: make this bug CLASS un-shippable (tracked workstream)
+>
+> Post-mortem of the hunt: every bug was a spot where Go reimplemented/simplified Java instead of porting 1:1,
+> dropping an invariant — and CI stayed green because the test gap is *dimensional* (each feature tested alone,
+> never in the combination that breaks it) and one test even pinned a bug. The deepest issue: port fidelity
+> isn't enforced by anything automated; the one net that could catch drift (the differential) is hand-fed.
+> Full analysis + acceptance criteria in `rfcs/164-port-fidelity-drift-detection.md` (v2, Graefe+Torvalds
+> reviewed). **Execution order = ships × leverage** (cheap always-on class-killers first, then the heavy net);
+> every found bug gets a committed minimized seed. Owner: query-engine cycle per WS.
+> - **[ ] WS-2 — Structural plan invariants** (highest ROI; always-on, Go-only CI). Each must run clean across
+>   the WHOLE existing corpus with ZERO runtime skip-lists (exemptions only as compile-time optional slots).
+>   - [ ] no `<nil>` child in the FINAL extracted plan (NOT memo members) — kills the ~20-wrapper relink class (IN-LIMIT). Land first.
+>   - [ ] `WithChildren(GetQuantifiers())` round-trip identity — most direct relink-class catch.
+>   - [ ] correlation/quantifier-binding completeness (no dangling correlation).
+>   - [ ] set-op comparison-key correctness; result-type/schema consistency; COVERING⊇referenced-fields (→ COUNT-COL).
+>   - NOT "DistinctRecords⇒has-dedup-node" (unsound — unique/PK/agg/streaming-agg/intersection are distinct w/o a node) → runtime no-dup or WS-3.
+> - **[ ] WS-3 — Single source of truth.** [ ] shared `isCountStar` + guard==consumer audit (cheap, first);
+>   [ ] port Java's `RecordQueryPlanVisitor` for plan properties (compile-time exhaustiveness) retiring the
+>   `plan_properties.go` switches; reconcile wrapper-held `unique`/`covering`. Graefe + Torvalds.
+> - **[ ] WS-1 — Generative Go-vs-Java row-level differential** (highest coverage; heavy-infra, nightly lane).
+>   ROW-drift only (plan-shape is WS-2/4); catches 7/10. Acceptance: [ ] schema engineered per bug (multi-key agg
+>   index, nullable+NULL sort cols, covering/non-covering pair); [ ] engine-acceptance skew classification;
+>   [ ] verify LIMIT path (JDBC setMaxRows? else IN-LIMIT drops to 6/10); [ ] corpus persistence + named lane +
+>   budget; [ ] mutation proof. Honest effort ~1-2wk (or narrow first cut 2-3d) — NOT 1 day. Torvalds + /code-review.
+> - **[ ] WS-4 — Property/metamorphic tests for Go-only paths.** [ ] cost monotonicity invariant (equality ≤ range);
+>   [ ] determinism via a COMMITTED deterministic cost-tie seed (not random fuzz); [ ] CI grep banning bare
+>   `range someMap` in plan code (defer the nogo analyzer). Graefe + Torvalds.
+> - **[ ] WS-5 — Audit & enumerate Go-only divergences in `DIVERGENCES.md`** ("what Java invariant does this drop?").
+>   Means "known reservoirs documented", not "all found". Graefe.
+>
+> Open hunt bugs: **NULLS-ORDER** is wrong-rows → fix DIRECTLY (extend `RequestedSortOrder` NULLS axis + thread
+> through `Ordering.Satisfies`), pinned by WS-2/WS-1 — not "through" the audit. COST-SELECTIVITY + NONDETERMINISM
+> ride WS-4 (pin-then-fix). Closing them WITH the nets that would have caught them is the test the workstream works.
+
 > **[ ] BUG (query-engine, wrong results, Graefe-gated) — local residual silently DROPPED on GROUP-BY over a
 > correlated join.** `SELECT o.id, COUNT(*) FROM o, t WHERE t.fk = o.id AND t.k = 5 GROUP BY o.id` plans
 > IDENTICALLY with and without `AND t.k = 5` → `StreamingAgg(keys=[O.ID], InMemorySort(…, FlatMap(outer=Scan(T),
