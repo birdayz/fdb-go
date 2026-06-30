@@ -93,7 +93,22 @@ Java tie-breaks with `planHash(PlanHashable.CURRENT_FOR_CONTINUATION)` — the *
 
 **Phase 3 — Prune every physical child ref to one concrete member.** Verify no physical ref reaches extraction with a multi-member exploratory `members` slice that `findPhysicalPlan` would scan first (`AllMembers = members ++ finalMembers`). This makes the first-member scan moot in production, mirroring Java's `getOnlyElement`. The live extraction path is `ExtractBestPlanFromSelector`→`rebuildExpressionFromSelectorVisited` (singleton refs), so the real tie is the per-Reference `Winner` stamp + the `extract.go` `GetBest` fallback — both must carry the structural tiebreak.
 
-**Phase 4 — Ordering-gate the primary-key intersector (CORRECTNESS — land FIRST/atomically with Phase 1).** Port Java's common-ordering gate into `WithPrimaryKeyIntersector`: stop discarding `requestedOrderings`; compute the merged INTERSECTION ordering (`Ordering.merge(...,INTERSECTION)` + `enumerateSatisfyingComparisonKeyValues` + `isCompatibleComparisonKey`, `WithPrimaryKeyDataAccessRule.java:112-200`) and emit only when all legs share a common pk ordering. Drops `Intersection(idx_a[=], idx_b[>])`; keeps the all-equality intersection. **If Go lacks `Ordering.merge(INTERSECTION)`, that port is a prerequisite, not an inline approximation.**
+**Phase 4 — Ordering-gate the primary-key intersector (CORRECTNESS — land with Phase 1b).** Port Java's common-ordering gate into `WithPrimaryKeyIntersector`: stop discarding `requestedOrderings`; compute the merged INTERSECTION ordering (`Ordering.merge(...,INTERSECTION)` + `enumerateSatisfyingComparisonKeyValues` + `isCompatibleComparisonKey`, `WithPrimaryKeyDataAccessRule.java:112-200`) and emit only when all legs share a common pk ordering. Drops `Intersection(idx_a[=], idx_b[>])`; keeps the all-equality intersection.
+
+> **IMPLEMENTATION BLOCKER (found while attempting Phase 4 — see OQ#6).** Two leg-level gate
+> formulations were tried and reverted, both breaking `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix`:
+> (a) a crude "every index column equality-bound" check; (b) the *proper* per-leg check
+> `computeWrapperRichOrdering(leg).Satisfies(pkRequested)`. Both correctly drop the value-range
+> leg (`idx_b[b>10]` → `(b,pk)` order) but ALSO drop the **vector leg** of a partition-inequality
+> vector intersection (RFC-046): the vector scan's `HintRichOrdering` reports *distance-rank*
+> order, not pk order, so any pk-order leg gate excludes it → the query becomes unplannable. Yet
+> on master that intersection plans (and presumably executes correctly). So **a vector leg validly
+> participates in a pk-keyed intersection despite its static ordering ≠ pk** — the execution
+> (vector cursor / RFC-046 partition merge) must reconcile it. The correct gate cannot be a blanket
+> per-leg pk-order check; it needs Java's `enumerateSatisfyingComparisonKeyValues` semantics, which
+> account for how each candidate type participates, AND resolution of OQ#6 (does the vector leg's
+> records actually arrive pk-ordered at the merge, or does the intersection plan re-sort?). **Phase 4
+> is blocked on OQ#6; do not ship a leg-level pk-order gate.**
 
 **Phase 5 — North star (separate gated RFC, tracked with an expiry).** Eliminate shells: migrate the 8 push-through sites to eager `memoizePlan` and delete the relink machinery. Pure-internal (no wire impact). Documented in DIVERGENCES.md.
 
@@ -117,6 +132,7 @@ The synthesized design claimed "1M stress NOT required for Phases 1–3 — tie 
 3. **Does Go have `Ordering.merge(INTERSECTION)` / `enumerateSatisfyingComparisonKeyValues`?** If not, building it 1:1 from Java is a Phase-4 prerequisite.
 4. **Set-op staleness:** verify set-op `WithChildren` rebuilds children from the fresh quantifiers rather than retaining the stale eager `w.plan` (`physical_wrapper.go:1351/1450`, `physical_unordered_union_wrapper.go:62`); the stale-children retention is a latent correctness smell independent of determinism.
 5. **Cross-engine:** confirm no continuation is expected to be re-planned across Go/Java engines (decides §5 (i) vs (ii)).
+6. **Vector-leg participation in a pk-keyed intersection (BLOCKS Phase 4).** `TestVectorPlan_PartitionInequalityNotConsumedIntoPrefix` (RFC-046) plans an intersection whose **vector** leg reports *distance-rank* order from `HintRichOrdering`, not pk order — yet the pk-keyed `RecordQueryIntersectionPlan` is emitted and (apparently) correct. Both a crude and a proper per-leg pk-order gate were tried and reverted because they drop this vector leg → unplannable. Resolve: does the vector cursor actually yield pk-ordered records at the merge (so the gate should consult execution-order, not `HintRichOrdering`), or does the intersection plan re-sort, or is the vector intersection a different (non-sorted-merge) shape that should be exempt from the pk-order gate entirely? Until this is answered, **no leg-level pk-order gate is correct** — the fix must follow Java's `enumerateSatisfyingComparisonKeyValues`, which encodes per-candidate-type participation. (OQ#2 — whether the value-range pk-merge is even reachable / wrong-rows — should be confirmed first; if `MaximumCoverageMatches` already prevents it, Phase 4 may reduce to an optimality gate, not a correctness one.)
 
 ## 10. Status of the already-landed work
 
