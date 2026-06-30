@@ -105,7 +105,19 @@ renames still rejected), so no existing store/evolution is affected.
 One commit on the RFC-135 branch (PR #336): the validator changes + `rename_fields_visitor.go` + tests.
 No proto/wire change. R2–R8 remain separate.
 
-## 8. Residual follow-up — port the missing `RenameFieldsVisitorTest` shapes (test-depth gap)
+## 8. Residual follow-up — port the missing `RenameFieldsVisitorTest` shapes (test-depth gap) — DONE (RFC-157)
+
+**Closed by RFC-157.** Most of this §8 was already stale by the time RFC-157 picked it up: the
+per-node-type shapes (`Grouping`/`Function`/`Split`/`Dimensions`/`KeyWithValue`/`List`/nested
+`RecordType`/`Version`/`Literal`/`Empty`/fan-type) and all four error/default arms had already been
+ported into the `renameFields` `Describe` block. The one genuinely-missing axis — the nested-descriptor
+re-derivation (`messageTypeForField`) at depth ≥ 2 and the `childSource==childTarget` short-circuit
+(dead across two independently-built files) — was closed by RFC-157 with six specs: depth-2 leaf,
+mid-chain parent, same-name-different-type, shared-nested (merged-record), asymmetric merge/split
+(`renameSplitRecord`), and the shared-dependency short-circuit. Verified by revert: dropping the
+per-level re-derivation fails all six (the re-derivation specs are behavioral revert-probes; the
+short-circuit spec is branch-coverage only, since line-28's `sourceDesc==targetDesc` guard covers
+that arm). The original (now-historical) gap description follows.
 
 The functional port is complete and merged, but the unit coverage of `RenameFieldsVisitor` is shallower
 than Java's. Java's `RenameFieldsVisitorTest.java` is parameterized across 11 shapes
