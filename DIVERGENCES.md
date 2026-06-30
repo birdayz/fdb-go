@@ -142,7 +142,7 @@ All 16 criteria ported. Criterion-by-criterion analysis:
 | 15. FlatMap join ordering | Compare outer child cardinalities | `compareFlatMapJoinOrdering` compares outer quantifier cardinalities | Aligned |
 | 15b. FlatMap vs NLJ | (none) | `compareFlatMapVsNLJ` — FlatMap beats NLJ | **Go-only** — workaround until `advancePlannerStage` is ported |
 | 15c. Scalar cost fallback | (none) | `EstimateCostWith` comparison | **Go-only** — breaks ties the ordinal criteria can't resolve |
-| 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `deepHashCode()` recursive | Aligned |
+| 16. Plan hash tiebreak | planHash(CURRENT_FOR_CONTINUATION) | `costExprHash`→`concretePlanHash`/`exprConcreteHash` (FNV) | **Shape-aligned, NOT byte-aligned** (RFC-167 §5) — both break cost ties by a structural plan hash so each engine is *intra-engine* stable, but Go uses an FNV hash (RFC-024 cache key) ≠ Java's `planHash(CURRENT_FOR_CONTINUATION)`, so Go and Java may pick **different** tie-winner indexes for the same query (rows identical; EXPLAIN may differ). Convergence is deferred until cross-engine continuation re-planning is a requirement (RFC-167 OQ#5). |
 
 Go-only criteria 15b and 15c are workarounds for the missing `advancePlannerStage`. Java's OptimizeGroup prunes finalMembers to a single winner — ties are rare. Go's flat member list has more competing plans, requiring tiebreakers. Audited: removing criterion #12 guard causes GROUP BY regression (covering index scan penalized by unmatched trailing fields), removing criteria 15b/15c causes JOIN regression (NLJ chosen over FlatMap without real statistics).
 

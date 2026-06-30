@@ -15,17 +15,25 @@ package embedded
 // order per range, so repeated in-process plannings expose order-dependence) and
 // requires ONE distinct plan.
 //
-// KNOWN-REMAINING (tracked in TODO.md as a multi-shift item, NOT closed here):
-// a multi-equality tie over several single-column indexes (e.g.
-// `WHERE a=5 AND b=7 AND c=9` with idx_a/idx_b/idx_c) is still nondeterministic.
-// Root cause is deeper and architectural: nil-inner "shell" wrappers (Fetch and
-// PredicatesFilter push-through templates) are costed without their eventual
-// inner so they rank artificially cheap, and the extraction relink
-// (findPhysicalPlan) resolves a shell's inner to the FIRST physical member of the
-// child reference by member-iteration order — so on a cost tie the relinked index
-// varies. The complete fix requires consistent shell handling across selection
-// AND extraction with total-order tie resolution; rows are always correct (it is
-// plan churn, not a wrong-rows bug), hence medium priority.
+// RFC-167 Phase 1 (inner-aware shell hash) additionally fixes the multi-equality
+// tie over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` with
+// idx_a/idx_b/idx_c). Those three competing plans are SAME-TYPE nil-inner shells
+// (Fetch(PredicatesFilter(IndexScan))) whose embedded plan has GetChildren()==[],
+// so the bare concretePlanHash criterion-#17 tie-break was blind to the buried
+// index and the comparator returned a tie → selection fell to member-iteration
+// order. costExprHash now resolves the shell's inner STRUCTURALLY through the
+// quantifier graph (exprConcreteHash), surfacing the index identity so the
+// tie-break is a true total order and the cost-min is deterministic. Pure
+// tie-resolution — no plan-shape re-ranking (the cheapest member, a single-index
+// shell, still wins, now deterministically).
+//
+// DECOUPLED FOLLOW-ON (RFC-167 Phases 2-4): making shells stop winning over real
+// plans (the guard generalization) re-ranks the all-equality case to a 3-way
+// Intersection, which requires the primary-key ordering-gate (Phase 4) to be
+// correct — and that gate must use the full ordering machinery (a crude
+// "all-columns-equality-bound" gate breaks vector/partition-inequality cases).
+// Set-op / reverse-scan ties (which the hash fix already covers via the same
+// exprConcreteHash) get explicit nets there. Those are NOT in this change.
 
 import (
 	"testing"
@@ -41,6 +49,21 @@ CREATE INDEX idx1 ON T(a)
 CREATE INDEX idx2 ON T(a)`
 
 	assertSinglePlan(t, "SELECT id FROM t WHERE a = 5", schema, 200)
+}
+
+func TestPlanDeterminism_MultiEqualityShellTie(t *testing.T) {
+	t.Parallel()
+	// Three single-column indexes, three equality predicates: the competing plans
+	// are same-type nil-inner shells whose buried index the #17 tie-break couldn't
+	// see — the canonical RFC-167 multi-equality leak. The inner-aware shell hash
+	// (Phase 1) makes it deterministic.
+	const schema = `
+CREATE TABLE T (id BIGINT NOT NULL, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_a ON T(a)
+CREATE INDEX idx_b ON T(b)
+CREATE INDEX idx_c ON T(c)`
+
+	assertSinglePlan(t, "SELECT id FROM t WHERE a = 5 AND b = 7 AND c = 9", schema, 200)
 }
 
 func assertSinglePlan(t *testing.T, sql, schema string, runs int) {
