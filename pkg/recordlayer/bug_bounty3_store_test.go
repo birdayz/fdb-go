@@ -665,27 +665,24 @@ var _ = Describe("BugBounty3Store", func() {
 	})
 
 	// =========================================================================
-	// BUG #7: DryRunSaveRecord validates lock state but DryRunDeleteRecord
-	// does not — inconsistent API behavior
+	// BUG #7 (RE-FRAMED — the original was a WRONG read of Java): NEITHER
+	// DryRunSaveRecord NOR DryRunDeleteRecord validates store-lock state.
 	//
-	// Severity: incorrect behavior ($100)
-	// Location: store_api.go:258-260 (DryRunSaveRecord) vs 289-307 (DryRunDeleteRecord)
-	//
-	// Description: DryRunSaveRecord calls validateRecordUpdateAllowed() at
-	// line 258, meaning it returns StoreIsLockedForRecordUpdatesError when
-	// the store is locked. DryRunDeleteRecord does NOT call this validation.
-	//
-	// Java's behavior: dryRunDeleteRecordAsync skips lock validation (it
-	// delegates to loadTypedRecord which only checks existence). So Go's
-	// DryRunDeleteRecord is actually correct.
-	//
-	// However, DryRunSaveRecord calls validateRecordUpdateAllowed(), which
-	// differs from Java's behavior. Java's dryRunSaveRecordAsync (via
-	// saveTypedRecord with isDryRun=true) DOES check the lock. So both
-	// Go methods match Java's behavior. No bug here — test documents the
-	// asymmetric but intentional design.
+	// The original BUG7 comment claimed "Java's dryRunSaveRecordAsync (via
+	// saveTypedRecord with isDryRun=true) DOES check the lock" and asserted that
+	// DryRunSaveRecord must return StoreIsLockedForRecordUpdatesError on a locked
+	// store. That is FALSE: Java's saveTypedRecord(isDryRun=true) early-returns at
+	// FDBRecordStore.java:578 — BEFORE validateRecordUpdateAllowed(recordStoreState)
+	// at line 584 (which lives only in the non-dry-run continuation). So a Java DRY
+	// RUN INSERT/UPDATE on a FORBID_RECORD_UPDATE-locked store PREVIEWS SUCCESS, and
+	// dryRunDeleteRecordAsync skips the check too (line 1735). The old assertion
+	// pinned Go being STRICTER than Java — a conformance divergence (Graefe caught
+	// it on the RFC-158 pre-merge review). DryRunSaveRecord no longer calls
+	// validateRecordUpdateAllowed; this test now pins the Java-faithful behavior for
+	// BOTH dry-run methods. (Real saves are still lock-rejected — see
+	// store_state_test.go "previews a DRY RUN save/delete …".)
 	// =========================================================================
-	It("BUG7-not-a-bug: DryRunSaveRecord checks lock, DryRunDeleteRecord does not — matches Java", func() {
+	It("BUG7-reframed: neither DryRunSaveRecord nor DryRunDeleteRecord checks the lock — matches Java", func() {
 		ks := specSubspace()
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -712,17 +709,17 @@ var _ = Describe("BugBounty3Store", func() {
 				"maintenance")
 			Expect(err).NotTo(HaveOccurred())
 
-			// DryRunSaveRecord should return lock error (matches Java)
-			_, err = store.DryRunSaveRecord(
+			// DryRunSaveRecord PREVIEWS success on a locked store — Java's isDryRun
+			// path early-returns before the lock check (NOT a lock error).
+			stored, err := store.DryRunSaveRecord(
 				&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)},
 				RecordExistenceCheckNone,
 			)
-			Expect(err).To(HaveOccurred())
-			var lockErr *StoreIsLockedForRecordUpdatesError
-			Expect(err).To(BeAssignableToTypeOf(lockErr),
-				"DryRunSaveRecord should return StoreIsLockedForRecordUpdatesError")
+			Expect(err).NotTo(HaveOccurred(),
+				"DryRunSaveRecord must preview success on a locked store (Java early-returns before validateRecordUpdateAllowed)")
+			Expect(stored).NotTo(BeNil())
 
-			// DryRunDeleteRecord should succeed (matches Java)
+			// DryRunDeleteRecord likewise previews (already correct, matches Java).
 			exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(exists).To(BeTrue(),

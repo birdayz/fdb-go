@@ -732,7 +732,13 @@ var _ = Describe("FDBRecordStore API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("detects lock state without writing", func() {
+		It("previews on a locked store without checking lock state (Java-faithful)", func() {
+			// RFC-158 / Graefe: Java's saveTypedRecord(isDryRun=true) early-returns at
+			// FDBRecordStore.java:578, BEFORE validateRecordUpdateAllowed (line 584). So a
+			// DRY RUN previews SUCCESS on a FORBID_RECORD_UPDATE-locked store — checking the
+			// lock here made Go stricter than Java. (This test previously asserted the lock
+			// error, pinning that divergence.) The real save IS still lock-rejected; see
+			// store_state_test.go + the OverrideLockSaveRecord spec below.
 			ks := specSubspace()
 			builder := baseMetaData()
 			md, err := builder.Build()
@@ -747,21 +753,24 @@ var _ = Describe("FDBRecordStore API", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// DryRun should fail with lock error.
+			// DryRun PREVIEWS success (no lock check), returning the would-be stored record.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
 
-				_, err = store.DryRunSaveRecord(
+				stored, derr := store.DryRunSaveRecord(
 					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 					RecordExistenceCheckNone,
 				)
-				return nil, err
+				if derr != nil {
+					return nil, derr
+				}
+				Expect(stored).NotTo(BeNil())
+				return nil, nil
 			})
-			Expect(err).To(HaveOccurred())
-			var lockErr *StoreIsLockedForRecordUpdatesError
-			Expect(errors.As(err, &lockErr)).To(BeTrue())
+			Expect(err).NotTo(HaveOccurred(),
+				"DryRunSaveRecord must preview success on a locked store (Java early-returns before the lock check)")
 		})
 	})
 
