@@ -187,7 +187,7 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 	// comparand makes buildAggScanPrefix.Merge fail to bind while the guard still
 	// marks the predicate "consumed", silently dropping it (wrong rows). A rare
 	// genuinely-correlated bound is conservatively declined too.
-	if comparandReadsField(cp.Comparison.Operand) {
+	if valueReadsField(cp.Comparison.Operand) {
 		return -1
 	}
 	for i, col := range groupCols {
@@ -198,11 +198,11 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 	return -1
 }
 
-// comparandReadsField reports whether v references a record field anywhere in
+// valueReadsField reports whether v references a record field anywhere in
 // its tree (i.e. it is not a pure literal/parameter constant the index scan can
 // bind to). A bare literal, a parameter, or a cast/arithmetic over constants
 // returns false; anything containing a FieldValue returns true.
-func comparandReadsField(v values.Value) bool {
+func valueReadsField(v values.Value) bool {
 	if v == nil {
 		return false
 	}
@@ -210,7 +210,7 @@ func comparandReadsField(v values.Value) bool {
 		return true
 	}
 	for _, c := range v.Children() {
-		if comparandReadsField(c) {
+		if valueReadsField(c) {
 			return true
 		}
 	}

@@ -81,10 +81,16 @@ condition matrix; run through the Go embedded engine **and** the Java conformanc
 - **Scope (state it):** **row-drift only.** A correct-but-different plan (a perf
   regression, covering↔non-covering returning identical rows) is invisible here — that's
   WS-2/WS-4's job. Plan-tree diff is normalization-heavy (different operator names/EXPLAIN
-  formats) and stays advisory.
+  formats) and stays advisory. The row comparison MUST be **order-sensitive for ORDER BY
+  queries** (compare the row *sequence*, not a set) — otherwise NULLS-ORDER, a pure
+  ordering bug, is invisible even with NULL data, and the mutation proof in (e) silently
+  fails to guard it.
 - **Catches (row-drift):** AGG-RESIDUAL, HAVING-PUSHDOWN, COUNT-COL, DISTINCT-UNIONALL,
-  NULLS-ORDER, CAST-ROUND, and the `region=status` instance. **Misses:** COST-SELECTIVITY
-  and NONDETERMINISM (same rows). **IN-LIMIT-NIL is conditional** — see acceptance (c).
+  NULLS-ORDER (only with the order-sensitive comparison above), and the `region=status`
+  instance. CAST-ROUND only if value generation is **boundary-aware** (a random generator
+  won't emit `0.49999999999999994`) — it's unit-pinned regardless, so not load-bearing
+  here. **Misses:** COST-SELECTIVITY and NONDETERMINISM (same rows). **IN-LIMIT-NIL is
+  conditional** — see acceptance (c).
 - **Acceptance:**
   (a) **Schema engineered to reach each bug surface** — a *multi-key* aggregate index
       (`SUM(v) GROUP BY a,b`), *nullable* sort columns *with NULL data*, and a
@@ -120,9 +126,11 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   every future per-wrapper relink bug across all ~20 wrappers at once. Highest-ROI single
   check; land it first.
 - [ ] **`WithChildren(GetQuantifiers())` round-trip identity.** Re-linking a node with its
-  own quantifiers must reproduce the node. The most *direct* catch for the whole relink
-  class (more so than the nil check — it also catches a relink that swaps in a
-  mismatched-alias child).
+  own quantifiers must reproduce the node — by **semantic** equality
+  (`EqualsWithoutChildren` + same children), NOT pointer identity, so a node that
+  legitimately re-derives its result type doesn't false-positive. The most *direct* catch
+  for the whole relink class (more so than the nil check — it also catches a relink that
+  swaps in a mismatched-alias child).
 - [ ] **Correlation / quantifier-binding completeness.** Every `CorrelationIdentifier`
   referenced in the final plan is bound by an enclosing quantifier (no dangling
   correlation). A first-order Cascades invariant; catches relink/translation bugs

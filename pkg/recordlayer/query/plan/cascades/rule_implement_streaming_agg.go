@@ -239,7 +239,7 @@ func isCountOnlyAggregation(aggs []expressions.AggregateSpec) bool {
 		if a.Operand == nil {
 			continue // COUNT(*)
 		}
-		if comparandReadsField(a.Operand) {
+		if valueReadsField(a.Operand) {
 			return false // COUNT(col) / COUNT(expr-over-col) needs the field
 		}
 		// COUNT(<constant>) reads no base-record field — covering is safe.
