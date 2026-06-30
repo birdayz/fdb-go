@@ -1080,6 +1080,17 @@ primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
 replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
 metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
 
+**DESIGN READY — see RFC-162 (needs Graefe ACK before impl).** Prototyped end-to-end and PROVED the
+approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
+sensitive Cascades `values` file) and touches the **wire format** — so it needs a Graefe design review
+first, not a rushed multi-site landing. WIRE VERIFIED: `tuple.UUID = msb‖lsb big-endian` =
+Java `TupleUtil.encode(UUID)` = `0x30 + msb(8B BE) + lsb(8B BE)` (`UUID_CODE=0x30`), consistent with
+`query_result.go:uuidMessageToString`. The 6 sites (with exact code) + the RFC-083/PromoteValue
+open question are in RFC-162. Partial landing is UNSAFE (enabling the index without every probe/
+projection site makes `SELECT v WHERE v=…` / covering `SELECT v` silently wrong — worse than the
+current clean XX000). Stub to implement first: `key_expression_validate.go:isTupleField` (currently
+`return false`).
+
 ### [ ] query-engine: nested derived tables drop ALIAS-introduced column names beyond one level (likely Go divergence, found 2026-06-28)
 
 Derived tables (subquery in FROM) are supported and cross-engine-tested (plandiff
