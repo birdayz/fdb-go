@@ -39,11 +39,12 @@ func TestAnsiRosterIntegrity(t *testing.T) {
 	}
 }
 
-// TestAnsiCorpusTagsClean is the exercised-not-exists guard against the real
+// TestAnsiLedgerEvidenceExists is the exercised-not-exists guard against the real
 // corpus: every `# ansi:` tag must sit on a scenario with a passing test and
-// every `# ansi-gap:` on a scenario with an unsupported pin. A mis-tag here is a
-// fake checkbox and fails the build.
-func TestAnsiCorpusTagsClean(t *testing.T) {
+// every `# ansi-gap:` on a scenario with an unsupported pin (and a positive tag
+// coexisting with an unsupported pin must declare the gap — the cross-feature
+// guard). A mis-tag here is a fake checkbox and fails the build.
+func TestAnsiLedgerEvidenceExists(t *testing.T) {
 	t.Parallel()
 	_, violations, err := collectAnsiEvidence("testdata")
 	if err != nil {
@@ -80,4 +81,68 @@ func TestAnsiEvidenceGuardBites(t *testing.T) {
 	if len(violations) == 0 {
 		t.Fatal("evidence guard did not bite: `# ansi: E051` on a scenario with no passing test produced no violation")
 	}
+}
+
+// TestAnsiCrossFeatureGuard pins the cross-feature rule (the "NULLIF credited by
+// COALESCE" trap codex caught): a scenario with a positive `# ansi:` tag AND an
+// unsupported-feature pin, but no `# ansi-gap:` tag, must be flagged — the
+// passing test might exercise a sibling feature, not the tagged one.
+func TestAnsiCrossFeatureGuard(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mixed := "name: mixed\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT COALESCE(id, 0) FROM t\n" +
+		"    rows: [[0]]\n" +
+		"  - query: SELECT NULLIF(id, 0) FROM t\n" +
+		"    error_code: \"42883\"\n" +
+		"# ansi: F261-04\n" // positive tag, but the scenario also rejects NULLIF and declares no gap
+	if err := os.WriteFile(filepath.Join(dir, "mixed.yaml"), []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, violations, err := collectAnsiEvidence(dir)
+	if err != nil {
+		t.Fatalf("collect ANSI evidence: %v", err)
+	}
+	if !containsSubstr(violations, "no `# ansi-gap:`") {
+		t.Fatalf("cross-feature guard did not fire on positive tag + unsupported pin with no gap tag; got %v", violations)
+	}
+}
+
+// TestAnsiConflictGuard pins the conflict rule: the same feature ID cannot be
+// tagged both `# ansi:` (supported) and `# ansi-gap:` (unsupported).
+func TestAnsiConflictGuard(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	conflict := "name: conflict\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT id FROM t\n" +
+		"    rows: [[1]]\n" +
+		"  - query: SELECT bad FROM t\n" +
+		"    error_code: \"0A000\"\n" +
+		"# ansi: E051\n" +
+		"# ansi-gap: E051\n"
+	if err := os.WriteFile(filepath.Join(dir, "conflict.yaml"), []byte(conflict), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, violations, err := collectAnsiEvidence(dir)
+	if err != nil {
+		t.Fatalf("collect ANSI evidence: %v", err)
+	}
+	if !containsSubstr(violations, "tagged both") {
+		t.Fatalf("conflict guard did not fire on same-ID pos+gap; got %v", violations)
+	}
+}
+
+func containsSubstr(ss []string, sub string) bool {
+	for _, s := range ss {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }

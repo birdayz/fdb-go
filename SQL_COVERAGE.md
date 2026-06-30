@@ -15,27 +15,27 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**319 scenarios · 2512 test cases** — 2244 supported (89.3%), 92 unsupported-feature pins, 176 error-path pins.
+**319 scenarios · 2512 test cases** — 2222 supported (88.5%), 94 unsupported-feature pins, 196 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 298 | 274 | 14 | 10 | 91.9% |
+| Aggregates & GROUP BY | 298 | 271 | 14 | 13 | 90.9% |
 | Joins | 264 | 255 | 3 | 6 | 96.6% |
 | Subqueries (EXISTS / IN / scalar) | 281 | 238 | 27 | 16 | 84.7% |
-| CTEs | 85 | 64 | 6 | 15 | 75.3% |
-| Set operations (UNION / INTERSECT / EXCEPT) | 47 | 40 | 4 | 3 | 85.1% |
-| DML (INSERT / UPDATE / DELETE) | 194 | 180 | 1 | 13 | 92.8% |
+| CTEs | 85 | 62 | 6 | 17 | 72.9% |
+| Set operations (UNION / INTERSECT / EXCEPT) | 47 | 38 | 5 | 4 | 80.9% |
+| DML (INSERT / UPDATE / DELETE) | 194 | 179 | 1 | 14 | 92.3% |
 | Ordering & pagination | 114 | 95 | 15 | 4 | 83.3% |
-| Scalar functions & expressions | 346 | 308 | 14 | 24 | 89.0% |
+| Scalar functions & expressions | 346 | 307 | 14 | 25 | 88.7% |
 | Predicates & WHERE | 104 | 102 | 0 | 2 | 98.1% |
 | Column resolution & aliasing | 55 | 29 | 0 | 26 | 52.7% |
-| NULL handling | 26 | 24 | 0 | 2 | 92.3% |
+| NULL handling | 26 | 22 | 0 | 4 | 84.6% |
 | NULL handling & boolean logic | 48 | 48 | 0 | 0 | 100.0% |
 | Index usage | 162 | 159 | 1 | 2 | 98.1% |
 | Types | 144 | 128 | 0 | 16 | 88.9% |
-| Keys & primary keys | 132 | 128 | 0 | 4 | 97.0% |
-| Error codes & validation | 37 | 17 | 1 | 19 | 45.9% |
+| Keys & primary keys | 132 | 127 | 0 | 5 | 96.2% |
+| Error codes & validation | 37 | 7 | 2 | 28 | 18.9% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
 | Other | 155 | 135 | 6 | 14 | 87.1% |
-| **Total** | **2512** | **2244** | **92** | **176** | **89.3%** |
+| **Total** | **2512** | **2222** | **94** | **196** | **88.5%** |
 

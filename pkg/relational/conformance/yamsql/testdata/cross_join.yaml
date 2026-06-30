@@ -42,6 +42,3 @@ tests:
     rows:
       - [10, 100]
       - [20, 200]
-
-# ANSI conformance tags (RFC-165 Ledger A):
-# ansi: F041-01

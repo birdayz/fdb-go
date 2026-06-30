@@ -2514,3 +2514,11 @@ scenario moves a row from `untested` to a real status. The drift guard
 (`TestAnsiLedgerEvidenceExists`) rejects a tag whose scenario lacks the matching outcome, so the
 scoreboard can't lie. As Go closes a gap, flip happens automatically when the new feature's scenario
 is tagged — never by hand-editing the doc.
+
+**RFC-165 follow-ups (tracked, non-blocking):**
+- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+      `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
+      SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
+      but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
+      conformance server so the fact becomes *verified*, not asserted, and flag any mismatch. Per
+      Torvalds + Graefe review of PR #400.

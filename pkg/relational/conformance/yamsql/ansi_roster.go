@@ -286,7 +286,7 @@ var ansiCoreRoster = []AnsiFeature{
 	},
 	{ID: "F261-01", Name: "Simple CASE", Core: true, Java: SupportNone, Note: "Java visitCaseExpressionFunctionCall is a no-op; Go evaluates correctly"},
 	{ID: "F261-02", Name: "Searched CASE", Core: true, Java: SupportFull},
-	{ID: "F261-03", Name: "NULLIF", Core: true, Java: SupportFull},
+	{ID: "F261-03", Name: "NULLIF", Core: true, Java: SupportNone, Note: "rejected 42883 — no function-registry entry (both engines)"},
 	{ID: "F261-04", Name: "COALESCE", Core: true, Java: SupportFull},
 
 	// ── F311 Schema definition statement ── Java: fdb CREATE SCHEMA (TEMPLATE) variant.

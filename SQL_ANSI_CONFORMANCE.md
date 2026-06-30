@@ -15,10 +15,15 @@ passing case, never a hand-typed status. For the measured corpus number see `SQL
 **Axes** (RFC-165 §4.2): `Java?` × `Go?`. The headline is keyed on **`Go?` only** —
 a feature only Java has is never counted as Go-supported.
 
+Counting follows PostgreSQL Appendix D: every Core row (parent **and** subfeature) counts. A
+parent's status is *derived* from its subfeatures (partial = some supported), so a parent-level
+"supported" is slightly more generous than PG's binary per-row assessment — but the number is
+reproducible and drift-guarded, never hand-typed.
+
 > **Denominator (pinned fact):** SQL:2023 Core as enumerated by PostgreSQL 18 = **176** mandatory
 > feature/subfeature rows (it was 177 in PG13–15; `F812` "Basic flagging" lost Core status in PG16).
 
-This ledger tracks **176** Core rows. **39** are N/A for an embedded record-layer SQL surface (cursors, table privileges, host-language binding, modules, SQL-invoked routines). Of the **137 applicable** Core rows: **Go supports 33** (28 shared-parity + 5 Go-only extension); **3 shared gaps** (roadmap); **0 port-fidelity divergences** (Java has it, Go rejects it → RFC-164); **101 not yet tagged** (Phase 1 — these are unknown, not gaps).
+This ledger tracks **176** Core rows. **39** are N/A for an embedded record-layer SQL surface (cursors, table privileges, host-language binding, modules, SQL-invoked routines). Of the **137 applicable** Core rows: **Go supports 32** (27 shared-parity + 5 Go-only extension); **4 shared gaps** (roadmap); **0 port-fidelity divergences** (Java has it, Go rejects it → RFC-164); **101 not yet tagged** (Phase 1 — these are unknown, not gaps).
 
 | Identifier | Core? | Feature | Java? | Go? | Routing | Evidence |
 |---|:---:|---|:---:|:---:|---|---|
@@ -144,8 +149,8 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | F031-13 | ✓ | DROP TABLE statement: RESTRICT clause | yes | untested | untested (Phase 1) | — |
 | F031-16 | ✓ | DROP VIEW statement: RESTRICT clause | partial | untested | untested (Phase 1) | — |
 | F031-19 | ✓ | REVOKE statement: RESTRICT clause | no | untested | untested (Phase 1) | — |
-| F041 | ✓ | Basic joined table | yes | partial | shared parity | cross_join |
-| F041-01 | ✓ | Inner join (but not necessarily the INNER keyword) | yes | yes | shared parity | cross_join |
+| F041 | ✓ | Basic joined table | yes | partial | shared parity | join_chained |
+| F041-01 | ✓ | Inner join (but not necessarily the INNER keyword) | yes | yes | shared parity | join_chained |
 | F041-02 | ✓ | INNER keyword | yes | untested | untested (Phase 1) | — |
 | F041-03 | ✓ | LEFT OUTER JOIN | yes | untested | untested (Phase 1) | — |
 | F041-04 | ✓ | RIGHT OUTER JOIN | yes | untested | untested (Phase 1) | — |
@@ -171,10 +176,10 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | F181 | ✓ | Multiple module support | no | untested | N/A (out of engine scope) | — |
 | F201 | ✓ | CAST function | yes | yes | shared parity | cast |
 | F221 | ✓ | Explicit defaults | no | untested | untested (Phase 1) | — |
-| F261 | ✓ | CASE expression | partial | yes | shared parity | case_when, coalesce_nullif |
+| F261 | ✓ | CASE expression | partial | partial | shared parity | case_when, coalesce_nullif |
 | F261-01 | ✓ | Simple CASE | no | yes | Go-only ext | case_when |
 | F261-02 | ✓ | Searched CASE | yes | yes | shared parity | case_when |
-| F261-03 | ✓ | NULLIF | yes | yes | shared parity | coalesce_nullif |
+| F261-03 | ✓ | NULLIF | no | no | shared gap → backlog | — |
 | F261-04 | ✓ | COALESCE | yes | yes | shared parity | coalesce_nullif |
 | F311 | ✓ | Schema definition statement | partial | untested | untested (Phase 1) | — |
 | F311-01 | ✓ | CREATE SCHEMA | yes | untested | untested (Phase 1) | — |

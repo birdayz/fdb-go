@@ -174,6 +174,28 @@ func collectAnsiEvidence(dir string) (map[string]*ansiTagEvidence, []string, err
 		}
 		hasPos := scenarioHasOutcome(s, OutcomeSupported)
 		hasGap := scenarioHasOutcome(s, OutcomeUnsupported)
+		// Cross-feature guard (the "NULLIF credited by COALESCE" trap): a
+		// scenario-level positive tag only proves the scenario has *some* passing
+		// test — that test might exercise a DIFFERENT feature than the tagged one.
+		// So when a scenario both carries a positive `# ansi:` tag AND pins an
+		// unsupported feature, it MUST also declare an `# ansi-gap:` tag, forcing
+		// the author to identify which feature is rejected (else a rejected
+		// feature gets silently credited by a sibling feature's passing test).
+		if len(pos) > 0 && hasGap && len(gaps) == 0 {
+			violations = append(violations, fmt.Sprintf("%s: carries a positive `# ansi:` tag and an "+
+				"unsupported-feature pin but no `# ansi-gap:` tag — declare which feature is rejected "+
+				"(a positive tag must not be credited by a different feature's passing test)", name))
+		}
+		// Conflict guard: the same ID cannot be both supported and a gap.
+		gapSet := make(map[string]bool, len(gaps))
+		for _, id := range gaps {
+			gapSet[id] = true
+		}
+		for _, id := range pos {
+			if gapSet[id] {
+				violations = append(violations, fmt.Sprintf("%s: `%s` is tagged both `# ansi:` and `# ansi-gap:`", name, id))
+			}
+		}
 		for _, id := range pos {
 			if !hasPos {
 				violations = append(violations, fmt.Sprintf("%s: `# ansi: %s` but scenario has no supported (positive) test", name, id))
@@ -283,6 +305,15 @@ const (
 // popUntested — explicitly NOT a divergence: a divergence requires an actual Go
 // rejection pin (SupportNone) proving Go diverges from a Java-supported feature,
 // not the mere absence of a tag.
+//
+// Per RFC-165 §4.6, a Java=Full/Go=Partial row routes to popSharedParity
+// (Partial counts as supported()), surfacing the subfeature-level divergence in
+// the row comment rather than the headline. That is correct for PARENT rows
+// (their Partial is a rollup). An *atomic subfeature* carrying both a positive
+// and a gap tag (Go=Partial) under Java=Full would be misrouted to parity rather
+// than flagged — but that can't reach here: the conflict guard rejects the same
+// ID tagged `# ansi:`+`# ansi-gap:`, and the cross-feature guard rejects a
+// positive tag coexisting with an undeclared unsupported pin.
 func (r AnsiRow) population() ansiPopulation {
 	if r.Go == SupportUntested {
 		return popUntested
@@ -384,6 +415,10 @@ func RenderAnsiLedger(l *AnsiLedger) string {
 	b.WriteString("passing case, never a hand-typed status. For the measured corpus number see `SQL_COVERAGE.md`.\n\n")
 	b.WriteString("**Axes** (RFC-165 §4.2): `Java?` × `Go?`. The headline is keyed on **`Go?` only** —\n")
 	b.WriteString("a feature only Java has is never counted as Go-supported.\n\n")
+	b.WriteString("Counting follows PostgreSQL Appendix D: every Core row (parent **and** subfeature) counts. A\n")
+	b.WriteString("parent's status is *derived* from its subfeatures (partial = some supported), so a parent-level\n")
+	b.WriteString("\"supported\" is slightly more generous than PG's binary per-row assessment — but the number is\n")
+	b.WriteString("reproducible and drift-guarded, never hand-typed.\n\n")
 
 	b.WriteString("> **Denominator (pinned fact):** SQL:2023 Core as enumerated by PostgreSQL 18 = **176** mandatory\n")
 	b.WriteString("> feature/subfeature rows (it was 177 in PG13–15; `F812` \"Basic flagging\" lost Core status in PG16).\n\n")

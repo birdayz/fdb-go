@@ -33,5 +33,7 @@ tests:
       - [4, ~]
 
 # ANSI conformance tags (RFC-165 Ledger A):
-# ansi: F261-03
+# NULLIF (F261-03) is rejected by fdb-relational (42883, no function-registry
+# entry) — pin it as a gap, NOT supported. COALESCE (F261-04) works.
+# ansi-gap: F261-03
 # ansi: F261-04

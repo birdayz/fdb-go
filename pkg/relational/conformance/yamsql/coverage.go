@@ -64,7 +64,7 @@ const (
 // classifyTest buckets a single test by its declared outcome. Typed fields
 // only — never the SQL text.
 func classifyTest(t Test) Outcome {
-	code := strings.TrimSpace(t.ErrorCode)
+	code := strings.TrimSpace(t.EffectiveErrorCode())
 	if code == "" {
 		return OutcomeSupported
 	}
