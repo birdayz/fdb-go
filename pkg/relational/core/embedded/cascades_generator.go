@@ -1839,12 +1839,19 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 	// Register PrimaryScanMatchCandidates for each record type's PK.
 	// Mirrors Java's RecordStoreScope which creates a PrimaryScanMatchCandidate
 	// from the common primary key.
+	// Deterministic (name-sorted) iteration: RecordTypes() is a Go map; ranging it
+	// directly left both the availableRecordTypes list handed to every primary-scan
+	// candidate AND the candidate order dependent on Go's randomised map order — the
+	// same nondeterminism class as the index map below (RFC-164 NONDETERMINISM / see
+	// RFC-167). Moot for single-table queries; this hardens the multi-table path.
 	allTypes := c.md.RecordTypes()
 	allTypeNames := make([]string, 0, len(allTypes))
 	for name := range allTypes {
 		allTypeNames = append(allTypeNames, name)
 	}
-	for _, rt := range allTypes {
+	sort.Strings(allTypeNames)
+	for _, name := range allTypeNames {
+		rt := allTypes[name]
 		if rt.PrimaryKey == nil {
 			continue
 		}
@@ -1872,7 +1879,7 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 	// (name-sorted) order: GetAllIndexes returns a Go map, and ranging it directly
 	// made the match-candidate order — and thus equal-cost tie resolution — depend
 	// on Go's randomised map iteration, producing 2-3 distinct plans for one query
-	// (RFC-164 NONDETERMINISM). Java keeps indexes in a stable order; sorting by
+	// (RFC-164 NONDETERMINISM / see RFC-167). Java keeps indexes in a stable order; sorting by
 	// index name restores that. (The partialMatchMap insertion-order fix in
 	// reference.go is downstream of this; both are needed.)
 	allIndexes := c.md.GetAllIndexes()

@@ -62,7 +62,7 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   `partialMatchMap` is now iterated in first-insertion order (companion `partialMatchOrder` slice, mirrors
 >   Java `LinkedHashMultimap`); (2) `cascades_generator.go` `metadataPlanContext.GetMatchCandidates` now sorts
 >   `RecordMetaData.GetAllIndexes()` (a Go map) by index name. Pinned by `TestPlanDeterminism_EqualCostIndexTie`
->   (2 indexes on one column, 200 runs, one plan). **REMAINING (multi-shift, tracked):** a multi-equality tie
+>   (2 indexes on one column, 200 runs, one plan). **REMAINING (multi-phase, tracked):** a multi-equality tie
 >   over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` / idx_a,idx_b,idx_c) is still
 >   nondeterministic. Root cause: nil-inner *shell* wrappers (Fetch + PredicatesFilter push-through templates)
 >   are costed without their eventual inner → rank artificially cheap; and the extraction relink

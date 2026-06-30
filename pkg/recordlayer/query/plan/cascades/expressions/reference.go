@@ -59,7 +59,7 @@ type Reference struct {
 	// is deterministic, mirroring Java's insertion-ordered LinkedHashMultimap.
 	// Ranging over partialMatchMap directly made equal-cost index ties resolve by
 	// Go's randomised map order → 2-3 distinct plans for one query (RFC-164
-	// NONDETERMINISM). The map stays for O(1) lookup; this slice fixes the order.
+	// NONDETERMINISM / see RFC-167). The map stays for O(1) lookup; this slice fixes the order.
 	partialMatchOrder []any
 
 	// winners stores per-properties best plans following Graefe 1995 §2.
