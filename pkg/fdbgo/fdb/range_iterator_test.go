@@ -5,12 +5,69 @@ package fdb_test
 // modes, and edge cases around empty ranges and single-element results.
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
+
+// TestRangeIterator_RowLimitUnlimitedAndInvalid pins the Iterator row-limit fix. Limit=-1
+// (ROW_LIMIT_UNLIMITED) must return ALL rows — like GetSliceWithError and libfdb_c — not an empty
+// result; Limit<=-2 must surface range_limits_invalid (2012), matching the GetSlice path. Pre-fix
+// the Iterator bailed on a non-positive row budget → 0 rows + nil for both, a silent wrong answer
+// that also contradicted GetSliceWithError on the same input.
+func TestRangeIterator_RowLimitUnlimitedAndInvalid(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	pfx := "iter_rowlimit_"
+	const n = 10
+	if _, err := db.Transact(func(tr gofdb.WritableTransaction) (any, error) {
+		for i := 0; i < n; i++ {
+			tr.Set(gofdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte("v"))
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	kr := gofdb.KeyRange{Begin: gofdb.Key(pfx + "00"), End: gofdb.Key(pfx + "99")}
+
+	if _, err := db.ReadTransact(func(rtr gofdb.ReadTransaction) (any, error) {
+		// Limit=-1 → unlimited: Iterator and GetSliceWithError must AGREE (all n rows).
+		slice, serr := rtr.GetRange(kr, gofdb.RangeOptions{Limit: -1}).GetSliceWithError()
+		if serr != nil {
+			return nil, serr
+		}
+		if len(slice) != n {
+			t.Fatalf("GetSlice(Limit:-1): got %d rows, want %d", len(slice), n)
+		}
+		iter := rtr.GetRange(kr, gofdb.RangeOptions{Limit: -1}).Iterator()
+		cnt := 0
+		for iter.Advance() {
+			iter.MustGet()
+			cnt++
+		}
+		if _, e := iter.Get(); e != nil {
+			return nil, e
+		}
+		if cnt != n {
+			t.Fatalf("Iterator(Limit:-1) must return all %d rows (unlimited), got %d — diverges from GetSlice", n, cnt)
+		}
+
+		// Limit=-2 → range_limits_invalid (2012), matching GetSlice / libfdb_c.
+		it2 := rtr.GetRange(kr, gofdb.RangeOptions{Limit: -2}).Iterator()
+		it2.Advance()
+		_, e2 := it2.Get()
+		var fe gofdb.Error
+		if !errors.As(e2, &fe) || fe.Code != 2012 {
+			t.Fatalf("Iterator(Limit:-2) must surface range_limits_invalid (2012), got %v", e2)
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+}
 
 // TestRangeIterator_ReversePaging verifies that iterating in reverse with a
 // small batch size correctly pages through all results. This exercises the

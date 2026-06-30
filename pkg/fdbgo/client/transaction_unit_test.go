@@ -669,6 +669,51 @@ func TestWatch_GetWatchCtxCancelRaceFree(t *testing.T) {
 	}
 }
 
+// TestOnError_RespectsTimeoutDeadline pins the SetTimeout-bounded OnError fix (entry gate). A
+// SetTimeout transaction whose deadline already passed must surface transaction_timed_out (1031)
+// from OnError IMMEDIATELY — not sleep a full (growing) backoff and signal a retry (nil), which
+// overshoots the declared timeout by up to one backoff. Matches C++ RYWImpl::onError's entry
+// timebomb check (ReadYourWrites.actor.cpp:1506). Revert-proof: without the entry gate,
+// OnError(not_committed) on an expired txn sleeps ~10ms then returns nil.
+func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now().Add(-1 * time.Second)
+	tx.SetTimeout(500) // deadline = creationTime+500ms → 500ms in the PAST
+	if tx.checkTimeout() == nil {
+		t.Fatal("setup: deadline should already be expired")
+	}
+	start := time.Now()
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
+	elapsed := time.Since(start)
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
+		t.Fatalf("OnError past the deadline must return transaction_timed_out (1031), got %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("OnError past the deadline must not sleep a backoff, took %v", elapsed)
+	}
+}
+
+// TestBackoffSleepBounded_CapsAtDeadline pins the timebomb-race half (ReadYourWrites.actor.cpp:1517):
+// a backoff longer than the remaining timeout is cut short at the deadline and surfaces 1031.
+func TestBackoffSleepBounded_CapsAtDeadline(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now()
+	tx.SetTimeout(50) // deadline ~50ms out
+	start := time.Now()
+	err := tx.backoffSleepBounded(context.Background(), 5*time.Second) // would otherwise sleep 5s
+	elapsed := time.Since(start)
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
+		t.Fatalf("backoffSleepBounded must surface 1031 when the deadline cuts the sleep, got %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("backoffSleepBounded must abort at the ~50ms deadline, took %v", elapsed)
+	}
+}
+
 // ============================================================================
 // Helpers — tiny utilities for these tests only. (bytesEqual lives in
 // commitpath_unit_test.go and is shared across all client_test files.)

@@ -1961,6 +1961,27 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// backoffSleepBounded sleeps for `delay`, but never past the SetTimeout deadline: a backoff that
+// would cross creationTime+timeout is cut short and surfaces transaction_timed_out (1031), matching
+// C++ RYWImpl::onError which races the backoff delay() against the timebomb (resetPromise,
+// ReadYourWrites.actor.cpp:1517) so the wait aborts the moment the deadline passes. With no timeout
+// set it is exactly backoffSleep. A genuine parent-ctx cancellation still surfaces ctx.Err().
+func (tx *Transaction) backoffSleepBounded(ctx context.Context, delay time.Duration) error {
+	if tx.timeout <= 0 {
+		return backoffSleep(ctx, delay)
+	}
+	bctx, cancel := context.WithDeadline(ctx, tx.deadline)
+	defer cancel()
+	if err := backoffSleep(bctx, delay); err != nil {
+		// The deadline fired (not the caller's ctx) → 1031, matching the timebomb race.
+		if ctx.Err() == nil && time.Now().After(tx.deadline) {
+			return &wire.FDBError{Code: ErrTransactionTimedOut}
+		}
+		return err
+	}
+	return nil
+}
+
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable
 // or ctx.Err() if ctx fires during the backoff sleep.
@@ -1971,6 +1992,15 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 	// cancelled handle — a real divergence (RFC-068).
 	if cerr := tx.checkCancelled(); cerr != nil {
 		return cerr // transaction_cancelled (1025)
+	}
+	// The SetTimeout deadline out-ranks the retry: C++ RYWImpl::onError throws transaction_timed_out
+	// at entry if the timebomb already fired (ReadYourWrites.actor.cpp:1506) — BEFORE classifying the
+	// input error. Without this, a SetTimeout txn under contention sleeps a full (growing) backoff and
+	// does one extra reset+retry before the NEXT op's checkTimeout surfaces 1031, overshooting the
+	// declared timeout. Non-retryable; mark errored and return.
+	if cerr := tx.checkTimeout(); cerr != nil {
+		tx.state.Store(int32(txStateErrored))
+		return cerr // transaction_timed_out (1031)
 	}
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
@@ -2014,7 +2044,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		if tx.db != nil {
 			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
-		if cerr := backoffSleep(ctx, delay); cerr != nil {
+		if cerr := tx.backoffSleepBounded(ctx, delay); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
@@ -2031,7 +2061,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		if tx.db != nil {
 			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
-		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
@@ -2059,7 +2089,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		if tx.db != nil {
 			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
-		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
@@ -2080,7 +2110,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) error {
 		if tx.db != nil {
 			tx.db.countRetryAndLog(ctx, fdbErr.Code, tx.retryCount)
 		}
-		if cerr := backoffSleep(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
+		if cerr := tx.backoffSleepBounded(ctx, tx.nextBackoff(fdbErr.Code)); cerr != nil {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}

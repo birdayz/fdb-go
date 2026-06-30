@@ -59,10 +59,12 @@ func keyAfter(k []byte) []byte {
 	return result
 }
 
-// effectiveLimit returns the limit to use for a range read.
-// Apple API: Limit=0 means unlimited.
+// effectiveLimit returns the row budget to use for a range read. Apple API: Limit=0 means
+// unlimited; ROW_LIMIT_UNLIMITED=-1 ALSO means unlimited (FDBTypes.h:728, isReached()==false for
+// -1). A row limit < -1 is range_limits_invalid (2012) and is rejected by the callers (the client
+// getRangeDir for GetSlice; Iterator() explicitly) — never normalized here.
 func effectiveLimit(limit int) int {
-	if limit == 0 {
+	if limit == 0 || limit == -1 {
 		return math.MaxInt32
 	}
 	return limit
@@ -120,6 +122,13 @@ func (rr goRangeResult) Iterator() RangeIterator {
 	begin, end, err := resolveRange(rr.tx, rr.r)
 	if err != nil {
 		return &goRangeIterator{err: convertError(err)}
+	}
+	// ROW_LIMIT_UNLIMITED is -1; anything below is range_limits_invalid (2012), matching the
+	// GetSlice path (client getRangeDir) and libfdb_c (RYW getRange isValid). Reject here: the
+	// iterator's Advance bails on a non-positive row budget, so an unvalidated Limit<=-2 would
+	// otherwise return zero rows + nil — a silent wrong answer that also contradicts GetSlice.
+	if rr.options.Limit < -1 {
+		return &goRangeIterator{err: Error{Code: client.ErrRangeLimitsInvalid}}
 	}
 	return &goRangeIterator{
 		rr:        rr,

@@ -57,6 +57,20 @@ One commit, three independent libfdb_c divergences (all pinned, full pre-commit 
    is enabled (C++ updateConflictMap, ReadYourWrites.actor.cpp:1986); rywDisabled adds directly
    (:1979). Pin: `TestAddReadConflict_FiltersSelfWrite` (white-box, red→green).
 
+## Done — round 3 (committed, red→green proven)
+
+6. **OnError backoff not bounded by the SetTimeout deadline** (MEDIUM). A timed-out txn slept a
+   full (growing) backoff and did one extra reset+retry before surfacing 1031. Fix: (a) an entry
+   gate `checkTimeout()` in OnError (C++ RYWImpl::onError :1506 throws timed_out at entry); (b)
+   `backoffSleepBounded` caps each backoff at the deadline → 1031 (C++ :1517 timebomb race). Pin:
+   `TestOnError_RespectsTimeoutDeadline` + `TestBackoffSleepBounded_CapsAtDeadline` (red→green).
+7. **Iterator() returns empty for Limit=-1 (ROW_LIMIT_UNLIMITED) and Limit<=-2** (MEDIUM, facade).
+   `-1` is unlimited (return all), `<=-2` is range_limits_invalid (2012). Fix: `effectiveLimit`
+   maps `-1`→MaxInt; `Iterator()` rejects `<-1` with 2012 (matching GetSlice/client + libfdb_c).
+   Pin: `TestRangeIterator_RowLimitUnlimitedAndInvalid` (red→green; pre-fix Iterator(-1)→0 rows).
+
+Also written: **RFC-165** (watch-at-committed-version design, Draft — needs FDB-C-dev ACK).
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)
