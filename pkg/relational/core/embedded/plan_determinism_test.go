@@ -36,6 +36,7 @@ package embedded
 // exprConcreteHash) get explicit nets there. Those are NOT in this change.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,12 +63,14 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 	t.Parallel()
 	const marker = "XPROCPLAN:"
 
-	// Child mode: plan once in this fresh process, print the plan, return.
+	// Child mode: plan once in this fresh process, print the plan, return. A
+	// planning error exits NON-ZERO (not a marker) so a deterministic error can't
+	// false-green the parent's "all samples identical" check (codex/Graefe/Torvalds).
 	if os.Getenv("FDB_DET_CHILD") == "1" {
 		plan, err := PlanQueryForTest(multiEqQuery, multiEqSchema, nil)
 		if err != nil {
-			fmt.Printf("%sERROR:%v\n", marker, err)
-			return
+			fmt.Fprintf(os.Stderr, "child planning error: %v\n", err)
+			os.Exit(2)
 		}
 		fmt.Printf("%s%s\n", marker, plan)
 		return
@@ -84,9 +87,15 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 		cmd.Env = append(os.Environ(), "FDB_DET_CHILD=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			// Harness couldn't re-exec the test binary (e.g. restricted sandbox) —
-			// skip rather than fail spuriously; the in-process test still pins the fix.
-			t.Skipf("cross-process harness could not run (subprocess %d: %v)\n%s", i, err, out)
+			// Distinguish "child RAN and FAILED" (planning error / panic / assertion →
+			// exit non-zero → *exec.ExitError) from "couldn't START the binary" (restricted
+			// sandbox). The former is a real regression and must FAIL the parent; only the
+			// latter skips. Skipping a child failure would let CI miss it (codex P2).
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				t.Fatalf("cross-process subprocess %d ran but failed (%v):\n%s", i, err, out)
+			}
+			t.Skipf("cross-process harness could not start (subprocess %d: %v)", i, err)
 		}
 		plan := ""
 		for _, line := range strings.Split(string(out), "\n") {
