@@ -80,11 +80,23 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   filter") — because **(3) the standalone `Filter(region>r1, VectorTopK)` plan is never GENERATED**: a partitioned
 >   vector scan (`partitionCount>0`) returns `EmitsOrderedStream()==false` (vector_index_match_candidate.go:139), so
 >   it is NOT excluded from the intersection (planner.go:628 RFC-156 guard) AND its only residual-bearing shape is the
->   intersection — there is no ordered-stream `Limit→Filter→ordered-scan` (RFC-156 Phase B) composition for the
->   partitioned case. **The real fix:** extend the un-partitioned ordered-stream + Filter composition to the
->   partitioned-WITH-partition-residual case (so the partition-inequality vector query plans to `Limit(k) →
->   Filter(region>r1) → VectorScan(ordered, fanout)`), THEN gate the intersection (pieces 1+2). This is an RFC-046/156
->   vector-planning change — substantial, needs the K>1 FDB rows pin + the existing vector suite green + 1M stress.
+>   intersection — there is no realization path building a `Filter` over a self-limiting vector scan (the compensation
+>   is blocked/non-realizable, so only the intersection ever carries the residual). **The real fix (Graefe-corrected —
+>   the earlier `Limit(k)→Filter→ordered-scan` framing was WRONG):** do NOT switch to ordered-stream + a global
+>   `Limit(k)` — a global Limit over a fanout stream returns the k nearest rows across ALL surviving partitions and
+>   DROPS whole partitions (e.g. `region>'r1'` spanning r2,r3 with per-partition `<=2` must return 2 from r2 AND 2 from
+>   r3 = 4 rows; global `Limit(2)` returns the 2 nearest overall, possibly both from r2, dropping r3). That is the
+>   deferred Phase E per-partition-top-k trap (`vector_index_match_candidate.go:307-310`) and a NEW wrong-rows bug.
+>   Instead, **keep the scan SELF-LIMITING** (per-partition top-k stays enforced inside the maintainer's per-partition
+>   HNSW search) and **realize a partition-contiguous `Filter` directly above it**: `Filter(region>r1) →
+>   VectorScan(self-limiting per-partition top-k, fanout prefix=[z1,*])`. The self-limiting fanout returns top-k for
+>   every region in z1 in region order; the partition-column Filter drops whole regions ≤ r1; survivors are exactly
+>   top-k per region for region>r1. The index-only-residual error resolves naturally: the self-limiting scan still
+>   consumes the DistanceRank in its binding (`rank<=k`), so only `region>r1` (non-index-only) remains for the Filter.
+>   So Piece 3 is NOT "extend ordered-stream to partitioned" — it is "realize a partition-contiguous Filter over the
+>   self-limiting per-partition scan" (Piece 2 already certifies its safety). THEN gate the intersection (pieces 1+2).
+>   The K>1 pin must assert the winning plan is `Filter(...) → VectorIndexScan(... rank<=k ...)` (self-limiting), NOT
+>   an ordered scan. RFC-046/156 vector-planning change — needs the K>1 FDB rows pin + the existing vector suite green + 1M stress.
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
