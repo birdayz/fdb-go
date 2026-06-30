@@ -139,12 +139,23 @@ func scenarioHasOutcome(s Scenario, want Outcome) bool {
 // scenario actually has an unsupported pin. This is the exercised-not-exists
 // guard (RFC-165 §4.3): a tag with no matching outcome is reported as an error,
 // not silently accepted.
-func collectAnsiEvidence(dir string) (map[string]*ansiTagEvidence, []string, error) {
+func collectAnsiEvidence(dir string, roster []AnsiFeature) (map[string]*ansiTagEvidence, []string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, nil, err
 	}
 	sort.Strings(matches)
+	// known is the set of valid roster IDs (parents + subfeatures). A tag for an
+	// ID NOT in this set is a typo (`E0511`, `E051-1`) that would otherwise
+	// silently credit nothing — BuildAnsiLedger iterates the roster, not the
+	// tags, so the real feature stays untested and the typo is invisible. Flag it.
+	known := make(map[string]bool)
+	for _, f := range roster {
+		known[f.ID] = true
+		for _, sub := range f.Subfeatures {
+			known[sub] = true
+		}
+	}
 	ev := map[string]*ansiTagEvidence{}
 	var violations []string
 	get := func(id string) *ansiTagEvidence {
@@ -197,6 +208,10 @@ func collectAnsiEvidence(dir string) (map[string]*ansiTagEvidence, []string, err
 			}
 		}
 		for _, id := range pos {
+			if !known[id] {
+				violations = append(violations, fmt.Sprintf("%s: `# ansi: %s` — unknown ANSI ID, not in the roster (typo?)", name, id))
+				continue
+			}
 			if !hasPos {
 				violations = append(violations, fmt.Sprintf("%s: `# ansi: %s` but scenario has no supported (positive) test", name, id))
 				continue
@@ -204,6 +219,10 @@ func collectAnsiEvidence(dir string) (map[string]*ansiTagEvidence, []string, err
 			get(id).positive = append(get(id).positive, name)
 		}
 		for _, id := range gaps {
+			if !known[id] {
+				violations = append(violations, fmt.Sprintf("%s: `# ansi-gap: %s` — unknown ANSI ID, not in the roster (typo?)", name, id))
+				continue
+			}
 			if !hasGap {
 				violations = append(violations, fmt.Sprintf("%s: `# ansi-gap: %s` but scenario has no unsupported-feature pin", name, id))
 				continue
@@ -241,6 +260,7 @@ func rollupGo(f AnsiFeature, ev map[string]*ansiTagEvidence) (Support, []string)
 	var evidence []string
 	if e := ev[f.ID]; e != nil {
 		evidence = append(evidence, e.positive...)
+		evidence = append(evidence, markGaps(e.gaps)...)
 	}
 	if len(f.Subfeatures) == 0 {
 		return direct, evidence
@@ -250,6 +270,7 @@ func rollupGo(f AnsiFeature, ev map[string]*ansiTagEvidence) (Support, []string)
 		s := deriveGo(ev[sub])
 		if e := ev[sub]; e != nil {
 			evidence = append(evidence, e.positive...)
+			evidence = append(evidence, markGaps(e.gaps)...)
 		}
 		switch s {
 		case SupportFull:
@@ -339,7 +360,7 @@ type AnsiLedger struct {
 // BuildAnsiLedger resolves the hand-authored roster against the corpus-derived
 // `# ansi:` evidence under dir.
 func BuildAnsiLedger(dir string, roster []AnsiFeature) (*AnsiLedger, error) {
-	ev, violations, err := collectAnsiEvidence(dir)
+	ev, violations, err := collectAnsiEvidence(dir, roster)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +370,20 @@ func BuildAnsiLedger(dir string, roster []AnsiFeature) (*AnsiLedger, error) {
 		l.Rows = append(l.Rows, AnsiRow{AnsiFeature: f, Go: goSupp, Evidence: dedup(evidence)})
 	}
 	return l, nil
+}
+
+// markGaps suffixes gap-pin scenario names with " (gap)" so the Evidence column
+// shows which scenario pinned a rejection (traceability for SupportNone/Partial
+// rows), distinct from positive-evidence scenarios.
+func markGaps(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = n + " (gap)"
+	}
+	return out
 }
 
 func dedup(in []string) []string {

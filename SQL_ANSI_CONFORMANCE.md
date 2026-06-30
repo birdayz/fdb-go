@@ -60,7 +60,7 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | E051-07 | ✓ | Qualified * in select list | yes | untested | untested (Phase 1) | — |
 | E051-08 | ✓ | Correlation names in the FROM clause | yes | untested | untested (Phase 1) | — |
 | E051-09 | ✓ | Rename columns in the FROM clause | yes | untested | untested (Phase 1) | — |
-| E061 | ✓ | Basic predicates and search conditions | partial | partial | shared parity | between, exists, in_list_comprehensive, like |
+| E061 | ✓ | Basic predicates and search conditions | partial | partial | shared parity | between, exists, in_list_comprehensive, like, subquery_in (gap) |
 | E061-01 | ✓ | Comparison predicate | yes | untested | untested (Phase 1) | — |
 | E061-02 | ✓ | BETWEEN predicate | yes | yes | shared parity | between |
 | E061-03 | ✓ | IN predicate with list of values | yes | yes | shared parity | in_list_comprehensive |
@@ -70,12 +70,12 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | E061-07 | ✓ | Quantified comparison predicate | no | untested | untested (Phase 1) | — |
 | E061-08 | ✓ | EXISTS predicate | yes | yes | shared parity | exists |
 | E061-09 | ✓ | Subqueries in comparison predicate | no | untested | untested (Phase 1) | — |
-| E061-11 | ✓ | Subqueries in IN predicate | no | no | shared gap → backlog | — |
+| E061-11 | ✓ | Subqueries in IN predicate | no | no | shared gap → backlog | subquery_in (gap) |
 | E061-12 | ✓ | Subqueries in quantified comparison predicate | no | untested | untested (Phase 1) | — |
 | E061-13 | ✓ | Correlated subqueries | partial | untested | untested (Phase 1) | — |
 | E061-14 | ✓ | Search condition | yes | untested | untested (Phase 1) | — |
-| E071 | ✓ | Basic query expressions | partial | partial | shared parity | union |
-| E071-01 | ✓ | UNION DISTINCT table operator | no | no | shared gap → backlog | — |
+| E071 | ✓ | Basic query expressions | partial | partial | shared parity | union, union (gap) |
+| E071-01 | ✓ | UNION DISTINCT table operator | no | no | shared gap → backlog | union (gap) |
 | E071-02 | ✓ | UNION ALL table operator | yes | yes | shared parity | union |
 | E071-03 | ✓ | EXCEPT DISTINCT table operator | no | untested | untested (Phase 1) | — |
 | E071-05 | ✓ | Columns combined via table operators need not have exactly the same data type | partial | untested | untested (Phase 1) | — |
@@ -91,14 +91,14 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | E081-08 | ✓ | WITH GRANT OPTION | no | untested | N/A (out of engine scope) | — |
 | E081-09 | ✓ | USAGE privilege | no | untested | N/A (out of engine scope) | — |
 | E081-10 | ✓ | EXECUTE privilege | no | untested | N/A (out of engine scope) | — |
-| E091 | ✓ | Set functions | partial | partial | shared parity | aggregate_sum_large, avg, count_star_vs_col |
+| E091 | ✓ | Set functions | partial | partial | shared parity | aggregate_sum_large, avg, count_distinct (gap), count_star_vs_col |
 | E091-01 | ✓ | AVG | yes | yes | shared parity | avg |
 | E091-02 | ✓ | COUNT | yes | yes | shared parity | count_star_vs_col |
 | E091-03 | ✓ | MAX | yes | untested | untested (Phase 1) | — |
 | E091-04 | ✓ | MIN | yes | untested | untested (Phase 1) | — |
 | E091-05 | ✓ | SUM | yes | yes | shared parity | aggregate_sum_large |
 | E091-06 | ✓ | ALL quantifier | yes | untested | untested (Phase 1) | — |
-| E091-07 | ✓ | DISTINCT quantifier | no | no | shared gap → backlog | — |
+| E091-07 | ✓ | DISTINCT quantifier | no | no | shared gap → backlog | count_distinct (gap) |
 | E101 | ✓ | Basic data manipulation | yes | yes | shared parity | delete_all_rows, insert_multi_row, update_comprehensive |
 | E101-01 | ✓ | INSERT statement | yes | yes | shared parity | insert_multi_row |
 | E101-03 | ✓ | Searched UPDATE statement | yes | yes | shared parity | update_comprehensive |
@@ -176,10 +176,10 @@ This ledger tracks **176** Core rows. **39** are N/A for an embedded record-laye
 | F181 | ✓ | Multiple module support | no | untested | N/A (out of engine scope) | — |
 | F201 | ✓ | CAST function | yes | yes | shared parity | cast |
 | F221 | ✓ | Explicit defaults | no | untested | untested (Phase 1) | — |
-| F261 | ✓ | CASE expression | partial | partial | shared parity | case_when, coalesce_nullif |
+| F261 | ✓ | CASE expression | partial | partial | shared parity | case_when, coalesce_nullif, coalesce_nullif (gap) |
 | F261-01 | ✓ | Simple CASE | no | yes | Go-only ext | case_when |
 | F261-02 | ✓ | Searched CASE | yes | yes | shared parity | case_when |
-| F261-03 | ✓ | NULLIF | no | no | shared gap → backlog | — |
+| F261-03 | ✓ | NULLIF | no | no | shared gap → backlog | coalesce_nullif (gap) |
 | F261-04 | ✓ | COALESCE | yes | yes | shared parity | coalesce_nullif |
 | F311 | ✓ | Schema definition statement | partial | untested | untested (Phase 1) | — |
 | F311-01 | ✓ | CREATE SCHEMA | yes | untested | untested (Phase 1) | — |

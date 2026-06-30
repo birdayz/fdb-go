@@ -37,6 +37,23 @@ func TestAnsiRosterIntegrity(t *testing.T) {
 			}
 		}
 	}
+	// @claude L2: a parent marked Java=Full must not have a subfeature marked
+	// Java=None — that is a contradiction (the feature can't be fully supported
+	// while a subfeature is absent). Catches an inconsistent hand-authored fact.
+	byID := make(map[string]AnsiFeature, len(ansiCoreRoster))
+	for _, f := range ansiCoreRoster {
+		byID[f.ID] = f
+	}
+	for _, f := range ansiCoreRoster {
+		if f.Java != SupportFull {
+			continue
+		}
+		for _, sub := range f.Subfeatures {
+			if byID[sub].Java == SupportNone {
+				t.Errorf("%s is Java=Full but subfeature %s is Java=None — contradictory roster fact", f.ID, sub)
+			}
+		}
+	}
 }
 
 // TestAnsiLedgerEvidenceExists is the exercised-not-exists guard against the real
@@ -46,13 +63,38 @@ func TestAnsiRosterIntegrity(t *testing.T) {
 // guard). A mis-tag here is a fake checkbox and fails the build.
 func TestAnsiLedgerEvidenceExists(t *testing.T) {
 	t.Parallel()
-	_, violations, err := collectAnsiEvidence("testdata")
+	_, violations, err := collectAnsiEvidence("testdata", ansiCoreRoster)
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
 	if len(violations) > 0 {
-		t.Fatalf("ANSI tag evidence violations (a `# ansi:` tag without a passing test, or a "+
-			"`# ansi-gap:` without an unsupported pin):\n%s", strings.Join(violations, "\n"))
+		t.Fatalf("ANSI tag evidence violations (a `# ansi:` tag without a passing test, a "+
+			"`# ansi-gap:` without an unsupported pin, or an unknown/typo'd ID):\n%s", strings.Join(violations, "\n"))
+	}
+}
+
+// TestAnsiPhantomIDBites pins the phantom-ID guard (@claude M1): a corpus tag for
+// an ID not in the roster (a typo like `E0511`) must be flagged, not silently
+// dropped — else the real feature stays untested and the typo is invisible.
+func TestAnsiPhantomIDBites(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	phantom := "name: phantom\n" +
+		"schema_template: |\n" +
+		"  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))\n" +
+		"tests:\n" +
+		"  - query: SELECT id FROM t\n" +
+		"    rows: [[1]]\n" +
+		"# ansi: E0511\n" // typo: extra digit — not a real roster ID
+	if err := os.WriteFile(filepath.Join(dir, "phantom.yaml"), []byte(phantom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
+	if err != nil {
+		t.Fatalf("collect ANSI evidence: %v", err)
+	}
+	if !containsSubstr(violations, "unknown ANSI ID") {
+		t.Fatalf("phantom-ID guard did not fire on `# ansi: E0511`; got %v", violations)
 	}
 }
 
@@ -74,7 +116,7 @@ func TestAnsiEvidenceGuardBites(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "badtag.yaml"), []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, violations, err := collectAnsiEvidence(dir)
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
@@ -102,7 +144,7 @@ func TestAnsiCrossFeatureGuard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "mixed.yaml"), []byte(mixed), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, violations, err := collectAnsiEvidence(dir)
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
@@ -129,7 +171,7 @@ func TestAnsiConflictGuard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "conflict.yaml"), []byte(conflict), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, violations, err := collectAnsiEvidence(dir)
+	_, violations, err := collectAnsiEvidence(dir, ansiCoreRoster)
 	if err != nil {
 		t.Fatalf("collect ANSI evidence: %v", err)
 	}
