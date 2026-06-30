@@ -93,7 +93,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				if err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
-				cont := c.buildContinuation(result.GetContinuation(), false)
+				cont := c.buildContinuation(result.GetContinuation())
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
 			// Inner exhausted for this outer row — close and advance outer.
@@ -106,7 +106,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				// Inner hit a scan/time/byte limit — serialize
 				// FlatMapContinuation with current outer + inner
 				// position so the next page resumes correctly.
-				cont := c.buildContinuation(innerCont, true)
+				cont := c.buildContinuation(innerCont)
 				return recordlayer.NewResultNoNext[QueryResult](reason, cont), nil
 			}
 
@@ -116,7 +116,7 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				if err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
-				cont := c.buildContinuation(innerCont, false)
+				cont := c.buildContinuation(innerCont)
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
 		}
@@ -220,7 +220,7 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 // is true, the inner cursor hit the time limit mid-row — encode the prior outer
 // position + inner position for resume. Otherwise encode the current outer
 // position (inner exhausted, next outer row on resume).
-func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation, innerTimeLimited bool) recordlayer.RecordCursorContinuation {
+func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
 	if innerCont != nil && innerCont.IsEnd() && c.lastOuterContinuation != nil && c.lastOuterContinuation.IsEnd() {
 		return &recordlayer.EndContinuation{}
 	}
@@ -231,7 +231,21 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 		fmc.CheckValue = c.currentOuter.PrimaryKey.Pack()
 	}
 
-	if innerTimeLimited && innerCont != nil && !innerCont.IsEnd() {
+	// Java FlatMapPipelinedCursor.Continuation (FlatMapPipelinedCursor.java:373)
+	// ALWAYS pairs priorOuterContinuation (the position AT the current outer row)
+	// with the inner continuation — there is no "value emit vs limit emit"
+	// distinction. The decision is purely whether the inner has a resumable
+	// position:
+	//   - inner NOT exhausted (a value emit mid-inner, or an inner out-of-band
+	//     stop): encode (priorOuter, inner) so resume re-opens THIS outer and
+	//     continues its inner after the last row. Encoding the ADVANCED outer
+	//     position here (as a prior Go-only innerTimeLimited flag did for the
+	//     value-emit path) skips the rest of this outer's inner rows on resume —
+	//     a silent row-drop on any mid-inner page boundary.
+	//   - inner exhausted (END): advance to the next outer (lastOuter, no inner).
+	//     Equivalent to Java's (priorOuter, inner=END), which re-opens the outer
+	//     and immediately advances.
+	if innerCont != nil && !innerCont.IsEnd() {
 		if c.priorOuterContinuation != nil && !c.priorOuterContinuation.IsEnd() {
 			fmc.OuterContinuation, _ = c.priorOuterContinuation.ToBytes()
 		}

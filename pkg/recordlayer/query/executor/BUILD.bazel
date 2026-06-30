@@ -42,6 +42,7 @@ go_test(
         "evaluation_context_test.go",
         "executor_integration_test.go",
         "executor_test.go",
+        "flat_map_continuation_test.go",
         "intersection_compkey_test.go",
         "limit_envelope_test.go",
         "limit_extension_test.go",
@@ -79,6 +80,7 @@ go_test(
         "scalar_subquery.go",
         "streaming_cursors.go",
         "vector_index_scan_integration_test.go",
+        "flat_map_continuation_test.go",
     ],
     deps = [
         "//gen",
