@@ -2550,13 +2550,33 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
-	tx.addReadConflict(begin, end)
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp): when RYW is DISABLED it adds the raw
+	// range; when ENABLED it runs the range through updateConflictMap(readRange, it), so a segment
+	// the transaction already satisfied with a local INDEPENDENT write (a plain Set / folded atomic)
+	// is NOT registered as a read-conflict — the read would have been served from the local write,
+	// not the database. Adding the raw range (as this did before) OVER-CONFLICTS vs libfdb_c: e.g.
+	// `Set(K); AddReadConflictRange([K, K+1)); <concurrent Set(K)>` would spuriously fail commit.
+	// Mirrors addGetKeyConflictRange's rywDisabled/else split + conflictRangesLocked filter.
+	if tx.rywDisabled {
+		tx.addReadConflict(begin, end)
+		return nil
+	}
+	tx.ryw.mu.Lock()
+	ranges := tx.ryw.conflictRangesLocked(begin, end)
+	tx.ryw.mu.Unlock()
+	for _, r := range ranges {
+		tx.addReadConflict(r[0], r[1])
+	}
 	return nil
 }
 
-// AddReadConflictKey adds a read conflict on a single key.
+// AddReadConflictKey adds a read conflict on a single key. Like
+// AddReadConflictRange over [key, keyAfter(key)), it must honor the RYW write-map
+// filter: a key the transaction already satisfied with a local independent write
+// is not registered as a read-conflict (C++ updateConflictMap), so
+// `Set(K); AddReadConflictKey(K); <concurrent Set(K)>` does not over-conflict.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.addReadConflictForKey(key)
+	tx.addReadConflictForKeyRYW(key)
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
