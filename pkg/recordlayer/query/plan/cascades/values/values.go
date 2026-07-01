@@ -50,6 +50,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // Canonical ISO 8601 layouts for temporal value formatting/parsing.
@@ -2185,6 +2187,13 @@ func (c *CastValue) Evaluate(evalCtx any) (any, error) {
 			}
 			return "false", nil
 		}
+		if b, ok := v.([16]byte); ok {
+			// A UUID flows through the engine as a neutral [16]byte (RFC-162);
+			// CAST(uuid AS STRING) renders the canonical 36-char form, matching
+			// Java's UUID.toString(). uuid.String() gives the lowercase 8-4-4-4-12
+			// layout with zero-padding preserved.
+			return uuid.UUID(b).String(), nil
+		}
 	case TypeCodeDate:
 		switch val := v.(type) {
 		case time.Time:
@@ -2414,12 +2423,46 @@ func (p *PromoteValue) Type() Type {
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
-// Evaluate delegates to the child — the seed treats Promote as a
-// no-op at runtime since cmpAny already handles cross-width
-// promotion. Plan-time inspection (explain, rewrite rules) is where
-// Promote earns its keep.
+// Evaluate delegates to the child for the numeric/cross-width case —
+// the seed treats Promote as a no-op there since cmpAny already
+// handles cross-width promotion, and plan-time inspection (explain,
+// rewrite rules) is where those Promotes earn their keep.
+//
+// The ONE runtime-active arm is STRING → UUID (Java's
+// PromoteValue.STRING_TO_UUID, `UUID.fromString`): a UUID column has
+// no native proto/SQL primitive, so `uuid_col = '<uuid>'` arrives as
+// a STRING comparand. Promoting it to UUID here parses the canonical
+// string into a neutral 16-byte value ([16]byte, matching Java's
+// java.util.UUID — no `tuple` import so `values` stays wire-agnostic).
+// The scan-range packer turns that [16]byte into a `tuple.UUID` at the
+// FDB wire boundary, so the equality probe hits the 0x30 index entry
+// instead of packing a 0x02 string that never matches.
 func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
-	return p.Child.Evaluate(evalCtx)
+	childResult, err := p.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	if !IsUuid(p.Target) {
+		return childResult, nil
+	}
+	switch v := childResult.(type) {
+	case nil:
+		// NULL promotes to NULL (SQL NULL propagation).
+		return nil, nil
+	case string:
+		u, perr := uuid.Parse(v)
+		if perr != nil {
+			// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
+			return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", v)
+		}
+		return [16]byte(u), nil
+	case [16]byte:
+		// Already a neutral UUID (e.g. an index-sourced INL join key);
+		// pass through unchanged — nothing to parse.
+		return v, nil
+	default:
+		return childResult, nil
+	}
 }
 
 // --- QuantifiedObjectValue -----------------------------------------

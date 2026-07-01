@@ -16,6 +16,7 @@ go_library(
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/query/semantic",
         "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@com_github_google_uuid//:uuid",
     ],
 )
 

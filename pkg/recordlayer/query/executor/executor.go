@@ -550,6 +550,37 @@ func scanBindContext(evalCtx *EvaluationContext) values.ParameterBinder {
 	return evalCtx.RowContext(nil)
 }
 
+// uuidToTupleElement converts a neutral 16-byte UUID comparand ([16]byte —
+// the wire-agnostic representation a UUID carries through the value layer, see
+// values.PromoteValue.Evaluate and predicates.cmpAny) into a tuple.UUID at the
+// FDB wire boundary. Only a named tuple.UUID packs as the 0x30 UUID tuple
+// element; a bare [16]byte would panic the tuple packer ("unencodable
+// element"). Everything else (int64, string, float64, …) passes through
+// unchanged. This is the sole place the value-layer [16]byte crosses into wire
+// encoding on the scan-range path — symmetric with the index-entry write in
+// recordlayer.scalarToInterface, so the equality probe seeks the exact 0x30
+// bytes Java (and the maintainer) wrote.
+func uuidToTupleElement(v any) any {
+	if b, ok := v.([16]byte); ok {
+		return tuple.UUID(b)
+	}
+	return v
+}
+
+// tupleElementToUUID is the inverse of uuidToTupleElement: it normalizes a
+// tuple.UUID read back off an index entry / primary key into the neutral
+// [16]byte the value layer works with (cmpAny, PromoteValue, materialization).
+// Applied at the covering-index read boundary so a UUID column flows downstream
+// as [16]byte regardless of whether it was sourced from a stored record
+// (protoFieldToGo) or an index entry — the two must be interchangeable for
+// residual filters and INL join keys. Non-UUID tuple elements pass through.
+func tupleElementToUUID(v any) any {
+	if u, ok := v.(tuple.UUID); ok {
+		return [16]byte(u)
+	}
+	return v
+}
+
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
 	if len(comparisons) == 0 {
 		return recordlayer.TupleRangeAllOf(nil), nil
@@ -573,6 +604,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		if err != nil {
 			return recordlayer.TupleRange{}, err
 		}
+		val = uuidToTupleElement(val)
 		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
 		// NOT `IS NULL`, handled above): SQL `NULL = x` is UNKNOWN for every row,
 		// so the probe matches NOTHING. Appending nil here would instead seek the
@@ -640,6 +672,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			if err != nil {
 				return recordlayer.TupleRange{}, err
 			}
+			comparand = uuidToTupleElement(comparand)
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
@@ -799,7 +832,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
 		if i < len(vals) {
-			datum[strings.ToUpper(col)] = vals[i]
+			datum[strings.ToUpper(col)] = tupleElementToUUID(vals[i])
 		}
 	}
 	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
@@ -811,7 +844,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	for i, col := range c.pkColumns {
 		idx := i + pkOffset
 		if idx < len(pk) {
-			datum[strings.ToUpper(col)] = pk[idx]
+			datum[strings.ToUpper(col)] = tupleElementToUUID(pk[idx])
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil

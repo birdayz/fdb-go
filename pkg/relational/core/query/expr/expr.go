@@ -68,6 +68,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -312,9 +314,46 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
 	left, right = widenIntConstAgainstDouble(op, left, right)
+	left, right = promoteStringComparandToUuid(op, left, right)
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
+}
+
+// promoteStringComparandToUuid types a STRING comparand compared against a UUID
+// operand as UUID, mirroring Java (where the comparand is a java.util.UUID, not
+// a String) and the widenIntConstAgainstDouble sibling for the numeric SARG
+// case. A UUID column has no native proto/SQL primitive — `uuid_col = '<uuid>'`
+// arrives with the column typed UUID and the literal typed STRING. Without this
+// promotion the comparand evaluates to a Go string and the index-scan range
+// packs a 0x02 string tuple element that never matches the 0x30 UUID index
+// entry. Wrapping the STRING operand in a PromoteValue toward the UUID type
+// makes it parse to a neutral [16]byte at eval time (PromoteValue.Evaluate's
+// STRING_TO_UUID arm), which the executor's scan packer seeks as a tuple.UUID.
+//
+// Only equality/ordering comparisons SARG an index, so only those are promoted.
+// A col-vs-col UUID join (both sides already UUID) is left untouched — its
+// comparand already evaluates to [16]byte, so no string coercion is needed and
+// none is inserted (this is the INL-join-key case a positional mask got wrong).
+func promoteStringComparandToUuid(op predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
+	default:
+		return left, right
+	}
+	lt, rt := left.Type(), right.Type()
+	if lt == nil || rt == nil {
+		return left, right
+	}
+	if values.IsUuid(lt) && rt.Code() == values.TypeCodeString {
+		return left, values.NewPromoteValue(right, lt)
+	}
+	if values.IsUuid(rt) && lt.Code() == values.TypeCodeString {
+		return values.NewPromoteValue(left, rt), right
+	}
+	return left, right
 }
 
 // widenIntConstAgainstDouble fixes a cross-type index-SARG hole: when one operand
@@ -480,6 +519,13 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE
 	// index misses everything — int and double tuple elements don't interleave).
 	widenIntToDouble := left.Type() != nil && left.Type().Code() == values.TypeCodeDouble
+	// Same SARG-type fix for a UUID column: parse each STRING element to the
+	// neutral [16]byte the value layer carries UUIDs as, so `uuid_col IN
+	// ('<u1>','<u2>')` packs a tuple.UUID per sub-probe (the InJoin binds each
+	// element and the executor's scan packer converts [16]byte→tuple.UUID) and
+	// the residual path compares [16]byte==[16]byte. Mirrors the equality
+	// PromoteValue arm in promoteStringComparandToUuid.
+	parseStringToUUID := left.Type() != nil && values.IsUuid(left.Type())
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
 		lit, ok := values.EvaluateConstant(v)
@@ -494,6 +540,16 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 				lit = float64(n)
 			case int:
 				lit = float64(n)
+			}
+		}
+		if parseStringToUUID {
+			if s, sok := lit.(string); sok {
+				u, perr := uuid.Parse(s)
+				if perr != nil {
+					// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
+					return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", s)
+				}
+				lit = [16]byte(u)
 			}
 		}
 		list = append(list, lit)
@@ -637,6 +693,14 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.NotNullInt
 	case "STRING", "ENUM":
 		return values.TypeString
+	case "UUID":
+		// UUID is a first-class scalar (Java's DataType.Primitives.UUID),
+		// stored as the tuple_fields.UUID message. Carrying the real UUID
+		// type — not Unknown — lets the predicate builder promote a STRING
+		// comparand (`uuid_col = '<uuid>'`) to UUID so the index-scan range
+		// packs a tuple.UUID and the non-boolean predicate gate rejects a
+		// bare `WHERE uuid_col`.
+		return values.NullableUuid
 	case "BOOL":
 		return values.TypeBool
 	case "FLOAT", "DOUBLE":

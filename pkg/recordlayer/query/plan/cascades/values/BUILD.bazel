@@ -71,7 +71,10 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/values",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/recordlayer/vectorcodec"],
+    deps = [
+        "//pkg/recordlayer/vectorcodec",
+        "@com_github_google_uuid//:uuid",
+    ],
 )
 
 go_test(

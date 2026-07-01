@@ -675,6 +675,22 @@ func cmpAny(a, b any) (int, bool) {
 		}
 		return bytes.Compare(av, bv), true
 	}
+	// UUID comparison. A UUID flows through the value layer as a neutral
+	// 16-byte array ([16]byte — matches Java's java.util.UUID; no `tuple`
+	// import keeps this package wire-agnostic). Both the record-read path
+	// (protoFieldToGo) and the index-entry-read path (normalized off the
+	// executor's tuple.UUID) hand us [16]byte, and a promoted comparand
+	// (PromoteValue string→UUID) evaluates to [16]byte too. Compare
+	// lexicographically — bytes.Compare gives the same unsigned big-endian
+	// order the tuple UUID wire encoding uses, so filter-path ordering
+	// agrees with index-scan-range ordering.
+	if av, ok := a.([16]byte); ok {
+		bv, ok2 := b.([16]byte)
+		if !ok2 {
+			return 0, false
+		}
+		return bytes.Compare(av[:], bv[:]), true
+	}
 	return 0, false
 }
 
