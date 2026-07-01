@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -93,14 +94,41 @@ func TestResolveFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("no_signal_flattens_to_all_alternatives", func(t *testing.T) {
+	t.Run("all_alternatives_returns_immediately", func(t *testing.T) {
 		t.Parallel()
+		// An all_alternatives_failed reply hits the early-return case (like wrong_shard) and stops the
+		// scan — it does NOT fall through to the post-loop default branch.
+		tried := 0
 		_, err := resolveFallback(nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			tried++
 			return nil, fdbErr(ErrAllAlternativesFailed)
 		})
 		var fe *wire.FDBError
 		if !errors.As(err, &fe) || fe.Code != ErrAllAlternativesFailed {
 			t.Fatalf("want all_alternatives_failed (1006); got %v", err)
+		}
+		if tried != 1 {
+			t.Fatalf("all_alternatives_failed must end the scan on the first replica; tried %d", tried)
+		}
+	})
+
+	t.Run("default_flattens_unclassified_error_to_all_alternatives", func(t *testing.T) {
+		t.Parallel()
+		// An error matching NO switch arm (not ctx / version / timeout / wrong-shard / all-alternatives)
+		// is dropped and the scan continues; with no version error and no timeout remembered, the post-loop
+		// DEFAULT branch flattens to all_alternatives_failed. This exercises that default (Torvalds nit:
+		// the old subtest fed all_alternatives and hit the early-return case, leaving the default untested).
+		tried := 0
+		_, err := resolveFallback(nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			tried++
+			return nil, fdbErr(1000) // operation_failed — unclassified here
+		})
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) || fe.Code != ErrAllAlternativesFailed {
+			t.Fatalf("default branch must flatten an unclassified error to all_alternatives_failed (1006); got %v", err)
+		}
+		if tried != 2 {
+			t.Fatalf("an unclassified error must NOT stop the scan; want both fallback replicas tried, got %d", tried)
 		}
 	})
 
@@ -117,6 +145,44 @@ func TestResolveFallback(t *testing.T) {
 		}
 		if !errors.Is(err, errReplyTimeout) {
 			t.Fatalf("the hedge's own timeout must seed the surfaced errReplyTimeout; got %v", err)
+		}
+	})
+
+	// TestResolveFallback_ContextCancel* pin the codex P2 fix: a cancelled/expired context must
+	// propagate IMMEDIATELY and never be masked by a remembered version error (a cancelled Get must
+	// return ctx.Err(), not a stale future_version). Revert-proof: drop the two ctx switch/guard cases
+	// in resolveFallback → these go red (the version error / all_alternatives surfaces instead).
+
+	t.Run("context_cancel_after_version_err_propagates", func(t *testing.T) {
+		t.Parallel()
+		// s2 returns future_version (remembered); then the caller/tx ctx is cancelled and s3's trySingle
+		// returns context.Canceled. Without the fix the loop drops it and the post-loop surfaces the
+		// remembered future_version — masking the cancellation. With the fix, ctx.Canceled wins.
+		_, err := resolveFallback(nil, servers, 0, 1, func(s ServerInfo) ([]byte, error) {
+			if s.Address == "s2" {
+				return nil, fdbErr(ErrFutureVersion)
+			}
+			return nil, context.Canceled // s3
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation during the fallback scan must propagate, not be masked by a remembered version error; got %v", err)
+		}
+	})
+
+	t.Run("hedge_context_cancel_propagates_immediately", func(t *testing.T) {
+		t.Parallel()
+		// The hedge itself failed with a deadline; no fallback should be tried and the ctx error surfaces
+		// directly (covers the no-untried-fallback path where the loop can't catch it).
+		called := false
+		_, err := resolveFallback(context.DeadlineExceeded, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			called = true
+			return nil, nil
+		})
+		if called {
+			t.Fatal("a cancelled hedge must not scan fallbacks — the ctx error propagates immediately")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("hedge deadline must propagate; got %v", err)
 		}
 	})
 }

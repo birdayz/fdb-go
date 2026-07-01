@@ -925,6 +925,13 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // transport error, never a reply-carried version error (those surface directly via parseGetValueReply on
 // the hedge success path, so they never reach here).
 func resolveFallback(hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
+	// A cancelled/expired context propagates IMMEDIATELY — never masked by a remembered version error
+	// or flattened to a timeout. A cancelled read must return ctx.Err() (C++ actor cancellation
+	// propagates), and context errors are intentionally NOT tracked as read failures. Checked here for
+	// the hedge's own failure (covers the no-untried-fallback case) and per replica in the loop below (codex).
+	if errors.Is(hedgeErr, context.Canceled) || errors.Is(hedgeErr, context.DeadlineExceeded) {
+		return nil, hedgeErr
+	}
 	sawTimeout := isReplyTimeout(hedgeErr)
 	var versionErr error
 	for i, server := range servers {
@@ -936,6 +943,8 @@ func resolveFallback(hedgeErr error, servers []ServerInfo, bestIdx, secondIdx in
 			return val, nil
 		}
 		switch {
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			return nil, err // cancellation/deadline wins immediately — never masked by a remembered version error
 		case isFutureVersionOrProcessBehind(err):
 			if versionErr == nil {
 				versionErr = err // remember, but keep trying — a later replica may still have the value
