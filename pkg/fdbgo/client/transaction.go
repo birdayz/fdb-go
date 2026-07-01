@@ -1413,10 +1413,33 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		tx.conflictMu.Unlock()
 		return
 	}
+	// SetVersionstampedKey: commit the key TRANSFORMED with the cached-read-version min-bound stamp at
+	// the placeholder, matching libfdb_c/Java. C++ atomicOp captures getCachedReadVersion().orDefault(0)
+	// and mutates k in place (ReadYourWrites.actor.cpp:2276), inserts THAT key into the write map (:2295),
+	// and the commit flush ships the write-map key to the proxy (:2059). The commit proxy overwrites
+	// [pos,pos+10) with the ASSIGNED stamp and strips the 4-byte offset, so the STORED record is
+	// byte-identical whether the placeholder held zeros or the min-bound stamp — but the commit-REQUEST
+	// wire bytes now match the reference clients (the same key also feeds the RYW read model below). A
+	// malformed key (no room for the offset/stamp) commits as-is; the commit-path validation reports
+	// client_invalid_operation — the same error C++ raises eagerly, deferred to Commit by Go's void Atomic().
+	mutKey := key
+	var svkUnreadBegin, svkUnreadEnd []byte
+	svkTransformed := false
+	if op == MutSetVersionstampedKey {
+		minVersion := int64(0)
+		tx.readVersionMu.Lock()
+		if tx.hasReadVersion {
+			minVersion = tx.readVersion // C++ tr.getCachedReadVersion().orDefault(0)
+		}
+		tx.readVersionMu.Unlock()
+		if rb, re, transformed, ok := versionstampKeyRange(key, minVersion, tx.maxReadKey()); ok {
+			mutKey, svkUnreadBegin, svkUnreadEnd, svkTransformed = transformed, rb, re, true
+		}
+	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  op,
-		Key:   key,
+		Key:   mutKey,
 		Value: operand,
 	})
 	// Atomic ops add a write conflict range but NOT a read conflict range —
@@ -1434,34 +1457,14 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	}
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
-		if op == MutSetVersionstampedKey {
+		if svkTransformed {
 			// SVK is RANGE-unreadable in the RYW model (RFC-098; C++
-			// ReadYourWrites.actor.cpp:2263-2277): the entire candidate stamp
-			// range [key@minStamp, key@\xff…) becomes unreadable, and the
-			// pending entry is stored at the key TRANSFORMED with the
-			// min-bound stamp (Atomic.h:289) — keeping the 4-byte offset
-			// suffix, exactly as C++ mutates k in place and inserts it
-			// suffix-and-all. The COMMIT mutation (tx.mutations above) keeps
-			// the user's original placeholder key; only the local read model
-			// uses the transform. A malformed key (no room for offset/stamp)
-			// falls through as a plain entry at the user key and the COMMIT
-			// path's validation reports client_invalid_operation — the same
-			// error C++ raises, but at a different time: C++ throws EAGERLY
-			// from getVersionstampKeyRange inside atomicOp() (before touching
-			// the write map), while Go's void Atomic() defers all mutation
-			// validation to Commit (pre-existing design, see the commit-path
-			// checks).
-			minVersion := int64(0)
-			tx.readVersionMu.Lock()
-			if tx.hasReadVersion {
-				minVersion = tx.readVersion // C++ tr.getCachedReadVersion().orDefault(0)
-			}
-			tx.readVersionMu.Unlock()
-			if rangeBegin, rangeEnd, transformed, ok := versionstampKeyRange(key, minVersion, tx.maxReadKey()); ok {
-				tx.ryw.addUnreadableRange(rangeBegin, rangeEnd)
-				tx.ryw.atomic(op, transformed, operand)
-				return
-			}
+			// ReadYourWrites.actor.cpp:2263-2277): the entire candidate stamp range
+			// [key@minStamp, key@\xff…) becomes unreadable, and the pending entry is stored at the
+			// min-bound-transformed key (mutKey) — the SAME key committed above, matching C++.
+			tx.ryw.addUnreadableRange(svkUnreadBegin, svkUnreadEnd)
+			tx.ryw.atomic(op, mutKey, operand)
+			return
 		}
 		tx.ryw.atomic(op, key, operand)
 	}

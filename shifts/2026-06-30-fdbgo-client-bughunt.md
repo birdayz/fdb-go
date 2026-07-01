@@ -438,6 +438,32 @@ Deterministic regression `TestRegisterBackgroundGoroutine_SkipsAfterClose` (reve
 `closed` check it reserves a slot after Close) + `TestRegisterBackgroundGoroutine_ConcurrentCloseNoMisuse`
 (300-iteration concurrent register||Close stress, no panic). Owes its own client gauntlet.
 
+**Round 24 — fresh-axis discovery sweep (3 parallel finders) + finding #26.** After the direct-fixable
+findings were exhausted, ran 3 read-only finder agents on lightly-explored axes:
+- **RYW getRange overlay merge — FAITHFUL** (traced vs `getRangeValue`/`RYWIterator`); the one behavioral
+  difference is the SVK candidate-range Set-preservation, which is a DELIBERATE, documented, *saner* Go
+  choice (C++ `addUnmodifiedAndUnreadableRange` silently drops a prior `Set`; Go keeps it). Not a bug.
+- **getKey / key-selector RYW resolution — FAITHFUL** (exhaustively traced offset-count, orEqual,
+  clear-skip, boundary, maxReadKey-clamp, rywDisabled). No divergence.
+- **versionstamp ops → finding #26 (LOW, wire-request-byte, FIXED).** Go's committed
+  `SetVersionstampedKey` mutation shipped the user's RAW zero placeholder; libfdb_c/Java commit the key
+  TRANSFORMED with the cached-read-version min-bound stamp at the placeholder (C++ captures
+  `getCachedReadVersion().orDefault(0)`, mutates k in place `ReadYourWrites.actor.cpp:2276`, stores it in
+  the write map `:2295`, and the commit flush ships the write-map key `:2059`). The commit proxy
+  overwrites `[pos,pos+10)` with the ASSIGNED stamp + strips the 4-byte offset, so the STORED record is
+  byte-identical (the wire-compat HARD LINE held) — but the commit-REQUEST bytes diverged from both
+  reference clients, and a code comment (transaction.go:1444) *incorrectly* claimed the raw-key commit
+  matched C++. Fixed: `Atomic()` now buffers the min-bound-transformed key into `tx.mutations` (the same
+  key feeds the RYW read model), with the comment corrected. Deterministic red→green
+  `TestAtomic_SVKCommitsMinBoundTransformedKey` (revert-proven: raw key → all-zero placeholder) +
+  `TestAtomic_SVKWriteOnlyTxnKeepsZeroPlaceholder` (orDefault(0) edge). Owes its own client gauntlet.
+
+Also independently verified FAITHFUL this round (no divergence): snapshot read conflict-skipping + RYW
+visibility, atomic-op RYW fold (absent/present-empty V2 gating), commit conflict-range assembly,
+Transaction shared-field synchronization, `IsRetryable` (byte-perfect vs `fdb_error_predicate`), and the
+retry backoff params (10ms/2.0/1s vs C++ ClientKnobs). The codebase is meticulous — remaining bugs are
+architectural (RFCs) or dimensional.
+
 **Codex caught 21 real issues across 14 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
