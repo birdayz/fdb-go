@@ -132,6 +132,24 @@ func (e *RecordDeserializationError) Unwrap() error {
 	return e.Cause
 }
 
+// ContinuationParseError is returned when continuation bytes fail to parse as
+// their wrapper proto. Matches Java's RecordCoreException("error parsing continuation")
+// with the "raw_bytes" log info key (e.g. OrElseCursor's constructor,
+// RecordCursor.fromList): a corrupt continuation is a caller error and must
+// surface, never be silently treated as a fresh start.
+type ContinuationParseError struct {
+	RawBytes []byte
+	Cause    error
+}
+
+func (e *ContinuationParseError) Error() string {
+	return fmt.Sprintf("error parsing continuation (raw_bytes=%x): %v", e.RawBytes, e.Cause)
+}
+
+func (e *ContinuationParseError) Unwrap() error {
+	return e.Cause
+}
+
 // KeyExpressionError is returned when a key expression evaluation fails.
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.InvalidExpressionException.
 type KeyExpressionError struct {
