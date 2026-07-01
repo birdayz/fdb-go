@@ -155,13 +155,13 @@ func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
 // TestPositionalRow_DuplicateNames_RFC173P2 pins the finding that drove the
 // projection wiring: a projection with duplicate output names (SELECT a, a; a join
 // projecting both legs' `id`) keeps BOTH values positionally, where the name-keyed
-// map is last-wins. projectionPositionalType uses a raw RecordType (NewRecordType
+// map is last-wins. positionalTypeFromNames uses a raw RecordType (NewRecordType
 // would panic on the duplicate); ordinal access is unambiguous, and the shadow
 // assert legitimately DIFFERS from the last-wins map on the duplicate (the §5
 // models-must-differ case, not a bug — it's the Slice-4 collision fix).
 func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
 	t.Parallel()
-	typ := projectionPositionalType([]string{"ID", "ID"})
+	typ := positionalTypeFromNames([]string{"ID", "ID"})
 	if len(typ.Fields) != 2 {
 		t.Fatalf("dup-name type fields = %d, want 2 (both kept, distinct by ordinal)", len(typ.Fields))
 	}

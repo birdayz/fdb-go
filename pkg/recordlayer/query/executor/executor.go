@@ -833,10 +833,20 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	pk := entry.PrimaryKey()
 
 	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
+	// RFC-173 P2: dual-emit a DENSE positional row over the covering index's schema
+	// (value columns then PK columns, in order). An out-of-range column is a nil
+	// slot (NULL) — matching the map omitting its key.
+	posNames := make([]string, 0, len(c.columns)+len(c.pkColumns))
+	posSlots := make([]any, 0, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
+		key := strings.ToUpper(col)
+		var v any
 		if i < len(vals) {
-			datum[strings.ToUpper(col)] = tupleElementToUUID(vals[i])
+			v = tupleElementToUUID(vals[i])
+			datum[key] = v
 		}
+		posNames = append(posNames, key)
+		posSlots = append(posSlots, v)
 	}
 	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
 	// The user-level PK columns are at the tail. Skip the prefix.
@@ -845,12 +855,18 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		pkOffset = len(pk) - len(c.pkColumns)
 	}
 	for i, col := range c.pkColumns {
+		key := strings.ToUpper(col)
 		idx := i + pkOffset
+		var v any
 		if idx < len(pk) {
-			datum[strings.ToUpper(col)] = tupleElementToUUID(pk[idx])
+			v = tupleElementToUUID(pk[idx])
+			datum[key] = v
 		}
+		posNames = append(posNames, key)
+		posSlots = append(posSlots, v)
 	}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+	pos := &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
 }
 
 func (c *coveringIndexCursor) Close() error {
@@ -1351,7 +1367,7 @@ func executeProjection(
 	for i, proj := range projections {
 		projNames[i] = projectionColumnName(proj)
 	}
-	projType := projectionPositionalType(projNames)
+	projType := positionalTypeFromNames(projNames)
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {

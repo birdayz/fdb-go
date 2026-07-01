@@ -92,17 +92,17 @@ func positionalRowFromMap(typ *values.RecordType, m map[string]any) *PositionalR
 	return row
 }
 
-// projectionPositionalType builds the RecordType for a projection's output — one
-// field per column in projection order (ordinal = position), named by the column
-// name. It uses a RAW RecordType (not NewRecordType) on purpose: a projection may
-// emit DUPLICATE output names (SELECT a, a; a join projecting two legs' `id`), and
-// the ordinal model keeps those as DISTINCT fields by position — the RFC-173
-// Slice-4 "last-leg-wins collision fix" — whereas NewRecordType panics on a
-// duplicate name. Positional access is by ordinal, so duplicates are unambiguous;
-// FieldIndex (name->ordinal) returns the first match, which is why the shadow
-// assert legitimately DIFFERS from the last-wins name map on duplicate-named
-// projections (the §5 models-must-differ case).
-func projectionPositionalType(names []string) *values.RecordType {
+// positionalTypeFromNames builds the RecordType for a producer's output — one
+// field per column in output order (ordinal = position), named by the column name.
+// It uses a RAW RecordType (not NewRecordType) on purpose: a producer may emit
+// DUPLICATE output names (SELECT a, a; a join projecting two legs' `id`; a covering
+// index whose value column repeats a PK column), and the ordinal model keeps those
+// as DISTINCT fields by position — the RFC-173 Slice-4 "last-leg-wins collision
+// fix" — whereas NewRecordType panics on a duplicate name. Positional access is by
+// ordinal, so duplicates are unambiguous; FieldIndex (name->ordinal) returns the
+// first match, which is why the shadow assert legitimately DIFFERS from the
+// last-wins name map on duplicate-named output (the §5 models-must-differ case).
+func positionalTypeFromNames(names []string) *values.RecordType {
 	fields := make([]values.Field, len(names))
 	for i, n := range names {
 		fields[i] = values.Field{Name: n, FieldType: values.UnknownType, Ordinal: i}
