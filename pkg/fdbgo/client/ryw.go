@@ -362,6 +362,20 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
 	return wm.materializeCommit()
 }
 
+// mutationsHaveVersionstamp reports whether the op-log carries any SetVersionstamped{Key,Value}. Those ops
+// can't be safely coalesced through the keyed write map — the 10-byte stamp is assigned at commit, so the
+// final key/value is unknown client-side, and a later Set on the same TEMPLATE key must not drop the
+// versionstamped op (C++ WriteMap::mutate pushes it onto the unreadable entry, WriteMap.cpp:139-146). A txn
+// carrying one ships its raw op-log 1:1 instead of the materialized write map (#28 / RFC-172).
+func mutationsHaveVersionstamp(muts []Mutation) bool {
+	for _, m := range muts {
+		if m.Type == MutSetVersionstampedKey || m.Type == MutSetVersionstampedValue {
+			return true
+		}
+	}
+	return false
+}
+
 // coalesceWriteConflicts sorts and merges write-conflict ranges (overlapping AND adjacent), matching C++'s
 // contiguous is_conflict_range segment emission in writeRangeToNativeTransaction pass 2
 // (ReadYourWrites.actor.cpp:2022-2033, 2069-2071). The per-op tx.writeConflicts list is uncoalesced, so a

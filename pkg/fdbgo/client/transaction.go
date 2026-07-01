@@ -1696,15 +1696,25 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// #28 (RFC-172): ship the COALESCED RYW write map, not the unfolded op-log. libfdb_c commits
 	// writeRangeToNativeTransaction's materialized vector (clears-first + per-key folded op stacks) plus
 	// coalesced write-conflict ranges, so a txn that hammers one key ships O(distinct keys) mutations, not
-	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. Scope: !rywDisabled only (the
-	// RYW-disabled path keeps no write map and ships its op-log 1:1, matching C++). Validation above stays
-	// over `muts` (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector
-	// is coalesced, and it is derived from the already-validated `muts` SNAPSHOT (coalesceCommitMutations
-	// replays it), so a Set racing this Commit can never ship or be sized unvalidated.
-	shipMuts, shipConflicts := muts, writeConflictsSnap[:nWriteConflicts]
-	if !tx.rywDisabled {
+	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. Validation above stays over `muts`
+	// (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector is coalesced,
+	// and it is derived from the already-validated `muts` SNAPSHOT (coalesceCommitMutations replays it), so
+	// a Set racing this Commit can never ship or be sized unvalidated.
+	//
+	// Scope: !rywDisabled AND no versionstamp op. The RYW-disabled path keeps no write map and ships its
+	// op-log 1:1 (matching C++). Versionstamp ops (SetVersionstamped{Key,Value}) are ALSO shipped 1:1: their
+	// stamped key/value is assigned at commit, so they cannot be safely keyed in the write map — a later Set
+	// on the same TEMPLATE key must NOT drop the versionstamped op (C++ WriteMap::mutate PUSHES it onto the
+	// unreadable entry's stack, WriteMap.cpp:139-146, so both ship). Rather than reproduce that stacking in
+	// the keyed cache, a txn carrying any versionstamp op ships its raw op-log (such txns are tiny and never
+	// approach 2101), sidestepping every versionstamp-materialization edge (codex #28 P2 + the double-SVK
+	// case). Non-versionstamp txns — including the 150k-op headline — get the full coalescing.
+	coalesce := !tx.rywDisabled && !mutationsHaveVersionstamp(muts)
+	shipMuts := muts
+	sizeConflicts := writeConflictsSnap[:nWriteConflicts]
+	if coalesce {
 		shipMuts = coalesceCommitMutations(muts)
-		shipConflicts = coalesceWriteConflicts(writeConflictsSnap[:nWriteConflicts])
+		sizeConflicts = coalesceWriteConflicts(writeConflictsSnap[:nWriteConflicts])
 	}
 
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
@@ -1723,16 +1733,16 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// that fast path's condition) but BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
-	if tx.db != nil && (len(shipMuts) > 0 || len(shipConflicts) > 0) {
+	if tx.db != nil && (len(shipMuts) > 0 || len(sizeConflicts) > 0) {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
 
-	if (len(shipMuts) > 0 || len(shipConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, shipConflicts) > tx.sizeLimit {
+	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, sizeConflicts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
-	if len(shipMuts) == 0 && len(shipConflicts) == 0 {
+	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
 		// Reset for reuse (matches C client behavior).
@@ -1745,6 +1755,22 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// read-only fast path and the size check above — exactly as C++ places it after its own read-only
 	// return and transaction_too_large check. See maybeMakeSelfConflicting for the full rationale.
 	tx.maybeMakeSelfConflicting()
+
+	// #28 P1 (codex): maybeMakeSelfConflicting above appends the synthetic \xff/SC/ self-conflict range to
+	// tx.writeConflicts (write-only non-tenant commits), AFTER the 2101 gate — matching C++, which adds it
+	// after the transaction_too_large check (NativeAPI.actor.cpp:6858) so it is NOT sized. But it MUST
+	// SHIP: pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the size-time
+	// `sizeConflicts` snapshot predates it. Re-derive the shipped conflicts from the now-updated
+	// tx.writeConflicts so the self-conflicting retry can still detect an already-applied commit
+	// (RFC-090). Conflict ranges are not validated, so re-snapshotting here (which also picks up any
+	// racing Set's conflict range) matches pre-#28's live read.
+	tx.conflictMu.Lock()
+	finalConflicts := tx.writeConflicts
+	tx.conflictMu.Unlock()
+	shipConflicts := finalConflicts
+	if coalesce {
+		shipConflicts = coalesceWriteConflicts(finalConflicts)
+	}
 
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
 	// read version exists before commit, even for write-only transactions.
