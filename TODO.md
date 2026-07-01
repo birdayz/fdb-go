@@ -255,6 +255,18 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
    with the API version threaded into `client.database` (mandatory-set → `api_version_unset` 2200). Pinned by
    a cgo in-txn-RYW + committed red→green differential + the 509/510 boundary. FDB-C-dev + Torvalds + codex +
    @claude all green. Next axes: option `defaultFor` matrix, versionstamp-offset edges (RFC-063 still Draft).
+   **Full-surface hunt (2026-06-30, PR #403, branch `hunt/fdbgo-client-bughunt`):** two multi-agent
+   discovery sweeps over 22 axes → adversarial verify (3 refuted) → **11 fixed red→green** (getKey
+   system-key clamp HIGH; watch goroutine race+leak HIGH; RYW more-on-exactly-limit + spurious-1020;
+   atomic invalid-opcode incl. silent ClearRange delete; AddReadConflict over-conflict; OnError-honors-
+   timeout; Iterator Limit=-1; hedge QueueModel leak; watch legal-range/key-size; too_many_watches;
+   StreamingModeExact-no-limit→2210). **Open (in the PR's severity table + `shifts/2026-06-30-fdbgo-client-
+   bughunt.md`):** 3 architectural → **RFC-165** (watch-at-committed-version), **RFC-166** (reset() must
+   clear non-persistent options — also closes snapshot-ryw-survives-reset), **RFC-167** (getKey isBackward
+   shard-location, needs multi-SS/SimTransport) — all Draft, need FDB-C-dev ACK; plus bounded LOWs (atomic
+   op-code precedence, oversized system-key Clear drop, buffer-pool sync.Pool race on SendFrame-error,
+   SYSTEM_IMMEDIATE+GRV-cache [Go-intentional, needs FDB-C-dev adjudication], dummy-txn jitter law,
+   api<520 versionstamp suffix, sendGetValue fallback error-masking). Review gauntlet owed before merge.
 3. **[ ] C2-followup — confirm RFC-057's lazy iterator closed the go-vs-cgo 1007-rate** near the 5s
    MVCC edge (profiling, not a fix). Detail: conformance section, "C2-followup".
 4. **[ ] Query-engine "one query path" unification.** Route `buildSelectShell`/SimpleTable builder +
@@ -1635,7 +1647,20 @@ timed_out/future_version — instead of breaking the watch). Four remaining, ran
   comment at `transaction.go:1595` ("Watch() calls are NOT cancelled by Reset()") contradicts the actual
   `reset()→cancelWatches()` path — cleanup.
 
-### [ ] fdbgo/client: missing `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — needs its own `fdb-client-engineer` RFC (commit-path wire/behavior; found by the quality-grind OnError audit, 2026-06-19)
+### [~] fdbgo/client: `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — NON-tenant LANDED; tenant + idempotency-id add remain
+
+**STATUS (landed):** The primary `makeSelfConflicting` port is DONE for **non-tenant** transactions
+(`transaction.go` `maybeMakeSelfConflicting` — the `!intersects(write, read)` gate → `makeSelfConflictingLocked`,
+placed after the read-only fast path + size check exactly as C++ commitMutations). The dummy-barrier key
+picker (`intersectConflictRanges`) and the guard now share one C++-faithful sorted-merge `intersectRanges`
+(1:1 with `intersects`, `NativeAPI.actor.cpp:6211` — O(n log n), not the old O(w·r) scan). Revert-proven by
+`self_conflict_test.go` (wire-level: SC in both vectors for a non-tenant write-only commit; gated OFF for a
+tenant commit; gated OFF when real ranges already intersect). **REMAINING:** (1) the **tenant** case —
+`buildCommitTransactionRequest` prefixes the `\xFF/SC/` key with the tenant prefix (only `metadataVersion`
+is exempt), so a faithful tenant port must either exempt the SC key or scope it inside the tenant keyspace;
+skipped for now (gate: `tenantId == NoTenantID`) because the first attempt broke `TestDifferential_Tenant*`.
+(2) the SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` (automatic-idempotency
+feature — distinct, gate on `tr.idempotencyId`).
 
 C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
 and read conflict ranges don't already intersect: `if (!causalWriteRisky &&
@@ -1665,6 +1690,39 @@ fault-injection test that triggers commit_unknown_result is needed). Port `makeS
 the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin with a Go-side
 commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
 SimTransport commit_unknown_result behavioral test.
+
+### [ ] fdbgo/client (#28, HIGH): commit ships the UNFOLDED mutation log; libfdb_c commits the COALESCED RYW write map → Go throws 2101 (`transaction_too_large`) on a transaction C++/Java commit fine — needs its own `fdb-client-engineer` RFC (commit-path materialization; verified vs cgo)
+
+**App-breaking behavioral divergence** (not a wire-bytes-of-stored-data issue — the final DB state is
+identical either way; the divergence is the committed mutation COUNT/SIZE, which trips Go's 2101 where
+C++ stays under the limit). A transaction that increments ONE counter key 150k times (or overwrites one
+key repeatedly) works on libfdb_c/Java and fails on Go.
+
+**Root cause.** Go's `tx.Commit` marshals `tx.mutations` — the raw, unfolded append log (one entry per
+`Set`/`Atomic` call). libfdb_c does NOT commit its append log: `ReadYourWritesTransaction::commit`
+materializes the COALESCED **RYW write map** via `writeRangeToNativeTransaction`
+(`ReadYourWrites.actor.cpp:1997-2071`, called from the commit actor at `:1392`). The write map folds
+same-key writes at INSERT time:
+- **SET/CLEAR** — last-writer-wins / clear-clears-the-stack (an absolute op resets the operation stack).
+- **Same-type associative atomic op** (ADD, OR, AND, MIN, MAX, …) — `WriteMap::coalesceOver`
+  (`WriteMap.cpp:480-495`) does `stack.poppush(coalesce(existing, new))`: it REPLACES the stack top with
+  the single combined op. So 150k `ADD 1`s on one key collapse to a single `ADD 150000`. (Exceptions kept
+  as a stack, NOT folded: `CompareAndClear`; a non-associative op whose operand SIZE differs; two DIFFERENT
+  atomic-op types — those `stack.push` instead.)
+`writeRangeToNativeTransaction` then emits clears FIRST (`:2004-2018`), then per-key the (folded) operation
+stack `op[i]` for `i in 0..op.size()` (`:2035-2065`) — so the shipped mutation vector is the coalesced one.
+
+**Fix shape (RFC-grade, high regression risk — this is the most critical wire path).** Commit from the
+coalesced write map for the RYW-enabled path (mirror `writeRangeToNativeTransaction`): iterate Go's RYW
+write map (`ryw.go` — `rywEntry`/operation-stack, the WriteMap.cpp analog already used for READS), emit
+clear ranges first then the folded per-key ops, in place of marshaling `tx.mutations`. Scope to
+`!rywDisabled` (the RYW-disabled path already commits its op log 1:1, matching C++ `:2291` `if
+(options.readYourWritesDisabled) return tr.atomicOp(...)`). Port `coalesceOver`/`coalesceUnder` fold
+semantics EXACTLY (associative-fold vs push, the operand-size and CompareAndClear/different-type
+exceptions). Validate with a cgo differential over many op-combination shapes (repeated ADD, ADD-then-SET,
+SET-then-CLEAR, mixed atomic types, non-associative-size-change) asserting byte-identical committed mutation
+vectors, plus the 150k-increment 2101 regression (red before, green after). FDB-C-dev DESIGN review before
+impl. Do NOT rush at a session tail — 2/2 commit-path fixes this session needed rework.
 
 ### [ ] fdbgo/client: transaction-level options are PRESERVED across `onError` retry; C++ resets them to DB defaults — needs its own RFC (found by the quality-grind options audit, 2026-06-19)
 

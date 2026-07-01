@@ -2105,7 +2105,10 @@ func SeedRunCorpus() []RunQuery {
 
 		// ===== UNION coverage =====
 		{
-			// UNION ALL — preserves duplicates, no sort.
+			// UNION ALL with an outer ORDER BY. Go deterministically applies the outer sort; Java
+			// intermittently fails to (same bug as union_all_two_branches_disjoint_where below), so this
+			// must carry the DivergenceJavaIntermittentGoCorrect annotation or it flakes whenever Java
+			// returns interleaved branch order. Go's sorted [1],[2] is SQL-correct.
 			Name:           "union_all_basic",
 			SchemaTemplate: "CREATE TABLE T_UA (id BIGINT, val BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{
@@ -2113,6 +2116,13 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_UA VALUES (2, 200)",
 			},
 			Query: "SELECT id FROM T_UA WHERE val = 100 UNION ALL SELECT id FROM T_UA WHERE val = 200 ORDER BY id",
+			Divergence: &Divergence{
+				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order, sometimes correctly sorted. Go's behaviour is deterministic and SQL-correct. Same bug as union_all_two_branches_disjoint_where.",
+				Direction: DivergenceJavaIntermittentGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)}, {float64(2)},
+				},
+			},
 		},
 		{
 			// `UNION` without ALL (implicit DISTINCT) is rejected by

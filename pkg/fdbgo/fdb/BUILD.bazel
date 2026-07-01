@@ -68,6 +68,7 @@ go_test(
         "//pkg/fdbgo/fdb/directory",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
     ],

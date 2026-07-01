@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -622,8 +623,7 @@ func TestCancel_SetsCancelledState(t *testing.T) {
 func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
-	parent := context.Background()
-	wctx := tx.getWatchCtx(parent)
+	wctx, _ := tx.newWatchCtx(context.Background())
 	if err := wctx.Err(); err != nil {
 		t.Fatalf("setup: watch ctx should be live, got %v", err)
 	}
@@ -631,22 +631,248 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	if wctx.Err() == nil {
 		t.Error("Cancel must cancel the watch context, but ctx.Err() is still nil")
 	}
-	// After cancel, getWatchCtx must mint a fresh context (non-nil parent ctx).
-	if tx.watchCtx != nil || tx.watchCancel != nil {
-		t.Error("Cancel must clear watchCtx/watchCancel so a future Watch can mint a fresh one")
+	// Cancel clears the per-watch cancels map so a future Watch mints fresh.
+	tx.watchMu.Lock()
+	n := len(tx.watchCancels)
+	tx.watchMu.Unlock()
+	if n != 0 {
+		t.Errorf("Cancel must clear the watch-cancels map, got %d entries", n)
 	}
 }
 
-func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
+// TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError pins watchSetupErr's precedence (codex #13 +
+// Torvalds): a context cancellation maps to transaction_cancelled (1025) ONLY when the txn was actually
+// Cancel()ed; a caller-ctx cancellation on a live txn passes through; and a GENUINE read error is NEVER
+// masked by 1025 even on a cancelled txn (whichever surfaced first wins, as in C++). Pure function —
+// deterministic, no scheduling.
+func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ctx_cancel_on_cancelled_txn_is_1025", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.state.Store(int32(txStateCancelled))
+		if got := fdbCodeOf(tx.watchSetupErr(context.Canceled)); got != 1025 {
+			t.Fatalf("context.Canceled on a cancelled txn must map to 1025, got %d", got)
+		}
+	})
+
+	t.Run("ctx_cancel_on_live_txn_passes_through", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx() // active
+		if err := tx.watchSetupErr(context.Canceled); !errors.Is(err, context.Canceled) {
+			t.Fatalf("context.Canceled on a live txn must pass through, got %v", err)
+		}
+	})
+
+	t.Run("genuine_error_never_masked_on_cancelled_txn", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.state.Store(int32(txStateCancelled))
+		got := tx.watchSetupErr(&wire.FDBError{Code: 1009}) // future_version — a real read error, not a cancel
+		var fe *wire.FDBError
+		if !errors.As(got, &fe) || fe.Code != 1009 {
+			t.Fatalf("a genuine read error must NOT be masked by 1025 on a cancelled txn, got %v", got)
+		}
+	})
+}
+
+// TestCancel_StateVisibleWhenWatchCancelled probes codex #13's ordering (Torvalds wanted a probe):
+// Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch context observes the
+// cancelled state at the instant it is cancelled. With the CORRECT order this is guaranteed — the store
+// is sequenced-before the context cancellation, whose Done()-close synchronizes-with the observing read
+// (Go memory model), so state.Load is guaranteed to see cancelled (that is exactly why watchSetupErr
+// maps 1025 and not context.Canceled). The FAILURE detection is a HIGH-PROBABILITY multi-core probe,
+// not a strict guarantee: with the buggy order (cancelWatches before the store) the observers whose
+// context is cancelled early in cancelWatches's loop run — on other cores — while Cancel is still
+// iterating, BEFORE the store, and record the non-cancelled state; 512 observers make it fire reliably
+// on any multi-core box (empirically ~500/512 with the lines swapped) but a single-core scheduler could
+// mask it. Both state.Load and Cancel's state.Store are atomic, so this is -race clean. Revert-proof:
+// swap the two lines in Cancel() and observers see the pre-store state → bad != 0.
+func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
-	if tx.watchCtx != nil {
-		t.Fatal("setup: watchCtx must start nil")
+	const n = 512
+	ctxs := make([]context.Context, n)
+	for i := range ctxs {
+		ctxs[i], _ = tx.newWatchCtx(context.Background())
 	}
-	a := tx.getWatchCtx(context.Background())
-	b := tx.getWatchCtx(context.Background())
-	if a != b {
-		t.Error("repeated getWatchCtx must return the same context until reset")
+	seen := make([]txState, n)
+	var start, done sync.WaitGroup
+	start.Add(n)
+	done.Add(n)
+	for i := range ctxs {
+		go func(i int) {
+			start.Done()
+			<-ctxs[i].Done()
+			seen[i] = txState(tx.state.Load()) // the state a setup read would observe in checkCancelled
+			done.Done()
+		}(i)
+	}
+	start.Wait()
+	time.Sleep(10 * time.Millisecond) // let every observer park on <-Done()
+	tx.Cancel()
+	done.Wait()
+	bad := 0
+	for _, s := range seen {
+		if s != txStateCancelled {
+			bad++
+		}
+	}
+	if bad != 0 {
+		t.Fatalf("%d/%d watch observers saw a non-cancelled state at cancellation — Cancel() stored the "+
+			"state AFTER cancelWatches(); it must store BEFORE so the Done()-close carries the "+
+			"happens-before edge (codex #13)", bad, n)
+	}
+}
+
+// TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
+// in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
+// a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
+// slot until the key changes, starving future watches under a low MAX_WATCHES (codex). The retry path
+// already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
+// stays live after OnError.
+// TestOnError_CallerCancelOutranksTxnTimeout pins that when a retryable FDB error reaches OnError
+// with BOTH the txn SetTimeout deadline AND the caller ctx expired, the caller's own cancellation
+// wins over the txn timeout (mapTimeout precedence) — a TransactCtx caller gets context.Canceled,
+// not 1031 (codex). Revert-proof: without the ctx.Err() check the timeout gate returns 1031.
+func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now().Add(-time.Second)
+	tx.SetTimeout(500) // txn deadline anchored in the PAST
+	cctx, ccancel := context.WithCancel(context.Background())
+	ccancel()                                                      // caller ctx cancelled
+	err := tx.OnError(cctx, &wire.FDBError{Code: ErrNotCommitted}) // retryable FDB error (1020)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller-cancel + expired txn timeout must return context.Canceled, not 1031, got %v", err)
+	}
+}
+
+func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	watchCtx, _ := tx.newWatchCtx(context.Background())
+	if watchCtx.Err() != nil {
+		t.Fatal("setup: watch ctx should start live")
+	}
+	_ = tx.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — non-retryable
+	if watchCtx.Err() == nil {
+		t.Fatal("a terminal (non-retryable) OnError must cancel in-flight watch contexts to free their slots")
+	}
+}
+
+// TestNewWatchCtx_PerWatchScoped pins the RFC-168 per-watch-context restructure (round-18 fix):
+// newWatchCtx mints a DISTINCT context per watch (not one shared per txn), each cancellable
+// independently via its scoped cancel WITHOUT touching siblings, while cancelWatches cancels ALL.
+func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	a, cancelA := tx.newWatchCtx(context.Background())
+	b, cancelB := tx.newWatchCtx(context.Background())
+	if a == b {
+		t.Fatal("each watch must get its OWN context, not a shared one")
+	}
+	// Cancelling A's scoped cancel cancels A only — B stays live (the round-18 fix).
+	cancelA()
+	if a.Err() == nil {
+		t.Error("a watch future's scoped cancel must cancel its own context")
+	}
+	if b.Err() != nil {
+		t.Errorf("cancelling one watch must NOT cancel a sibling, got %v", b.Err())
+	}
+	// cancelWatches (Cancel/reset) cancels the remaining live watch (B).
+	tx.cancelWatches()
+	if b.Err() == nil {
+		t.Error("cancelWatches must cancel all remaining watches")
+	}
+	cancelB() // idempotent no-op (already cancelled+deregistered)
+}
+
+// TestWatch_NewWatchCtxCancelRaceFree pins the watchMu synchronization. newWatchCtx (the synchronous
+// WatchSetup capture, which appends to watchCancels) and cancelWatches (Cancel()/reset(), incl. the
+// OnError retry path, which snapshots+clears the map) run concurrently with the watch future by
+// design. Both touch watchCancels under watchMu; without it `go test -race` would report a data race.
+// MUST be run under -race to catch a regression.
+func TestWatch_NewWatchCtxCancelRaceFree(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 200; i++ {
+		tx := newTestTx()
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = tx.newWatchCtx(context.Background()) }()
+		go func() { defer wg.Done(); tx.Cancel() }()
+		wg.Wait()
+	}
+}
+
+// TestOnError_RespectsTimeoutDeadline pins the SetTimeout-bounded OnError fix (entry gate). A
+// SetTimeout transaction whose deadline already passed must surface transaction_timed_out (1031)
+// from OnError IMMEDIATELY — not sleep a full (growing) backoff and signal a retry (nil), which
+// overshoots the declared timeout by up to one backoff. Matches C++ RYWImpl::onError's entry
+// timebomb check (ReadYourWrites.actor.cpp:1506). Revert-proof: without the entry gate,
+// OnError(not_committed) on an expired txn sleeps ~10ms then returns nil.
+func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now().Add(-1 * time.Second)
+	tx.SetTimeout(500) // deadline = creationTime+500ms → 500ms in the PAST
+	if tx.checkTimeout() == nil {
+		t.Fatal("setup: deadline should already be expired")
+	}
+	start := time.Now()
+	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
+	elapsed := time.Since(start)
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
+		t.Fatalf("OnError past the deadline must return transaction_timed_out (1031), got %v", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("OnError past the deadline must not sleep a backoff, took %v", elapsed)
+	}
+
+	// Isolate the ENTRY GATE (Torvalds): a NON-retryable error past the deadline must ALSO become
+	// 1031. This is the gate's unique contribution — a non-retryable code never reaches
+	// backoffSleepBounded (it returns the original error at the !onErrorRetryable branch), so only
+	// the entry checkTimeout turns it into 1031. C++ onError throws transaction_timed_out at ENTRY,
+	// before classifying the error (ReadYourWrites.actor.cpp:1506). Revert-proof of the gate ALONE.
+	tx2 := newTestTx()
+	tx2.creationTime = time.Now().Add(-1 * time.Second)
+	tx2.SetTimeout(500)                                                   // deadline 500ms in the PAST
+	err2 := tx2.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — NOT retryable
+	var fe2 *wire.FDBError
+	if !errors.As(err2, &fe2) || fe2.Code != ErrTransactionTimedOut {
+		t.Fatalf("entry gate: a NON-retryable FDB error past the deadline must become 1031, got %v", err2)
+	}
+
+	// codex: a NON-FDB application error past the deadline must ESCAPE unchanged — the timeout gate
+	// is for FDB errors (the retry path) only, not the caller's own error. Revert-proof of the gate
+	// POSITION (after errors.As): pre-fix the gate ran first and replaced this with 1031.
+	tx3 := newTestTx()
+	tx3.creationTime = time.Now().Add(-1 * time.Second)
+	tx3.SetTimeout(500) // expired
+	appErr := errors.New("business logic failed")
+	if got := tx3.OnError(context.Background(), appErr); got != appErr {
+		t.Fatalf("a non-FDB application error past the deadline must escape unchanged, got %v", got)
+	}
+}
+
+// TestBackoffSleepBounded_CapsAtDeadline pins the timebomb-race half (ReadYourWrites.actor.cpp:1517):
+// a backoff longer than the remaining timeout is cut short at the deadline and surfaces 1031.
+func TestBackoffSleepBounded_CapsAtDeadline(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now()
+	tx.SetTimeout(50) // deadline ~50ms out
+	start := time.Now()
+	err := tx.backoffSleepBounded(context.Background(), 5*time.Second) // would otherwise sleep 5s
+	elapsed := time.Since(start)
+	var fe *wire.FDBError
+	if !errors.As(err, &fe) || fe.Code != ErrTransactionTimedOut {
+		t.Fatalf("backoffSleepBounded must surface 1031 when the deadline cuts the sleep, got %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("backoffSleepBounded must abort at the ~50ms deadline, took %v", elapsed)
 	}
 }
 

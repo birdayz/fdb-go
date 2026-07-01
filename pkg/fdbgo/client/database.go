@@ -305,13 +305,55 @@ type database struct {
 	// at >=510). Read-only after open.
 	apiVersion int
 
+	// outstandingWatches/maxWatches: per-Database cap on concurrently-outstanding (not-yet-fired,
+	// not-yet-cancelled) watches — C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:5694)
+	// throws too_many_watches (1032) once outstandingWatches >= maxWatches. maxWatches defaults to
+	// DEFAULT_MAX_OUTSTANDING_WATCHES (10000, ClientKnobs.cpp:120) and is lowerable via the
+	// max_watches database option (SetMaxWatches). 0 means unlimited.
+	outstandingWatches atomic.Int64
+	maxWatches         atomic.Int64
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	connected chan struct{}
 	wg        sync.WaitGroup
+	// closeMu guards `closed`, the barrier that stops the lazy GRV-cache background refresher from
+	// registering a wg slot once Close() has begun. Without it, the refresher's one-shot db.wg.Add(1)
+	// (grv.go) can race Close's db.wg.Wait() at a zero counter → "sync: WaitGroup misuse: Add called
+	// concurrently with Wait" panic. Close sets closed under this lock BEFORE cancel()/Wait(); the
+	// refresher launch checks it under the same lock, so the check-and-Add is atomic w.r.t. the store.
+	closeMu sync.Mutex
+	closed  bool
 }
+
+// defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
+const defaultMaxOutstandingWatches = 10000
+
+// absoluteMaxWatches mirrors CLIENT_KNOBS->ABSOLUTE_MAX_WATCHES (ClientKnobs.cpp:121) — the upper
+// bound MAX_WATCHES accepts; a higher (or negative) value is rejected with invalid_option_value.
+const absoluteMaxWatches = 1_000_000
+
+// tryAcquireWatch reserves an outstanding-watch slot, returning too_many_watches (1032) when the
+// cap is exceeded — C++ increaseWatchCounter (NativeAPI.actor.cpp:2175-2179, called from
+// Transaction::watch :5694). Each successful acquire MUST be matched by exactly one releaseWatch.
+func (db *database) tryAcquireWatch() error {
+	// C++ DatabaseContext::increaseWatchCounter (NativeAPI.actor.cpp:2175-2177) throws when
+	// `outstandingWatches >= maxOutstandingWatches`. n is the post-increment count
+	// (outstandingWatches+1), so `n > max` is exactly `outstandingWatches >= max`. maxWatches is
+	// NOT an unlimited sentinel: MAX_WATCHES=0 (and any negative, which SetMaxWatches/C++
+	// extractIntOption clamp to 0 — NativeAPI:2139) is a HARD 0-cap, so the FIRST watch fails 1032.
+	n := db.outstandingWatches.Add(1)
+	if n > db.maxWatches.Load() {
+		db.outstandingWatches.Add(-1)
+		return &wire.FDBError{Code: ErrTooManyWatches}
+	}
+	return nil
+}
+
+// releaseWatch frees an outstanding-watch slot (C++ decreaseWatchCounter).
+func (db *database) releaseWatch() { db.outstandingWatches.Add(-1) }
 
 // apiVersionAtLeast reports whether the selected API version is >= v. Mirrors
 // C++ DatabaseContext::apiVersionAtLeast (Transaction::apiVersionAtLeast →
@@ -783,7 +825,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 		},
 	}
 
-	db.hedgeEnabled.Store(true) // default: hedge on (matches C++)
+	db.hedgeEnabled.Store(true)                       // default: hedge on (matches C++)
+	db.maxWatches.Store(defaultMaxOutstandingWatches) // C++ DEFAULT_MAX_OUTSTANDING_WATCHES (10000)
 
 	if err := db.bootstrap(ctx); err != nil {
 		cancel()
@@ -957,6 +1000,21 @@ func (d *Database) SetDefaultAccessSystemKeys() {
 	d.db.txDefaults.AccessSysKeys = true
 }
 
+// SetMaxWatches sets the cap on concurrently-outstanding watches for this Database
+// (FDB_DB_OPTION_MAX_WATCHES). Once the count would exceed it, a new watch fails with
+// too_many_watches (1032). Matches C++ DatabaseContext maxOutstandingWatches; default 10000.
+// 0 is a REAL cap (no watches allowed — the first fails), NOT "unlimited". An out-of-range value
+// (< 0 or > ABSOLUTE_MAX_WATCHES) is REJECTED with invalid_option_value (2006) and the cap is left
+// UNCHANGED — C++ extractIntOption(value, 0, ABSOLUTE_MAX_WATCHES) throws on out-of-range, it does
+// NOT clamp (NativeAPI.actor.cpp:2092-2102 / :2139).
+func (d *Database) SetMaxWatches(n int64) error {
+	if n < 0 || n > absoluteMaxWatches {
+		return &wire.FDBError{Code: 2006} // invalid_option_value; cap unchanged
+	}
+	d.db.maxWatches.Store(n)
+	return nil
+}
+
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
 // a fresh read version from the GRV proxy. Use after external writes.
 func (d *Database) InvalidateGRVCache() {
@@ -971,8 +1029,34 @@ func (d *Database) GetDBInfo() *DBInfo {
 
 // Close shuts down the database connection. Idempotent.
 // Cancels background goroutines, waits for them to exit, closes all connections.
+// registerBackgroundGoroutine reserves a db.wg slot for a lazily-started background goroutine (the
+// GRV-cache refresher), returning true iff it was reserved. It returns FALSE once Close() has begun, so
+// a slot is never Add()ed after Close's db.wg.Wait() is (or is about to be) waiting — which, once the
+// topology-monitor slot has drained the counter toward zero, would panic with
+// "sync: WaitGroup misuse: Add called concurrently with Wait". The closed check and the Add share
+// closeMu with Close's `closed = true`, so the check-and-Add is atomic w.r.t. that store: either the
+// Add happens before closed is set (so the counter is still ≥1 from the topology monitor and Close's
+// Wait observes this slot) or closed is already set (so we skip). The caller's goroutine MUST
+// db.wg.Done() on exit.
+func (db *database) registerBackgroundGoroutine() bool {
+	db.closeMu.Lock()
+	defer db.closeMu.Unlock()
+	if db.closed {
+		return false
+	}
+	db.wg.Add(1)
+	return true
+}
+
 func (d *Database) Close() error {
 	d.db.closeOnce.Do(func() {
+		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
+		// refresher (register a new wg slot) after we've begun waiting. The refresher launch checks
+		// `closed` under closeMu and skips its Add when set (grv.go); taking the same lock here makes the
+		// check-and-Add atomic w.r.t. this store, so the Add never races Wait at a zero counter.
+		d.db.closeMu.Lock()
+		d.db.closed = true
+		d.db.closeMu.Unlock()
 		d.db.cancel()
 		d.db.wg.Wait()
 		d.db.connMu.Lock()

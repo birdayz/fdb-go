@@ -145,7 +145,12 @@ func FuzzDDSketch(f *testing.F) {
 				t.Fatalf("non-finite stat in %+v", st)
 			}
 		}
-		if len(data) > 0 && !(st.Min <= st.Median && st.Median <= st.P90 && st.P90 <= st.P99) {
+		// Min is EXACT while Median/P90/P99 are DDSketch estimates (±0.5% relative), so the
+		// exact-Min-vs-sketch-Median edge needs a bucket-width of slack: a near-degenerate sample
+		// (all values in ~one bucket) can put the sketch median just below the exact Min. The
+		// sketch-vs-sketch edges (median≤p90≤p99) stay strict (monotone in q). Same reasoning as
+		// TestFDB_Metrics_LatencyRecorded's Min≤Median*1.0201 slack.
+		if len(data) > 0 && !(st.Min <= st.Median*1.0201 && st.Median <= st.P90 && st.P90 <= st.P99) {
 			t.Fatalf("quantiles not monotone: %+v", st)
 		}
 	})

@@ -5,7 +5,53 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 )
+
+// TestSetMaxWatches_FacadeConvertsError pins that the public DatabaseOptions.SetMaxWatches returns a
+// converted fdb.Error (not the internal *wire.FDBError) for an out-of-range cap, like every other
+// facade setter (codex). A bare &client.Database{} suffices: SetMaxWatches(-1) returns 2006 before
+// it touches the (nil) inner database.
+func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
+	t.Parallel()
+	opts := DatabaseOptions{db: &internalDB{inner: &client.Database{}}}
+
+	err := opts.SetMaxWatches(-1)
+	var fe Error
+	if !errors.As(err, &fe) || fe.Code != 2006 {
+		t.Fatalf("facade SetMaxWatches(-1) must return fdb.Error{2006}, got %T %v", err, err)
+	}
+	// It must NOT leak the internal *wire.FDBError through the public API.
+	var we *wire.FDBError
+	if errors.As(err, &we) {
+		t.Fatalf("facade must convert, not leak *wire.FDBError, got %T %v", err, err)
+	}
+	// The over-max bound converts the same way. (The valid-cap path stores into the inner database
+	// and is covered by client.TestSetMaxWatches_RejectsOutOfRange; the bare facade db here has no
+	// inner store, so we only exercise the reject-and-convert path the codex finding is about.)
+	if c := opts.SetMaxWatches(absoluteMaxWatchesFacade + 1); c == nil {
+		t.Fatal("facade SetMaxWatches(>1e6) must reject")
+	}
+}
+
+const absoluteMaxWatchesFacade = 1_000_000
+
+// TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() actually runs its cancel
+// hook (which cancels the watch context so the poll drains and releases its outstanding-watch slot),
+// instead of the base futureBase.Cancel() no-op that left the slot charged (codex). The fn here
+// stands in for WatchPoll (blocks until cancelled); the hook for the scoped cancel (releases the poll).
+func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	f := newFutureNilCancel(
+		func() error { <-release; return errors.New("polled") },
+		func() { close(release) },
+	)
+	f.Cancel() // must run the hook (base future Cancel is a no-op — the bug)
+	if err := f.Get(); err == nil || err.Error() != "polled" {
+		t.Fatalf("Cancel must run the hook so the future's fn completes, got %v", err)
+	}
+}
 
 // newBareOptionsTx builds a facade transaction over a bare client transaction.
 // The option setters only mutate the inner transaction's fields, so no database

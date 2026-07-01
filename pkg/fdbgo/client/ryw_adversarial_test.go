@@ -268,6 +268,15 @@ func TestRYWAtomic_ChainedOps(t *testing.T) {
 			// Apply chain + read via RYW.
 			rywResult, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 				for _, op := range tt.ops {
+					if op.op == MutSetValue {
+						// Atomic(MutSetValue) is rejected as invalid_mutation_type (C++ atomicOp,
+						// ReadYourWrites.actor.cpp:2234 — SetValue is not in ATOMIC_MASK). A real
+						// client models a chained "set" via Set(); the RYW fold is identical
+						// (rywCache.set stores a resolved entry, the next atomic folds over it at
+						// "Site B"), so Set(50)+Add(10) still resolves to 60.
+						tx.Set(key, op.param)
+						continue
+					}
 					tx.Atomic(op.op, key, op.param)
 				}
 				val, err := tx.Get(ctx, key)

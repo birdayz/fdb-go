@@ -88,6 +88,93 @@ func TestDifferential_GetKeyBoundary(t *testing.T) {
 	}
 }
 
+// TestDifferential_GetKeyBoundaryRYWDisabled pins the rywDisabled getKey clamp.
+//
+// FOUND (this hunt): with ReadYourWritesDisable set, Go's GetKey bypassed the RYW layer and
+// returned tx.getKey's raw storage resolution VERBATIM. A forward selector that walks off the
+// end of the user keyspace (e.g. firstGreaterOrEqual("\xff")) resolves to the first SYSTEM key
+// (\xff/…) on storage; Go leaked that system key while libfdb_c's readThrough(GetKeyReq) clamps
+// the RETURNED key to getMaxReadKey (\xff) — ReadYourWrites.actor.cpp:182-183, "Filter out
+// results in the system keys if they are not accessible" (NativeAPI doesn't clip). The
+// RYW-ENABLED path (TestDifferential_GetKeyBoundary above) already clamped via getKeyRYW, so
+// this dimension was unprobed. Fix: transaction.go GetKey clamps the rywDisabled return to
+// maxReadKey AFTER the (unclamped) conflict-range add.
+//
+// Both clients SetReadYourWritesDisable (before any op, clean) and pin the SAME read version, so
+// they resolve against an identical committed snapshot — go==cgo is a clean assertion.
+func TestDifferential_GetKeyBoundaryRYWDisabled(t *testing.T) {
+	t.Parallel()
+	maxReadKey := []byte{0xff}
+	cases := []struct {
+		name    string
+		key     string
+		orEqual bool
+		offset  int
+	}{
+		// firstGreaterOrEqual("\xff") / firstGreaterThan("\xff"): nothing in user space is
+		// >= \xff, so storage resolves into the (always-present) system keyspace. Must clamp.
+		{"FGE_into_system", "\xff", false, 1},
+		{"FGT_into_system", "\xff", true, 1},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			const maxAttempts = 12
+			for attempt := 0; ; attempt++ {
+				if attempt >= maxAttempts {
+					t.Fatalf("%s: did not clear transient errors in %d attempts", c.name, maxAttempts)
+				}
+				v := freshSharedVersion(t)
+				goKey, goErr := goGetKeyAtPinnedRYWDisabled(t, v, c.key, c.orEqual, c.offset)
+				cKey, cErr := cgoGetKeyAtPinnedRYWDisabled(t, v, c.key, c.orEqual, c.offset)
+				goCode, cCode := fdbErrorCode(goErr), fdbErrorCode(cErr)
+				if (goErr != nil && isFDBRetryable(goErr)) || (cErr != nil && isFDBRetryable(cErr)) {
+					continue
+				}
+				if goCode != cCode {
+					t.Fatalf("%s: error code differs: go=%d cgo=%d", c.name, goCode, cCode)
+				}
+				if goCode != 0 {
+					return
+				}
+				if !bytes.Equal(goKey, cKey) {
+					t.Fatalf("%s: rywDisabled getKey leaked unclamped key: go=%x cgo=%x (libfdb_c clamps to maxReadKey)", c.name, goKey, cKey)
+				}
+				// Document the clamp target: libfdb_c (and now Go) must return maxReadKey (\xff).
+				if !bytes.Equal(cKey, maxReadKey) {
+					t.Fatalf("%s: expected libfdb_c to clamp to maxReadKey %x, got %x — system keyspace empty at v?", c.name, maxReadKey, cKey)
+				}
+				return
+			}
+		})
+	}
+}
+
+func goGetKeyAtPinnedRYWDisabled(t *testing.T, v int64, key string, orEqual bool, offset int) ([]byte, error) {
+	t.Helper()
+	tr, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("go create: %v", err)
+	}
+	defer tr.Cancel()
+	_ = tr.Options().SetReadYourWritesDisable() // clean: before any op
+	tr.SetReadVersion(v)
+	return tr.GetKey(gofdb.KeySelector{Key: gofdb.Key(key), OrEqual: orEqual, Offset: offset}).Get()
+}
+
+func cgoGetKeyAtPinnedRYWDisabled(t *testing.T, v int64, key string, orEqual bool, offset int) ([]byte, error) {
+	t.Helper()
+	tr, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatalf("cgo create: %v", err)
+	}
+	defer tr.Cancel()
+	_ = tr.Options().SetReadYourWritesDisable()
+	tr.SetReadVersion(v)
+	return tr.GetKey(cgofdb.KeySelector{Key: cgofdb.Key(key), OrEqual: orEqual, Offset: offset}).Get()
+}
+
 func goGetKeyAtPinned(t *testing.T, v int64, key string, orEqual bool, offset int) ([]byte, error) {
 	t.Helper()
 	tr, err := goClient.CreateTransaction()
