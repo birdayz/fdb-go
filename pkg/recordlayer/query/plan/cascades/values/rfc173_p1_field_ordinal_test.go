@@ -43,18 +43,17 @@ func TestFieldValue_ResolveOrdinal_RFC173P1(t *testing.T) {
 	}
 }
 
-// TestFieldValue_OrdinalOrderingPrecondition_RFC173P1 is P1's dual-mode assert,
-// expressed structurally: the ordinal path (resolveOrdinal -> declared Field.Ordinal)
-// agrees with slice-position access (GetField) — and therefore with the
-// authoritative name path — IFF the RecordType's Fields are ordinal-ordered
-// (Fields[i].Ordinal == i). NewRecordType does NOT enforce that (it copies fields
-// verbatim), so this pins the precondition the migration must honor: P2's positional
-// row must be indexed by declared Ordinal (as Java's RecordType maintains), not by
-// slice position, or ordinal access reads the wrong field. The mis-ordered case is
-// the teeth — without it the assert would be vacuous.
+// TestFieldValue_OrdinalOrderingPrecondition_RFC173P1 pins the soundness
+// invariant the ordinal substrate rests on: ordinal access (resolveOrdinal ->
+// declared Field.Ordinal) must agree with slice-position access (GetField) — and
+// therefore with the authoritative name path. This holds IFF Fields[i].Ordinal
+// == i. NewRecordType now ENFORCES that by normalising Ordinal to slice position
+// (RFC-173, matching Java's positionally-indexed Record), so the substrate is
+// sound by construction. The raw-bypass case is the teeth: it shows the wrong-field
+// read that normalisation prevents — without it the invariant would be untested.
 func TestFieldValue_OrdinalOrderingPrecondition_RFC173P1(t *testing.T) {
 	t.Parallel()
-	// Well-ordered control: declared Ordinal == slice position → round-trip holds.
+	// Well-ordered control: round-trip holds.
 	ordered := NewRecordType("R", false, []Field{
 		{Name: "a", FieldType: NotNullLong, Ordinal: 0},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 1},
@@ -68,26 +67,35 @@ func TestFieldValue_OrdinalOrderingPrecondition_RFC173P1(t *testing.T) {
 		t.Fatalf("ordered round-trip broke: GetField(%d).Name=%q, want %q", ordB, g.Name, fvB.Field)
 	}
 
-	// Mis-ordered (the teeth): slice positions a@0/b@1 but DECLARED ordinals a=1/b=0.
-	// NewRecordType keeps them verbatim, so resolveOrdinal (declared) and GetField
-	// (slice position) DIVERGE — the exact failure the migration must prevent.
-	misordered := NewRecordType("M", false, []Field{
+	// ENFORCEMENT: NewRecordType normalises divergent input ordinals to slice
+	// position, so ordinal access is sound regardless of what the caller passed.
+	normalized := NewRecordType("N", false, []Field{
+		{Name: "a", FieldType: NotNullLong, Ordinal: 9}, // divergent inputs...
+		{Name: "b", FieldType: NotNullLong, Ordinal: 3},
+	})
+	for i, f := range normalized.Fields {
+		if f.Ordinal != i {
+			t.Fatalf("NewRecordType must normalise Field[%d].Ordinal to %d, got %d", i, i, f.Ordinal)
+		}
+	}
+	fvA := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("n"), normalized), "a", NotNullLong)
+	ordA, ok := fvA.resolveOrdinal()
+	if !ok || ordA != 0 {
+		t.Fatalf("normalised: resolveOrdinal(a) = (%d,%v), want (0,true)", ordA, ok)
+	}
+	if g, _ := normalized.GetField(ordA); g.Name != "a" {
+		t.Fatalf("normalised round-trip broke: GetField(%d).Name=%q, want a", ordA, g.Name)
+	}
+
+	// TEETH — why the guard matters: a RAW RecordType (bypassing NewRecordType)
+	// with Ordinal != slice position makes ordinal access read the WRONG field.
+	// This is exactly the divergence NewRecordType's normalisation prevents.
+	raw := &RecordType{RecordName: "M", Fields: []Field{
 		{Name: "a", FieldType: NotNullLong, Ordinal: 1},
 		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
-	})
-	fvA := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("m"), misordered), "a", NotNullLong)
-	ordA, ok := fvA.resolveOrdinal()
-	if !ok || ordA != 1 {
-		t.Fatalf("mis-ordered: resolveOrdinal(a) = (%d,%v), want its declared Ordinal (1,true)", ordA, ok)
-	}
-	got, ok := misordered.GetField(ordA)
-	if !ok {
-		t.Fatalf("mis-ordered: GetField(%d) not found", ordA)
-	}
-	if got.Name == fvA.Field {
-		t.Fatal("expected mis-ordered record to expose ordinal!=slice-position divergence, but round-trip held — the precondition assert would be vacuous")
-	}
-	if got.Name != "b" {
-		t.Fatalf("mis-ordered: GetField(1).Name = %q, want b (slice position 1) — proving ordinal access reads the WRONG field when Fields aren't ordinal-ordered", got.Name)
+	}}
+	f, _ := raw.LookupField("a") // declared Ordinal 1
+	if g, _ := raw.GetField(f.Ordinal); g.Name == "a" {
+		t.Fatal("raw mis-ordered record should expose the ordinal!=slice-position divergence the guard prevents")
 	}
 }

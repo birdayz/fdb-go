@@ -373,6 +373,15 @@ func NewRecordType(name string, nullable bool, fields []Field) *RecordType {
 			}
 			seenNames[f.Name] = struct{}{}
 		}
+		// RFC-173: a record's fields are positionally indexed — Field.Ordinal is
+		// the field's slice position, matching Java's Record (ordinal == index) and
+		// keeping GetField(ordinal) consistent with the declared Ordinal. Every prod
+		// construction site already sets Ordinal to the slice position (audited); we
+		// normalise here so the ordinal-resolution substrate (FieldValue.resolveOrdinal)
+		// is SOUND by construction — ordinal access can never read a different field
+		// than name access. A caller that passed a divergent Ordinal is corrected, not
+		// silently trusted.
+		f.Ordinal = i
 		out[i] = f
 	}
 	return &RecordType{
