@@ -11,9 +11,10 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 **Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up
 any item below, any handover follow-up, or any new hunt — RFC-173 (`rfcs/173-ordinal-column-resolution.md`)
 is the exclusive focus. It retires the name-based `AnchoredJoin` column model for Java's ordinal/group
-model (the RFC-164 WS-2 root fix): one RFC, one long-lived PR, staged commits (RFC-ack → impl slices,
-each re-acked). Foundational, ~15–20 shifts. See RFC-173 §4 for the slice order and §5 for the
-(execution-pin, not dark-diff) validation gate.
+model (the RFC-164 WS-2 root fix): one RFC, **staged merged PRs** (precursors P1/P2/P3/Slice 1 each
+merge independently; atomic Slice 3 as its own PR), RFC-ack → per-slice re-ack. Foundational,
+**~25–30 shifts**. See RFC-173 §4 for the slice order and §5 for the (execution-pin, not dark-diff)
+validation gate.
 
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
 

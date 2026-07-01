@@ -4,12 +4,16 @@
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
-**Process (PACKAGING UNDER OWNER REVIEW):** ONE RFC (this document, of record). Torvalds NAK'd a
-single long-lived PR for a ~25–30-shift migration (branch rot against the churning memo + repeated
-Graefe re-acks). Recommended reconciliation: the behaviour-preserving precursors (P1/P2/P3/Slice 1)
-land as **separate merged PRs** on master; only the genuinely-atomic **Slice 3** warrants its own
-PR — all tracked to this one RFC. RFC-ack gates the first implementation commit; each slice is
-re-acked as it lands. **Owner to rule on packaging** (one PR vs. staged merged PRs).
+**Process (packaging — ADOPTED; owner may override):** ONE RFC (this document, of record).
+Implementation lands as **staged merged PRs**, not one long-lived branch — resolving Torvalds'
+NAK (a single ~25–30-shift branch rots against the churning memo and forces repeated Graefe
+re-acks). The behaviour-preserving precursors (**P1, P2, P3, Slice 1**) each merge to master
+independently (green + reviewed); the genuinely-atomic **Slice 3** lands as its own PR; the
+remaining slices group by coherence (Slice 2's wedge with its boundary adapter; Slice 4's
+deletions; Slice 5; Slice 6). Every PR is tracked to this one RFC and re-acked as it lands.
+"One RFC" is preserved; the single-PR literal is dropped because it is the shape Torvalds showed
+is actively harmful. (Owner asked for one PR; this adopts staged merged PRs per the reviewer NAK —
+override if the literal single PR is required, noting that leaves Torvalds' NAK standing.)
 **Cross-refs:** RFC-164 (port-fidelity), RFC-077 (join interning / CTE column-rename),
 RFC-142 (lateral `UNNEST` + `WITH ORDINALITY`), RFC-036 (outer joins), RFC-081 (UNION-by-position).
 **Paths:** executor references (`executor.go`, `executor_new_plans.go`, `flat_map_cursor.go`,
@@ -389,7 +393,11 @@ re-acked as they go.
   deletions safe; direction correct. Objections: (a) paths wrong → **fixed** (Paths note); (b)
   clock 25–30 not 15–20 → **fixed**; (c) the two Go-only invariants "named but undesigned" →
   **designed** in §6 this revision; (d) **the NAK proper:** the single long-lived PR rots + forces
-  repeated re-acks — split behaviour-preserving precursors into separate merged PRs. → **Owner
-  decision pending** (Process note); Torvalds' ACK is contingent on it. Re-request Torvalds once
-  packaging is ruled.
+  repeated re-acks — split behaviour-preserving precursors into separate merged PRs. → **Adopted**
+  (Process note: staged merged PRs; owner may override).
 - **@claude — pending** (extension-inventory cross-check on #422).
+
+**Round 2 (RFC v3):** all Round-1 items addressed — ordering pin (§5), Go-only invariants designed
+(§6), clock/paths fixed, packaging adopted as staged merged PRs. Re-requesting **Torvalds** (his
+condition "split the precursors out and this is an ACK" is now met) and folding in **@claude** when
+it completes. RFC-ack = all four ACK on this HEAD.
