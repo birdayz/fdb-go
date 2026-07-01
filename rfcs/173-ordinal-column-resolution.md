@@ -4,10 +4,13 @@
 this line deliberately does not restate it). Round 5 (adversarial content re-review, 2026-07-01)
 is folded into this revision; **Slice 2 starts only when all four Round-5 boxes in §10 are
 checked.** Progress: P1 merged (#423), P2 merged (#427),
-P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
-buried-reference precursor LANDED gauntlet-passed, Step 2b producer flip LANDED with the
-authority proof + §5 pins, dual-emission benchmark exit obligation SATISFIED; see the §4
-Slice 1 execution log). Each staged PR re-acked on its own HEAD.
+P3 folded into Slice 3 (#429/#430), **Slice 1 MERGED (#437, `12516e33f`)** — all four gates ACKed
+at the merge HEAD (Graefe impl+delta, Torvalds incl. mutation-testing the authority proof, codex,
+@claude), ordinal resolution authoritative on the non-join frontier, §5 dual-window differential
+standing (1617 entries), stress faster than pre-merge master (the `positionalTypeCache` repays the
+window overhead); see the §4 Slice 1 execution log. **Slice 2 is next: its Round-5 boxes are all
+checked; the name-burial inventory entry gate (§4 Slice 2) runs before any Slice 2 code.**
+Each staged PR re-acked on its own HEAD.
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.

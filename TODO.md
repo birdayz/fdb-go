@@ -47,65 +47,37 @@ validation gate.
   member-count-delta (the pin the spike omitted); (iii) certify no CTE-rename NULL-read via §5
   execution pins + RFC-077 task-count baseline (safety is flip-live-gated, un-shadowable). Full
   analysis banked in RFC §4 P3.
-- [~] **Slice 1 non-join ordinal** (branch `feat/rfc173-slice1-ordinal-nonjoin`):
-  - [x] Step 1 — type the scan quantifier + names-only scan match (Fork B), committed `d42220b2a`,
-    all 53 targets green, Graefe design-ACK + fork-ruling. Fixed latent `GetResultValue` flowedType
-    discard. Still DARK (resolveOrdinal has zero authoritative callers). See RFC §4 Slice 1 Step 1.
-  - [x] Step 2a — Evaluate ordinal read path (`values.OrdinalRow`, `evaluateOrdinal` no-fallback +
-    loud `OrdinalResolutionError`, `Evaluate`/`evaluateCorrelated` ordinal branches), committed
-    `f0037e3db`, dark + unit-tested.
-  - [x] **Buried-reference fix — retire the ColumnAliasMap source-name reverse-map** (`a58c54c61`,
-    Graefe design-ACK + impl-ACK, codex clean; @claude at PR time). Derived-table/CTE refs now resolve
-    to the OUTPUT column (Java parity) across 7 sites; deleted `rewriteProjectionAliases`; re-keyed the
-    recursive-CTE temp table to output names (`recursiveRemapValues` never persists a qualified key);
-    2 beyond-plan root-cause fixes (`validateTablesAndColumnsInner` skip, executor dedup on the
-    projection OUTPUT schema). **4 RFC-082 divergences LIFTED** (real-Java conformance validated Go now
-    returns identical rows where it previously 42703-rejected). Name-model-safe (53/53 green). This
-    UNBLOCKS Step 2b — the ordinal flip's ~15 failing derived/recursive cases now resolve clean.
-    - [ ] Follow-up (Graefe, non-blocking, PRE-EXISTING — not introduced): (a) an un-aliased QUALIFIED
-      seed projection with no column-alias list folds a qualified name into `outCols`
-      (`cascades_translator.go` recursive-CTE re-keying); (c) a LENGTH-MISMATCHED recursive-CTE
-      column-alias list is silently ignored rather than a loud error (Graefe delta-ack residual —
-      SQL says it should be an error). Fix when a slice touches the area.
-      (b) `SELECT *` seed + column-alias list: **FIXED** in the Slice-1 gauntlet round (twice-flagged,
-      codex P2 + Graefe) — seed schema derived via `derivedOutputColumns` so the alias list applies;
-      pinned by `TestFDB_RecursiveCTEStarSeedAliases_RFC173`. Graefe delta-ACK on `70b024e87`.
-  - [x] Step 2b — ordinal resolution AUTHORITATIVE on the non-join frontier (`f0b9e206c`): producers
-    flow `PositionalRow` (gate `qr.Positional != nil`, propagates along the frontier, stops at
-    join/aggregate boundaries), `executeMap` gap closed, sort ValueExpr keys ordinal (named-key
-    comparators positional-first with documented Datum fallback — comparator semantics, not eval).
-    Verified by the AUTHORITY PROOF (`TestFrontierOrdinalAuthority_RFC173Slice1`: wrong Datum vs
-    correct Positional → must read positional; Datum-only key → loud error).
-  - [x] §5 pins: CTE-rename green VIA ordinal · no-spurious-sort EXPLAIN pin
-    (`TestFDB_RFC173Slice1_NoSpuriousSort`) · GROUP BY/HAVING/ORDER BY frontier pin · P2 projection
-    e2e shadow (`TestExecuteProjection_ShadowAndOutputNames_RFC173`) · **dual-emission benchmark
-    (Round-5 Slice 1 EXIT OBLIGATION, satisfied `4d5095088`)**: +71% window overhead after the
-    `positionalTypeCache` fix (positional build now CHEAPER than the map build → Slice 4 ends
-    net-faster) · P1 absent-field → loud `OrdinalResolutionError` (per Graefe, NOT SemanticException).
-  - [x] **Round-5 (#434) impact executed** (`228e35d19` merge + `c4b00b83f`): no rework of solved
-    parts (findings 1/2/3/5 → Slices 2–4; finding 4 validates the buried-ref work). **§5 dual-window
-    corpus differential implemented** (`pkg/relational/conformance/dualwindow`: all 1617 plandiff
-    entries under ordinal vs name model — emission-suppression oracle `DisablePositionalEmission`,
-    carve-outs empty). **FIRST CATCH on run 1:** recursive-CTE computed-column (`SELECT n + 1`)
-    silently stalled recursion (count 2, Java says 10 — pre-existing silent-wrong in
-    `rfc082KnownRed`); fixed via the shared `values.ProjectionColumnName` naming contract
-    (`legPhysicalOutputNames` — the wrap reads PHYSICAL keys; wrap kept because an alias-override
-    leaks qualified keys and regressed the RFC-130 budget). Known-red lock SHRANK (entry removed,
-    real-Java-validated). Pinned: `TestFDB_RecursiveCTEComputedColumn_RFC173` (count AND values).
-    Differential: 1617 entries, 0 carve-outs, 0 mismatches. All 54 targets green.
-  - [~] Slice 1 impl gauntlet: **Graefe ACK** (all 5 design conditions verified; 4 recorded
-    obligations → RFC Slice-4 kill list + Slices 2–3 oracle-gate obligation). **Torvalds fix-first →
-    all items done**: (1) authority proof rewritten E2E through ExecutePlan per dispatch site
-    (projection/filter/predicates-filter/map + loud-miss — a deleted production dispatch now fails
-    the test), (2) stale reverted-shape comment rewritten, (3) `unionProjectionColumnName` delegated
-    to the shared contract, (4) `executeFilter` uses `hasBindingContext`. **codex: one P2 — the
-    `SELECT *`-seed alias drop — FIXED** (+ pinned). → re-request codex + Torvalds on the fix HEAD,
-    then PR → @claude → merge.
-- [ ] **Slice 2 2-way wedge**
-  (builds `appendNullLeg` + join-producer positional dual-emission; commits to eager
-  `FieldValue.ofOrdinalNumber` baking — lazy resolveOrdinal is sound ONLY on the non-join frontier,
-  RFC §4 Slice 1 load-bearing invariant) ·
-  [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning**) · [ ] Slice 4 retire `AnchoredJoin` ·
+- [x] **Slice 1 non-join ordinal — MERGED (#437, `12516e33f`), all four gates ACKed at the merge
+  HEAD** (Graefe impl+delta ACK · Torvalds fix-first→ACK incl. MUTATION-TESTING the authority proof ·
+  codex clean (P2 fixed; delta finding = documented Go≥1.22 loopvar false positive) · @claude "nothing
+  blocks merge"). Ordinal resolution authoritative on the non-join frontier; buried-reference
+  reverse-map retired (4 RFC-082 divergences lifted, real-Java-validated); §5 dual-window differential
+  standing (1617 entries, first catch fixed: recursive-CTE computed-column silent-wrong, known-red
+  lock shrank); dual-emission benchmark satisfied (+71% window, `positionalTypeCache` → Slice 4 ends
+  net-faster); 1M stress FASTER than pre-merge master (scan_all_wide 4.52s vs 5.57s — the cache repays
+  the window). Full execution log: RFC §4 Slice 1.
+  - [ ] Follow-up (non-blocking, PRE-EXISTING, recursive-CTE re-keying area): (a) un-aliased QUALIFIED
+    seed projection folds a qualified name into `outCols`; (c) LENGTH-MISMATCHED column-alias list is
+    silently ignored rather than a loud error (SQL says error). Fix when a slice touches the area.
+  - [ ] Graefe recorded obligations live in RFC §4: Slice-4 kill list (sort-comparator fallback dies
+    loud · dualwindow retires with the name map · `legPhysicalOutputNames` must not outlive the window ·
+    bound `positionalTypeCache` dynamicpb leak) + Slices 2–3 oracle-gate rule (new birth sites extend
+    `DisablePositionalEmission`).
+- [~] **Slice 2 2-way wedge** (branch `feat/rfc173-slice2-wedge`) — Round-5 preconditions MET (all
+  four §10 Round-5 boxes checked).
+  - [ ] **ENTRY GATE (mandatory, ≤1 shift, before ANY Slice 2 code): the name-burial inventory** —
+    enumerate every name-keyed row producer/consumer and alias-swap site, slot each into a slice
+    (RFC §4 Slice 2). Known candidates to sweep: `projNames` source+alias double-writes,
+    `qualifyTypeFallback`, `ambiguousColumnMarker`, union name-recovery gates, the `RowEvalContext`
+    param/subquery frontier (`ColumnAliasMap` already retired in Slice 1).
+  - [ ] Then the wedge per RFC §4 Slice 2: 2-way ordinal result value (`ofOrdinalNumber` EAGER baking
+    — lazy is non-join-frontier-only), positional merged row, ordinal predicate resolution,
+    `appendNullLeg`, correlated-scalar-subquery 2-leg seed + single-source `UNNEST`; **NO interning
+    flip** (canonical sequence: Slice 3); **flattening-aware scoping gate** vs `SelectMergeRule`
+    evasion + its before/after pins; extend the `DisablePositionalEmission` oracle to every new birth
+    site; §5 GROUP BY/HAVING-over-2-way-join pin.
+- [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning + FieldValue node-identity flip +
+  collapsed-FieldPath representation ruling**) · [ ] Slice 4 retire `AnchoredJoin` (+ kill list) ·
   [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
 
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
