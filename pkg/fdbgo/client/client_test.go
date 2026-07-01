@@ -576,13 +576,32 @@ func TestGrvCache_TryCache(t *testing.T) {
 			wantOK:   false,
 		},
 		{
-			name: "system immediate always bypasses cache",
+			// #16: C++ rkThrottlingCooledDown(IMMEDIATE) returns true (NativeAPI.actor.cpp:7485-7486),
+			// and the cache gate (:7503-7517) does NOT exclude IMMEDIATE, so an opted-in IMMEDIATE
+			// read is served from a fresh cache. Revert-proof: restoring tryCache's `return 0, false`
+			// for grvPrioritySystemImmediate re-reds this (and the throttle-immunity case below).
+			name: "system immediate serves cache (never ratekeeper-throttled)",
 			setup: func(c *grvCache) {
 				c.version.Store(1000000)
 				c.lastTime.Store(time.Now().UnixNano())
 			},
 			priority: grvPrioritySystemImmediate,
-			wantOK:   false,
+			wantOK:   true,
+			wantVer:  1000000,
+		},
+		{
+			// IMMEDIATE ignores the DEFAULT/BATCH ratekeeper throttle entirely — it is never throttled,
+			// so a fresh cache serves even when both DEFAULT and BATCH are in cooldown.
+			name: "system immediate serves cache despite default+batch throttle",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				c.lastTime.Store(time.Now().UnixNano())
+				c.lastRkDefault.Store(time.Now().UnixNano())
+				c.lastRkBatch.Store(time.Now().UnixNano())
+			},
+			priority: grvPrioritySystemImmediate,
+			wantOK:   true,
+			wantVer:  1000000,
 		},
 		{
 			name: "stale cache expired",
