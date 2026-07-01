@@ -3210,8 +3210,11 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 		return
 	}
 	td := &tx.db.txDefaults
-	// Non-persistent → DB defaults, on BOTH reset() and OnError retry (C++ options.reset(tr) memset +
-	// re-copy of the non-persistent DB defaults).
+	// Non-persistent → DB defaults on BOTH reset() and OnError retry. The RYW-level options
+	// (readSystemKeys/writeSystemKeys) are zeroed by C++ options.reset(tr) (ReadYourWrites.actor.cpp:
+	// 2078-2083); the NativeAPI-level ones (sizeLimit, priority, lockAware, tags, useGrvCache, …) by
+	// TransactionOptions::clear on the fresh TransactionState (NativeAPI.actor.cpp:6131-6151). Both are the
+	// non-persistent set — cleared regardless of userReset.
 	tx.readSystemKeys = td.ReadSystemKeys
 	tx.writeSystemKeys = td.AccessSysKeys
 	if td.SizeLimit > 0 {
@@ -3226,15 +3229,26 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	tx.rywDisabled = false
 	tx.snapshotRYWDisableCount = 0
 	tx.tags = nil
+	// useGrvCache/skipGrvCache (USE_GRV_CACHE 1101 / SKIP_GRV_CACHE 1102) and writeConflictsDisabled are
+	// non-persistent, reset by TransactionOptions::clear (NativeAPI.actor.cpp:6148-6149); leaving them set
+	// would serve a stale cached GRV / drop write conflicts on a retried-or-reset txn where C++ starts fresh
+	// (FDB-C-dev + Torvalds).
+	tx.useGrvCache = false
+	tx.skipGrvCache = false
+	tx.writeConflictsDisabled = false
 	if !userReset {
 		return // OnError retry: PRESERVE the per-txn persistent options (timeout / retryLimit / maxRetryDelay).
 	}
 	// user Reset(): persistent options revert to the DB defaults (C++ persistentOptions.clear() +
-	// getTransactionDefaults re-copy).
-	tx.timeout = time.Duration(td.Timeout) * time.Millisecond // 0 → disabled
-	tx.hasRetryLimit = td.HasRetryLimit
+	// getTransactionDefaults re-copy, ReadYourWrites.actor.cpp:2744-2751). Route the retry limit through the
+	// SAME setter CreateTransaction uses so an unlimited (negative) DB default matches: SetRetryLimit(-1) →
+	// hasRetryLimit=false, whereas a raw copy leaves hasRetryLimit=true with retryLimit=-1 and makes the
+	// next OnError stop retrying (0 >= -1, codex #9/#14).
+	tx.timeout = time.Duration(td.Timeout) * time.Millisecond // 0 → disabled (deadline recomputed by reset())
 	if td.HasRetryLimit {
-		tx.retryLimit = td.RetryLimit
+		tx.SetRetryLimit(int64(td.RetryLimit))
+	} else {
+		tx.hasRetryLimit = false // no DB retry-limit default → unlimited
 	}
 	tx.maxRetryDelay = time.Duration(td.MaxRetryDelay) * time.Millisecond
 }

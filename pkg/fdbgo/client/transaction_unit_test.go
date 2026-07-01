@@ -498,9 +498,15 @@ func TestReset_ClearsCommittedIdentity(t *testing.T) {
 	}
 }
 
-func TestReset_PreservesPersistentOptions(t *testing.T) {
+// TestReset_OnErrorRetryOptionContract pins the RFC-171 split on the OnError-retry path (reset(false)):
+// NON-persistent options (priority/causalReadRisky/lockAware/readLockAware/sizeLimit/RYW-disable/tags)
+// are cleared to DB defaults exactly as C++ TransactionOptions::clear does on the fresh TransactionState,
+// while the PERSISTENT maxRetryDelay is preserved. tenantId (construction-time, not an option) and the
+// retryCount/backoff bookkeeping (only user Reset() clears them) survive. A real db is required — with a
+// nil db applyOptionDefaults short-circuits and this contract wouldn't be exercised.
+func TestReset_OnErrorRetryOptionContract(t *testing.T) {
 	t.Parallel()
-	tx := newTestTx()
+	tx := txWithDB()
 	tx.priority = PriorityBatch
 	tx.causalReadRisky = true
 	tx.lockAware = true
@@ -516,20 +522,26 @@ func TestReset_PreservesPersistentOptions(t *testing.T) {
 
 	tx.reset(false)
 
-	if tx.priority != PriorityBatch || !tx.causalReadRisky || !tx.lockAware || !tx.readLockAware {
-		t.Error("reset clobbered priority / causalReadRisky / lockAware / readLockAware")
+	// Non-persistent → cleared on the retry path (C++ TransactionOptions::clear).
+	if tx.priority != 0 || tx.causalReadRisky || tx.lockAware || tx.readLockAware {
+		t.Error("retry reset must clear priority / causalReadRisky / lockAware / readLockAware (non-persistent)")
 	}
-	if tx.sizeLimit != 5_000_000 || tx.maxRetryDelay != 10*time.Second {
-		t.Error("reset clobbered sizeLimit or maxRetryDelay")
+	if tx.sizeLimit != transactionSizeLimit {
+		t.Errorf("retry reset must clear sizeLimit to the 10MB default, got %d", tx.sizeLimit)
 	}
-	if !tx.rywDisabled || tx.snapshotRYWDisableCount != 1 {
-		t.Error("reset clobbered RYW disable flags (snapshotRYWDisableCount must be preserved across reset — persistent option)")
+	if tx.rywDisabled || tx.snapshotRYWDisableCount != 0 {
+		t.Error("retry reset must clear RYW disable flags (non-persistent)")
 	}
+	if len(tx.tags) != 0 {
+		t.Errorf("retry reset must clear tags, got %v", tx.tags)
+	}
+	// Persistent → preserved on the retry path.
+	if tx.maxRetryDelay != 10*time.Second {
+		t.Errorf("retry reset must PRESERVE maxRetryDelay (persistent), got %v", tx.maxRetryDelay)
+	}
+	// tenantId is construction-time, not an option — never touched by reset.
 	if tx.tenantId != 7 {
 		t.Errorf("reset clobbered tenantId: got %d, want 7", tx.tenantId)
-	}
-	if len(tx.tags) != 2 || tx.tags[0] != "a" || tx.tags[1] != "b" {
-		t.Errorf("reset clobbered tags: got %v, want [a b]", tx.tags)
 	}
 	// retryCount + backoff are explicitly NOT cleared by internal reset (only
 	// user-facing Reset clears them).

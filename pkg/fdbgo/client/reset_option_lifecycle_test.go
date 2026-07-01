@@ -106,3 +106,62 @@ func TestReset_OptionPersistenceSplit(t *testing.T) {
 		}
 	})
 }
+
+// TestReset_ClearsGrvCacheAndWriteConflictFlags pins that the non-persistent GRV-cache options
+// (USE_GRV_CACHE 1101 / SKIP_GRV_CACHE 1102) and writeConflictsDisabled are cleared on BOTH reset paths,
+// matching C++ TransactionOptions::clear (NativeAPI.actor.cpp:6148-6149). Leaving useGrvCache set would
+// serve a stale cached GRV on the retried txn; leaving writeConflictsDisabled set would silently drop
+// write conflict ranges C++ would add on the fresh state. Revert-proof: drop the three clears in
+// applyOptionDefaults → these assertions red.
+func TestReset_ClearsGrvCacheAndWriteConflictFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		userReset bool
+	}{
+		{"OnError retry (reset false)", false},
+		{"user Reset (reset true)", true},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tx := txWithDB()
+			tx.SetUseGrvCache()
+			tx.SetSkipGrvCache()
+			tx.SetWriteConflictsDisabled()
+
+			tx.reset(tc.userReset)
+
+			if tx.useGrvCache {
+				t.Error("useGrvCache must clear (non-persistent, TransactionOptions::clear)")
+			}
+			if tx.skipGrvCache {
+				t.Error("skipGrvCache must clear (non-persistent, TransactionOptions::clear)")
+			}
+			if tx.writeConflictsDisabled {
+				t.Error("writeConflictsDisabled must clear (non-persistent)")
+			}
+		})
+	}
+}
+
+// TestReset_UnlimitedDBRetryDefaultStaysUnlimited pins codex #9/#14: a DB default of "unlimited retries"
+// is stored as HasRetryLimit=true with RetryLimit=-1 (SetTransactionRetryLimit(-1)). A raw copy on user
+// Reset would leave hasRetryLimit=true, retryLimit=-1, and the next OnError's `retryCount >= retryLimit`
+// check (0 >= -1) would immediately STOP retrying. Routing through SetRetryLimit collapses the negative to
+// hasRetryLimit=false (truly unlimited), exactly as CreateTransaction does. Revert-proof: replace the
+// SetRetryLimit call with a raw `hasRetryLimit=td.HasRetryLimit; retryLimit=td.RetryLimit` → red.
+func TestReset_UnlimitedDBRetryDefaultStaysUnlimited(t *testing.T) {
+	t.Parallel()
+	tx := txWithDB()
+	tx.db.txDefaults.HasRetryLimit = true
+	tx.db.txDefaults.RetryLimit = -1 // unlimited
+	tx.SetRetryLimit(3)              // per-txn override
+
+	tx.reset(true) // user Reset → revert to the DB default, which is "unlimited"
+
+	if tx.hasRetryLimit {
+		t.Errorf("user Reset must collapse the unlimited (-1) DB retry default to hasRetryLimit=false, got retryLimit=%d", tx.retryLimit)
+	}
+}
