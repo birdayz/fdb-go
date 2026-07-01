@@ -345,15 +345,29 @@ round-17 future `Cancel()` → `CancelWatches` (txn-wide) cancels UNRELATED watc
 per-watch cancellation. This is the exact limitation documented on the round-17 fix. **There is no
 minimal patch — round 18 REQUIRES the per-watch-context restructure.**
 
-**UPDATE: the restructure was IMPLEMENTED after all (per-watch context, RFC-168 → status IMPLEMENTED).** Rationale:
-the fix is an 8-return signature restructure of `WatchSetup`/`WatchPoll` + the per-txn watch fields +
-the facade, touching the most-fragile area (7 rounds) with subtle survives-commit / race-free / map-
-cleanup semantics. Landing it at the end of a very long review session, WITHOUT a fresh review cycle,
-risks a watch-lifecycle regression worse than round-18's niche multi-watch over-cancel. I started the
-restructure (newWatchCtx + cancelWatches core), judged the signature ripple too risky to land safely
-here, and reverted cleanly to round-17. **RFC-168 has the complete design + test plan** for the
-follow-up. The round-18 over-cancel ships as a documented known limitation (multi-watch cancellation
-scope) pending that restructure — the only outstanding codex item.
+**UPDATE — the restructure LANDED (commit `6a76e4d70`, RFC-168 → status IMPLEMENTED).** The per-watch
+context restructure: `watchCtx`/`watchCancel` → `watchCancels map[uint64]context.CancelFunc`;
+`getWatchCtx` → `newWatchCtx` (returns ctx + a SCOPED cancel); `WatchSetup` returns the scoped cancel
+(6th value), threaded to `WatchPoll` (deferred self-cleaning deregister) + the fdb facade (the future's
+`Cancel()` scopes to ONE watch, not txn-wide). Closes round-13 poisoning, round-17 future-Cancel, and
+round-18 over-cancel at once. Verified: `TestNewWatchCtx_PerWatchScoped` (cancel one, sibling survives)
++ `TestWatch_NewWatchCtxCancelRaceFree` under `-race`, the watch integration suite, both concurrency
+fault tests, **binding-stress 100/100 pass 0 deaths**, and the full-suite hook (53/53). Owes the
+codex/persona gauntlet on this HEAD (codex re-review #12 in flight).
+
+**Round 19 — conflict-range oversized-key CLAMP (new finding #23, LOW, wire-bytes divergence).**
+`AddReadConflictRange`/`AddWriteConflictRange` had the maxReadKey/maxWriteKey legal-range check (2004)
+but NOT the C++ RYW oversized-key CLAMP: a non-system key >10 KB is < `\xff`, so it passes the
+legal-range gate and reaches the clamp in libfdb_c (`ReadYourWrites.actor.cpp:1958-1976` read /
+`:2474-2492` write) — each endpoint truncated to `getMaxReadKeySize+1` (== `getMaxClearKeySize`, 10009
+non-system / 30001 system) and the range DROPPED if the clamp collapses it to empty. Go shipped the
+FULL oversized key to the resolver (wire + tx-size-accounting divergence; outcome-equivalent since no
+stored key exceeds the max, but the bytes/size differ). Ported the clamp (mirrors the existing
+`ClearRange` clamp template) + red→green regression `TestAddConflictRange_ClampsOversizedKeys` (4
+subtests: read/write × clamp-both-endpoints/drops-when-empty; revert-proven — all 4 fail without the
+clamp). NOTE the single-key `AddReadConflictKey`/`AddWriteConflictKey` variants also miss this (+ the
+2004 legal-range check) but their fix needs the API-shape decision (no error return to surface 2004) —
+kept as a separate follow-up, not fixed piecemeal.
 
 **Codex caught 19 real issues across 12 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.

@@ -2731,6 +2731,22 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 		!(bytes.Equal(begin, metadataVersionKeyBytes) && bytes.Equal(end, metadataVersionKeyEndBytes)) {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
+	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1958-1976) then CLAMPS an oversized endpoint
+	// to getMaxReadKeySize+1 bytes and DROPS the whole range if the clamp collapses it to empty.
+	// getMaxReadKeySize == getMaxKeySize == getMaxClearKeySize (hasRawAccess is always true here). The
+	// legal-range check above runs on the RAW keys first (C++ order); a non-system key >10 KB is < \xff
+	// so it PASSES that check and reaches the clamp. There are no stored keys longer than the max, so
+	// the truncated range is equivalent — but without this Go shipped the full oversized key to the
+	// resolver (wire + tx-size divergence) instead of libfdb_c's truncation.
+	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
+		begin = begin[:bmax+1]
+	}
+	if emax := getMaxClearKeySize(end); len(end) > emax {
+		end = end[:emax+1]
+	}
+	if bytes.Compare(begin, end) >= 0 {
+		return nil // C++ r.empty() → returns without recording a conflict range
+	}
 	// C++ addReadConflictRange (ReadYourWrites.actor.cpp:1977-1986): when RYW is DISABLED, add the
 	// full range directly (tr.addReadConflictRange, :1979); otherwise run updateConflictMap (:1986) —
 	// the write-map filter that SUBTRACTS locally-written independent segments (a plain Set before
@@ -2767,6 +2783,18 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	maxKey := tx.maxWriteKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
+	}
+	// C++ addWriteConflictRange (ReadYourWrites.actor.cpp:2474-2492) CLAMPS an oversized endpoint to
+	// getMaxKeySize+1 (== getMaxClearKeySize) and DROPS the range if the clamp collapses it to empty —
+	// identical to the read path above. Without this Go shipped the full oversized key to the resolver.
+	if bmax := getMaxClearKeySize(begin); len(begin) > bmax {
+		begin = begin[:bmax+1]
+	}
+	if emax := getMaxClearKeySize(end); len(end) > emax {
+		end = end[:emax+1]
+	}
+	if bytes.Compare(begin, end) >= 0 {
+		return nil // C++ r.empty() → returns without recording a conflict range
 	}
 	tx.addWriteConflict(begin, end)
 	return nil

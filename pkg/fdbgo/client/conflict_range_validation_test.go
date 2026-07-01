@@ -27,6 +27,93 @@ func crCode(t *testing.T, err error) int {
 	return -1
 }
 
+// TestAddConflictRange_ClampsOversizedKeys pins that AddReadConflictRange / AddWriteConflictRange
+// CLAMP an oversized endpoint to getMaxClearKeySize+1 bytes and DROP the range when the clamp
+// collapses it to empty — matching C++ RYW add{Read,Write}ConflictRange
+// (ReadYourWrites.actor.cpp:1958-1976 read / :2474-2492 write). getMaxReadKeySize == getMaxKeySize ==
+// getMaxClearKeySize (hasRawAccess is always true for conflict ranges), so the non-system limit is
+// keySizeLimit+tenantPrefixSize (10008) → clamp to 10009. A non-system key >10 KB is < \xff, so it
+// PASSES the maxReadKey/maxWriteKey legal-range check and reaches the clamp. Revert-proof: drop the
+// clamp and the recorded conflict range keeps the full 20000-byte key (or, in the empty case, records
+// a bogus non-empty range libfdb_c would have dropped). No DB — the clamp is synchronous.
+func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
+	t.Parallel()
+	const nonSysMax = keySizeLimit + tenantPrefixSize // 10008; hasRawAccess=true for conflict ranges
+	bigA := func(n int) []byte {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = 'a'
+		}
+		return b
+	}
+
+	t.Run("read_clamps_both_endpoints", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.rywDisabled = true // land directly in readConflicts, bypassing the write-map filter
+		begin := bigA(20000)
+		end := bigA(20000)
+		end[0] = 'b' // begin < end, both non-system, both oversized
+		if err := tx.AddReadConflictRange(begin, end); err != nil {
+			t.Fatalf("AddReadConflictRange: %v", err)
+		}
+		if len(tx.readConflicts) != 1 {
+			t.Fatalf("want 1 recorded read conflict, got %d", len(tx.readConflicts))
+		}
+		r := tx.readConflicts[0]
+		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
+			t.Fatalf("endpoints not clamped to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
+		}
+	})
+
+	t.Run("read_drops_when_clamp_empties_range", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.rywDisabled = true
+		begin := bigA(20000)
+		end := bigA(20000)
+		end[15000] = 'z' // begin < end, but they AGREE on the first 10009 bytes → clamp to identical prefix → empty
+		if err := tx.AddReadConflictRange(begin, end); err != nil {
+			t.Fatalf("AddReadConflictRange: %v", err)
+		}
+		if len(tx.readConflicts) != 0 {
+			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.readConflicts))
+		}
+	})
+
+	t.Run("write_clamps_both_endpoints", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		begin := bigA(20000)
+		end := bigA(20000)
+		end[0] = 'b'
+		if err := tx.AddWriteConflictRange(begin, end); err != nil {
+			t.Fatalf("AddWriteConflictRange: %v", err)
+		}
+		if len(tx.writeConflicts) != 1 {
+			t.Fatalf("want 1 recorded write conflict, got %d", len(tx.writeConflicts))
+		}
+		r := tx.writeConflicts[0]
+		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
+			t.Fatalf("endpoints not clamped to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
+		}
+	})
+
+	t.Run("write_drops_when_clamp_empties_range", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		begin := bigA(20000)
+		end := bigA(20000)
+		end[15000] = 'z'
+		if err := tx.AddWriteConflictRange(begin, end); err != nil {
+			t.Fatalf("AddWriteConflictRange: %v", err)
+		}
+		if len(tx.writeConflicts) != 0 {
+			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.writeConflicts))
+		}
+	})
+}
+
 func TestAddReadConflictRange_Validation(t *testing.T) {
 	t.Parallel()
 	mvk := string(metadataVersionKeyBytes)
