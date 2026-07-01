@@ -82,6 +82,64 @@ type Container struct {
 // The image parameter can be empty ("") to use the default image with the version
 // from FDB_VERSION env var or the built-in default.
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
+	return retryContainerStart(ctx, maxContainerStartAttempts,
+		func(attempt int) time.Duration { return time.Duration(attempt) * time.Second },
+		func() (*Container, error) { return runOnce(ctx, img, opts...) })
+}
+
+// maxContainerStartAttempts bounds Run's retry of the whole container bring-up when an attempt dies
+// transiently. Each attempt creates a FRESH container, so a one-off death (e.g. the FDB container
+// OOM-killed mid-`configure new` under CI's --local_test_jobs container concurrency) recovers on the next
+// try once the memory spike has passed. Deterministic failures (bad option/config) are NOT retried.
+const maxContainerStartAttempts = 3
+
+// isTransientContainerErr reports whether a container bring-up failure is a transient death worth
+// retrying with a fresh container — chiefly a Docker-daemon OOM-kill during InitializeDatabase under CI
+// concurrency, which surfaces as "container <id> is not running" from the configure exec (the FDB process
+// died between the FDBD-joined-cluster wait and `configure new`). A fresh container started a moment later
+// typically succeeds. Config/option errors do NOT match, so they fail fast (recreating won't help them).
+func isTransientContainerErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "is not running") || // container died (OOM-killed) mid-bring-up
+		strings.Contains(s, "container exited") ||
+		strings.Contains(s, "failed to start")
+}
+
+// retryContainerStart calls attempt up to maxAttempts times, retrying ONLY on isTransientContainerErr and
+// backing off backoff(attempt) between tries (attempt is 1-based; no sleep after the last try). It stops
+// early on ctx cancellation or a non-transient error. Split out from Run so the retry policy is unit-
+// testable with a fake attempt/backoff (no real Docker).
+func retryContainerStart(ctx context.Context, maxAttempts int, backoff func(attempt int) time.Duration, attempt func() (*Container, error)) (*Container, error) {
+	var lastErr error
+	for i := 1; i <= maxAttempts; i++ {
+		c, err := attempt()
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // cancelled/expired — surface cancellation, don't keep recreating
+		}
+		if !isTransientContainerErr(err) {
+			return nil, err // deterministic failure — recreating won't help
+		}
+		if i < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff(i)):
+			}
+		}
+	}
+	return nil, fmt.Errorf("container start failed after %d transient attempts: %w", maxAttempts, lastErr)
+}
+
+// runOnce performs a single container bring-up (create + init) with no retry. Run wraps it in
+// retryContainerStart. Each call creates a brand-new container.
+func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
 	cfg := defaultOptions()
 
 	// Apply our module options to extract config.

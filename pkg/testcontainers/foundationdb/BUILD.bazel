@@ -29,6 +29,7 @@ go_test(
         "integration_test.go",
         "multinode_client_test.go",
         "multiprocess_test.go",
+        "retry_test.go",
     ],
     embed = [":foundationdb"],
     deps = [
