@@ -275,41 +275,30 @@ func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
 	return o.bindingMap[v]
 }
 
-// IsCompatibleWithRequestedSortOrder checks if a provided sort order
-// is compatible with a requested sort order.
+// IsCompatibleWithRequestedSortOrder checks if a provided sort order is
+// compatible with a requested sort order. Ports Java
+// OrderingPart.ProvidedSortOrder.isCompatibleWithRequestedSortOrder
+// (OrderingPart.java:322-332) exactly:
+//
+//   - ANY request, or a CHOOSE/FIXED provided order, is always compatible
+//     (and these early-returns must come BEFORE the counterflow check, since
+//     IsCounterflowNulls is only meaningful for directional values);
+//   - otherwise the NULL placement must agree (counterflow-nulls equality);
+//   - and the direction (ascending-ness) must agree, compared via
+//     IsAnyAscending on BOTH sides (so e.g. ASC_NULLS_LAST provided is
+//     compatible with an ASC_NULLS_LAST request, not just plain ASCENDING).
+//
+// This is the gate that keeps a forward (ASC_NULLS_FIRST) scan from
+// satisfying an `ORDER BY x ASC NULLS LAST` (ASC_NULLS_LAST) request, so the
+// sort is not wrongly elided.
 func (p ProvidedSortOrder) IsCompatibleWithRequestedSortOrder(req RequestedSortOrder) bool {
-	if req == RequestedSortOrderAny {
+	if req == RequestedSortOrderAny || p == ProvidedSortOrderChoose || p == ProvidedSortOrderFixed {
 		return true
 	}
-	if p == ProvidedSortOrderFixed {
-		return true
-	}
-	if req.IsDirectional() && p.IsDirectional() {
-		// Direction must match...
-		if req.IsDescending() != p.IsAnyDescending() {
-			return false
-		}
-		// ...AND so must the NULL placement. A forward index scan provides ASC
-		// NULLS FIRST; it does not satisfy a requested ASC NULLS LAST, so the sort
-		// is retained. Without this check the sort was wrongly elided (RFC-164 §5).
-		return req.NullsFirst() == p.nullsFirst()
-	}
-	return true
-}
-
-// nullsFirst reports the NULL placement a directional provided ordering yields.
-// The natural FDB tuple placement is ascending→NULLS FIRST, descending→NULLS
-// LAST; the explicit *NullsFirst/*NullsLast provided variants agree with that
-// (a forward scan is ascending-nulls-first, a reverse scan is descending-nulls-
-// last), so both the plain and explicit variants map to the natural placement.
-func (p ProvidedSortOrder) nullsFirst() bool {
-	switch p {
-	case ProvidedSortOrderAscending, ProvidedSortOrderAscendingNullsFirst:
-		return true
-	case ProvidedSortOrderDescending, ProvidedSortOrderDescendingNullsLast:
+	if p.IsCounterflowNulls() != req.IsCounterflowNulls() {
 		return false
 	}
-	return true
+	return p.IsAnyAscending() == req.IsAnyAscending()
 }
 
 // EnumerateSatisfyingComparisonKeyValues enumerates the comparison key
@@ -326,6 +315,20 @@ func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 	reqParts := requested.GetParts()
 	requestedKeys := make([]string, len(reqParts))
 	for i, part := range reqParts {
+		// Counterflow NULL placement (e.g. ASC NULLS LAST) cannot be
+		// satisfied by a set-operation comparison key here: Go emits a
+		// plain comparison Value, not the ToOrderedBytesValue physical
+		// encoding Java uses (ProvidedOrderingPart.comparisonKeyValue) to
+		// re-order NULLs against the natural tuple order. Refusing here
+		// (rather than relying on IsCompatibleWithRequestedSortOrder, which
+		// early-returns true for FIXED/CHOOSE bindings) prevents a merge
+		// set-op from claiming to satisfy a counterflow request while
+		// emitting a natural-null key. Such requests fall back to an
+		// in-memory sort. Porting ToOrderedBytesValue is tracked in
+		// DIVERGENCES.md.
+		if part.SortOrder.IsCounterflowNulls() {
+			return nil
+		}
 		bindings := o.bindingMapForExplain(values.ExplainValue(part.Value))
 		if bindings == nil {
 			return nil
@@ -472,7 +475,13 @@ func (o *RichOrdering) DirectionalOrderingParts(
 
 		if !sortOrder.IsDirectional() {
 			if reqSort, ok := reqMap[key]; ok && reqSort.IsDirectional() {
-				if reqSort.IsAscending() {
+				// Map to the natural provided value for the direction. We
+				// never stamp a counterflow provided order here: a counterflow
+				// request is refused at the satisfaction gate
+				// (IsCompatibleWithRequestedSortOrder) and in the comparison-key
+				// enumeration, so this can never claim to satisfy NULLS LAST
+				// via a plain (non-ToOrderedBytes) comparison key.
+				if reqSort.IsAnyAscending() {
 					sortOrder = ProvidedSortOrderAscending
 				} else {
 					sortOrder = ProvidedSortOrderDescending

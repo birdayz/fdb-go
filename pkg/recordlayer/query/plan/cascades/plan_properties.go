@@ -296,9 +296,24 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
 	}
 	bm := make(map[values.Value][]OrderingBinding, len(o.Keys))
 	for i, k := range o.Keys {
-		dir := ProvidedSortOrderAscending
-		if i < len(o.Descending) && o.Descending[i] {
-			dir = ProvidedSortOrderDescending
+		// Map (descending, nulls-first) -> the matching ProvidedSortOrder,
+		// including the counterflow variants. NullsFirstAt defaults to the
+		// natural placement, so natural-order producers (index scans, which
+		// leave NullsFirst empty) yield plain ASCENDING/DESCENDING unchanged;
+		// only a counterflow in-memory sort yields a counterflow value, which
+		// keeps a parent sort from eliding against it incorrectly.
+		desc := o.DescendingAt(i)
+		nullsFirst := o.NullsFirstAt(i)
+		var dir ProvidedSortOrder
+		switch {
+		case !desc && nullsFirst:
+			dir = ProvidedSortOrderAscending // ASC_NULLS_FIRST
+		case !desc && !nullsFirst:
+			dir = ProvidedSortOrderAscendingNullsLast // ASC_NULLS_LAST (counterflow)
+		case desc && !nullsFirst:
+			dir = ProvidedSortOrderDescending // DESC_NULLS_LAST
+		default: // desc && nullsFirst
+			dir = ProvidedSortOrderDescendingNullsFirst // DESC_NULLS_FIRST (counterflow)
 		}
 		bm[k] = []OrderingBinding{SortedBinding(dir)}
 	}

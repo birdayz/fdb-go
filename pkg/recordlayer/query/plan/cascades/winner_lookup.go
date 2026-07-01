@@ -142,7 +142,7 @@ func requestedOrderingToProps(ordering *RequestedOrdering) expressions.PhysicalP
 		} else {
 			names[i] = p.Value.Name()
 		}
-		desc[i] = p.SortOrder.IsDescending()
+		desc[i] = p.SortOrder.IsAnyDescending()
 	}
 	return expressions.OrderingFromNameDir(names, desc)
 }

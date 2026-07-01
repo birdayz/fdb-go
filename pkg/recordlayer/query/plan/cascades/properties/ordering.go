@@ -40,6 +40,31 @@ type Ordering struct {
 	// Descending is parallel to Keys. true = descending order for that
 	// key. nil or shorter than Keys means all ascending.
 	Descending []bool
+	// NullsFirst is parallel to Keys. true = NULLs sort before non-NULLs
+	// for that key. nil or shorter than Keys means the FDB-natural default
+	// per key (ASC → nulls first, DESC → nulls last) — see NullsFirstAt.
+	// Only "counterflow" producers (an explicit ORDER BY ... NULLS clause
+	// that inverts the natural order, materialized by an in-memory sort)
+	// need to populate this; natural-order producers (index scans) leave it
+	// empty and NullsFirstAt derives the natural placement. Carrying it lets
+	// a parent sort correctly decline to elide against a counterflow stream
+	// (e.g. an inner `ASC NULLS LAST` does NOT satisfy an outer `ASC`).
+	NullsFirst []bool
+}
+
+// DescendingAt reports whether key i is descending (false past the slice).
+func (o Ordering) DescendingAt(i int) bool {
+	return i < len(o.Descending) && o.Descending[i]
+}
+
+// NullsFirstAt reports the NULL placement for key i, defaulting to the
+// FDB-natural order (ASC → nulls first, DESC → nulls last) when NullsFirst
+// is unset for that key.
+func (o Ordering) NullsFirstAt(i int) bool {
+	if i < len(o.NullsFirst) {
+		return o.NullsFirst[i]
+	}
+	return !o.DescendingAt(i) // natural: ASC→nulls first, DESC→nulls last
 }
 
 // EstimateOrdering returns the static ordering guarantee for an
@@ -72,11 +97,17 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 		sks := v.GetSortKeys()
 		keys := make([]values.Value, 0, len(sks))
 		desc := make([]bool, 0, len(sks))
+		nullsFirst := make([]bool, 0, len(sks))
 		for _, sk := range sks {
 			keys = append(keys, sk.Value)
 			desc = append(desc, sk.Reverse)
+			nf := !sk.Reverse // natural default: ASC→nulls first, DESC→nulls last
+			if sk.NullsFirst != nil {
+				nf = *sk.NullsFirst
+			}
+			nullsFirst = append(nullsFirst, nf)
 		}
-		return Ordering{IsKnown: true, Keys: keys, Descending: desc}
+		return Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 	case *expressions.LogicalFilterExpression:
 		return inheritFromInner(v.GetInner())
 	case *expressions.LogicalProjectionExpression:

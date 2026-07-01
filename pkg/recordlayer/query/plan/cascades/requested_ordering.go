@@ -4,72 +4,58 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// RequestedSortOrder specifies the desired sort direction for one
-// ordering part. Mirrors Java's OrderingPart.RequestedSortOrder.
+// RequestedSortOrder specifies the desired sort direction (and NULL
+// placement) for one ordering part. Mirrors Java's
+// OrderingPart.RequestedSortOrder, where each directional value maps to a
+// TupleOrdering.Direction:
 //
-// Cross-enum NULL-variant asymmetry — a Go-specific SIMPLIFICATION (NOT a literal
-// port: Java's three sort-order enums are symmetric, all carrying ASC_NULLS_LAST /
-// DESC_NULLS_FIRST). In Go:
-//   - RequestedSortOrder / MatchedSortOrder carry the NON-natural explicit
-//     variants: AscendingNullsLast, DescendingNullsFirst.
-//   - ProvidedSortOrder (ordering_part.go) instead carries the NATURAL-explicit
-//     pair AscendingNullsFirst / DescendingNullsLast and OMITS the non-natural
-//     variants entirely.
+//	Ascending            -> ASC_NULLS_FIRST  (ascending,  nulls first; counterflow=false)
+//	Descending           -> DESC_NULLS_LAST  (descending, nulls last;  counterflow=false)
+//	AscendingNullsLast   -> ASC_NULLS_LAST   (ascending,  nulls last;  counterflow=true)
+//	DescendingNullsFirst -> DESC_NULLS_FIRST (descending, nulls first; counterflow=true)
 //
-// This is sound ONLY because Go index matching produces exclusively natural
-// provided orders (ValueIndexScanMatchCandidate emits only the natural Matched
-// variants), so a provided AscendingNullsFirst→nullsFirst()==true is correct and
-// a non-natural request fails compat in both scan directions (sort retained). If
-// a NULLS-LAST-keyed index ever feeds elision, ProvidedSortOrder must regain the
-// non-natural variants first (see matched_ordering_part.go ToProvidedSortOrder).
+// "Counterflow nulls" means the requested NULL placement runs against the
+// natural FDB tuple order for that direction (ASC defaults nulls-first,
+// DESC defaults nulls-last). This is the property Java's
+// ProvidedSortOrder.isCompatibleWithRequestedSortOrder gates on.
 type RequestedSortOrder int
 
 const (
 	RequestedSortOrderAny RequestedSortOrder = iota
-	// RequestedSortOrderAscending is ascending with the NATURAL null placement
-	// (NULLS FIRST — the FDB forward-scan tuple order). Mirrors Java's ASCENDING.
 	RequestedSortOrderAscending
-	// RequestedSortOrderDescending is descending with the NATURAL null placement
-	// (NULLS LAST). Mirrors Java's DESCENDING.
 	RequestedSortOrderDescending
-	// RequestedSortOrderAscendingNullsLast is ascending with the NON-natural
-	// NULLS LAST placement (an explicit `ORDER BY x ASC NULLS LAST`). A forward
-	// index scan provides ASC NULLS FIRST, so it does NOT satisfy this — the sort
-	// must be retained. Mirrors Java's ASCENDING_NULLS_LAST.
 	RequestedSortOrderAscendingNullsLast
-	// RequestedSortOrderDescendingNullsFirst is descending with the non-natural
-	// NULLS FIRST placement (`ORDER BY x DESC NULLS FIRST`). Mirrors Java's
-	// DESCENDING_NULLS_FIRST.
 	RequestedSortOrderDescendingNullsFirst
 )
 
 func (s RequestedSortOrder) IsDirectional() bool {
-	return s == RequestedSortOrderAscending || s == RequestedSortOrderDescending ||
-		s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
+	switch s {
+	case RequestedSortOrderAscending, RequestedSortOrderDescending,
+		RequestedSortOrderAscendingNullsLast, RequestedSortOrderDescendingNullsFirst:
+		return true
+	default:
+		return false
+	}
 }
 
-// IsAscending reports whether s is any ascending variant (natural or NULLS LAST).
-func (s RequestedSortOrder) IsAscending() bool {
+// IsAnyAscending reports whether this is an ascending direction (nulls
+// first or last). Mirrors Java SortOrder.isAnyAscending().
+func (s RequestedSortOrder) IsAnyAscending() bool {
 	return s == RequestedSortOrderAscending || s == RequestedSortOrderAscendingNullsLast
 }
 
-// IsDescending reports whether s is any descending variant (natural or NULLS FIRST).
-func (s RequestedSortOrder) IsDescending() bool {
+// IsAnyDescending reports whether this is a descending direction (nulls
+// first or last). Mirrors Java SortOrder.isAnyDescending().
+func (s RequestedSortOrder) IsAnyDescending() bool {
 	return s == RequestedSortOrderDescending || s == RequestedSortOrderDescendingNullsFirst
 }
 
-// NullsFirst reports the requested NULL placement for a directional order: the
-// natural placement is ASC→NULLS FIRST and DESC→NULLS LAST; the *NullsLast /
-// *NullsFirst variants invert it. For Any / non-directional orders the result is
-// unconstrained (reported as natural true); callers gate on IsDirectional first.
-func (s RequestedSortOrder) NullsFirst() bool {
-	switch s {
-	case RequestedSortOrderAscending, RequestedSortOrderDescendingNullsFirst:
-		return true
-	case RequestedSortOrderDescending, RequestedSortOrderAscendingNullsLast:
-		return false
-	}
-	return true
+// IsCounterflowNulls reports whether the requested NULL placement runs
+// against the natural tuple order for this direction. Mirrors Java
+// TupleOrdering.Direction.isCounterflowNulls(). Only valid for
+// directional values (Java verifies isDirectional first).
+func (s RequestedSortOrder) IsCounterflowNulls() bool {
+	return s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
 }
 
 // RequestedOrderingPart is a (Value, RequestedSortOrder) pair specifying
