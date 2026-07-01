@@ -618,15 +618,24 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
 		var restrictedMatches []PartialMatch
 		for _, m := range allMatches {
-			// RFC-156 Phase B: an ordered-stream vector scan must not be an
-			// intersection arm. Intersection is a SELF-LIMITING combinator — it
-			// merges its intersecting cursors into a single bounded (top-k)
-			// result — so folding an ordered-stream scan into it would self-limit
-			// the scan BELOW the residual, the very thing this phase forbids. This
-			// is the same root invariant as the compensationSafeForYield
-			// relaxation: a residual must compose ABOVE the un-limited ordered
-			// stream (Limit → Filter → ordered scan), never collapse it.
-			if vc, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok && vc.EmitsOrderedStream() {
+			// A vector scan must NEVER be a primary-key intersection arm — in
+			// EITHER of its two forms:
+			//   - ORDERED-STREAM (un-partitioned, RFC-156 Phase B): the residual
+			//     must compose ABOVE the un-limited distance-ordered stream
+			//     (Limit → Filter → ordered scan); folding it into the SELF-LIMITING
+			//     intersection combinator would self-limit the scan BELOW the
+			//     residual, the very thing that phase forbids.
+			//   - SELF-LIMITING (partitioned per-partition top-k, RFC-046): the scan
+			//     emits (partition, distance) order, which is NOT primary-key-
+			//     monotonic, so the pk-keyed sorted-merge (merge_cursor.go max-key/
+			//     advance) would drop rows whose distance rank disagrees with their
+			//     pk order (wrong rows for k>1). The safe shape is a Filter above the
+			//     un-intersected scan (compensationSafeForYield's partition-residual
+			//     exception, residualIsPartitionContiguous).
+			// Both reduce to the same invariant — a distance-ordered scan cannot be a
+			// pk-keyed intersection leg — so exclude ALL vector candidates here, the
+			// single home for the rule (RFC-167 Phase 4).
+			if _, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok {
 				continue
 			}
 			if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
@@ -876,9 +885,15 @@ func residualIsPartitionContiguous(
 		idxs = append(idxs, i)
 	}
 	sort.Ints(idxs)
-	// Contiguous run starting exactly at boundLen.
-	for k, i := range idxs {
-		if i != boundLen+k {
+	// Contiguous run starting exactly at boundLen. A LEADING inequality on the
+	// first partition column (e.g. zone>'z0', boundLen 0, residual {zone} at
+	// index 0) is admitted here (0 == 0+0) and is correct: the scan fans out over
+	// all partitions and the whole-partition Filter selects those with zone>'z0',
+	// preserving each partition's top-k. Only a GAP before the residual (a leading
+	// column neither bound nor filtered, e.g. region='r1' with zone unbound →
+	// residual {region} at index 1 ≠ boundLen 0) is rejected.
+	for pos, i := range idxs {
+		if i != boundLen+pos {
 			return false
 		}
 	}

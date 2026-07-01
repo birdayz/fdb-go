@@ -364,6 +364,46 @@ func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) 
 	}
 }
 
+// TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual pins the
+// boundLen-0 admit path of residualIsPartitionContiguous (Torvalds nit): a
+// LEADING partition-column inequality (WHERE zone > 'z1') binds no equality
+// prefix, so the scan fans out over ALL partitions and the whole-partition
+// Filter(zone>'z1') selects those with zone>'z1', preserving each surviving
+// partition's per-partition top-k. residualIsPartitionContiguous admits it
+// (residual {zone} at index 0 == boundLen 0), distinct from the rejected
+// leading-column-GAP case (region='r1' with zone unbound). Only z2 has
+// zone>'z1', so the result is that partition's top-2 = {31}; if the inequality
+// were dropped, z1's rows would appear too — so {31} alone proves it is honored,
+// and the shape assertion proves it planned to the self-limiting Filter form
+// (not an intersection, not unplannable).
+func TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
+
+	sql := `SELECT id, region FROM docs WHERE zone > 'z1'
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 2`
+
+	exp, got := planExplainAndRun(t, ctx, db, md, ks, sql)
+	if !strings.Contains(exp, "VectorIndexScan") {
+		t.Fatalf("query did not plan to a vector scan:\n%s", exp)
+	}
+	if strings.Contains(exp, "Intersection") {
+		t.Fatalf("leading-inequality query planned to an Intersection:\n%s", exp)
+	}
+	if !strings.Contains(exp, "PredicatesFilter") || !strings.Contains(exp, "rank<=") {
+		t.Fatalf("expected Filter(zone>'z1') → VectorScan(self-limiting rank<=2), got:\n%s", exp)
+	}
+	want := []idRegion{{31, "r1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("leading-inequality K-NN = %v, want %v (zone>'z1' keeps only z2's (z2,r1) top-2 = {31})", got, want)
+	}
+}
+
 type idRegion struct {
 	id     int64
 	region string

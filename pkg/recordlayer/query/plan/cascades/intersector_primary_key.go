@@ -44,18 +44,6 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 				if planI == nil || planJ == nil {
 					continue
 				}
-				// A self-limiting per-partition vector top-k scan delivers
-				// (partition, distance) order, NOT primary-key order, so it cannot
-				// be a leg of a pk-keyed sorted-merge intersection: the max-key/
-				// advance loop (merge_cursor.go) would drop rows whose distance rank
-				// disagrees with their pk order (wrong rows for k>1). The safe shape
-				// is a Filter above the un-intersected self-limiting scan
-				// (compensationSafeForYield's partition-residual exception), so skip
-				// this pair. (An ordered-stream vector scan is already excluded from
-				// data-access intersection candidates upstream, planner.go.)
-				if isSelfLimitingVectorScan(planI) || isSelfLimitingVectorScan(planJ) {
-					continue
-				}
 
 				intersectionPlan := plans.NewRecordQueryIntersectionPlan(
 					[]plans.RecordQueryPlan{planI, planJ}, pkValues)
@@ -93,11 +81,6 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 						planJ := createScanForAccess(aj)
 						planK := createScanForAccess(ak)
 						if planI == nil || planJ == nil || planK == nil {
-							continue
-						}
-						// See the 2-way loop: a self-limiting vector scan is not
-						// pk-ordered and must not be an intersection leg.
-						if isSelfLimitingVectorScan(planI) || isSelfLimitingVectorScan(planJ) || isSelfLimitingVectorScan(planK) {
 							continue
 						}
 
@@ -166,16 +149,6 @@ func commonPrimaryKeyValues(accesses []Vectored[*SingleMatchedAccess], ctx PlanC
 		}
 	}
 	return result
-}
-
-// isSelfLimitingVectorScan reports whether a scan plan is a self-limiting
-// per-partition vector top-k scan (RecordQueryVectorIndexPlan not in ordered-
-// stream mode). Such a scan emits its rows in (partition, distance) order, which
-// is not primary-key-monotonic, so it cannot participate in the pk-keyed
-// sorted-merge intersection (see the skip in WithPrimaryKeyIntersector).
-func isSelfLimitingVectorScan(p plans.RecordQueryPlan) bool {
-	v, ok := p.(*plans.RecordQueryVectorIndexPlan)
-	return ok && !v.IsOrderedStream()
 }
 
 func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
