@@ -160,10 +160,15 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	// Insert 6 rows, UUIDs out of byte order, with a duplicate of uuidV1.
+	// Insert 7 rows, UUIDs out of byte order, with an UNEVEN largest group
+	// (uuidV1 × 3) so a paginated GROUP BY over a UUID column exercises an
+	// uneven group under a tiny per-page budget (the group value round-trips as
+	// [16]byte via the continuation's UUID tag, materialized to the canonical
+	// string). The aggregate group KEY deliberately stays a JSON-safe %T:%v
+	// string, not raw tuple.UUID bytes (see computeGroupKey).
 	mwjoMustExec(t, db, ctx, fmt.Sprintf(
-		"INSERT INTO t (id, v) VALUES (1,'%s'),(2,'%s'),(3,'%s'),(4,'%s'),(5,'%s'),(6,'%s')",
-		uuidV3, uuidV1, uuidV2, uuidV1, uuidV3, uuidV2))
+		"INSERT INTO t (id, v) VALUES (1,'%s'),(2,'%s'),(3,'%s'),(4,'%s'),(5,'%s'),(6,'%s'),(7,'%s')",
+		uuidV3, uuidV1, uuidV2, uuidV1, uuidV3, uuidV2, uuidV1))
 
 	// Pin the connection with a tiny per-page scanned-rows budget so the
 	// in-memory sort / streaming aggregate pages mid-buffer and must serialize
@@ -196,7 +201,7 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 
 	t.Run("paginated_order_by", func(t *testing.T) {
 		got := readStrings("SELECT v FROM t ORDER BY v")
-		want := []string{uuidV1, uuidV1, uuidV2, uuidV2, uuidV3, uuidV3}
+		want := []string{uuidV1, uuidV1, uuidV1, uuidV2, uuidV2, uuidV3, uuidV3}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("paginated ORDER BY v = %v, want %v (canonical strings, byte order)", got, want)
 		}
@@ -221,9 +226,9 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 			got = append(got, g)
 		}
 		sort.Slice(got, func(i, j int) bool { return got[i].v < got[j].v })
-		want := []gc{{uuidV1, 2}, {uuidV2, 2}, {uuidV3, 2}}
+		want := []gc{{uuidV1, 3}, {uuidV2, 2}, {uuidV3, 2}}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Fatalf("paginated GROUP BY = %v, want %v", got, want)
+			t.Fatalf("paginated GROUP BY = %v, want %v (uuidV1 group of 3 must NOT split across the page)", got, want)
 		}
 	})
 }
