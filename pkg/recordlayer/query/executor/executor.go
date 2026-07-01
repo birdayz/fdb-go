@@ -13,12 +13,14 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -1846,7 +1848,12 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				if err != nil {
 					panic(err)
 				}
-				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092)
+				// widenInt32: tuple has no int32 (RFC-092). uuidToTupleElement:
+				// a UUID comparison/PK key is a neutral [16]byte, which the tuple
+				// packer cannot encode — convert it to tuple.UUID, exactly as
+				// mergeSortCursor.extractKey does, so compareKeys' Pack doesn't
+				// panic on an intersection over a UUID key (RFC-162).
+				t[i] = uuidToTupleElement(widenInt32(v))
 			}
 			return t
 		}
@@ -2756,6 +2763,28 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		case int64:
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
 		}
+	case protoreflect.MessageKind:
+		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
+		// … and INSERT … SELECT flow the value through here (INSERT … VALUES uses
+		// functions.ConvertToProtoValue instead). Accept the neutral [16]byte
+		// (SET v = v, an index/record-sourced value) and the canonical string
+		// (SET v = '<uuid>'), building the same msb/lsb message Java writes —
+		// otherwise a valid UUID assignment fell through to the 22000 reject.
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
+			switch u := v.(type) {
+			case [16]byte:
+				return uuidBytesToProtoMessage(fd, u)
+			case uuid.UUID:
+				return uuidBytesToProtoMessage(fd, u)
+			case string:
+				parsed, perr := uuid.Parse(u)
+				if perr != nil {
+					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+						"Invalid UUID value for the UUID type %s", u)
+				}
+				return uuidBytesToProtoMessage(fd, parsed)
+			}
+		}
 	}
 	// All promotable conversions are handled above, so anything reaching here is
 	// a genuinely incompatible assignment (e.g. a float64/DOUBLE into an integer
@@ -2764,6 +2793,24 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	// the sibling ConvertToProtoValue fallthrough — not a generic Go error.
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+}
+
+// uuidBytesToProtoMessage builds a tuple_fields.UUID proto message (msb/lsb,
+// big-endian) from a 16-byte UUID — the write-side inverse of uuidMessageToBytes
+// and the mirror of functions.uuidStringToProtoMessage, so a UUID written via
+// UPDATE / INSERT…SELECT is byte-identical to one written via INSERT … VALUES.
+func uuidBytesToProtoMessage(fd protoreflect.FieldDescriptor, b [16]byte) (protoreflect.Value, error) {
+	msgDesc := fd.Message()
+	mostFD := msgDesc.Fields().ByName("most_significant_bits")
+	leastFD := msgDesc.Fields().ByName("least_significant_bits")
+	if mostFD == nil || leastFD == nil {
+		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
+			"UUID message descriptor missing most/least_significant_bits fields")
+	}
+	dyn := dynamicpb.NewMessage(msgDesc)
+	dyn.Set(mostFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(b[0:8]))))   //nolint:gosec
+	dyn.Set(leastFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(b[8:16])))) //nolint:gosec
+	return protoreflect.ValueOfMessage(dyn), nil
 }
 
 func executeTempTableScan(

@@ -861,6 +861,13 @@ func formatCompareOperand(v any) string {
 		}
 		buf = append(buf, '\'')
 		return string(buf)
+	case [16]byte:
+		// A UUID comparand flows as a neutral [16]byte (RFC-162); render the
+		// canonical 8-4-4-4-12 form (matching tuple.UUID.String and the
+		// driver-facing string) instead of the %v Go array literal, so EXPLAIN
+		// of a residual UUID filter (e.g. `v <> '<uuid>'`, IS DISTINCT FROM) is
+		// readable and injective.
+		return fmt.Sprintf("'%x-%x-%x-%x-%x'", x[0:4], x[4:6], x[6:8], x[8:10], x[10:16])
 	case []any:
 		// IN-list: `(e1, e2, e3)` — same rendering style as SQL.
 		parts := make([]string, len(x))

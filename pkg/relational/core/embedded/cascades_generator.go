@@ -2221,8 +2221,12 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 			nullable = api.ColumnNoNulls
 		}
 		cols[i] = executor.ColumnDef{
-			Name:     strings.ToUpper(string(fd.Name())),
-			TypeName: protoKindToTypeName(fd.Kind()),
+			Name: strings.ToUpper(string(fd.Name())),
+			// Route through protoFieldTypeName (descriptor-aware) so a bare
+			// SELECT * reports a UUID column as "OTHER" — the same JDBC name the
+			// projection path (valueTypeName) and Java (Types.OTHER) use — rather
+			// than the "UNKNOWN" protoKindToTypeName's MessageKind default gives.
+			TypeName: protoFieldTypeName(rt.Descriptor, string(fd.Name())),
 			Nullable: nullable,
 		}
 	}
@@ -3075,7 +3079,10 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 		case values.TypeCodeTimestamp:
 			return "TIMESTAMP"
 		case values.TypeCodeUuid:
-			return "UUID"
+			// JDBC getColumnTypeName for a UUID is the catch-all "OTHER"
+			// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
+			// field-path protoFieldTypeName so all metadata paths agree.
+			return "OTHER"
 		}
 	}
 	return ""

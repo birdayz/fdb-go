@@ -158,7 +158,12 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				if err != nil {
 					panic(err)
 				}
-				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092). See executor.go widenInt32.
+				// widenInt32 (RFC-092) + uuidToTupleElement: a UUID group/PK
+				// comparison key arrives as a neutral [16]byte the tuple packer
+				// can't encode; convert it to tuple.UUID so compareKeys' Pack
+				// doesn't panic on a multi-aggregate intersection over a UUID
+				// GROUP BY key (RFC-162). Mirrors mergeSortCursor.extractKey.
+				t[i] = uuidToTupleElement(widenInt32(v))
 			}
 			return t
 		}

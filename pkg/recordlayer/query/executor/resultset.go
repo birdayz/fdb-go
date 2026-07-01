@@ -5,9 +5,26 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
+
+// resultValueString renders a column value as a string for the api.ResultSet
+// String()/Bytes() accessors (Java ResultSet.getString parity). A UUID flows
+// through the engine as a neutral [16]byte (RFC-162); a bare %v would print a Go
+// array literal, so render the canonical 36-char form — the same string the
+// database/sql driver boundary (materializeDriverValue) surfaces via Object().
+func resultValueString(v any) string {
+	switch u := v.(type) {
+	case [16]byte:
+		return tuple.UUID(u).String()
+	case tuple.UUID:
+		return u.String()
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
 
 // RecordLayerResultSet wraps a RecordCursor[QueryResult] and implements
 // api.ResultSet. Mirrors Java's RecordLayerResultSet: Next() advances
@@ -155,7 +172,7 @@ func (rs *RecordLayerResultSet) String(columnIndex int) (string, error) {
 	if v == nil {
 		return "", nil
 	}
-	return fmt.Sprintf("%v", v), nil
+	return resultValueString(v), nil
 }
 
 func (rs *RecordLayerResultSet) Bytes(columnIndex int) ([]byte, error) {
@@ -169,7 +186,7 @@ func (rs *RecordLayerResultSet) Bytes(columnIndex int) ([]byte, error) {
 	if b, ok := v.([]byte); ok {
 		return b, nil
 	}
-	return []byte(fmt.Sprintf("%v", v)), nil
+	return []byte(resultValueString(v)), nil
 }
 
 func (rs *RecordLayerResultSet) Boolean(columnIndex int) (bool, error) {
@@ -200,7 +217,7 @@ func (rs *RecordLayerResultSet) StringByName(name string) (string, error) {
 	if v == nil {
 		return "", nil
 	}
-	return fmt.Sprintf("%v", v), nil
+	return resultValueString(v), nil
 }
 
 func (rs *RecordLayerResultSet) BytesByName(name string) ([]byte, error) {
@@ -214,7 +231,7 @@ func (rs *RecordLayerResultSet) BytesByName(name string) ([]byte, error) {
 	if b, ok := v.([]byte); ok {
 		return b, nil
 	}
-	return []byte(fmt.Sprintf("%v", v)), nil
+	return []byte(resultValueString(v)), nil
 }
 
 func (rs *RecordLayerResultSet) BooleanByName(name string) (bool, error) {
