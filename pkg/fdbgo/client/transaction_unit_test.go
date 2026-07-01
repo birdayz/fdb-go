@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -903,4 +904,67 @@ func newTestTx() *Transaction {
 	tx := &Transaction{}
 	tx.state.Store(int32(txStateActive))
 	return tx
+}
+
+// TestAtomic_APIVersionSub520VersionstampSuffix pins the api<520 versionstamp offset zero-extension.
+// The Go client accepts apiVersion >= 510 (database.go:32), so 510-519 is reachable. C++ RYW::atomicOp
+// (ReadYourWrites.actor.cpp:2250-2261) appends \x00\x00 to a SetVersionstampedKey and \x00\x00\x00\x00
+// to a SetVersionstampedValue when !apiVersionAtLeast(520), widening the offset to the unified 4-byte
+// field the commit proxy reads. At apiVersion >= 520 the key/operand is byte-unchanged. Revert-proof:
+// deleting the append block in Atomic() reds the api-510 sub-tests.
+func TestAtomic_APIVersionSub520VersionstampSuffix(t *testing.T) {
+	t.Parallel()
+	mkTx := func(apiVersion int) *Transaction {
+		tx := &Transaction{db: &database{apiVersion: apiVersion}, rywDisabled: true}
+		tx.state.Store(int32(txStateActive))
+		return tx
+	}
+
+	t.Run("SetVersionstampedValue appends 4-byte offset at api<520", func(t *testing.T) {
+		t.Parallel()
+		operand := []byte("stampme") // pre-520: no user offset; client appends the 4-byte offset-0
+		tx := mkTx(510)
+		tx.Atomic(MutSetVersionstampedValue, []byte("k"), operand)
+		if len(tx.mutations) != 1 {
+			t.Fatalf("expected 1 buffered mutation, got %d", len(tx.mutations))
+		}
+		want := append(append([]byte{}, operand...), 0, 0, 0, 0)
+		if !bytes.Equal(tx.mutations[0].Value, want) {
+			t.Errorf("api 510 SVV value: got %x, want %x (operand + 4-byte offset-0)", tx.mutations[0].Value, want)
+		}
+	})
+
+	t.Run("SetVersionstampedValue unchanged at api>=520", func(t *testing.T) {
+		t.Parallel()
+		operand := []byte("stampme\x00\x00\x00\x00") // >=520: user supplies the 4-byte offset
+		tx := mkTx(520)
+		tx.Atomic(MutSetVersionstampedValue, []byte("k"), operand)
+		if !bytes.Equal(tx.mutations[0].Value, operand) {
+			t.Errorf("api 520 SVV value: got %x, want %x (unchanged)", tx.mutations[0].Value, operand)
+		}
+	})
+
+	t.Run("SetVersionstampedKey appends 2-byte extension at api<520", func(t *testing.T) {
+		t.Parallel()
+		// An out-of-legal-range key makes the versionstampKeyRange transform a no-op (transaction.go:1448
+		// gates on key < maxWriteKey), so the buffered key is the raw key with ONLY the suffix appended —
+		// isolating the suffix from the (separately-tested) offset transform.
+		rawKey := []byte{0xff, 0xff, 0xff} // >= maxWriteKey (0xff) for a non-system txn
+		tx := mkTx(510)
+		tx.Atomic(MutSetVersionstampedKey, rawKey, []byte("v"))
+		want := append(append([]byte{}, rawKey...), 0, 0)
+		if !bytes.Equal(tx.mutations[0].Key, want) {
+			t.Errorf("api 510 SVK key: got %x, want %x (rawKey + 2-byte extension)", tx.mutations[0].Key, want)
+		}
+	})
+
+	t.Run("SetVersionstampedKey unchanged at api>=520", func(t *testing.T) {
+		t.Parallel()
+		rawKey := []byte{0xff, 0xff, 0xff}
+		tx := mkTx(520)
+		tx.Atomic(MutSetVersionstampedKey, rawKey, []byte("v"))
+		if !bytes.Equal(tx.mutations[0].Key, rawKey) {
+			t.Errorf("api 520 SVK key: got %x, want %x (unchanged)", tx.mutations[0].Key, rawKey)
+		}
+	})
 }

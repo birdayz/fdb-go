@@ -1426,6 +1426,25 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		tx.conflictMu.Unlock()
 		return
 	}
+	// API < 520 versionstamp offset zero-extension (C++ RYW::atomicOp, ReadYourWrites.actor.cpp:2250-2261).
+	// Pre-520 the SetVersionstampedKey offset was a 2-byte suffix and SetVersionstampedValue carried no
+	// user offset; libfdb_c widens both to the unified 4-byte offset the commit proxy reads (parsed as the
+	// trailing int32, ReadYourWrites.actor.cpp:2196/2283 → Atomic.h:258-264) by appending \x00\x00 (key,
+	// zero-extending the 2-byte offset) / \x00\x00\x00\x00 (value, a literal offset-0). The Go client
+	// accepts apiVersion >= 510 (database.go:32), so 510-519 is reachable; without this a Go app at that
+	// version writes versionstamp bytes libfdb_c would not — a wire divergence. Done here (the RYW::atomicOp
+	// analog) BEFORE the versionstampKeyRange transform + buffering below, so the suffixed key/operand flow
+	// through identically to C++. apiVersionAtLeast(520) → no-op, so the modern path is byte-unchanged.
+	// (Applied unconditionally per op-type like C++ 2251/2257; the metadataVersionKey SetVersionstampedValue
+	// case is unreachable here since metadataVersion requires API >= 610.)
+	if tx.db != nil && !tx.db.apiVersionAtLeast(520) {
+		switch op {
+		case MutSetVersionstampedKey:
+			key = append(append(make([]byte, 0, len(key)+2), key...), 0, 0)
+		case MutSetVersionstampedValue:
+			operand = append(append(make([]byte, 0, len(operand)+4), operand...), 0, 0, 0, 0)
+		}
+	}
 	// SetVersionstampedKey: commit the key TRANSFORMED with the cached-read-version min-bound stamp at
 	// the placeholder, matching libfdb_c/Java. C++ atomicOp captures getCachedReadVersion().orDefault(0)
 	// and mutates k in place (ReadYourWrites.actor.cpp:2276), inserts THAT key into the write map (:2295),
