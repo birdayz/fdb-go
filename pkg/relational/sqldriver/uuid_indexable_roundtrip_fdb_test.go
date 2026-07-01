@@ -242,6 +242,38 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 		}
 	})
 
+	// IN + ORDER BY on the indexed column can plan as an InUnion whose
+	// mergeSortCursor keys on the UUID comparison value. That merge key must pack
+	// the [16]byte as a tuple.UUID (0x30+bytes) so the packed-tuple order matches
+	// unsigned big-endian UUID order — otherwise the merge (which assumes sorted
+	// inputs) reorders/drops rows. Assert the sorted output regardless of plan;
+	// the EXPLAIN check documents when the merge path is actually exercised.
+	t.Run("in_order_by_merge", func(t *testing.T) {
+		q := fmt.Sprintf("SELECT v FROM t WHERE v IN ('%s', '%s', '%s') ORDER BY v", uuidV3, uuidV1, uuidV2)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("IN ... ORDER BY v: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, s)
+		}
+		want := []string{uuidV1, uuidV2, uuidV3}
+		if len(got) != len(want) {
+			t.Fatalf("IN...ORDER BY = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("IN...ORDER BY = %v, want %v (byte order)", got, want)
+			}
+		}
+	})
+
 	// MIN/MAX over a UUID column is REJECTED — identically to Java. Java's
 	// NumericAggregationValue only registers MIN/MAX physical operators for
 	// INT/LONG/FLOAT/DOUBLE (no UUID, no STRING), so encapsulation fails the

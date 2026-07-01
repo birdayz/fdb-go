@@ -765,6 +765,12 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 			t[i] = tv
 		case int32:
 			t[i] = int64(tv)
+		case [16]byte:
+			// A UUID merge key must pack as a tuple.UUID (0x30 + 16 bytes) so the
+			// packed-tuple ordering the merge relies on matches the unsigned
+			// big-endian UUID order — the fmt.Sprintf default below would pack a
+			// decimal-list string ("[16]uint8:[85 14 …]") that sorts lexically.
+			t[i] = tuple.UUID(tv)
 		default:
 			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
