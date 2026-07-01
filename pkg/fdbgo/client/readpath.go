@@ -1171,14 +1171,17 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 
 // watchSetupErr maps a setup-read failure to the faithful terminal error. The blocking GRV / value
 // read run on watchCtx (a child of the caller ctx); a Cancel()/reset() during setup cancels watchCtx
-// via cancelWatches, so the read surfaces context.Canceled. When the txn itself was Cancel()ed, that
-// out-ranks the raw ctx error as transaction_cancelled (1025) — the SAME precedence WatchSetup's entry
-// checks enforce (checkCancelled before ctx.Err) and what C++'s watch actor observes after
-// resetPromise fires (NativeAPI.actor.cpp:5678). A caller-ctx cancellation or any other read error is
-// returned as-is.
+// via cancelWatches, so the read surfaces a context cancellation. Only THAT is reinterpreted: when the
+// txn itself was Cancel()ed, the cancellation out-ranks the raw ctx error as transaction_cancelled
+// (1025) — matching what C++'s watch read observes after resetPromise.sendError(transaction_cancelled)
+// fires (ReadYourWrites.actor.cpp:1284-1333). A caller-ctx cancellation (txn not cancelled) is
+// returned as-is, and a GENUINE read error (an FDBError, a decode failure) is NEVER masked by 1025
+// even if a Cancel raced in just after it — whichever surfaced first wins, as in C++ (Torvalds).
 func (tx *Transaction) watchSetupErr(err error) error {
-	if cerr := tx.checkCancelled(); cerr != nil {
-		return cerr // transaction_cancelled (1025)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if cerr := tx.checkCancelled(); cerr != nil {
+			return cerr // the watchCtx cancellation was a txn Cancel → transaction_cancelled (1025)
+		}
 	}
 	return err
 }
@@ -1205,8 +1208,12 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 	defer tx.db.releaseWatch()
 	// Deregister THIS watch's scoped context on completion (fire / error / cancel), so the per-txn
 	// watchCancels map self-cleans across a reused post-commit handle. Idempotent with the future's
-	// Cancel() and the cancelWatches path.
-	defer watchCancel()
+	// Cancel() and the cancelWatches path. Production callers always pass a non-nil watchCancel (from
+	// WatchSetup's success path), but guard defensively so a future caller on an error path can't panic
+	// the async watch goroutine (Torvalds).
+	if watchCancel != nil {
+		defer watchCancel()
+	}
 
 	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
 	// reused across the wrong-shard retry loop — matching C++ watchValue's single

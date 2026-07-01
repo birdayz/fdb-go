@@ -640,6 +640,43 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	}
 }
 
+// TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError pins watchSetupErr's precedence (codex #13 +
+// Torvalds): a context cancellation maps to transaction_cancelled (1025) ONLY when the txn was actually
+// Cancel()ed; a caller-ctx cancellation on a live txn passes through; and a GENUINE read error is NEVER
+// masked by 1025 even on a cancelled txn (whichever surfaced first wins, as in C++). Pure function —
+// deterministic, no scheduling.
+func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ctx_cancel_on_cancelled_txn_is_1025", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.state.Store(int32(txStateCancelled))
+		if got := fdbCodeOf(tx.watchSetupErr(context.Canceled)); got != 1025 {
+			t.Fatalf("context.Canceled on a cancelled txn must map to 1025, got %d", got)
+		}
+	})
+
+	t.Run("ctx_cancel_on_live_txn_passes_through", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx() // active
+		if err := tx.watchSetupErr(context.Canceled); !errors.Is(err, context.Canceled) {
+			t.Fatalf("context.Canceled on a live txn must pass through, got %v", err)
+		}
+	})
+
+	t.Run("genuine_error_never_masked_on_cancelled_txn", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx()
+		tx.state.Store(int32(txStateCancelled))
+		got := tx.watchSetupErr(&wire.FDBError{Code: 1009}) // future_version — a real read error, not a cancel
+		var fe *wire.FDBError
+		if !errors.As(got, &fe) || fe.Code != 1009 {
+			t.Fatalf("a genuine read error must NOT be masked by 1025 on a cancelled txn, got %v", got)
+		}
+	})
+}
+
 // TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
 // in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
 // a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its

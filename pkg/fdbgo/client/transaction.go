@@ -1795,9 +1795,15 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 // Cancel cancels the transaction. All subsequent operations will return an error.
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
+	// Store the cancelled state BEFORE cancelWatches so a watch setup read parked on watchCtx, which
+	// cancelWatches is about to unblock, deterministically observes txStateCancelled when it re-checks
+	// checkCancelled in watchSetupErr → transaction_cancelled (1025). The store is sequenced-before the
+	// context cancellation, whose Done()-close is a happens-before edge to the read goroutine's
+	// state.Load(), so the ordering is guaranteed, not racy (codex: the prior order let the unblocked
+	// read see the not-yet-cancelled state and surface context.Canceled instead of 1025).
+	tx.state.Store(int32(txStateCancelled))
 	tx.cancelWatches()
 	tx.endTxSpan() // RFC-115 §4 Layer 2: end the "Transaction" otel span on teardown
-	tx.state.Store(int32(txStateCancelled))
 }
 
 // Reset resets the transaction to a clean state, as if newly created from Database.

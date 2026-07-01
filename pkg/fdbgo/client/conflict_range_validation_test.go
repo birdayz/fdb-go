@@ -112,6 +112,28 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.writeConflicts))
 		}
 	})
+
+	// The clamp runs BEFORE the rywDisabled branch, so the RYW-ENABLED path (updateConflictMap via
+	// conflictRangesLocked) must clamp too. With an empty write map the filter returns the whole range
+	// unchanged, so the clamped [begin,end) lands in readConflicts (Torvalds: the rywDisabled subtests
+	// above left this path unprobed).
+	t.Run("read_clamps_on_ryw_enabled_path", func(t *testing.T) {
+		t.Parallel()
+		tx := newTestTx() // rywDisabled=false → routes through conflictRangesLocked
+		begin := bigA(20000)
+		end := bigA(20000)
+		end[0] = 'b'
+		if err := tx.AddReadConflictRange(begin, end); err != nil {
+			t.Fatalf("AddReadConflictRange: %v", err)
+		}
+		if len(tx.readConflicts) != 1 {
+			t.Fatalf("want 1 recorded read conflict via the RYW filter, got %d", len(tx.readConflicts))
+		}
+		r := tx.readConflicts[0]
+		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
+			t.Fatalf("RYW-enabled path did not clamp to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
+		}
+	})
 }
 
 func TestAddReadConflictRange_Validation(t *testing.T) {

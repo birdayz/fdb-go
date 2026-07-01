@@ -386,7 +386,34 @@ missed by releasing the reply). Revert-proven: without the fix it FAILS at 24.7s
 after Cancel"). Passes under `-race` with the whole watch suite. This is the restructure's own
 follow-up edge; re-review #13 owed on the new HEAD.
 
-**Codex caught 20 real issues across 13 review rounds the persona reviewers missed** — critical-gate
+**Round 21 — the round-20 HEAD's gauntlet (codex #13 + FDB-C-dev + Torvalds), all findings addressed.**
+Both personas ACK'd the restructure + clamp + watchCtx commits vs C++ 7.3.77 (FDB-C-dev cited the exact
+RYW/NativeAPI file:line for each). Follow-ups fixed in this round:
+- **codex #13 [P2] Cancel ordering** (readpath.go:1180 / transaction.go:1797): `Cancel()` stored
+  `txStateCancelled` AFTER `cancelWatches()`, so a setup read unblocked by cancelWatches could hit
+  `watchSetupErr`→`checkCancelled` before the state flipped → `context.Canceled` instead of 1025 (a
+  latent flake in the round-20 test). Fixed by storing the state FIRST; the store is now
+  sequenced-before the ctx cancellation whose Done()-close is a happens-before edge to the read's
+  `state.Load()` — correct by construction. (No isolated red→green: the race is benign-timing, Store
+  wins ~always; a test asserting the intra-Cancel window passes both ways = a fake checkbox, so it was
+  removed. The reliable end-to-end 1025 is the fault test.)
+- **Torvalds #1 masking** (readpath.go:1179): `watchSetupErr` re-checked `checkCancelled` for ANY read
+  error → a genuine FDBError on a cancelled txn was masked to 1025. Guarded to remap ONLY a context
+  cancellation. Deterministic red→green: `TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError`
+  (`genuine_error_never_masked_on_cancelled_txn` FAILS without the guard — 1009 masked to 1025).
+- **Torvalds #2** WatchPoll `defer watchCancel()` nil-guarded (defensive).
+- **Torvalds #3** clamp RYW-enabled path now covered (`read_clamps_on_ryw_enabled_path`).
+- **FDB-C-dev note (non-blocking, deferred):** Go acquires the watch slot BEFORE the setup value read;
+  C++ RYWImpl::watch charges `increaseWatchCounter` AFTER the read (so C++ holds no slot during the
+  read window). Pre-existing (finding #11 charge-at-registration), narrow, and commit 3 already narrows
+  it (prompt release on Cancel). Candidate follow-up: move the acquire to after the value read while
+  keeping it synchronous (before the async poll) to match RYWImpl::watch exactly. Queued, not in scope.
+
+**Queued next-fix:** the grv-cache background-refresher `db.wg.Add(1)` (grv.go:295) can race Close's
+`wg.Wait()` (database.go:1028) at a zero counter → WaitGroup-misuse panic. Narrow (needs USE_GRV_CACHE
+opt-in racing Close); fix = a closed-guard shared with Close's cancel/Wait. `-race` repro owed.
+
+**Codex caught 21 real issues across 14 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
