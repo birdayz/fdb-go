@@ -212,7 +212,7 @@ func TestTransactionSpanLifecycle(t *testing.T) {
 	}
 	// The parent linkage survives an attempt reset (regenerateSpan honors spanParent).
 	childSpanBefore := tx1.spanContext.SpanID
-	tx1.reset()
+	tx1.reset(false)
 	if tx1.spanContext.TraceID != parentTrace {
 		t.Fatal("parent traceID must survive reset() (retry keeps the trace)")
 	}

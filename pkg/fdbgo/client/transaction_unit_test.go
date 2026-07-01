@@ -487,7 +487,7 @@ func TestReset_ClearsCommittedIdentity(t *testing.T) {
 	tx.hasCommitted = true
 	tx.nextWriteNoConflict = true
 
-	tx.reset()
+	tx.reset(false)
 
 	if tx.committedVersion != 0 || tx.hasCommitted || tx.txnBatchId != 0 {
 		t.Errorf("internal reset must clear committed identity: ver=%d has=%v batch=%d",
@@ -498,9 +498,15 @@ func TestReset_ClearsCommittedIdentity(t *testing.T) {
 	}
 }
 
-func TestReset_PreservesPersistentOptions(t *testing.T) {
+// TestReset_OnErrorRetryOptionContract pins the RFC-171 split on the OnError-retry path (reset(false)):
+// NON-persistent options (priority/causalReadRisky/lockAware/readLockAware/sizeLimit/RYW-disable/tags)
+// are cleared to DB defaults exactly as C++ TransactionOptions::clear does on the fresh TransactionState,
+// while the PERSISTENT maxRetryDelay is preserved. tenantId (construction-time, not an option) and the
+// retryCount/backoff bookkeeping (only user Reset() clears them) survive. A real db is required — with a
+// nil db applyOptionDefaults short-circuits and this contract wouldn't be exercised.
+func TestReset_OnErrorRetryOptionContract(t *testing.T) {
 	t.Parallel()
-	tx := newTestTx()
+	tx := txWithDB()
 	tx.priority = PriorityBatch
 	tx.causalReadRisky = true
 	tx.lockAware = true
@@ -514,22 +520,28 @@ func TestReset_PreservesPersistentOptions(t *testing.T) {
 	tx.retryCount = 3
 	tx.backoff = 200 * time.Millisecond
 
-	tx.reset()
+	tx.reset(false)
 
-	if tx.priority != PriorityBatch || !tx.causalReadRisky || !tx.lockAware || !tx.readLockAware {
-		t.Error("reset clobbered priority / causalReadRisky / lockAware / readLockAware")
+	// Non-persistent → cleared on the retry path (C++ TransactionOptions::clear).
+	if tx.priority != 0 || tx.causalReadRisky || tx.lockAware || tx.readLockAware {
+		t.Error("retry reset must clear priority / causalReadRisky / lockAware / readLockAware (non-persistent)")
 	}
-	if tx.sizeLimit != 5_000_000 || tx.maxRetryDelay != 10*time.Second {
-		t.Error("reset clobbered sizeLimit or maxRetryDelay")
+	if tx.sizeLimit != transactionSizeLimit {
+		t.Errorf("retry reset must clear sizeLimit to the 10MB default, got %d", tx.sizeLimit)
 	}
-	if !tx.rywDisabled || tx.snapshotRYWDisableCount != 1 {
-		t.Error("reset clobbered RYW disable flags (snapshotRYWDisableCount must be preserved across reset — persistent option)")
+	if tx.rywDisabled || tx.snapshotRYWDisableCount != 0 {
+		t.Error("retry reset must clear RYW disable flags (non-persistent)")
 	}
+	if len(tx.tags) != 0 {
+		t.Errorf("retry reset must clear tags, got %v", tx.tags)
+	}
+	// Persistent → preserved on the retry path.
+	if tx.maxRetryDelay != 10*time.Second {
+		t.Errorf("retry reset must PRESERVE maxRetryDelay (persistent), got %v", tx.maxRetryDelay)
+	}
+	// tenantId is construction-time, not an option — never touched by reset.
 	if tx.tenantId != 7 {
 		t.Errorf("reset clobbered tenantId: got %d, want 7", tx.tenantId)
-	}
-	if len(tx.tags) != 2 || tx.tags[0] != "a" || tx.tags[1] != "b" {
-		t.Errorf("reset clobbered tags: got %v, want [a b]", tx.tags)
 	}
 	// retryCount + backoff are explicitly NOT cleared by internal reset (only
 	// user-facing Reset clears them).
@@ -545,7 +557,7 @@ func TestReset_ClearsAccumulatedTagThrottle(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.proxyTagThrottledDuration = 1.5
-	tx.reset()
+	tx.reset(false)
 	if tx.proxyTagThrottledDuration != 0 {
 		t.Errorf("reset must clear proxyTagThrottledDuration, got %v", tx.proxyTagThrottledDuration)
 	}
@@ -559,7 +571,7 @@ func TestReset_ReAppliesTimeoutFromCreationTime(t *testing.T) {
 	tx.creationTime = creation
 	tx.deadline = time.Time{} // wipe to verify reset re-applies it
 
-	tx.reset()
+	tx.reset(false)
 
 	want := creation.Add(5 * time.Second)
 	if !tx.deadline.Equal(want) {
@@ -572,17 +584,20 @@ func TestReset_ReAppliesTimeoutFromCreationTime(t *testing.T) {
 	}
 }
 
-func TestReset_NoTimeoutLeavesDeadlineUntouched(t *testing.T) {
+func TestReset_NoTimeoutClearsDeadline(t *testing.T) {
 	t.Parallel()
+	// The deadline always reflects the current timeout: with no timeout (0), reset clears it. RFC-171 made
+	// this load-bearing — a user Reset() that reverts timeout to a 0 DB default MUST drop the prior
+	// deadline, else the reused handle spuriously times out at the stale deadline. (Pre-RFC-171 reset left
+	// the deadline untouched when timeout=0, which could leave a stale future/past deadline.)
 	tx := newTestTx()
 	tx.timeout = 0
-	originalDeadline := time.Now().Add(time.Hour) // arbitrary sentinel
-	tx.deadline = originalDeadline
+	tx.deadline = time.Now().Add(time.Hour) // a stale deadline with no backing timeout
 
-	tx.reset()
+	tx.reset(false)
 
-	if !tx.deadline.Equal(originalDeadline) {
-		t.Errorf("timeout=0: deadline must not be touched, got %v want %v", tx.deadline, originalDeadline)
+	if !tx.deadline.IsZero() {
+		t.Errorf("timeout=0: deadline must be cleared (deadline reflects the timeout), got %v", tx.deadline)
 	}
 }
 

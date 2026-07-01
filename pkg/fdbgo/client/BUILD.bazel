@@ -110,6 +110,7 @@ go_test(
         "readpath_timeout_test.go",
         "readpath_unit_test.go",
         "reply_ground_truth_test.go",
+        "reset_option_lifecycle_test.go",
         "resolve_fallback_test.go",
         "retry_adversarial_test.go",
         "retry_predicate_pin_test.go",

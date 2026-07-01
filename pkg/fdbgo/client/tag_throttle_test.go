@@ -384,14 +384,15 @@ func TestResetClearsProxyThrottleDuration(t *testing.T) {
 		proxyTagThrottledDuration: 15.0,
 	}
 
-	tx.reset()
+	tx.reset(false)
 
 	if tx.proxyTagThrottledDuration != 0 {
 		t.Fatalf("expected 0 after reset, got %f", tx.proxyTagThrottledDuration)
 	}
-	// Tags should be preserved.
-	if len(tx.tags) != 1 || tx.tags[0] != "mytag" {
-		t.Fatalf("expected tags preserved after reset, got %v", tx.tags)
+	// Tags are NON-persistent — cleared on reset (RFC-171 / #9,#14; C++ TransactionOptions::clear sets
+	// tags = TagSet{}, NativeAPI.actor.cpp:6131-6144). Pre-RFC-171 Go wrongly preserved them.
+	if len(tx.tags) != 0 {
+		t.Fatalf("expected tags CLEARED after reset (non-persistent), got %v", tx.tags)
 	}
 }
 
