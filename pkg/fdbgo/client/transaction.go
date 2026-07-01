@@ -1426,6 +1426,25 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		tx.conflictMu.Unlock()
 		return
 	}
+	// API < 520 versionstamp offset zero-extension (C++ RYW::atomicOp, ReadYourWrites.actor.cpp:2250-2261).
+	// Pre-520 the SetVersionstampedKey offset was a 2-byte suffix and SetVersionstampedValue carried no
+	// user offset; libfdb_c widens both to the unified 4-byte offset the commit proxy reads (parsed as the
+	// trailing int32, ReadYourWrites.actor.cpp:2196/2283 → Atomic.h:258-264) by appending \x00\x00 (key,
+	// zero-extending the 2-byte offset) / \x00\x00\x00\x00 (value, a literal offset-0). The Go client
+	// accepts apiVersion >= 510 (database.go:32), so 510-519 is reachable; without this a Go app at that
+	// version writes versionstamp bytes libfdb_c would not — a wire divergence. Done here (the RYW::atomicOp
+	// analog) BEFORE the versionstampKeyRange transform + buffering below, so the suffixed key/operand flow
+	// through identically to C++. apiVersionAtLeast(520) → no-op, so the modern path is byte-unchanged.
+	// (Applied unconditionally per op-type like C++ 2251/2257; the metadataVersionKey SetVersionstampedValue
+	// case is unreachable here since metadataVersion requires API >= 610.)
+	if tx.db != nil && !tx.db.apiVersionAtLeast(520) {
+		switch op {
+		case MutSetVersionstampedKey:
+			key = append(append(make([]byte, 0, len(key)+2), key...), 0, 0)
+		case MutSetVersionstampedValue:
+			operand = append(append(make([]byte, 0, len(operand)+4), operand...), 0, 0, 0, 0)
+		}
+	}
 	// SetVersionstampedKey: commit the key TRANSFORMED with the cached-read-version min-bound stamp at
 	// the placeholder, matching libfdb_c/Java. C++ atomicOp captures getCachedReadVersion().orDefault(0)
 	// and mutates k in place (ReadYourWrites.actor.cpp:2276), inserts THAT key into the write map (:2295),
@@ -1573,10 +1592,26 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	// prefix itself (tenantId >= 0), the user key must stay within KEY_SIZE_LIMIT, so the slack is
 	// gated on the no-tenant case (C++ forbids raw-access options on tenant transactions for this).
 	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
-	if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
+	// C++ checks key/operand size EAGERLY in atomicOp on the ORIGINAL user bytes (RYW:2237-2242), BEFORE
+	// appending the API<520 versionstamp offset suffix (:2250-2261). Go defers this to commit, where the
+	// buffered mutation already carries that client-added suffix (2B for SVK — the versionstampKeyRange
+	// transform preserves it, transaction.go:1516; 4B for SVV) — so it must be discounted here, else a
+	// boundary-sized legacy value is spuriously value_too_large (codex). At apiVersion>=520 there is no
+	// client-added suffix (nothing to discount); the user-provided offset there IS counted by C++, which
+	// len(m.Key)/len(m.Value) as-is already matches.
+	keyLen, valLen := len(m.Key), len(m.Value)
+	if tx.db != nil && !tx.db.apiVersionAtLeast(520) {
+		switch m.Type {
+		case MutSetVersionstampedKey:
+			keyLen -= 2
+		case MutSetVersionstampedValue:
+			valLen -= 4
+		}
+	}
+	if keyLen > getMaxWriteKeySize(m.Key, rawAccess) {
 		return &wire.FDBError{Code: 2102} // key_too_large
 	}
-	if len(m.Value) > valueSizeLimit {
+	if valLen > valueSizeLimit {
 		return &wire.FDBError{Code: 2103} // value_too_large
 	}
 	// Versionstamp offset validation → client_invalid_operation (2000). C++ atomicOp validates this
