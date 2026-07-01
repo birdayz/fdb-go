@@ -30,8 +30,12 @@ func buildAndParseWriteConflicts(t *testing.T, op MutationType, key, operand []b
 
 	tx.Atomic(op, key, operand)
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
-	defer marshalBufPool.Put(bufp)
+	body, _ := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	// Do NOT return bufp to marshalBufPool: UnmarshalFDB's WriteConflictRanges ALIAS `body` (the pooled
+	// buffer), and this helper returns those ranges to the caller, which reads them after we return.
+	// Pooling the buffer here (the old `defer marshalBufPool.Put(bufp)`) let a concurrent parallel
+	// subtest draw the same buffer and MarshalFDBPooled over it while the caller still read the aliased
+	// ranges — a data race (-race). Drop the buffer; GC reclaims it once the returned ranges are done.
 	var req types.CommitTransactionRequest
 	if err := req.UnmarshalFDB(body); err != nil {
 		t.Fatalf("UnmarshalFDB: %v", err)

@@ -509,8 +509,35 @@ Transaction shared-field synchronization, `IsRetryable` (byte-perfect vs `fdb_er
 retry backoff params (10ms/2.0/1s vs C++ ClientKnobs). The codebase is meticulous — remaining bugs are
 architectural (RFCs) or dimensional.
 
-**Codex caught 21 real issues across 14 review rounds the persona reviewers missed** — critical-gate
-value, fully borne out.
+**Codex caught 22 real issues across 18 review rounds the persona reviewers missed** — critical-gate
+value, fully borne out. The latest (codex #17): a P2 REGRESSION in the finding-#26 fix itself
+(SVK-transform hiding the raw key from legal-range validation) that BOTH persona reviewers ACK'd and
+missed. This is the recurring lesson of the whole hunt: codex is load-bearing; never merge a
+query/client change it hasn't cleared on the exact HEAD.
+
+## Session close-out (this shift)
+
+**Fixed + gauntlet-cleared (8 fix commits):** RFC-168 per-watch restructure; #23 conflict-range
+oversized clamp; #24 watch-setup-reads-on-watchCtx; round-21 (codex #13 Cancel-order + Torvalds' 3);
+#25 grv-cache Close barrier + deterministic Cancel test; #15 SendFrame pooled-body-on-error;
+#26 SVK commit min-bound transform; #26-P2 SVK legal-range gate (codex #17). Each red→green + FDB-C-dev
++ Torvalds + codex ACK/clean.
+
+**Verified FAITHFUL this shift (no divergence — ~10 axes):** RYW getRange merge, getKey/selector
+resolution, snapshot conflict-skip + RYW visibility, atomic-op RYW fold (V2 absent/present-empty),
+commit conflict-range assembly, Transaction shared-field sync, IsRetryable (byte-perfect), retry backoff
+params, versionstamp (except #26), metadata-version.
+
+**Documented + DEFERRED (architectural / verified-narrow — precise recipes above):** #22 getValue
+fallback masking (narrow); #27 makeSelfConflicting (MEDIUM — commit self-conflict + dummy-barrier);
+#28 write-map-folding size/2101 divergence (HIGH, MEASURED vs cgo — commit from a coalesced map). Plus
+the pre-existing architectural set: #8 watch-at-committed (RFC-170), #9/#14 reset-clears-options
+(RFC-171), #10 getKey isBackward (RFC-169), #16 SYSTEM_IMMEDIATE GRV-cache, #21 api<520 versionstamp.
+
+**Signal for the next shift:** the direct-fixable client surface is exhausted; the remaining findings are
+commit-path/architectural (need RFCs + careful implementation), and the #26→P2 sequence shows quick
+commit-path changes carry real regression risk. #27 and #28 are the highest-value next fixes — both want
+their own focused effort with a real cross-client differential test, not a tail-of-shift patch.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
