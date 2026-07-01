@@ -214,9 +214,12 @@ item's acceptance criterion in §5 is "the grep returns zero."
   the ban lives in CLAUDE.md prose, not in CI — the exact failure mode design principle #10
   warns about (match the property, not the observable). Extend `docs_consistency_test.go` (or
   add a sibling `source_hygiene_test.go`) to fail on `(day|night|swing)shift-[0-9]+` and
-  reviewer-attribution patterns (`(codex[:)]`, `(Torvalds`, `audit #N`) in non-test source
-  comments. Lands in the same PR as the B1/B2 sweeps (gate + zero-state together, so it's
-  born green and stays green).
+  reviewer-attribution patterns (`(codex[:)]`, `(Torvalds`, `audit #N`) in **ALL Go source
+  comments, `_test.go` included** (generated code and `fdb-record-layer/` excluded) — B2's
+  inventory includes test files and CLAUDE.md's ban covers all code comments, so a
+  non-test-only gate could pass with violations standing (codex P2 on this RFC). Lands in the
+  same PR as the B1/B2 sweeps (gate + zero-state together, so it's born green and stays
+  green).
 - **F3 — codify the red-nightly freeze exception.** A1 sat red for three days because the
   RFC-173 freeze had no keep-the-lights-on carve-out, while CLAUDE.md simultaneously mandates
   "red CI is red — full stop." Resolve the contradiction in CLAUDE.md: a red nightly
@@ -264,7 +267,8 @@ regrowing while attention is on 173).
 - **A2:** `grep -rn "FixpointApply\|func (p \*Planner) Explore(" pkg/` → zero in non-test code;
   no behavioral test coverage lost (triage table in the PR).
 - **B1/B2:** the F2 CI gate exists and passes — `(day|night|swing)shift-[0-9]+` and
-  reviewer-attribution patterns return zero hits in non-test source comments.
+  reviewer-attribution patterns return zero hits in Go source comments across `pkg/`, `cmd/`,
+  `conformance/`, **test files included** (generated code excluded).
 - **B3/B4/B5:** no comment in `cascades/` or `pkg/fdbgo` describes retired code as current;
   `cost.go` rule-count references derived or deleted; relocated rationale landed in the RFCs
   cited (RFC-150/151 for B3; per-field RFC pointers for B4).
@@ -307,8 +311,9 @@ regrowing while attention is on 173).
   pins that were passing only via looseness. Each such failure is triaged as
   regression-vs-was-never-right before adjusting the pin — the OR-pins exist because two plan
   shapes genuinely occurred, and RFC-167 says that itself is the bug.
-- **F2 false positives** (e.g. a legitimate "codex" string in test fixtures). Gate scopes to
-  non-test source comments; allowlist file for the genuinely legitimate hit, empty at birth.
+- **F2 false positives** (e.g. a legitimate "codex" string in test fixtures). Gate scans
+  comment text only — never string literals or identifiers (parse with `go/parser`, scan
+  comment groups); allowlist for the genuinely legitimate hit, empty at birth.
 
 ## 7. Review log
 
@@ -321,5 +326,9 @@ regrowing while attention is on 173).
   (zero option-backing fields on `Transaction`); §4 freeze paragraph resolved into the owner's
   actual decision. F2 comment-scope note: gate scopes to comments, not string literals
   (allowlist covers residue).
+- **codex — one P2 finding (2026-07-02, folded).** B2's inventory includes `_test.go` files
+  but the F2 gate/criterion scoped to non-test comments — the gate could pass with the
+  inventoried violations standing. Folded: gate + sweeps now cover ALL Go source comments,
+  test files included (§2 F2, §5 B1/B2).
 - (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface) at execution time, per-PR.
-- (pending) codex, @claude — PR #439.
+- (pending) @claude — PR #439.
