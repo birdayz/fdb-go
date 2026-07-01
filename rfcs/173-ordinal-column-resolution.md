@@ -550,7 +550,12 @@ Rounds 1–4 (RFC v1–v5):
 
 Round 5 (this revision — material content changes, full re-ack required before Slice 2 starts;
 Slice 1 continues under its own already-acked plan):
-- [ ] **Graefe** · - [ ] **Torvalds** · - [ ] **codex-review** · - [ ] **@claude**
+- [x] **Graefe** — ACK, unconditional on `dcf493dae` (his one condition — the Slice 2 scoping
+  gate must be flattening-aware against `SelectMergeRule` evasion — folded in and re-verified).
+- [x] **Torvalds** — ACK on `dcf493dae` (three nits fixed: risk-2 pre-fold clause,
+  `semantic_hash.go:108`, LEFT-JOIN hazard ref `:346-358`; Slice 1 benchmark exit obligation
+  added per his suggestion).
+- [ ] **codex-review** (in flight) · - [ ] **@claude** (PR review)
 
 **Acceptance for the RFC ack:** all four acked with no outstanding NAK, and §5's per-slice
 execution pins are agreed as the certification mechanism (replacing the discredited dark-diff
