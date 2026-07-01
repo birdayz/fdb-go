@@ -6,6 +6,17 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+# ⛔ ALL WORK FROZEN — sole priority is RFC-173 (ordinal/group column-resolution migration)
+
+**Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up
+any item below, any handover follow-up, or any new hunt — RFC-173 (`rfcs/173-ordinal-column-resolution.md`)
+is the exclusive focus. It retires the name-based `AnchoredJoin` column model for Java's ordinal/group
+model (the RFC-164 WS-2 root fix): one RFC, one long-lived PR, staged commits (RFC-ack → impl slices,
+each re-acked). Foundational, ~15–20 shifts. The frozen backlog resumes only after the migration
+completes. See RFC-173 §4 for the slice order and §5 for the (execution-pin, not dark-diff) validation gate.
+
+---
+
 # NEXT
 
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
