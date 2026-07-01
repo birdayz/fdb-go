@@ -147,13 +147,18 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   (flipping early changes interning identity before P3 is ready). Hard part: the nil-`Child` leaf
   form has no child `Type` — thread `Type.Record` to construction sites or keep leaves on the
   name path.
-- **P2 — Positional/typed runtime row in the executor** (~2 shifts, heaviest precursor). Every
-  row producer (scans, index scans, `mergeRows`, `qualifyOuterRow`, filters, projections) emits a
-  typed positional row **alongside** the `map[string]any`; consumers still read the map. This is
-  where **positional null-extension for the Go-only outer joins** is actually built (the sound
-  replacement for null-key-absence, killing the LEFT-JOIN bare-resolve hazard at
-  `executor_new_plans.go:341-348`). Hard part: wide blast radius; dual emission doubles per-row
-  materialization cost for the migration window — must be measured and bounded.
+- **P2 — Positional/typed runtime row in the executor** (~2 shifts, heaviest precursor). The
+  NON-JOIN row producers (scans, index scans, covering index, projections) emit a typed positional
+  row **alongside** the `map[string]any`; consumers still read the map; filters pass it through
+  unchanged. **Scope note (gauntlet-agreed, PR #427):** the JOIN/lateral producers (`mergeRows`,
+  `qualifyOuterRow`/`flatmap`, `explode`) and the outer-join **positional null-extension** primitive
+  (`appendNullLeg` — the sound replacement for null-key-absence that kills the LEFT-JOIN
+  bare-resolve hazard at `executor_new_plans.go:341-348`) move to **Slice 2/3**, which restructures
+  those producers positional-native and consumes the primitive. Dual-emitting a positional row over
+  the AnchoredJoin merge in P2 would be throwaway work Slice 3 deletes: "wire the mirror where it's
+  a mirror; rewrite the join where it's a rewrite" (Graefe). Hard part: wide blast radius; dual
+  emission doubles per-row materialization cost for the migration window — must be measured and
+  bounded (**benchmark deferred to Slice 1**, when the ordinal path first goes live).
 - **P3 — Alias-bijection structural interning** (~1.5 shifts). Implement `findMatches` over
   bijective `AliasMap`s at `Reference.Insert/InsertFinal`, extending the existing
   `SemanticEqualsUnderAliasMap`/`MemoEqual` machinery to Java's `containsInMemo` semantics. Runs
@@ -299,7 +304,8 @@ The owner's hard constraint: extensions must keep working and be architecturally
   **second pass** (`streaming_cursors.go:653,868-877`).
   **Design (Go-native, no Java reference):** `FULL OUTER = LEFT ∪ unmatched-inner`, both expressed
   in the positional row. The LEFT half null-extends the **inner** leg's ordinal slots (via
-  `DefaultOnEmpty`, built in P2). The unmatched-inner half — the `matchedInner` second pass — must
+  `DefaultOnEmpty` + `appendNullLeg`, built in **Slice 2/3** — see the P2 scope note in §4). The
+  unmatched-inner half — the `matchedInner` second pass — must
   null-extend the **outer** leg's ordinal slots: fill the outer-leg ordinals with **typed NULLs**
   and the inner-leg ordinals with the inner row's values (the exact mirror of the LEFT direction).
   Dedup between the two passes rides the same bitmap. This is the one place the positional row's

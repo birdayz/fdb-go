@@ -291,10 +291,19 @@ func executeIndexScan(
 				pkCols = rt.PrimaryKey.FieldNames()
 			}
 		}
+		cov := p.GetCoveringColumns()
+		posNames := make([]string, 0, len(cov)+len(pkCols))
+		for _, col := range cov {
+			posNames = append(posNames, strings.ToUpper(col))
+		}
+		for _, col := range pkCols {
+			posNames = append(posNames, strings.ToUpper(col))
+		}
 		return &coveringIndexCursor{
 			inner:     indexCursor,
-			columns:   p.GetCoveringColumns(),
+			columns:   cov,
 			pkColumns: pkCols,
+			posType:   positionalTypeFromNames(posNames),
 		}, nil
 	}
 
@@ -816,7 +825,10 @@ type coveringIndexCursor struct {
 	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	columns   []string
 	pkColumns []string
-	closed    bool
+	// posType is the RFC-173 P2 positional-row schema (value columns then PK
+	// columns), computed once at construction since columns/pkColumns are fixed.
+	posType *values.RecordType
+	closed  bool
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -829,28 +841,46 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	}
 
 	entry := result.GetValue()
-	vals := entry.IndexValues()
-	pk := entry.PrimaryKey()
+	datum, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
+}
 
-	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
-	for i, col := range c.columns {
+// buildCoveringRow constructs a covering-index result row: the name-keyed datum AND
+// the RFC-173 P2 positional row, from the index value columns then PK columns. An
+// out-of-range column is absent from the datum (SQL NULL) and a nil positional slot.
+// posType is the cursor-fixed positional schema (value cols then PK cols). When a
+// value-column name collides with a PK-column name the datum is last-wins (the PK
+// write overwrites the value write) while the positional row keeps BOTH, distinct by
+// ordinal — the Slice-4 collision fix; the shadow assert legitimately differs there.
+// Extracted from coveringIndexCursor.OnNext so the real bookkeeping (upper-casing,
+// pkOffset prefix-skip, dup-name positions) is unit-testable against shadowMismatch.
+func buildCoveringRow(columns, pkColumns []string, vals, pk tuple.Tuple, posType *values.RecordType) (map[string]any, *PositionalRow) {
+	datum := make(map[string]any, len(columns)+len(pkColumns))
+	posSlots := make([]any, 0, len(columns)+len(pkColumns))
+	for i, col := range columns {
+		var v any
 		if i < len(vals) {
-			datum[strings.ToUpper(col)] = tupleElementToUUID(vals[i])
+			v = tupleElementToUUID(vals[i])
+			datum[strings.ToUpper(col)] = v
 		}
+		posSlots = append(posSlots, v)
 	}
-	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
-	// The user-level PK columns are at the tail. Skip the prefix.
+	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
+	// the user-level PK columns are at the tail. Skip the prefix.
 	pkOffset := 0
-	if len(pk) > len(c.pkColumns) {
-		pkOffset = len(pk) - len(c.pkColumns)
+	if len(pk) > len(pkColumns) {
+		pkOffset = len(pk) - len(pkColumns)
 	}
-	for i, col := range c.pkColumns {
+	for i, col := range pkColumns {
 		idx := i + pkOffset
+		var v any
 		if idx < len(pk) {
-			datum[strings.ToUpper(col)] = tupleElementToUUID(pk[idx])
+			v = tupleElementToUUID(pk[idx])
+			datum[strings.ToUpper(col)] = v
 		}
+		posSlots = append(posSlots, v)
 	}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
+	return datum, &PositionalRow{Type: posType, Slots: posSlots}
 }
 
 func (c *coveringIndexCursor) Close() error {
@@ -1344,12 +1374,21 @@ func executeProjection(
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
 	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
+	// RFC-173 P2: the projection's output schema is row-invariant — compute the
+	// column names and the (dup-safe) positional RecordType ONCE, then emit a
+	// PositionalRow per row alongside the name-keyed map.
+	projNames := make([]string, len(projections))
+	for i, proj := range projections {
+		projNames[i] = projectionColumnName(proj)
+	}
+	projType := positionalTypeFromNames(projNames)
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
 			return qr
 		}
 		projected := make(map[string]any, len(projections))
+		slots := make([]any, len(projections))
 		var rowCtx any = qr.Datum
 		if m, ok := qr.Datum.(map[string]any); ok {
 			switch {
@@ -1362,13 +1401,14 @@ func executeProjection(
 			}
 		}
 		for i, proj := range projections {
-			key := projectionColumnName(proj)
+			key := projNames[i]
 			val, err := proj.Evaluate(rowCtx)
 			if err != nil {
 				evalErr = err
 				return qr
 			}
 			projected[key] = val
+			slots[i] = val // RFC-173 P2: dense positional slot (kept even on dup names)
 			// Also store under the alias so that outer projections
 			// (e.g. CTE consumers) can resolve the aliased name.
 			if i < len(aliases) && aliases[i] != "" {
@@ -1389,6 +1429,7 @@ func executeProjection(
 		}
 		return QueryResult{
 			Datum:      projected,
+			Positional: &PositionalRow{Type: projType, Slots: slots},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
 		}
