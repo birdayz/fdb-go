@@ -48,6 +48,15 @@ type RecordQueryVectorIndexPlan struct {
 	isReturningVectors *bool
 	recordTypes        []string
 	flowedType         values.Type
+	// partitionColumns are the partition-key column names in key order
+	// (columnNames[:partitionCount]). Carried for the planner's
+	// partition-residual safety check (compensationSafeForYield): a residual
+	// over these columns, contiguous immediately after the bound equality
+	// prefix, selects WHOLE partitions and so composes safely as a Filter above
+	// a self-limiting per-partition top-k scan. Not wire-serialized and not a
+	// distinguishing plan property (fully determined by indexName) — excluded
+	// from Equals/HashCode.
+	partitionColumns []string
 	// orderedStream selects the VBASE distance-ordered mode (RFC-156 Phase B).
 	// When true the scan does NOT self-limit to k: it emits its bounded
 	// re-ranked horizon (the engine's candidate pool / re-rank budget c) in
@@ -140,6 +149,18 @@ func (p *RecordQueryVectorIndexPlan) GetIndexName() string { return p.indexName 
 // GetPrefixComparisons returns the partition-key equality ranges.
 func (p *RecordQueryVectorIndexPlan) GetPrefixComparisons() []*predicates.ComparisonRange {
 	return p.prefixComparisons
+}
+
+// GetPartitionColumns returns the partition-key column names in key order.
+func (p *RecordQueryVectorIndexPlan) GetPartitionColumns() []string { return p.partitionColumns }
+
+// WithPartitionColumns returns a copy of the plan carrying the partition-key
+// column names (columnNames[:partitionCount]). Set by the match candidate's
+// ToScanPlan so the planner can certify a partition-column residual as safe.
+func (p *RecordQueryVectorIndexPlan) WithPartitionColumns(cols []string) *RecordQueryVectorIndexPlan {
+	c := *p
+	c.partitionColumns = append([]string(nil), cols...)
+	return &c
 }
 
 // GetQueryVector returns the search-vector Value.

@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"sort"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -731,7 +732,23 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 				// yieldUnknown so ImplementFilterRule realizes the physical Filter
 				// over the ordered scan (the residual is non-index-only; the
 				// index-only distance marker lives only inside the scan binding).
-				if v.plan == nil || !v.plan.IsOrderedStream() {
+				//
+				// SELF-LIMITING (partitioned) exception: a residual over the
+				// PARTITION-key columns, contiguous immediately after the bound
+				// equality prefix, is ALSO safe over a self-limiting per-partition
+				// top-k scan. Such a filter selects WHOLE partitions (drops entire
+				// regions ≤ 'r1'), never within-partition rows, so the per-partition
+				// top-k the maintainer already enforced is preserved: survivors are
+				// exactly top-k per surviving partition. This yields the correct
+				// Filter(region>r1) → VectorScan(self-limiting) plan instead of the
+				// pk-keyed intersection (which drops rows for k>1 because the vector
+				// cursor delivers distance order, not pk order). The contiguity check
+				// keeps a leading-column-unbound residual (region='r1', zone unbound)
+				// unplannable — a non-contiguous residual is out of scope (RFC-046).
+				if v.plan == nil {
+					return false
+				}
+				if !v.plan.IsOrderedStream() && !residualIsPartitionContiguous(f, v.plan) {
 					return false
 				}
 			case *physicalAggregateIndexWrapper:
@@ -797,6 +814,71 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			if _, fedByProbe := probeCorr[alias]; fedByProbe {
 				continue
 			}
+			return false
+		}
+	}
+	return true
+}
+
+// residualIsPartitionContiguous reports whether every field the residual filter
+// f references is a PARTITION-key column of the vector scan, and the referenced
+// columns are exactly the contiguous run of partition columns immediately after
+// the scan's bound equality prefix. Such a residual selects WHOLE partitions, so
+// it composes safely as a Filter above a self-limiting per-partition top-k scan
+// (compensationSafeForYield): dropping entire partitions never disturbs the
+// per-partition top-k the maintainer already enforced.
+//
+// The contiguity anchor (start exactly at len(bound equality prefix)) is what
+// distinguishes the plannable partition-INEQUALITY case (WHERE zone='z1' AND
+// region>'r1' — bound prefix [zone], residual {region} at index 1 = boundLen 1)
+// from the out-of-scope leading-column-unbound case (WHERE region='r1', zone
+// unbound — bound prefix [], residual {region} at index 1 ≠ boundLen 0), which
+// stays unplannable (TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual).
+// A residual touching any non-partition column (or a non-contiguous set) is not
+// certified here and stays on the OLD InsertFinal path.
+func residualIsPartitionContiguous(
+	f *expressions.LogicalFilterExpression,
+	plan *plans.RecordQueryVectorIndexPlan,
+) bool {
+	partCols := plan.GetPartitionColumns()
+	if len(partCols) == 0 {
+		return false
+	}
+	colIndex := make(map[string]int, len(partCols))
+	for i, c := range partCols {
+		colIndex[strings.ToUpper(c)] = i
+	}
+
+	residualFields := map[string]struct{}{}
+	for _, pred := range f.GetPredicates() {
+		collectPredicateFieldValues(pred, residualFields)
+	}
+	if len(residualFields) == 0 {
+		return false
+	}
+
+	// The bound equality prefix length: the leading run of non-empty EQUALITY
+	// partition ranges the scan actually constrains.
+	boundLen := 0
+	for _, cr := range plan.GetPrefixComparisons() {
+		if cr == nil || cr.IsEmpty() || cr.GetRangeType() != predicates.ComparisonRangeEquality {
+			break
+		}
+		boundLen++
+	}
+
+	idxs := make([]int, 0, len(residualFields))
+	for fld := range residualFields {
+		i, ok := colIndex[strings.ToUpper(fld)]
+		if !ok {
+			return false // residual touches a non-partition column → not safe here
+		}
+		idxs = append(idxs, i)
+	}
+	sort.Ints(idxs)
+	// Contiguous run starting exactly at boundLen.
+	for k, i := range idxs {
+		if i != boundLen+k {
 			return false
 		}
 	}

@@ -53,8 +53,21 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
 >   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
 >   review sweep (not committed regressions) found nothing.
-> - **[ ] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — ACTIVE on master, pre-existing).** Found by Graefe
->   during RFC-167 Phase 4 review (PR #411). For a partitioned vector index with a partition-key inequality (e.g.
+> - **[x] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — was ACTIVE on master, pre-existing) — FIXED.**
+>   Pin: `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2` (`WHERE zone='z1' AND region>'r1' … <=2` now
+>   returns `{21,22}`, was `{22}`). The fix is TWO pieces (piece 3 collapsed into piece 2 — the realization path
+>   already existed): (1) targeted vector-leg gate `isSelfLimitingVectorScan` in `WithPrimaryKeyIntersector` drops
+>   the invalid pk-keyed intersection (a self-limiting vector scan is (region,distance)-ordered, never pk-ordered);
+>   (2) `compensationSafeForYield` `residualIsPartitionContiguous` exception — a residual over the partition columns
+>   CONTIGUOUS immediately after the bound equality prefix selects whole partitions, so it composes safely as a Filter
+>   above the self-limiting scan; `ImplementFilterRule` (which has NO gate against a Filter over a self-limiting vector
+>   scan, only against index-only predicates) then realizes `Filter(region>'r1') → VectorScan(self-limiting rank<=2)`.
+>   The DistanceRank stays in the scan binding (never leaks to the residual — rule_match_intermediate.go:470-483 keeps
+>   it consumed), so the Filter carries only the non-index-only `region>'r1'`. Contiguity anchor keeps the
+>   leading-column-unbound case (`region='r1'`, zone unbound) unplannable (`TrailingEqualityResidual` still green).
+>   Plan field `RecordQueryVectorIndexPlan.partitionColumns` (not wire-serialized) carries the names for the check.
+>   HISTORICAL (kept for context — root cause). Found by Graefe during RFC-167 Phase 4 review (PR #411). For a
+>   partitioned vector index with a partition-key inequality (e.g.
 >   `WHERE zone='z1' AND region>'m' AND <distance> <= K`, `PARTITION BY (zone,region)`), `WithPrimaryKeyIntersector`
 >   emits `Intersection(VectorTopK, PrimaryRange)` keyed on the full pk — and it is the ONLY physical plan (the safe
 >   `Filter(region>m, VectorTopK)` is blocked by `compensationSafeForYield` planner.go:734), so it is SELECTED. But the
