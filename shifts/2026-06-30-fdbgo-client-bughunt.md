@@ -249,9 +249,13 @@ Pinned deterministically: `TestWatchSetup_CancelledTxnDoesNotLeakSlot` (round-11
    intercept, Cancel()s mid-read, releases → asserts the slot is freed (2nd watch under cap=1
    succeeds). Revert-proof: with getWatchCtx bound late, the watch long-polls forever holding the
    slot and Watch never drains (the wait times out).
-3. **Conflict atomicity (round 12, transaction.go):** drive a concurrent `AddReadConflictRange`
-   (filtered into ≥2 sub-ranges) vs a Commit snapshot; assert the shipped read-conflict set is
-   all-or-none. Needs a Commit-snapshot injection point.
+3. **Conflict atomicity (round 12, transaction.go):** CORRECT-BY-CONSTRUCTION, not deterministically
+   testable. The race is a pure in-memory `conflictMu` interleave (a Commit snapshot landing BETWEEN
+   two sub-range appends) — there is no network park point for the sim intercept, and a `-race` test
+   is vacuous (both accesses are already `conflictMu`-serialized, so the linearization is not a memory
+   race). The `addReadConflicts` one-lock batch makes the append atomic by construction; forcing a
+   partial would require a hot-path conflictMu-interleave hook (a code smell not worth adding for this
+   edge). Left as-is: the fix is landed + commented; the two testable items (#1, #2) are pinned.
 
 **Round 13 — codex's 6th `--supersede` re-review found two MORE** (P2 + P3), both on the round-12
 watch-ctx change, both fixed red→green (deterministically — no fault injection needed):
