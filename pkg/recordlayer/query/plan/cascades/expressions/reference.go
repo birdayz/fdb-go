@@ -359,10 +359,39 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 			return false
 		}
 	}
+	// RFC-173 P3 (dark shadow): the alias-bijection tier (MemoEqual) is currently
+	// GATED to InternsAliasAware merge-selects. P3 makes it global — every member
+	// deduped alias-aware, like Java's Reference.containsInMemo. Here we only
+	// OBSERVE, without changing behavior: for a NON-opted-in expression that the
+	// alias-identity tiers (1-2) did not dedup, would the global bijection tier have
+	// deduped it against an existing member? A `true` is exactly the extra dedup P3
+	// makes authoritative in Slice 3 (a shared sub-product wrapped under a fresh
+	// quantifier alias). Zero cost when the observer is unset (production); the
+	// member is still appended, so dedup behavior is UNCHANGED. Certification is by
+	// the RFC-077 task-count baseline + CTE-rename execution pins (RFC-173 §5), NOT
+	// by asserting the shadow agrees with today's dedup — the whole point is that it
+	// dedups MORE (the merge-re-enumeration + CTE-rename cases).
+	if InternShadowObserver != nil && !aliasAware {
+		would := false
+		for _, m := range r.members {
+			if m.HashCodeWithoutChildren() == eHash && MemoEqual(m, e) {
+				would = true
+				break
+			}
+		}
+		InternShadowObserver(would)
+	}
 	r.members = append(r.members, e)
 	r.correlatedToCache = nil
 	return true
 }
+
+// InternShadowObserver is the RFC-173 P3 dark-shadow hook. When non-nil, Reference.Insert
+// calls it after the current dedup tiers miss on a NON-alias-aware expression, passing
+// whether the GLOBAL alias-bijection tier (which P3 makes authoritative in Slice 3) would
+// have deduped it. nil in production (zero cost); set by the P3 shadow test / a corpus
+// measurement to collect the extra-dedup rate. Never changes Insert's dedup behavior.
+var InternShadowObserver func(wouldDedupUnderGlobalBijection bool)
 
 // aliasAwareInterner is implemented by expressions whose quantifier aliases are
 // planner-internal (no external consumer resolves them by identity), so they
