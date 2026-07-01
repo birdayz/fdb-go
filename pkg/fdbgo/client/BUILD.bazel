@@ -120,6 +120,7 @@ go_test(
         "ryw_integration_test.go",
         "ryw_snapshot_cache_test.go",
         "ryw_test.go",
+        "self_conflict_test.go",
         "setget_test.go",
         "settimeout_test.go",
         "simtransport_test.go",

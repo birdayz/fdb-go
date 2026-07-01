@@ -1725,6 +1725,26 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return nil
 	}
 
+	// makeSelfConflicting (C++ commitMutations, NativeAPI.actor.cpp:6858-6860 — AFTER the read-only fast
+	// path and the size check above): a commit whose write and read conflict ranges don't already
+	// intersect gets an ephemeral \xFF/SC/<UID> self-conflict range added to BOTH sets, so the
+	// commit_unknown_result dummy-transaction barrier synchronizes over that synthetic key instead of a
+	// real user key — avoiding spurious not_committed (1020) for other clients reading a hot user key
+	// (finding #27). causalWriteRisky is a no-op option in this client, so the C++ guard
+	// `!causalWriteRisky && !intersects(...)` reduces to just the no-intersection check.
+	//
+	// Scoped to NON-tenant transactions: the \xFF/SC/ key is a raw system key, and threading it through
+	// a tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a
+	// separate subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and
+	// the finding's primary scenario.
+	if tx.tenantId < 0 {
+		tx.conflictMu.Lock()
+		if !conflictRangesIntersect(tx.writeConflicts, tx.readConflicts) {
+			tx.makeSelfConflictingLocked()
+		}
+		tx.conflictMu.Unlock()
+	}
+
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
 	// read version exists before commit, even for write-only transactions.
 	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
@@ -2542,6 +2562,50 @@ func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
 	copy(buf, begin)
 	copy(buf[nb:], end)
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
+}
+
+// selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
+var selfConflictPrefix = []byte("\xff/SC/")
+
+// conflictRangesIntersect reports whether any write conflict range overlaps any read conflict range,
+// mirroring C++ intersects(write_conflict_ranges, read_conflict_ranges) (NativeAPI.actor.cpp:6859).
+// O(w*r); a commit carries few explicit conflict ranges, so this is not a hot path.
+func conflictRangesIntersect(writes, reads []KeyRange) bool {
+	for _, w := range writes {
+		for _, r := range reads {
+			// [wb,we) overlaps [rb,re) ⟺ wb < re && rb < we.
+			if bytes.Compare(w.Begin, r.End) < 0 && bytes.Compare(r.Begin, w.End) < 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// makeSelfConflictingLocked appends an ephemeral \xFF/SC/<random 16-byte UID> single-key range to BOTH
+// the read and write conflict sets — porting C++ Transaction::makeSelfConflicting
+// (NativeAPI.actor.cpp:5952-5959), which push_backs the range UNCONDITIONALLY (it does NOT consult
+// writeConflictsDisabled / the next-write-no-conflict flag). A commit whose write/read conflict ranges
+// don't already intersect calls this so it always self-conflicts on a synthetic key: the
+// commit_unknown_result dummy-transaction barrier (commitDummyTransaction) then synchronizes over that
+// key rather than a real user key, avoiding spurious not_committed (1020) for concurrent readers of a
+// hot user key (finding #27). The key is a \xFF system key, exempt from tenant prefixing at commit-build
+// (buildCommitTransactionRequest) so the committed range matches the raw-access dummy's conflict key.
+// Caller MUST hold conflictMu.
+func (tx *Transaction) makeSelfConflictingLocked() {
+	sc := make([]byte, len(selfConflictPrefix)+16)
+	copy(sc, selfConflictPrefix)
+	binary.LittleEndian.PutUint64(sc[len(selfConflictPrefix):], rand.Uint64())
+	binary.LittleEndian.PutUint64(sc[len(selfConflictPrefix)+8:], rand.Uint64())
+	end := keyAfterBytes(sc)
+	rb := tx.conflictBufAlloc(len(sc) + len(end))
+	copy(rb, sc)
+	copy(rb[len(sc):], end)
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc)], End: rb[len(sc):]})
+	wb := tx.conflictBufAlloc(len(sc) + len(end))
+	copy(wb, sc)
+	copy(wb[len(sc):], end)
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: wb[:len(sc)], End: wb[len(sc):]})
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write

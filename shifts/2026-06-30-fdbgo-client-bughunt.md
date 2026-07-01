@@ -466,8 +466,28 @@ findings were exhausted, ran 3 read-only finder agents on lightly-explored axes:
   `TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation` (revert-proven: drop the guard → the
   `\xff` key is transformed to a `0x01…` stamp and passes validation). Re-gauntlet owed.
 
+**Round 26 — finding #27 FIXED.** Ported `makeSelfConflicting`: `Commit`, after the read-only fast path
+and the size check (matching C++ commitMutations order, NativeAPI.actor.cpp:6858-6860), now checks
+`conflictRangesIntersect(writeConflicts, readConflicts)` and, when they DON'T intersect (causalWriteRisky
+is a no-op option here, so the C++ `!causalWriteRisky` term is always true), calls
+`makeSelfConflictingLocked` — appending an ephemeral `\xFF/SC/<16 random bytes>` single-key range to
+BOTH conflict sets (unconditional push, bypassing the no-write-conflict flags, like C++ :5952-5959). The
+barrier's `intersectConflictRanges` then finds the SC key instead of falling back to `writes[0].Begin` —
+no more spurious 1020 on a real user key. Tests: `TestConflictRangesIntersect`,
+`TestMakeSelfConflicting_AddsSCRangeToBoth`, `TestDummyBarrier_PicksSCKeyOverRealKey` (revert-proven:
+no-op makeSelfConflicting → the barrier picks the REAL user key) — all green under `-race`.
+**SCOPED to NON-tenant transactions** (`tx.tenantId < 0`): a first attempt injected the un-prefixed
+`\xFF/SC/` range for tenant txns too and broke the `TestDifferential_Tenant{CrossClientCRUD,
+VersionstampedKey,VersionstampedValue}` differentials (Go's tenant commit rejects/mishandles an
+un-prefixed system-key conflict range that cgo accepts — a tenant-scope subtlety). Rather than debug that
+tenant+SC+resolver interaction at the tail (the #26→P2 lesson: commit-path changes need care), the SC is
+scoped to non-tenant (the common case + the finding's primary scenario); **the tenant case is a
+documented follow-up** (investigate why the un-prefixed SC is rejected for a Go tenant commit but not a
+cgo one). NOTE: `SetCausalWriteRisky` also remains a no-op (unimplemented option) — a separate low
+divergence. Owes its gauntlet.
+
 **Round 25 — 2nd discovery sweep (idempotency + size-limit finders).** Commit-idempotency finder →
-**finding #27 (MEDIUM, open):** Go omits C++ `makeSelfConflicting()` (NativeAPI.actor.cpp:5952-5959,
+**finding #27 (MEDIUM, FIXED in round 26):** Go omitted C++ `makeSelfConflicting()` (NativeAPI.actor.cpp:5952-5959,
 called at :6858) — the ephemeral `\xFF/SC/<randomUID>` range added to the read+write conflict sets of
 (virtually) every commit. Consequences: (a) the `CommitTransactionRequest` conflict-range bytes diverge
 from libfdb_c (NOT persisted → no cross-engine record corruption, hard line holds); (b) the post-1021
