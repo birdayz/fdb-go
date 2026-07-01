@@ -1570,6 +1570,39 @@ the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin
 commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
 SimTransport commit_unknown_result behavioral test.
 
+### [ ] fdbgo/client (#28, HIGH): commit ships the UNFOLDED mutation log; libfdb_c commits the COALESCED RYW write map → Go throws 2101 (`transaction_too_large`) on a transaction C++/Java commit fine — needs its own `fdb-client-engineer` RFC (commit-path materialization; verified vs cgo)
+
+**App-breaking behavioral divergence** (not a wire-bytes-of-stored-data issue — the final DB state is
+identical either way; the divergence is the committed mutation COUNT/SIZE, which trips Go's 2101 where
+C++ stays under the limit). A transaction that increments ONE counter key 150k times (or overwrites one
+key repeatedly) works on libfdb_c/Java and fails on Go.
+
+**Root cause.** Go's `tx.Commit` marshals `tx.mutations` — the raw, unfolded append log (one entry per
+`Set`/`Atomic` call). libfdb_c does NOT commit its append log: `ReadYourWritesTransaction::commit`
+materializes the COALESCED **RYW write map** via `writeRangeToNativeTransaction`
+(`ReadYourWrites.actor.cpp:1997-2071`, called from the commit actor at `:1392`). The write map folds
+same-key writes at INSERT time:
+- **SET/CLEAR** — last-writer-wins / clear-clears-the-stack (an absolute op resets the operation stack).
+- **Same-type associative atomic op** (ADD, OR, AND, MIN, MAX, …) — `WriteMap::coalesceOver`
+  (`WriteMap.cpp:480-495`) does `stack.poppush(coalesce(existing, new))`: it REPLACES the stack top with
+  the single combined op. So 150k `ADD 1`s on one key collapse to a single `ADD 150000`. (Exceptions kept
+  as a stack, NOT folded: `CompareAndClear`; a non-associative op whose operand SIZE differs; two DIFFERENT
+  atomic-op types — those `stack.push` instead.)
+`writeRangeToNativeTransaction` then emits clears FIRST (`:2004-2018`), then per-key the (folded) operation
+stack `op[i]` for `i in 0..op.size()` (`:2035-2065`) — so the shipped mutation vector is the coalesced one.
+
+**Fix shape (RFC-grade, high regression risk — this is the most critical wire path).** Commit from the
+coalesced write map for the RYW-enabled path (mirror `writeRangeToNativeTransaction`): iterate Go's RYW
+write map (`ryw.go` — `rywEntry`/operation-stack, the WriteMap.cpp analog already used for READS), emit
+clear ranges first then the folded per-key ops, in place of marshaling `tx.mutations`. Scope to
+`!rywDisabled` (the RYW-disabled path already commits its op log 1:1, matching C++ `:2291` `if
+(options.readYourWritesDisabled) return tr.atomicOp(...)`). Port `coalesceOver`/`coalesceUnder` fold
+semantics EXACTLY (associative-fold vs push, the operand-size and CompareAndClear/different-type
+exceptions). Validate with a cgo differential over many op-combination shapes (repeated ADD, ADD-then-SET,
+SET-then-CLEAR, mixed atomic types, non-associative-size-change) asserting byte-identical committed mutation
+vectors, plus the 150k-increment 2101 regression (red before, green after). FDB-C-dev DESIGN review before
+impl. Do NOT rush at a session tail — 2/2 commit-path fixes this session needed rework.
+
 ### [ ] fdbgo/client: transaction-level options are PRESERVED across `onError` retry; C++ resets them to DB defaults — needs its own RFC (found by the quality-grind options audit, 2026-06-19)
 
 C++ `Transaction::resetImpl` (`NativeAPI.actor.cpp:6166`, called by `tr.reset()` on the RYW onError
