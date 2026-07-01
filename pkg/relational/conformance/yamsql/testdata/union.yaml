@@ -14,6 +14,7 @@ setup:
 tests:
   # UNION ALL — 6 rows.
   - query: SELECT v FROM a UNION ALL SELECT v FROM b
+    ansi: [E071-02]
     unordered: true
     rows:
       - [10]
@@ -26,4 +27,5 @@ tests:
   # supported" (0A000); fdb-relational's planner has no de-duplication
   # operator.
   - query: SELECT v FROM a UNION SELECT v FROM b
+    ansi_gap: [E071-01]
     error_code: "0AF00"

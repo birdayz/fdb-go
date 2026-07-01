@@ -1098,6 +1098,41 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 	}
 }
 
+// boundSelectivity computes the combined selectivity of a set of scan-comparison
+// bounds: each equality bound multiplies in EqualityBoundSelectivity and each open
+// range multiplies in RangeSelectivity. A point probe is more selective than a
+// range, so EqualityBoundSelectivity < RangeSelectivity (RFC-164 COST-SELECTIVITY);
+// using the generic residual FilterSelectivity (0.5) for an equality bound inverted
+// that and mis-picked the index. Empty/nil bounds are skipped. It also reports the
+// number of non-empty bounds and whether they are all equality, so each caller can
+// apply its own unique / point-lookup short-circuit.
+//
+// This is the SINGLE source for equality-vs-range bound costing, shared by
+// physicalScanWrapper.HintCost, physicalIndexScanWrapper.HintCost, and scanLikeCost.
+// It is centralised deliberately: the same loop duplicated across those sites is how
+// the inverted equality cost survived (in dead code) past the original fix.
+// LOW-NDV CAVEAT: statless, this assumes every equality is a high-cardinality point
+// (NDV≈10). A low-NDV equality (e.g. `status = ?`, a boolean) actually retains far
+// more than 10% — costing it cheaper than it is. Distinguishing that needs per-column
+// NDV statistics (not yet available here); see scanLikeCost's fullBindUnique note.
+func boundSelectivity(comps []*predicates.ComparisonRange) (sel float64, numBound int, allEquality bool) {
+	sel = 1.0
+	allEquality = true
+	for _, cr := range comps {
+		if cr == nil || cr.IsEmpty() {
+			continue
+		}
+		numBound++
+		if cr.IsEquality() {
+			sel *= properties.EqualityBoundSelectivity
+		} else {
+			allEquality = false
+			sel *= properties.RangeSelectivity
+		}
+	}
+	return sel, numBound, allEquality
+}
+
 // scanLikeCost is the metadata-independent leaf cost for the concrete join-ordering
 // recursion (provably-unique full-equality bind → 1 row; else table cardinality ×
 // per-comparison selectivity × the physical-wrapper discount). The scan/index
@@ -1114,21 +1149,7 @@ func combineConcreteCost(p plans.RecordQueryPlan, child []properties.Cost, stats
 // index unique, so we conservatively fall through to the selectivity estimate; the
 // metadata-aware wrapper HintCost still recognises unique indexes for the memo cost.
 func scanLikeCost(comps []*predicates.ComparisonRange, recordTypes []string, stats properties.StatisticsProvider, fullBindUnique bool) properties.Cost {
-	numBound := 0
-	allEquality := true
-	sel := 1.0
-	for _, cr := range comps {
-		if cr == nil || cr.IsEmpty() {
-			continue
-		}
-		numBound++
-		if cr.IsEquality() {
-			sel *= properties.FilterSelectivity
-		} else {
-			allEquality = false
-			sel *= properties.RangeSelectivity
-		}
-	}
+	sel, numBound, allEquality := boundSelectivity(comps)
 	if fullBindUnique && numBound > 0 && allEquality && numBound == len(comps) {
 		return properties.Cost{Cardinality: 1, CPU: properties.ScanCPU}
 	}
@@ -1777,13 +1798,71 @@ func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 	return -1
 }
 
-// costExprHash returns the deterministic tiebreak hash, over the concrete plan for a
-// physical expression and the logical memo otherwise.
+// costExprHash returns the deterministic tiebreak hash (criterion #17), over the
+// concrete plan for a physical expression and the logical memo otherwise.
+//
+// For a nil-inner SHELL (a push-through Fetch/Filter/Map/Distinct/InJoin template),
+// the embedded plan's GetChildren() is empty, so the bare concretePlanHash is blind
+// to the buried index — idx_a/idx_b/idx_c shells collapse to the SAME hash and the
+// tie-break returns 0, leaving selection to resolve by member-iteration order
+// (RFC-167 NONDETERMINISM). exprConcreteHash resolves the buried inner STRUCTURALLY
+// through the quantifier graph (mirroring exprConcreteCost) so the hash carries the
+// index identity. The fast path (no template below) keeps the cheap concretePlanHash.
 func costExprHash(e expressions.RelationalExpression) uint64 {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {
-			return concretePlanHash(plan)
+			if !planTreeHasStub(plan) {
+				return concretePlanHash(plan)
+			}
+			return exprConcreteHash(e, map[*expressions.Reference]bool{})
 		}
 	}
 	return deepHashCode(e)
+}
+
+// exprConcreteHash is the template-aware structural hash for a physical expression
+// whose plan tree contains a nil-inner shell. It mirrors exprConcreteCostRec: it
+// folds the node's own HashCodeWithoutChildren with each child's hash, preferring
+// the concrete embedded child plan and resolving ONLY a template child through its
+// quantifier Reference — so the buried index/scan identity surfaces into the hash.
+// Resolution is STRUCTURAL (firstPhysicalChild), never cost-driven (no comparator
+// re-entry — Graefe / Java planHash is a pure structural integer).
+func exprConcreteHash(e expressions.RelationalExpression, visited map[*expressions.Reference]bool) uint64 {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return deepHashCode(e)
+	}
+	plan := ph.GetRecordQueryPlan()
+	if plan == nil {
+		return deepHashCode(e)
+	}
+	if !planTreeHasStub(plan) {
+		return concretePlanHash(plan)
+	}
+	h := plan.HashCodeWithoutChildren()
+	quants := e.GetQuantifiers()
+	planKids := plan.GetChildren()
+	for i, q := range quants {
+		var childHash uint64
+		if i < len(planKids) && planKids[i] != nil && !planTreeHasStub(planKids[i]) {
+			childHash = concretePlanHash(planKids[i])
+		} else if ref := q.GetRangesOver(); ref != nil && !visited[ref] {
+			visited[ref] = true
+			// firstPhysicalChild (structural, AllMembers-order) — NOT bestPhysicalChild
+			// (cost). This matches what extraction relinks to for every shell type via
+			// findPhysicalPlan, so the hash equals concretePlanHash(the plan extraction
+			// emits). The lone exception is InMemorySort, which extracts via
+			// findBestPhysicalPlan (cost-best); harmless here because the sort-count
+			// discriminator (#~9) fires before #17, but a Phase-1b net should pin it.
+			if child := firstPhysicalChild(ref); child != nil {
+				childHash = exprConcreteHash(child, visited)
+			}
+		}
+		// Unlike exprConcreteCostRec's last-resort branch (ref nil/visited → fold the
+		// concrete child as-is), an unresolvable child folds a constant (childHash==0):
+		// deterministic, and that branch is DAG-unreachable for a genuine nil-inner
+		// shell (its inner ref resolves down to a physical scan that never points back up).
+		h ^= childHash*0x517cc1b727220a95 + 0x6c62272e07bb0142
+	}
+	return h
 }

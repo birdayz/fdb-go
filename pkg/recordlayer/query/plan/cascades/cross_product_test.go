@@ -109,7 +109,7 @@ func TestProvidedSortOrder_IsDirectional(t *testing.T) {
 	t.Parallel()
 	directional := []ProvidedSortOrder{
 		ProvidedSortOrderAscending, ProvidedSortOrderDescending,
-		ProvidedSortOrderAscendingNullsFirst, ProvidedSortOrderDescendingNullsLast,
+		ProvidedSortOrderAscendingNullsLast, ProvidedSortOrderDescendingNullsFirst,
 	}
 	for _, s := range directional {
 		if !s.IsDirectional() {
@@ -129,8 +129,8 @@ func TestProvidedSortOrder_IsAnyDescending(t *testing.T) {
 	if !ProvidedSortOrderDescending.IsAnyDescending() {
 		t.Fatal("descending should be any-descending")
 	}
-	if !ProvidedSortOrderDescendingNullsLast.IsAnyDescending() {
-		t.Fatal("descending-nulls-last should be any-descending")
+	if !ProvidedSortOrderDescendingNullsFirst.IsAnyDescending() {
+		t.Fatal("descending-nulls-first should be any-descending")
 	}
 	if ProvidedSortOrderAscending.IsAnyDescending() {
 		t.Fatal("ascending should not be any-descending")

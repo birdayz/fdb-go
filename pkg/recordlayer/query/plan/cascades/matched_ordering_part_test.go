@@ -84,17 +84,19 @@ func TestMatchedSortOrder_ToProvidedSortOrder(t *testing.T) {
 	if MatchedSortOrderDescending.ToProvidedSortOrder(true) != ProvidedSortOrderAscending {
 		t.Fatal("desc reverse")
 	}
-	// NullsLast/NullsFirst variants.
-	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(false) != ProvidedSortOrderAscendingNullsFirst {
+	// NullsLast/NullsFirst (counterflow) variants — map by Direction.
+	// Forward preserves the Direction; reverse uses reverseDirection
+	// (ASC_NULLS_LAST<->DESC_NULLS_FIRST).
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(false) != ProvidedSortOrderAscendingNullsLast {
 		t.Fatal("asc-nulls-last forward")
 	}
-	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(true) != ProvidedSortOrderDescendingNullsLast {
+	if MatchedSortOrderAscendingNullsLast.ToProvidedSortOrder(true) != ProvidedSortOrderDescendingNullsFirst {
 		t.Fatal("asc-nulls-last reverse")
 	}
-	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(false) != ProvidedSortOrderDescendingNullsLast {
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(false) != ProvidedSortOrderDescendingNullsFirst {
 		t.Fatal("desc-nulls-first forward")
 	}
-	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(true) != ProvidedSortOrderAscendingNullsFirst {
+	if MatchedSortOrderDescendingNullsFirst.ToProvidedSortOrder(true) != ProvidedSortOrderAscendingNullsLast {
 		t.Fatal("desc-nulls-first reverse")
 	}
 }

@@ -81,3 +81,4 @@ tests:
     rows: []
   - query: SELECT id FROM t WHERE s LIKE '^hello'
     rows: []
+    ansi: [E061-04]

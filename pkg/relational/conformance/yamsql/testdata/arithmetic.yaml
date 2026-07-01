@@ -41,6 +41,7 @@ tests:
     error_code: "22012"
   # Addition.
   - query: SELECT a + b FROM t WHERE id = 1
+    ansi: [E011-04]
     rows:
       - [24]
   # Subtraction.

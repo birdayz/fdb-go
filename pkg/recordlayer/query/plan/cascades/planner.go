@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"sort"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -617,6 +618,26 @@ func (p *Planner) pushDataAccessTasks(ref *expressions.Reference, _ expressions.
 		// intersection cursor cannot evaluate, yielding 0 rows (RFC-069).
 		var restrictedMatches []PartialMatch
 		for _, m := range allMatches {
+			// A vector scan must NEVER be a primary-key intersection arm — in
+			// EITHER of its two forms:
+			//   - ORDERED-STREAM (un-partitioned, RFC-156 Phase B): the residual
+			//     must compose ABOVE the un-limited distance-ordered stream
+			//     (Limit → Filter → ordered scan); folding it into the SELF-LIMITING
+			//     intersection combinator would self-limit the scan BELOW the
+			//     residual, the very thing that phase forbids.
+			//   - SELF-LIMITING (partitioned per-partition top-k, RFC-046): the scan
+			//     emits (partition, distance) order, which is NOT primary-key-
+			//     monotonic, so the pk-keyed sorted-merge (merge_cursor.go max-key/
+			//     advance) would drop rows whose distance rank disagrees with their
+			//     pk order (wrong rows for k>1). The safe shape is a Filter above the
+			//     un-intersected scan (compensationSafeForYield's partition-residual
+			//     exception, residualIsPartitionContiguous).
+			// Both reduce to the same invariant — a distance-ordered scan cannot be a
+			// pk-keyed intersection leg — so exclude ALL vector candidates here, the
+			// single home for the rule (RFC-167 Phase 4).
+			if _, ok := m.GetMatchCandidate().(*VectorIndexScanMatchCandidate); ok {
+				continue
+			}
 			if hasRestrictedScan(m) && !matchBoundPrefixIsCorrelated(m) {
 				restrictedMatches = append(restrictedMatches, m)
 			}
@@ -707,8 +728,39 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			continue
 		}
 		for _, m := range cref.AllMembers() {
-			switch m.(type) {
-			case *physicalVectorIndexScanWrapper, *physicalAggregateIndexWrapper:
+			switch v := m.(type) {
+			case *physicalVectorIndexScanWrapper:
+				// A residual applied AFTER a self-limiting top-k vector scan
+				// changes the result (you would post-filter the K rows, not the
+				// underlying set) — UNSAFE, keep on the OLD InsertFinal path.
+				// But a residual over an ORDERED-STREAM scan (RFC-156 Phase B) is
+				// SAFE and CORRECT: the scan emits its full re-ranked horizon in
+				// distance order, so a Filter culls non-matching rows BEFORE the
+				// Limit(k) above takes k — the VBASE "filter-during-traversal"
+				// shape (Limit → Filter → ordered scan). Route it through
+				// yieldUnknown so ImplementFilterRule realizes the physical Filter
+				// over the ordered scan (the residual is non-index-only; the
+				// index-only distance marker lives only inside the scan binding).
+				//
+				// SELF-LIMITING (partitioned) exception: a residual over the
+				// PARTITION-key columns, contiguous immediately after the bound
+				// equality prefix, is ALSO safe over a self-limiting per-partition
+				// top-k scan. Such a filter selects WHOLE partitions (drops entire
+				// regions ≤ 'r1'), never within-partition rows, so the per-partition
+				// top-k the maintainer already enforced is preserved: survivors are
+				// exactly top-k per surviving partition. This yields the correct
+				// Filter(region>r1) → VectorScan(self-limiting) plan instead of the
+				// pk-keyed intersection (which drops rows for k>1 because the vector
+				// cursor delivers distance order, not pk order). The contiguity check
+				// keeps a leading-column-unbound residual (region='r1', zone unbound)
+				// unplannable — a non-contiguous residual is out of scope (RFC-046).
+				if v.plan == nil {
+					return false
+				}
+				if !v.plan.IsOrderedStream() && !residualIsPartitionContiguous(f, v.plan) {
+					return false
+				}
+			case *physicalAggregateIndexWrapper:
 				return false
 			}
 		}
@@ -771,6 +823,108 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 			if _, fedByProbe := probeCorr[alias]; fedByProbe {
 				continue
 			}
+			return false
+		}
+	}
+	return true
+}
+
+// residualIsPartitionContiguous reports whether every field the residual filter
+// f references is a LOCAL PARTITION-key column of the vector scan, and the
+// referenced columns are exactly the contiguous run of partition columns
+// immediately after the scan's bound equality prefix. Such a residual selects
+// WHOLE partitions, so it composes safely as a Filter above a self-limiting
+// per-partition top-k scan (compensationSafeForYield): dropping entire partitions
+// never disturbs the per-partition top-k the maintainer already enforced. The
+// LOCAL qualifier is enforced here (the field-locality reject below) so the
+// guarantee is self-contained — an outer-correlated field sharing a partition
+// column's name is not misattributed.
+//
+// The contiguity anchor (start exactly at len(bound equality prefix)) is what
+// distinguishes the plannable partition-INEQUALITY case (WHERE zone='z1' AND
+// region>'r1' — bound prefix [zone], residual {region} at index 1 = boundLen 1)
+// from the out-of-scope leading-column-GAP case (WHERE region='r1', zone unbound
+// — bound prefix [], residual {region} at index 1 ≠ boundLen 0), which stays
+// unplannable (TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual). The
+// discriminator is the GAP, not mere unboundedness: a leading INEQUALITY (WHERE
+// zone>'z1' — bound prefix [], residual {zone} at index 0 = boundLen 0) has no gap
+// and IS admitted (LeadingInequalityResidual). A residual touching any
+// non-partition column (or a non-contiguous set) is not certified here and stays
+// on the OLD InsertFinal path.
+func residualIsPartitionContiguous(
+	f *expressions.LogicalFilterExpression,
+	plan *plans.RecordQueryVectorIndexPlan,
+) bool {
+	partCols := plan.GetPartitionColumns()
+	if len(partCols) == 0 {
+		return false
+	}
+	colIndex := make(map[string]int, len(partCols))
+	for i, c := range partCols {
+		colIndex[strings.ToUpper(c)] = i
+	}
+
+	// Field-locality: every residual field must belong to THIS filter's own scan.
+	// The field-name matching below is by bare name (FieldValue.Field), which is
+	// blind to the correlation root (FieldValue.Child) — so an OUTER-correlated
+	// field that coincidentally shares a partition column's name (e.g. a join
+	// residual `outer.region = ...` over a scan partitioned by `region`) would be
+	// misattributed as this scan's partition column, silently breaking the
+	// whole-partition guarantee. Reject any residual correlated to a non-local
+	// alias here so this function's safety is SELF-CONTAINED, not dependent on the
+	// separate OUTER-correlation guard later in compensationSafeForYield (query-
+	// parameter ConstantObjectValue aliases are execution constants, not row
+	// correlations — subtract them first, as that guard does).
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	for _, pred := range f.GetPredicates() {
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		deletePredicateConstantObjectAliases(pred, corr)
+		for alias := range corr {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
+	}
+
+	residualFields := map[string]struct{}{}
+	for _, pred := range f.GetPredicates() {
+		collectPredicateFieldValues(pred, residualFields)
+	}
+	if len(residualFields) == 0 {
+		return false
+	}
+
+	// The bound equality prefix length: the leading run of non-empty EQUALITY
+	// partition ranges the scan actually constrains.
+	boundLen := 0
+	for _, cr := range plan.GetPrefixComparisons() {
+		if cr == nil || cr.IsEmpty() || cr.GetRangeType() != predicates.ComparisonRangeEquality {
+			break
+		}
+		boundLen++
+	}
+
+	idxs := make([]int, 0, len(residualFields))
+	for fld := range residualFields {
+		i, ok := colIndex[strings.ToUpper(fld)]
+		if !ok {
+			return false // residual touches a non-partition column → not safe here
+		}
+		idxs = append(idxs, i)
+	}
+	sort.Ints(idxs)
+	// Contiguous run starting exactly at boundLen. A LEADING inequality on the
+	// first partition column (e.g. zone>'z0', boundLen 0, residual {zone} at
+	// index 0) is admitted here (0 == 0+0) and is correct: the scan fans out over
+	// all partitions and the whole-partition Filter selects those with zone>'z0',
+	// preserving each partition's top-k. Only a GAP before the residual (a leading
+	// column neither bound nor filtered, e.g. region='r1' with zone unbound →
+	// residual {region} at index 1 ≠ boundLen 0) is rejected.
+	for pos, i := range idxs {
+		if i != boundLen+pos {
 			return false
 		}
 	}

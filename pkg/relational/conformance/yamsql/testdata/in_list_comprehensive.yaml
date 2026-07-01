@@ -59,3 +59,4 @@ tests:
   - query: SELECT COUNT(*) FROM emp WHERE id IN (1, 2, 3, 4, 5)
     rows:
       - [5]
+    ansi: [E061-03]

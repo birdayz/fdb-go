@@ -21,6 +21,7 @@ setup:
 tests:
   # IN-subquery — rejected.
   - query: SELECT id FROM a WHERE v IN (SELECT v FROM b)
+    ansi_gap: [E061-11]
     error_code: "0AF00"
   # NOT IN-subquery — also rejected (same path).
   - query: SELECT id FROM a WHERE v NOT IN (SELECT v FROM b)

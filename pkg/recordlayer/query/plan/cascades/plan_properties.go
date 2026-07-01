@@ -89,13 +89,18 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryDistinctPlan,
-		*plans.RecordQueryUnionPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
 		*plans.RecordQueryInUnionPlan:
 		return true
-	case *plans.RecordQueryUnorderedUnionPlan:
+	case *plans.RecordQueryUnorderedUnionPlan,
+		// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant (union.go:
+		// "UNION ALL with no dedup"; executeUnion concatenates branches). It
+		// does NOT remove duplicates, so it must NOT report distinct records —
+		// otherwise ImplementDistinctFinalRule treats its partition as already
+		// distinct and elides an enclosing SELECT DISTINCT, returning dups.
+		*plans.RecordQueryUnionPlan:
 		return false
 	default:
 		return false
@@ -291,9 +296,24 @@ func computeWrapperRichOrdering(w physicalPlanExpression) *RichOrdering {
 	}
 	bm := make(map[values.Value][]OrderingBinding, len(o.Keys))
 	for i, k := range o.Keys {
-		dir := ProvidedSortOrderAscending
-		if i < len(o.Descending) && o.Descending[i] {
-			dir = ProvidedSortOrderDescending
+		// Map (descending, nulls-first) -> the matching ProvidedSortOrder,
+		// including the counterflow variants. NullsFirstAt defaults to the
+		// natural placement, so natural-order producers (index scans, which
+		// leave NullsFirst empty) yield plain ASCENDING/DESCENDING unchanged;
+		// only a counterflow in-memory sort yields a counterflow value, which
+		// keeps a parent sort from eliding against it incorrectly.
+		desc := o.DescendingAt(i)
+		nullsFirst := o.NullsFirstAt(i)
+		var dir ProvidedSortOrder
+		switch {
+		case !desc && nullsFirst:
+			dir = ProvidedSortOrderAscending // ASC_NULLS_FIRST
+		case !desc && !nullsFirst:
+			dir = ProvidedSortOrderAscendingNullsLast // ASC_NULLS_LAST (counterflow)
+		case desc && !nullsFirst:
+			dir = ProvidedSortOrderDescending // DESC_NULLS_LAST
+		default: // desc && nullsFirst
+			dir = ProvidedSortOrderDescendingNullsFirst // DESC_NULLS_FIRST (counterflow)
 		}
 		bm[k] = []OrderingBinding{SortedBinding(dir)}
 	}
@@ -416,7 +436,12 @@ func computeCardinalities(w physicalPlanExpression, plan plans.RecordQueryPlan) 
 			}
 		}
 		if limit < 0 {
-			// Negative limit = no cap (OFFSET-only stream).
+			// Negative limit = no cap (OFFSET-only stream). A RUNTIME-Value limit
+			// (GetLimitValue()!=nil) is also stored as limit=-1 and DELIBERATELY
+			// lands here: its real cap is only known at execution, so reading it as
+			// conservative no-cap (over-estimating cardinality) is the sound choice —
+			// over-estimation never enables an unsound rewrite (matching the explicit
+			// HintCost conservative choice). Do not "fix" this into reducing to -1.
 			return child
 		}
 		maxCard := child.GetMaxCardinality()

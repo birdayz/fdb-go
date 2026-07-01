@@ -102,6 +102,11 @@ func PlanQueryForTest(sql, schemaDDL string, stats properties.StatisticsProvider
 	if physPlan == nil {
 		return "", fmt.Errorf("physical plan is nil")
 	}
+	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
+	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return "", fmt.Errorf("plan invariant violated: %w", err)
+	}
 	return physPlan.Explain(), nil
 }
 
@@ -180,6 +185,11 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
 		return "", fmt.Errorf("physical plan is nil")
+	}
+	// RFC-164 WS-2: structural plan invariants — an always-on backstop that fails
+	// loudly on a malformed extracted plan (e.g. a relink that dropped a child).
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return "", fmt.Errorf("plan invariant violated: %w", err)
 	}
 	return physPlan.Explain(), nil
 }
@@ -292,6 +302,10 @@ func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaDat
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
 		return nil, fmt.Errorf("physical plan is nil")
+	}
+	// RFC-164 WS-2: structural plan invariants (see ValidatePlanInvariants).
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
 	return physPlan, nil
 }

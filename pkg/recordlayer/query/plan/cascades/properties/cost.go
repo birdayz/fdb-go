@@ -66,6 +66,17 @@ const (
 	// one-third of the value domain is selected.
 	RangeSelectivity = 0.33
 
+	// EqualityBoundSelectivity is the fraction of rows an EQUALITY index-scan
+	// bound (col = X) retains. A point match selects far fewer rows than a range,
+	// so this MUST be < RangeSelectivity — otherwise the cost model treats an
+	// equality probe as less selective than a range probe and picks the wrong
+	// index (RFC-164 COST-SELECTIVITY). It is deliberately distinct from
+	// FilterSelectivity (0.5, the generic residual-Filter heuristic): a residual
+	// filter of unknown form may keep half the rows, but an indexed equality bound
+	// is a point lookup. The invariant EqualityBoundSelectivity < RangeSelectivity
+	// is pinned by TestCostSelectivity_EqualityBeatsRange.
+	EqualityBoundSelectivity = 0.1
+
 	// DistinctSelectivity is the fraction of rows Distinct retains
 	// (i.e. the assumed unique rate). 0.7 means 30% of input rows are
 	// duplicates of an earlier row.
@@ -105,36 +116,6 @@ const (
 	// (Graefe). 0.1 == FilterCPU: one extra row-equivalent of setup per iteration.
 	IterationOverhead = 0.1
 )
-
-// IndexColumnSelectivity returns the selectivity for a single index
-// column given the total table cardinality, comparison type, whether
-// the index is unique, and whether the cardinality came from real
-// statistics. Uses heuristic estimates:
-//   - With real stats, equality on unique: 1/N
-//   - With real stats, equality on non-unique: 1/√N
-//   - With real stats, range: RangeSelectivity (0.33)
-//   - Without real stats: FilterSelectivity (0.5) for equality,
-//     RangeSelectivity (0.33) for range
-//
-// The function returns a fraction in (0, 1].
-func IndexColumnSelectivity(tableCardinality float64, isEquality bool, isUnique bool, hasRealStats bool) float64 {
-	if !hasRealStats {
-		if isEquality {
-			return FilterSelectivity
-		}
-		return RangeSelectivity
-	}
-	if tableCardinality <= 1 {
-		return 1.0
-	}
-	if isEquality {
-		if isUnique {
-			return 1.0 / tableCardinality
-		}
-		return 1.0 / math.Sqrt(tableCardinality)
-	}
-	return RangeSelectivity
-}
 
 // Cost is a Go-native heuristic cost: a cardinality estimate plus a
 // CPU estimate. Lower is cheaper.

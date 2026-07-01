@@ -22,7 +22,8 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 | Searched CASE (`CASE WHEN cond`) | Y | Y | Y | |
 | Simple CASE (`CASE expr WHEN val`) | N | Y | Y | Java accepts the syntax but mis-evaluates: `visitCaseExpressionFunctionCall` is a no-op that always falls through to ELSE; Go evaluates correctly (`case_simple_int_match` divergence) |
 | CAST | Y | Y | Y | Overflow detection aligned |
-| COALESCE / NULLIF | Y | Y | Y | |
+| COALESCE | Y | Y | Y | |
+| NULLIF | N | N | Y | Both reject (42883 — no function-registry entry); shared ANSI gap F261-03 |
 | GREATEST / LEAST | Y | Y | Y | |
 | CARDINALITY (array length, `ln`) | Y | Y | Y | Added in Java 4.12 (scalar fn + index support); Go ports both (RFC-143) |
 | String functions (UPPER etc.) | N | N | Y | Both reject -- Java has no function catalog entry |
@@ -104,7 +105,7 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 | ORDER BY (no index) | N | Ext | Y | Go extension: in-memory sort |
 | ORDER BY aggregate | N | Ext | Y | Go extension |
 | NULLS FIRST / LAST | Y | Y | Y | |
-| LIMIT / OFFSET (clause) | N | N | Y | Both reject at parse time |
+| LIMIT / OFFSET (outer SELECT) | Y | Y | Y | Wired via `limitClause`→`LogicalLimit`; rejected only inside subqueries (0AF00) and DELETE |
 | SELECT DISTINCT | P | Ext | Y | Java rejects most DISTINCT; Go has ImplementDistinctFinalRule (D-3 aligned) |
 | DISTINCT + ORDER BY | N | Ext | Y | Go extension |
 
@@ -147,25 +148,36 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 
 ## Summary
 
-| Category | Java 4.12.11.0 | Go | ANSI coverage |
-|---|---|---|---|
-| Core DML | Full | Full | Full |
-| Expressions | Partial (no scalar fns) | Partial + datetime ext | ~60% |
-| Predicates | Full | Full + byte literals | ~90% |
-| Aggregation | **Full** (4.12 wires GROUP BY/HAVING through the SQL layer) | **Full** | ~85% |
-| Set operations | UNION ALL only | UNION ALL only | ~25% |
-| Joins | INNER + LEFT/RIGHT OUTER (4.12); FULL OUTER rejected | + FULL OUTER (Go-only ext) | ~85% |
-| Subqueries | Partial | **Matches Java** (EXISTS + scalar work, correlated scalar rejected by both) | ~70% |
-| CTEs | Full + recursive | Full + recursive + DFS ext | ~90% |
-| Ordering | Index-only | Full (in-memory sort ext) | ~80% |
-| Types | Core types | All Java types + DATE/TIMESTAMP ext | ~80% |
-| Error codes | Full | Full (ExceptionUtil 1:1 port) | ~95% |
+> **Measured numbers live in the generated, drift-guarded ledgers (RFC-165), not here:**
+> - `SQL_COVERAGE.md` (Ledger B) — measured corpus coverage (% of test cases that pass).
+> - `SQL_ANSI_CONFORMANCE.md` (Ledger A) — ANSI SQL:2023 Core scorecard, Go support *derived* from `# ansi:` corpus tags.
+>
+> The table below is a **qualitative** Java-vs-Go narrative only (the old hand-typed `~%` ANSI-coverage
+> column has been deleted — it was fabricated). For any percentage, defer to the ledgers (`just sql-coverage`).
+
+| Category | Java 4.12.11.0 | Go |
+|---|---|---|
+| Core DML | Full | Full |
+| Expressions | Partial (no scalar fns) | Partial + datetime ext |
+| Predicates | Full | Full + byte literals |
+| Aggregation | **Full** (4.12 wires GROUP BY/HAVING through the SQL layer) | **Full** |
+| Set operations | UNION ALL only | UNION ALL only |
+| Joins | INNER + LEFT/RIGHT OUTER (4.12); FULL OUTER rejected | + FULL OUTER (Go-only ext) |
+| Subqueries | Partial | **Matches Java** (EXISTS + scalar work, correlated scalar rejected by both) |
+| CTEs | Full + recursive | Full + recursive + DFS ext |
+| Ordering | Index-only | Full (in-memory sort ext) |
+| Types | Core types | All Java types + DATE/TIMESTAMP ext |
+| Error codes | Full | Full (ExceptionUtil 1:1 port) |
 
 4.12 closed several former gaps that Go had already implemented as extensions: GROUP BY/HAVING aggregation, LEFT/RIGHT OUTER JOIN, EXISTS in the projection list, and boolean literals in WHERE are now wired in Java's SQL layer too. Go remains more capable than Java 4.12.11.0 in ordering, DISTINCT, recursive CTEs, FULL OUTER JOIN, and temporal types. **Go matches Java for subquery support** — uncorrelated scalar subqueries and correlated EXISTS both work; correlated scalar subqueries are rejected by both engines. Both engines lack string/math functions. Go extends beyond Java with FULL OUTER JOIN, DATE/TIMESTAMP column types, CAST, CURRENT_TIMESTAMP/CURRENT_DATE, and date-part extraction functions (YEAR/MONTH/DAY/HOUR/MINUTE/SECOND).
 
 ## Yamsql Conformance
 
-115 scenario test suite. Current: **115/115 pass (100%)**.
+The yamsql corpus is the conformance harness. **Do not hand-type the counts here** — they rot
+(this line previously read "115/115" long after the corpus passed 300 files). The current,
+measured numbers are generated into `SQL_COVERAGE.md` (corpus pass rate) and
+`SQL_ANSI_CONFORMANCE.md` (ANSI Core scorecard), each guarded by a drift test that fails CI if
+stale. Run `just sql-coverage` to regenerate; see `FEATURE_MATRIX.md` for the scenario inventory.
 
 ## Cascades Divergence Status
 

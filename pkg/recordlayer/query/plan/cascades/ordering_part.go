@@ -4,15 +4,23 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// ProvidedSortOrder represents the sort direction of a provided
-// ordering part. Mirrors Java's OrderingPart.ProvidedSortOrder.
+// ProvidedSortOrder represents the sort direction (and NULL placement)
+// of a provided ordering part. Mirrors Java's
+// OrderingPart.ProvidedSortOrder — exactly 6 constants, each directional
+// value mapping to a TupleOrdering.Direction:
+//
+//	Ascending            -> ASC_NULLS_FIRST  (counterflow=false)
+//	Descending           -> DESC_NULLS_LAST  (counterflow=false)
+//	AscendingNullsLast   -> ASC_NULLS_LAST   (counterflow=true)
+//	DescendingNullsFirst -> DESC_NULLS_FIRST (counterflow=true)
+//	Fixed / Choose       -> non-directional
 type ProvidedSortOrder int
 
 const (
 	ProvidedSortOrderAscending ProvidedSortOrder = iota
 	ProvidedSortOrderDescending
-	ProvidedSortOrderAscendingNullsFirst
-	ProvidedSortOrderDescendingNullsLast
+	ProvidedSortOrderAscendingNullsLast
+	ProvidedSortOrderDescendingNullsFirst
 	ProvidedSortOrderFixed
 	ProvidedSortOrderChoose
 )
@@ -20,25 +28,48 @@ const (
 func (s ProvidedSortOrder) IsDirectional() bool {
 	switch s {
 	case ProvidedSortOrderAscending, ProvidedSortOrderDescending,
-		ProvidedSortOrderAscendingNullsFirst, ProvidedSortOrderDescendingNullsLast:
+		ProvidedSortOrderAscendingNullsLast, ProvidedSortOrderDescendingNullsFirst:
 		return true
 	default:
 		return false
 	}
 }
 
-func (s ProvidedSortOrder) IsAnyDescending() bool {
-	return s == ProvidedSortOrderDescending || s == ProvidedSortOrderDescendingNullsLast
+// IsAnyAscending reports whether this is an ascending direction (nulls
+// first or last). Mirrors Java SortOrder.isAnyAscending().
+func (s ProvidedSortOrder) IsAnyAscending() bool {
+	return s == ProvidedSortOrderAscending || s == ProvidedSortOrderAscendingNullsLast
 }
 
+func (s ProvidedSortOrder) IsAnyDescending() bool {
+	return s == ProvidedSortOrderDescending || s == ProvidedSortOrderDescendingNullsFirst
+}
+
+// IsCounterflowNulls reports whether the NULL placement runs against the
+// natural tuple order for this direction. Mirrors Java
+// TupleOrdering.Direction.isCounterflowNulls(). Only valid for
+// directional values.
+func (s ProvidedSortOrder) IsCounterflowNulls() bool {
+	return s == ProvidedSortOrderAscendingNullsLast || s == ProvidedSortOrderDescendingNullsFirst
+}
+
+// ToRequestedSortOrder maps a provided sort order to the requested sort
+// order with the same TupleOrdering.Direction (preserving NULL
+// placement), mirroring Java ProvidedSortOrder.toRequestedSortOrder()
+// (a by-Direction map, not a collapse to the natural order).
 func (s ProvidedSortOrder) ToRequestedSortOrder() RequestedSortOrder {
-	if s.IsDirectional() {
-		if s.IsAnyDescending() {
-			return RequestedSortOrderDescending
-		}
+	switch s {
+	case ProvidedSortOrderAscending:
 		return RequestedSortOrderAscending
+	case ProvidedSortOrderDescending:
+		return RequestedSortOrderDescending
+	case ProvidedSortOrderAscendingNullsLast:
+		return RequestedSortOrderAscendingNullsLast
+	case ProvidedSortOrderDescendingNullsFirst:
+		return RequestedSortOrderDescendingNullsFirst
+	default:
+		return RequestedSortOrderAny
 	}
-	return RequestedSortOrderAny
 }
 
 // ProvidedOrderingPart is a (Value, ProvidedSortOrder) pair for a

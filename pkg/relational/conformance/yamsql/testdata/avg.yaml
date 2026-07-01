@@ -24,3 +24,4 @@ tests:
   - query: SELECT AVG(v) FROM t WHERE v > 100
     rows:
       - [~]
+    ansi: [E091-01]

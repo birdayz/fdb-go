@@ -11,6 +11,7 @@ setup:
 tests:
   # COALESCE(a, b, 'default') — first non-null wins.
   - query: SELECT id, COALESCE(a, b, 'default') FROM t ORDER BY id
+    ansi: [F261-04]
     rows:
       - [1, 'x']
       - [2, 'y']
@@ -23,6 +24,7 @@ tests:
   # architectural reason in both engines: the function registry has no
   # NULLIF evaluator. Workaround: `CASE WHEN a = b THEN NULL ELSE a END`.
   - query: SELECT id, NULLIF(a, 'x') FROM t ORDER BY id
+    ansi_gap: [F261-03]
     error_code: "42883"
   # NULLIF rejected via the searched-CASE workaround.
   - query: SELECT id, CASE WHEN a = 'y' THEN NULL ELSE a END FROM t ORDER BY id

@@ -1,0 +1,502 @@
+//go:build stress
+
+// Full-scale RFC-156 Phase C vector-search stress tests. These are the
+// large-corpus (10k/40k/20k) variants of the SPFresh streaming-search pins.
+// They live in the `stress`-tagged target so per-PR CI (standard + race)
+// EXCLUDES them (--test_tag_filters=-stress) — they would otherwise blow the
+// sqldriver_test target's ~300s timeout, especially under -race. The nightly
+// stress workflow runs this target and exercises them at full scale.
+//
+// The per-PR sqldriver_test package keeps REDUCED-corpus variants of BOTH pins
+// (TestFDB_VectorSearch_StreamingHeapBounded and
+// TestFDB_VectorSearch_ColdStartCappedHonestTruncation) that still trigger the
+// exact same code paths (honest budget truncation; cold-start capped-posting
+// ScanLimitReached → self-heal) at a fraction of the row count. The full-scale
+// versions here add the cross-corpus memory-INDEPENDENCE proof (4× corpus, flat
+// peak heap) and the production-scale (20k) cold-start substrate.
+
+package stress_test
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/metadata"
+)
+
+// TestFDB_VectorSearch_StreamingHeapBounded is the end-to-end heap-bytes proof
+// the user asked for ("stress, and prove memory doesn't explode") — the SQL-path
+// companion to the white-box O(budget) candidate-count assertion in the
+// "retains O(budget) candidates" Phase C spec. A sizable corpus with a
+// PATHOLOGICAL never-matching residual forces the ordered-stream scan to widen
+// all the way to the budget cap. Run through the executor at TWO corpus sizes
+// (4× apart) and prove with runtime.ReadMemStats that:
+//
+//	(a) the peak heap GROWTH attributable to the query is O(budget) — corpus
+//	    INDEPENDENT. A 4× larger corpus does NOT 4× the peak heap; the streaming
+//	    working set is bounded by the candidate/cell budget, never the corpus.
+//	(b) the query completes within the FDB 5 s tx and the budget cap surfaces as
+//	    a ScanLimitReached (→ *ScanLimitReachedError out of CollectAll), NEVER a
+//	    tx timeout and NEVER a silently-swallowed SourceExhausted.
+//
+// The per-PR sqldriver_test package keeps a reduced single-corpus variant that
+// pins half (b) (honest budget truncation) plus an absolute O(budget) ceiling;
+// the cross-corpus 4× independence proof in half (a) lives here at full scale.
+//
+// Measured peak heap numbers are logged for the record.
+func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+
+	b := metadata.NewSchemaTemplateBuilder().SetName("vt")
+	b.AddTable("DOCS", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("CATEGORY", api.NewStringType(false), 2),
+		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 3),
+	}, []string{"ID"})
+	b.AddVectorIndexUsing("SPFRESH", "DOCS", "VEC_IDX", "EMBEDDING", nil,
+		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	desc := md.GetRecordType("DOCS").Descriptor
+
+	makeRec := func(id int64, vec []float64) proto.Message {
+		m := dynamicpb.NewMessage(desc)
+		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString("other"))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		return m
+	}
+
+	// A never-matching residual (no row has CATEGORY='nomatch') forces the scan
+	// to widen to the budget cap regardless of corpus size — the worst case for
+	// memory. k is generous so the Limit never short-circuits the widening.
+	const sql = `SELECT id FROM docs WHERE category = 'nomatch'
+		QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [0.0, 0.0, 0.0])) <= 10`
+	plan, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if exp := plan.Explain(); !strings.Contains(exp, "VectorIndexScan") || !strings.Contains(exp, "ordered") {
+		t.Fatalf("expected an ordered VectorIndexScan; explain:\n%s", exp)
+	}
+
+	type heapResult struct {
+		n         int
+		baseInuse uint64
+		peakInuse uint64
+		baseAlloc uint64
+		peakAlloc uint64
+		rows      int
+		truncated bool
+		elapsed   time.Duration
+	}
+
+	runAt := func(n int) heapResult {
+		ks := subspace.FromBytes(tuple.Tuple{t.Name(), int64(n)}.Pack())
+		storeBuilder := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+			return recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+		}
+
+		// Spread rows across a wide grid so widening keeps admitting fresh cells.
+		const batch = 500
+		for start := 0; start < n; start += batch {
+			end := start + batch
+			if end > n {
+				end = n
+			}
+			s, e := start, end
+			if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, sErr := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if sErr != nil {
+					return nil, sErr
+				}
+				for i := s; i < e; i++ {
+					v := []float64{float64(i%128) * 0.5, float64(i/128) * 0.5, float64(i%7) * 0.3}
+					if _, e := store.SaveRecord(makeRec(int64(i+1), v)); e != nil {
+						return nil, e
+					}
+				}
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("insert @%d (n=%d): %v", start, n, err)
+			}
+		}
+
+		// Drain the index to quiescence (the production sweeper's steady state):
+		// cold-start inserts pile everything into ONE oversized posting and queue a
+		// split task, so an UNmaintained index has a single read-capped cell over
+		// which the ordered stream cannot widen. The MAINTAINED index splits into
+		// many postings — the realistic substrate where the budget-bounded widening
+		// genuinely engages and binds. (The unmaintained read-capped path has its
+		// own honest-truncation pin: TestFDB_VectorSearch_ColdStartCappedHonestTruncation.)
+		if _, rerr := recordlayer.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
+			t.Fatalf("rebalance (n=%d): %v", n, rerr)
+		}
+
+		// Settle the heap: drop the insertion + rebalance garbage so the baseline
+		// reflects only resident state, not the bulk churn.
+		runtime.GC()
+		runtime.GC()
+		var m0 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+
+		// Sample peak heap during the query on a background ticker (ReadMemStats is
+		// a STW snapshot; 3 ms spacing is dense for a sub-second query yet cheap).
+		stop := make(chan struct{})
+		donePeak := make(chan [2]uint64, 1)
+		go func() {
+			var pkInuse, pkAlloc uint64
+			var ms runtime.MemStats
+			tick := time.NewTicker(3 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-stop:
+					donePeak <- [2]uint64{pkInuse, pkAlloc}
+					return
+				case <-tick.C:
+					runtime.ReadMemStats(&ms)
+					if ms.HeapInuse > pkInuse {
+						pkInuse = ms.HeapInuse
+					}
+					if ms.HeapAlloc > pkAlloc {
+						pkAlloc = ms.HeapAlloc
+					}
+				}
+			}
+		}()
+
+		var collectErr error
+		var rows int
+		start := time.Now()
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := storeBuilder(rtx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+				executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cursor.Close()
+			var results []executor.QueryResult
+			results, collectErr = executor.CollectAll(ctx, cursor)
+			rows = len(results)
+			// Do NOT surface collectErr to db.Run: a ScanLimitReached truncation is
+			// the EXPECTED honest-truncation outcome here, not a tx-level failure to
+			// retry. Capture it and assert on its type below.
+			return nil, nil
+		})
+		elapsed := time.Since(start)
+		close(stop)
+		peak := <-donePeak
+
+		if err != nil {
+			t.Fatalf("query (n=%d) hit a tx-level error (timeout?): %v", n, err)
+		}
+
+		truncated := false
+		var sl *recordlayer.ScanLimitReachedError
+		if errors.As(collectErr, &sl) {
+			truncated = true
+		} else if collectErr != nil {
+			t.Fatalf("query (n=%d) errored with a NON-truncation error: %T %v", n, collectErr, collectErr)
+		}
+
+		return heapResult{
+			n:         n,
+			baseInuse: m0.HeapInuse,
+			peakInuse: peak[0],
+			baseAlloc: m0.HeapAlloc,
+			peakAlloc: peak[1],
+			rows:      rows,
+			truncated: truncated,
+			elapsed:   elapsed,
+		}
+	}
+
+	const mb = 1024 * 1024
+	growth := func(r heapResult) int64 { return int64(r.peakInuse) - int64(r.baseInuse) }
+
+	// Two corpus sizes that BOTH saturate the O(budget) ceiling. The default
+	// streaming budget admits up to widenBatch (64) postings per widen burst, each
+	// read-capped at 4·Lmax+1 entries, so the peak retained candidate set is
+	// bounded by maxCandidates + widenBatch·(4·Lmax+1) — a corpus-INDEPENDENT
+	// constant (the same bound the white-box "retains O(budget)" spec asserts on
+	// the count). Saturation needs ≥ widenBatch postings; with the default Lmax a
+	// rebalanced corpus yields ~n/CellTarget postings, so both sizes here clear it
+	// comfortably (a 4× smaller corpus would merely UNDER-saturate and read flat-
+	// low, never higher — so two saturated sizes is the honest comparator). 4×
+	// apart: if the working set were O(corpus) the larger would ~4× the smaller.
+	const sizeA, sizeB = 10000, 40000
+	rA := runAt(sizeA)
+	rB := runAt(sizeB)
+
+	for _, r := range []heapResult{rA, rB} {
+		t.Logf("n=%5d  baseInuse=%4dMB peakInuse=%4dMB growth=%5.1fMB  baseAlloc=%4dMB peakAlloc=%4dMB  rows=%d truncated=%v elapsed=%s",
+			r.n, r.baseInuse/mb, r.peakInuse/mb, float64(growth(r))/float64(mb),
+			r.baseAlloc/mb, r.peakAlloc/mb, r.rows, r.truncated, r.elapsed)
+	}
+
+	// (b) Honest truncation at BOTH sizes — the budget binds (corpus > candidate
+	// cap), surfacing as ScanLimitReached, never a timeout, never a silent
+	// SourceExhausted. The never-matching residual returns 0 rows.
+	for _, r := range []heapResult{rA, rB} {
+		if !r.truncated {
+			t.Errorf("n=%d: expected ScanLimitReached truncation (budget cap), got none "+
+				"(rows=%d) — the budget did NOT bind or the reason was swallowed", r.n, r.rows)
+		}
+		if r.rows != 0 {
+			t.Errorf("n=%d: never-matching residual returned %d rows, want 0", r.n, r.rows)
+		}
+		if r.elapsed >= 5*time.Second {
+			t.Errorf("n=%d: query took %s — at/over the FDB 5s tx limit (should be budget-bounded well under)", r.n, r.elapsed)
+		}
+	}
+
+	// (a) Corpus-INDEPENDENCE of the peak heap. The corpus is 4× larger at sizeB,
+	// yet both saturate the SAME O(budget) ceiling, so the peak heap GROWTH must be
+	// essentially flat — within a small additive slack (measurement/GC jitter +
+	// the modest routing-list growth with more cells), NOT scaling with corpus. A
+	// working set that materialized the corpus would be ~4× larger at sizeB.
+	gA, gB := growth(rA), growth(rB)
+	slack := int64(40 * mb)
+	if gB > gA+slack {
+		t.Errorf("peak heap GREW with the corpus: n=%d growth=%.1fMB, n=%d growth=%.1fMB, delta=%.1fMB > slack=%dMB "+
+			"— the streaming working set is NOT O(budget) (memory scales with corpus)",
+			sizeA, float64(gA)/float64(mb), sizeB, float64(gB)/float64(mb),
+			float64(gB-gA)/float64(mb), slack/mb)
+	}
+	// Sub-linearity guard: a true O(corpus) working set would 4× from sizeA→sizeB.
+	// O(budget) stays within a constant, so the larger growth is FAR below 4×.
+	if gA > 4*mb && gB > 3*gA {
+		t.Errorf("peak heap scaled ~linearly with corpus: n=%d growth=%.1fMB vs n=%d growth=%.1fMB (>3×) "+
+			"— working set is O(corpus), not O(budget)", sizeA, float64(gA)/float64(mb), sizeB, float64(gB)/float64(mb))
+	}
+	// Absolute O(budget) ceiling: the peak growth is bounded by maxCandidates +
+	// widenBatch·(4·Lmax+1) candidates' worth of maps + transient posting reads —
+	// modest and constant. A corpus-materializing implementation would blow past.
+	const ceiling = 160 * mb
+	if gB > ceiling {
+		t.Errorf("n=%d peak heap growth=%.1fMB exceeds the O(budget) ceiling %dMB — memory explosion",
+			sizeB, float64(gB)/float64(mb), ceiling/mb)
+	}
+}
+
+// TestFDB_VectorSearch_ColdStartCappedHonestTruncation is the full-scale (20k)
+// red→green pin for the honest-truncation bug RFC-156 stress coverage surfaced —
+// a SILENT WRONG ANSWER, the exact "never a silent < k" violation Phase C
+// forbids — and proves the fix end-to-end at production scale. The per-PR
+// sqldriver_test package keeps a reduced variant (tuned Lmax → a capped posting
+// at a few hundred rows) that triggers the identical code path.
+//
+// ROOT CAUSE (now fixed). Cold-start SaveRecord inserts pile every row into ONE
+// coarse cell with a single oversized posting (>4*Lmax entries) and a
+// queued-but-unrun split task. The ordered-stream search reads only the 4*Lmax+1
+// ENVELOPE of that posting (spfresh_query.go scoreCells records the overflow in
+// frontier.capped and re-files the split) — posting entries are keyed by PK, so
+// the envelope is the SMALLEST 4*Lmax+1 PKs and every larger-PK row is INVISIBLE
+// to the query. BEFORE the fix, with only one coarse cell the cursor set
+// streamExhaust purely on widenRouteComplete (ignoring frontier.capped) and
+// returned SourceExhausted — claiming the index was COMPLETE while it examined a
+// small fraction of the entries. The repro below (matching row at the LARGEST PK,
+// in the invisible tail) returned [] with SourceExhausted: a silent, signal-free
+// wrong answer. The fix gates streamExhaust on `widenRouteComplete &&
+// len(frontier.capped)==0`; a capped posting now sets budgetHit → ScanLimitReached.
+//
+// HONEST CONTRACT (what this asserts, two phases):
+//
+//  1. UNMAINTAINED (cold-start, capped posting): the query CANNOT see the tail in
+//     one pass, so it must signal incompleteness with ScanLimitReached (resumable),
+//     NEVER an incomplete/empty set under SourceExhausted.
+//  2. AFTER MAINTENANCE: the first query's terminal re-filed the split
+//     (refileCapped); the rebalancer processes it and the oversized posting splits
+//     into <=Lmax pieces (no longer capped). Re-running the SAME query now returns
+//     the true nearest match [20000] with SourceExhausted (genuinely complete).
+//
+// Together this proves the fix: no silent under-return, and the read-path re-file
+// heals it.
+func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+
+	b := metadata.NewSchemaTemplateBuilder().SetName("vt")
+	b.AddTable("DOCS", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("CATEGORY", api.NewStringType(false), 2),
+		metadata.NewColumnSpec("EMBEDDING", api.NewVectorType(64, 3, true), 3),
+	}, []string{"ID"})
+	b.AddVectorIndexUsing("SPFRESH", "DOCS", "VEC_IDX", "EMBEDDING", nil,
+		map[string]string{recordlayer.IndexOptionSPFreshMetric: "EUCLIDEAN_METRIC"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	desc := md.GetRecordType("DOCS").Descriptor
+	storeBuilder := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+		return recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+	}
+
+	makeRec := func(id int64, cat string, vec []float64) proto.Message {
+		m := dynamicpb.NewMessage(desc)
+		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
+		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(cat))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		return m
+	}
+
+	// 20k rows, cold-start (NO rebalance) → one oversized capped posting. The
+	// matching row has the LARGEST PK (so it lands in the invisible posting tail)
+	// AND is the nearest (at the origin query). Every other row is a far decoy.
+	const nW = 20000
+	for start := 0; start < nW; start += 500 {
+		end := start + 500
+		if end > nW {
+			end = nW
+		}
+		s, e := start, end
+		if _, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if sErr != nil {
+				return nil, sErr
+			}
+			for i := s; i < e; i++ {
+				id := int64(i + 1)
+				cat, vec := "other", []float64{float64(i%128)*0.5 + 10, float64(i/128)*0.5 + 10, 1}
+				if id == nW {
+					cat, vec = "target", []float64{0, 0, 0} // nearest, but largest PK → invisible tail
+				}
+				if _, e := store.SaveRecord(makeRec(id, cat, vec)); e != nil {
+					return nil, e
+				}
+			}
+			return nil, nil
+		}); err != nil {
+			t.Fatalf("insert @%d: %v", start, err)
+		}
+	}
+
+	const sql = `SELECT id FROM docs WHERE category = 'target'
+		QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(embedding, [0.0, 0.0, 0.0])) <= 1`
+	plan, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+
+	// runQuery drains the executor cursor manually so it observes the TERMINAL
+	// reason directly (CollectAll would re-map an out-of-band stop to an error).
+	runQuery := func() ([]int64, recordlayer.NoNextReason) {
+		var ids []int64
+		var reason recordlayer.NoNextReason
+		_, qerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, sErr := storeBuilder(rtx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			cursor, cErr := executor.ExecutePlan(ctx, plan, store,
+				executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+			if cErr != nil {
+				return nil, cErr
+			}
+			defer cursor.Close()
+			for {
+				res, e := cursor.OnNext(ctx)
+				if e != nil {
+					return nil, e
+				}
+				if !res.HasNext() {
+					reason = res.GetNoNextReason()
+					break
+				}
+				ids = append(ids, res.GetValue().Datum.(map[string]any)["ID"].(int64))
+			}
+			return nil, nil
+		})
+		if qerr != nil {
+			t.Fatalf("execute: %v", qerr)
+		}
+		return ids, reason
+	}
+
+	// Phase 1 — UNMAINTAINED: the capped posting hides the true nearest match in
+	// its tail. The terminal MUST be ScanLimitReached (honest "I could not see the
+	// whole posting; more may exist"), NOT SourceExhausted with a silent < k.
+	// (Pre-fix this returned [] + SourceExhausted — the silent wrong answer.)
+	ids, reason := runQuery()
+	t.Logf("cold-start (capped) residual K-NN: ids=%v reason=%v (isOutOfBand=%v)", ids, reason, reason.IsOutOfBand())
+	if reason != recordlayer.ScanLimitReached {
+		t.Errorf("honest-truncation contract: a read-capped posting (true nearest match in the "+
+			"invisible tail) must surface ScanLimitReached, got reason=%v ids=%v — a silent under-return "+
+			"under SourceExhausted is the §1 'never a silent < k' violation", reason, ids)
+	}
+	if !reason.IsOutOfBand() {
+		t.Errorf("ScanLimitReached must be out-of-band (resumable); reason=%v is in-band", reason)
+	}
+
+	// Maintenance — the first query's terminal re-filed the oversized posting's
+	// split (refileCapped); draining the queue splits it into <=Lmax pieces.
+	if _, rerr := recordlayer.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
+		t.Fatalf("rebalance: %v", rerr)
+	}
+
+	// Phase 2 — AFTER MAINTENANCE: the posting is no longer capped, so the true
+	// nearest match is now visible and the index is genuinely complete: the SAME
+	// query returns [20000] with SourceExhausted. The re-file path healed the
+	// under-return — no permanent data loss, just an honest signal in the interim.
+	ids2, reason2 := runQuery()
+	t.Logf("post-rebalance residual K-NN: ids=%v reason=%v (isOutOfBand=%v); true answer=[%d]",
+		ids2, reason2, reason2.IsOutOfBand(), int64(nW))
+	if !reflect.DeepEqual(ids2, []int64{nW}) {
+		t.Errorf("post-maintenance: query for the nearest CATEGORY='target' returned ids=%v, want [%d] "+
+			"(the true nearest, now visible after the capped posting split)", ids2, int64(nW))
+	}
+	if reason2 != recordlayer.SourceExhausted {
+		t.Errorf("post-maintenance: a fully-maintained index (no capped postings) must return "+
+			"SourceExhausted (genuinely complete), got reason=%v", reason2)
+	}
+}

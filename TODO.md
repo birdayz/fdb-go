@@ -8,6 +8,186 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 # NEXT
 
+> ## Cascades bug hunt (branch `hunt/cascades-bug-hunt`) — 9 confirmed bugs
+>
+> Multi-agent + differential hunt across the Cascades engine. 6 FIXED in this PR (red→green tests,
+> full `sqldriver` suite green); 3 OPEN below (riskier — own focused Graefe cycle each).
+>
+> **FIXED (this PR):**
+> - **[x] AGG-RESIDUAL (critical, wrong results).** `AggregateDataAccessRule` dropped any input filter
+>   predicate that wasn't a grouping-key equality (non-group column, or inequality) — aggregate read over
+>   ALL rows. `SELECT g,SUM(v) FROM ga WHERE f=1 GROUP BY g` returned the unfiltered sum. Fix: decline the
+>   aggregate-index match when a residual isn't a grouping-key equality (Java compensation = impossible) →
+>   StreamingAgg fallback. `rule_aggregate_data_access.go`. Pins: `TestFDB_AggIndexResidualDrop`,
+>   `TestBugHunt_AggregateIndexResidualNotDropped`.
+> - **[x] IN-LIMIT-NIL (critical, 0 rows / exec error).** `physicalLimitWrapper.WithChildren` gated relink on
+>   `isLeafReplaceable`, so `… WHERE c IN (…) LIMIT k` over a Projection kept the eager nil-inner snapshot →
+>   `Limit(Project(Fetch(<nil>)))` → 0 rows. Fix: always relink (the fetch wrapper's RFC-070 fix, applied to
+>   limit). `physical_limit_wrapper.go`. Pins: `TestFDB_InListLimitReturnsRows`, `TestBugHunt_InListLimitNoNilInner`.
+> - **[x] HAVING-PUSHDOWN (high, wrong results).** `predicateReferencesOnlyKeys` checked only the LHS, so
+>   `HAVING g > SUM(v)` was pushed below the GroupBy onto the raw scan. Fix: also require the RHS comparand to
+>   be key-only/constant. `rule_push_filter_through_groupby.go`. Pin: `TestBugHunt_HavingAggregateNotPushedBelowGroupBy`.
+> - **[x] COUNT-COL-COVERING (high, COUNT returns 0).** scalar `COUNT(col)` force-marked the index scan COVERING
+>   with zero columns → col read as NULL → COUNT=0. Fix: gate on a true COUNT(*) (mirror executor `isCountStar`).
+>   `rule_implement_streaming_agg.go`. Pin: `TestBugHunt_CountColumnNotForcedCovering`.
+> - **[x] DISTINCT-UNIONALL (high, duplicate rows).** `computeDistinctRecords` reported the no-dedup UNION ALL plan
+>   (`RecordQueryUnionPlan`) as distinct → `SELECT DISTINCT` over UNION ALL elided the dedup. Fix: report it
+>   non-distinct. `plan_properties.go`. Pin: `TestBugHunt_DistinctOverUnionAllKeepsDedup`.
+> - **[x] CAST-ROUND (low, Java parity).** `CAST(double AS INT/BIGINT)` used pre-Java-7 `floor(x+0.5)` →
+>   `0.49999999999999994` rounded to 1, `-0.5` to -1. Fix: faithful `java.lang.Math.round` bit-port.
+>   `values/values.go`. Pin: `TestBugHunt_CastDoubleToIntJavaRounding`.
+>
+> **OPEN (riskier — separate Graefe cycles; repros in PR):**
+> - **[x] COST-SELECTIVITY — FIXED (PR pending).** The equality bound was costed at `FilterSelectivity=0.5`
+>   > `RangeSelectivity=0.33` — inverted, so a broad range index was costed cheaper than a selective equality
+>   index. Introduced a distinct `EqualityBoundSelectivity=0.1` (< `RangeSelectivity`, kept separate from the
+>   generic residual-`FilterSelectivity`) and wired it into the 3 equality-vs-range scan-cost sites
+>   (`physical_wrapper.go` ×2, `planning_cost_model.go` scanLikeCost). `WHERE a=5 AND b>10` now drives off
+>   `IDX_A([=])` not `IDX_B([<>])` (master proven to pick the wrong index). Pins: `TestCostSelectivity_EqualityBeatsRange`
+>   (constant invariant sentinel) + `TestCostSelectivity_PrefersEqualityIndex` (plan). 1M stress before/after +
+>   FuzzCostMonotonicity 1.3M green; only 1 cost-assertion test churned.
+> - **[x] NULLS-ORDER — FIXED (PR pending).** Restored the NULLS axis to `RequestedSortOrder`
+>   (`AscendingNullsLast`/`DescendingNullsFirst`), populated it from `SortKey.NullsFirst`, and made
+>   `IsCompatibleWithRequestedSortOrder` + data-access `SatisfiesRequestedOrdering` null-aware (+ direction
+>   sites use `IsAscending()`/`IsDescending()`). `ORDER BY b ASC NULLS LAST` now retains the InMemorySort.
+>   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
+>   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
+>   review sweep (not committed regressions) found nothing.
+> - **[x] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — was ACTIVE on master, pre-existing) — FIXED.**
+>   Pin: `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2` (`WHERE zone='z1' AND region>'r1' … <=2` now
+>   returns `{21,22}`, was `{22}`). The fix is TWO pieces (piece 3 collapsed into piece 2 — the realization path
+>   already existed): (1) exclude ALL `VectorIndexScanMatchCandidate` from the pk-intersection candidate set — one
+>   condition in `pushDataAccessTasks` (planner.go ~628), the single home for the rule — since a vector scan is
+>   distance-ordered (ordered-stream OR self-limiting per-partition), never pk-monotonic, so it can never be a valid
+>   pk-keyed sorted-merge leg (the earlier draft's plan-level `isSelfLimitingVectorScan` intersector guards were
+>   consolidated into this upstream candidate-level check — Torvalds/Graefe nit, provably equivalent);
+>   (2) `compensationSafeForYield` `residualIsPartitionContiguous` exception — a residual over the partition columns
+>   CONTIGUOUS immediately after the bound equality prefix selects whole partitions, so it composes safely as a Filter
+>   above the self-limiting scan; `ImplementFilterRule` (which has NO gate against a Filter over a self-limiting vector
+>   scan, only against index-only predicates) then realizes `Filter(region>'r1') → VectorScan(self-limiting rank<=2)`.
+>   The DistanceRank stays in the scan binding (never leaks to the residual — rule_match_intermediate.go:470-483 keeps
+>   it consumed), so the Filter carries only the non-index-only `region>'r1'`. Contiguity anchor keeps the
+>   leading-column-unbound case (`region='r1'`, zone unbound) unplannable (`TrailingEqualityResidual` still green).
+>   Plan field `RecordQueryVectorIndexPlan.partitionColumns` (not wire-serialized) carries the names for the check.
+>   HISTORICAL (kept for context — root cause). Found by Graefe during RFC-167 Phase 4 review (PR #411). For a
+>   partitioned vector index with a partition-key inequality (e.g.
+>   `WHERE zone='z1' AND region>'m' AND <distance> <= K`, `PARTITION BY (zone,region)`), `WithPrimaryKeyIntersector`
+>   emits `Intersection(VectorTopK, PrimaryRange)` keyed on the full pk — and it is the ONLY physical plan (the safe
+>   `Filter(region>m, VectorTopK)` is blocked by `compensationSafeForYield` planner.go:734), so it is SELECTED. But the
+>   multi-partition vector cursor delivers `(region, distance)` order, NOT pk order (`vector_index_maintainer.go:779-790,1103`),
+>   and `executeIntersection` (executor.go:1710) feeds it into the pk-keyed sorted-merge (merge_cursor.go:405-467) with
+>   no re-sort → for K>1 rows per partition whose distance-order ≠ doc_id-order, the merge DROPS rows. Worked example:
+>   partition (z1,n) rows aaa(d=5),bbb(d=1),ccc(d=3): vector emits bbb,ccc,aaa; pk-range emits aaa,bbb,ccc; merge drops
+>   aaa. Latent because only K=1 is tested (`vector_multipartition_e2e_fdb_test.go:140`, `<=1`). FIX (same two pieces
+>   as RFC-167 Phase 4): the Java common-ordering gate in `WithPrimaryKeyIntersector` (drops this invalid intersection)
+>   + refine `compensationSafeForYield` so a PARTITION-key-column residual over a per-partition vector top-k is safe
+>   (selects whole partitions, never within-partition rows) → yields the correct `Filter`. PIN with a K>1 partition-
+>   residual FDB rows test FIRST. **CONFIRMED empirically** (probe, dropped during cleanup): `WHERE zone='z1' AND
+>   region>'r1' … <=2` plans to `Intersection(VectorIndexScan(rank<=2), Scan(DOCS,[=,<>]))` and returns `{22}` —
+>   DROPS id 21 (correct is `{21,22}`; in r2 the nearest vector is id 22 (dist 1.20) but id 21 (dist 1.41) sorts
+>   first by pk → the pk-merge advances past 21). **FIX ATTEMPTED (reverted) — it is THREE pieces, not two:**
+>   (1) the pk-order gate in `WithPrimaryKeyIntersector` (per-leg `computeWrapperRichOrdering(leg).Satisfies(pkReq)`)
+>   correctly drops the invalid vector intersection — VERIFIED; (2) the `compensationSafeForYield` partition-residual
+>   exception (with a CONTIGUITY check: the residual columns must be exactly the partition columns immediately after
+>   the bound equality prefix `len(prefixComparisons)` — else a leading partition col like `zone` is left unbound,
+>   which must stay unplannable per `TrailingEqualityResidual`) — VERIFIED via the plan field
+>   `RecordQueryVectorIndexPlan.partitionColumns` set in `ToScanPlan` from `columnNames[:partitionCount]`. BUT pieces
+>   1+2 alone make BOTH the K=1 and K>1 inequality queries UNPLANNABLE ("index-only predicate … cannot be a residual
+>   filter") — because **(3) the standalone `Filter(region>r1, VectorTopK)` plan is never GENERATED**: a partitioned
+>   vector scan (`partitionCount>0`) returns `EmitsOrderedStream()==false` (vector_index_match_candidate.go:139), so
+>   it is NOT excluded from the intersection (planner.go:628 RFC-156 guard) AND its only residual-bearing shape is the
+>   intersection — there is no realization path building a `Filter` over a self-limiting vector scan (the compensation
+>   is blocked/non-realizable, so only the intersection ever carries the residual). **The real fix (Graefe-corrected —
+>   the earlier `Limit(k)→Filter→ordered-scan` framing was WRONG):** do NOT switch to ordered-stream + a global
+>   `Limit(k)` — a global Limit over a fanout stream returns the k nearest rows across ALL surviving partitions and
+>   DROPS whole partitions (e.g. `region>'r1'` spanning r2,r3 with per-partition `<=2` must return 2 from r2 AND 2 from
+>   r3 = 4 rows; global `Limit(2)` returns the 2 nearest overall, possibly both from r2, dropping r3). That is the
+>   deferred Phase E per-partition-top-k trap (`vector_index_match_candidate.go:307-310`) and a NEW wrong-rows bug.
+>   Instead, **keep the scan SELF-LIMITING** (per-partition top-k stays enforced inside the maintainer's per-partition
+>   HNSW search) and **realize a partition-contiguous `Filter` directly above it**: `Filter(region>r1) →
+>   VectorScan(self-limiting per-partition top-k, fanout prefix=[z1,*])`. The self-limiting fanout returns top-k for
+>   every region in z1 in region order; the partition-column Filter drops whole regions ≤ r1; survivors are exactly
+>   top-k per region for region>r1. The index-only-residual error resolves naturally: the self-limiting scan still
+>   consumes the DistanceRank in its binding (`rank<=k`), so only `region>r1` (non-index-only) remains for the Filter.
+>   So Piece 3 is NOT "extend ordered-stream to partitioned" — it is "realize a partition-contiguous Filter over the
+>   self-limiting per-partition scan" (Piece 2 already certifies its safety). THEN gate the intersection (pieces 1+2).
+>   The K>1 pin must assert the winning plan is `Filter(...) → VectorIndexScan(... rank<=k ...)` (self-limiting), NOT
+>   an ordered scan. RFC-046/156 vector-planning change — needs the K>1 FDB rows pin + the existing vector suite green + 1M stress.
+> - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
+>   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
+>   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
+>   Decoupled finding: the guard-generalization + VALUE-RANGE ordering-gate (which re-rank value-range shells to the
+>   Intersection) are a separate landing needing the full ordering machinery + 1M stress (see RFC-167 §4 IMPLEMENTATION
+>   FINDING). **OQ#6 is RESOLVED and the vector half is DONE** (VECTOR-PARTITION-INTERSECTION-K>1 above, fixed): a
+>   vector scan is distance-ordered and can NEVER be a valid pk-keyed intersection leg, so it is excluded from the
+>   intersection candidate set entirely (one condition in `pushDataAccessTasks`) and its residual composes as a Filter
+>   above the un-intersected self-limiting scan. That removed the false conflation an earlier crude per-leg gate hit
+>   (dropping the vector leg is a TRUE positive, not a symptom of a bad gate). REMAINING (value-range only): whether a
+>   VALUE-RANGE pk-merge is even reachable / wrong-rows or MaximumCoverageMatches prevents it (OQ#2), and the general
+>   per-leg pk-order gate for value-range intersections following Java's `enumerateSatisfyingComparisonKeyValues`
+>   (per-candidate-type participation) — the RFC-167 Phase 1b landing, needing the full ordering machinery + 1M stress.
+>   Full design + verified root cause + phased plan in **`rfcs/167-cascades-plan-determinism.md`** (the deeper
+>   layer is the RFC-070 nil-inner-shell architecture defeating Java's prune-to-one-concrete-member + planHash
+>   tie-break; an orthogonal pk-intersector ordering bug — `intersector_primary_key.go` dropping requestedOrderings
+>   — is a plausible wrong-rows risk that Phase 4 fixes). **Phase 0 (this change):** fixed the two map-iteration
+>   sources: (1) `expressions/reference.go`
+>   `partialMatchMap` is now iterated in first-insertion order (companion `partialMatchOrder` slice, mirrors
+>   Java `LinkedHashMultimap`); (2) `cascades_generator.go` `metadataPlanContext.GetMatchCandidates` now sorts
+>   `RecordMetaData.GetAllIndexes()` (a Go map) by index name. Pinned by `TestPlanDeterminism_EqualCostIndexTie`
+>   (2 indexes on one column, 200 runs, one plan). **REMAINING (multi-phase, tracked):** a multi-equality tie
+>   over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` / idx_a,idx_b,idx_c) is still
+>   nondeterministic. Root cause: nil-inner *shell* wrappers (Fetch + PredicatesFilter push-through templates)
+>   are costed without their eventual inner → rank artificially cheap; and the extraction relink
+>   `findPhysicalPlan` (physical_wrapper.go) resolves a shell's inner to the FIRST physical member of the child
+>   reference by member-iteration order → on a cost tie the relinked index varies. Naive fixes tried and reverted:
+>   excluding all shell types from `OptimizeGroupTask` selection deterministically picks the cost-cheapest REAL
+>   plan, but that's an Intersection (e.g. `idx_a ∩ idx_b`) — a plan-shape regression vs the single-index plan
+>   the shell relink produced, AND exposes intersection mis-costing. The complete fix needs consistent shell
+>   handling + total-order tie resolution across selection AND `findPhysicalPlan` extraction, validated by 1M
+>   stress (it changes index selection broadly). Rows are always correct → medium. `FuzzPlanner_Determinism`
+>   misses both (doesn't exercise equal-index ties).
+>
+> **Latent (not reachable today):** `ValueIndexScanMatchCandidate.createsDuplicates` is a dead field (always
+> false) so fan-out value-index access never emits the per-leg PK Distinct Java applies — but the embedded
+> metadata builder never emits a `FanType.FanOut` value index, so no SQL query reaches it. Wire a guard if/when
+> FanOut value indexes become expressible.
+>
+> ## RFC-164 — Port-fidelity drift: make this bug CLASS un-shippable (tracked workstream)
+>
+> Post-mortem of the hunt: every bug was a spot where Go reimplemented/simplified Java instead of porting 1:1,
+> dropping an invariant — and CI stayed green because the test gap is *dimensional* (each feature tested alone,
+> never in the combination that breaks it) and one test even pinned a bug. The deepest issue: port fidelity
+> isn't enforced by anything automated; the one net that could catch drift (the differential) is hand-fed.
+> Full analysis + acceptance criteria in `rfcs/164-port-fidelity-drift-detection.md` (v2, Graefe+Torvalds
+> reviewed). **Execution order = ships × leverage** (cheap always-on class-killers first, then the heavy net);
+> every found bug gets a committed minimized seed. Owner: query-engine cycle per WS.
+> - **[ ] WS-2 — Structural plan invariants** (highest ROI; always-on, Go-only CI). Each must run clean across
+>   the WHOLE existing corpus with ZERO runtime skip-lists (exemptions only as compile-time optional slots).
+>   - [x] no `<nil>` child in the FINAL extracted plan — LANDED (`ValidatePlanInvariants`, plan-tree walk via
+>     genuine-leaf classification; always-on in `PlanQueryForTest`; corpus-clean zero-skip-list; mutation-proven
+>     vs IN-LIMIT; `FuzzPlanner_Invariants` 1M+ execs). Kills the ~20-wrapper relink class.
+>   - [ ] `WithChildren(GetQuantifiers())` round-trip identity — most direct relink-class catch.
+>   - [ ] correlation/quantifier-binding completeness (no dangling correlation).
+>   - [ ] set-op comparison-key correctness; result-type/schema consistency; COVERING⊇referenced-fields (→ COUNT-COL).
+>   - NOT "DistinctRecords⇒has-dedup-node" (unsound — unique/PK/agg/streaming-agg/intersection are distinct w/o a node) → runtime no-dup or WS-3.
+> - **[ ] WS-3 — Single source of truth.** [ ] shared `isCountStar` + guard==consumer audit (cheap, first);
+>   [ ] port Java's `RecordQueryPlanVisitor` for plan properties (compile-time exhaustiveness) retiring the
+>   `plan_properties.go` switches; reconcile wrapper-held `unique`/`covering`. Graefe + Torvalds.
+> - **[ ] WS-1 — Generative Go-vs-Java row-level differential** (highest coverage; heavy-infra, nightly lane).
+>   ROW-drift only (plan-shape is WS-2/4); catches 7/10. Acceptance: [ ] schema engineered per bug (multi-key agg
+>   index, nullable+NULL sort cols, covering/non-covering pair); [ ] engine-acceptance skew classification;
+>   [ ] verify LIMIT path (JDBC setMaxRows? else IN-LIMIT drops to 6/10); [ ] corpus persistence + named lane +
+>   budget; [ ] mutation proof. Honest effort ~1-2wk (or narrow first cut 2-3d) — NOT 1 day. Torvalds + /code-review.
+> - **[ ] WS-4 — Property/metamorphic tests for Go-only paths.** [ ] cost monotonicity invariant (equality ≤ range);
+>   [ ] determinism via a COMMITTED deterministic cost-tie seed (not random fuzz); [ ] CI grep banning bare
+>   `range someMap` in plan code (defer the nogo analyzer). Graefe + Torvalds.
+> - **[ ] WS-5 — Audit & enumerate Go-only divergences in `DIVERGENCES.md`** ("what Java invariant does this drop?").
+>   Means "known reservoirs documented", not "all found". Graefe.
+>
+> Open hunt bugs: **NULLS-ORDER** is wrong-rows → fix DIRECTLY (extend `RequestedSortOrder` NULLS axis + thread
+> through `Ordering.Satisfies`), pinned by WS-2/WS-1 — not "through" the audit. COST-SELECTIVITY + NONDETERMINISM
+> ride WS-4 (pin-then-fix). Closing them WITH the nets that would have caught them is the test the workstream works.
+
 > **[ ] BUG (query-engine, wrong results, Graefe-gated) — local residual silently DROPPED on GROUP-BY over a
 > correlated join.** `SELECT o.id, COUNT(*) FROM o, t WHERE t.fk = o.id AND t.k = 5 GROUP BY o.id` plans
 > IDENTICALLY with and without `AND t.k = 5` → `StreamingAgg(keys=[O.ID], InMemorySort(…, FlatMap(outer=Scan(T),
@@ -1618,6 +1798,8 @@ asserts post-quiescence that every ACTIVE posting is within the 4×Lmax envelope
 search-visibility bound) and its failure diag includes posting size vs cap + sidecar
 presence, so either silent-miss shape self-diagnoses on any recurrence.
 
+- [ ] **RFC-156 budget-exhaustion 5s-deadline stress is unverified programmatically.** `spfreshDefaultStreamCellBudget=512` / `spfreshDefaultStreamCandidateBudget=4000` are calibrated-by-comment, not pinned by a test asserting that ordered-stream search+materialize stays within the FDB 5s tx deadline on a large index + a pathologically selective residual filter (the heap/stream tests verify memory bounds and truncation honesty, not the wall-clock deadline).
+
 ### [x] CORRECTNESS FIXED — re-enumerated indexed multi-way joins (was: NULL / 0 rows)
 
 **Symptom (fixed).** A 3-way *indexed chain* join planned through the RFC-042 L3
@@ -2532,3 +2714,37 @@ Open work (detail + file:line in the RFC):
   a cadence (today they're library entry points a deployment must wire).
 - **SQL nice-to-haves:** yamsql vector port, `ef_search` FDB behavioral test,
   OR-of-two-KNN execution test, window-in-`WHERE` `42F21` rejection.
+
+## RFC-165 — ANSI SQL Core conformance backlog (read-side reach beyond the Java port)
+
+Generated scorecard: `SQL_ANSI_CONFORMANCE.md` (Ledger A) tracks SQL:2023 Core (176 features per
+PostgreSQL 18). `Go?` is derived from `# ansi:` corpus tags — never hand-typed. The **shared-gap**
+rows (Java and Go both lack the feature) are this backlog; each is a wire-safe **read-side**
+extension and ships under the full query-engine gate (Graefe + deep coverage). The **divergence**
+rows (Java has it, Go rejects it) are RFC-164 port-fidelity bugs, not this list.
+
+Shared ANSI gaps surfaced so far (extend by tagging more corpus + completing the roster, Phase 1):
+- [ ] **E091-07 `COUNT(DISTINCT)` / DISTINCT quantifier** — rejected 0A000 in both engines. The
+      single highest-value Core gap. (Pinned today as `# ansi-gap: E091-07` on `count_distinct.yaml`.)
+- [ ] **E071-01 / E071-03 `UNION DISTINCT` / `EXCEPT DISTINCT`** — only `UNION ALL` works (E071-02).
+      No Cascades dedup rule. (`# ansi-gap: E071-01` on `union.yaml`.)
+- [ ] **E061-11 subqueries in `IN` predicate** — rejected 0AF00 in both. (`# ansi-gap: E061-11` on `subquery_in.yaml`.)
+- [ ] **E021-04/05/06/08/09/11 string functions** (`CHARACTER_LENGTH`, `OCTET_LENGTH`, `SUBSTRING`,
+      `UPPER`/`LOWER`, `TRIM`, `POSITION`) + **E021-07** string concatenation — no function-catalog
+      entry in either engine (42883). A whole Core subfeature family.
+- [ ] **E011-03 `DECIMAL`/`NUMERIC`** — no exact-decimal type; BIGINT division truncates.
+- [ ] **E141-04/06/07 `FOREIGN KEY` / `CHECK` / column defaults** — only NOT NULL/UNIQUE/PK today.
+
+**Phase 1 (continuing): tag the rest of the corpus.** Each `# ansi:`/`# ansi-gap:` tag on a yamsql
+scenario moves a row from `untested` to a real status. The drift guard
+(`TestAnsiLedgerEvidenceExists`) rejects a tag whose scenario lacks the matching outcome, so the
+scoreboard can't lie. As Go closes a gap, flip happens automatically when the new feature's scenario
+is tagged — never by hand-editing the doc.
+
+**RFC-165 follow-ups (tracked, non-blocking):**
+- [ ] **Verify the `Java?` roster facts against the live 4.12.11.0 server.** The `Java?` column in
+      `ansi_roster.go` is currently a hand-authored frozen-version *assertion* (sourced from
+      SQL_CONFORMANCE.md), structurally contained (it can't inflate the Go headline — see RFC-165 §4.6)
+      but unverified. As A3 cross-engine coverage grows, diff each tagged feature's `Java?` against the
+      conformance server so the fact becomes *verified*, not asserted, and flag any mismatch. Per
+      Torvalds + Graefe review of PR #400.

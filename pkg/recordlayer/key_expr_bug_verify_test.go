@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"fdb.dev/gen"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -38,7 +37,13 @@ var _ = Describe("KeyExprBugVerify", func() {
 	})
 
 	// Bug 2: FieldKeyExpression nil message must respect FanType.
-	// Java's getNullResult(): FanOut → empty, Concatenate → [[emptyList]], None → [[nil]].
+	// Java's getNullResult() for the default NullStandin.NULL (what
+	// Key.field(name, fanType) uses; Go does not model NullStandin):
+	// FanOut → empty, Concatenate → [[null]] (scalar(nullStandin) → tuple
+	// null 0x00), None → [[null]]. The empty-NESTED-tuple form (0x05 0x00) is
+	// Java's NOT_NULL branch / the present-but-empty repeated case, NOT the
+	// absent-field default — emitting it here would write wire-divergent
+	// index bytes vs Java (FieldKeyExpression.java:229-240).
 	Describe("Bug2: nil message respects FanType", func() {
 		It("FanType.None on nil returns [[nil]]", func() {
 			expr := Field("order_id")
@@ -54,16 +59,15 @@ var _ = Describe("KeyExprBugVerify", func() {
 			Expect(result).To(BeEmpty())
 		})
 
-		It("FanType.Concatenate on nil returns [[empty nested tuple]]", func() {
+		It("FanType.Concatenate on nil returns [[null]] (tuple null, matching Java default)", func() {
 			expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
 			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(HaveLen(1))
-			Expect(result[0]).To(HaveLen(1))
-			// Empty nested tuple.Tuple (packable), not a bare []any (Pack panics on []any).
-			emptyTuple, ok := result[0][0].(tuple.Tuple)
-			Expect(ok).To(BeTrue(), "Concatenate on nil should return an empty nested tuple")
-			Expect(emptyTuple).To(BeEmpty())
+			// Java FieldKeyExpression.getNullResult() Concatenate default ->
+			// scalar(nullStandin) -> tuple null (packs as 0x00), NOT an empty
+			// nested tuple (0x05 0x00). The byte-level assertion lives in
+			// key_expression_concatenate_test.go (absent-field case).
+			Expect(result).To(Equal([][]any{{nil}}))
 		})
 	})
 

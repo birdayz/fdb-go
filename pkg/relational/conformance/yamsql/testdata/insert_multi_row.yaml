@@ -9,6 +9,7 @@ setup: []
 tests:
   # Single row INSERT
   - query: INSERT INTO t VALUES (1, 'Alice', 100)
+    ansi: [E101-01]
     rows: []
   - query: SELECT COUNT(*) FROM t
     rows:

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -416,6 +417,12 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Cascades planner could not plan query")
 	}
+	// RFC-164 WS-2: structural plan invariants on the PRODUCTION path — a relink
+	// that dropped a child fails loudly here rather than executing to wrong/zero
+	// rows (the IN-LIMIT symptom).
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed query plan: "+err.Error())
+	}
 	// Plan scalar subqueries independently through the Cascades pipeline.
 	var scalarSubs []scalarSubqueryBinding
 	for _, ssq := range scalarSubqueryPlans {
@@ -447,6 +454,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		if subPlan == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"scalar subquery physical plan nil")
+		}
+		if err := cascades.ValidatePlanInvariants(subPlan); err != nil {
+			return nil, api.NewError(api.ErrCodeInternalError, "malformed scalar-subquery plan: "+err.Error())
 		}
 		scalarSubs = append(scalarSubs, scalarSubqueryBinding{
 			alias: ssq.Alias,
@@ -907,6 +917,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	physPlan := ph.GetRecordQueryPlan()
 	if physPlan == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML physical plan nil")
+	}
+	// RFC-164 WS-2: structural plan invariants on the production DML path.
+	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
 
 	ls.setPlan(physPlan)
@@ -1825,12 +1839,19 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 	// Register PrimaryScanMatchCandidates for each record type's PK.
 	// Mirrors Java's RecordStoreScope which creates a PrimaryScanMatchCandidate
 	// from the common primary key.
+	// Deterministic (name-sorted) iteration: RecordTypes() is a Go map; ranging it
+	// directly left both the availableRecordTypes list handed to every primary-scan
+	// candidate AND the candidate order dependent on Go's randomised map order — the
+	// same nondeterminism class as the index map below (RFC-164 NONDETERMINISM / see
+	// RFC-167). Moot for single-table queries; this hardens the multi-table path.
 	allTypes := c.md.RecordTypes()
 	allTypeNames := make([]string, 0, len(allTypes))
 	for name := range allTypes {
 		allTypeNames = append(allTypeNames, name)
 	}
-	for _, rt := range allTypes {
+	sort.Strings(allTypeNames)
+	for _, name := range allTypeNames {
+		rt := allTypes[name]
 		if rt.PrimaryKey == nil {
 			continue
 		}
@@ -1854,10 +1875,22 @@ func (c *metadataPlanContext) GetMatchCandidates() []cascades.MatchCandidate {
 		))
 	}
 
-	// Register secondary index candidates.
+	// Register secondary index candidates. Iterate in a deterministic
+	// (name-sorted) order: GetAllIndexes returns a Go map, and ranging it directly
+	// made the match-candidate order — and thus equal-cost tie resolution — depend
+	// on Go's randomised map iteration, producing 2-3 distinct plans for one query
+	// (RFC-164 NONDETERMINISM / see RFC-167). Java keeps indexes in a stable order; sorting by
+	// index name restores that. (The partialMatchMap insertion-order fix in
+	// reference.go is downstream of this; both are needed.)
 	allIndexes := c.md.GetAllIndexes()
+	indexNames := make([]string, 0, len(allIndexes))
+	for name := range allIndexes {
+		indexNames = append(indexNames, name)
+	}
+	sort.Strings(indexNames)
 	defs := make([]cascades.IndexDef, 0, len(allIndexes))
-	for _, idx := range allIndexes {
+	for _, name := range indexNames {
+		idx := allIndexes[name]
 		if idx.RootExpression == nil {
 			continue
 		}

@@ -87,3 +87,4 @@ tests:
   - query: SELECT id FROM test_cast WHERE CAST(num_col AS STRING) = CAST(123 AS STRING)
     rows:
       - [1]
+    ansi: [F201]

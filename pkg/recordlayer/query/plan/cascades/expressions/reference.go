@@ -55,6 +55,12 @@ type Reference struct {
 
 	planProperties  any           // set during PLANNING phase; typed as *cascades.PlanPropertiesMap via cascades package
 	partialMatchMap map[any][]any // MatchCandidate → []PartialMatch; typed via cascades helpers
+	// partialMatchOrder records candidates in first-insertion order so iteration
+	// is deterministic, mirroring Java's insertion-ordered LinkedHashMultimap.
+	// Ranging over partialMatchMap directly made equal-cost index ties resolve by
+	// Go's randomised map order → 2-3 distinct plans for one query (RFC-164
+	// NONDETERMINISM / see RFC-167). The map stays for O(1) lookup; this slice fixes the order.
+	partialMatchOrder []any
 
 	// winners stores per-properties best plans following Graefe 1995 §2.
 	winners map[any]RelationalExpression
@@ -515,11 +521,15 @@ func (r *Reference) AddPartialMatch(candidate any, match any) bool {
 	if r.partialMatchMap == nil {
 		r.partialMatchMap = make(map[any][]any)
 	}
-	existing := r.partialMatchMap[candidate]
+	existing, seen := r.partialMatchMap[candidate]
 	for _, e := range existing {
 		if e == match {
 			return false // already present
 		}
+	}
+	if !seen {
+		// First match for this candidate — record its insertion order.
+		r.partialMatchOrder = append(r.partialMatchOrder, candidate)
 	}
 	r.partialMatchMap[candidate] = append(existing, match)
 	return true
@@ -543,8 +553,10 @@ func (r *Reference) GetAllPartialMatches() []any {
 		return nil
 	}
 	var result []any
-	for _, matches := range r.partialMatchMap {
-		result = append(result, matches...)
+	// Iterate in insertion order (Java LinkedHashMultimap.values()), not Go's
+	// randomised map order, so tie resolution is deterministic.
+	for _, candidate := range r.partialMatchOrder {
+		result = append(result, r.partialMatchMap[candidate]...)
 	}
 	return result
 }
@@ -556,10 +568,10 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 	if r.partialMatchMap == nil {
 		return nil
 	}
-	result := make([]any, 0, len(r.partialMatchMap))
-	for k := range r.partialMatchMap {
-		result = append(result, k)
-	}
+	// Insertion order (Java LinkedHashMultimap.keySet()), not Go's randomised map
+	// order, so candidate iteration is deterministic.
+	result := make([]any, 0, len(r.partialMatchOrder))
+	result = append(result, r.partialMatchOrder...)
 	return result
 }
 

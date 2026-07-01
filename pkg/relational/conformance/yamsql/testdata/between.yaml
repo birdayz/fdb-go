@@ -124,3 +124,4 @@ tests:
   - query: SELECT COUNT(*) FROM t WHERE v NOT BETWEEN NULL AND 2
     rows:
       - [4]
+    ansi: [E061-02]

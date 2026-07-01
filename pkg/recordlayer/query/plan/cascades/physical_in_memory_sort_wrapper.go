@@ -88,11 +88,15 @@ func (w *physicalInMemorySortWrapper) HintOrdering() properties.Ordering {
 	}
 	keys := make([]values.Value, len(w.plan.GetSortKeys()))
 	desc := make([]bool, len(w.plan.GetSortKeys()))
+	nullsFirst := make([]bool, len(w.plan.GetSortKeys()))
 	for i, sk := range w.plan.GetSortKeys() {
 		keys[i] = &values.FieldValue{Field: sk.Field, Typ: values.UnknownType}
 		desc[i] = sk.Desc
+		nullsFirst[i] = sk.NullsFirst
 	}
-	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+	// Carry NULL placement so a parent sort does not elide against a
+	// counterflow (e.g. ASC NULLS LAST) stream as if it were natural order.
+	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc, NullsFirst: nullsFirst}
 }
 
 // HintCost: in-memory sort is expensive — materialize + O(n log n).

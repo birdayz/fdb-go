@@ -1642,6 +1642,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			l := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
 			return &descriptorpb.FieldDescriptorProto{Name: &name, Number: &number, Type: &t, Label: &l, TypeName: &typeName}
 		}
+		// repeatedMessageField builds a REPEATED message-typed field — the parent of a
+		// FanOut nesting (Java's `field(..., FanType.FanOut).nest(...)`).
+		repeatedMessageField := func(name string, number int32, typeName string) *descriptorpb.FieldDescriptorProto {
+			t := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+			l := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+			return &descriptorpb.FieldDescriptorProto{Name: &name, Number: &number, Type: &t, Label: &l, TypeName: &typeName}
+		}
 		strField := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
 			t := descriptorpb.FieldDescriptorProto_TYPE_STRING
 			l := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
@@ -1945,6 +1952,32 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			got, err := renameFields(Nest("inner", Field("foo")), oldD, newD)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(proto.Equal(got.ToKeyExpression(), Nest("wrapper", Field("foo")).ToKeyExpression())).To(BeTrue())
+		})
+
+		It("rewrites under a FanOut (repeated-message) parent at depth ≥2, preserving FanType", func() {
+			// Graefe's flagged axis (Java's `many_middle`): a FanType.FanOut nesting parent at
+			// depth ≥2. Every prior depth spec used an OPTIONAL parent. This renames the FanOut
+			// parent itself (groups→groups_v2, by number) AND the deep leaf (foo→foo_z), and the
+			// rewritten expression must STILL be a FanOut nest — proving the visitor both
+			// re-derives through a REPEATED message descriptor and preserves e.fanType
+			// (rename_fields_visitor.go). A dropped fan type would yield Nest (None) and fail
+			// proto.Equal.
+			oldD := buildFile("o.proto",
+				msg("Outer", repeatedMessageField("groups", 1, ".test.Group")),
+				msg("Group", messageField("inner", 1, ".test.Inner")),
+				msg("Inner", strField("foo", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			newD := buildFile("n.proto",
+				msg("Outer", repeatedMessageField("groups_v2", 1, ".test.Group")),
+				msg("Group", messageField("inner", 1, ".test.Inner")),
+				msg("Inner", strField("foo_z", 1), strField("bar", 2)),
+			).Messages().Get(0)
+			got, err := renameFields(NestFanOut("groups", Nest("inner", Field("foo"))), oldD, newD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proto.Equal(
+				got.ToKeyExpression(),
+				NestFanOut("groups_v2", Nest("inner", Field("foo_z"))).ToKeyExpression(),
+			)).To(BeTrue())
 		})
 	})
 

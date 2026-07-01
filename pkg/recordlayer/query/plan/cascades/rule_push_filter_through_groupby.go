@@ -88,17 +88,50 @@ func buildGroupKeySet(keys []values.Value) map[string]struct{} {
 func predicateReferencesOnlyKeys(p predicates.QueryPredicate, keySet map[string]struct{}) bool {
 	cp, ok := p.(*predicates.ComparisonPredicate)
 	if !ok {
-		if _, isConst := p.(*predicates.ConstantPredicate); isConst {
-			return true
-		}
+		// A ConstantPredicate (e.g. HAVING FALSE / HAVING NULL after folding)
+		// references NO grouping column, so it is NOT a grouping-key predicate
+		// and must stay ABOVE the GroupBy. Pushing a row-eliminating constant
+		// below a SCALAR (zero-grouping-key) aggregate is WRONG: the scalar
+		// aggregate emits one row even over empty input, so `SELECT COUNT(*)
+		// FROM t HAVING FALSE` would return 1 row {0} instead of 0 rows. Only a
+		// ComparisonPredicate on a grouping column is pushable (RFC-166).
 		return false
 	}
 	fv, ok := cp.Operand.(*values.FieldValue)
 	if !ok {
 		return false
 	}
-	_, inKeys := keySet[strings.ToUpper(fv.Field)]
-	return inKeys
+	if _, inKeys := keySet[strings.ToUpper(fv.Field)]; !inKeys {
+		return false
+	}
+	// The RHS comparand must ALSO reference only grouping keys / constants.
+	// A HAVING predicate like `g > SUM(v)` has a grouping-key LHS but an
+	// AGGREGATE-valued RHS: pushing it below the GroupBy evaluates it on raw
+	// scan rows where SUM(v) does not yet exist, mis-filtering the aggregation
+	// input. Java's PredicatePushDownRule.visitGroupByExpression pushes NOTHING
+	// through a GroupBy for exactly this reason; we keep the (sound) key-only
+	// pushdown but must reject any predicate whose comparand is not key-only.
+	return comparandReferencesOnlyKeys(cp.Comparison, keySet)
+}
+
+// comparandReferencesOnlyKeys reports whether a comparison's RHS comparand is
+// safe to evaluate below a GroupBy: a unary comparison (IS [NOT] NULL, no
+// comparand), a literal/constant comparand, or a grouping-key field. Anything
+// else (an aggregate value, a non-key column, an arithmetic/correlated value)
+// is conservatively treated as non-pushable.
+func comparandReferencesOnlyKeys(c predicates.Comparison, keySet map[string]struct{}) bool {
+	if c.Type.IsUnary() || c.Operand == nil {
+		return true
+	}
+	switch rhs := c.Operand.(type) {
+	case *values.FieldValue:
+		_, inKeys := keySet[strings.ToUpper(rhs.Field)]
+		return inKeys
+	case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
+		return true
+	default:
+		return false
+	}
 }
 
 var _ ExpressionRule = (*PushFilterThroughGroupByRule)(nil)

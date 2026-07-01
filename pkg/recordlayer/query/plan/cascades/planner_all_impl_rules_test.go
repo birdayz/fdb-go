@@ -12,10 +12,11 @@ func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
 	// 15 ordering-push + 4 referenced-fields-push + 9 Java-ported + 12 fetch-push-through
-	// + 1 Go extension (ImplementInMemorySortRule) = 41
+	// + 1 vector limit-fold (SinkLimitIntoVectorScanRule, RFC-156 Phase B)
+	// + 1 Go extension (ImplementInMemorySortRule) = 42
 	// Rules yield into Members.
-	if len(rules) != 41 {
-		t.Fatalf("expected 41 implementation rules, got %d", len(rules))
+	if len(rules) != 42 {
+		t.Fatalf("expected 42 implementation rules, got %d", len(rules))
 	}
 }
 

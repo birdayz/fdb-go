@@ -195,7 +195,7 @@ func TestPushFilterThroughGroupBy_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestPushFilterThroughGroupBy_ConstantPredPushes(t *testing.T) {
+func TestPushFilterThroughGroupBy_ConstantPredNotPushed(t *testing.T) {
 	t.Parallel()
 
 	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
@@ -212,7 +212,12 @@ func TestPushFilterThroughGroupBy_ConstantPredPushes(t *testing.T) {
 	gbRef := expressions.InitialOf(gb)
 	gbQ := expressions.ForEachQuantifier(gbRef)
 
-	// Constant TRUE predicate — can always be pushed.
+	// A ConstantPredicate references no grouping column, so it must NOT be
+	// pushed below the GroupBy — it stays above (RFC-166). With only a constant
+	// in the filter, the rule has nothing pushable and must not fire. (Pushing a
+	// row-eliminating constant below a scalar aggregate breaks empty-group
+	// semantics; a TRUE constant is dropped above the GroupBy by
+	// FilterDropTruePredicatesRule, so no optimization is lost.)
 	filterExpr := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewConstantPredicate(predicates.TriTrue),
@@ -220,7 +225,7 @@ func TestPushFilterThroughGroupBy_ConstantPredPushes(t *testing.T) {
 	filterRef := expressions.InitialOf(filterExpr)
 
 	results := FireExpressionRule(NewPushFilterThroughGroupByRule(), filterRef)
-	if len(results) == 0 {
-		t.Fatal("PushFilterThroughGroupByRule should fire with constant TRUE predicate")
+	if len(results) != 0 {
+		t.Fatalf("PushFilterThroughGroupByRule must NOT push a constant predicate below the GroupBy; got %d results", len(results))
 	}
 }

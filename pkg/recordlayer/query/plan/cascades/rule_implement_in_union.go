@@ -244,7 +244,7 @@ func adjustBindingsForInUnion(
 		}
 
 		if reqSort, ok := reqMap[val]; ok && reqSort.IsDirectional() {
-			if reqSort == RequestedSortOrderAscending {
+			if reqSort.IsAnyAscending() {
 				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
 			} else {
 				adjustedBM[val] = []OrderingBinding{SortedBinding(ProvidedSortOrderDescending)}

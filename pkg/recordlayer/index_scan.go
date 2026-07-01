@@ -44,6 +44,13 @@ const (
 	// Must be used with ScanVectorIndex which provides VectorScanBounds.
 	// Matches Java's IndexScanType.BY_DISTANCE.
 	IndexScanByDistance IndexScanType = "BY_DISTANCE"
+
+	// IndexScanByDistanceOrderedStream is the RFC-156 Phase C VBASE distance-
+	// ordered STREAMING scan: a demand-driven cursor that widens its scanned
+	// horizon in batches as the consumer (Filter → Limit) pulls, bounded by a
+	// budget cap (honest ScanLimitReached truncation, never a silent < k). Go-only
+	// read-side extension; no wire-format change.
+	IndexScanByDistanceOrderedStream IndexScanType = "BY_DISTANCE_ORDERED_STREAM"
 )
 
 // TupleRange specifies a range of tuples for index scanning.
@@ -350,6 +357,21 @@ func (store *FDBRecordStore) ScanIndexByType(
 	case IndexScanByDistance:
 		// HNSW and SPFresh share the BY_DISTANCE TupleRange/IndexEntry
 		// contract (RFC-094 §10) — dispatch by interface, not concrete type.
+		vm, ok := maintainer.(byDistanceScanner)
+		if !ok {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
+			}
+		}
+		return vm.ScanByDistance(scanRange, continuation, scanProperties)
+	case IndexScanByDistanceOrderedStream:
+		// RFC-156 Phase C: the VBASE distance-ordered STREAMING scan (demand-driven
+		// widening + budget-bounded honest truncation). Only SPFresh implements
+		// widening; an HNSW ordered scan has no posting cells to widen, so it falls
+		// back to the fixed-horizon ScanByDistance (Phase B, unchanged).
+		if sm, ok := maintainer.(orderedStreamScanner); ok {
+			return sm.ScanByDistanceOrderedStream(scanRange, continuation, scanProperties)
+		}
 		vm, ok := maintainer.(byDistanceScanner)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
@@ -776,7 +798,17 @@ type byDistanceScanner interface {
 	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }
 
+// orderedStreamScanner is the RFC-156 Phase C distance-ordered STREAMING scan
+// (demand-driven widening + budget-bounded honest truncation). Same TupleRange/
+// IndexEntry contract as ScanByDistance; only partition indices with a widenable
+// posting structure (SPFresh) implement it — others use the ScanByDistance
+// fixed-horizon fallback.
+type orderedStreamScanner interface {
+	ScanByDistanceOrderedStream(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
+}
+
 var (
-	_ byDistanceScanner = (*vectorIndexMaintainer)(nil)
-	_ byDistanceScanner = (*spfreshIndexMaintainer)(nil)
+	_ byDistanceScanner    = (*vectorIndexMaintainer)(nil)
+	_ byDistanceScanner    = (*spfreshIndexMaintainer)(nil)
+	_ orderedStreamScanner = (*spfreshIndexMaintainer)(nil)
 )

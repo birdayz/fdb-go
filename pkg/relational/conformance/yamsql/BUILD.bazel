@@ -1,8 +1,21 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# keep: the ANSI-tagged yamsql corpus, exported so the cross-engine Java?-fact
+# verification (//conformance:java_facts_conformance_test) can stage it into
+# runfiles and walk the `ansi:`/`ansi_gap:` tags. (The yamsql_test below globs the
+# same files directly via `data`.)
+filegroup(
+    name = "testdata",
+    srcs = glob(["testdata/**"]),
+    visibility = ["//visibility:public"],
+)
+
 go_library(
     name = "yamsql",
     srcs = [
+        "ansi_roster.go",
+        "ansiledger.go",
+        "coverage.go",
         "diff.go",
         "featurematrix.go",
         "runner.go",
@@ -19,6 +32,10 @@ go_library(
 go_test(
     name = "yamsql_test",
     srcs = [
+        "ansiledger_internal_test.go",
+        "ansiledger_test.go",
+        "coverage_internal_test.go",
+        "coverage_test.go",
         "featurematrix_test.go",
         "runner_test.go",
         "yamsql_test.go",
@@ -27,6 +44,12 @@ go_test(
         # keep: staged into runfiles so TestFeatureMatrixUpToDate can read the
         # committed matrix and walk up to the repo root under Bazel.
         "//:FEATURE_MATRIX.md",
+        # keep: staged so TestSQLCoverageUpToDate / TestAnsiLedgerUpToDate
+        # (RFC-165 Ledgers B/A) read the committed reports under Bazel. Without
+        # this the guards pass vacuously under `bazel test` while only `go test`
+        # catches drift.
+        "//:SQL_COVERAGE.md",
+        "//:SQL_ANSI_CONFORMANCE.md",
         "//:MODULE.bazel",
     ],
     embed = [":yamsql"],

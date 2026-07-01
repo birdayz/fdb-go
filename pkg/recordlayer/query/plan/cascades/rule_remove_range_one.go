@@ -35,6 +35,10 @@ func (r *RemoveRangeOneRule) Matcher() matching.BindingMatcher { return r.matche
 
 func (r *RemoveRangeOneRule) OnMatch(call *ExpressionRuleCall) {
 	lim := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
+	// A runtime cap (parameterized RFC-156 rank limit) is not a literal LIMIT 1.
+	if lim.GetLimitValue() != nil {
+		return
+	}
 	// Only match LIMIT 1 OFFSET 0.
 	if lim.GetLimit() != 1 || lim.GetOffset() != 0 {
 		return

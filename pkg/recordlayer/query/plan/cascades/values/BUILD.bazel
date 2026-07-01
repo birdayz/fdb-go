@@ -59,6 +59,7 @@ go_library(
         "value_row_number.go",
         "value_row_number_high_order.go",
         "value_scalar_subquery.go",
+        "value_strict_rank_limit.go",
         "value_subscript.go",
         "value_throws.go",
         "value_udf.go",
@@ -76,6 +77,7 @@ go_library(
 go_test(
     name = "values_test",
     srcs = [
+        "cast_round_bughunt_test.go",
         "coercion_test.go",
         "correlation_test.go",
         "equals_without_children_test.go",

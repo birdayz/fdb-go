@@ -288,6 +288,14 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
 
+		// --- Vector scan limit fold (RFC-156 Phase B) ---
+		// Folds a Limit(k) directly above an ordered-stream VectorIndexScan back
+		// into the scan's self-limiting top-k mode (restores the legacy one-shot
+		// search(k) for no-residual / partition-only queries). Does NOT fire when
+		// a residual Filter intervenes — those keep the Limit→Filter→ordered-scan
+		// form that returns the true k nearest MATCHING rows.
+		NewSinkLimitIntoVectorScanRule(),
+
 		// --- Fetch push-through rules (physical plan optimization) ---
 		NewMergeFetchIntoCoveringIndexRule(),
 		NewPushDistinctBelowFilterRule(),
