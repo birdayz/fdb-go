@@ -528,7 +528,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	}
 	if result.err != nil {
 		// Hedge failed — fall back to remaining servers sequentially (see resolveFallback).
-		return resolveFallback(result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
+		return resolveFallback(ctx, result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
 			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
 		})
 	}
@@ -924,13 +924,15 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // the right response). hedgeErr seeds the remembered timeout from the hedge arm's own failure — a
 // transport error, never a reply-carried version error (those surface directly via parseGetValueReply on
 // the hedge success path, so they never reach here).
-func resolveFallback(hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
-	// A cancelled/expired context propagates IMMEDIATELY — never masked by a remembered version error
-	// or flattened to a timeout. A cancelled read must return ctx.Err() (C++ actor cancellation
-	// propagates), and context errors are intentionally NOT tracked as read failures. Checked here for
-	// the hedge's own failure (covers the no-untried-fallback case) and per replica in the loop below (codex).
-	if errors.Is(hedgeErr, context.Canceled) || errors.Is(hedgeErr, context.DeadlineExceeded) {
-		return nil, hedgeErr
+func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
+	// A cancelled/expired CALLER context propagates IMMEDIATELY — a cancelled read must return ctx.Err(),
+	// never a remembered version error or a flattened timeout. Gate on ctx.Err() (the real READ context),
+	// NOT errors.Is on a per-server error: a cold dial / RPC timeout to an unreachable replica surfaces as
+	// a wrapped context.DeadlineExceeded under the db-scoped DefaultRPCTimeout while the read context is
+	// still LIVE, and that must fall back to other replicas rather than abort the scan (codex). Checked at
+	// entry (covers the no-untried-fallback case) and after each replica in the loop below.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	sawTimeout := isReplyTimeout(hedgeErr)
 	var versionErr error
@@ -942,9 +944,10 @@ func resolveFallback(hedgeErr error, servers []ServerInfo, bestIdx, secondIdx in
 		if err == nil {
 			return val, nil
 		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // caller cancelled mid-scan — propagate, never mask with a remembered error
+		}
 		switch {
-		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			return nil, err // cancellation/deadline wins immediately — never masked by a remembered version error
 		case isFutureVersionOrProcessBehind(err):
 			if versionErr == nil {
 				versionErr = err // remember, but keep trying — a later replica may still have the value
