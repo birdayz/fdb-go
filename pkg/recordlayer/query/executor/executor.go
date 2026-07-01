@@ -1344,12 +1344,21 @@ func executeProjection(
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
 	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
+	// RFC-173 P2: the projection's output schema is row-invariant — compute the
+	// column names and the (dup-safe) positional RecordType ONCE, then emit a
+	// PositionalRow per row alongside the name-keyed map.
+	projNames := make([]string, len(projections))
+	for i, proj := range projections {
+		projNames[i] = projectionColumnName(proj)
+	}
+	projType := projectionPositionalType(projNames)
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
 			return qr
 		}
 		projected := make(map[string]any, len(projections))
+		slots := make([]any, len(projections))
 		var rowCtx any = qr.Datum
 		if m, ok := qr.Datum.(map[string]any); ok {
 			switch {
@@ -1362,13 +1371,14 @@ func executeProjection(
 			}
 		}
 		for i, proj := range projections {
-			key := projectionColumnName(proj)
+			key := projNames[i]
 			val, err := proj.Evaluate(rowCtx)
 			if err != nil {
 				evalErr = err
 				return qr
 			}
 			projected[key] = val
+			slots[i] = val // RFC-173 P2: dense positional slot (kept even on dup names)
 			// Also store under the alias so that outer projections
 			// (e.g. CTE consumers) can resolve the aliased name.
 			if i < len(aliases) && aliases[i] != "" {
@@ -1389,6 +1399,7 @@ func executeProjection(
 		}
 		return QueryResult{
 			Datum:      projected,
+			Positional: &PositionalRow{Type: projType, Slots: slots},
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
 		}

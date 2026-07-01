@@ -151,3 +151,36 @@ func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
 		t.Fatal("protoToMap should omit the unset VAL_INT32 key (sparse map)")
 	}
 }
+
+// TestPositionalRow_DuplicateNames_RFC173P2 pins the finding that drove the
+// projection wiring: a projection with duplicate output names (SELECT a, a; a join
+// projecting both legs' `id`) keeps BOTH values positionally, where the name-keyed
+// map is last-wins. projectionPositionalType uses a raw RecordType (NewRecordType
+// would panic on the duplicate); ordinal access is unambiguous, and the shadow
+// assert legitimately DIFFERS from the last-wins map on the duplicate (the §5
+// models-must-differ case, not a bug — it's the Slice-4 collision fix).
+func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
+	t.Parallel()
+	typ := projectionPositionalType([]string{"ID", "ID"})
+	if len(typ.Fields) != 2 {
+		t.Fatalf("dup-name type fields = %d, want 2 (both kept, distinct by ordinal)", len(typ.Fields))
+	}
+	row := &PositionalRow{Type: typ, Slots: []any{int64(1), int64(2)}}
+	// Both values coexist positionally (the map would keep only the last).
+	if v0, _ := row.Get(0); v0 != int64(1) {
+		t.Fatalf("Get(0) = %v, want 1", v0)
+	}
+	if v1, _ := row.Get(1); v1 != int64(2) {
+		t.Fatalf("Get(1) = %v, want 2", v1)
+	}
+	// GetByName resolves to the FIRST match (FieldIndex first-match semantics).
+	if v, ok := row.GetByName("ID"); !ok || v != int64(1) {
+		t.Fatalf("GetByName(ID) = (%v,%v), want (1,true) — first match", v, ok)
+	}
+	// Shadow against a last-wins map DIFFERS at ID (map has 2, positional field 0
+	// has 1) — the §5 legitimate difference, surfaced not silently lost.
+	lastWinsMap := map[string]any{"ID": int64(2)}
+	if bad := shadowMismatch(row, lastWinsMap); bad != "ID" {
+		t.Fatalf("dup-name shadow should differ at ID (map last-wins vs positional dense), got %q", bad)
+	}
+}
