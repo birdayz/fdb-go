@@ -72,11 +72,19 @@ item's acceptance criterion in §5 is "the grep returns zero."
   machinery-only tests die with the machinery. **PR #438** (`refactor/remove-legacy-planner`,
   net −987 LOC): triage table in the PR body; FixpointApply mentions swept per B5's A2 slice.
   **Watch item resolved:** one legacy-pinned property does NOT hold on the unified path —
-  `FuzzCostMonotonicity`'s best-cost monotonicity. Root-caused as an artifact of the memo-less
-  legacy engine (RFC-037 cross-group memo merges re-point canonical members, shifting
-  `EstimateCost`'s documented first-member approximation), not a planner bug — selection ranks
-  through the same merged children and extraction uses winners. Reframed as `FuzzCostSanity`
-  with the triggering input checked in as a seed.
+  `FuzzCostMonotonicity`'s best-cost monotonicity. **Framing (per Graefe review):** cost
+  monotonicity IS a Cascades invariant, group merging included — when child costs come from
+  group winners, a merge takes the min of the merged winners and root best-cost is
+  non-increasing. What breaks it in Go is not merging but `EstimateCost`'s **first-member
+  approximation** (cost.go:24-31, :263-268): child References are costed at their first
+  member, making cost a function of memo state rather than of the expression. Under that
+  approximation the pin genuinely cannot hold; Java offers no analogous scalar invariant
+  (`CascadesCostModel` is a comparator, no numeric cost). Reframed as `FuzzCostSanity`
+  (finite/non-negative) with the triggering input as a seed. **Registered follow-up:** when
+  child costing moves to winner-based (`BestMemberCostWith` already exists at cost.go:389; the
+  package doc promises it), RESTORE the monotonicity pin — it is a free oracle — and retire
+  `FuzzCostSanity`'s weaker half. Permanent docs must say "not an invariant of the
+  first-member approximation", never "not a Cascades invariant under merging".
 
 ### Track B — process noise in permanent source (violates CLAUDE.md's explicit bans)
 
@@ -243,10 +251,11 @@ RFC-173 owns `pkg/relational/core/embedded`, the executor row model, and `FieldV
 | D1 (structured plan assertions) | plan shapes converge to Java's *after* 173 | after 173 (asserting pre-173 shapes structurally = re-pinning twice) |
 | F3 (CLAUDE.md carve-out) | process text only | **now** |
 
-The freeze question is the owner's: Tracks B/E/F are mechanical, zero-behavior-change, and
-mostly outside 173's blast radius — they are natural "keep the hands warm" work between 173
-slice reviews, but the freeze directive as written forbids them. This RFC takes no position
-beyond flagging that F3 (and arguably F2) protect the freeze itself and should not wait.
+**Owner decision (2026-07-02, resolved):** the owner authorized executing this RFC ("work on
+it") — Tracks B/E/F proceed during the RFC-173 freeze as keep-the-lights-on work; C1/C5/D1
+remain queued behind 173 per the table above. F3 and F2 go first: they protect the freeze
+itself (F3 closes the process gap that let A1 sit red; F2 stops the B-track violations from
+regrowing while attention is on 173).
 
 ## 5. Acceptance criteria
 
@@ -262,13 +271,28 @@ beyond flagging that F3 (and arguably F2) protect the freeze itself and should n
 - **C1:** `logical_predicate.go` < 1,500 lines and contains only predicate construction; DML /
   aggregate / union builders in their own files; zero semantic diffs (pure move, verified by
   the full relational suite).
-- **C2:** option accessors live on an embedded `txOptions`; `Transaction` struct body readable
-  in one screen-page per concern grouping.
+- **C2:** zero option-backing fields remain directly on `Transaction` — all live on the
+  embedded `txOptions`, with the accessors as one-line delegates; the remaining direct fields
+  are grouped per concern with one contract comment per group (not per field).
+- **C3:** after B3 lands, `pushDataAccessTasks` and `compensationSafeForYield` are each ≤80
+  lines or decomposed into named phase functions along the boundaries the current comments
+  delineate; zero behavior change (full cascades + relational suites green, no plan-shape
+  diffs).
 - **C5:** `AggregateOperands` has no nil-slot-means-text contract; `aggregateArgText` and
   `isBareColumnIdentifier` deleted.
 - **D1:** plan-shape suite asserts on typed plan nodes; zero disjunctive pins remain (each
   either exact or the nondeterminism fixed per RFC-167).
-- **E1/E2:** `-race` clean; one documented contract for deferred-error fields.
+- **D2:** the `expected = 42` count pin is gone, replaced by assertions that carry
+  information: every rule registered exactly once (no duplicates) and every exported rule type
+  present in the set.
+- **E1:** `GetReadVersion` reads `tx.readVersion` under `readVersionMu`; a concurrent
+  GetReadVersion-vs-commit-path hammer test runs under `-race` (a bare "`-race` clean" is
+  near-vacuous — the suite already is).
+- **E2:** one documented contract for deferred-error fields, applied to both `rywPoisonErr`
+  and `invalidAtomicOpErr`.
+- **E3:** the libfdb_c differential suite gains named cases for the pipelined-vs-full-RYW
+  boundary (pending atomic on the read key; range straddling a pipelined write); the PR
+  closing E3 lists them. A deferral with no verifiable artifact is how deferrals evaporate.
 - **F1:** repo root contains no stale scratch docs; one divergence doc.
 - **F3:** CLAUDE.md contains the red-nightly carve-out.
 
@@ -288,6 +312,14 @@ beyond flagging that F3 (and arguably F2) protect the freeze itself and should n
 
 ## 7. Review log
 
-- (pending) Graefe — Track C registration + A2 (query-engine surface).
-- (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface).
-- (pending) Torvalds, codex, @claude — full document.
+- **Graefe — ACK-with-nits (2026-07-02, folded).** A2/C3/C4/C5/D1/§4 all ACK. Conditions on
+  the cost-monotonicity retirement, both folded into §2 A2: (1) frame the break as Go's
+  first-member approximation, NOT as "not a Cascades invariant under merging" (it is one);
+  (2) register restoring the monotonicity pin when winner-based child costing lands.
+- **Torvalds — ACK-with-nits (2026-07-02, folded).** All citations survived hostile
+  spot-check. Nits folded: §5 criteria added for C3/D2/E1/E2/E3; C2 criterion made mechanical
+  (zero option-backing fields on `Transaction`); §4 freeze paragraph resolved into the owner's
+  actual decision. F2 comment-scope note: gate scopes to comments, not string literals
+  (allowlist covers residue).
+- (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface) at execution time, per-PR.
+- (pending) codex, @claude — PR #439.
