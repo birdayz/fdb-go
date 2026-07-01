@@ -1843,7 +1843,17 @@ func executeFlatMap(
 	cursor.initialInnerCont = innerCont
 	cursor.hasPendingInner = innerCont != nil
 	cursor.pendingCheckValue = checkValue
-	if innerCont != nil && outerCont != nil {
+	// Seed lastOuterContinuation from the saved OuterContinuation whenever one is
+	// present — NOT only when an inner continuation is also present. The very next
+	// outer advance copies it into priorOuterContinuation (the position AT the
+	// resumed outer row), which is what a subsequent mid-inner buildContinuation
+	// pairs with the check_value. If a page ended via wrapOuterContinuation (outer
+	// hit an out-of-band limit → innerCont nil but outerCont set), gating on
+	// innerCont != nil left priorOuterContinuation nil on the resumed page, so the
+	// next mid-inner continuation encoded an EMPTY OuterContinuation (resume from
+	// the start) while carrying a non-start check_value → check_value mismatch on
+	// the following resume.
+	if outerCont != nil {
 		cursor.lastOuterContinuation = recordlayer.NewBytesContinuation(outerCont)
 	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
