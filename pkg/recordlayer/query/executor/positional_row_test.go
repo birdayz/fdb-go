@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"reflect"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -78,10 +77,9 @@ func TestPositionalRow_RFC173P2(t *testing.T) {
 	}
 }
 
-// TestPositionalRow_ShadowAssert_RFC173P2 pins the dual-emission bridge
-// (positionalRowFromMap) and the shadow assert (shadowMismatch): a row built from
-// a name-keyed map agrees with it field-for-field (including list values and
-// absent=NULL fields), and a divergent row is caught.
+// TestPositionalRow_ShadowAssert_RFC173P2 pins the shadow assert (shadowMismatch):
+// a positional row that matches the name map agrees field-for-field (including list
+// values and absent=NULL fields), and a divergent slot is caught.
 func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
 	t.Parallel()
 	typ := values.NewRecordType("R", false, []values.Field{
@@ -91,27 +89,25 @@ func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
 	})
 	m := map[string]any{"ID": int64(7), "NAME": "alice", "TAGS": []any{"a", "b"}}
 
-	// Round-trip: the built row shadow-agrees with the source map on every field.
-	row := positionalRowFromMap(typ, m)
+	// A row matching the map shadow-agrees on every field (incl. the list value,
+	// compared by reflect.DeepEqual).
+	row := NewPositionalRow(typ)
+	row.Set(0, int64(7))
+	row.Set(1, "alice")
+	row.Set(2, []any{"a", "b"})
 	if bad := shadowMismatch(row, m); bad != "" {
-		t.Fatalf("round-trip shadow mismatch on field %q", bad)
-	}
-	// List value survives via reflect.DeepEqual (not ==).
-	if v, _ := row.Get(2); !reflect.DeepEqual(v, []any{"a", "b"}) {
-		t.Fatalf("list slot = %v, want [a b]", v)
+		t.Fatalf("matching row shadow mismatch on field %q", bad)
 	}
 
-	// A field the map omits -> nil slot -> still agrees (NULL on both sides).
+	// A field the map omits + a nil slot -> agrees (NULL on both sides).
 	m2 := map[string]any{"ID": int64(7)}
-	row2 := positionalRowFromMap(typ, m2)
+	row2 := NewPositionalRow(typ)
+	row2.Set(0, int64(7))
 	if bad := shadowMismatch(row2, m2); bad != "" {
 		t.Fatalf("absent-field shadow mismatch on %q (absent must be NULL both sides)", bad)
 	}
-	if v, ok := row2.Get(1); !ok || v != nil {
-		t.Fatalf("absent NAME slot = (%v,%v), want (nil,true)", v, ok)
-	}
 
-	// TEETH: a divergent positional row is caught by the shadow assert.
+	// TEETH: a divergent slot is caught by the shadow assert.
 	row.Set(1, "MALLORY")
 	if bad := shadowMismatch(row, m); bad != "NAME" {
 		t.Fatalf("shadow assert should catch divergence at NAME, got %q", bad)
@@ -182,49 +178,5 @@ func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
 	lastWinsMap := map[string]any{"ID": int64(2)}
 	if bad := shadowMismatch(row, lastWinsMap); bad != "ID" {
 		t.Fatalf("dup-name shadow should differ at ID (map last-wins vs positional dense), got %q", bad)
-	}
-}
-
-// TestPositionalRow_AppendNullLeg_RFC173P2 pins the outer-join null-extension
-// primitive: an unmatched leg is appended as NULL slots (not absent keys), read
-// unambiguously by ordinal — and it's dup-safe (both legs may share a name).
-func TestPositionalRow_AppendNullLeg_RFC173P2(t *testing.T) {
-	t.Parallel()
-	outer := &PositionalRow{
-		Type:  positionalTypeFromNames([]string{"A_ID", "A_X"}),
-		Slots: []any{int64(1), "hi"},
-	}
-	innerType := positionalTypeFromNames([]string{"B_ID", "A_X"}) // A_X duplicates outer's name
-
-	ext := outer.appendNullLeg(innerType)
-	// Outer values retained; inner leg is NULL.
-	if len(ext.Slots) != 4 {
-		t.Fatalf("extended slots = %d, want 4", len(ext.Slots))
-	}
-	if v, _ := ext.Get(0); v != int64(1) {
-		t.Fatalf("Get(0) = %v, want 1 (outer retained)", v)
-	}
-	if v, _ := ext.Get(1); v != "hi" {
-		t.Fatalf("Get(1) = %v, want hi (outer retained)", v)
-	}
-	if v, ok := ext.Get(2); !ok || v != nil {
-		t.Fatalf("Get(2) = (%v,%v), want (nil,true) — unmatched inner leg NULL", v, ok)
-	}
-	if v, ok := ext.Get(3); !ok || v != nil {
-		t.Fatalf("Get(3) = (%v,%v), want (nil,true) — unmatched inner leg NULL", v, ok)
-	}
-	// Dup name A_X: ordinal 1 (outer) has "hi", ordinal 3 (inner) is NULL — distinct
-	// by position, no bare-resolve hazard. GetByName returns the first (outer).
-	if v, ok := ext.GetByName("A_X"); !ok || v != "hi" {
-		t.Fatalf("GetByName(A_X) = (%v,%v), want (hi,true) — first (outer) match", v, ok)
-	}
-
-	// Nil receiver: the FULL-OUTER unmatched-inner mirror (null-extend a whole leg).
-	nullLeg := (*PositionalRow)(nil).appendNullLeg(innerType)
-	if len(nullLeg.Slots) != 2 {
-		t.Fatalf("nil-receiver extended slots = %d, want 2", len(nullLeg.Slots))
-	}
-	if v, ok := nullLeg.Get(0); !ok || v != nil {
-		t.Fatalf("nil-receiver Get(0) = (%v,%v), want (nil,true)", v, ok)
 	}
 }

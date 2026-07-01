@@ -291,10 +291,19 @@ func executeIndexScan(
 				pkCols = rt.PrimaryKey.FieldNames()
 			}
 		}
+		cov := p.GetCoveringColumns()
+		posNames := make([]string, 0, len(cov)+len(pkCols))
+		for _, col := range cov {
+			posNames = append(posNames, strings.ToUpper(col))
+		}
+		for _, col := range pkCols {
+			posNames = append(posNames, strings.ToUpper(col))
+		}
 		return &coveringIndexCursor{
 			inner:     indexCursor,
-			columns:   p.GetCoveringColumns(),
+			columns:   cov,
 			pkColumns: pkCols,
+			posType:   positionalTypeFromNames(posNames),
 		}, nil
 	}
 
@@ -816,7 +825,10 @@ type coveringIndexCursor struct {
 	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	columns   []string
 	pkColumns []string
-	closed    bool
+	// posType is the RFC-173 P2 positional-row schema (value columns then PK
+	// columns), computed once at construction since columns/pkColumns are fixed.
+	posType *values.RecordType
+	closed  bool
 }
 
 func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -834,18 +846,15 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
 	// RFC-173 P2: dual-emit a DENSE positional row over the covering index's schema
-	// (value columns then PK columns, in order). An out-of-range column is a nil
-	// slot (NULL) — matching the map omitting its key.
-	posNames := make([]string, 0, len(c.columns)+len(c.pkColumns))
+	// (value columns then PK columns, in order) against the cursor-fixed c.posType.
+	// An out-of-range column is a nil slot (NULL) — matching the map omitting its key.
 	posSlots := make([]any, 0, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
-		key := strings.ToUpper(col)
 		var v any
 		if i < len(vals) {
 			v = tupleElementToUUID(vals[i])
-			datum[key] = v
+			datum[strings.ToUpper(col)] = v
 		}
-		posNames = append(posNames, key)
 		posSlots = append(posSlots, v)
 	}
 	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
@@ -855,17 +864,15 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		pkOffset = len(pk) - len(c.pkColumns)
 	}
 	for i, col := range c.pkColumns {
-		key := strings.ToUpper(col)
 		idx := i + pkOffset
 		var v any
 		if idx < len(pk) {
 			v = tupleElementToUUID(pk[idx])
-			datum[key] = v
+			datum[strings.ToUpper(col)] = v
 		}
-		posNames = append(posNames, key)
 		posSlots = append(posSlots, v)
 	}
-	pos := &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+	pos := &PositionalRow{Type: c.posType, Slots: posSlots}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
 }
 

@@ -69,69 +69,6 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 	return r.Get(i)
 }
 
-// positionalRowFromMap builds a PositionalRow for typ by reading each named field
-// from the legacy name-keyed map — the dual-emission bridge every row producer
-// uses to emit the positional row ALONGSIDE its existing map[string]any during the
-// dark/dual migration window. A field absent from the map becomes a nil slot (SQL
-// NULL), matching the map's missing-key = NULL semantics; an anonymous field
-// (empty name) is left nil (not name-addressable). Field names follow the
-// upper-case identifier-folding convention the map keys already use.
-func positionalRowFromMap(typ *values.RecordType, m map[string]any) *PositionalRow {
-	row := NewPositionalRow(typ)
-	if typ == nil || m == nil {
-		return row
-	}
-	for i, f := range typ.Fields {
-		if f.Name == "" {
-			continue
-		}
-		if v, ok := m[f.Name]; ok {
-			row.Slots[i] = v
-		}
-	}
-	return row
-}
-
-// appendNullLeg returns a new PositionalRow with legType's fields appended as
-// all-NULL slots — the RFC-173 P2 positional null-extension for an unmatched
-// outer-join leg. The name model represents an unmatched leg by the ABSENCE of its
-// keys, which a bare FieldValue can silently mis-resolve to the OTHER leg's
-// like-named column (the LEFT-OUTER bare-resolve hazard, executor_new_plans.go);
-// a nil positional slot reads NULL unambiguously by ordinal, so there is no hazard.
-// legType is appended raw (dup-safe: two legs may share a column name, kept distinct
-// by ordinal). A nil receiver yields a row of legType's NULL slots alone (the
-// FULL-OUTER unmatched-inner mirror null-extends the OUTER leg the same way).
-// The Slice-2/3 join restructuring uses this to build its outer-join output rows.
-func (r *PositionalRow) appendNullLeg(legType *values.RecordType) *PositionalRow {
-	var baseFields []values.Field
-	var baseSlots []any
-	if r != nil && r.Type != nil {
-		baseFields = r.Type.Fields
-		baseSlots = r.Slots
-	}
-	extra := 0
-	if legType != nil {
-		extra = len(legType.Fields)
-	}
-	fields := make([]values.Field, 0, len(baseFields)+extra)
-	slots := make([]any, 0, len(baseSlots)+extra)
-	for i, f := range baseFields {
-		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: i})
-		var v any
-		if i < len(baseSlots) {
-			v = baseSlots[i]
-		}
-		slots = append(slots, v)
-	}
-	if legType != nil {
-		for _, f := range legType.Fields {
-			fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: len(fields)})
-			slots = append(slots, nil) // unmatched leg -> NULL
-		}
-	}
-	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
-}
-
 // positionalTypeFromNames builds the RecordType for a producer's output — one
 // field per column in output order (ordinal = position), named by the column name.
 // It uses a RAW RecordType (not NewRecordType) on purpose: a producer may emit
@@ -154,10 +91,14 @@ func positionalTypeFromNames(names []string) *values.RecordType {
 // the first field where the positional row DISAGREES with the name-keyed map, or
 // "" if they agree on every named field of the row's type. A field the map omits
 // reads as nil on both sides (map missing-key = NULL, unset slot = nil), so
-// agreement holds for absent fields. Used to certify — per row, on every plan —
-// that the positional representation faithfully mirrors the name-keyed map before
-// the ordinal model is made authoritative (RFC-173 §5, execution-based validation).
-// Comparison is reflect.DeepEqual so list/bytes/message values compare correctly.
+// agreement holds for absent fields. Comparison is reflect.DeepEqual so
+// list/bytes/message values compare correctly.
+//
+// SCOPE: today this is exercised by the per-producer shadow TESTS (each producer's
+// positional row vs its name map) — it is NOT wired into production and does not
+// run per-row on every plan yet. Slice 1 (which makes ordinal resolution
+// authoritative) is where the shadow certification runs in the dual-emission path;
+// until then, do not treat this as a live production guard.
 func shadowMismatch(row *PositionalRow, m map[string]any) string {
 	if row == nil || row.Type == nil {
 		return ""
