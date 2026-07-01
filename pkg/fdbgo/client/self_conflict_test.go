@@ -2,7 +2,9 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire/types"
@@ -179,6 +181,52 @@ func anySelfConflictRange(rs []types.KeyRangeRef) bool {
 		}
 	}
 	return false
+}
+
+func anySelfConflictKeyRange(rs []KeyRange) bool {
+	for _, r := range rs {
+		if bytes.HasPrefix(r.Begin, selfConflictPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCommit_CallsMaybeMakeSelfConflicting closes the LAST revert-hole (Torvalds): the helper-level and
+// buildCommit-level tests all invoke maybeMakeSelfConflicting DIRECTLY, so deleting its single production
+// call site (Commit) leaves them green while SC injection silently vanishes in prod. This drives the REAL
+// Commit() end-to-end and asserts the injection actually happened. Trick: Commit runs maybeMakeSelfConflicting
+// (transaction.go:1730) BEFORE ensureReadVersion (the commit-path GRV) and BEFORE tx.commit()/postCommitReset.
+// A commit on an already-cancelled ctx fails at that GRV — AFTER the SC range is injected into the conflict
+// sets, but BEFORE the success path resets them — so the injected \xFF/SC/ range persists in tx state for
+// inspection. Revert-proof: delete the maybeMakeSelfConflicting() call in Commit → no SC range → red.
+// No false green: if the GRV somehow succeeds the commit resets the conflicts and the SC assertion fails loudly.
+func TestCommit_CallsMaybeMakeSelfConflicting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	tx := db.CreateTransaction()               // tenantId == NoTenantID
+	tx.Set([]byte(t.Name()+"_k"), []byte("v")) // a write → not read-only; adds a write conflict, no read conflict
+
+	cctx, ccancel := context.WithCancel(ctx)
+	ccancel() // cancel so Commit fails at the commit-path GRV, after injection, before reset
+	if err := tx.Commit(cctx); err == nil {
+		t.Fatal("Commit on a cancelled ctx must fail at the commit-path GRV (before tx.commit); got nil")
+	}
+
+	tx.conflictMu.Lock()
+	reads := append([]KeyRange(nil), tx.readConflicts...)
+	writes := append([]KeyRange(nil), tx.writeConflicts...)
+	tx.conflictMu.Unlock()
+	if !anySelfConflictKeyRange(reads) {
+		t.Fatalf("Commit() did not inject the \\xFF/SC/ range into readConflicts — the maybeMakeSelfConflicting call site is unwired; got %d ranges", len(reads))
+	}
+	if !anySelfConflictKeyRange(writes) {
+		t.Fatalf("Commit() did not inject the \\xFF/SC/ range into writeConflicts; got %d ranges", len(writes))
+	}
 }
 
 // TestCommit_NonTenantWriteOnlyInjectsSelfConflictToWire pins the WIRING and payoff of finding #27:
