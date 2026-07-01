@@ -148,7 +148,60 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
 - [ ] **Correlation / quantifier-binding completeness.** Every `CorrelationIdentifier`
   referenced in the final plan is bound by an enclosing quantifier (no dangling
   correlation). A first-order Cascades invariant; catches relink/translation bugs
-  generically.
+  generically. **See the FINDING below — the direct formulation is BLOCKED on the
+  same physical-layer fidelity gap as the field-level invariants.**
+- **FINDING — correlation-completeness on the EXTRACTED plan is not viable as an
+  always-on backstop; Go physical plans over-report free correlations.** Implemented and
+  probed the cleanest false-positive-proof formulation: `F_out ⊆ F_in` — planning must not
+  WIDEN the external free-correlation set (a legitimate `__const`/outer correlation sits in
+  BOTH input and output so it's never flagged; only a DROPPED binding widens the set). Wired
+  as a chokepoint in `Planner.Plan` (F_in captured cache-free from the pristine input ref so
+  it can't prime a stale `correlatedToCache`; F_out from `bestExpr`). Result: PASSES a 20k
+  random-plan fuzz corpus (3,987 with non-empty input correlations, zero widening) BUT
+  FALSE-POSITIVES across essentially every real join / IN-list / partition query — e.g.
+  `SELECT A.id FROM A LEFT JOIN B ON B.a_id = A.id` yields a physical plan whose correctly-
+  computed external correlation is `{A}` over a CLOSED input `{}`. Root cause: the physical
+  extraction references internally-bound aliases at a level where they aren't quantifier-bound
+  — a `Map`/`Fetch` projecting `A.id` sits ABOVE the `FlatMap`/`NLJ` that binds A as its outer
+  leg (the NLJ wrapper itself correctly subtracts both legs; A leaks from the projection wrapper
+  over it), plus `RecordQueryInJoinPlan`'s `bindingName` and partition-merge source aliases (the
+  `$m"…`/leg aliases in the failures) that are bound by EXECUTION-TIME mechanisms (per-row outer
+  binding, IN-list binding, merge re-exposure) the correlation walk doesn't model as binding.
+  The fuzz corpus missed this because `buildFuzzExpression` uses constant/self-flowed predicates,
+  never correlated joins that implement to these operators. Two nuances proven along the way:
+  (a) `Reference.GetCorrelatedTo` adds `GetCorrelatedToWithoutChildren` RAW (no own-alias
+  subtraction), unlike the correct `expressionCorrelatedTo` — so it reports own-bound aliases as
+  free; the correct own-subtracting computation is required or the check is confounded. (b) Even
+  with the correct computation the physical over-report remains.
+- **RESOLVED against Java (4.12.11.0) — Go's non-closed join plans ARE a real structural
+  divergence; the invariant is viable once Go matches Java.** Java's base algorithm
+  (`AbstractRelationalExpressionWithChildren.computeCorrelatedTo`, lines 57-77) subtracts own
+  quantifier aliases from own-node correlations UNCONDITIONALLY and from children iff
+  `canCorrelate()` — identical to the correct Go computation. Java guarantees a fully-planned
+  top-level plan is STRICTLY closed (`getCorrelatedTo() == ∅`, *no* `__const` exception:
+  `ConstantObjectValue.getCorrelatedToWithoutChildren()` returns `Set.of()`). It achieves this
+  for a projected join by FOLDING the SELECT-list projection into the join plan's own result
+  value: `ImplementNestedLoopJoinRule` yields `new RecordQueryFlatMapPlan(outer, inner,
+  selectExpression.getResultValue(), …)` (line 187) — the FlatMap OWNS `A.id` and `A` is its own
+  outer quantifier, so it's subtracted → closed. NO separate Project sits above a join. When Java
+  emits a standalone Map (single-quantifier selects only), it REBASES the result value onto the
+  Map's own inner quantifier (`ImplementSimpleSelectRule.java:178`
+  `resultValue.rebase(AliasMap.ofAliases(alias, beforeMapQuantifier.getAlias()))`), so a Map's
+  value can never reference a buried grandchild alias. Go instead produces
+  `Project([A.ID], FlatMap(outer=Scan(A), …))` where the Project's result value still references
+  the BURIED outer alias `A` (Go keeps the SELECT list as a separate LogicalProjection over the
+  join's Select AND does not rebase the Project's value onto its own inner) → non-closed. Go's
+  own `NewRecordQueryFlatMapPlan` already carries a `resultValue` and the Go join rule already
+  passes `sel.GetResultValue()` to it, so the folding machinery exists. TWO Java-faithful fixes
+  (a design choice for the fix RFC): (a) FOLD the projection into the FlatMap result value and
+  drop the separate Project — Java's primary path, fully closes the plan AND removes the shape
+  divergence, but re-shapes every `Project(…, FlatMap(…))` EXPLAIN assertion (rfc152/rfc153 et al);
+  (b) SURGICAL — keep the Project but rebase its result value onto the Project's own inner
+  quantifier (Java's `ImplementSimpleSelectRule` pattern), closing the correlation WITHOUT changing
+  plan shape (leaves the extra-Project shape divergence, closes the correlation gap). Either is an
+  RFC-gated, Graefe-reviewed query-engine change; once Go's plans are closed, this `F_out ⊆ F_in`
+  invariant (or the stricter Java "final plan is strictly closed") becomes viable+clean and ships
+  alongside the fix. Do NOT add a plan-tree version that breaks the corpus before the fix lands.
 - [ ] **Set-op comparison-key correctness.** Every leg of an ordered UNION/INTERSECTION
   provides a compatible comparison key whose columns exist in that leg's output. Guards
   the multi-intersection aggregate path (`RecordQueryMultiIntersectionOnValuesPlan`).
