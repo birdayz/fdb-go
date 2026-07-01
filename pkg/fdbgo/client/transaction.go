@@ -1934,6 +1934,15 @@ func (tx *Transaction) cancelWatches() {
 	}
 }
 
+// CancelWatches cancels this transaction's in-flight watch(es), so their long-polls drain and
+// release their outstanding-watch slots. Exposed so the fdb facade can wire a Watch future's
+// Cancel() to it (a cancelled watch future must free its cap slot — codex). NOTE: the watch context
+// is currently per-transaction (shared), so this cancels ALL of the txn's watches; a per-watch
+// context (handover follow-up) would scope it to the one future.
+func (tx *Transaction) CancelWatches() {
+	tx.cancelWatches()
+}
+
 // getWatchCtx returns a context for Watch() calls that is cancelled on
 // reset/Reset. Created lazily — if no Watch is ever called, no context
 // is allocated.
@@ -2051,8 +2060,14 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// before classifying the FDB error and before any backoff. Without this, a SetTimeout txn under
 	// contention sleeps a full (growing) backoff and does one extra reset+retry before the NEXT op's
 	// checkTimeout surfaces 1031, overshooting the declared timeout. Non-retryable; mark errored.
+	// BUT a done CALLER ctx out-ranks the txn timeout (mapTimeout precedence, transaction.go:107-116):
+	// if both the SetTimeout deadline and the caller's ctx have expired, a TransactCtx caller must get
+	// their own context.Canceled/DeadlineExceeded, not 1031 (codex).
 	if cerr := tx.checkTimeout(); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr // the caller's own cancellation/deadline out-ranks the txn timeout
+		}
 		return cerr // transaction_timed_out (1031)
 	}
 

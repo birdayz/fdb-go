@@ -36,6 +36,23 @@ func TestSetMaxWatches_FacadeConvertsError(t *testing.T) {
 
 const absoluteMaxWatchesFacade = 1_000_000
 
+// TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() actually runs its cancel
+// hook (which cancels the watch context so the poll drains and releases its outstanding-watch slot),
+// instead of the base futureBase.Cancel() no-op that left the slot charged (codex). The fn here
+// stands in for WatchPoll (blocks until cancelled); the hook for CancelWatches (releases the poll).
+func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	f := newFutureNilCancel(
+		func() error { <-release; return errors.New("polled") },
+		func() { close(release) },
+	)
+	f.Cancel() // must run the hook (base future Cancel is a no-op — the bug)
+	if err := f.Get(); err == nil || err.Error() != "polled" {
+		t.Fatalf("Cancel must run the hook so the future's fn completes, got %v", err)
+	}
+}
+
 // newBareOptionsTx builds a facade transaction over a bare client transaction.
 // The option setters only mutate the inner transaction's fields, so no database
 // or container is needed to exercise them.

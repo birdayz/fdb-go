@@ -644,6 +644,23 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 // slot until the key changes, starving future watches under a low MAX_WATCHES (codex). The retry path
 // already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
 // stays live after OnError.
+// TestOnError_CallerCancelOutranksTxnTimeout pins that when a retryable FDB error reaches OnError
+// with BOTH the txn SetTimeout deadline AND the caller ctx expired, the caller's own cancellation
+// wins over the txn timeout (mapTimeout precedence) — a TransactCtx caller gets context.Canceled,
+// not 1031 (codex). Revert-proof: without the ctx.Err() check the timeout gate returns 1031.
+func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.creationTime = time.Now().Add(-time.Second)
+	tx.SetTimeout(500) // txn deadline anchored in the PAST
+	cctx, ccancel := context.WithCancel(context.Background())
+	ccancel()                                                      // caller ctx cancelled
+	err := tx.OnError(cctx, &wire.FDBError{Code: ErrNotCommitted}) // retryable FDB error (1020)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller-cancel + expired txn timeout must return context.Canceled, not 1031, got %v", err)
+	}
+}
+
 func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

@@ -182,6 +182,32 @@ func newFutureNil(fn func() error) FutureNil {
 	return f
 }
 
+// cancellableFutureNil is a FutureNil whose Cancel() runs a hook, instead of the base no-op. Watch()
+// uses it so that an app freeing an unneeded watch by Cancel()ing the returned future actually
+// cancels the underlying watch (its context → the long-poll drains and releases its
+// outstanding-watch slot). Without this the slot stays charged until the key changes (codex).
+type cancellableFutureNil struct {
+	futureNil
+	cancel func()
+}
+
+func (f *cancellableFutureNil) Cancel() {
+	if f.cancel != nil {
+		f.cancel()
+	}
+}
+
+func newFutureNilCancel(fn func() error, cancel func()) FutureNil {
+	f := &cancellableFutureNil{cancel: cancel}
+	f.init()
+	go func() {
+		defer close(f.done)
+		defer recoverFuturePanic(func(e error) { f.err = e }) // RFC-110
+		f.err = fn()
+	}()
+	return f
+}
+
 // FutureKey represents the asynchronous result of a function that returns
 // a Key.
 type FutureKey interface {

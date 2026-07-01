@@ -315,8 +315,22 @@ do the comprehensive restructure in ONE reviewed change: (1) terminal checks fir
 (3) per-watch cancellable context (not one-shared), (4) reads, (5) acquire LAST (after reads), (6)
 cancel-this-watch on setup error, (7) OnError/abort cancels all. Closes every edge class at once.
 
-**Codex caught 16 real issues across 10 review rounds the persona reviewers missed** — critical-gate
-value, fully borne out.
+**Round 17 — codex's 10th `--supersede` re-review found two MORE** (a watch one — 6th round — and a
+non-watch one), both fixed red→green:
+- **Watch future Cancel() was a no-op (fdb/transaction.go) — 6th watch round:** the facade Watch
+  returned `newFutureNil`, whose Cancel() is a base no-op, so an app freeing an unneeded watch by
+  cancelling its future never cancelled watchCtx / reached releaseWatch → the cap kept counting it.
+  Added `newFutureNilCancel` (a FutureNil with a Cancel hook) + exported `client.Transaction.
+  CancelWatches`, and wired Watch's future Cancel → CancelWatches. Pin:
+  `TestNewFutureNilCancel_CancelRunsHook`. LIMITATION: watchCtx is per-txn shared, so this cancels
+  ALL the txn's watches — the per-watch-context restructure (below) scopes it to the one future.
+- **OnError caller-cancel vs txn-timeout (transaction.go):** the round-8 checkTimeout gate returned
+  1031 before observing a done caller ctx, so a TransactCtx caller with BOTH deadlines expired got
+  1031 instead of their context.Canceled. Added the ctx.Err() check inside the gate (mapTimeout
+  precedence). Pin: `TestOnError_CallerCancelOutranksTxnTimeout`.
+
+**Codex caught 18 real issues across 11 review rounds the persona reviewers missed** — critical-gate
+value, fully borne out. **The watch area (rounds 11-14, 16, 17 = SIX) needs the restructure now.**
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 

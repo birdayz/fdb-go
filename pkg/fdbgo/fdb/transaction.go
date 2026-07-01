@@ -440,12 +440,15 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	// watch. Capturing both here and threading them through keeps only the
 	// long-poll asynchronous.
 	value, readVersion, span, watchCtx, setupErr := inner.WatchSetup(ctx, k)
-	return newFutureNil(func() error {
+	// Cancel() on the returned future cancels the underlying watch (its context → WatchPoll drains and
+	// releases the outstanding-watch slot), so an app can free an unneeded watch — the base future
+	// Cancel() is a no-op, which would leave the slot charged until the key changed (codex).
+	return newFutureNilCancel(func() error {
 		if setupErr != nil {
 			return convertError(setupErr)
 		}
 		return convertError(inner.WatchPoll(watchCtx, k, value, readVersion, span))
-	})
+	}, inner.CancelWatches)
 }
 
 // CreateTenant creates a tenant within this transaction.
