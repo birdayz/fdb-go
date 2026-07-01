@@ -1042,11 +1042,11 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
-	value, readVersion, span, watchCtx, err := tx.WatchSetup(ctx, key)
+	value, readVersion, span, watchCtx, watchCancel, err := tx.WatchSetup(ctx, key)
 	if err != nil {
 		return err
 	}
-	return tx.WatchPoll(watchCtx, key, value, readVersion, span)
+	return tx.WatchPoll(watchCtx, watchCancel, key, value, readVersion, span)
 }
 
 // WatchSetup performs the SYNCHRONOUS part of a watch: pin the read version, add
@@ -1066,7 +1066,7 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 //     future goroutine runs — sending the watch at version 0, which can error or
 //     register incorrectly. So the read version is captured synchronously here and
 //     threaded through to sendWatch.
-func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, context.Context, error) {
+func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, context.Context, context.CancelFunc, error) {
 	// Terminal transaction/context state out-ranks ALL watch-setup work — matching C++'s entry
 	// timebomb (resetPromise fires before the op's own logic). So a Cancel()ed / timed-out txn or an
 	// already-cancelled caller ctx returns 1025 / the caller's error / 1031 BEFORE the watches-disabled
@@ -1074,18 +1074,18 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// reads get via ensureReadVersion (codex: else Cancel();WatchSetup(illegalKey) wrongly returned
 	// 2004). mapTimeout precedence: txn-cancelled, then the caller's ctx, then the txn SetTimeout.
 	if cerr := tx.checkCancelled(); cerr != nil {
-		return nil, 0, types.SpanContext{}, nil, cerr // transaction_cancelled (1025)
+		return nil, 0, types.SpanContext{}, nil, nil, cerr // transaction_cancelled (1025)
 	}
 	if cerr := ctx.Err(); cerr != nil {
-		return nil, 0, types.SpanContext{}, nil, cerr // caller ctx already cancelled / past its deadline
+		return nil, 0, types.SpanContext{}, nil, nil, cerr // caller ctx already cancelled / past its deadline
 	}
 	if terr := tx.checkTimeout(); terr != nil {
-		return nil, 0, types.SpanContext{}, nil, terr // transaction_timed_out (1031)
+		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)
 	}
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
-		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 1034} // watches_disabled
+		return nil, 0, types.SpanContext{}, nil, nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
 	// Eager legal-range + key-size validation, BEFORE the read — C++ RYW watch
 	// (ReadYourWrites.actor.cpp:2450-2456): a key >= getMaxReadKey() (and != metadataVersionKey) is
@@ -1093,11 +1093,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// (non-system) transaction could register a watch on a \xff system key or an oversized key that
 	// libfdb_c rejects. Mirrors the Get/Set legal-range + commit key-size gates.
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
-		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
+		return nil, 0, types.SpanContext{}, nil, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
 	if len(key) > getMaxWriteKeySize(key, rawAccess) {
-		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
+		return nil, 0, types.SpanContext{}, nil, nil, &wire.FDBError{Code: 2102} // key_too_large
 	}
 
 	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++
@@ -1108,32 +1108,26 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// catch → decreaseWatchCounter, NativeAPI:5679). Charged AFTER the malformed-key rejections above
 	// so an illegal/oversized-key watch never holds a slot.
 	if err := tx.db.tryAcquireWatch(); err != nil {
-		return nil, 0, types.SpanContext{}, nil, err // too_many_watches (1032)
+		return nil, 0, types.SpanContext{}, nil, nil, err // too_many_watches (1032)
 	}
 
-	// Bind the cancellable watch context HERE — right after the acquire and BEFORE the blocking GRV /
-	// value read below (codex). A Cancel()/reset() during that blocking setup cancels THIS context,
-	// so WatchPoll observes it and drains, releasing the slot. Binding it AFTER the read (as before)
-	// let a Cancel during the read be missed by cancelWatches (no watchCancel set yet) → WatchPoll ran
-	// on a fresh, never-cancelled context, long-polling until the key changed and HOLDING the slot, so
-	// a low MAX_WATCHES could reject later watches even though the txn was cancelled. The async
-	// WatchPoll USES this context, never a lazy fetch (which races Cancel/reset — RFC-115 §4).
-	// watchCtxCreated is true iff THIS call minted watchCtx: a setup failure below then clears it (so
-	// a later watch doesn't reuse a context this call's cancelled/expired ctx poisoned), while leaving
-	// a pre-existing active watch's context alone (codex).
-	watchCtx, watchCtxCreated := tx.getWatchCtx(ctx)
+	// Mint THIS watch's own cancellable context HERE — right after the acquire and BEFORE the blocking
+	// GRV / value read below (codex). A Cancel()/reset() during that blocking setup cancels THIS
+	// context, so WatchPoll observes it and drains, releasing the slot. watchCancel is the SCOPED
+	// cancel (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll
+	// defers it on completion, and the fdb facade wires the Watch future's Cancel() to it — so one
+	// watch is freed without touching siblings (round 18). The async WatchPoll USES this context,
+	// never a lazy fetch (which races Cancel/reset — RFC-115 §4).
+	watchCtx, watchCancel := tx.newWatchCtx(ctx)
 
-	// ensureReadVersion checks cancelled FIRST (transaction.go:622), so a Cancel that ran before the
-	// bind above (its cancelWatches was a no-op, leaving the just-bound watchCtx live) is caught here
-	// → the slot is released by the error path below. A Cancel DURING this GRV / the value read
-	// cancels the early-bound watchCtx, so WatchPoll drains and releases it. No extra cancelled-state
-	// guard needed (it would duplicate this one).
+	// A Cancel that ran before the mint above (its cancelWatches was a no-op) is caught here by
+	// ensureReadVersion's leading checkCancelled (transaction.go:622) → the slot + this watch's
+	// context are released by the error path. A Cancel DURING this GRV / the value read cancels this
+	// watch's context, so WatchPoll drains and releases it.
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		tx.db.releaseWatch()
-		if watchCtxCreated {
-			tx.cancelWatches() // setup failed; clear the context THIS call minted so no later watch reuses it
-		}
-		return nil, 0, types.SpanContext{}, nil, err
+		watchCancel() // setup failed — cancel+deregister THIS watch's context
+		return nil, 0, types.SpanContext{}, nil, nil, err
 	}
 	tx.readVersionMu.Lock()
 	readVersion := tx.readVersion
@@ -1160,14 +1154,13 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	value, err := tx.ryw.get(ctx, key, tx.getValue)
 	if err != nil {
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
-		if watchCtxCreated {
-			tx.cancelWatches() // clear the context THIS call minted so a later watch doesn't reuse it
-		}
-		return value, readVersion, span, nil, err
+		watchCancel()        // cancel+deregister THIS watch's context
+		return value, readVersion, span, nil, nil, err
 	}
-	// watchCtx was bound synchronously above (right after the acquire, before this blocking read) so a
-	// Cancel/reset during setup cancels the very context WatchPoll holds — see the comment there.
-	return value, readVersion, span, watchCtx, nil
+	// watchCtx/watchCancel were minted synchronously above (before this blocking read), so a
+	// Cancel/reset during setup cancels the very context WatchPoll holds; WatchPoll defers watchCancel
+	// to deregister on completion, and the facade wires the future's Cancel() to it.
+	return value, readVersion, span, watchCtx, watchCancel, nil
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
@@ -1176,9 +1169,9 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 // (also captured by WatchSetup — NOT re-read from the possibly-reset transaction).
 // Retries on wrong_shard_server with cache invalidation. Intended to run in the
 // watch future's goroutine.
-func (tx *Transaction) WatchPoll(watchCtx context.Context, key, value []byte, readVersion int64, span types.SpanContext) error {
+func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.CancelFunc, key, value []byte, readVersion int64, span types.SpanContext) error {
 	// watchCtx is captured SYNCHRONOUSLY by WatchSetup and passed in (NOT fetched here via
-	// getWatchCtx): this runs in the async watch future, so a lazy fetch would race
+	// newWatchCtx): this runs in the async watch future, so a lazy fetch would race
 	// Cancel()/reset()'s cancelWatches on watchCtx/watchCancel AND, if cancelWatches won, leak a
 	// never-cancelled poll. Binding at setup makes Reset()/Cancel() cancel the very context this
 	// loop holds — matching C++ resetRyow() → resetPromise.sendError(transaction_cancelled). span
@@ -1190,6 +1183,10 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, key, value []byte, re
 	// error / cancel — matching C++ decreaseWatchCounter in the async watch actor (NativeAPI:5679).
 	// tx.db is always set on a WatchPoll (the locate/sendWatch below dereference it), so no nil guard.
 	defer tx.db.releaseWatch()
+	// Deregister THIS watch's scoped context on completion (fire / error / cancel), so the per-txn
+	// watchCancels map self-cleans across a reused post-commit handle. Idempotent with the future's
+	// Cancel() and the cancelWatches path.
+	defer watchCancel()
 
 	// The WatchValueRequest carries a CHILD of the tx span, derived ONCE here and
 	// reused across the wrong-shard retry loop — matching C++ watchValue's single

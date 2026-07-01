@@ -623,8 +623,7 @@ func TestCancel_SetsCancelledState(t *testing.T) {
 func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
-	parent := context.Background()
-	wctx, _ := tx.getWatchCtx(parent)
+	wctx, _ := tx.newWatchCtx(context.Background())
 	if err := wctx.Err(); err != nil {
 		t.Fatalf("setup: watch ctx should be live, got %v", err)
 	}
@@ -632,9 +631,12 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	if wctx.Err() == nil {
 		t.Error("Cancel must cancel the watch context, but ctx.Err() is still nil")
 	}
-	// After cancel, getWatchCtx must mint a fresh context (non-nil parent ctx).
-	if tx.watchCtx != nil || tx.watchCancel != nil {
-		t.Error("Cancel must clear watchCtx/watchCancel so a future Watch can mint a fresh one")
+	// Cancel clears the per-watch cancels map so a future Watch mints fresh.
+	tx.watchMu.Lock()
+	n := len(tx.watchCancels)
+	tx.watchMu.Unlock()
+	if n != 0 {
+		t.Errorf("Cancel must clear the watch-cancels map, got %d entries", n)
 	}
 }
 
@@ -664,7 +666,7 @@ func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
 func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
-	watchCtx, _ := tx.getWatchCtx(context.Background())
+	watchCtx, _ := tx.newWatchCtx(context.Background())
 	if watchCtx.Err() != nil {
 		t.Fatal("setup: watch ctx should start live")
 	}
@@ -674,38 +676,45 @@ func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	}
 }
 
-func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
+// TestNewWatchCtx_PerWatchScoped pins the RFC-168 per-watch-context restructure (round-18 fix):
+// newWatchCtx mints a DISTINCT context per watch (not one shared per txn), each cancellable
+// independently via its scoped cancel WITHOUT touching siblings, while cancelWatches cancels ALL.
+func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
-	if tx.watchCtx != nil {
-		t.Fatal("setup: watchCtx must start nil")
+	a, cancelA := tx.newWatchCtx(context.Background())
+	b, cancelB := tx.newWatchCtx(context.Background())
+	if a == b {
+		t.Fatal("each watch must get its OWN context, not a shared one")
 	}
-	a, createdA := tx.getWatchCtx(context.Background())
-	if !createdA {
-		t.Error("first getWatchCtx must report created=true (it minted the context)")
+	// Cancelling A's scoped cancel cancels A only — B stays live (the round-18 fix).
+	cancelA()
+	if a.Err() == nil {
+		t.Error("a watch future's scoped cancel must cancel its own context")
 	}
-	b, createdB := tx.getWatchCtx(context.Background())
-	if createdB {
-		t.Error("second getWatchCtx must report created=false (it reused the context)")
+	if b.Err() != nil {
+		t.Errorf("cancelling one watch must NOT cancel a sibling, got %v", b.Err())
 	}
-	if a != b {
-		t.Error("repeated getWatchCtx must return the same context until reset")
+	// cancelWatches (Cancel/reset) cancels the remaining live watch (B).
+	tx.cancelWatches()
+	if b.Err() == nil {
+		t.Error("cancelWatches must cancel all remaining watches")
 	}
+	cancelB() // idempotent no-op (already cancelled+deregistered)
 }
 
-// TestWatch_GetWatchCtxCancelRaceFree pins the watchMu fix. getWatchCtx (the synchronous
-// WatchSetup capture) and cancelWatches (Cancel()/reset(), incl. the OnError retry path) touch
-// watchCtx/watchCancel, and the watch future runs concurrently with Cancel/reset by design.
-// Pre-fix these were plain unsynchronized field accesses → `go test -race` reported a data race.
-// MUST be run under -race to catch a regression. (The production race was additionally removed by
-// binding the watch context at WatchSetup so WatchPoll no longer fetches it in the goroutine.)
-func TestWatch_GetWatchCtxCancelRaceFree(t *testing.T) {
+// TestWatch_NewWatchCtxCancelRaceFree pins the watchMu synchronization. newWatchCtx (the synchronous
+// WatchSetup capture, which appends to watchCancels) and cancelWatches (Cancel()/reset(), incl. the
+// OnError retry path, which snapshots+clears the map) run concurrently with the watch future by
+// design. Both touch watchCancels under watchMu; without it `go test -race` would report a data race.
+// MUST be run under -race to catch a regression.
+func TestWatch_NewWatchCtxCancelRaceFree(t *testing.T) {
 	t.Parallel()
 	for i := 0; i < 200; i++ {
 		tx := newTestTx()
 		var wg sync.WaitGroup
 		wg.Add(2)
-		go func() { defer wg.Done(); _, _ = tx.getWatchCtx(context.Background()) }()
+		go func() { defer wg.Done(); _, _ = tx.newWatchCtx(context.Background()) }()
 		go func() { defer wg.Done(); tx.Cancel() }()
 		wg.Wait()
 	}

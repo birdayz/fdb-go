@@ -345,7 +345,7 @@ round-17 future `Cancel()` → `CancelWatches` (txn-wide) cancels UNRELATED watc
 per-watch cancellation. This is the exact limitation documented on the round-17 fix. **There is no
 minimal patch — round 18 REQUIRES the per-watch-context restructure.**
 
-**DECISION: DEFERRED the restructure to a focused, separately-reviewed change → RFC-168.** Rationale:
+**UPDATE: the restructure was IMPLEMENTED after all (per-watch context, RFC-168 → status IMPLEMENTED).** Rationale:
 the fix is an 8-return signature restructure of `WatchSetup`/`WatchPoll` + the per-txn watch fields +
 the facade, touching the most-fragile area (7 rounds) with subtle survives-commit / race-free / map-
 cleanup semantics. Landing it at the end of a very long review session, WITHOUT a fresh review cycle,

@@ -418,17 +418,17 @@ type Transaction struct {
 	// encounters commit_unknown_result.
 	isDummy bool
 
-	// watchCtx/watchCancel: cancellable context for in-flight Watch calls.
-	// Created lazily on first Watch(). Cancelled on Reset()/reset() to match
-	// C++ resetRyow() which sends transaction_cancelled to pending watches.
-	// watchMu guards both fields: getWatchCtx (the synchronous WatchSetup capture)
-	// can run concurrently with cancelWatches (Cancel()/reset(), incl. the OnError
-	// retry path). The async WatchPoll no longer touches these — it uses the context
-	// captured synchronously by WatchSetup (threaded through), so a Cancel/reset
-	// always cancels the very context the poll holds (no lost-cancellation leak).
-	watchMu     sync.Mutex
-	watchCtx    context.Context
-	watchCancel context.CancelFunc
+	// Per-watch cancellation (watchMu-guarded). Each in-flight Watch() gets its OWN cancellable
+	// context keyed by a monotonic id (newWatchCtx), so an individual watch future's Cancel() scopes
+	// to that ONE watch, while Cancel()/reset() (cancelWatches) cancel ALL of the txn's watches — C++
+	// resetRyow() sends transaction_cancelled to every pending watch. The context is captured
+	// SYNCHRONOUSLY in WatchSetup (the async WatchPoll only USES it, threaded through), so a concurrent
+	// Cancel/reset cancels the exact context the poll holds (no lost-cancellation leak). Entries are
+	// removed on watch completion (WatchPoll's deferred scoped cancel) and by the future's Cancel, so
+	// the map does not grow across a reused (post-commit) transaction handle.
+	watchMu      sync.Mutex
+	watchCancels map[uint64]context.CancelFunc
+	nextWatchID  uint64
 
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
@@ -1921,43 +1921,45 @@ func (tx *Transaction) SetSpanParent(b []byte) error {
 	return nil
 }
 
-// cancelWatches cancels any in-flight Watch() calls by cancelling the
-// watch context. Matches C++ resetRyow() which sends transaction_cancelled
-// through resetPromise to cancel pending watches.
+// cancelWatches cancels ALL of the transaction's in-flight watches (Cancel()/reset()) — C++
+// resetRyow() sends transaction_cancelled through resetPromise to every pending watch.
 func (tx *Transaction) cancelWatches() {
 	tx.watchMu.Lock()
-	defer tx.watchMu.Unlock()
-	if tx.watchCancel != nil {
-		tx.watchCancel()
-		tx.watchCtx = nil
-		tx.watchCancel = nil
+	cancels := tx.watchCancels
+	tx.watchCancels = nil
+	tx.watchMu.Unlock()
+	for _, c := range cancels {
+		c()
 	}
 }
 
-// CancelWatches cancels this transaction's in-flight watch(es), so their long-polls drain and
-// release their outstanding-watch slots. Exposed so the fdb facade can wire a Watch future's
-// Cancel() to it (a cancelled watch future must free its cap slot — codex). NOTE: the watch context
-// is currently per-transaction (shared), so this cancels ALL of the txn's watches; a per-watch
-// context (handover follow-up) would scope it to the one future.
-func (tx *Transaction) CancelWatches() {
-	tx.cancelWatches()
-}
-
-// getWatchCtx returns a context for Watch() calls that is cancelled on
-// reset/Reset. Created lazily — if no Watch is ever called, no context
-// is allocated.
-// getWatchCtx returns the per-transaction watch context, creating it (from parent) on first use.
-// The second return is true iff THIS call created it — a failing WatchSetup uses that to clear a
-// context IT minted (so a later watch on the same txn doesn't reuse a now-cancelled child) while
-// leaving a pre-existing active watch's context untouched (codex).
-func (tx *Transaction) getWatchCtx(parent context.Context) (context.Context, bool) {
+// newWatchCtx mints a fresh cancellable context for ONE watch (a child of the caller's parent, so the
+// caller's own cancellation still propagates), registers it under a unique id, and returns the
+// context plus a SCOPED cancel that cancels+deregisters only THIS watch (idempotent). The future's
+// Cancel(), a failed WatchSetup, and WatchPoll's completion all call the scoped cancel — so one watch
+// can be freed without touching sibling watches (codex round 18), the map self-cleans, and
+// Cancel()/reset() (cancelWatches) still cancel every live watch. Captured synchronously in
+// WatchSetup (the async WatchPoll only USES the context) — preserves the race-free bind.
+func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
 	tx.watchMu.Lock()
-	defer tx.watchMu.Unlock()
-	if tx.watchCtx == nil {
-		tx.watchCtx, tx.watchCancel = context.WithCancel(parent)
-		return tx.watchCtx, true
+	if tx.watchCancels == nil {
+		tx.watchCancels = make(map[uint64]context.CancelFunc)
 	}
-	return tx.watchCtx, false
+	id := tx.nextWatchID
+	tx.nextWatchID++
+	tx.watchCancels[id] = cancel
+	tx.watchMu.Unlock()
+	scoped := func() {
+		tx.watchMu.Lock()
+		c, ok := tx.watchCancels[id]
+		delete(tx.watchCancels, id)
+		tx.watchMu.Unlock()
+		if ok {
+			c()
+		}
+	}
+	return ctx, scoped
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.

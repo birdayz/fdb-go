@@ -1,7 +1,14 @@
 # RFC-168: Watch-setup per-watch-context restructure
 
-**Status:** Draft — the definitive root fix for the watch-setup edge class (codex rounds 11–18 of the
-fdbgo client bug-hunt). Needs FDB-C-dev + Torvalds + codex review as a focused, standalone change.
+**Status:** IMPLEMENTED (round 18 of the fdbgo client bug-hunt) — the per-watch-context restructure
+landed after all. `watchCtx`/`watchCancel` → `watchCancels map[uint64]context.CancelFunc`;
+`getWatchCtx` → `newWatchCtx` (returns the context + a scoped cancel); WatchSetup returns the scoped
+cancel (6th value), threaded to WatchPoll (deferred for self-cleaning deregister) and the fdb facade
+(the future's Cancel scopes to one watch). Verified: per-watch unit tests + `TestNewWatchCtx_
+PerWatchScoped` (cancel one, sibling survives) + `TestWatch_NewWatchCtxCancelRaceFree` under `-race`,
+the watch integration suite, and both concurrency fault tests. Closes the round-13 poisoning, round-17
+future-Cancel, and round-18 over-cancel edges at once. Still owed the codex/persona review gauntlet on
+this HEAD.
 **Item:** FDB client bug-hunt (2026-06-30). See `shifts/2026-06-30-fdbgo-client-bughunt.md`.
 **Spec:** libfdb_c 7.3.77 (`/tmp/fdbsrc`).
 

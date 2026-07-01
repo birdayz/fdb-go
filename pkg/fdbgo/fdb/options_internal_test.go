@@ -39,7 +39,7 @@ const absoluteMaxWatchesFacade = 1_000_000
 // TestNewFutureNilCancel_CancelRunsHook pins that a Watch future's Cancel() actually runs its cancel
 // hook (which cancels the watch context so the poll drains and releases its outstanding-watch slot),
 // instead of the base futureBase.Cancel() no-op that left the slot charged (codex). The fn here
-// stands in for WatchPoll (blocks until cancelled); the hook for CancelWatches (releases the poll).
+// stands in for WatchPoll (blocks until cancelled); the hook for the scoped cancel (releases the poll).
 func TestNewFutureNilCancel_CancelRunsHook(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})

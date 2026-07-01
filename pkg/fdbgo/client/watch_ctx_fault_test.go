@@ -10,13 +10,13 @@ import (
 )
 
 // TestWatchSetup_CancelDuringValueRead_ReleasesSlot is the deterministic fault-injection regression
-// for the round-12 getWatchCtx-early fix (RFC follow-up / handover test-debt #2). It holds the
+// for the round-12 newWatchCtx-early fix (RFC follow-up / handover test-debt #2). It holds the
 // WatchSetup value-read reply via the simDialer intercept so setup parks IN the read, cancels the
 // transaction mid-read, then releases — and asserts the outstanding-watch slot is freed.
 //
-// With getWatchCtx bound BEFORE the read (the fix), the Cancel cancels the very context WatchPoll
+// With newWatchCtx bound BEFORE the read (the fix), the Cancel cancels the very context WatchPoll
 // holds, so WatchPoll drains and releaseWatch runs → a second watch under MAX_WATCHES=1 succeeds.
-// Revert-proof: with getWatchCtx bound AFTER the read, the Cancel's cancelWatches is a no-op (no
+// Revert-proof: with newWatchCtx bound AFTER the read, the Cancel's cancelWatches is a no-op (no
 // context yet), the read completes, WatchSetup mints a FRESH never-cancelled context, and WatchPoll
 // long-polls forever HOLDING the slot — so tx.Watch never returns (the <-watchErr wait times out) and
 // the slot is never freed.
@@ -76,14 +76,14 @@ func TestWatchSetup_CancelDuringValueRead_ReleasesSlot(t *testing.T) {
 	select {
 	case <-watchErr: // the watch drained (fix); without the fix it long-polls forever and this times out
 	case <-time.After(30 * time.Second):
-		t.Fatal("Watch did not drain after Cancel — the slot leaked (getWatchCtx bound too late)")
+		t.Fatal("Watch did not drain after Cancel — the slot leaked (newWatchCtx bound too late)")
 	}
 
 	// The slot must be free now — a fresh WatchSetup under cap=1 must not fail too_many_watches.
 	sd.setIntercept(nil) // stop holding replies
 	tx2 := db.CreateTransaction()
 	tx2.SetReadVersion(rv)
-	if _, _, _, _, err := tx2.WatchSetup(ctx, []byte(t.Name()+"_k2")); err != nil {
+	if _, _, _, _, _, err := tx2.WatchSetup(ctx, []byte(t.Name()+"_k2")); err != nil {
 		t.Fatalf("cancelled watch must release its slot; fresh WatchSetup must succeed, got %v", err)
 	}
 	db.db.releaseWatch() // free tx2's slot (no WatchPoll runs for it)

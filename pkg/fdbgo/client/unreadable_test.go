@@ -562,7 +562,7 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		}
 		tx.SetReadVersion(rv + 50_000_000)
 		k := append(append([]byte(nil), pfx...), []byte("watch1")...)
-		if _, _, _, _, err := tx.WatchSetup(ctx, k); err == nil {
+		if _, _, _, _, _, err := tx.WatchSetup(ctx, k); err == nil {
 			t.Fatal("watch setup at a future read version did not fail")
 		}
 		// Read-only commit: the readErr gate precedes the read-only fast

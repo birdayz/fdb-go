@@ -439,16 +439,22 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	// read version could be cleared to 0 by commit before the async poll sends the
 	// watch. Capturing both here and threading them through keeps only the
 	// long-poll asynchronous.
-	value, readVersion, span, watchCtx, setupErr := inner.WatchSetup(ctx, k)
-	// Cancel() on the returned future cancels the underlying watch (its context → WatchPoll drains and
-	// releases the outstanding-watch slot), so an app can free an unneeded watch — the base future
-	// Cancel() is a no-op, which would leave the slot charged until the key changed (codex).
+	value, readVersion, span, watchCtx, watchCancel, setupErr := inner.WatchSetup(ctx, k)
+	// Cancel() on the returned future cancels THIS watch (its scoped context → WatchPoll drains and
+	// releases the outstanding-watch slot), so an app can free ONE unneeded watch without touching the
+	// transaction's other watches (round 18) — the base future Cancel() is a no-op, which would leave
+	// the slot charged until the key changed (codex). On a setup failure watchCancel is nil (already
+	// cancelled+deregistered in WatchSetup); guard the hook.
+	cancelHook := func() {}
+	if watchCancel != nil {
+		cancelHook = watchCancel
+	}
 	return newFutureNilCancel(func() error {
 		if setupErr != nil {
 			return convertError(setupErr)
 		}
-		return convertError(inner.WatchPoll(watchCtx, k, value, readVersion, span))
-	}, inner.CancelWatches)
+		return convertError(inner.WatchPoll(watchCtx, watchCancel, k, value, readVersion, span))
+	}, cancelHook)
 }
 
 // CreateTenant creates a tenant within this transaction.
