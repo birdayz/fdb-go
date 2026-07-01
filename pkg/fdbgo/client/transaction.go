@@ -432,12 +432,12 @@ type Transaction struct {
 	nextWatchID  uint64
 
 	// watchAct is the per-incarnation commit-completion signal for pending watches (RFC-170 / #8). A watch
-	// captures the CURRENT activation at setup; the async facade blocks on it (awaitWatchActivation) and
+	// captures the CURRENT activation at setup; the async facade blocks on it (AwaitWatchCommit) and
 	// registers the watch at the COMMITTED version instead of the read version — so a self-write-then-watch
 	// stays pending until the NEXT external change rather than firing on the txn's own write. Commit /
 	// read-only fast path / reset / Cancel all ROTATE it (fireWatchActivation Swaps a fresh one) so a
 	// reset-away watch can never be armed by a LATER incarnation's commit (the readGen-keying the RFC
-	// requires). Lazily created on first Watch/commit via watchActLoad (nil until then — the common
+	// requires). Lazily created on first Watch/commit via WatchActivation (nil until then — the common
 	// watch-free txn pays nothing).
 	watchAct atomic.Pointer[watchActivation]
 
@@ -2013,7 +2013,7 @@ type watchActivation struct {
 	abandoned bool
 }
 
-// watchActLoad returns this incarnation's activation, lazily creating it on first use (a fresh handle
+// WatchActivation returns this incarnation's activation, lazily creating it on first use (a fresh handle
 // before any Watch/commit has nil watchAct). Race-safe via CAS so two concurrent Watch() calls share one.
 func (tx *Transaction) WatchActivation() *watchActivation {
 	if act := tx.watchAct.Load(); act != nil {
@@ -2045,7 +2045,7 @@ func (tx *Transaction) fireWatchActivation(version int64, abandoned bool) {
 	close(prev.done)
 }
 
-// awaitWatchActivation blocks until the watch's captured incarnation resolves, returning the version to
+// AwaitWatchCommit blocks until the watch's captured incarnation resolves, returning the version to
 // register the watch at — committedVersion, or readVersion when the txn didn't commit (C++ setupWatches'
 // `committedVersion > 0 ? committedVersion : readVersion`, NativeAPI.actor.cpp:6420). Returns an error when
 // the watch is abandoned (reset/Cancel → 1025) or its scoped context is cancelled, so the facade drains
@@ -2062,6 +2062,18 @@ func (tx *Transaction) AwaitWatchCommit(watchCtx context.Context, act *watchActi
 		return readVersion, nil
 	case <-watchCtx.Done():
 		return 0, watchCtx.Err()
+	}
+}
+
+// ReleaseWatch releases the outstanding-watch slot WatchSetup reserved (C++ decreaseWatchCounter). It is
+// normally released by WatchPoll on completion, but when AwaitWatchCommit aborts a watch BEFORE it reaches
+// WatchPoll (never-committed / reset / Cancel / ctx-expiry), WatchPoll never runs — so the async facade
+// calls this on that abort path, else the slot leaks and later watches fail with too_many_watches under
+// MAX_WATCHES (codex #8). Idempotent-safe by construction: WatchPoll runs only on the success path, this
+// only on the abort path — never both for one watch.
+func (tx *Transaction) ReleaseWatch() {
+	if tx.db != nil {
+		tx.db.releaseWatch()
 	}
 }
 

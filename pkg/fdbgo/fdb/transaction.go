@@ -462,6 +462,13 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 		// the watch. A never-committed / reset / Cancel'd watch drains here without registering.
 		watchVersion, err := inner.AwaitWatchCommit(watchCtx, act, readVersion)
 		if err != nil {
+			// The watch aborted before reaching WatchPoll — the only path that releases the reserved
+			// outstanding-watch slot + deregisters the scoped context. Do both here, else the slot leaks
+			// → too_many_watches under MAX_WATCHES in retry/cancel-heavy flows (codex #8).
+			inner.ReleaseWatch()
+			if watchCancel != nil {
+				watchCancel()
+			}
 			return convertError(err)
 		}
 		return convertError(inner.WatchPoll(watchCtx, watchCancel, k, value, watchVersion, span))
