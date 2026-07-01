@@ -1592,10 +1592,26 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	// prefix itself (tenantId >= 0), the user key must stay within KEY_SIZE_LIMIT, so the slack is
 	// gated on the no-tenant case (C++ forbids raw-access options on tenant transactions for this).
 	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
-	if len(m.Key) > getMaxWriteKeySize(m.Key, rawAccess) {
+	// C++ checks key/operand size EAGERLY in atomicOp on the ORIGINAL user bytes (RYW:2237-2242), BEFORE
+	// appending the API<520 versionstamp offset suffix (:2250-2261). Go defers this to commit, where the
+	// buffered mutation already carries that client-added suffix (2B for SVK — the versionstampKeyRange
+	// transform preserves it, transaction.go:1516; 4B for SVV) — so it must be discounted here, else a
+	// boundary-sized legacy value is spuriously value_too_large (codex). At apiVersion>=520 there is no
+	// client-added suffix (nothing to discount); the user-provided offset there IS counted by C++, which
+	// len(m.Key)/len(m.Value) as-is already matches.
+	keyLen, valLen := len(m.Key), len(m.Value)
+	if tx.db != nil && !tx.db.apiVersionAtLeast(520) {
+		switch m.Type {
+		case MutSetVersionstampedKey:
+			keyLen -= 2
+		case MutSetVersionstampedValue:
+			valLen -= 4
+		}
+	}
+	if keyLen > getMaxWriteKeySize(m.Key, rawAccess) {
 		return &wire.FDBError{Code: 2102} // key_too_large
 	}
-	if len(m.Value) > valueSizeLimit {
+	if valLen > valueSizeLimit {
 		return &wire.FDBError{Code: 2103} // value_too_large
 	}
 	// Versionstamp offset validation → client_invalid_operation (2000). C++ atomicOp validates this

@@ -968,3 +968,61 @@ func TestAtomic_APIVersionSub520VersionstampSuffix(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateMutation_LegacyVersionstampSizeDiscount pins codex's P2 on the api<520 versionstamp fix:
+// the client-added offset suffix (2B SVK / 4B SVV) must NOT count toward the key/value size limit at the
+// deferred commit-time check, because C++ checks size EAGERLY on the ORIGINAL user bytes (RYW:2237-2242)
+// BEFORE appending the suffix (:2250-2261). Without the discount a boundary-sized legacy value is
+// spuriously value_too_large. At api>=520 the offset is user-provided and DOES count (no discount).
+// Revert-proof: dropping the discount block reds the two "at the limit" legacy cases.
+func TestValidateMutation_LegacyVersionstampSizeDiscount(t *testing.T) {
+	t.Parallel()
+	mkTx := func(apiVersion int) *Transaction {
+		tx := &Transaction{db: &database{apiVersion: apiVersion}}
+		tx.state.Store(int32(txStateActive))
+		return tx
+	}
+	isCode := func(err error, code int) bool {
+		var fe *wire.FDBError
+		return errors.As(err, &fe) && fe.Code == code
+	}
+
+	t.Run("legacy SVV at the limit passes (4-byte suffix discounted)", func(t *testing.T) {
+		t.Parallel()
+		tx := mkTx(510)
+		// Logical value == valueSizeLimit; buffered carries the client-added 4-byte offset.
+		m := Mutation{Type: MutSetVersionstampedValue, Key: []byte("k"), Value: make([]byte, valueSizeLimit+4)}
+		if err := tx.validateMutation(m, tx.maxWriteKey()); err != nil {
+			t.Errorf("legacy SVV at the limit must pass (suffix discounted), got %v", err)
+		}
+	})
+
+	t.Run("legacy SVV one byte over the limit is value_too_large", func(t *testing.T) {
+		t.Parallel()
+		tx := mkTx(510)
+		m := Mutation{Type: MutSetVersionstampedValue, Key: []byte("k"), Value: make([]byte, valueSizeLimit+5)}
+		if err := tx.validateMutation(m, tx.maxWriteKey()); !isCode(err, 2103) {
+			t.Errorf("legacy SVV over the limit must be value_too_large (2103), got %v", err)
+		}
+	})
+
+	t.Run("legacy SVK at the limit passes (2-byte suffix discounted)", func(t *testing.T) {
+		t.Parallel()
+		tx := mkTx(510)
+		m := Mutation{Type: MutSetVersionstampedKey, Key: make([]byte, keySizeLimit+2), Value: []byte("v")}
+		if err := tx.validateMutation(m, tx.maxWriteKey()); err != nil {
+			t.Errorf("legacy SVK at the limit must pass (suffix discounted), got %v", err)
+		}
+	})
+
+	t.Run("api>=520 SVV counts the offset (no discount)", func(t *testing.T) {
+		t.Parallel()
+		tx := mkTx(520)
+		if err := tx.validateMutation(Mutation{Type: MutSetVersionstampedValue, Key: []byte("k"), Value: make([]byte, valueSizeLimit)}, tx.maxWriteKey()); err != nil {
+			t.Errorf("api520 SVV at the limit must pass, got %v", err)
+		}
+		if err := tx.validateMutation(Mutation{Type: MutSetVersionstampedValue, Key: []byte("k"), Value: make([]byte, valueSizeLimit+1)}, tx.maxWriteKey()); !isCode(err, 2103) {
+			t.Errorf("api520 SVV over the limit must be value_too_large, got %v", err)
+		}
+	})
+}
