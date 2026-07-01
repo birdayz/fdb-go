@@ -841,15 +841,23 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	}
 
 	entry := result.GetValue()
-	vals := entry.IndexValues()
-	pk := entry.PrimaryKey()
+	datum, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
+}
 
-	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
-	// RFC-173 P2: dual-emit a DENSE positional row over the covering index's schema
-	// (value columns then PK columns, in order) against the cursor-fixed c.posType.
-	// An out-of-range column is a nil slot (NULL) — matching the map omitting its key.
-	posSlots := make([]any, 0, len(c.columns)+len(c.pkColumns))
-	for i, col := range c.columns {
+// buildCoveringRow constructs a covering-index result row: the name-keyed datum AND
+// the RFC-173 P2 positional row, from the index value columns then PK columns. An
+// out-of-range column is absent from the datum (SQL NULL) and a nil positional slot.
+// posType is the cursor-fixed positional schema (value cols then PK cols). When a
+// value-column name collides with a PK-column name the datum is last-wins (the PK
+// write overwrites the value write) while the positional row keeps BOTH, distinct by
+// ordinal — the Slice-4 collision fix; the shadow assert legitimately differs there.
+// Extracted from coveringIndexCursor.OnNext so the real bookkeeping (upper-casing,
+// pkOffset prefix-skip, dup-name positions) is unit-testable against shadowMismatch.
+func buildCoveringRow(columns, pkColumns []string, vals, pk tuple.Tuple, posType *values.RecordType) (map[string]any, *PositionalRow) {
+	datum := make(map[string]any, len(columns)+len(pkColumns))
+	posSlots := make([]any, 0, len(columns)+len(pkColumns))
+	for i, col := range columns {
 		var v any
 		if i < len(vals) {
 			v = tupleElementToUUID(vals[i])
@@ -857,13 +865,13 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		}
 		posSlots = append(posSlots, v)
 	}
-	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
-	// The user-level PK columns are at the tail. Skip the prefix.
+	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
+	// the user-level PK columns are at the tail. Skip the prefix.
 	pkOffset := 0
-	if len(pk) > len(c.pkColumns) {
-		pkOffset = len(pk) - len(c.pkColumns)
+	if len(pk) > len(pkColumns) {
+		pkOffset = len(pk) - len(pkColumns)
 	}
-	for i, col := range c.pkColumns {
+	for i, col := range pkColumns {
 		idx := i + pkOffset
 		var v any
 		if idx < len(pk) {
@@ -872,8 +880,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		}
 		posSlots = append(posSlots, v)
 	}
-	pos := &PositionalRow{Type: c.posType, Slots: posSlots}
-	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
+	return datum, &PositionalRow{Type: posType, Slots: posSlots}
 }
 
 func (c *coveringIndexCursor) Close() error {

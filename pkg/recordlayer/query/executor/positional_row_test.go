@@ -6,6 +6,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -178,5 +179,56 @@ func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
 	lastWinsMap := map[string]any{"ID": int64(2)}
 	if bad := shadowMismatch(row, lastWinsMap); bad != "ID" {
 		t.Fatalf("dup-name shadow should differ at ID (map last-wins vs positional dense), got %q", bad)
+	}
+}
+
+// TestBuildCoveringRow_ShadowAndCollision_RFC173P2 closes the coverage gap @claude
+// flagged: run the REAL covering-index bookkeeping (buildCoveringRow — upper-casing,
+// pkOffset prefix-skip, dup-name positions) and shadow-assert the positional row
+// against its own datum, including the value/PK name-collision case a synthetic unit
+// test can't reach.
+func TestBuildCoveringRow_ShadowAndCollision_RFC173P2(t *testing.T) {
+	t.Parallel()
+
+	// Non-colliding: value cols [a,b], PK col [id] — positional row shadow-agrees.
+	posType := positionalTypeFromNames([]string{"A", "B", "ID"})
+	datum, row := buildCoveringRow(
+		[]string{"a", "b"}, []string{"id"},
+		tuple.Tuple{int64(10), "hi"}, tuple.Tuple{int64(99)}, posType)
+	if bad := shadowMismatch(row, datum); bad != "" {
+		t.Fatalf("covering-row shadow mismatch on field %q", bad)
+	}
+	if v, _ := row.GetByName("A"); v != int64(10) {
+		t.Fatalf("A = %v, want 10", v)
+	}
+	if v, _ := row.GetByName("ID"); v != int64(99) {
+		t.Fatalf("ID = %v, want 99", v)
+	}
+
+	// pkOffset prefix-skip: pk carries a record-type prefix; the user PK is the tail.
+	posType2 := positionalTypeFromNames([]string{"ID"})
+	_, row2 := buildCoveringRow(nil, []string{"id"}, nil, tuple.Tuple{int64(7), int64(42)}, posType2)
+	if v, _ := row2.Get(0); v != int64(42) {
+		t.Fatalf("pkOffset skip: ID = %v, want 42 (tail, not the type-prefix 7)", v)
+	}
+
+	// VALUE/PK name COLLISION (@claude's motivating case): value col "x" + PK col "x",
+	// different values. datum is last-wins (PK overwrites); the positional row keeps
+	// BOTH by ordinal — so shadowMismatch legitimately differs at X (Slice-4 fix).
+	posType3 := positionalTypeFromNames([]string{"X", "X"})
+	datum3, row3 := buildCoveringRow(
+		[]string{"x"}, []string{"x"},
+		tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}, posType3)
+	if datum3["X"] != int64(2) {
+		t.Fatalf("datum last-wins: X = %v, want 2 (PK overwrites value)", datum3["X"])
+	}
+	if v, _ := row3.Get(0); v != int64(1) {
+		t.Fatalf("positional keeps value col: Get(0) = %v, want 1", v)
+	}
+	if v, _ := row3.Get(1); v != int64(2) {
+		t.Fatalf("positional keeps PK col: Get(1) = %v, want 2", v)
+	}
+	if bad := shadowMismatch(row3, datum3); bad != "X" {
+		t.Fatalf("collision shadow should differ at X (positional dense vs datum last-wins), got %q", bad)
 	}
 }
