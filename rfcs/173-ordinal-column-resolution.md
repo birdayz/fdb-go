@@ -56,7 +56,7 @@ engine is a 1:1 port of Java Cascades. In one load-bearing place it is **not** a
   (`executor.go` `mergeRows:2019-2081`, `qualifyAlias:2082`), and `FieldValue.Evaluate`
   resolves by string map lookup (`values.go:210-325`). **Node identity is name-based too:** memo
   interning compares `FieldValue`s by `av.Field == bv.Field` (`map_field_values.go:260-262`) and
-  hashes `"field:"+Field` (`semantic_hash.go:107`).
+  hashes `"field:"+Field` (`semantic_hash.go:108`).
 
 ### 1.1 Why this is the "cheap implementation" to retire
 
@@ -121,7 +121,7 @@ representation, and it forces everything else:
 - `FieldValue.Evaluate` does pure string map lookups (`values.go:210-325`).
 - `FieldValue` **node identity** is the name: `EqualsWithoutChildren` compares `Field`
   (`map_field_values.go:260-262`) and the semantic hash is `"field:"+Field`
-  (`semantic_hash.go:107`). Java's identity is ordinal-only (§3).
+  (`semantic_hash.go:108`). Java's identity is ordinal-only (§3).
 - The planner's anchored RC is *explicitly specified* to emit byte-for-byte the key set
   `mergeRows` physically writes (`value_anchored_join_record.go:22-53`).
 
@@ -192,7 +192,7 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   unchanged. **Scope note (gauntlet-agreed, PR #427):** the JOIN/lateral producers (`mergeRows`,
   `qualifyOuterRow`/`flatmap`, `explode`) and the outer-join **positional null-extension** primitive
   (`appendNullLeg` — the sound replacement for null-key-absence that kills the LEFT-JOIN
-  bare-resolve hazard at `executor_new_plans.go:341-348`) move to **Slice 2/3**, which restructures
+  bare-resolve hazard at `executor_new_plans.go:346-358`) move to **Slice 2/3**, which restructures
   those producers positional-native and consumes the primitive. Dual-emitting a positional row over
   the AnchoredJoin merge in P2 would be throwaway work Slice 3 deletes: "wire the mirror where it's
   a mirror; rewrite the join where it's a rewrite" (Graefe). Hard part: wide blast radius; dual
@@ -237,7 +237,9 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   scans/filters/projections/sorts (no merged row) make P1+P2 authoritative and retire the name
   map on that frontier. `AnchoredJoin` untouched. Reuse the inverted `producesMergedRows` test to
   find the safe frontier. Verify `UNION`/set-op (already positional,
-  `remapUnionColumnsByPosition`) rides the ordinal row unchanged.
+  `remapUnionColumnsByPosition`) rides the ordinal row unchanged. **Exit obligation (Round 5):**
+  run the dual-emission per-row cost benchmark deferred from P2 (§4 P2 scope note; §8 risk 5)
+  before the ordinal path goes live.
 - **Slice 2 — 2-way join ordinal output (the wedge)** (~2 shifts, floor). A 2-way join has exactly
   one bipartition, so `NewReEnumerationAnchoredRecord` **never fires** — only the seed matters
   (verified: `rule_partition_select.go:48` returns on <3 quantifiers; outer joins are always
@@ -264,11 +266,20 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   emits references with **no dotted prefix and genuine (unhidden) correlations**, which those
   classifiers silently mis-handle (wrong bipartition validity, wrong predicate placement), a
   failure the row adapter cannot see. Ruling: **scope the ordinal path to 2-way joins that are
-  not consumed as a leg of a name-model merge select** (arity gate on the enclosing select at
-  translation); mixed nesting stays name-model until Slice 3 flips N-way. The adapter then only
-  bridges row format at the subquery/scan boundary; correlation-semantic bridging is explicitly
-  out of scope — that hazard is *why* the gate exists, and the gate itself carries a pin (a 2-way
-  join under a 3-way join must plan and execute name-model-identically before/after Slice 2).
+  not consumed as a leg of a name-model merge select** — and the gate must be
+  **flattening-aware** (Graefe condition, Round 5): a naive translation-time arity check on the
+  enclosing select is evadable, because `SelectMergeRule` (`rule_select_merge.go`) flattens
+  inner-join-equivalent boxes during exploration — `FROM (a JOIN b) t1, (c JOIN d) t2` is 2-way
+  at translation and 3+-way post-flattening. Gate on the **post-flattening arity of the
+  transitive inner-join-equivalent cluster** (computable at translation by walking the cluster),
+  or — if that proves fragile — make ordinal 2-way selects a **merge barrier** for the
+  coexistence window (`SelectMergeRule` declines to flatten through an ordinal select). Mixed
+  nesting stays name-model until Slice 3 flips N-way. The adapter then only bridges row format
+  at the subquery/scan boundary; correlation-semantic bridging is explicitly out of scope — that
+  hazard is *why* the gate exists, and the gate carries pins: (a) a 2-way join under a 3-way
+  join must plan and execute name-model-identically before/after Slice 2, and (b) the flattening
+  evasion shape (`FROM (a JOIN b) t1, (c JOIN d) t2`) must stay name-model end-to-end during the
+  window.
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~3 shifts). Replace the name-based re-stamp machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/
@@ -284,7 +295,7 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   **Also atomic in this slice (Round-5 additions):**
   - **`FieldValue` node-identity flip (name → ordinal).** Java compares accessors by ordinal ONLY
     (`ResolvedAccessor.equals`/`hashCode`, `FieldValue.java:676-690`); Go compares by name
-    (`EqualsWithoutChildren`, `map_field_values.go:260-262`; `semantic_hash.go:107`). P1
+    (`EqualsWithoutChildren`, `map_field_values.go:260-262`; `semantic_hash.go:108`). P1
     deliberately deferred the flip ("for now") — Slice 3, which owns the interning flip, is the
     owner. It CANNOT slip past Slice 4: the moment duplicate bare names coexist positionally
     (§7's `SELECT *` fix), name-based identity conflates two genuinely different columns into one
@@ -487,8 +498,8 @@ then deleting it in Slice 5. At most one of those was right; the destination say
    memo that stops deduplicating (super-linear blowup with arity). Mitigation: precursors proven
    by execution pins; 2-way wedge first.
 2. **Interning regression → plan blowup.** Alias-bijection must keep collapsing shared sub-joins;
-   pinned by the task-count baseline + the STAR planning wall-clock bound (§5), not discovered in
-   Slice 3.
+   pinned by the task-count baseline + the STAR planning wall-clock bound (§5), which gate
+   Slice 3's flip — a regression blocks the slice rather than shipping in it.
 3. **Correlation-order budget.** Removing the exploration-hiding (Slice 5) is safe only if the
    local-bind subtraction is exactly Java's; a subtly-wrong subtraction reinflates ≥4-way STAR
    past the task budget.
@@ -590,7 +601,7 @@ Findings folded in:
    owned by Slice 3, with a §5 duplicate-name identity pin. It is a wrong-plans landmine the
    moment Slice 4 lets duplicate bare names coexist: Java identity is ordinal-only
    (`FieldValue.java:676-690`), Go's is name-only (`map_field_values.go:260-262`,
-   `semantic_hash.go:107`), and name identity conflates duplicate-named columns in the memo.
+   `semantic_hash.go:108`), and name identity conflates duplicate-named columns in the memo.
 2. **Slice 2 ↔ folded-P3 interning contradiction** (Slice 2 said "flip 2-way seed interning";
    the fold says the tier lands with its Slice 3 consumer) — resolved by the canonical interning
    sequence in Slice 3 (no flip in Slice 2); §5.3's wedge claim corrected; the fold paragraph's
