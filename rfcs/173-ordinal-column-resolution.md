@@ -2,7 +2,8 @@
 
 **Status:** ACKED THROUGH ROUND 4 (Graefe ✅ · Torvalds ✅ · codex ✅ · @claude ✅; see §10 review
 log); **Round 5 (adversarial content re-review, 2026-07-01) folded into this revision — re-ack
-pending; Slice 2 must not start until it lands.** Progress: P1 merged (#423), P2 merged (#427),
+in progress, state tracked in the §10 Round-5 checklist (the single source of truth); Slice 2
+must not start until all four ack.** Progress: P1 merged (#423), P2 merged (#427),
 P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
 Step 2b blocked on the buried-reference precursor, Graefe-acked 7-site plan, recorded in that
 branch's §4 Slice 1 log). Each staged PR re-acked on its own HEAD.
@@ -599,7 +600,8 @@ groupby-over-join pin; two citation fixes).
   risk #5 now states plainly that the dual-rep window lives on master across the merged precursor
   PRs.
 
-**Round 5 (RFC v6, this revision) — adversarial content re-review; RE-ACK PENDING (all four).**
+**Round 5 (RFC v6, this revision) — adversarial content re-review; re-ack state tracked in the
+Round-5 checklist above (the single source of truth — this heading does not restate it).**
 Independent full-content review (2026-07-01) after P1/P2 merged, P3 folded, Slice 1 mid-flight.
 Findings folded in:
 1. **`FieldValue` node-identity flip was created in P1 ("for now") and never scheduled** — now
@@ -625,6 +627,7 @@ Findings folded in:
    citation drift (mergeRows, qualifyAlias, `values.go` anchors, TODO.md guard ref,
    `accumulateRow`) and the two out-of-tree files in the Paths note fixed.
 
-**Gate for Rounds 1–4 satisfied; Round 5 re-ack pending.** Slice 1 continues (its scope is
-unchanged by Round 5); **Slice 2 must not start until Round 5 is re-acked** — it consumes three
-Round-5 rulings (no-interning-flip, the scoping gate, the entry-gate inventory).
+**Gate for Rounds 1–4 satisfied; Round 5 re-ack per the checklist above.** Slice 1 continues
+(its scope is unchanged by Round 5); **Slice 2 must not start until all four Round-5 boxes are
+checked** — it consumes three Round-5 rulings (no-interning-flip, the scoping gate, the
+entry-gate inventory).
