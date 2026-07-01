@@ -12,8 +12,9 @@ name: Nightly Fuzz
 # (i % 3) == offset.
 on:
   schedule:
-    # 3:17 AM UTC daily (off-minute to avoid fleet congestion)
-    - cron: '17 3 * * *'
+    # 4:17 AM UTC daily (off-minute to avoid GitHub's top-of-hour scheduler
+    # congestion, which is the worst source of scheduled-run dispatch delay).
+    - cron: '17 4 * * *'
   workflow_dispatch: # manual trigger
 
 jobs:

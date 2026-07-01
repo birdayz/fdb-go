@@ -8,6 +8,22 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 # NEXT
 
+> ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
+> The Nightly Fuzz (`cron: 17 3 * * *`, moved to `17 4` = 4:17 AM UTC) consistently *runs* mid-day,
+> not at night: GitHub CREATES the scheduled run ~4-5 h after the cron (07:04 on 06-30, 07:50 on 07-01),
+> then it queues behind the single self-hosted `hetzner-fdb` runner. Two compounding causes:
+> (1) **GitHub scheduled-workflow dispatch is best-effort and heavily deprioritized under high account
+> usage** — a documented GitHub behavior; the off-minute cron (`:17`, not `:00`) mitigates but does not
+> eliminate it. (2) **`--max-runners 1`** (RFC-155, box is 4-core/7.6 GiB) serializes a merge-burst backlog,
+> so even once dispatched the fuzz waits behind CI/differential runs. Moving the cron to 4 AM does NOT fix
+> the delay — it just renames the nominal time. Real options (pick later): (a) accept GitHub best-effort
+> scheduling for nightlies (they're regression nets, exact time doesn't matter); (b) reduce the backlog —
+> a second runner box, or a larger box to lift `max-runners` to 2 (RFC-155 §3 locked it at 1 for
+> dependency isolation — revisit); (c) dispatch nightlies via an external scheduler (`workflow_dispatch`
+> from a reliable cron outside GitHub) so they fire on time; (d) a dedicated nightly runner so scheduled
+> jobs don't contend with per-PR CI. Also: the last two Nightly Fuzz runs FAILED (06-29, 06-30) — a
+> separate real signal to investigate (a fuzz target has been red for two nights; no-unrelated-flakes rule).
+
 > ## Cascades bug hunt (branch `hunt/cascades-bug-hunt`) — 9 confirmed bugs
 >
 > Multi-agent + differential hunt across the Cascades engine. 6 FIXED in this PR (red→green tests,
