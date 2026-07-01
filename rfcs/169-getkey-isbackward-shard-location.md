@@ -59,7 +59,8 @@ cannot be proven on the single-container differential harness — it needs a mul
    (FDBTypes.h:659-661) — NOT `offset <= 0` alone. Getting this wrong (tagging `lastLessOrEqual`
    backward) would MIRROR the bug: the client routes to `rangeContainingKeyBefore` but the SS, whose
    real `isBackward()` is false, uses `rangeContaining` (storageserver.actor.cpp:4504) → wrong_shard.
-   The implementation already uses the correct predicate (`readpath.go:183`).
+   The implementation already uses the correct predicate (the `keySelectorIsBackward` helper in
+   `readpath.go`, unit-pinned by `TestKeySelectorIsBackward`).
 
 ### Open questions for FDB-C-dev — RESOLVED (2026-07-01, against 7.3.77)
 - **Cache lookup vs request stamp:** BOTH are required. C++ uses one `locationCache`; only the lookup
