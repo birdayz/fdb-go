@@ -214,10 +214,11 @@ item's acceptance criterion in §5 is "the grep returns zero."
   the ban lives in CLAUDE.md prose, not in CI — the exact failure mode design principle #10
   warns about (match the property, not the observable). Extend `docs_consistency_test.go` (or
   add a sibling `source_hygiene_test.go`) to fail on `(day|night|swing)shift-[0-9]+` and
-  reviewer-attribution patterns (`(codex[:)]`, `(Torvalds`, `audit #N`) in **ALL Go source
-  comments, `_test.go` included** (generated code and `fdb-record-layer/` excluded) — B2's
-  inventory includes test files and CLAUDE.md's ban covers all code comments, so a
-  non-test-only gate could pass with violations standing (codex P2 on this RFC). Lands in the
+  reviewer-attribution patterns (`(codex[:)]`, `(Torvalds`, `audit #N`) in **the comments of
+  every tracked Go file** (`git ls-files '*.go'`, `_test.go` included; only generated code and
+  `fdb-record-layer/` excluded) — B2's inventory includes test files, CLAUDE.md's ban covers
+  all code comments, and violations live outside `pkg/` too (`tools/bazelscaleset`), so any
+  narrower gate passes with violations standing (codex P2 ×2 on this RFC). Lands in the
   same PR as the B1/B2 sweeps (gate + zero-state together, so it's born green and stays
   green).
 - **F3 — codify the red-nightly freeze exception.** A1 sat red for three days because the
@@ -267,8 +268,11 @@ regrowing while attention is on 173).
 - **A2:** `grep -rn "FixpointApply\|func (p \*Planner) Explore(" pkg/` → zero in non-test code;
   no behavioral test coverage lost (triage table in the PR).
 - **B1/B2:** the F2 CI gate exists and passes — `(day|night|swing)shift-[0-9]+` and
-  reviewer-attribution patterns return zero hits in Go source comments across `pkg/`, `cmd/`,
-  `conformance/`, **test files included** (generated code excluded).
+  reviewer-attribution patterns return zero hits in the comments of **every tracked Go file
+  in the repo** (`git ls-files '*.go'`), test files included; excluded only: `gen/`,
+  `*/parser/gen/`, `*.pb.go`, `fdb-record-layer/`. Not a directory list — `tools/`,
+  `example/`, and root-level Go files are in scope (codex round-2 catch:
+  `tools/bazelscaleset` carries attribution comments).
 - **B3/B4/B5:** no comment in `cascades/` or `pkg/fdbgo` describes retired code as current;
   `cost.go` rule-count references derived or deleted; relocated rationale landed in the RFCs
   cited (RFC-150/151 for B3; per-field RFC pointers for B4).
@@ -326,9 +330,12 @@ regrowing while attention is on 173).
   (zero option-backing fields on `Transaction`); §4 freeze paragraph resolved into the owner's
   actual decision. F2 comment-scope note: gate scopes to comments, not string literals
   (allowlist covers residue).
-- **codex — one P2 finding (2026-07-02, folded).** B2's inventory includes `_test.go` files
-  but the F2 gate/criterion scoped to non-test comments — the gate could pass with the
-  inventoried violations standing. Folded: gate + sweeps now cover ALL Go source comments,
-  test files included (§2 F2, §5 B1/B2).
+- **codex — two P2 findings (2026-07-02, both folded).** Round 1: B2's inventory includes
+  `_test.go` files but the F2 gate/criterion scoped to non-test comments. Round 2: the
+  widened criterion still listed only `pkg/ cmd/ conformance/` while tracked Go files with
+  violations exist outside (`tools/bazelscaleset`). Folded: gate + sweeps cover the comments
+  of every tracked Go file (`git ls-files '*.go'`), only generated code excluded (§2 F2,
+  §5 B1/B2). Both rounds were the same lesson: define the scope by the tracked-file set, not
+  by an enumerated directory list.
 - (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface) at execution time, per-PR.
 - (pending) @claude — PR #439.
