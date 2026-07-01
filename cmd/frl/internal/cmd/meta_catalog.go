@@ -14,11 +14,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 )
 
 // newMetaCatalogCmd is the `meta catalog` noun — a read-only view of
@@ -318,8 +316,7 @@ func runCatalogQuery[T any](
 	// DefaultCatalogSubspace() catalog.OpenRecordLayerStoreCatalog uses.
 	// Read from the same place the driver writes so `meta catalog` sees
 	// what `frl sql` just created.
-	ks := relkeyspace.New(subspace.Sub())
-	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
+	cat, err := catalog.NewRecordLayerStoreCatalog(relationalKeyspace().CatalogSubspace())
 	if err != nil {
 		return zero, fmt.Errorf("open relational catalog: %w", err)
 	}
@@ -329,18 +326,23 @@ func runCatalogQuery[T any](
 		return fn(ctx, cat, txn)
 	})
 	if err != nil {
-		// Turn "no store header at keyspace …" into an operator-friendly
-		// "catalog not found on this cluster" — the plain-core branch
-		// the PR comment flagged. Matches the shape errors.As users
-		// expect from the rest of the CLI.
-		if strings.Contains(err.Error(), "store does not exist") ||
-			strings.Contains(err.Error(), "no store header") {
-			return zero, fmt.Errorf("no relational catalog on this cluster — `__SYS/CATALOG` is empty; this is plain-core, not fdb-relational. Use `frl meta get --meta-file <path>` instead")
-		}
-		return zero, err
+		return zero, wrapMissingCatalogErr(err)
 	}
 	v, _ := result.(T)
 	return v, nil
+}
+
+// wrapMissingCatalogErr turns "no store header at keyspace …" into an
+// operator-friendly "catalog not found on this cluster" — the
+// plain-core branch. Shared by every catalog reader (`meta catalog`,
+// catalogSource for --database/--schema addressing) so the message
+// can't drift.
+func wrapMissingCatalogErr(err error) error {
+	if strings.Contains(err.Error(), "store does not exist") ||
+		strings.Contains(err.Error(), "no store header") {
+		return fmt.Errorf("no relational catalog on this cluster — `__SYS/CATALOG` is empty; this is plain-core, not fdb-relational. Use `frl meta get --meta-file <path>` instead")
+	}
+	return err
 }
 
 // --- rendering -------------------------------------------------------------

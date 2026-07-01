@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,8 +11,6 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
-	"fdb.dev/cmd/frl/internal/config"
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -39,16 +36,19 @@ func newStoreCmd() *cobra.Command {
 }
 
 func newStoreInfoCmd() *cobra.Command {
-	var contextName, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "info",
 		Short: "Print DataStoreInfo for the current context's store",
 		Example: `  frl store info
   frl store info --context prod
+  frl store info --database /myapp --schema main
   frl store info -o json | jq '.formatVersion'`,
 		Long: "Reads the store header (format version, metadata version, " +
 			"user version, record count state, lock state, user fields) " +
-			"directly from FDB at the keyspace path in the active context. " +
+			"directly from FDB at the keyspace path in the active context " +
+			"(or the relational store addressed by --database/--schema). " +
 			"No metadata is loaded — this command works even against a " +
 			"store whose metadata isn't yet configured in frl.\n\n" +
 			"--output / -o: 'text' (default, human-readable) or 'json' " +
@@ -59,44 +59,30 @@ func newStoreInfoCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfg, err := config.Load()
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			ctx, err := config.ResolveContext(cfg, contextName)
-			if err != nil {
-				if errors.Is(err, config.ErrNoContext) {
-					path, _ := config.Path()
-					return fmt.Errorf("%w (config: %s)", err, path)
-				}
-				return err
-			}
-			return runStoreInfo(cmd.Context(), cmd.OutOrStdout(), ctx, outputFmt)
+			return runStoreInfo(cmd.Context(), cmd.OutOrStdout(), target, outputFmt)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "",
-		"context name to use (default: Config.current_context)")
+	addr.register(c, false)
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text",
 		"output format: text or json")
 	return c
 }
 
-func runStoreInfo(ctx context.Context, out io.Writer, cfgCtx *configv1.Context, outputFmt string) error {
-	if cfgCtx.GetKeyspacePath() == "" {
-		return fmt.Errorf("context %q has empty keyspace_path; add it to the config",
-			cfgCtx.GetName())
+func runStoreInfo(ctx context.Context, out io.Writer, target *storeTarget, outputFmt string) error {
+	ss, err := target.subspace()
+	if err != nil {
+		return err
 	}
 
-	db, err := openDatabase(cfgCtx.GetClusterFile())
+	db, err := openDatabase(target.cfgCtx.GetClusterFile())
 	if err != nil {
 		return err
 	}
 	rec := recordlayer.NewFDBDatabase(db)
-
-	ss, err := parseKeyspacePath(cfgCtx.GetKeyspacePath())
-	if err != nil {
-		return err
-	}
 
 	info, err := readStoreInfo(ctx, rec, ss)
 	if err != nil {
@@ -105,7 +91,7 @@ func runStoreInfo(ctx context.Context, out io.Writer, cfgCtx *configv1.Context, 
 	if outputFmt == "json" {
 		return writeStoreInfoJSON(out, info)
 	}
-	return writeStoreInfo(out, cfgCtx, info, ss.Bytes())
+	return writeStoreInfo(out, target, info, ss.Bytes())
 }
 
 // writeStoreInfoJSON emits the raw DataStoreInfo proto as indented JSON.
@@ -208,11 +194,16 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 // subspacePrefix is the packed FDB byte prefix of the store's keyspace;
 // rendered in hex so operators can paste it directly into `fdbcli getrange`.
 // Nil means the caller didn't resolve a prefix (rare — tests only).
-func writeStoreInfo(out io.Writer, cfgCtx *configv1.Context, info *gen.DataStoreInfo, subspacePrefix []byte) error {
+func writeStoreInfo(out io.Writer, target *storeTarget, info *gen.DataStoreInfo, subspacePrefix []byte) error {
+	cfgCtx := target.cfgCtx
 	var b strings.Builder
 	fmt.Fprintf(&b, "Context:           %s\n", cfgCtx.GetName())
 	fmt.Fprintf(&b, "Cluster file:      %s\n", orDefault(cfgCtx.GetClusterFile(), "(default)"))
-	fmt.Fprintf(&b, "Keyspace path:     %s\n", cfgCtx.GetKeyspacePath())
+	if target.relational() {
+		fmt.Fprintf(&b, "Database/schema:   %s/%s\n", target.database, target.schema)
+	} else {
+		fmt.Fprintf(&b, "Keyspace path:     %s\n", cfgCtx.GetKeyspacePath())
+	}
 	if len(subspacePrefix) > 0 {
 		fmt.Fprintf(&b, "FDB prefix (hex):  %x\n", subspacePrefix)
 	}

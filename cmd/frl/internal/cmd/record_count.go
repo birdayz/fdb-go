@@ -11,10 +11,9 @@ import (
 
 func newRecordCountCmd() *cobra.Command {
 	var (
-		contextName string
-		metaFile    string
-		recordType  string
-		outputFmt   string
+		addr       storeAddressFlags
+		recordType string
+		outputFmt  string
 	)
 	c := &cobra.Command{
 		Use:   "count",
@@ -35,11 +34,11 @@ func newRecordCountCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			count, err := withStore(cmd.Context(), cfgCtx, override,
+			count, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (int64, error) {
 					if recordType != "" {
 						// Up-front type validation so a typo surfaces as
@@ -70,8 +69,7 @@ func newRecordCountCmd() *cobra.Command {
 			return err
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVar(&recordType, "type", "", "count only this record type (requires RecordTypeKeyExpression count key)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c

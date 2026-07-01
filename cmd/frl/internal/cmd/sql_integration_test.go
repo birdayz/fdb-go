@@ -187,3 +187,92 @@ func TestIntegration_MetaCatalog_UnknownTemplateErrors(t *testing.T) {
 		t.Fatal("expected error for unknown template")
 	}
 }
+
+// The RFC-174 Slice 2 headline pin: rows created through the SQL layer
+// are readable through the record-layer commands using relational
+// addressing — three altitudes on the same store. Before layered
+// addressing this was IMPOSSIBLE: the schema subspace's first tuple
+// element contains a literal '/' which keyspace_path syntax cannot
+// express, and no command could use the catalog as a metadata source.
+func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
+	setupSQLFixture(t)
+
+	// record scan sees the SQL-inserted rows with protojson payloads.
+	out, err := runCmd(t, "record", "scan", "--database", "/frlsql", "--schema", "main", "--limit", "0")
+	if err != nil {
+		t.Fatalf("record scan --database: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Errorf("record scan missing SQL-inserted rows:\n%s", out)
+	}
+	// Every line is a JSON envelope with primary_key + record_type.
+	firstLine := strings.SplitN(strings.TrimSpace(out), "\n", 2)[0]
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(firstLine), &envelope); err != nil {
+		t.Fatalf("scan line is not a JSON envelope: %v\nline: %s", err, firstLine)
+	}
+	if envelope["record_type"] == "" {
+		t.Errorf("envelope missing record_type: %v", envelope)
+	}
+
+	// record get by PK returns one row.
+	out, err = runCmd(t, "record", "get", "1,1", "--database", "/frlsql", "--schema", "main")
+	if err != nil {
+		t.Fatalf("record get --database: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "alpha") {
+		t.Errorf("record get 1 missing alpha:\n%s", out)
+	}
+
+	// store info reads the relational store's header.
+	out, err = runCmd(t, "store", "info", "--database", "/frlsql", "--schema", "main")
+	if err != nil {
+		t.Fatalf("store info --database: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "Database/schema:   /frlsql/main") ||
+		!strings.Contains(out, "Format version:") {
+		t.Errorf("store info missing relational address or header fields:\n%s", out)
+	}
+
+	// store dump decodes the same store's raw bytes with subspace labels.
+	out, err = runCmd(t, "store", "dump", "--database", "/frlsql", "--schema", "main", "--limit", "0")
+	if err != nil {
+		t.Fatalf("store dump --database: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "record") || !strings.Contains(out, "store-info") {
+		t.Errorf("store dump missing record/store-info lines:\n%s", out)
+	}
+
+	// index ls resolves catalog metadata (a PK-only table may list no
+	// secondary indexes — exit 0 and a well-formed render is the pin).
+	if out, err = runCmd(t, "index", "ls", "--database", "/frlsql", "--schema", "main"); err != nil {
+		t.Fatalf("index ls --database: %v\noutput: %s", err, out)
+	}
+}
+
+// Unknown schema surfaces the catalog's error, not a panic or an
+// empty-store puzzle.
+func TestIntegration_LayeredAddressing_UnknownSchema(t *testing.T) {
+	setupSQLFixture(t)
+	_, err := runCmd(t, "record", "scan", "--database", "/frlsql", "--schema", "nope")
+	if err == nil {
+		t.Fatal("expected error for unknown schema")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error should name the missing schema: %v", err)
+	}
+}
+
+// --type prepends the record-type key for prefix-keyed types, so the
+// operator can address relational rows by their logical key alone.
+func TestIntegration_LayeredAddressing_RecordGetWithType(t *testing.T) {
+	setupSQLFixture(t)
+	out, err := runCmd(t, "record", "get", "2", "--type", "ITEMS",
+		"--database", "/frlsql", "--schema", "main")
+	if err != nil {
+		t.Fatalf("record get --type: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "beta") {
+		t.Errorf("record get 2 --type ITEMS missing beta:\n%s", out)
+	}
+}

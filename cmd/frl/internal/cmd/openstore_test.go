@@ -145,3 +145,36 @@ func TestResolveMetaSourceFile_FDBStoreWrappedWithContext(t *testing.T) {
 		t.Errorf("error %v should name the context", err)
 	}
 }
+
+// storeAddressFlags mode rules: --database/--schema come as a pair and
+// don't mix with --meta-file.
+func TestStoreAddressFlags_Validate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		f       storeAddressFlags
+		wantErr string
+	}{
+		{"neither", storeAddressFlags{}, ""},
+		{"both relational", storeAddressFlags{database: "/d", schema: "s"}, ""},
+		{"database only", storeAddressFlags{database: "/d"}, "both"},
+		{"schema only", storeAddressFlags{schema: "s"}, "both"},
+		{"relational plus meta-file", storeAddressFlags{database: "/d", schema: "s", metaFile: "m.pb"}, "conflicting"},
+		{"meta-file only", storeAddressFlags{metaFile: "m.pb"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.f.validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate() = %v; want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("validate() = %v; want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -28,7 +28,8 @@ func newIndexCmd() *cobra.Command {
 }
 
 func newIndexLsCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	var noFDB bool
 	c := &cobra.Command{
 		Use:   "ls",
@@ -50,26 +51,31 @@ func newIndexLsCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
 			if noFDB {
-				if override == nil {
-					src, err := meta.FromContext(cfgCtx, nil, nil)
+				if target.relational() {
+					return fmt.Errorf("--no-fdb cannot be combined with --database/--schema — the catalog metadata lives in FDB")
+				}
+				var src meta.Source
+				if target.metaFile != "" {
+					src = &meta.FileSource{Path: target.metaFile}
+				} else {
+					src, err = meta.FromContext(target.cfgCtx, nil, nil)
 					if err != nil {
 						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
 							"(add `meta_file` to the context or pass --meta-file)", err)
 					}
-					override = src
 				}
-				md, err := override.Load(cmd.Context())
+				md, err := src.Load(cmd.Context())
 				if err != nil {
 					return err
 				}
 				return renderIndexList(cmd.OutOrStdout(), md, nil, outputFmt)
 			}
-			return withStoreE(cmd.Context(), cfgCtx, override,
+			return withStoreE(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) error {
 					return renderIndexList(cmd.OutOrStdout(),
 						store.GetRecordMetaData(),
@@ -78,8 +84,7 @@ func newIndexLsCmd() *cobra.Command {
 				})
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().BoolVar(&noFDB, "no-fdb", false, "render from metadata only; skip opening the store")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
