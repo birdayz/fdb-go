@@ -359,7 +359,10 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	entry.value = nil
 	paramCopy := c.allocBytes(len(param))
 	copy(paramCopy, param)
-	entry.atomics = append(entry.atomics, rywMutation{typ: op, param: paramCopy})
+	// Coalesce onto the pending chain (C++ WriteMap::coalesceOver at insert time, WriteMap.cpp:106/144):
+	// repeated same-type resolvable atomics fold to one op, so a 150k-`ADD 1` chain on an unread key ships
+	// one mutation, not 150k (the RFC-172 / #28 fix). Read-transparent; versionstamps/CompareAndClear push.
+	entry.atomics = coalesceOverAtomics(entry.atomics, rywMutation{typ: op, param: paramCopy})
 	if !exists {
 		c.sortedKeys = nil
 	}
@@ -1178,6 +1181,54 @@ func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
 // it as ABSENT (our approximation) rather than surface a phantom value.
 func isUnresolvedVersionstamp(op MutationType) bool {
 	return op == MutSetVersionstampedKey || op == MutSetVersionstampedValue
+}
+
+// isNonAssociativeOp mirrors C++ isNonAssociativeOp / NON_ASSOCIATIVE_MASK (CommitTransaction.h:576-578):
+// ops that obey the associative law ONLY when all operands have equal length. coalesceOverAtomics folds
+// two same-type non-associative ops solely when their operand lengths match; the associative ops
+// (And, AndV2, ByteMin, ByteMax, AppendIfFits) always fold on same type.
+func isNonAssociativeOp(op MutationType) bool {
+	switch op {
+	case MutAddValue, MutOr, MutXor, MutMax, MutMin, MutMinV2,
+		MutSetVersionstampedKey, MutSetVersionstampedValue, MutCompareAndClear:
+		return true
+	default:
+		return false
+	}
+}
+
+// coalesceOverAtomics folds newMut into the pending atomic chain, a port of C++ WriteMap::coalesceOver
+// (WriteMap.cpp:480-494) + coalesce (:357) restricted to Go's representation: the SetValue base is stored
+// separately in rywEntry.value and resolved via the eager value-fold at atomic() sites B/C, so this stack
+// is a PURE atomic chain (its top is always an atomic op, never a SetValue). Within that restriction the
+// two C++ branches reduce to:
+//   - same op type, associative OR equal operand length → FOLD (combine operands via applyAtomic, keep the
+//     atomic type) — 150k `ADD 1` (all 8-byte) → one `ADD 150000`;
+//   - same op type, non-associative, DIFFERENT operand length → PUSH (keep both);
+//   - a DIFFERENT op type → PUSH (two atomics of different type never collapse — C++ else-branch
+//     `isAtomicOp(new) && isAtomicOp(existing)` → push).
+//
+// Versionstamped ops and CompareAndClear are always PUSHED (never folded): CompareAndClear is excluded from
+// C++'s same-type fold branch (`newEntry.type != CompareAndClear`) and over another atomic pushes; a
+// versionstamped op is kept intact so the entry's unreadable/resolve semantics are byte-for-byte unchanged
+// (its 10-byte stamp is assigned at commit, so folding cannot combine operands anyway). The fold is
+// read-transparent: resolveAtomics over the folded chain yields the identical value.
+func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation {
+	if len(stack) == 0 || isUnresolvedVersionstamp(newMut.typ) || newMut.typ == MutCompareAndClear {
+		return append(stack, newMut)
+	}
+	top := &stack[len(stack)-1]
+	if top.typ != newMut.typ || isUnresolvedVersionstamp(top.typ) {
+		return append(stack, newMut) // different type (or the top is an unfoldable versionstamp) → keep both
+	}
+	if isNonAssociativeOp(top.typ) && len(top.param) != len(newMut.param) {
+		return append(stack, newMut) // non-associative + operand-size mismatch → keep both
+	}
+	// Fold: combine the two operands with the op's own primitive, keeping the atomic type
+	// (C++ coalesce same-type branch, e.g. AddValue → doAdd(existing, new) → AddValue).
+	combined, _ := applyAtomic(top.typ, top.param, newMut.param)
+	top.param = combined
+	return stack
 }
 
 // resolveAtomics folds an atomic-mutation chain onto a storage base for the RYW read

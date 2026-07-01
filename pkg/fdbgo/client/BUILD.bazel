@@ -116,6 +116,7 @@ go_test(
         "retry_test.go",
         "rpc_test.go",
         "ryw_adversarial_test.go",
+        "ryw_coalesce_test.go",
         "ryw_fuzz_test.go",
         "ryw_getkey_test.go",
         "ryw_integration_test.go",
