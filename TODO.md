@@ -22,13 +22,19 @@ validation gate.
 - [x] **P1 — ordinal `FieldPath` substrate** (dark): `FieldValue.resolveOrdinal` + `RecordType.FieldIndex`
   (list-position = Java ordinal) + `NewRecordType` normalises `Fields[i].Ordinal == i`. All-four-acked,
   merged (#423, `a20794e9b`).
-- [ ] **P2 — positional/typed runtime row** (NEXT; heaviest precursor, ~2 shifts). Emit a typed positional
-  row alongside the name-keyed `map[string]any` in every producer; build positional null-extension for the
-  Go-only outer joins here. **Carry-forward:** (a) [Graefe] when a resolution path becomes AUTHORITATIVE,
-  escalate `resolveOrdinal`'s absent-field / non-record decline from silent `(0,false)` to Java's
-  `SemanticException` (fail loud, not silent-wrong); (b) [@claude] `RecordType.FieldIndex` and `LookupField`
-  are near-duplicate linear scans — dedup (`LookupField` → `FieldIndex` + index) when P2 touches both.
-- [ ] P3 — alias-bijection interning · [ ] Slice 1 non-join ordinal · [ ] Slice 2 2-way wedge ·
+- [~] **P2 — positional/typed runtime row** (in gauntlet, PR #427). Typed positional row emitted
+  alongside the name-keyed `map[string]any` by the NON-JOIN producers (scans, covering index,
+  projections; filters pass it through free) + the `PositionalRow` substrate + `shadowMismatch`.
+  **Scope (gauntlet-agreed):** the JOIN/lateral producers (`mergeRows`/`flatmap`/`explode`) and the
+  outer-join null-extension primitive (`appendNullLeg`) move to **Slice 2/3** (they're restructured
+  positional-native there; dual-emitting over the doomed AnchoredJoin merge would be throwaway).
+  **Deferred to Slice 1:** the dual-emission per-row cost benchmark (RFC §4 P2 hard part), when the
+  ordinal path first goes live. **Carry-forward:** (a) [Graefe] when a resolution path becomes
+  AUTHORITATIVE, escalate `resolveOrdinal`'s absent-field / non-record decline from silent
+  `(0,false)` to Java's `SemanticException`; (b) [@claude] `RecordType.FieldIndex` and `LookupField`
+  are near-duplicate scans — dedup (`LookupField` → `FieldIndex` + index) when a slice touches both.
+- [ ] P3 — alias-bijection interning · [ ] Slice 1 non-join ordinal · [ ] **Slice 2 2-way wedge**
+  (builds `appendNullLeg` + join-producer positional dual-emission) ·
   [ ] Slice 3 atomic N-way flip · [ ] Slice 4 retire `AnchoredJoin` · [ ] Slice 5 closure invariant ·
   [ ] Slice 6 extensions + ANSI headroom.
 
