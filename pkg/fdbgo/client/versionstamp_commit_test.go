@@ -51,6 +51,42 @@ func TestAtomic_SVKCommitsMinBoundTransformedKey(t *testing.T) {
 	}
 }
 
+// TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation pins codex #17's P2 on the #26 fix: a
+// SetVersionstampedKey whose placeholder is at offset 0 and whose raw placeholder bytes are \xff (a
+// raw system key) must NOT be transformed for a non-system txn — it stays RAW so the commit-path
+// validateMutation checks the raw key and reports key_outside_legal_range (2004). Transforming first
+// would hide the leading \xff behind the read-version/zero stamp and let the mutation commit without
+// system-key access. Revert-proof: drop the `key < maxWriteKey` guard and the transformed key's
+// leading byte is the stamp (not \xff), so validateMutation passes and the check is bypassed.
+func TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx() // non-system txn: maxWriteKey == \xff
+	tx.rywDisabled = true
+	tx.readVersionMu.Lock()
+	tx.hasReadVersion = true
+	tx.readVersion = 0x0102030405060708 // non-zero, so the transform WOULD change the leading placeholder
+	tx.readVersionMu.Unlock()
+
+	// SVK key: 10 x \xff placeholder + LE offset 0 → placeholder at [0,10), raw key is a system key.
+	key := make([]byte, 14)
+	for i := 0; i < 10; i++ {
+		key[i] = 0xff
+	}
+	binary.LittleEndian.PutUint32(key[10:], 0)
+	tx.Atomic(MutSetVersionstampedKey, key, []byte("v"))
+
+	if len(tx.mutations) != 1 {
+		t.Fatalf("want 1 buffered mutation, got %d", len(tx.mutations))
+	}
+	if got := tx.mutations[0].Key; got[0] != 0xff {
+		t.Fatalf("out-of-range \\xff-placeholder SVK was transformed (leading byte %#x, not 0xff) — the "+
+			"legal-range check on the raw key is bypassed (codex #17)", got[0])
+	}
+	if err := tx.validateMutation(tx.mutations[0], tx.maxWriteKey()); fdbCodeOf(err) != 2004 {
+		t.Fatalf("a \\xff-placeholder SVK on a non-system txn must be key_outside_legal_range (2004), got %v", err)
+	}
+}
+
 // TestAtomic_SVKWriteOnlyTxnKeepsZeroPlaceholder pins the orDefault(0) edge: a write-only transaction
 // with NO cached read version transforms the placeholder with version 0 — which is byte-identical to
 // the raw zero placeholder, so Go and libfdb_c agree (C++ getCachedReadVersion().orDefault(0) == 0).

@@ -1425,7 +1425,14 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	mutKey := key
 	var svkUnreadBegin, svkUnreadEnd []byte
 	svkTransformed := false
-	if op == MutSetVersionstampedKey {
+	// Only transform a raw key that is in the legal WRITE range. C++ getVersionstampKeyRange rejects an
+	// out-of-legal-range key BEFORE transforming (ReadYourWrites.actor.cpp:2266); leaving an out-of-range
+	// raw key un-transformed keeps the commit-path validateMutation checking the RAW key, so a \xff
+	// placeholder at offset 0 (a raw system key on a non-system txn) still reports key_outside_legal_range
+	// (2004). Transforming it first would hide the leading \xff behind the read-version/zero stamp and
+	// bypass the check (codex). For a placeholder at offset > 0 the leading byte is unchanged by the
+	// transform, so the raw/transformed legal-range status is identical; the guard only matters at offset 0.
+	if op == MutSetVersionstampedKey && bytes.Compare(key, tx.maxWriteKey()) < 0 {
 		minVersion := int64(0)
 		tx.readVersionMu.Lock()
 		if tx.hasReadVersion {

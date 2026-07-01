@@ -456,7 +456,28 @@ findings were exhausted, ran 3 read-only finder agents on lightly-explored axes:
   matched C++. Fixed: `Atomic()` now buffers the min-bound-transformed key into `tx.mutations` (the same
   key feeds the RYW read model), with the comment corrected. Deterministic red→green
   `TestAtomic_SVKCommitsMinBoundTransformedKey` (revert-proven: raw key → all-zero placeholder) +
-  `TestAtomic_SVKWriteOnlyTxnKeepsZeroPlaceholder` (orDefault(0) edge). Owes its own client gauntlet.
+  `TestAtomic_SVKWriteOnlyTxnKeepsZeroPlaceholder` (orDefault(0) edge).
+  **codex #17 caught a P2 regression in the #26 fix** (both personas ACK'd, missed it — codex the
+  critical gate again): buffering the TRANSFORMED key meant `validateMutation` no longer saw the raw
+  key, so a `\xff` placeholder at offset 0 (a raw system key on a non-system txn) bypassed the
+  legal-range check (the transform hides the leading `\xff` behind the stamp). Fixed by gating the
+  transform on `key < maxWriteKey` (only a legal raw key is transformed; an out-of-range one stays raw
+  so `validateMutation` reports 2004 — matching C++ getVersionstampKeyRange's eager reject). Pin
+  `TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation` (revert-proven: drop the guard → the
+  `\xff` key is transformed to a `0x01…` stamp and passes validation). Re-gauntlet owed.
+
+**Round 25 — 2nd discovery sweep (idempotency + size-limit finders).** Commit-idempotency finder →
+**finding #27 (MEDIUM, open):** Go omits C++ `makeSelfConflicting()` (NativeAPI.actor.cpp:5952-5959,
+called at :6858) — the ephemeral `\xFF/SC/<randomUID>` range added to the read+write conflict sets of
+(virtually) every commit. Consequences: (a) the `CommitTransactionRequest` conflict-range bytes diverge
+from libfdb_c (NOT persisted → no cross-engine record corruption, hard line holds); (b) the post-1021
+`commitDummyTransaction` barrier synchronizes over a REAL user key (`writes[0].Begin`, commitpath.go:268)
+instead of the SC key → a concurrent reader of that hot key can get a spurious `not_committed` (1020)
+during a 1021 storm. Fix recipe: port `makeSelfConflicting` (inject `\xFF/SC/<UID>` into read+write
+conflict ranges when `!causalWriteRisky` and ranges don't already intersect) so the dummy barrier uses
+the ephemeral key. Idempotency-ID tagging is NOT a divergence (`automaticIdempotency` defaults false, so
+libfdb_c also omits them — Go matches). Needs a deterministic UID → deferred (Date/rand unavailable in
+some contexts; use a per-txn counter/uid source). (size-limit finder result pending at handover.)
 
 Also independently verified FAITHFUL this round (no divergence): snapshot read conflict-skipping + RYW
 visibility, atomic-op RYW fold (absent/present-empty V2 gating), commit conflict-range assembly,
