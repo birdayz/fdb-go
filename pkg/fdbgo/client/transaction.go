@@ -391,9 +391,11 @@ type Transaction struct {
 	// disabled-oriented inverse (disableCount = 1 - enabledCount for the modern-API default of
 	// 1), so DISABLE does count++, ENABLE does count--, and bypass iff count > 0 — exactly
 	// equivalent at every integer (enabledCount <= 0 ⟺ disableCount > 0) while keeping the Go
-	// zero value (0) mean "enabled", so a bare Transaction never silently bypasses RYW. This is
-	// a persistent option: it is preserved across reset() (re-applied on retry, like C++
-	// persistentOptions). By default (count 0) snapshot reads DO go through the RYW cache.
+	// zero value (0) mean "enabled", so a bare Transaction never silently bypasses RYW.
+	// SNAPSHOT_RYW_{ENABLE,DISABLE} (600/601) are NOT persistent="true" in fdb.options, so this
+	// counter is cleared to 0 on BOTH reset paths (user Reset and OnError retry) by
+	// applyOptionDefaults, matching C++ TransactionOptions::clear on the fresh state — it is NOT
+	// preserved across a retry. By default (count 0) snapshot reads DO go through the RYW cache.
 	snapshotRYWDisableCount int
 
 	// System key access control. Matches C++ ReadYourWritesTransaction:
@@ -3229,10 +3231,12 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	tx.rywDisabled = false
 	tx.snapshotRYWDisableCount = 0
 	tx.tags = nil
-	// useGrvCache/skipGrvCache (USE_GRV_CACHE 1101 / SKIP_GRV_CACHE 1102) and writeConflictsDisabled are
-	// non-persistent, reset by TransactionOptions::clear (NativeAPI.actor.cpp:6148-6149); leaving them set
-	// would serve a stale cached GRV / drop write conflicts on a retried-or-reset txn where C++ starts fresh
-	// (FDB-C-dev + Torvalds).
+	// useGrvCache/skipGrvCache (USE_GRV_CACHE 1101 / SKIP_GRV_CACHE 1102) are non-persistent, reset by
+	// TransactionOptions::clear (NativeAPI.actor.cpp:6148-6149) — leaving them set would serve a stale
+	// cached GRV on a retried-or-reset txn where C++ starts fresh. writeConflictsDisabled has no C++
+	// option code (a Go-only bulk-insert convenience); it must likewise reset because a fresh C++ txn
+	// always adds write conflict ranges, so keeping it set across a retry/reset would silently drop
+	// conflicts C++ would keep.
 	tx.useGrvCache = false
 	tx.skipGrvCache = false
 	tx.writeConflictsDisabled = false
