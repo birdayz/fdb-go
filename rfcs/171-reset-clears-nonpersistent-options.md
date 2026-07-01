@@ -1,4 +1,4 @@
-# RFC-166: Transaction.reset() must clear non-persistent options (port C++ reset semantics)
+# RFC-171: Transaction.reset() must clear non-persistent options (port C++ reset semantics)
 
 **Status:** Draft — needs FDB-C-dev design ACK before implementation (the OnError-retry path is the risky part).
 **Item:** FDB client bug-hunt (2026-06-30) re-run, findings: `txn-options-lifecycle` (HIGH) +

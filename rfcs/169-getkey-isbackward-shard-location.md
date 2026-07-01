@@ -1,4 +1,4 @@
-# RFC-167: Thread isBackward through key-location so backward selectors resolve at shard boundaries
+# RFC-169: Thread isBackward through key-location so backward selectors resolve at shard boundaries
 
 **Status:** Draft — needs FDB-C-dev design ACK + a multi-SS / SimTransport proof strategy.
 **Item:** FDB client bug-hunt (2026-06-30), finding #10 (MEDIUM). See `shifts/2026-06-30-fdbgo-client-bughunt.md`.

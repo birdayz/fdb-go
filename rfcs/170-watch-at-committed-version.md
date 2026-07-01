@@ -1,4 +1,4 @@
-# RFC-165: Register watches at the committed version, not the read version
+# RFC-170: Register watches at the committed version, not the read version
 
 **Status:** Draft — needs FDB-C-dev design ACK before implementation.
 **Item:** FDB client bug-hunt (2026-06-30), finding #1 (HIGH). See `shifts/2026-06-30-fdbgo-client-bughunt.md`.

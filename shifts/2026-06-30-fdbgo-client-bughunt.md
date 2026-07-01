@@ -69,7 +69,8 @@ One commit, three independent libfdb_c divergences (all pinned, full pre-commit 
    maps `-1`→MaxInt; `Iterator()` rejects `<-1` with 2012 (matching GetSlice/client + libfdb_c).
    Pin: `TestRangeIterator_RowLimitUnlimitedAndInvalid` (red→green; pre-fix Iterator(-1)→0 rows).
 
-Also written: **RFC-165** (watch-at-committed-version design, Draft — needs FDB-C-dev ACK).
+Also written: **RFC-170** (watch-at-committed-version design, Draft — needs FDB-C-dev ACK). (Renumbered
+from 165 → 170 after merging master, whose 165–167 were taken by query-layer RFCs.)
 
 ## Done — round 4 (committed, red→green proven)
 
@@ -84,11 +85,11 @@ Also written: **RFC-165** (watch-at-committed-version design, Draft — needs FD
    applies the same maxReadKey/key-size gates as Get, BEFORE the read (C++ RYW watch,
    ReadYourWrites.actor.cpp:2450-2456). Pin: `TestWatchSetup_RejectsSystemAndOversizedKeys`.
 
-Also written: **RFC-166** (reset() must clear non-persistent options — closes the `txn-options-lifecycle`
+Also written: **RFC-171** (reset() must clear non-persistent options — closes the `txn-options-lifecycle`
 HIGH + `snapshot-ryw` MEDIUM findings; Draft, needs FDB-C-dev ACK).
 
 The 2026-06-30 clean discovery re-run also CONFIRMED (still open, in the PR table): Reset() option
-preservation (HIGH, RFC-166), buffer-pool `sync.Pool` race on SendFrame error (LOW), SYSTEM_IMMEDIATE
+preservation (HIGH, RFC-171), buffer-pool `sync.Pool` race on SendFrame error (LOW), SYSTEM_IMMEDIATE
 +GRV-cache (LOW), atomic op-code precedence (LOW — the edge flagged in the round-1 atomic fix),
 oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by the adversarial verify.
 
@@ -119,7 +120,7 @@ oversized system-key Clear silently dropped (LOW). 3 candidates were REFUTED by 
     only size-drop a key WITHIN the legal range; an illegal one is buffered → commit reports 2004.
     Pin: `TestClear_OversizedSystemKey` (key must exceed SYSTEM_KEY_SIZE_LIMIT=30000 to exercise it).
 
-Also written: **RFC-167** (getKey isBackward shard-location, Draft — needs multi-SS/SimTransport proof).
+Also written: **RFC-169** (getKey isBackward shard-location, Draft — needs multi-SS/SimTransport proof).
 
 ## Final disposition of the remaining low-value findings (engineering judgment)
 
