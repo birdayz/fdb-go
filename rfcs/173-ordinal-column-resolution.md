@@ -4,13 +4,21 @@
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
-**Process:** ONE RFC, ONE PR. The migration lands as **staged commits on this single PR** —
-RFC-ack gates the first implementation commit; each slice is reviewed as it lands; a final
-impl-ack closes it. Not a big-bang diff, not fragmented across PRs.
+**Process (PACKAGING UNDER OWNER REVIEW):** ONE RFC (this document, of record). Torvalds NAK'd a
+single long-lived PR for a ~25–30-shift migration (branch rot against the churning memo + repeated
+Graefe re-acks). Recommended reconciliation: the behaviour-preserving precursors (P1/P2/P3/Slice 1)
+land as **separate merged PRs** on master; only the genuinely-atomic **Slice 3** warrants its own
+PR — all tracked to this one RFC. RFC-ack gates the first implementation commit; each slice is
+re-acked as it lands. **Owner to rule on packaging** (one PR vs. staged merged PRs).
 **Cross-refs:** RFC-164 (port-fidelity), RFC-077 (join interning / CTE column-rename),
 RFC-142 (lateral `UNNEST` + `WITH ORDINALITY`), RFC-036 (outer joins), RFC-081 (UNION-by-position).
-**Effort (honest):** foundational — ~15–20 focused shifts across 9 slices, with a
-dual-representation window that must not be left parked mid-flight.
+**Paths:** executor references (`executor.go`, `executor_new_plans.go`, `flat_map_cursor.go`,
+`streaming_cursors.go`) are under `pkg/recordlayer/query/executor/`; planner/value references under
+`pkg/recordlayer/query/plan/cascades/`.
+**Effort (honest):** foundational — **~25–30 focused shifts** across 9 slices (the `FieldValue`
+nil-`Child` leaf form + ~105 `FieldValue` sites, the resolver still emitting dotted names, and the
+`OrdinalFieldName _0/_1` emulation make P1 heavier than a single shift), with a dual-representation
+window that must not be left parked mid-flight.
 
 ---
 
@@ -233,6 +241,14 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
      must all pass under the ordinal buried-source recovery.
    - `SELECT *` collision: goldens updated to the both-columns-coexist result, reviewed as an
      intentional change.
+   - **Ordering / distinctness property propagation (Graefe, required):** a per-slice EXPLAIN pin
+     asserting **NO sort reappears on an index-ordered join**. Provided orderings are *Values*
+     referencing columns; when a column's identity flips name→ordinal, the provided-ordering
+     rebase (`pullUpOrderingFromSelectChild`) must stay consistent, or index-ordering match fails,
+     `RemoveSortRule` stops firing, and a **spurious sort** appears — a plan-property regression the
+     row-content shadow (item 1) is blind to. Slice 4 handles column ORDER
+     (`cascades_generator.go`) but MUST also rebase ordering pull-up; every slice that flips a
+     column's identity carries this pin.
 3. **The 2-way wedge (Slice 2) is the real de-risk** — it runs the full ordinal model on live
    join plans (result value + positional row + ordinal predicate resolution + alias-bijection
    interning) before the atomic N-way flip, so Slice 3 lands on proven mechanics.
@@ -248,17 +264,38 @@ The owner's hard constraint: extensions must keep working and be architecturally
   SQL has no lateral array unnest that participates in inner-join re-enumeration, so nothing in
   Java's ordinal model was ever required to keep an unprojected lateral-source array column live
   across a re-enumeration merge or to stop a bipartition stranding an `Explode` from its buried
-  source. The buried-source recovery is a **from-scratch rewrite** onto genuine child
-  correlations (Slice 3), and it needs a **Go-only invariant**: *an unprojected lateral-source
-  column survives the merge*. This must be pinned by execution (the RFC-142 suite), not assumed
-  from Java.
+  source. Today the name model recovers the source from a dotted `'A.ARR'` prefix
+  (`value_correlation.go:47`, `MergeSeedLegsOfValue`).
+  **Design (Go-native invariant, enforced BY the model — not a special case):** the `Explode` over
+  the buried source array references its source via a *genuine* `FieldValue` ordinal path with a
+  real child correlation to the source quantifier. The invariant — *an unprojected lateral-source
+  column referenced by an `Explode` survives every re-enumeration bipartition that separates the
+  `Explode` from its source* — then follows from the genuine-correlation model: a bipartition that
+  stranded the `Explode` from its source would leave a **free correlation**, which the
+  now-genuine correlation tracking (Slice 5, `computeCorrelatedTo` with local-bind subtraction)
+  **rejects as an invalid bipartition**. So Slice 3's from-scratch recovery is precisely: for each
+  bipartition, read the dependent `Explode`'s *real child correlation* (not a dotted string) and
+  keep the referenced source ordinals live on the side that binds them. There is no re-exposure
+  duality to port — the constraint is emergent. **Pin (mandatory, execution-based):** the RFC-142
+  suite (buried `WHERE`, buried `GROUP BY`, table-first resolution, explicit-JOIN rejection,
+  silent-zero-row, silent-wrong-grouping) must pass under the ordinal recovery — the row-content
+  shadow is blind to the wrong-plan-too-few-rows failure this class produces, so it cannot certify
+  this and execution pins are the only valid gate.
 - **FULL OUTER JOIN** (RFC-036) — Java SQL has **no outer joins**; its `DefaultOnEmpty` is a
   LEFT-only per-outer-row `nullOnEmpty` on a `ForEach` quantifier and structurally cannot emit an
   inner row that matched no outer row. Go's FULL OUTER emits those via a `matchedInner` bitmap
-  **second pass** (`streaming_cursors.go:653,868-877`). So "positional null-extension = a
-  `DefaultOnEmpty` analog" (P2/Slice 6) is only half the story — the outer-side NULL for an
-  unmatched *inner* row has no Java reference for mechanism or ordinal-null direction and must be
-  designed and pinned explicitly.
+  **second pass** (`streaming_cursors.go:653,868-877`).
+  **Design (Go-native, no Java reference):** `FULL OUTER = LEFT ∪ unmatched-inner`, both expressed
+  in the positional row. The LEFT half null-extends the **inner** leg's ordinal slots (via
+  `DefaultOnEmpty`, built in P2). The unmatched-inner half — the `matchedInner` second pass — must
+  null-extend the **outer** leg's ordinal slots: fill the outer-leg ordinals with **typed NULLs**
+  and the inner-leg ordinals with the inner row's values (the exact mirror of the LEFT direction).
+  Dedup between the two passes rides the same bitmap. This is the one place the positional row's
+  null-extension is **bidirectional**, and it has no Java oracle. **Pin (mandatory,
+  order-sensitive):** the FULL OUTER execution tests assert row COUNT on *both* unmatched sides AND
+  NULL PLACEMENT by direction — outer-side NULL for an unmatched inner row, inner-side NULL for an
+  unmatched outer row — since a wrong null-direction is invisible to a set-based or count-only
+  check.
 
 Extensions that **ride along** (preserved, re-verified by their suites before name paths delete):
 correlated scalar subquery (2-leg ordinal seed, Slice 2 — **and add the currently-missing
@@ -335,4 +372,24 @@ RFC-level ack; each impl slice re-requests after its commit (an ack only covers 
 
 **Acceptance for the RFC ack:** all four acked with no outstanding NAK, and §5's per-slice
 execution pins are agreed as the certification mechanism (replacing the discredited dark-diff
-gate). Implementation commits then land on THIS PR, slice by slice, re-acked as they go.
+gate). Implementation commits then land slice by slice (packaging per the owner ruling above),
+re-acked as they go.
+
+### Review log
+
+**Round 1 (RFC v1, commit `0284ccc46`):**
+- **Graefe — ACK (conditional).** Verified every load-bearing claim against Java 4.12.11.0:
+  destination faithful, the `<3`-arity seam is a clean architectural boundary, Slice 3 atomicity is
+  real, delete-not-port (§6) is correct, §5 execution-pins follow. **Condition:** add an
+  ordering/distinctness property-propagation pin (a name→ordinal identity flip can break
+  index-ordering match → `RemoveSortRule` stops firing → spurious sort, invisible to the
+  row-content shadow). → **Addressed** in §5 (ordering pin) this revision.
+- **codex — clean.** Doc-only diff, no actionable defects.
+- **Torvalds — NAK (conditional): "right destination, wrong packaging, soft clock."** §5 sound;
+  deletions safe; direction correct. Objections: (a) paths wrong → **fixed** (Paths note); (b)
+  clock 25–30 not 15–20 → **fixed**; (c) the two Go-only invariants "named but undesigned" →
+  **designed** in §6 this revision; (d) **the NAK proper:** the single long-lived PR rots + forces
+  repeated re-acks — split behaviour-preserving precursors into separate merged PRs. → **Owner
+  decision pending** (Process note); Torvalds' ACK is contingent on it. Re-request Torvalds once
+  packaging is ruled.
+- **@claude — pending** (extension-inventory cross-check on #422).
