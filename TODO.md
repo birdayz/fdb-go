@@ -1526,7 +1526,20 @@ timed_out/future_version — instead of breaking the watch). Four remaining, ran
   comment at `transaction.go:1595` ("Watch() calls are NOT cancelled by Reset()") contradicts the actual
   `reset()→cancelWatches()` path — cleanup.
 
-### [ ] fdbgo/client: missing `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — needs its own `fdb-client-engineer` RFC (commit-path wire/behavior; found by the quality-grind OnError audit, 2026-06-19)
+### [~] fdbgo/client: `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — NON-tenant LANDED; tenant + idempotency-id add remain
+
+**STATUS (landed):** The primary `makeSelfConflicting` port is DONE for **non-tenant** transactions
+(`transaction.go` `maybeMakeSelfConflicting` — the `!intersects(write, read)` gate → `makeSelfConflictingLocked`,
+placed after the read-only fast path + size check exactly as C++ commitMutations). The dummy-barrier key
+picker (`intersectConflictRanges`) and the guard now share one C++-faithful sorted-merge `intersectRanges`
+(1:1 with `intersects`, `NativeAPI.actor.cpp:6211` — O(n log n), not the old O(w·r) scan). Revert-proven by
+`self_conflict_test.go` (wire-level: SC in both vectors for a non-tenant write-only commit; gated OFF for a
+tenant commit; gated OFF when real ranges already intersect). **REMAINING:** (1) the **tenant** case —
+`buildCommitTransactionRequest` prefixes the `\xFF/SC/` key with the tenant prefix (only `metadataVersion`
+is exempt), so a faithful tenant port must either exempt the SC key or scope it inside the tenant keyspace;
+skipped for now (gate: `tenantId == NoTenantID`) because the first attempt broke `TestDifferential_Tenant*`.
+(2) the SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` (automatic-idempotency
+feature — distinct, gate on `tr.idempotencyId`).
 
 C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
 and read conflict ranges don't already intersect: `if (!causalWriteRisky &&

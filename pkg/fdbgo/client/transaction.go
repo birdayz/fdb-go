@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1725,25 +1726,10 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return nil
 	}
 
-	// makeSelfConflicting (C++ commitMutations, NativeAPI.actor.cpp:6858-6860 — AFTER the read-only fast
-	// path and the size check above): a commit whose write and read conflict ranges don't already
-	// intersect gets an ephemeral \xFF/SC/<UID> self-conflict range added to BOTH sets, so the
-	// commit_unknown_result dummy-transaction barrier synchronizes over that synthetic key instead of a
-	// real user key — avoiding spurious not_committed (1020) for other clients reading a hot user key
-	// (finding #27). causalWriteRisky is a no-op option in this client, so the C++ guard
-	// `!causalWriteRisky && !intersects(...)` reduces to just the no-intersection check.
-	//
-	// Scoped to NON-tenant transactions: the \xFF/SC/ key is a raw system key, and threading it through
-	// a tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a
-	// separate subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and
-	// the finding's primary scenario.
-	if tx.tenantId < 0 {
-		tx.conflictMu.Lock()
-		if !conflictRangesIntersect(tx.writeConflicts, tx.readConflicts) {
-			tx.makeSelfConflictingLocked()
-		}
-		tx.conflictMu.Unlock()
-	}
+	// makeSelfConflicting: C++ commitMutations (NativeAPI.actor.cpp:6858-6860), placed here — AFTER the
+	// read-only fast path and the size check above — exactly as C++ places it after its own read-only
+	// return and transaction_too_large check. See maybeMakeSelfConflicting for the full rationale.
+	tx.maybeMakeSelfConflicting()
 
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
 	// read version exists before commit, even for write-only transactions.
@@ -2567,19 +2553,74 @@ func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
 // selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
 var selfConflictPrefix = []byte("\xff/SC/")
 
-// conflictRangesIntersect reports whether any write conflict range overlaps any read conflict range,
-// mirroring C++ intersects(write_conflict_ranges, read_conflict_ranges) (NativeAPI.actor.cpp:6859).
-// O(w*r); a commit carries few explicit conflict ranges, so this is not a hot path.
-func conflictRangesIntersect(writes, reads []KeyRange) bool {
-	for _, w := range writes {
-		for _, r := range reads {
-			// [wb,we) overlaps [rb,re) ⟺ wb < re && rb < we.
-			if bytes.Compare(w.Begin, r.End) < 0 && bytes.Compare(r.Begin, w.End) < 0 {
-				return true
+// intersectRanges mirrors C++ intersects (NativeAPI.actor.cpp:6211-6228): it sorts
+// both range vectors by begin, then walks them in a single linear pass, returning
+// the FIRST overlapping pair's intersection [max(begins), min(ends)) — or ok=false
+// when the vectors are disjoint. O(n log n) like the native client, NOT the O(w*r)
+// nested scan that stalls large mixed commits (thousands of small point read/write
+// conflict ranges still fit under the size limit). Sorts COPIES so it never reorders
+// the live tx.readConflicts/writeConflicts slices (whose headers alias the conflictBuf
+// arena) — C++ sorts the request's vectors in place only because they are already the
+// committed snapshot at that call site; the intersection RESULT is identical either way.
+func intersectRanges(lhs, rhs []KeyRange) (KeyRange, bool) {
+	if len(lhs) == 0 || len(rhs) == 0 {
+		return KeyRange{}, false
+	}
+	ls := append([]KeyRange(nil), lhs...)
+	rs := append([]KeyRange(nil), rhs...)
+	sort.Slice(ls, func(i, j int) bool { return bytes.Compare(ls[i].Begin, ls[j].Begin) < 0 })
+	sort.Slice(rs, func(i, j int) bool { return bytes.Compare(rs[i].Begin, rs[j].Begin) < 0 })
+	l, r := 0, 0
+	for l < len(ls) && r < len(rs) {
+		switch {
+		case bytes.Compare(ls[l].End, rs[r].Begin) <= 0: // ls[l] entirely before rs[r]
+			l++
+		case bytes.Compare(rs[r].End, ls[l].Begin) <= 0: // rs[r] entirely before ls[l]
+			r++
+		default:
+			// Overlap. C++ returns lhs[l] & rhs[r] = [max(begins), min(ends)).
+			begin := ls[l].Begin
+			if bytes.Compare(rs[r].Begin, begin) > 0 {
+				begin = rs[r].Begin
 			}
+			end := ls[l].End
+			if bytes.Compare(rs[r].End, end) < 0 {
+				end = rs[r].End
+			}
+			return KeyRange{Begin: begin, End: end}, true
 		}
 	}
-	return false
+	return KeyRange{}, false
+}
+
+// conflictRangesIntersect reports whether any write conflict range overlaps any read conflict range,
+// mirroring C++ intersects(write_conflict_ranges, read_conflict_ranges).present() (NativeAPI.actor.cpp:6859).
+func conflictRangesIntersect(writes, reads []KeyRange) bool {
+	_, ok := intersectRanges(writes, reads)
+	return ok
+}
+
+// maybeMakeSelfConflicting adds an ephemeral \xFF/SC/<UID> self-conflict range (makeSelfConflictingLocked)
+// to a NON-tenant commit whose write and read conflict ranges don't already intersect — porting the C++
+// commitMutations guard `!causalWriteRisky && !intersects(...)` → makeSelfConflicting
+// (NativeAPI.actor.cpp:6858-6860). causalWriteRisky is a no-op option in this client, so the guard reduces
+// to the no-intersection check. With the range in BOTH sets, the commit_unknown_result dummy-transaction
+// barrier (commitDummyTransaction) synchronizes over that synthetic key instead of a real user key —
+// avoiding spurious not_committed (1020) for other clients reading a hot user key (finding #27).
+//
+// Scoped to NON-tenant transactions: the \xFF/SC/ key is a raw system key, and threading it through a
+// tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a separate
+// subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and the finding's
+// primary scenario. Callers (Commit) must NOT hold conflictMu — this takes it.
+func (tx *Transaction) maybeMakeSelfConflicting() {
+	if tx.tenantId != NoTenantID {
+		return
+	}
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if !conflictRangesIntersect(tx.writeConflicts, tx.readConflicts) {
+		tx.makeSelfConflictingLocked()
+	}
 }
 
 // makeSelfConflictingLocked appends an ephemeral \xFF/SC/<random 16-byte UID> single-key range to BOTH
@@ -2589,9 +2630,11 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 // don't already intersect calls this so it always self-conflicts on a synthetic key: the
 // commit_unknown_result dummy-transaction barrier (commitDummyTransaction) then synchronizes over that
 // key rather than a real user key, avoiding spurious not_committed (1020) for concurrent readers of a
-// hot user key (finding #27). The key is a \xFF system key, exempt from tenant prefixing at commit-build
-// (buildCommitTransactionRequest) so the committed range matches the raw-access dummy's conflict key.
-// Caller MUST hold conflictMu.
+// hot user key (finding #27). Only maybeMakeSelfConflicting calls this, and only on the NON-tenant path,
+// so the raw \xFF/SC/ key is committed verbatim (a non-tenant commit prepends no tenant prefix) and thus
+// matches the raw-access dummy's conflict key. buildCommitTransactionRequest exempts ONLY the
+// metadataVersion key from tenant prefixing — it would prefix this \xFF/SC/ key — which is one reason the
+// tenant case is a separate follow-up rather than a trivial gate flip. Caller MUST hold conflictMu.
 func (tx *Transaction) makeSelfConflictingLocked() {
 	sc := make([]byte, len(selfConflictPrefix)+16)
 	copy(sc, selfConflictPrefix)

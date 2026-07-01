@@ -246,25 +246,19 @@ func onErrorRetryable(code int) bool {
 	}
 }
 
-// intersectConflictRanges finds the begin key of a range that exists in both
-// write and read conflict sets. Returns it for use as the dummy transaction's
-// conflict key. Falls back to writes[0].Begin if no intersection found
-// (shouldn't happen with makeSelfConflicting). Matches C++ intersects()
-// at NativeAPI.actor.cpp:6745.
+// intersectConflictRanges returns the begin key of the range present in both the
+// write and read conflict sets — the dummy transaction's single-key conflict key.
+// Mirrors C++ NativeAPI.actor.cpp:6745: commitDummyTransaction barriers on
+// singleKeyRange(intersects(write_conflict_ranges, read_conflict_ranges).get().begin).
+// Uses the shared O(n log n) sorted-merge (intersectRanges), so it picks the SAME
+// overlap begin C++ would. Falls back to writes[0].Begin when the sets are disjoint:
+// C++ relies on makeSelfConflicting having guaranteed a non-empty intersection, but
+// Go's tenant commit path skips makeSelfConflicting, so the fallback keeps the barrier
+// well-defined there rather than panicking on an empty intersection.
 func intersectConflictRanges(writes, reads []KeyRange) []byte {
-	for _, w := range writes {
-		for _, r := range reads {
-			// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
-			if bytes.Compare(w.Begin, r.End) < 0 && bytes.Compare(r.Begin, w.End) < 0 {
-				// Return the max of the two begins (start of the overlap).
-				if bytes.Compare(w.Begin, r.Begin) >= 0 {
-					return w.Begin
-				}
-				return r.Begin
-			}
-		}
+	if kr, ok := intersectRanges(writes, reads); ok {
+		return kr.Begin
 	}
-	// No intersection — fall back to first write conflict key.
 	return writes[0].Begin
 }
 
