@@ -969,8 +969,9 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      RFC-082 annotations 4.12 lifted were reclassified to keep the conformance gate green (4 Java bug-fixes
      → plain equivalence; `left_outer_join_basic` + `where_case_returns_bool_probe` lifted → plain
      equivalence; `bare_bool_where_rejected` → JavaSucceedsGoRejects). **Remaining:** full corpus re-sweep,
-     reclassify cross-engine specs/comments encoding lifted 4.11 limits, flip `SQL_CONFORMANCE.md` /
-     `CASCADES_DIVERGENCE.md`, clear the `DIVERGENCES.md` rebaseline banner. Gate: Torvalds + codex + @claude.
+     reclassify cross-engine specs/comments encoding lifted 4.11 limits, flip `SQL_CONFORMANCE.md`
+     (`CASCADES_DIVERGENCE.md` folded into `DIVERGENCES.md`, RFC-174 F1), clear the `DIVERGENCES.md`
+     rebaseline banner. Gate: Torvalds + codex + @claude.
 
 > **Prior wave closed:** D1 (RFC-118 SimTransport), B2 (RFC-109 escape hatch), the RFC-056 lazy GetKey
 > iterator (RFC-057), the GRV-cache divergence (RFC-104), and B1/CI-off-the-box (untracked, owner

@@ -181,4 +181,4 @@ stale. Run `just sql-coverage` to regenerate; see `FEATURE_MATRIX.md` for the sc
 
 ## Cascades Divergence Status
 
-See `CASCADES_DIVERGENCE.md` for the full audit. **ALL divergences resolved** (D-1 through D-12). D-4 (cost model) is intentional by design. Zero open architectural divergences from Java.
+See `DIVERGENCES.md` — the authoritative Go-vs-Java divergence doc (Cascades planner included).
