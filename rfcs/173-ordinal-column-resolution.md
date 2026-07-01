@@ -42,7 +42,7 @@ engine is a 1:1 port of Java Cascades. In one load-bearing place it is **not** a
   `RecordConstructorValue` whose fields are keyed by upper-cased dotted `ALIAS.COL` strings (plus
   bare `COL` duplicates, last-leg-wins, plus dotted-verbatim keys for nested legs) —
   `values/value_anchored_join_record.go:54-99`, tagged by a single bool
-  `RecordConstructorValue.AnchoredJoin` (`values.go:2264-2291`). `FieldValue` is name-only
+  `RecordConstructorValue.AnchoredJoin` (`values.go:2321`). `FieldValue` is name-only
   (`Field string`, no ordinal — `values.go:183-187`). At execution the join emits a
   `map[string]any` row keyed by that same bare+`ALIAS.COL`+`TYPE.COL` set
   (`executor.go` `mergeRows:1937-1992`, `qualifyAlias:2000-2015`), and `FieldValue.Evaluate`
@@ -253,6 +253,13 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
      row-content shadow (item 1) is blind to. Slice 4 handles column ORDER
      (`cascades_generator.go`) but MUST also rebase ordering pull-up; every slice that flips a
      column's identity carries this pin.
+   - **`GROUP BY`/`HAVING` over a JOIN (RFC-088, @claude-flagged):** `groupby_over_join_fdb_test.go`
+     — a qualified joined-table group key (`d.dname`), a bare one (`dname` from `dept` in
+     `emp JOIN dept`), a multi-key `GROUP BY` mixing a joined-table key with a first-table key, and
+     `HAVING` over the grouped join output — must return the same correct grouped rows under ordinal
+     resolution. Gated where the join's merged row becomes authoritative: **Slice 2** for the 2-way
+     case, **Slice 3** for N-way. (Grouping keys ride the generic value path, so this is a
+     ride-along, but it exercises exactly the name→ordinal flip on a merged row and must be pinned.)
 3. **The 2-way wedge (Slice 2) is the real de-risk** — it runs the full ordinal model on live
    join plans (result value + positional row + ordinal predicate resolution + alias-bijection
    interning) before the atomic N-way flip, so Slice 3 lands on proven mechanics.
@@ -303,10 +310,16 @@ The owner's hard constraint: extensions must keep working and be architecturally
 
 Extensions that **ride along** (preserved, re-verified by their suites before name paths delete):
 correlated scalar subquery (2-leg ordinal seed, Slice 2 — **and add the currently-missing
-at-most-one guard early**, `TODO.md:1060-1078`, it is a correctness gap not cleanup); CTE
+at-most-one guard early**, `TODO.md:1125-1146`, it is a correctness gap not cleanup); CTE
 column-rename (fixed by global alias-bijection, Slice 4); UNION/set-op by position (already
 positional — delete `aggregateNamesStableForUnion`/`unionBranchNormalizable` rather than migrate);
-grouped-aggregate UNION-by-name as a join leg (columns come from the leg's `rangesOver` `Type`).
+grouped-aggregate UNION-by-name as a join leg (columns come from the leg's `rangesOver` `Type`);
+**`GROUP BY`/`HAVING` over a JOIN (RFC-088, @claude-flagged) — Go-only** (Java can't plan
+multi-table joins, `UnableToPlanException`), so it has no Java analog *like* RFC-142/FULL OUTER,
+but UNLIKE them it needs **no bespoke design**: grouping keys evaluate through the same generic
+`FieldValue.Evaluate`/`row.Datum` path (`streaming_cursors.go:214-249` `computeGroupKey`/
+`accumulateRow`), so it rides along once P1/P2 make ordinal resolution authoritative — it just must
+be PINNED (§5), not left implicit.
 
 **Resolve the Slice 3/Slice 5 contradiction now:** commit to the genuine-correlation model and
 **delete** the buried-leg re-exposure recovery outright (proving the unprojected-lateral-source
@@ -395,9 +408,16 @@ re-acked as they go.
   **designed** in §6 this revision; (d) **the NAK proper:** the single long-lived PR rots + forces
   repeated re-acks — split behaviour-preserving precursors into separate merged PRs. → **Adopted**
   (Process note: staged merged PRs; owner may override).
-- **@claude — pending** (extension-inventory cross-check on #422).
+- **@claude — "sound migration plan," one real §6 gap (not a NAK).** Found the missing
+  name-resolution-dependent Go-only extension: **`GROUP BY`/`HAVING` over a JOIN (RFC-088)** — group
+  keys resolve through the same `mergeRows`/`row.Datum` name-map this RFC retires, but it was unnamed
+  in §5/§6. → **Addressed:** added to §6 ride-along list + a §5 execution pin
+  (`groupby_over_join_fdb_test.go`). Also flagged two stale citations (`values.go` AnchoredJoin field
+  → `:2321`; scalar-subquery guard TODO → `TODO.md:1125-1146`) → **fixed**. Confirmed §5
+  execution-pins, delete-not-port, the two no-Java-mechanism extensions, and the `producesMergedRows`
+  allowlist all check out.
 
-**Round 2 (RFC v3):** all Round-1 items addressed — ordering pin (§5), Go-only invariants designed
-(§6), clock/paths fixed, packaging adopted as staged merged PRs. Re-requesting **Torvalds** (his
-condition "split the precursors out and this is an ACK" is now met) and folding in **@claude** when
-it completes. RFC-ack = all four ACK on this HEAD.
+**Round 2 (RFC v3):** packaging adopted as staged merged PRs; Round-1 items (ordering pin, Go-only
+invariant designs, clock/paths) addressed. **Round 3 (RFC v4):** @claude fold-ins done (RFC-088
+groupby-over-join pin; two citation fixes). Re-requesting **Torvalds** (his condition met) as the
+last open ack. RFC-ack = all four ACK on this HEAD.
