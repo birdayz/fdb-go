@@ -53,12 +53,79 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
 >   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
 >   review sweep (not committed regressions) found nothing.
+> - **[x] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — was ACTIVE on master, pre-existing) — FIXED.**
+>   Pin: `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2` (`WHERE zone='z1' AND region>'r1' … <=2` now
+>   returns `{21,22}`, was `{22}`). The fix is TWO pieces (piece 3 collapsed into piece 2 — the realization path
+>   already existed): (1) exclude ALL `VectorIndexScanMatchCandidate` from the pk-intersection candidate set — one
+>   condition in `pushDataAccessTasks` (planner.go ~628), the single home for the rule — since a vector scan is
+>   distance-ordered (ordered-stream OR self-limiting per-partition), never pk-monotonic, so it can never be a valid
+>   pk-keyed sorted-merge leg (the earlier draft's plan-level `isSelfLimitingVectorScan` intersector guards were
+>   consolidated into this upstream candidate-level check — Torvalds/Graefe nit, provably equivalent);
+>   (2) `compensationSafeForYield` `residualIsPartitionContiguous` exception — a residual over the partition columns
+>   CONTIGUOUS immediately after the bound equality prefix selects whole partitions, so it composes safely as a Filter
+>   above the self-limiting scan; `ImplementFilterRule` (which has NO gate against a Filter over a self-limiting vector
+>   scan, only against index-only predicates) then realizes `Filter(region>'r1') → VectorScan(self-limiting rank<=2)`.
+>   The DistanceRank stays in the scan binding (never leaks to the residual — rule_match_intermediate.go:470-483 keeps
+>   it consumed), so the Filter carries only the non-index-only `region>'r1'`. Contiguity anchor keeps the
+>   leading-column-unbound case (`region='r1'`, zone unbound) unplannable (`TrailingEqualityResidual` still green).
+>   Plan field `RecordQueryVectorIndexPlan.partitionColumns` (not wire-serialized) carries the names for the check.
+>   HISTORICAL (kept for context — root cause). Found by Graefe during RFC-167 Phase 4 review (PR #411). For a
+>   partitioned vector index with a partition-key inequality (e.g.
+>   `WHERE zone='z1' AND region>'m' AND <distance> <= K`, `PARTITION BY (zone,region)`), `WithPrimaryKeyIntersector`
+>   emits `Intersection(VectorTopK, PrimaryRange)` keyed on the full pk — and it is the ONLY physical plan (the safe
+>   `Filter(region>m, VectorTopK)` is blocked by `compensationSafeForYield` planner.go:734), so it is SELECTED. But the
+>   multi-partition vector cursor delivers `(region, distance)` order, NOT pk order (`vector_index_maintainer.go:779-790,1103`),
+>   and `executeIntersection` (executor.go:1710) feeds it into the pk-keyed sorted-merge (merge_cursor.go:405-467) with
+>   no re-sort → for K>1 rows per partition whose distance-order ≠ doc_id-order, the merge DROPS rows. Worked example:
+>   partition (z1,n) rows aaa(d=5),bbb(d=1),ccc(d=3): vector emits bbb,ccc,aaa; pk-range emits aaa,bbb,ccc; merge drops
+>   aaa. Latent because only K=1 is tested (`vector_multipartition_e2e_fdb_test.go:140`, `<=1`). FIX (same two pieces
+>   as RFC-167 Phase 4): the Java common-ordering gate in `WithPrimaryKeyIntersector` (drops this invalid intersection)
+>   + refine `compensationSafeForYield` so a PARTITION-key-column residual over a per-partition vector top-k is safe
+>   (selects whole partitions, never within-partition rows) → yields the correct `Filter`. PIN with a K>1 partition-
+>   residual FDB rows test FIRST. **CONFIRMED empirically** (probe, dropped during cleanup): `WHERE zone='z1' AND
+>   region>'r1' … <=2` plans to `Intersection(VectorIndexScan(rank<=2), Scan(DOCS,[=,<>]))` and returns `{22}` —
+>   DROPS id 21 (correct is `{21,22}`; in r2 the nearest vector is id 22 (dist 1.20) but id 21 (dist 1.41) sorts
+>   first by pk → the pk-merge advances past 21). **FIX ATTEMPTED (reverted) — it is THREE pieces, not two:**
+>   (1) the pk-order gate in `WithPrimaryKeyIntersector` (per-leg `computeWrapperRichOrdering(leg).Satisfies(pkReq)`)
+>   correctly drops the invalid vector intersection — VERIFIED; (2) the `compensationSafeForYield` partition-residual
+>   exception (with a CONTIGUITY check: the residual columns must be exactly the partition columns immediately after
+>   the bound equality prefix `len(prefixComparisons)` — else a leading partition col like `zone` is left unbound,
+>   which must stay unplannable per `TrailingEqualityResidual`) — VERIFIED via the plan field
+>   `RecordQueryVectorIndexPlan.partitionColumns` set in `ToScanPlan` from `columnNames[:partitionCount]`. BUT pieces
+>   1+2 alone make BOTH the K=1 and K>1 inequality queries UNPLANNABLE ("index-only predicate … cannot be a residual
+>   filter") — because **(3) the standalone `Filter(region>r1, VectorTopK)` plan is never GENERATED**: a partitioned
+>   vector scan (`partitionCount>0`) returns `EmitsOrderedStream()==false` (vector_index_match_candidate.go:139), so
+>   it is NOT excluded from the intersection (planner.go:628 RFC-156 guard) AND its only residual-bearing shape is the
+>   intersection — there is no realization path building a `Filter` over a self-limiting vector scan (the compensation
+>   is blocked/non-realizable, so only the intersection ever carries the residual). **The real fix (Graefe-corrected —
+>   the earlier `Limit(k)→Filter→ordered-scan` framing was WRONG):** do NOT switch to ordered-stream + a global
+>   `Limit(k)` — a global Limit over a fanout stream returns the k nearest rows across ALL surviving partitions and
+>   DROPS whole partitions (e.g. `region>'r1'` spanning r2,r3 with per-partition `<=2` must return 2 from r2 AND 2 from
+>   r3 = 4 rows; global `Limit(2)` returns the 2 nearest overall, possibly both from r2, dropping r3). That is the
+>   deferred Phase E per-partition-top-k trap (`vector_index_match_candidate.go:307-310`) and a NEW wrong-rows bug.
+>   Instead, **keep the scan SELF-LIMITING** (per-partition top-k stays enforced inside the maintainer's per-partition
+>   HNSW search) and **realize a partition-contiguous `Filter` directly above it**: `Filter(region>r1) →
+>   VectorScan(self-limiting per-partition top-k, fanout prefix=[z1,*])`. The self-limiting fanout returns top-k for
+>   every region in z1 in region order; the partition-column Filter drops whole regions ≤ r1; survivors are exactly
+>   top-k per region for region>r1. The index-only-residual error resolves naturally: the self-limiting scan still
+>   consumes the DistanceRank in its binding (`rank<=k`), so only `region>r1` (non-index-only) remains for the Filter.
+>   So Piece 3 is NOT "extend ordered-stream to partitioned" — it is "realize a partition-contiguous Filter over the
+>   self-limiting per-partition scan" (Piece 2 already certifies its safety). THEN gate the intersection (pieces 1+2).
+>   The K>1 pin must assert the winning plan is `Filter(...) → VectorIndexScan(... rank<=k ...)` (self-limiting), NOT
+>   an ordered scan. RFC-046/156 vector-planning change — needs the K>1 FDB rows pin + the existing vector suite green + 1M stress.
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
->   Decoupled finding: the guard-generalization + Phase-4 ordering-gate (which re-rank to the Intersection) are a
->   separate landing needing the full ordering machinery + 1M stress (a crude gate breaks vector cases; see RFC-167
->   §4 IMPLEMENTATION FINDING).
+>   Decoupled finding: the guard-generalization + VALUE-RANGE ordering-gate (which re-rank value-range shells to the
+>   Intersection) are a separate landing needing the full ordering machinery + 1M stress (see RFC-167 §4 IMPLEMENTATION
+>   FINDING). **OQ#6 is RESOLVED and the vector half is DONE** (VECTOR-PARTITION-INTERSECTION-K>1 above, fixed): a
+>   vector scan is distance-ordered and can NEVER be a valid pk-keyed intersection leg, so it is excluded from the
+>   intersection candidate set entirely (one condition in `pushDataAccessTasks`) and its residual composes as a Filter
+>   above the un-intersected self-limiting scan. That removed the false conflation an earlier crude per-leg gate hit
+>   (dropping the vector leg is a TRUE positive, not a symptom of a bad gate). REMAINING (value-range only): whether a
+>   VALUE-RANGE pk-merge is even reachable / wrong-rows or MaximumCoverageMatches prevents it (OQ#2), and the general
+>   per-leg pk-order gate for value-range intersections following Java's `enumerateSatisfyingComparisonKeyValues`
+>   (per-candidate-type participation) — the RFC-167 Phase 1b landing, needing the full ordering machinery + 1M stress.
 >   Full design + verified root cause + phased plan in **`rfcs/167-cascades-plan-determinism.md`** (the deeper
 >   layer is the RFC-070 nil-inner-shell architecture defeating Java's prune-to-one-concrete-member + planHash
 >   tie-break; an orthogonal pk-intersector ordering bug — `intersector_primary_key.go` dropping requestedOrderings

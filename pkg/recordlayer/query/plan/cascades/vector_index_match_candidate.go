@@ -290,6 +290,15 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		c.flowedType,
 	)
 
+	// Carry the partition-key column names so the planner can certify a
+	// partition-column residual (an unconsumed partition INEQUALITY, e.g.
+	// region > 'r1') as safe to compose as a Filter above this self-limiting
+	// per-partition scan (compensationSafeForYield). Selecting whole partitions
+	// never touches within-partition top-k ordering (RFC-046).
+	if c.partitionCount > 0 {
+		plan = plan.WithPartitionColumns(c.columnNames[:c.partitionCount])
+	}
+
 	// RFC-156 Phase B — canonical form for a GLOBAL-rank vector query (no
 	// PARTITION BY ⇔ an un-partitioned index, partitionCount == 0, e.g. the
 	// un-partitioned SPFresh case in §1): emit the scan in VBASE distance-

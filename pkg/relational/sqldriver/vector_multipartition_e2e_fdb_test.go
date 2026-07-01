@@ -159,6 +159,59 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidual(t *testing.T) {
 	}
 }
 
+// TestFDB_VectorSearch_MultiPartition_InequalityResidualK2 pins the K>1
+// partition-inequality wrong-rows bug (found during RFC-167 Phase 4 review):
+// a partition-key inequality (region > 'r1') over a partitioned vector index
+// with k=2 per partition. The ONLY residual-bearing plan the old planner could
+// produce was Intersection(VectorTopK(rank<=2), PrimaryRange(region>'r1')) keyed
+// on the primary key — but the multi-partition vector cursor delivers
+// (region, distance) order, NOT pk order, so feeding it into the pk-keyed
+// sorted-merge DROPS rows whose distance rank disagrees with their pk order.
+//
+// In partition (z1,r2) the two rows for query vector (1,0,0) are id 21=(0,1,0)
+// (dist √2≈1.414) and id 22=(0.2,0.9,0) (dist √1.45≈1.204): the vector cursor
+// emits 22 then 21 (distance order) while the pk-range emits 21 then 22 — so the
+// max-key/advance merge advances past 21 and returns only {22}. The correct
+// answer is BOTH rows {21, 22} (top-2 of the single surviving region r2).
+//
+// The fix (RFC-167 Phase 4): the pk-order gate drops the invalid vector
+// intersection, and the compensationSafeForYield partition-residual exception
+// yields the correct Filter(region>'r1') → VectorScan(self-limiting per-partition
+// top-k) plan. The Filter selects the whole r2 partition and never disturbs its
+// per-partition top-2, so both rows survive. The plan MUST be the self-limiting
+// PredicatesFilter-over-VectorScan shape (rank<=2), NOT an ordered scan and NOT
+// an intersection (Graefe: assert the self-limiting shape).
+func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
+
+	sql := `SELECT id, region FROM docs WHERE zone = 'z1' AND region > 'r1'
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 2`
+
+	exp, got := planExplainAndRun(t, ctx, db, md, ks, sql)
+	if !strings.Contains(exp, "VectorIndexScan") {
+		t.Fatalf("query did not plan to a vector scan:\n%s", exp)
+	}
+	// Self-limiting Filter-over-scan shape, NOT the pk-keyed intersection (the
+	// wrong-rows shape) and NOT an ordered scan (which cannot express per-
+	// partition top-k).
+	if strings.Contains(exp, "Intersection") {
+		t.Fatalf("k>1 partition-inequality query planned to a pk-keyed Intersection (drops rows):\n%s", exp)
+	}
+	if !strings.Contains(exp, "PredicatesFilter") || !strings.Contains(exp, "rank<=") {
+		t.Fatalf("expected Filter(region>'r1') → VectorScan(self-limiting rank<=2), got:\n%s", exp)
+	}
+	want := []idRegion{{21, "r2"}, {22, "r2"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("k>1 partition-inequality K-NN = %v, want %v (both top-2 of r2; the distance-vs-pk order disagreement must NOT drop id 21)", got, want)
+	}
+}
+
 // TestFDB_VectorSearch_MultiPartition_Pagination pins the cross-partition
 // continuation (Torvalds: "the whole risk"). Driving the multi-partition scan
 // page-by-page with a returned-row-limit of 1 must yield, by concatenation, the
@@ -308,6 +361,46 @@ func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "not plannable") && !strings.Contains(err.Error(), "index-only") {
 		t.Fatalf("expected an unplannable / index-only planning error, got: %v", err)
+	}
+}
+
+// TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual pins the
+// boundLen-0 admit path of residualIsPartitionContiguous (Torvalds nit): a
+// LEADING partition-column inequality (WHERE zone > 'z1') binds no equality
+// prefix, so the scan fans out over ALL partitions and the whole-partition
+// Filter(zone>'z1') selects those with zone>'z1', preserving each surviving
+// partition's per-partition top-k. residualIsPartitionContiguous admits it
+// (residual {zone} at index 0 == boundLen 0), distinct from the rejected
+// leading-column-GAP case (region='r1' with zone unbound). Only z2 has
+// zone>'z1', so the result is that partition's top-2 = {31}; if the inequality
+// were dropped, z1's rows would appear too — so {31} alone proves it is honored,
+// and the shape assertion proves it planned to the self-limiting Filter form
+// (not an intersection, not unplannable).
+func TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	db, md, ks := multiPartitionVectorSetup(t, ctx)
+
+	sql := `SELECT id, region FROM docs WHERE zone > 'z1'
+		QUALIFY ROW_NUMBER() OVER (PARTITION BY zone, region
+			ORDER BY euclidean_distance(embedding, [1.0, 0.0, 0.0])) <= 2`
+
+	exp, got := planExplainAndRun(t, ctx, db, md, ks, sql)
+	if !strings.Contains(exp, "VectorIndexScan") {
+		t.Fatalf("query did not plan to a vector scan:\n%s", exp)
+	}
+	if strings.Contains(exp, "Intersection") {
+		t.Fatalf("leading-inequality query planned to an Intersection:\n%s", exp)
+	}
+	if !strings.Contains(exp, "PredicatesFilter") || !strings.Contains(exp, "rank<=") {
+		t.Fatalf("expected Filter(zone>'z1') → VectorScan(self-limiting rank<=2), got:\n%s", exp)
+	}
+	want := []idRegion{{31, "r1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("leading-inequality K-NN = %v, want %v (zone>'z1' keeps only z2's (z2,r1) top-2 = {31})", got, want)
 	}
 }
 
