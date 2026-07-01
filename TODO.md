@@ -1241,7 +1241,15 @@ value cols) instead of a plain key expression when INCLUDE is present; (3) wire
 def.IncludeClause().UidList() through parseIndexDefinition (ddl.go). Flip the reject +
 the sentinel when implemented. Same applies to the indexAsSelect / vector paths' INCLUDE.
 
-### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
+### [x] metadata: UUID columns are indexable end-to-end — RFC-162 DONE (item 1021, PR #397)
+
+**DONE (PR #397, Graefe+Torvalds ACK'd).** UUID is now a first-class indexable primitive, write
+side AND read side. A UUID flows through the Cascades value layer as a neutral `[16]byte` (decision
+(b)); `tuple.UUID` only at the FDB wire boundary, canonical string only at the driver boundary.
+`CREATE INDEX` + `WHERE v = '<uuid>'` (all comparison ops incl. IS [NOT] DISTINCT FROM), IN, ranges,
+covering `SELECT v`, UUID PK, INL join on a UUID key, ORDER BY / DISTINCT / GROUP BY / merge-sort all
+work; MIN/MAX over UUID is rejected identically to Java. Pinned by
+`uuid_indexable_roundtrip_fdb_test.go` + friends. Historical design notes below.
 
 `CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build
 RecordMetaData: ... index "T_V" validation failed: field "V" in "T" is a message
@@ -1260,7 +1268,7 @@ primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
 replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
 metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
 
-**IN PROGRESS — RFC-162 (Graefe design ACK'd).** Sites 1-2 LANDED: the validator accepts the
+**DONE — RFC-162 (Graefe design + impl ACK'd; PR #397).** Sites 1-2 LANDED: the validator accepts the
 tuple_fields.UUID message (`isTupleField`) and the maintainer writes the entry as a `tuple.UUID`
 (`scalarToInterface`→`uuidMessageToTuple`), byte-identical to Java — pinned by
 `recordlayer/uuid_key_encoding_test.go` (unit, wire format) + `indexable_types_probe` (CREATE INDEX +
