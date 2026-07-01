@@ -294,6 +294,154 @@ func (c *rywCache) clearRange(begin, end []byte) {
 	c.unreadableRanges = subtractRangeList(c.unreadableRanges, begin, end)
 }
 
+// materializeCommit builds the coalesced commit mutation vector from the RYW write map — a port of C++
+// ReadYourWritesTransaction::writeRangeToNativeTransaction over the whole key space
+// (StringRef()..allKeys.end, ReadYourWrites.actor.cpp:1392 → :1997-2071). Two passes, matching C++:
+//   - pass 1: emit every cleared range as a ClearRange mutation. Clears go FIRST ("because of keys that
+//     are both cleared and set to a new value") — the clears-then-ops order lets a Set inside a cleared
+//     range win, so no cleared range needs splitting around operation keys.
+//   - pass 2: per operation key in sorted order emit the coalesced op — a present value → Set; an absent
+//     value (a matched CompareAndClear) → single-key Clear (C++ SetValue-absent → tr.clear(key)); a
+//     pending atomic chain → one atomicOp per folded stack entry.
+//
+// The result is [all clears in range order] ++ [all ops in key order]. The fold already happened at insert
+// time (coalesceOverAtomics + the site-B/C value-fold), so this walk ships the same bytes libfdb_c does.
+// Caller must NOT hold c.mu.
+func (c *rywCache) materializeCommit() []Mutation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Mutation, 0, len(c.cleared)+len(c.writes))
+	// Pass 1 — clears (c.cleared is kept sorted + non-overlapping by addClearedRangeLocked).
+	for _, r := range c.cleared {
+		out = append(out, Mutation{Type: MutClearRange, Key: r.begin, Value: r.end})
+	}
+	// Pass 2 — per-key operations in sorted key order.
+	c.ensureSortedLocked()
+	for _, k := range c.sortedKeys {
+		e := c.writes[k]
+		key := []byte(k)
+		switch {
+		case e.hasAtomics:
+			for _, m := range e.atomics {
+				out = append(out, Mutation{Type: m.typ, Key: key, Value: m.param})
+			}
+		case e.absent:
+			// A matched CompareAndClear resolved to "no value" → C++ SetValue(absent) → tr.clear(key),
+			// i.e. a single-key ClearRange [key, key+\x00). (An absent entry is an operation key in the
+			// write map, emitted in pass 2, NOT a cleared range from pass 1.)
+			end := make([]byte, len(key)+1)
+			copy(end, key)
+			out = append(out, Mutation{Type: MutClearRange, Key: key, Value: end})
+		default:
+			out = append(out, Mutation{Type: MutSetValue, Key: key, Value: e.value})
+		}
+	}
+	return out
+}
+
+// coalesceCommitMutations replays a validated mutation snapshot through a throwaway RYW write map and
+// materializes it, yielding the coalesced commit vector libfdb_c ships (RFC-172 / #28). Working from the
+// SNAPSHOT rather than the live tx.ryw keeps the shipped set byte-identical to the set Commit just
+// validated: the write map is a pure function of the op-log — the site-B/C value-fold and the
+// coalesceOverAtomics chain-fold use only LOCAL write state, never DB reads — so the replay reproduces
+// tx.ryw exactly, while a Set racing this Commit on another goroutine (appended to tx.mutations beyond the
+// snapshot) is simply absent and can never ship unvalidated. Single-key clears are stored in the op-log as
+// MutClearRange(k, k+\x00), so clearRange reproduces the original clear().
+func coalesceCommitMutations(muts []Mutation) []Mutation {
+	var wm rywCache
+	for _, m := range muts {
+		switch m.Type {
+		case MutSetValue:
+			wm.set(m.Key, m.Value)
+		case MutClearRange:
+			wm.clearRange(m.Key, m.Value)
+		default:
+			wm.atomic(m.Type, m.Key, m.Value)
+		}
+	}
+	return wm.materializeCommit()
+}
+
+// mutationsHaveVersionstamp reports whether the op-log carries any SetVersionstamped{Key,Value}. Those ops
+// can't be safely coalesced through the keyed write map — the 10-byte stamp is assigned at commit, so the
+// final key/value is unknown client-side, and a later Set on the same TEMPLATE key must not drop the
+// versionstamped op (C++ WriteMap::mutate pushes it onto the unreadable entry, WriteMap.cpp:139-146). A txn
+// carrying one ships its raw op-log 1:1 instead of the materialized write map (#28 / RFC-172).
+func mutationsHaveVersionstamp(muts []Mutation) bool {
+	for _, m := range muts {
+		if m.Type == MutSetVersionstampedKey || m.Type == MutSetVersionstampedValue {
+			return true
+		}
+	}
+	return false
+}
+
+// coalesceWriteConflicts sorts and merges write-conflict ranges (overlapping AND adjacent), matching C++'s
+// contiguous is_conflict_range segment emission in writeRangeToNativeTransaction pass 2
+// (ReadYourWrites.actor.cpp:2022-2033, 2069-2071). The per-op tx.writeConflicts list is uncoalesced, so a
+// key hammered N times carries N identical [k,k+\x00) ranges; without this they ship N-fold and trip 2101
+// on size just like the unfolded mutations. Adjacent merge ([a,b)+[b,c)→[a,c)) mirrors C++ treating
+// touching conflict segments as one range. Returns a fresh slice; input is not mutated.
+func coalesceWriteConflicts(in []KeyRange) []KeyRange {
+	if len(in) <= 1 {
+		return in
+	}
+	rs := make([]KeyRange, len(in))
+	copy(rs, in)
+	sort.Slice(rs, func(i, j int) bool {
+		if cmp := bytes.Compare(rs[i].Begin, rs[j].Begin); cmp != 0 {
+			return cmp < 0
+		}
+		return bytes.Compare(rs[i].End, rs[j].End) < 0
+	})
+	out := rs[:1]
+	for _, r := range rs[1:] {
+		last := &out[len(out)-1]
+		if bytes.Compare(r.Begin, last.End) <= 0 { // overlapping OR adjacent
+			if bytes.Compare(r.End, last.End) > 0 {
+				last.End = r.End
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// coalesceCommitVectors decides the mutation vector + pre-self-conflict write-conflict vector to size and
+// ship for a commit (#28 / RFC-172). rawMuts is the already-validated op-log snapshot; rawConflicts is the
+// pre-SC write-conflict snapshot. Returns (shipMuts, sizeConflicts, coalesced). The op-log is coalesced
+// (write-map materialize + conflict merge) UNLESS RYW is disabled OR the txn carries a versionstamp op —
+// both keep the raw op-log 1:1: the 10-byte stamp is assigned at commit so it can't be keyed in the write
+// map (a later Set on the same template key must not drop the versionstamped op — C++ WriteMap::mutate
+// pushes it, WriteMap.cpp:139-148), and such txns are tiny (never near 2101). A versionstamp txn that also
+// hammers an unrelated key ships uncoalesced — safe (no wrong bytes, no dropped op), identical to pre-#28
+// and the rywDisabled path (FDB-C-dev delta ACK: non-blocking). Extracted from Commit as a PURE function so
+// the ship-decision is unit-testable / revert-provable outside Commit's inline flow (Torvalds).
+func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisabled bool) (shipMuts []Mutation, sizeConflicts []KeyRange, coalesced bool) {
+	if rywDisabled || mutationsHaveVersionstamp(rawMuts) {
+		return rawMuts, rawConflicts, false
+	}
+	return coalesceCommitMutations(rawMuts), coalesceWriteConflicts(rawConflicts), true
+}
+
+// finalizeShipConflicts appends the self-conflict range (added by maybeMakeSelfConflicting AFTER the 2101
+// gate, so it is unsized — matching C++, which adds it after the transaction_too_large check,
+// NativeAPI.actor.cpp:6858) to the SIZED write-conflict snapshot, re-coalescing when the txn coalesces.
+// Works from the snapshot (rawConflicts) — NOT a live re-read of tx.writeConflicts — so a Set racing this
+// Commit cannot ship an unvalidated/unsized conflict range whose mutation was excluded from the frozen
+// op-log (codex #28 P2b). Pure + unit-testable (Torvalds).
+func finalizeShipConflicts(rawConflicts []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
+	base := rawConflicts
+	if scAdded {
+		base = append(append(make([]KeyRange, 0, len(rawConflicts)+1), rawConflicts...), sc)
+	}
+	if coalesced {
+		return coalesceWriteConflicts(base)
+	}
+	return base
+}
+
 // atomic records an atomic mutation.
 func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	c.mu.Lock()
@@ -359,7 +507,10 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	entry.value = nil
 	paramCopy := c.allocBytes(len(param))
 	copy(paramCopy, param)
-	entry.atomics = append(entry.atomics, rywMutation{typ: op, param: paramCopy})
+	// Coalesce onto the pending chain (C++ WriteMap::coalesceOver at insert time, WriteMap.cpp:106/144):
+	// repeated same-type resolvable atomics fold to one op, so a 150k-`ADD 1` chain on an unread key ships
+	// one mutation, not 150k (the RFC-172 / #28 fix). Read-transparent; versionstamps/CompareAndClear push.
+	entry.atomics = coalesceOverAtomics(entry.atomics, rywMutation{typ: op, param: paramCopy})
 	if !exists {
 		c.sortedKeys = nil
 	}
@@ -1178,6 +1329,54 @@ func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
 // it as ABSENT (our approximation) rather than surface a phantom value.
 func isUnresolvedVersionstamp(op MutationType) bool {
 	return op == MutSetVersionstampedKey || op == MutSetVersionstampedValue
+}
+
+// isNonAssociativeOp mirrors C++ isNonAssociativeOp / NON_ASSOCIATIVE_MASK (CommitTransaction.h:576-578):
+// ops that obey the associative law ONLY when all operands have equal length. coalesceOverAtomics folds
+// two same-type non-associative ops solely when their operand lengths match; the associative ops
+// (And, AndV2, ByteMin, ByteMax, AppendIfFits) always fold on same type.
+func isNonAssociativeOp(op MutationType) bool {
+	switch op {
+	case MutAddValue, MutOr, MutXor, MutMax, MutMin, MutMinV2,
+		MutSetVersionstampedKey, MutSetVersionstampedValue, MutCompareAndClear:
+		return true
+	default:
+		return false
+	}
+}
+
+// coalesceOverAtomics folds newMut into the pending atomic chain, a port of C++ WriteMap::coalesceOver
+// (WriteMap.cpp:480-494) + coalesce (:357) restricted to Go's representation: the SetValue base is stored
+// separately in rywEntry.value and resolved via the eager value-fold at atomic() sites B/C, so this stack
+// is a PURE atomic chain (its top is always an atomic op, never a SetValue). Within that restriction the
+// two C++ branches reduce to:
+//   - same op type, associative OR equal operand length → FOLD (combine operands via applyAtomic, keep the
+//     atomic type) — 150k `ADD 1` (all 8-byte) → one `ADD 150000`;
+//   - same op type, non-associative, DIFFERENT operand length → PUSH (keep both);
+//   - a DIFFERENT op type → PUSH (two atomics of different type never collapse — C++ else-branch
+//     `isAtomicOp(new) && isAtomicOp(existing)` → push).
+//
+// Versionstamped ops and CompareAndClear are always PUSHED (never folded): CompareAndClear is excluded from
+// C++'s same-type fold branch (`newEntry.type != CompareAndClear`) and over another atomic pushes; a
+// versionstamped op is kept intact so the entry's unreadable/resolve semantics are byte-for-byte unchanged
+// (its 10-byte stamp is assigned at commit, so folding cannot combine operands anyway). The fold is
+// read-transparent: resolveAtomics over the folded chain yields the identical value.
+func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation {
+	if len(stack) == 0 || isUnresolvedVersionstamp(newMut.typ) || newMut.typ == MutCompareAndClear {
+		return append(stack, newMut)
+	}
+	top := &stack[len(stack)-1]
+	if top.typ != newMut.typ || isUnresolvedVersionstamp(top.typ) {
+		return append(stack, newMut) // different type (or the top is an unfoldable versionstamp) → keep both
+	}
+	if isNonAssociativeOp(top.typ) && len(top.param) != len(newMut.param) {
+		return append(stack, newMut) // non-associative + operand-size mismatch → keep both
+	}
+	// Fold: combine the two operands with the op's own primitive, keeping the atomic type
+	// (C++ coalesce same-type branch, e.g. AddValue → doAdd(existing, new) → AddValue).
+	combined, _ := applyAtomic(top.typ, top.param, newMut.param)
+	top.param = combined
+	return stack
 }
 
 // resolveAtomics folds an atomic-mutation chain onto a storage base for the RYW read

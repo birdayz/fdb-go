@@ -41,7 +41,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutSetValue, Key: []byte("mykey"), Value: []byte("myval")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -62,7 +62,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutClearRange, Key: []byte("begin"), Value: []byte("end")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -91,7 +91,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutSetVersionstampedKey, Key: vsKey, Value: []byte("vsval")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -129,7 +129,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Begin: []byte("\xff/metadataVersion"), End: []byte("\xff/metadataVersionZZ")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -156,7 +156,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Begin: []byte("b"), End: []byte("y")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -182,7 +182,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Begin: []byte("a"), End: []byte("z")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -213,7 +213,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutAddValue, Key: []byte("counter"), Value: []byte{1, 0, 0, 0, 0, 0, 0, 0}},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -253,7 +253,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -273,7 +273,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -296,7 +296,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 			{Type: MutSetVersionstampedKey, Key: vsKey, Value: []byte{}},
 		}
 
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		defer marshalBufPool.Put(poolBuf)
 
 		req := parseSerialized(g, body)
@@ -354,7 +354,7 @@ func TestTenantCommit_BuildTwiceNoDoublePrefix(t *testing.T) {
 	}
 
 	build := func() []byte {
-		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+		body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 		out := append([]byte(nil), body...) // copy before the buffer returns to the pool
 		marshalBufPool.Put(poolBuf)
 		return out

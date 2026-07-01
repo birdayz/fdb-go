@@ -25,7 +25,7 @@ import (
 // barrier before returning the error. This matches C++ NativeAPI.actor.cpp
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
-func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
+func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflicts []KeyRange) error {
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
 		return &wire.FDBError{Code: ErrAllProxiesUnreachable}
@@ -44,7 +44,7 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
 
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildCommitTransactionRequest(tx, replyToken, muts)
+	body, poolBuf := buildCommitTransactionRequest(tx, replyToken, muts, writeConflicts)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
 	// C++ captures onProxiesChanged before dispatch. If we captured after
@@ -317,7 +317,7 @@ var marshalBufPool = sync.Pool{New: func() any {
 // buildCommitTransactionRequest constructs the full request. Returns the
 // serialized body and a pool handle — caller MUST call releaseMarshalBuf
 // after the body is no longer needed (after SendFrame).
-func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, muts []Mutation) (body []byte, poolBuf *[]byte) {
+func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, muts []Mutation, writeConflicts []KeyRange) (body []byte, poolBuf *[]byte) {
 	// `muts` is the mutation snapshot Commit already validated — marshal exactly
 	// it, so the shipped set is byte-identical to the validated set (a Set racing
 	// Commit on another goroutine appends to tx.mutations BEYOND this snapshot and
@@ -336,8 +336,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	// CommitTransactionRequest once from a stable snapshot.
 	tx.conflictMu.Lock()
 	readSnap := tx.readConflicts
-	writeSnap := tx.writeConflicts
 	tx.conflictMu.Unlock()
+	// writeSnap is the caller-supplied write-conflict snapshot — coalesced for a RYW commit (#28), or the
+	// raw op-log ranges for a rywDisabled commit — so the shipped conflict set matches what Commit sized.
+	writeSnap := writeConflicts
 
 	// Zero-copy reinterpret: Mutation and MutationRef have identical memory layout
 	// (uint8 + []byte + []byte). Avoid copying 200+ mutations per batch.
