@@ -36,10 +36,21 @@ validation gate.
   AUTHORITATIVE, escalate `resolveOrdinal`'s absent-field / non-record decline from silent
   `(0,false)` to Java's `SemanticException`; (b) [@claude] `RecordType.FieldIndex` and `LookupField`
   are near-duplicate scans — dedup (`LookupField` → `FieldIndex` + index) when a slice touches both.
-- [ ] P3 — alias-bijection interning · [ ] Slice 1 non-join ordinal · [ ] **Slice 2 2-way wedge**
+- [x] **P3 — alias-bijection interning → FOLDED INTO SLICE 3** (gauntlet call, PR #429 NOT merged:
+  Graefe + Torvalds + codex all ACK-with-fold; @claude n/a). The dark-shadow spike proved the
+  mechanism (tier-3 predicate minus the `aliasAware` gate → `would=true` == the flip's extra dedup)
+  and quantified it (≈259 extra dedups / 1500 planned corpus exprs — an **approximate, Insert-only
+  under-count**, not a pinned number). But the observer is a nil-in-prod hook + an unasserted `t.Logf`
+  — transitional scaffolding deleted at the flip, so it lands **with its Slice 3 consumer**, not
+  stranded ahead of it. Spike preserved on `feat/rfc173-p3-bijection-interning`. **Slice 3 owes:**
+  (i) build the global bijection tier live; (ii) **assert** shadow-predicted-delta == actual
+  member-count-delta (the pin the spike omitted); (iii) certify no CTE-rename NULL-read via §5
+  execution pins + RFC-077 task-count baseline (safety is flip-live-gated, un-shadowable). Full
+  analysis banked in RFC §4 P3.
+- [ ] Slice 1 non-join ordinal · [ ] **Slice 2 2-way wedge**
   (builds `appendNullLeg` + join-producer positional dual-emission) ·
-  [ ] Slice 3 atomic N-way flip · [ ] Slice 4 retire `AnchoredJoin` · [ ] Slice 5 closure invariant ·
-  [ ] Slice 6 extensions + ANSI headroom.
+  [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning**) · [ ] Slice 4 retire `AnchoredJoin` ·
+  [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
 
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
 
