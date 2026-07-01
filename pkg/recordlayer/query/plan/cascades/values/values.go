@@ -231,13 +231,25 @@ type OrdinalRow interface {
 // runtime row. Per Graefe: authority + a silent name-map fallback means a
 // resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
 // is the resolved ordinal, or -1 for a flat-reference (name->ordinal) miss.
+// Available carries the row type's column names (when the row exposes them) so
+// the failure is diagnosable from the message alone.
 type OrdinalResolutionError struct {
-	Field   string
-	Ordinal int
+	Field     string
+	Ordinal   int
+	Available []string
 }
 
 func (e *OrdinalResolutionError) Error() string {
-	return fmt.Sprintf("RFC-173 ordinal resolution: field %q not resolvable in the runtime row (ordinal %d) — malformed plan", e.Field, e.Ordinal)
+	return fmt.Sprintf("RFC-173 ordinal resolution: field %q not resolvable in the runtime row (ordinal %d, row columns %v) — malformed plan", e.Field, e.Ordinal, e.Available)
+}
+
+// ordinalRowNames extracts the row type's column names for diagnostics, when
+// the OrdinalRow implementation exposes them (executor.PositionalRow does).
+func ordinalRowNames(row OrdinalRow) []string {
+	if tn, ok := row.(interface{ TypeNames() []string }); ok {
+		return tn.TypeNames()
+	}
+	return nil
 }
 
 // evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
@@ -249,12 +261,12 @@ func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
 		if v, inRange := row.Get(ord); inRange {
 			return v, nil
 		}
-		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord}
+		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord, Available: ordinalRowNames(row)}
 	}
 	if v, ok := row.GetByName(f.Field); ok {
 		return v, nil
 	}
-	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1}
+	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1, Available: ordinalRowNames(row)}
 }
 
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
@@ -574,6 +586,24 @@ func ContainsAggregate(v Value) bool {
 		return true
 	})
 	return found
+}
+
+// ProjectionColumnName is the projection output-column NAMING CONTRACT: the
+// name a projected Value's result is keyed under in the executor's name-keyed
+// row (executeProjection's projNames) and, alias-absent, in the positional
+// row's type (posNames). A FieldValue projects under its (possibly dotted)
+// Field; any other Value under its upper-cased explain rendering (a computed
+// expression like `n + 1` is keyed "(N + 1)"). Shared here so the
+// planner/translator side can READ a projection's output by the exact key the
+// executor WRITES — reading by any other rendering (e.g. the logical layer's
+// un-parenthesized "N + 1") is a silent NULL under the name model and a loud
+// OrdinalResolutionError under the ordinal model (RFC-173 §5 dual-window
+// differential, first catch).
+func ProjectionColumnName(v Value) string {
+	if fv, ok := v.(*FieldValue); ok {
+		return fv.Field
+	}
+	return strings.ToUpper(ExplainValue(v))
 }
 
 // ExplainValue renders a Value as a readable expression string.

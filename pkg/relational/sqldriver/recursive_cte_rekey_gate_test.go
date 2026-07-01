@@ -103,3 +103,61 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g.Expect(drows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(dgot).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 100}))
 }
+
+// TestFDB_RecursiveCTEComputedColumn_RFC173 pins the dual-window differential's
+// first catch: a recursive CTE whose recursive leg projects a COMPUTED expression
+// (`SELECT n + 1`). The leg's normalization used to WRAP a projection re-reading
+// the leg output by its LOGICAL column name ("N + 1"), but the physical row is
+// keyed by the PHYSICAL name (projectionColumnName/ExplainValue → "(N + 1)") — a
+// mismatch the tolerant name map absorbed as a silent NULL, so `WHERE n < 10`
+// stopped the recursion one level early and count(*) returned 2 instead of 10.
+// Every suite recursive CTE used bare columns (logical == physical), so this
+// dimension was unprobed until the §5 differential flagged it. The fix
+// (normalizeLegToOutputColumns) overrides the leg projection's aliases
+// POSITIONALLY — nothing is re-read by name, so the mismatch site is gone.
+func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	dbPath := "/rcte_computed_col"
+	setup := openTestDB(t, dbPath)
+	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE rcte_computed_tmpl "+
+			"CREATE TABLE t (id BIGINT NOT NULL, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_computed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1)")).Error().NotTo(gomega.HaveOccurred())
+
+	// Depth counter 1..10: every level must advance (a one-level stall returns 2).
+	var count int64
+	g.Expect(db.QueryRowContext(ctx,
+		"WITH RECURSIVE c AS (SELECT id AS n FROM t UNION ALL SELECT n + 1 FROM c WHERE n < 10) SELECT count(*) FROM c",
+	).Scan(&count)).To(gomega.Succeed())
+	g.Expect(count).To(gomega.Equal(int64(10)), "computed-column recursive CTE must recurse the full depth (silent one-level stall = 2)")
+
+	// And the actual values, ordered — proving each level computed n+1 correctly
+	// (not NULLs padding a correct count).
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE c AS (SELECT id AS n FROM t UNION ALL SELECT n + 1 FROM c WHERE n < 10) SELECT n FROM c ORDER BY n")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var n int64
+		g.Expect(rows.Scan(&n)).To(gomega.Succeed())
+		got = append(got, n)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))
+}

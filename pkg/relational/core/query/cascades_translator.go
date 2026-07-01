@@ -3836,16 +3836,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 
 	// Normalize the SEED to the OUTPUT schema when a column-alias list renames it
-	// beyond the seed's own output names — read each seed source column, re-emit
-	// under the OUTPUT name. Skipped when they already coincide (no alias list, or
-	// the seed uses AS matching the list), keeping the common recursive-CTE plan
-	// unchanged. The read Values never persist a qualified key (recursiveRemapValues).
+	// beyond the seed's own output names. Skipped when they already coincide (no
+	// alias list, or the seed uses AS matching the list), keeping the common
+	// recursive-CTE plan unchanged.
 	if len(seedSrc) > 0 && len(outCols) == len(seedSrc) && !equalFoldSlices(outCols, seedOut) {
-		seedExpr = expressions.NewLogicalProjectionExpressionWithAliases(
-			recursiveRemapValues(seedSrc),
-			append([]string(nil), outCols...),
-			expressions.ForEachQuantifier(expressions.InitialOf(seedExpr)),
-		)
+		seedExpr = normalizeLegToOutputColumns(seedExpr, seedSrc, outCols)
 	}
 
 	// Wrap seed in TempTableInsert.
@@ -3892,11 +3887,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (unqualified, re-qualified under the scan alias at the next level).
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
-		recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
-			recursiveRemapValues(recCols),
-			append([]string(nil), outCols...),
-			expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
-		)
+		recursiveExpr = normalizeLegToOutputColumns(recursiveExpr, recCols, outCols)
 	}
 
 	// Wrap recursive leg in TempTableInsert.
@@ -3998,8 +3989,56 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 	return out
 }
 
+// normalizeLegToOutputColumns wraps a recursive-CTE leg with the normalization
+// projection that re-emits its output columns under the CTE's OUTPUT names
+// (outCols). The wrap READS the leg's output by its PHYSICAL column names — the
+// Datum/positional keys the executor actually writes (legPhysicalOutputNames) —
+// not the LOGICAL names the logical plan carries. For a bare or qualified column
+// the two coincide ("ID", "T.ID"); for a COMPUTED column they differ (logical
+// "N + 1" vs physical "(N + 1)", values.ProjectionColumnName), and reading by
+// the logical name was a silent NULL under the tolerant name model (recursion
+// stalled one level early: `recursive_cte_depth_counter` returned 2 instead of
+// Java's 10 — a pre-existing silent-wrong) and a loud OrdinalResolutionError
+// under the ordinal model. Found by the RFC-173 §5 dual-window differential on
+// its first run.
+//
+// The WRAP form (not an alias override on the leg's own projection) is
+// deliberate: for a qualified-join body the wrap is what STRIPS the qualified
+// datum keys ("T.ID") before the temp-table insert — recursiveRemapValues reads
+// the qualified key but projects the BARE output name — preserving the "never
+// persist a qualified key" invariant AND the temp-table row size the RFC-130
+// memory budget is calibrated to (an alias override leaks the qualified keys
+// into the temp rows: TestFDB_RFC130_RecursiveCTE_NoDoubleCharge regressed).
+func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string) expressions.RelationalExpression {
+	return expressions.NewLogicalProjectionExpressionWithAliases(
+		recursiveRemapValues(legPhysicalOutputNames(leg, legCols)),
+		append([]string(nil), outCols...),
+		expressions.ForEachQuantifier(expressions.InitialOf(leg)),
+	)
+}
+
+// legPhysicalOutputNames returns a recursive-CTE leg's PHYSICAL output column
+// names — the keys its top projection actually emits, via the shared
+// values.ProjectionColumnName naming contract — falling back to the LOGICAL
+// names when the leg's top expression is not a projection (bare-column shapes,
+// where the two coincide; a computed column under a non-projection top would
+// loud-error under ordinal resolution, which the §5 dual-window differential
+// watches for).
+func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) []string {
+	lp, ok := leg.(*expressions.LogicalProjectionExpression)
+	if !ok || len(lp.GetProjectedValues()) != len(logicalCols) {
+		return logicalCols
+	}
+	out := make([]string, len(logicalCols))
+	for i, v := range lp.GetProjectedValues() {
+		out[i] = values.ProjectionColumnName(v)
+	}
+	return out
+}
+
 // recursiveRemapValues builds the read-side Values for a recursive-CTE leg's
-// normalization projection. Each source column becomes a FieldValue: a dotted
+// normalization projection (the non-projection-top fallback of
+// normalizeLegToOutputColumns). Each source column becomes a FieldValue: a dotted
 // reference (a join body's "B.ID") reads the QUALIFIED datum key via a
 // QuantifiedObjectValue child while projectionColumnName returns the BARE field,
 // so a qualified key is never persisted into the temp table (a qualified key

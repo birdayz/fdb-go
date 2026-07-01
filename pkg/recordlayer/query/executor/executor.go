@@ -842,6 +842,9 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 	entry := result.GetValue()
 	datum, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	if DisablePositionalEmission { // §5 dual-window differential oracle gate
+		pos = nil
+	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
 }
 
@@ -3580,11 +3583,11 @@ func comparePKTuples(a, b tuple.Tuple) int {
 	return 0
 }
 
+// projectionColumnName delegates to the shared naming contract in the values
+// package (values.ProjectionColumnName) so the planner/translator side can read
+// a projection's output by the exact key the executor writes.
 func projectionColumnName(v values.Value) string {
-	if fv, ok := v.(*values.FieldValue); ok {
-		return fv.Field
-	}
-	return strings.ToUpper(values.ExplainValue(v))
+	return values.ProjectionColumnName(v)
 }
 
 func fieldFromDatum(datum any, key string) any {

@@ -107,6 +107,21 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 	return rc
 }
 
+// DisablePositionalEmission, when true, stops the row-birth sites
+// (FromStoredRecord, the covering-index cursor) from emitting the RFC-173
+// PositionalRow — recreating the pre-Slice-1 NAME model end-to-end: no
+// positional row is born, so the frontier gates (`qr.Positional != nil`) never
+// fire and every producer/consumer runs name resolution + name emission, exactly
+// the pre-flip world. It exists for ONE purpose: the §5 dual-window corpus
+// DIFFERENTIAL (ordinal result == name result row-for-row across the corpus,
+// with enumerated carve-outs), which needs the name model as a live oracle
+// during the dual-representation window (retired with the map side in Slice 4).
+// It is NOT a resolution fallback — Graefe's no-name-fallback rule governs
+// resolution; this suppresses EMISSION, in test builds only. Default false;
+// production pays one bool read per scanned row. Tests that flip it must own
+// the whole test binary phase (no concurrent queries in the other mode).
+var DisablePositionalEmission bool
+
 // StrictReferenceCheck, when true, makes filter/projection cursors evaluate
 // QueryResult.Complete rows through a Strict RowEvalContext, so a reference to
 // a name absent from the (complete) row is reported via

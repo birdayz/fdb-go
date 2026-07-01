@@ -55,9 +55,13 @@ type QueryResult struct {
 // folding convention).
 func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
 	datum := protoToMap(rec.Record)
+	var pos *PositionalRow
+	if !DisablePositionalEmission { // §5 dual-window differential oracle gate
+		pos = protoToPositional(rec.Record)
+	}
 	return QueryResult{
 		Datum:      datum,
-		Positional: protoToPositional(rec.Record),
+		Positional: pos,
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
 	}
