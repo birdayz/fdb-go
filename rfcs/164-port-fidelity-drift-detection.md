@@ -158,6 +158,25 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   don't assume it.
 - [ ] **Result-type / schema consistency** — declared result type == what children +
   projection produce (a `join_projection_coltype` regression already exists).
+- **FINDING — the three field-level invariants above (set-op comparison-key columns,
+  COVERING⇒referenced-fields, result-type consistency) are NOT checkable on the FINAL
+  extracted plan tree as written.** Probed empirically: the plan nodes that would be the
+  set-op LEGS — index-scan / value-producing plans — carry `*values.PrimitiveType` /
+  `UnknownType`, not a `*RecordType` with named fields (a `RecordQueryIndexPlan` for
+  `SELECT id, x … WHERE x = 5` flows `*PrimitiveType`), and `RecordQueryPlan` exposes no
+  `WithChildren`. Field-level typing is INCONSISTENT across the tree: some nodes DO carry a
+  `*RecordType` (e.g. the field-name recovery at `executor.go:1660` handles exactly that, with
+  a scan-metadata fallback for the untyped case) — but the leg types a set-op comparison-key
+  check would need to resolve are the untyped ones. So a post-extraction "does the leg's output
+  contain column X" check has NO reliable teeth (its resolvable-type precondition fails on the
+  index-scan legs that matter; it would be a fake-green checkbox). These invariants need a
+  PREREQUISITE — either consistent field-level type propagation into physical plans (a WS-3
+  `RecordQueryPlanVisitor`-adjacent effort) OR check
+  them on the richer EXPRESSION tree (quantifiers + result values carry the types/correlations)
+  at/just-before extraction, where `bestExpr` is in hand. The no-`<nil>`-child invariant
+  works precisely because child-PRESENCE is the one structural property fully available on the
+  untyped plan tree. Re-scope: implement these three at the expression layer, or gate them on
+  type-carrying plans; do not add a toothless plan-tree version.
 - **NOT a structural invariant (do not add as one):** "DistinctRecords==true ⇒ has a
   Distinct node" is **unsound** — distinctness legitimately arises with no dedup operator
   (unique-index, PK, aggregate-index, streaming-agg, intersection; Java's own
@@ -180,10 +199,30 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   (`unique`/`covering` live on `physicalIndexScanWrapper`, not the plan) — migrate onto
   the plan as Java does (`getMatchCandidateMaybe().createsDuplicates()`), or thread it in.
   **Acceptance: a new plan type added without declaring its property fails to COMPILE.**
-- [ ] **One shared `isCountStar`** used by planner + executor (COUNT-COL was two copies);
-  and one **`comparandReadsField`/group-key matcher** shared by guard + consumer (the AGG
+- [x] **One shared `isCountStar`** used by planner + executor (COUNT-COL was two copies).
+  LANDED: `expressions.IsCountStar(AggregateSpec)` is the single source of truth, consumed by
+  the aggregate-index candidate (`aggregate_index_candidate.go`, 2 sites) AND the executor's
+  group cursors (`streaming_cursors.go`). The executor was the OUTLIER — its prior local copy
+  narrowly treated only a nil-VALUED constant operand as count-star, disagreeing with the
+  planner (and the translator's documented "a constant operand folds into count-star",
+  `cascades_translator.go`) on COUNT(1)/COUNT(TRUE). The shared rule (COUNT with no operand OR
+  a constant operand) aligns them; result-preserving (a non-null constant counts every row via
+  either the count-star total or the per-operand non-null count — full aggregate corpus green),
+  and pinned by `TestIsCountStar` (COUNT(*), COUNT(1), COUNT(NULL), COUNT(col) classification).
+- [ ] One **`comparandReadsField`/group-key matcher** shared by guard + consumer (the AGG
   guard≠consumer drift, already done in RFC-163 via `groupColEqualityIndex` — audit for
-  other guard/consumer pairs). This is the cheap first piece — land it early.
+  other guard/consumer pairs).
+- **FOLLOW-UP (surfaced by the isCountStar dedup review, Graefe) — `COUNT(NULL)` folds to
+  all-rows, a possible port-fidelity bug.** The translator's "a constant operand folds into
+  count-star" doctrine classifies `COUNT(NULL)` (a resolved `ConstantValue{Value:nil}` operand)
+  as count-star → the group's TOTAL row count. Standard SQL (and Postgres/MySQL) return
+  `COUNT(NULL) = 0` (it counts non-NULL values of a NULL expression). This is INVARIANT under
+  the dedup (old and new classifiers agree on `ConstantValue{nil}`), so out of scope there, but
+  it is a live port-fidelity question: verify Java's behavior (does it fold the NULL *literal*
+  to `COUNT(*)`, or return 0?) — Java is the spec. If Java returns 0, `IsCountStar` must exclude
+  a nil-valued constant (`Operand` is `*ConstantValue` with `Value != nil`), and the translator's
+  fold must not apply to the NULL literal. Pin with a `COUNT(NULL)` rows test once the Java
+  oracle is confirmed. (WS-1's Go-vs-Java differential would catch this class automatically.)
 - **Effort:** ~1–2 days (it's a wide refactor across every `RecordQuery*` type + dispatch
   sites + three properties, not one switch). **Gate:** Graefe + Torvalds.
 

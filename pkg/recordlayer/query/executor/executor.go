@@ -2221,19 +2221,6 @@ func isNumeric(v any) bool {
 	return false
 }
 
-func isCountStar(agg expressions.AggregateSpec) bool {
-	if agg.Function != expressions.AggCount {
-		return false
-	}
-	if agg.Operand == nil {
-		return true
-	}
-	if cv, ok := agg.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-		return true
-	}
-	return false
-}
-
 func aggResultName(agg expressions.AggregateSpec) string {
 	opName := "?"
 	if agg.OperandName != "" {

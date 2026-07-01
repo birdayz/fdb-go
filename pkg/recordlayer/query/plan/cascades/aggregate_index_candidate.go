@@ -139,13 +139,9 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 		return false
 	}
 	if c.aggFunction == expressions.AggCount {
-		isCountStar := aggs[0].Operand == nil
-		if !isCountStar {
-			if _, isConst := aggs[0].Operand.(*values.ConstantValue); isConst {
-				isCountStar = true
-			}
-		}
-		if isCountStar {
+		// Single source of truth for count-star (RFC-164 WS-3) — must match the
+		// executor's group cursors and the translator's normalization.
+		if expressions.IsCountStar(aggs[0]) {
 			return c.aggColumn == ""
 		}
 		opFV, ok := aggs[0].Operand.(*values.FieldValue)
@@ -190,13 +186,9 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		return false
 	}
 	if c.aggFunction == expressions.AggCount {
-		isCountStar := agg.Operand == nil
-		if !isCountStar {
-			if _, isConst := agg.Operand.(*values.ConstantValue); isConst {
-				isCountStar = true
-			}
-		}
-		if isCountStar {
+		// Single source of truth for count-star (RFC-164 WS-3) — must match the
+		// executor's group cursors and the translator's normalization.
+		if expressions.IsCountStar(agg) {
 			return c.aggColumn == ""
 		}
 		opFV, ok := agg.Operand.(*values.FieldValue)
