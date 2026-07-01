@@ -184,3 +184,47 @@ func TestPositionalRow_DuplicateNames_RFC173P2(t *testing.T) {
 		t.Fatalf("dup-name shadow should differ at ID (map last-wins vs positional dense), got %q", bad)
 	}
 }
+
+// TestPositionalRow_AppendNullLeg_RFC173P2 pins the outer-join null-extension
+// primitive: an unmatched leg is appended as NULL slots (not absent keys), read
+// unambiguously by ordinal — and it's dup-safe (both legs may share a name).
+func TestPositionalRow_AppendNullLeg_RFC173P2(t *testing.T) {
+	t.Parallel()
+	outer := &PositionalRow{
+		Type:  positionalTypeFromNames([]string{"A_ID", "A_X"}),
+		Slots: []any{int64(1), "hi"},
+	}
+	innerType := positionalTypeFromNames([]string{"B_ID", "A_X"}) // A_X duplicates outer's name
+
+	ext := outer.appendNullLeg(innerType)
+	// Outer values retained; inner leg is NULL.
+	if len(ext.Slots) != 4 {
+		t.Fatalf("extended slots = %d, want 4", len(ext.Slots))
+	}
+	if v, _ := ext.Get(0); v != int64(1) {
+		t.Fatalf("Get(0) = %v, want 1 (outer retained)", v)
+	}
+	if v, _ := ext.Get(1); v != "hi" {
+		t.Fatalf("Get(1) = %v, want hi (outer retained)", v)
+	}
+	if v, ok := ext.Get(2); !ok || v != nil {
+		t.Fatalf("Get(2) = (%v,%v), want (nil,true) — unmatched inner leg NULL", v, ok)
+	}
+	if v, ok := ext.Get(3); !ok || v != nil {
+		t.Fatalf("Get(3) = (%v,%v), want (nil,true) — unmatched inner leg NULL", v, ok)
+	}
+	// Dup name A_X: ordinal 1 (outer) has "hi", ordinal 3 (inner) is NULL — distinct
+	// by position, no bare-resolve hazard. GetByName returns the first (outer).
+	if v, ok := ext.GetByName("A_X"); !ok || v != "hi" {
+		t.Fatalf("GetByName(A_X) = (%v,%v), want (hi,true) — first (outer) match", v, ok)
+	}
+
+	// Nil receiver: the FULL-OUTER unmatched-inner mirror (null-extend a whole leg).
+	nullLeg := (*PositionalRow)(nil).appendNullLeg(innerType)
+	if len(nullLeg.Slots) != 2 {
+		t.Fatalf("nil-receiver extended slots = %d, want 2", len(nullLeg.Slots))
+	}
+	if v, ok := nullLeg.Get(0); !ok || v != nil {
+		t.Fatalf("nil-receiver Get(0) = (%v,%v), want (nil,true)", v, ok)
+	}
+}

@@ -92,6 +92,46 @@ func positionalRowFromMap(typ *values.RecordType, m map[string]any) *PositionalR
 	return row
 }
 
+// appendNullLeg returns a new PositionalRow with legType's fields appended as
+// all-NULL slots — the RFC-173 P2 positional null-extension for an unmatched
+// outer-join leg. The name model represents an unmatched leg by the ABSENCE of its
+// keys, which a bare FieldValue can silently mis-resolve to the OTHER leg's
+// like-named column (the LEFT-OUTER bare-resolve hazard, executor_new_plans.go);
+// a nil positional slot reads NULL unambiguously by ordinal, so there is no hazard.
+// legType is appended raw (dup-safe: two legs may share a column name, kept distinct
+// by ordinal). A nil receiver yields a row of legType's NULL slots alone (the
+// FULL-OUTER unmatched-inner mirror null-extends the OUTER leg the same way).
+// The Slice-2/3 join restructuring uses this to build its outer-join output rows.
+func (r *PositionalRow) appendNullLeg(legType *values.RecordType) *PositionalRow {
+	var baseFields []values.Field
+	var baseSlots []any
+	if r != nil && r.Type != nil {
+		baseFields = r.Type.Fields
+		baseSlots = r.Slots
+	}
+	extra := 0
+	if legType != nil {
+		extra = len(legType.Fields)
+	}
+	fields := make([]values.Field, 0, len(baseFields)+extra)
+	slots := make([]any, 0, len(baseSlots)+extra)
+	for i, f := range baseFields {
+		fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: i})
+		var v any
+		if i < len(baseSlots) {
+			v = baseSlots[i]
+		}
+		slots = append(slots, v)
+	}
+	if legType != nil {
+		for _, f := range legType.Fields {
+			fields = append(fields, values.Field{Name: f.Name, FieldType: f.FieldType, Ordinal: len(fields)})
+			slots = append(slots, nil) // unmatched leg -> NULL
+		}
+	}
+	return &PositionalRow{Type: &values.RecordType{Fields: fields}, Slots: slots}
+}
+
 // positionalTypeFromNames builds the RecordType for a producer's output — one
 // field per column in output order (ordinal = position), named by the column name.
 // It uses a RAW RecordType (not NewRecordType) on purpose: a producer may emit
