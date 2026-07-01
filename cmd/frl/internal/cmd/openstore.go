@@ -157,10 +157,18 @@ func withStore[T any](
 	}
 
 	result, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		// SetSkipPossiblyRebuild: every withStore caller is a read-only
+		// command, and Open() without it runs checkPossiblyRebuild —
+		// which WRITES (header version bump, index clears/rebuild marks)
+		// whenever the provided metadata is newer than the store header.
+		// A `record scan --meta-file newer.pb` must never mutate the
+		// store it inspects. Write commands (RFC-174 Slice 4) make this
+		// decision explicitly on their own open path.
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(md).
 			SetSubspace(ss).
+			SetSkipPossiblyRebuild(true).
 			Open()
 		if err != nil {
 			return nil, fmt.Errorf("open store at %s: %w", cfgCtx.GetKeyspacePath(), err)

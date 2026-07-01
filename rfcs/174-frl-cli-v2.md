@@ -180,6 +180,20 @@ Config gains the same duality. `Context` gets optional `database` + `schema` fie
 alternative to `keyspace_path` + `metadata` (additive proto change, v1 configs stay valid;
 validation rejects setting both). The demo's `keyspace_path: /unused` hack dies.
 
+**Config-free invocation + chainable `fdb up`** (owner addition during review round 2):
+`--cluster-file` becomes a flag on `sql` and every store-touching command, overriding the
+context's `cluster_file`; combined with `--database/--schema` or `--keyspace`, no config file
+is required at all. `frl fdb up` adopts the UNIX stdout contract — human progress moves to
+stderr, stdout carries exactly the cluster-file path (`-o json`: `{cluster_file, container,
+context}`) — so the two compose into a one-liner:
+
+```
+frl sql --cluster-file $(frl fdb up) --database /demo -f schema.sql
+```
+
+This also retires the demo's `keyspace_path: /unused` hack and the operator-guide FAQ entry
+about missing root-level overrides. Lands in Slice 2 with the rest of the addressing flags.
+
 **Typed keyspace segments** (the `parseKeyspacePath` "left for v2" at `store.go:154`): the
 relational case is handled natively above, so slash-in-segment pressure is gone; what remains is
 real record-layer apps with non-string tuple elements. Add a JSON-tuple form accepted anywhere a
@@ -314,6 +328,7 @@ slices so they arrive with a net.
   (schema/seed/query/tx/meta-commands, `-c`, `-f`, stdin) and `meta catalog`.
 - **Slice 2 — layered addressing (~1.5 shifts):** `CatalogSource`, `--database/--schema` on all
   store-touching commands, config `database`/`schema` fields, `keyspace_tuple` typed form,
+  `--cluster-file` override + `fdb up` stdout contract (config-free chaining, §3.1),
   demo updated to show the round-trip (seed via `sql`, inspect via `record scan`/`store dump`).
   The e2e pin: create through SQL, read the same rows through `record scan`, dump the same
   index entries through `index scan`.

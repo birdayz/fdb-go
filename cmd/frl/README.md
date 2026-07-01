@@ -190,7 +190,7 @@ Tab-complete covers:
 ## What's not yet wired
 
 Writes (`record put`, `record delete`, `meta apply`, `store truncate` /
-`destroy` / `lock`, `index build` / `rebuild` / `set-state`), `config
-add-context`, `keyspace ls`/`tree` (FDB directory layer), `tx run`. See
-the repo-root `TODO.md` section `## frl CLI` for the full design +
-what's deferred and why.
+`lock`, `index build` / `rebuild` / `set-state`), layered addressing
+(`--database`/`--schema` on record/index/store commands), `sql` output
+formats, `config add-context`. See `rfcs/174-frl-cli-v2.md` at the repo
+root for the full v2 design, slice plan, and review record.

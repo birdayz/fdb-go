@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 
@@ -83,7 +84,10 @@ func newSQLCmd() *cobra.Command {
 				return err
 			}
 			if databaseURI == "" {
-				return fmt.Errorf("--database is required (e.g. --database /myapp)")
+				// Starts with a sentence word: fang capitalizes the first
+				// rune of error banners, which would garble a leading flag
+				// name into "--Database".
+				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
 			}
 			dsn := buildFDBSQLDSN(cfgCtx, databaseURI, initSchema)
 			db, err := sql.Open("fdbsql", dsn)
@@ -92,6 +96,13 @@ func newSQLCmd() *cobra.Command {
 			}
 			defer db.Close()
 
+			// Pick the style profile per-writer: real terminal → colors +
+			// box-drawing; pipe/redirect/test buffer → plain ASCII. Scripts
+			// consuming `frl sql -c … | jq` must never see ANSI escapes.
+			st := plainSQLStyles()
+			if isTerminalWriter(cmd.OutOrStdout()) {
+				st = ttySQLStyles()
+			}
 			runner := &sqlRunner{
 				db:       db,
 				out:      cmd.OutOrStdout(),
@@ -100,6 +111,7 @@ func newSQLCmd() *cobra.Command {
 				cfgCtx:   cfgCtx,
 				database: databaseURI,
 				schema:   initSchema,
+				st:       st,
 			}
 			defer runner.close()
 			switch {
@@ -164,6 +176,7 @@ type sqlRunner struct {
 	database string            // active database URI (from --database)
 	schema   string            // tracked for the prompt; set by \c
 	inTx     bool              // reflects the driver's tx state for prompt styling
+	st       sqlStyles         // TTY (color+box-drawing) or plain (ASCII) profile
 }
 
 // tableInfo is the minimal shape rendered by \d — table name + column
@@ -219,8 +232,8 @@ func (r *sqlRunner) repl() error {
 	}
 	defer rl.Close()
 
-	banner := sqlBannerStyle.Render("frl sql") + " — " +
-		sqlMutedStyle.Render("\\? for help, \\q to quit, multi-line ends at ; — BEGIN/COMMIT/ROLLBACK supported")
+	banner := r.st.banner.Render("frl sql") + " — " +
+		r.st.muted.Render("\\? for help, \\q to quit, multi-line ends at ; — BEGIN/COMMIT/ROLLBACK supported")
 	fmt.Fprintln(r.out, banner)
 
 	var buf strings.Builder
@@ -228,7 +241,7 @@ func (r *sqlRunner) repl() error {
 		if buf.Len() == 0 {
 			rl.SetPrompt(r.prompt())
 		} else {
-			rl.SetPrompt(sqlContinuePrompt())
+			rl.SetPrompt(r.continuePrompt())
 		}
 		line, readErr := rl.Readline()
 		if readErr != nil {
@@ -268,7 +281,7 @@ func (r *sqlRunner) repl() error {
 				continue
 			}
 			if err := r.execute(stmt); err != nil {
-				fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+				fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 			}
 		}
 	}
@@ -297,11 +310,11 @@ func (r *sqlRunner) execute(stmt string) error {
 			return err
 		}
 		defer rows.Close()
-		n, err := renderTable(r.out, rows)
+		n, err := r.renderTable(r.out, rows)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
+		fmt.Fprintln(r.out, r.st.muted.Render(
 			fmt.Sprintf("(%d row%s, %s)", n, plural(n), time.Since(start).Round(time.Millisecond))))
 		return nil
 	}
@@ -334,11 +347,11 @@ func (r *sqlRunner) execute(stmt string) error {
 		}
 	}
 	if affected >= 0 {
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
+		fmt.Fprintln(r.out, r.st.muted.Render(
 			fmt.Sprintf("OK (%d row%s affected, %s)",
 				affected, plural(int(affected)), time.Since(start).Round(time.Millisecond))))
 	} else {
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
+		fmt.Fprintln(r.out, r.st.muted.Render(
 			"OK ("+time.Since(start).Round(time.Millisecond).String()+")"))
 	}
 	return nil
@@ -483,39 +496,39 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 		r.printMetaHelp()
 	case `\d`:
 		if err := r.listTables(); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\dt`:
 		if err := r.listTemplates(); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\c`:
 		if len(fields) < 2 {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("usage: \\c <schema>"))
+			fmt.Fprintln(r.errOut, r.st.errS.Render("usage: \\c <schema>"))
 			return false
 		}
 		if r.inTx {
 			// Schema changes and open transactions don't mix cleanly —
 			// fdb-relational would either leak the tx or refuse the
 			// schema swap. Tell the operator to pick one.
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render(
+			fmt.Fprintln(r.errOut, r.st.errS.Render(
 				"cannot switch schema inside a transaction — COMMIT or ROLLBACK first"))
 			return false
 		}
 		r.schema = fields[1]
-		fmt.Fprintln(r.out, sqlMutedStyle.Render("schema → "+r.schema))
+		fmt.Fprintln(r.out, r.st.muted.Render("schema → "+r.schema))
 	case `\i`:
 		if len(fields) < 2 {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("usage: \\i <file>"))
+			fmt.Fprintln(r.errOut, r.st.errS.Render("usage: \\i <file>"))
 			return false
 		}
 		if err := r.runFile(fields[1]); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\e`:
 		stmt, err := readFromEditor(r.schema)
 		if err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 			return false
 		}
 		if strings.TrimSpace(stmt) == "" {
@@ -523,12 +536,12 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 		}
 		for _, s := range splitStatements(stmt) {
 			if execErr := r.execute(s); execErr != nil {
-				fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+execErr.Error())
+				fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+execErr.Error())
 				break
 			}
 		}
 	default:
-		fmt.Fprintln(r.errOut, sqlMutedStyle.Render(
+		fmt.Fprintln(r.errOut, r.st.muted.Render(
 			fmt.Sprintf("unknown meta-command %q — try \\?", fields[0])))
 	}
 	return false
@@ -547,7 +560,7 @@ func (r *sqlRunner) listTables() error {
 		return err
 	}
 	if len(tables) == 0 {
-		_, err := fmt.Fprintln(r.out, sqlMutedStyle.Render(
+		_, err := fmt.Fprintln(r.out, r.st.muted.Render(
 			fmt.Sprintf("(no tables in %s/%s)", r.database, r.schema)))
 		return err
 	}
@@ -558,7 +571,7 @@ func (r *sqlRunner) listTables() error {
 	for _, tbl := range tables {
 		rows = append(rows, []string{tbl.name, fmt.Sprintf("%d", tbl.columns)})
 	}
-	return renderStaticTable(r.out, headers, rows)
+	return r.renderStaticTable(r.out, headers, rows)
 }
 
 // listTemplates powers `\dt` — every template visible on the cluster.
@@ -571,7 +584,7 @@ func (r *sqlRunner) listTemplates() error {
 		return fmt.Errorf("%w (also available: `frl meta catalog templates`)", err)
 	}
 	defer rows.Close()
-	_, err = renderTable(r.out, rows)
+	_, err = r.renderTable(r.out, rows)
 	return err
 }
 
@@ -588,10 +601,10 @@ func (r *sqlRunner) printMetaHelp() {
 		{`\e`, "open $EDITOR — run the buffer on save+exit"},
 	}
 	var b strings.Builder
-	b.WriteString(sqlBannerStyle.Render("meta-commands") + "\n")
+	b.WriteString(r.st.banner.Render("meta-commands") + "\n")
 	for _, h := range help {
 		b.WriteString("  ")
-		b.WriteString(sqlCmdStyle.Render(h.cmd))
+		b.WriteString(r.st.cmd.Render(h.cmd))
 		b.WriteString("  ")
 		b.WriteString(h.desc)
 		b.WriteString("\n")
@@ -602,7 +615,7 @@ func (r *sqlRunner) printMetaHelp() {
 	// correctly. Worth calling out because the behaviour surprises
 	// operators coming from Postgres's default READ COMMITTED.
 	b.WriteString("\n")
-	b.WriteString(sqlMutedStyle.Render(
+	b.WriteString(r.st.muted.Render(
 		"note: within BEGIN/COMMIT, SELECT returns rows including uncommitted\n" +
 			"      writes (FDB Read-Your-Writes). ROLLBACK discards them correctly.\n"))
 	fmt.Fprint(r.out, b.String())
@@ -652,7 +665,7 @@ func readFromEditor(schema string) (string, error) {
 // row count. Empty result sets are rendered as just the header so the
 // operator can see which columns came back. NULL values render as
 // italic "NULL" so they don't blend with empty strings.
-func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
+func (r *sqlRunner) renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return 0, err
@@ -673,7 +686,7 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 		}
 		rendered := make([]string, len(row))
 		for i, v := range row {
-			rendered[i] = renderCell(v)
+			rendered[i] = r.renderCell(v)
 		}
 		table = append(table, rendered)
 	}
@@ -695,20 +708,20 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 
 	header := make([]string, len(cols))
 	for i, c := range cols {
-		header[i] = sqlHeaderStyle.Render(padCell(c, widths[i]))
+		header[i] = r.st.header.Render(padCell(c, widths[i]))
 	}
 	sep := make([]string, len(cols))
 	for i := range cols {
-		sep[i] = sqlMutedStyle.Render(strings.Repeat("─", widths[i]))
+		sep[i] = r.st.muted.Render(strings.Repeat(r.st.hLine, widths[i]))
 	}
-	fmt.Fprintln(out, strings.Join(header, sqlMutedStyle.Render(" │ ")))
-	fmt.Fprintln(out, strings.Join(sep, sqlMutedStyle.Render("─┼─")))
+	fmt.Fprintln(out, strings.Join(header, r.st.muted.Render(r.st.vSep)))
+	fmt.Fprintln(out, strings.Join(sep, r.st.muted.Render(r.st.cross)))
 	for _, row := range table {
 		cells := make([]string, len(row))
 		for i, c := range row {
 			cells[i] = padCell(c, widths[i])
 		}
-		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
+		fmt.Fprintln(out, strings.Join(cells, r.st.muted.Render(r.st.vSep)))
 	}
 	return len(table), nil
 }
@@ -717,7 +730,7 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 // The sibling of renderTable for places where we have the data in a
 // slice already (catalog queries, \d output) rather than behind a
 // *sql.Rows cursor.
-func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
+func (r *sqlRunner) renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = lipgloss.Width(h)
@@ -734,20 +747,20 @@ func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
 	}
 	header := make([]string, len(headers))
 	for i, h := range headers {
-		header[i] = sqlHeaderStyle.Render(padCell(h, widths[i]))
+		header[i] = r.st.header.Render(padCell(h, widths[i]))
 	}
 	sep := make([]string, len(headers))
 	for i := range headers {
-		sep[i] = sqlMutedStyle.Render(strings.Repeat("─", widths[i]))
+		sep[i] = r.st.muted.Render(strings.Repeat(r.st.hLine, widths[i]))
 	}
-	fmt.Fprintln(out, strings.Join(header, sqlMutedStyle.Render(" │ ")))
-	fmt.Fprintln(out, strings.Join(sep, sqlMutedStyle.Render("─┼─")))
+	fmt.Fprintln(out, strings.Join(header, r.st.muted.Render(r.st.vSep)))
+	fmt.Fprintln(out, strings.Join(sep, r.st.muted.Render(r.st.cross)))
 	for _, row := range rows {
 		cells := make([]string, len(row))
 		for i, c := range row {
 			cells[i] = padCell(c, widths[i])
 		}
-		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
+		fmt.Fprintln(out, strings.Join(cells, r.st.muted.Render(r.st.vSep)))
 	}
 	return nil
 }
@@ -784,9 +797,9 @@ func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, err
 // (Go nil) gets a muted "NULL" sentinel so it's distinguishable from
 // the empty string. []byte renders as hex — the same convention
 // formatPK already uses for binary PKs.
-func renderCell(v any) string {
+func (r *sqlRunner) renderCell(v any) string {
 	if v == nil {
-		return sqlMutedStyle.Render("NULL")
+		return r.st.muted.Render("NULL")
 	}
 	switch t := v.(type) {
 	case []byte:
@@ -813,46 +826,94 @@ func padCell(s string, w int) string {
 
 // --- styling -------------------------------------------------------------
 
-var (
-	// Purposefully muted palette — this is a REPL, not a presentation.
-	// Colors only on stderr-safe elements so piping to less / jq
-	// doesn't render ANSI garbage on a terminal-less stream.
-	sqlBannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	sqlMutedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	sqlErrorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	sqlCmdStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	sqlPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	sqlPromptMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlContStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlSchemaColor = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	// sqlTxMarker is the `*` that appears before `>` while a
-	// transaction is open — yellow so it's noticeable without being
-	// alarming (errors use red).
-	sqlTxMarker = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
-)
+// sqlStyles carries every visual element the sql command emits — lipgloss
+// styles plus the table border glyphs. Two profiles exist: ttySQLStyles
+// (colors + Unicode box-drawing) when stdout is a real terminal, and
+// plainSQLStyles (no ANSI, pure ASCII) when stdout is piped/redirected.
+// Regression context: styles used to be unconditional package vars, so
+// `frl sql -c … | jq` received raw ESC sequences and `─┼─` box-drawing —
+// unusable in scripts. Off-TTY output must contain no byte ≥ 0x80 and no
+// `\x1b` (pinned by TestRenderStaticTable_PlainIsASCII).
+type sqlStyles struct {
+	banner      lipgloss.Style
+	muted       lipgloss.Style
+	header      lipgloss.Style
+	errS        lipgloss.Style
+	cmd         lipgloss.Style
+	prompt      lipgloss.Style
+	promptMuted lipgloss.Style
+	cont        lipgloss.Style
+	schema      lipgloss.Style
+	// txMarker is the `*` that appears before `>` while a transaction is
+	// open — yellow so it's noticeable without being alarming (errors
+	// use red).
+	txMarker lipgloss.Style
+
+	vSep  string // column separator in table rows, e.g. " │ " / " | "
+	hLine string // horizontal rule rune under the header, e.g. "─" / "-"
+	cross string // separator-row junction, e.g. "─┼─" / "-+-"
+}
+
+// ttySQLStyles is the interactive profile. Purposefully muted palette —
+// this is a REPL, not a presentation.
+func ttySQLStyles() sqlStyles {
+	return sqlStyles{
+		banner:      lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		muted:       lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		header:      lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		errS:        lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+		cmd:         lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true),
+		prompt:      lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		promptMuted: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		cont:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		schema:      lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		txMarker:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true),
+		vSep:        " │ ",
+		hLine:       "─",
+		cross:       "─┼─",
+	}
+}
+
+// plainSQLStyles is the piped/scripted profile: zero-value lipgloss
+// styles render text unmodified (no ANSI), and the borders are ASCII so
+// awk/cut/grep pipelines see clean 7-bit output.
+func plainSQLStyles() sqlStyles {
+	return sqlStyles{
+		vSep:  " | ",
+		hLine: "-",
+		cross: "-+-",
+	}
+}
+
+// isTerminalWriter reports whether w is an interactive terminal. A
+// bytes.Buffer (tests), a pipe (`| jq`), or a redirect (`> f`) all
+// return false and get the plain profile.
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
+}
 
 // prompt builds the primary prompt. If a schema is active it's
 // included in a muted color so operators can see which namespace they
 // are in at a glance. When a transaction is open (r.inTx), a `*`
 // is injected before `>` — psql uses the same signal.
 func (r *sqlRunner) prompt() string {
-	marker := sqlPromptStyle.Render("> ")
+	marker := r.st.prompt.Render("> ")
 	if r.inTx {
-		marker = sqlTxMarker.Render("*") + sqlPromptStyle.Render("> ")
+		marker = r.st.txMarker.Render("*") + r.st.prompt.Render("> ")
 	}
 	if r.schema != "" {
-		return sqlPromptStyle.Render("frl") + sqlPromptMuted.Render("(") +
-			sqlSchemaColor.Render(r.schema) + sqlPromptMuted.Render(")") +
+		return r.st.prompt.Render("frl") + r.st.promptMuted.Render("(") +
+			r.st.schema.Render(r.schema) + r.st.promptMuted.Render(")") +
 			marker
 	}
-	return sqlPromptStyle.Render("frl") + marker
+	return r.st.prompt.Render("frl") + marker
 }
 
 // sqlContinuePrompt is the indented continuation prompt shown while a
 // statement is still accumulating input. Matches psql's `-> ` arrow.
-func sqlContinuePrompt() string {
-	return sqlContStyle.Render("  -> ")
+func (r *sqlRunner) continuePrompt() string {
+	return r.st.cont.Render("  -> ")
 }
 
 // --- helpers -------------------------------------------------------------

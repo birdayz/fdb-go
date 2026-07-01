@@ -171,6 +171,16 @@ func parseKeyspacePath(path string) (subspace.Subspace, error) {
 	return subspace.Sub(elems...), nil
 }
 
+// keyHex renders an fdb.Key as plain lowercase hex of its raw bytes —
+// paste-able into `fdbcli getrange`. NEVER format an fdb.Key with %x
+// directly: fdb.Key implements Stringer (Printable escaping), and fmt
+// routes %x through String(), so `%x` on the key hexes the *escaped
+// text* ("\x02dev\x00" → "5c7830326465765c783030…") instead of the key
+// bytes ("026465760014").
+func keyHex(k fdb.Key) string {
+	return fmt.Sprintf("%x", []byte(k))
+}
+
 // readStoreInfo reads the DataStoreInfo proto directly from FDB at the
 // store's StoreInfoKey subspace, without going through a FDBRecordStore
 // builder (which would require metadata we intentionally don't load here).
@@ -180,11 +190,11 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 		return rtx.Transaction().Get(key).Get()
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read store header at %x: %w", key, err)
+		return nil, fmt.Errorf("read store header at %s: %w", keyHex(key), err)
 	}
 	bytes, _ := result.([]byte)
 	if len(bytes) == 0 {
-		return nil, fmt.Errorf("no store header at keyspace %x — store does not exist", key)
+		return nil, fmt.Errorf("no store header at keyspace %s — store does not exist", keyHex(key))
 	}
 	info := &gen.DataStoreInfo{}
 	if err := proto.Unmarshal(bytes, info); err != nil {

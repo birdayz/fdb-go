@@ -41,6 +41,7 @@ go_library(
         "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "@build_buf_go_protoyaml//:protoyaml",
+        "@com_github_charmbracelet_x_term//:term",
         "@com_github_chzyer_readline//:readline",
         "@com_github_spf13_cobra//:cobra",
         "@land_charm_lipgloss_v2//:lipgloss",

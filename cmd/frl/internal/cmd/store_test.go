@@ -329,3 +329,26 @@ func TestRunStoreInfo_EmptyKeyspaceErrors(t *testing.T) {
 func proto_string(s string) *string { return &s }
 func proto_int32(v int32) *int32    { return &v }
 func proto_bool(v bool) *bool       { return &v }
+
+// Regression: fdb.Key implements Stringer, and fmt routes %x through
+// String() — so `%x` on a key hexed the Printable-escaped text
+// ("\x02dev\x00\x14" → "5c7830326465765c…") instead of the raw bytes.
+// keyHex must produce the raw-byte hex that pastes into fdbcli.
+func TestKeyHex_RawBytesNotEscapedString(t *testing.T) {
+	t.Parallel()
+	ss, err := parseKeyspacePath("/dev")
+	if err != nil {
+		t.Fatalf("parseKeyspacePath: %v", err)
+	}
+	key := ss.Pack(tuple.Tuple{int64(0)}) // StoreInfoKey shape: \x02dev\x00\x14
+	got := keyHex(key)
+	want := "026465760014"
+	if got != want {
+		t.Errorf("keyHex = %q; want %q", got, want)
+	}
+	// The bug signature: hex of the escaped string always starts with
+	// "5c78" ("\x"). Guard against reintroducing %x-on-fdb.Key.
+	if strings.HasPrefix(got, "5c78") {
+		t.Errorf("keyHex = %q; hexed the Stringer output, not the raw bytes", got)
+	}
+}

@@ -71,10 +71,7 @@ func newFdbUpCmd() *cobra.Command {
 			fmt.Fprintln(out, "Configuring (new single memory)...")
 			if err := retry(15, 2*time.Second, func() error {
 				o, err := runDocker("exec", name, "fdbcli", "--exec", "configure new single memory")
-				if err != nil {
-					return fmt.Errorf("%w: %s", err, strings.TrimSpace(o))
-				}
-				return nil
+				return configureNewOutcome(o, err)
 			}); err != nil {
 				return fmt.Errorf("configure cluster (is the image healthy? `frl fdb down --name %s` to clean up): %w", name, err)
 			}
@@ -193,6 +190,23 @@ func setContext(cfg *configv1.Config, name, clusterFile, keyspace string) {
 		KeyspacePath: keyspace,
 	})
 	cfg.CurrentContext = name
+}
+
+// configureNewOutcome interprets one `fdbcli configure new` attempt.
+// `configure new` is NOT idempotent: if an earlier attempt succeeded
+// server-side (including a half-acknowledged one where fdbcli exited
+// nonzero anyway), every subsequent attempt reports "Database already
+// exists" until the retry budget is exhausted — failing a perfectly
+// healthy cluster. That response means the database is configured, so
+// it is success, not an error.
+func configureNewOutcome(output string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(output, "Database already exists") {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
 }
 
 func runDocker(args ...string) (string, error) {

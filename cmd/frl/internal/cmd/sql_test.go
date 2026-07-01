@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -70,6 +71,30 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 				t.Errorf("buildFDBSQLDSN = %q; want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// Regression: the missing---database error used to read "--database is
+// required …", which fang's error banner capitalizes into "--Database is
+// required" — garbling the flag name. The message must start with a
+// sentence word so banner capitalization can't touch the flag.
+func TestSQL_MissingDatabaseFlag_Message(t *testing.T) {
+	// Not parallel: writeTestConfig uses t.Setenv.
+	writeTestConfig(t, "local")
+	c := newSQLCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{})
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error when --database is missing")
+	}
+	if !strings.Contains(err.Error(), "missing required flag --database") {
+		t.Errorf("error = %q; want it to mention `missing required flag --database`", err)
+	}
+	if strings.HasPrefix(err.Error(), "-") {
+		t.Errorf("error = %q; must not start with a flag name (fang banner capitalization garbles it)", err)
 	}
 }
 
@@ -176,20 +201,75 @@ func TestPlural(t *testing.T) {
 
 func TestRenderCell_TypeDispatch(t *testing.T) {
 	t.Parallel()
-	// NULL is special — renders with ANSI-styled NULL text, so we
-	// match on the literal "NULL" token rather than the whole string.
-	got := renderCell(nil)
-	if !strings.Contains(got, "NULL") {
-		t.Errorf("nil cell = %q; want to contain NULL", got)
+	// Plain profile: NULL renders as the bare token (no ANSI), so exact
+	// matches are safe throughout.
+	r := &sqlRunner{st: plainSQLStyles()}
+	if got := r.renderCell(nil); got != "NULL" {
+		t.Errorf("nil cell = %q; want NULL", got)
 	}
-	if got := renderCell([]byte{0x01, 0x02, 0xff}); got != "0102ff" {
+	if got := r.renderCell([]byte{0x01, 0x02, 0xff}); got != "0102ff" {
 		t.Errorf("[]byte cell = %q; want 0102ff", got)
 	}
-	if got := renderCell("hello"); got != "hello" {
+	if got := r.renderCell("hello"); got != "hello" {
 		t.Errorf("string cell = %q; want hello", got)
 	}
-	if got := renderCell(int64(42)); got != "42" {
+	if got := r.renderCell(int64(42)); got != "42" {
 		t.Errorf("int64 cell = %q; want 42", got)
+	}
+}
+
+// Regression (RFC-174 bug 2 + codex P2-3): piped/scripted output must be
+// pure 7-bit ASCII with zero ANSI escapes. The \x1b check alone would
+// pass with Unicode box-drawing (`─┼─`) still present, so assert every
+// byte < 0x80 too.
+func TestRenderStaticTable_PlainIsASCII(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	r := &sqlRunner{out: &out, st: plainSQLStyles()}
+	err := r.renderStaticTable(&out,
+		[]string{"NAME", "VALUE"},
+		[][]string{{"alpha", "1"}, {"beta", "NULL"}})
+	if err != nil {
+		t.Fatalf("renderStaticTable: %v", err)
+	}
+	got := out.Bytes()
+	if bytes.ContainsRune(got, 0x1b) {
+		t.Errorf("plain table contains ANSI escape:\n%q", got)
+	}
+	for i, b := range got {
+		if b >= 0x80 {
+			t.Errorf("plain table contains non-ASCII byte 0x%02x at offset %d:\n%q", b, i, got)
+			break
+		}
+	}
+	// Sanity: it still looks like a table (ASCII separators present;
+	// exact spacing depends on column widths).
+	if !strings.Contains(out.String(), " | ") || !strings.Contains(out.String(), "-+-") {
+		t.Errorf("plain table missing ASCII separators:\n%s", out.String())
+	}
+}
+
+// The TTY profile must keep the box-drawing look — plain mode is a pipe
+// concession, not a downgrade for interactive users.
+func TestRenderStaticTable_TTYKeepsBoxDrawing(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	r := &sqlRunner{out: &out, st: ttySQLStyles()}
+	if err := r.renderStaticTable(&out,
+		[]string{"NAME"}, [][]string{{"alpha"}}); err != nil {
+		t.Fatalf("renderStaticTable: %v", err)
+	}
+	if !strings.Contains(out.String(), "─") {
+		t.Errorf("tty table lost its box-drawing rule:\n%q", out.String())
+	}
+}
+
+// isTerminalWriter: a bytes.Buffer (and any non-*os.File) is never a
+// terminal — that's what routes tests and pipes to the plain profile.
+func TestIsTerminalWriter_BufferIsNotTerminal(t *testing.T) {
+	t.Parallel()
+	if isTerminalWriter(&bytes.Buffer{}) {
+		t.Error("bytes.Buffer reported as terminal")
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -584,6 +585,83 @@ func TestIntegration_TxReadVersion_JSON(t *testing.T) {
 	}
 }
 
+// snapshotStoreBytes reads every key-value pair under ss in one snapshot
+// read and returns a stable string rendering — the "byte-identical
+// before/after" comparator for mutation regression tests.
+func snapshotStoreBytes(t *testing.T, clusterFile string, ss subspace.Subspace) string {
+	t.Helper()
+	db, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatalf("open FDB: %v", err)
+	}
+	begin, end := ss.FDBRangeKeys()
+	result, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		var b strings.Builder
+		iter := rtx.Snapshot().GetRange(fdb.KeyRange{Begin: begin, End: end},
+			fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+		for iter.Advance() {
+			kv, err := iter.Get()
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&b, "%x=%x\n", kv.Key, kv.Value)
+		}
+		return b.String(), nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot store range: %v", err)
+	}
+	return result.(string)
+}
+
+// Regression (RFC-174 Slice 0 bug 5, Graefe G2): read-only commands must
+// NEVER mutate the store they inspect. withStore used to call Open()
+// without SetSkipPossiblyRebuild inside a read-write transaction, so a
+// `record scan --meta-file <newer>` ran checkPossiblyRebuild and wrote —
+// header version bump + index clears/rebuild marks — from a scan.
+func TestIntegration_RecordScan_NewerMetadataDoesNotMutateStore(t *testing.T) {
+	bindConfig(t)
+
+	// Newer metadata: the fixture's shape plus one more index. AddIndex
+	// bumps the metadata version past the store header's, which is
+	// exactly the state that makes checkPossiblyRebuild want to write.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$quantity", recordlayer.Field("quantity")))
+	newerMD, err := b.Build()
+	if err != nil {
+		t.Fatalf("build newer metadata: %v", err)
+	}
+	newerFile := filepath.Join(t.TempDir(), "newer-meta.pb")
+	nf, err := os.Create(newerFile)
+	if err != nil {
+		t.Fatalf("create newer meta.pb: %v", err)
+	}
+	if err := recordlayer.WriteRecordMetaData(newerMD, nf); err != nil {
+		t.Fatalf("write newer meta.pb: %v", err)
+	}
+	nf.Close()
+
+	ss := subspace.Sub("frl", "integration")
+	before := snapshotStoreBytes(t, fixture.clusterFilePath, ss)
+
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--meta-file", newerFile)
+	if err != nil {
+		t.Fatalf("record scan with newer metadata: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+
+	after := snapshotStoreBytes(t, fixture.clusterFilePath, ss)
+	if before != after {
+		t.Errorf("read-only `record scan` mutated the store (checkPossiblyRebuild wrote)\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestIntegration_StoreInfo_EmptyKeyspace(t *testing.T) {
 	// Point at a keyspace that has no store at it yet. store info should
 	// return a clear "no store header" error rather than panic or hang.
@@ -612,6 +690,21 @@ contexts:
 	// know it's a provisioning question, not a permissions / network issue.
 	if !strings.Contains(err.Error(), "store does not exist") {
 		t.Errorf("error = %v; want 'store does not exist'", err)
+	}
+	// Regression: the reported keyspace must be the raw-byte hex of the
+	// store-info key (paste-able into fdbcli), not the hex of fdb.Key's
+	// Printable string form — %x on fdb.Key routes through Stringer and
+	// produced "5c7830…" garbage.
+	ss, perr := parseKeyspacePath("/frl/never-written")
+	if perr != nil {
+		t.Fatalf("parseKeyspacePath: %v", perr)
+	}
+	wantHex := keyHex(ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey}))
+	if !strings.Contains(err.Error(), wantHex) {
+		t.Errorf("error = %v; want raw-byte key hex %q", err, wantHex)
+	}
+	if strings.Contains(err.Error(), "5c78") {
+		t.Errorf("error = %v; contains escaped-string hex (the %%x-on-fdb.Key bug)", err)
 	}
 }
 
