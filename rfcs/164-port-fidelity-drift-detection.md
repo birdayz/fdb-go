@@ -288,11 +288,12 @@ this drops?"** **Acceptance:** the known reservoirs are written down, each tagge
 by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs documented*,
 **not** "all divergences found" (un-completable by nature). **Gate:** Graefe.
 DONE: `DIVERGENCES.md` "RFC-164 WS-5 — Go-only divergence reservoir audit" — a table of the
-five reservoirs (simplified `RequestedSortOrder`; scalar cost fallback + Go-only tiebreakers;
+six reservoirs (simplified `RequestedSortOrder`; scalar cost fallback + Go-only tiebreakers;
 hand-rolled `AggregateDataAccessRule`; per-wrapper relink / RFC-070 shells; Go-only physical-
-filter builders), each with the Java invariant it drops, the risk class (wrong-rows /
-nondeterminism / panic), and a COVERED (naming the WS-2/4 invariant + pin) or TRACKED tag.
-The five are the concrete reservoirs this RFC's own §1 flavor table + the DIVERGENCES.md
+filter builders; `WithPrimaryKeyIntersector` discards `requestedOrderings`), each with the Java
+invariant it drops, the risk class (wrong-rows / nondeterminism / panic), and a COVERED (naming
+the WS-2/4 invariant + pin) or TRACKED tag.
+These are the concrete reservoirs this RFC's own §1 flavor table + the DIVERGENCES.md
 "Intentional Architectural Decisions" section already surface; each is now tied to its
 structural net or a tracked follow-up. New reservoirs get the same treatment (method noted).
 
