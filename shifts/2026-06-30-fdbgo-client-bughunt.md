@@ -477,7 +477,31 @@ during a 1021 storm. Fix recipe: port `makeSelfConflicting` (inject `\xFF/SC/<UI
 conflict ranges when `!causalWriteRisky` and ranges don't already intersect) so the dummy barrier uses
 the ephemeral key. Idempotency-ID tagging is NOT a divergence (`automaticIdempotency` defaults false, so
 libfdb_c also omits them — Go matches). Needs a deterministic UID → deferred (Date/rand unavailable in
-some contexts; use a per-txn counter/uid source). (size-limit finder result pending at handover.)
+some contexts; use a per-txn counter/uid source).
+
+Size-limit finder → **finding #28 (HIGH, open — architectural, MEASURED vs real libfdb_c):** Go sizes
+`transaction_too_large` (2101) AND ships the commit against the UNFOLDED append-only `tx.mutations` log
+(transaction.go:1264/1306/1447 append; :1714 2101 gate; :1752 ship), whereas libfdb_c COALESCES same-key
+writes in the RYW WriteMap (`writes.mutate`/`clear`, ReadYourWrites.actor.cpp:2295/2402/2435) and
+materializes the FOLDED map at commit (:1392) before sizing (`Transaction::getSize` NativeAPI:6818 vs
+sizeLimit :6835). Measured: 200× `Set(sameKey)` → Go rejects at sizeLimit<22000, cgo at <110 (~200×); at
+the 10 MB default, ~150k increments of ONE counter key → **Go throws 2101 while Java/C on the same
+cluster commit fine** (1 folded mutation). `GetApproximateSize` itself MATCHES cgo (both unfolded — the
+user API is faithful); the divergence is at the 2101 boundary + the shipped commit content + resolver
+load. Final stored KV state is identical (last-write-wins/atomic fold) → NOT data corruption, but a real
+cross-client commit-behavior divergence that breaks ported counter/hot-key/retry-accumulation code. The
+existing `TestDifferential_TransactionSizeLimit` uses only DISTINCT keys, so the folding axis was never
+probed. **Fix (architectural, deferred — needs an RFC + careful atomic-coalescing/clear/set-then-clear
+semantics):** commit from a coalesced write map (Go already folds in the RYW model `tx.ryw` but ships the
+unfolded `tx.mutations`; C++ coalescing is a RYW-ENABLED feature — readYourWritesDisabled does NOT
+coalesce in either client, so scope the fold to the RYW-enabled path). It touches the commit path — a
+rushed change risks a lost/misordered-mutation regression, so it is the correct focused follow-up, not a
+session-tail fix.
+
+**NOTE on the 2nd finder sweep:** the size-limit finder (a general-purpose, write-enabled agent) wrote a
+scratch test into `pkg/fdbgo/bench/` mid-investigation, which gazelle picked up and failed a commit hook.
+Cleaned up. Future discovery sweeps should use the read-only `Explore` agent, or run in a worktree, to
+keep the tree clean.
 
 Also independently verified FAITHFUL this round (no divergence): snapshot read conflict-skipping + RYW
 visibility, atomic-op RYW fold (absent/present-empty V2 gating), commit conflict-range assembly,
