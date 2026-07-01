@@ -677,16 +677,18 @@ func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
 	})
 }
 
-// TestCancel_StateVisibleWhenWatchCancelled pins codex #13's ordering deterministically (Torvalds
-// wanted a probe test): Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch
-// context observes the cancelled state at the instant it is cancelled. The store is sequenced-before
-// the context cancellation, whose Done()-close synchronizes-with the observing read (Go memory model),
-// making the state.Load guaranteed to see cancelled — that is exactly why watchSetupErr maps 1025 and
-// not context.Canceled. Uses many watches + parked observers: with the buggy order (cancelWatches
-// before the store), observers whose context is cancelled early in cancelWatches's loop run — on other
-// cores — while Cancel is still iterating, BEFORE the store, and record the non-cancelled state. Both
-// state.Load and Cancel's state.Store are atomic, so this is -race clean. Revert-proof: swap the two
-// lines in Cancel() and observers see the pre-store state → bad != 0.
+// TestCancel_StateVisibleWhenWatchCancelled probes codex #13's ordering (Torvalds wanted a probe):
+// Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch context observes the
+// cancelled state at the instant it is cancelled. With the CORRECT order this is guaranteed — the store
+// is sequenced-before the context cancellation, whose Done()-close synchronizes-with the observing read
+// (Go memory model), so state.Load is guaranteed to see cancelled (that is exactly why watchSetupErr
+// maps 1025 and not context.Canceled). The FAILURE detection is a HIGH-PROBABILITY multi-core probe,
+// not a strict guarantee: with the buggy order (cancelWatches before the store) the observers whose
+// context is cancelled early in cancelWatches's loop run — on other cores — while Cancel is still
+// iterating, BEFORE the store, and record the non-cancelled state; 512 observers make it fire reliably
+// on any multi-core box (empirically ~500/512 with the lines swapped) but a single-core scheduler could
+// mask it. Both state.Load and Cancel's state.Store are atomic, so this is -race clean. Revert-proof:
+// swap the two lines in Cancel() and observers see the pre-store state → bad != 0.
 func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
