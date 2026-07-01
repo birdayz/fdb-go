@@ -721,6 +721,48 @@ func TestPromoteValue_EvaluateDelegatesToChild(t *testing.T) {
 	}
 }
 
+// The STRING_TO_UUID arm: PromoteValue(string, UUID).Evaluate parses the
+// canonical string to a neutral [16]byte (Java's UUID.fromString). This is the
+// runtime path a bound parameter takes — a string literal gets constant-folded
+// to a [16]byte ConstantValue by SimplifyValue, but a ParameterValue stays a
+// PromoteValue and hits this at exec time.
+func TestPromoteValue_EvaluateStringToUuid(t *testing.T) {
+	t.Parallel()
+	child := &ConstantValue{Value: "550e8400-e29b-41d4-a716-446655440000", Typ: TypeString}
+	got, err := NewPromoteValue(child, NotNullUuid).Evaluate(nil)
+	require.NoError(t, err)
+	want := [16]byte{0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00}
+	if got != any(want) {
+		t.Fatalf("Evaluate = %#v, want %#v", got, want)
+	}
+}
+
+func TestPromoteValue_EvaluateUuidPassthroughAndNull(t *testing.T) {
+	t.Parallel()
+	// An already-[16]byte comparand (e.g. an index-sourced INL join key) passes
+	// through unchanged — nothing to parse.
+	raw := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	got, err := NewPromoteValue(&ConstantValue{Value: raw, Typ: NotNullUuid}, NotNullUuid).Evaluate(nil)
+	require.NoError(t, err)
+	if got != any(raw) {
+		t.Fatalf("[16]byte passthrough = %#v, want %#v", got, raw)
+	}
+	// NULL promotes to NULL.
+	gotNull, err := NewPromoteValue(NewNullValue(TypeString), NotNullUuid).Evaluate(nil)
+	require.NoError(t, err)
+	if gotNull != nil {
+		t.Fatalf("NULL promote = %#v, want nil", gotNull)
+	}
+}
+
+func TestPromoteValue_EvaluateInvalidUuidErrors(t *testing.T) {
+	t.Parallel()
+	_, err := NewPromoteValue(&ConstantValue{Value: "not-a-uuid", Typ: TypeString}, NotNullUuid).Evaluate(nil)
+	if err == nil {
+		t.Fatal("expected an error promoting an invalid UUID string")
+	}
+}
+
 func TestPromoteValue_NilChildPanics(t *testing.T) {
 	t.Parallel()
 	defer func() {

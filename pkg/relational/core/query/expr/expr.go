@@ -349,13 +349,33 @@ func promoteStringComparandToUuid(_ predicates.ComparisonType, left, right value
 	if lt == nil || rt == nil {
 		return left, right
 	}
-	if values.IsUuid(lt) && rt.Code() == values.TypeCodeString {
+	if values.IsUuid(lt) && promotableToUuid(rt) {
 		return left, values.NewPromoteValue(right, lt)
 	}
-	if values.IsUuid(rt) && lt.Code() == values.TypeCodeString {
+	if values.IsUuid(rt) && promotableToUuid(lt) {
 		return values.NewPromoteValue(left, rt), right
 	}
 	return left, right
+}
+
+// promotableToUuid reports whether a comparand of type t, compared against a
+// UUID operand, should be typed UUID. STRING is the literal case
+// (`uuid_col = '<uuid>'`); UNKNOWN covers a bound parameter (`uuid_col = ?`,
+// ParameterValue.Typ stays UnknownType until inference — which never types it
+// UUID) reached via the exported planner path (the sqldriver substitutes `?`
+// as text, so it lands as a STRING there, but PlanRecordQueryWithMetadata +
+// ParameterValue bindings do not). Wrapping either in PromoteValue(UUID) is
+// safe: PromoteValue.Evaluate parses a bound string to [16]byte and passes a
+// non-string (already-[16]byte, or a genuinely mismatched value) through
+// unchanged, so a non-string parameter degrades to the same UNKNOWN compare it
+// gave before — never a wrong-typed tuple probe.
+func promotableToUuid(t values.Type) bool {
+	switch t.Code() {
+	case values.TypeCodeString, values.TypeCodeUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 // widenIntConstAgainstDouble fixes a cross-type index-SARG hole: when one operand
