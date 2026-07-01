@@ -33,7 +33,6 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 
@@ -51,6 +50,7 @@ func newSQLCmd() *cobra.Command {
 		initSchema  string
 		cmdline     string
 		filePath    string
+		clusterFile string
 	)
 	c := &cobra.Command{
 		Use:   "sql",
@@ -79,17 +79,21 @@ func newSQLCmd() *cobra.Command {
 			"search scope so queries don't need schema-qualified names.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfgCtx, _, err := resolveContextAndOverride(contextName, "")
+			// --cluster-file makes the invocation self-contained (chains
+			// with `frl fdb up`); otherwise the context supplies it.
+			f := storeAddressFlags{contextName: contextName, clusterFile: clusterFile}
+			target, err := f.resolve()
 			if err != nil {
 				return err
 			}
+			cf := target.clusterFile()
 			if databaseURI == "" {
 				// Starts with a sentence word: fang capitalizes the first
 				// rune of error banners, which would garble a leading flag
 				// name into "--Database".
 				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
 			}
-			dsn := buildFDBSQLDSN(cfgCtx, databaseURI, initSchema)
+			dsn := buildFDBSQLDSN(cf, databaseURI, initSchema)
 			db, err := sql.Open("fdbsql", dsn)
 			if err != nil {
 				return fmt.Errorf("open fdbsql %q: %w", dsn, err)
@@ -104,14 +108,14 @@ func newSQLCmd() *cobra.Command {
 				st = ttySQLStyles()
 			}
 			runner := &sqlRunner{
-				db:       db,
-				out:      cmd.OutOrStdout(),
-				errOut:   cmd.ErrOrStderr(),
-				ctx:      cmd.Context(),
-				cfgCtx:   cfgCtx,
-				database: databaseURI,
-				schema:   initSchema,
-				st:       st,
+				db:          db,
+				out:         cmd.OutOrStdout(),
+				errOut:      cmd.ErrOrStderr(),
+				ctx:         cmd.Context(),
+				clusterFile: cf,
+				database:    databaseURI,
+				schema:      initSchema,
+				st:          st,
 			}
 			defer runner.close()
 			switch {
@@ -129,6 +133,7 @@ func newSQLCmd() *cobra.Command {
 	c.Flags().StringVar(&initSchema, "schema", "", "default schema for un-qualified references")
 	c.Flags().StringVarP(&cmdline, "command", "c", "", "run a single SQL statement non-interactively and exit")
 	c.Flags().StringVarP(&filePath, "file", "f", "", "execute SQL statements from a file and exit")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
 	return c
 }
 
@@ -139,13 +144,13 @@ func newSQLCmd() *cobra.Command {
 // Query params go through url.Values so paths with `&`, `=`, `?`, or
 // spaces (e.g. "/home/user/my project/fdb.cluster") round-trip through
 // the driver's URL parser without corrupting the DSN.
-func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
+func buildFDBSQLDSN(clusterFile, dbPath, schema string) string {
 	var b strings.Builder
 	b.WriteString("fdbsql:///")
 	b.WriteString(strings.TrimPrefix(dbPath, "/"))
 	params := url.Values{}
-	if cf := cfgCtx.GetClusterFile(); cf != "" {
-		params.Set("cluster_file", cf)
+	if clusterFile != "" {
+		params.Set("cluster_file", clusterFile)
 	}
 	if schema != "" {
 		params.Set("schema", schema)
@@ -167,16 +172,16 @@ func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
 // queries, and tx commands — must flow through the same handle.
 // `db.Conn(ctx)` is grabbed lazily on first execute().
 type sqlRunner struct {
-	db       *sql.DB
-	conn     *sql.Conn
-	out      io.Writer
-	errOut   io.Writer
-	ctx      context.Context
-	cfgCtx   *configv1.Context // cluster_file for catalog lookups
-	database string            // active database URI (from --database)
-	schema   string            // tracked for the prompt; set by \c
-	inTx     bool              // reflects the driver's tx state for prompt styling
-	st       sqlStyles         // TTY (color+box-drawing) or plain (ASCII) profile
+	db          *sql.DB
+	conn        *sql.Conn
+	out         io.Writer
+	errOut      io.Writer
+	ctx         context.Context
+	clusterFile string    // effective cluster file (flag > context) for DSN + catalog lookups
+	database    string    // active database URI (from --database)
+	schema      string    // tracked for the prompt; set by \c
+	inTx        bool      // reflects the driver's tx state for prompt styling
+	st          sqlStyles // TTY (color+box-drawing) or plain (ASCII) profile
 }
 
 // tableInfo is the minimal shape rendered by \d — table name + column
@@ -770,7 +775,7 @@ func (r *sqlRunner) renderStaticTable(out io.Writer, headers []string, rows [][]
 // Runs in its own read-only FDB tx — short enough to not contend
 // with a long-running REPL statement.
 func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, error) {
-	tables, err := runCatalogQuery(r.ctx, r.cfgCtx,
+	tables, err := runCatalogQuery(r.ctx, r.clusterFile,
 		func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]tableInfo, error) {
 			sch, err := cat.LoadSchema(txn, dbURI, schemaName)
 			if err != nil {

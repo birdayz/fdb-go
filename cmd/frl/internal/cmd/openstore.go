@@ -30,6 +30,7 @@ type storeAddressFlags struct {
 	metaFile    string
 	database    string
 	schema      string
+	clusterFile string
 }
 
 // register declares the flags on c. withMetaFile is false for commands
@@ -41,6 +42,7 @@ func (f *storeAddressFlags) register(c *cobra.Command, withMetaFile bool) {
 	}
 	c.Flags().StringVar(&f.database, "database", "", "relational database URI (with --schema; overrides keyspace_path)")
 	c.Flags().StringVar(&f.schema, "schema", "", "relational schema name (with --database)")
+	c.Flags().StringVar(&f.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
 }
 
 // relational reports whether the relational addressing mode is active.
@@ -75,7 +77,7 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	}
 	cfgCtx, err := config.ResolveContext(cfg, f.contextName)
 	if err != nil {
-		selfContained := f.metaFile != "" || f.relational()
+		selfContained := f.metaFile != "" || f.relational() || f.clusterFile != ""
 		if !selfContained {
 			if errors.Is(err, config.ErrNoContext) {
 				path, _ := config.Path()
@@ -86,10 +88,11 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 		cfgCtx = &configv1.Context{Name: "(cli-flag)"}
 	}
 	return &storeTarget{
-		cfgCtx:   cfgCtx,
-		metaFile: f.metaFile,
-		database: f.database,
-		schema:   f.schema,
+		cfgCtx:          cfgCtx,
+		metaFile:        f.metaFile,
+		database:        f.database,
+		schema:          f.schema,
+		clusterFileFlag: f.clusterFile,
 	}, nil
 }
 
@@ -97,13 +100,23 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 // (cluster file + record-layer keyspace/metadata defaults) plus any
 // flag overrides. withStore turns it into an open FDBRecordStore.
 type storeTarget struct {
-	cfgCtx   *configv1.Context
-	metaFile string
-	database string
-	schema   string
+	cfgCtx          *configv1.Context
+	metaFile        string
+	database        string
+	schema          string
+	clusterFileFlag string
 }
 
 func (t *storeTarget) relational() bool { return t.database != "" }
+
+// clusterFile is the effective cluster file: --cluster-file wins over
+// the context's, empty means the client's default discovery.
+func (t *storeTarget) clusterFile() string {
+	if t.clusterFileFlag != "" {
+		return t.clusterFileFlag
+	}
+	return t.cfgCtx.GetClusterFile()
+}
 
 // describe renders the target for error messages — the relational
 // address or the context's keyspace path, whichever is active.

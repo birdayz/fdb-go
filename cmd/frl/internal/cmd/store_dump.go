@@ -66,7 +66,7 @@ func newStoreDumpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			db, err := openDatabase(target.cfgCtx.GetClusterFile())
+			db, err := openDatabase(target.clusterFile())
 			if err != nil {
 				return err
 			}

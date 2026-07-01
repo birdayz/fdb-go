@@ -78,7 +78,7 @@ func runStoreInfo(ctx context.Context, out io.Writer, target *storeTarget, outpu
 		return err
 	}
 
-	db, err := openDatabase(target.cfgCtx.GetClusterFile())
+	db, err := openDatabase(target.clusterFile())
 	if err != nil {
 		return err
 	}
