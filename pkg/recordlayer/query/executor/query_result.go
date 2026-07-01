@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/binary"
 	"strings"
+	"sync"
 
 	"google.golang.org/protobuf/proto"
 
@@ -25,12 +26,15 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // Mirrors Java's QueryResult.
 type QueryResult struct {
 	Datum any
-	// Positional is the RFC-173 P2 ordinal-model sibling of Datum: the same row
-	// as a typed PositionalRow (field values indexed by ordinal). Emitted ALONGSIDE
-	// the name-keyed Datum during the dark/dual migration window; nil until a
-	// producer populates it (scans do, via FromStoredRecord). No consumer reads it
-	// yet — the name-keyed Datum stays authoritative until Slice 1+. A shadow test
-	// pins that it mirrors Datum field-for-field.
+	// Positional is the RFC-173 ordinal-model sibling of Datum: the same row as
+	// a typed PositionalRow (field values indexed by ordinal). Non-nil marks the
+	// row as being on the NON-JOIN FRONTIER (scans, covering scans, projection/
+	// map over the frontier emit it; join producers mergeRows/qualifyOuterRow do
+	// NOT), and since Slice 1 it is what FieldValue resolution READS there —
+	// authoritative, by ordinal, loud on a miss. The name-keyed Datum is still
+	// emitted alongside for coexistence (downstream name-model consumers, final
+	// materialization) until Slice 4 retires it; a shadow test pins that the two
+	// mirror each other field-for-field.
 	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
@@ -59,31 +63,52 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 	}
 }
 
-// protoToPositional is the RFC-173 P2 ordinal-model counterpart of protoToMap: it
+// positionalTypeCache caches the row-invariant PositionalRow.Type per message
+// descriptor. The RecordType depends only on the descriptor (field names in
+// declaration order), never the row, and rebuilding it per scanned row made
+// protoToPositional cost more than the sparse protoToMap itself
+// (BenchmarkProtoToPositional_Order). The cached type is shared across rows and
+// goroutines — read-only after construction (FieldIndex / shadow reads only).
+// Keyed by the descriptor (a per-message-type singleton for generated code;
+// dynamicpb descriptors miss and rebuild, which is correct, just uncached). A
+// racy duplicate Store is harmless: both values are structurally equal.
+var positionalTypeCache sync.Map // protoreflect.MessageDescriptor -> *values.RecordType
+
+// protoToPositional is the RFC-173 ordinal-model counterpart of protoToMap: it
 // builds a PositionalRow from a proto message, one slot per descriptor field in
 // declaration order (the field's ordinal), with an UPPER-cased field name and a
-// dark UnknownType (P2 shadows VALUES, not types — type refinement comes when the
-// ordinal model becomes authoritative). An unset field is a nil slot — matching
-// protoToMap omitting the key (SQL NULL) — so the positional row and the map agree
-// field-for-field (pinned by the shadow test). Emitted alongside the name-keyed
-// map; nothing reads it yet.
+// dark UnknownType (type refinement comes with the later slices). An unset field
+// is a nil slot — matching protoToMap omitting the key (SQL NULL) — so the
+// positional row and the map agree field-for-field (pinned by the shadow test).
+// Since Slice 1 this row is what the non-join frontier RESOLVES against; the
+// name-keyed map is still emitted for coexistence (retired in Slice 4).
 func protoToPositional(msg proto.Message) *PositionalRow {
 	if msg == nil {
 		return nil
 	}
 	refl := msg.ProtoReflect()
-	fields := refl.Descriptor().Fields()
+	desc := refl.Descriptor()
+	fields := desc.Fields()
 	n := fields.Len()
-	rtFields := make([]values.Field, n)
+	var rt *values.RecordType
+	if v, ok := positionalTypeCache.Load(desc); ok {
+		rt = v.(*values.RecordType)
+	} else {
+		rtFields := make([]values.Field, n)
+		for i := 0; i < n; i++ {
+			rtFields[i] = values.Field{Name: strings.ToUpper(string(fields.Get(i).Name())), FieldType: values.UnknownType, Ordinal: i}
+		}
+		rt = values.NewRecordType("", false, rtFields)
+		positionalTypeCache.Store(desc, rt)
+	}
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
-		rtFields[i] = values.Field{Name: strings.ToUpper(string(fd.Name())), FieldType: values.UnknownType, Ordinal: i}
 		if refl.Has(fd) {
 			slots[i] = protoFieldToGo(fd, refl.Get(fd))
 		}
 	}
-	return &PositionalRow{Type: values.NewRecordType("", false, rtFields), Slots: slots}
+	return &PositionalRow{Type: rt, Slots: slots}
 }
 
 // protoToMap converts a proto.Message to map[string]any with
