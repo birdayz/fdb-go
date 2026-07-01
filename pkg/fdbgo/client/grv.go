@@ -46,8 +46,9 @@ type grvCache struct {
 }
 
 // tryCache returns the cached version if it's fresh enough and not throttled.
-// priority determines which ratekeeper throttle to check:
-// BATCH checks lastRkBatch, DEFAULT checks lastRkDefault.
+// priority determines which ratekeeper throttle to check: BATCH checks lastRkBatch,
+// DEFAULT checks lastRkDefault, and SYSTEM_IMMEDIATE is never throttled (it bypasses
+// ratekeeper, so it is always "cooled down" and serves a fresh cache — #16).
 // Matches C++ DatabaseContext::getConsistentReadVersion throttle checks. The
 // opt-in gate (USE_GRV_CACHE) is enforced by the CALLER (getReadVersion);
 // reaching here already implies the transaction opted in (RFC-104).
@@ -295,19 +296,31 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 		// prior Go behavior) left a cold/stale cache un-warmed: every opted-in read with
 		// lag > MAX_VERSION_CACHE_LAG fell through to a real GRV and the cache never
 		// caught up, defeating the opt-in entirely for sparse workloads.
-		b.refreshOnce.Do(func() {
-			// Reserve the refresher's wg slot under the close barrier. If Close() has begun,
-			// registerBackgroundGoroutine returns false and we skip: starting a background goroutine +
-			// db.wg.Add(1) now would race Close's db.wg.Wait() at a zero counter (the topology monitor has
-			// Done'd) → "WaitGroup misuse: Add concurrently with Wait" panic. refreshOnce still marks this
-			// done (no retry) and tryCache below misses → the caller falls through to a real GRV, the
-			// right behavior during shutdown.
-			if !db.registerBackgroundGoroutine() {
-				return
-			}
-			b.refresherStarted.Store(true)
-			go b.backgroundRefresher(db) // does its own db.wg.Done() on exit
-		})
+		//
+		// EXCEPT for SYSTEM_IMMEDIATE (#16, codex): Go's refresher is PER-BATCHER and issues its periodic
+		// GRVs at b.priority, so starting the IMMEDIATE batcher's refresher would emit a long-lived stream
+		// of ratekeeper-bypassing PRIORITY_SYSTEM_IMMEDIATE GRVs from a single opted-in read — a real
+		// throttling bug. C++ instead runs ONE cx-level updater at DEFAULT priority (backgroundGrvUpdater,
+		// NativeAPI.actor.cpp:1283 — its refreshTransaction uses a default-priority getReadVersion), so
+		// IMMEDIATE never drives ratekeeper-bypassing background traffic. IMMEDIATE still SERVES the shared
+		// cache below when it is warm (the #16 fix); the cache is kept warm by DEFAULT/BATCH refreshers and
+		// every commit/GRV reply, and a pure-IMMEDIATE read-only workload simply falls through to a real
+		// GRV once it ages out — never a background IMMEDIATE flood.
+		if b.priority != grvPrioritySystemImmediate {
+			b.refreshOnce.Do(func() {
+				// Reserve the refresher's wg slot under the close barrier. If Close() has begun,
+				// registerBackgroundGoroutine returns false and we skip: starting a background goroutine +
+				// db.wg.Add(1) now would race Close's db.wg.Wait() at a zero counter (the topology monitor has
+				// Done'd) → "WaitGroup misuse: Add concurrently with Wait" panic. refreshOnce still marks this
+				// done (no retry) and tryCache below misses → the caller falls through to a real GRV, the
+				// right behavior during shutdown.
+				if !db.registerBackgroundGoroutine() {
+					return
+				}
+				b.refresherStarted.Store(true)
+				go b.backgroundRefresher(db) // does its own db.wg.Done() on exit
+			})
+		}
 		if v, ok := db.grvCache.tryCache(b.priority); ok {
 			db.metrics.countGRVCacheHit()
 			return v, false, nil

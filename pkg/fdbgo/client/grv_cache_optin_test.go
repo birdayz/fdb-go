@@ -153,3 +153,54 @@ func TestFDB_GRVCache_SkipOverridesUse(t *testing.T) {
 		t.Fatalf("SKIP_GRV_CACHE did not override USE_GRV_CACHE: GRVCacheHits advanced by %d, want 0", got)
 	}
 }
+
+// TestFDB_GRVCache_ImmediateServesButStartsNoRefresher pins the #16 codex P2: an opted-in
+// SYSTEM_IMMEDIATE read SERVES the warm shared cache (the #16 fix) but must NOT start the IMMEDIATE
+// batcher's background refresher. Go's refresher is per-batcher and issues its periodic GRVs at the
+// batcher's priority, so starting the IMMEDIATE refresher would emit a long-lived stream of
+// ratekeeper-bypassing PRIORITY_SYSTEM_IMMEDIATE GRVs from a single opted-in read. C++ instead runs one
+// cx-level updater at DEFAULT priority (backgroundGrvUpdater, NativeAPI.actor.cpp:1283), never IMMEDIATE.
+// Revert-proof: removing the `b.priority != grvPrioritySystemImmediate` guard in getReadVersion starts
+// the IMMEDIATE refresher and reds the refresherStarted assertion.
+func TestFDB_GRVCache_ImmediateServesButStartsNoRefresher(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	immBatcher := db.db.grvBatchers[grvBatcherSystemImmediate]
+
+	// Warm the shared cache with a real GRV (population is unconditional), then set its freshness clock
+	// to now() so the IMMEDIATE opt-in read is a deterministic hit inside maxVersionCacheLag.
+	warm := db.CreateTransaction()
+	if err := warm.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("warm GRV: %v", err)
+	}
+	v := db.db.grvCache.version.Load()
+	if v == 0 {
+		t.Fatal("GRV cache not populated")
+	}
+	db.db.grvCache.updateFromGRV(time.Now(), v)
+	if immBatcher.refresherStarted.Load() {
+		t.Fatal("IMMEDIATE refresher started before any IMMEDIATE opt-in read")
+	}
+
+	hitsBefore := db.db.metrics.Snapshot().GRVCacheHits
+	tx := db.CreateTransaction()
+	tx.SetUseGrvCache()
+	tx.SetPriority(PrioritySystemImmediate)
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		t.Fatalf("IMMEDIATE opt-in read: %v", err)
+	}
+	// #16: IMMEDIATE serves the warm cache.
+	if got := db.db.metrics.Snapshot().GRVCacheHits - hitsBefore; got != 1 {
+		t.Fatalf("IMMEDIATE opt-in must serve the warm cache (#16); GRVCacheHits advanced by %d, want 1", got)
+	}
+	if rv := tx.readVersion; rv != v {
+		t.Fatalf("IMMEDIATE opt-in read version = %d, want the cached %d", rv, v)
+	}
+	// codex #16 P2: but it must NOT start the IMMEDIATE batcher's refresher.
+	if immBatcher.refresherStarted.Load() {
+		t.Fatal("IMMEDIATE opt-in started the IMMEDIATE refresher — a stream of ratekeeper-bypassing IMMEDIATE GRVs (codex #16 P2)")
+	}
+}
