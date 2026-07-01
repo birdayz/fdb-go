@@ -66,6 +66,7 @@ go_test(
         "coverage_test.go",
         "cte_plans_test.go",
         "explode_test.go",
+        "in_join_test.go",
         "index_key_value_to_partial_record_test.go",
         "multi_intersection_test.go",
         "new_plans_test.go",

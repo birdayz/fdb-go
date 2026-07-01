@@ -243,10 +243,24 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   `fullBindUnique` 1-row short-circuit (the low-NDV secondary-index hazard — a whole-index
   equality bind that selects a large bucket must NOT be costed as a 1-row point probe) is the one
   COST-SELECTIVITY-adjacent path still unpinned.
-- [ ] **Determinism under cost-tied access paths** — **commit a deterministic seed** that
+- [~] **Determinism under cost-tied access paths** — **commit a deterministic seed** that
   hits an equal-cost index tie; acceptance = that seed goes red on the mutation.
   `FuzzPlanner_Determinism` passed only because it never *randomly* hit a tie; relying on
-  random fuzzing to re-hit it is hope, not a test.
+  random fuzzing to re-hit it is hope, not a test. DONE for the EQUALITY tie:
+  `TestPlanDeterminism_EqualCostIndexTie` + `_MultiEqualityShellTie` + `_CrossProcess`
+  (committed deterministic seeds, cross-process mutation-proven, #409). FINDING while probing
+  the IN-list tie: `a IN (1,2,3)` over two identical indexes is NOT plan-deterministic, from
+  TWO sources — (#1) the `RecordQueryInJoinPlan` binding correlation alias (a process-global
+  `UniqueCorrelationIdentifier` counter) was folded into Explain + Equals + Hash, so every
+  replan produced a non-equal / differently-hashed plan → plan-cache churn — **FIXED** (identity
+  now alias-invariant; real alias retained for execution; pinned by
+  `TestRecordQueryInJoinPlan_BindingAliasInvariant`); and (#2 — **OPEN**) the InJoin's INNER
+  index-scan selection is itself a cost-tie (idx1↔idx2) that the Phase-1a `exprConcreteHash`
+  tie-break resolves for the plain `a = 5` equality case but NOT through the InJoin inner path
+  (~27/200 runs flip). Repro: `SELECT id FROM t WHERE a IN (1,2,3)` over two identical indexes
+  on `a`. Fix direction: extend the deterministic winner tie-break to the InJoin inner selection
+  (`physical_in_join_wrapper.go` / the InJoin implement rule) — same class as RFC-167 Phase 1b
+  comprehensive tie-resolution; the full IN-list Explain-stability seed is re-added once it lands.
 - [ ] **Map-iteration lint** — ship the **CI grep** banning bare `range someMap` in
   plan-affecting code first (80% value, 5% cost); defer the nogo analyzer (gold-plating).
 - **Effort:** ~1–2 days. **Gate:** Graefe (cost/determinism) + Torvalds (lint).
