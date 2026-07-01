@@ -1,7 +1,11 @@
 # RFC-173: Migrate join column resolution from name-based `AnchoredJoin` to Java's ordinal/group model
 
-**Status:** RFC-ACK COMPLETE — all four acked (Graefe ✅ · Torvalds ✅ · codex ✅ · @claude ✅; see
-§10 review log). Implementation may begin; each staged PR re-acked on its own HEAD.
+**Status:** ACKED THROUGH ROUND 4 (Graefe ✅ · Torvalds ✅ · codex ✅ · @claude ✅; see §10 review
+log); **Round 5 (adversarial content re-review, 2026-07-01) folded into this revision — re-ack
+pending; Slice 2 must not start until it lands.** Progress: P1 merged (#423), P2 merged (#427),
+P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
+Step 2b blocked on the buried-reference precursor, Graefe-acked 7-site plan, recorded in that
+branch's §4 Slice 1 log). Each staged PR re-acked on its own HEAD.
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
@@ -19,7 +23,9 @@ override if the literal single PR is required, noting that leaves Torvalds' NAK 
 RFC-142 (lateral `UNNEST` + `WITH ORDINALITY`), RFC-036 (outer joins), RFC-081 (UNION-by-position).
 **Paths:** executor references (`executor.go`, `executor_new_plans.go`, `flat_map_cursor.go`,
 `streaming_cursors.go`) are under `pkg/recordlayer/query/executor/`; planner/value references under
-`pkg/recordlayer/query/plan/cascades/`.
+`pkg/recordlayer/query/plan/cascades/` (`values/`, `expressions/`, `predicates/` subpackages).
+Two exceptions: `cascades_translator.go` is under `pkg/relational/core/query/`,
+`cascades_generator.go` under `pkg/relational/core/embedded/`.
 **Effort (honest):** foundational — **~25–30 focused shifts** across 9 slices (the `FieldValue`
 nil-`Child` leaf form + ~105 `FieldValue` sites, the resolver still emitting dotted names, and the
 `OrdinalFieldName _0/_1` emulation make P1 heavier than a single shift), with a dual-representation
@@ -43,11 +49,14 @@ engine is a 1:1 port of Java Cascades. In one load-bearing place it is **not** a
   `RecordConstructorValue` whose fields are keyed by upper-cased dotted `ALIAS.COL` strings (plus
   bare `COL` duplicates, last-leg-wins, plus dotted-verbatim keys for nested legs) —
   `values/value_anchored_join_record.go:54-99`, tagged by a single bool
-  `RecordConstructorValue.AnchoredJoin` (`values.go:2321`). `FieldValue` is name-only
-  (`Field string`, no ordinal — `values.go:183-187`). At execution the join emits a
-  `map[string]any` row keyed by that same bare+`ALIAS.COL`+`TYPE.COL` set
-  (`executor.go` `mergeRows:1937-1992`, `qualifyAlias:2000-2015`), and `FieldValue.Evaluate`
-  resolves by string map lookup (`values.go:208-285`).
+  `RecordConstructorValue.AnchoredJoin` (`values.go:2349`). `FieldValue` stores no ordinal
+  (`Field string` + `Child` — `values.go:185-189`; P1's dark `resolveOrdinal`,
+  `values.go:340-353`, derives one on demand but name stays authoritative). At execution the join
+  emits a `map[string]any` row keyed by that same bare+`ALIAS.COL`+`TYPE.COL` set
+  (`executor.go` `mergeRows:2019-2081`, `qualifyAlias:2082`), and `FieldValue.Evaluate`
+  resolves by string map lookup (`values.go:210-325`). **Node identity is name-based too:** memo
+  interning compares `FieldValue`s by `av.Field == bv.Field` (`map_field_values.go:260-262`) and
+  hashes `"field:"+Field` (`semantic_hash.go:107`).
 
 ### 1.1 Why this is the "cheap implementation" to retire
 
@@ -78,9 +87,18 @@ Everything downstream is scaffolding around one string contract, and it costs us
    all of it natively. Since long-term ANSI compatibility is a project goal, the clean-Java core
    and the ANSI-sound foundation are the **same** decision.
 4. **An operator allowlist trap.** `producesMergedRows` / `bindAlias` suppression
-   (`executor_new_plans.go:302-348`) is a hand-maintained set of "operators that emit merged
+   (`executor_new_plans.go:312-358`) is a hand-maintained set of "operators that emit merged
    rows." Any new merged-row operator (hash join, merge join) must be added by hand or it
    silently mis-resolves.
+5. **The burial is not join-only (Round-5 correction to §1's framing).** The same
+   see-through-the-alias divergence lives on the *single-quantifier* frontier: derived-table /
+   recursive-CTE resolution (`ColumnAliasMap`) rewrites an output-column reference back to its
+   *source* column, which the tolerant name map absorbs (the executor double-writes source and
+   alias keys) and the ordinal model correctly rejects. Slice 1's Step 2b blocker found this
+   empirically (~15 derived-table/recursive-CTE tests; Graefe-acked 7-site precursor, recorded on
+   the Slice 1 branch). Consequence: the burial sites must be **enumerated up front, not
+   discovered one blocker at a time** — §4 carries a name-burial inventory as a Slice 2 entry
+   gate.
 
 ### 1.2 What we are NOT doing
 
@@ -97,16 +115,21 @@ layer on top. Rejected as an end-state (see §9).
 The migration's hardest, non-decomposable core is **not** the planner — it is the runtime row
 representation, and it forces everything else:
 
-- `FieldValue.Field` is a bare string with no ordinal (`values.go:183-187`).
+- `FieldValue.Field` is a bare string; the stored form has no ordinal (`values.go:185-189`).
 - The merged join row is a `map[string]any` keyed by upper `ALIAS.COL`/`COL`/`TYPE.COL`
-  (`executor.go` `mergeRows:1937-1992`).
-- `FieldValue.Evaluate` does pure string map lookups (`values.go:208-285`).
+  (`executor.go` `mergeRows:2019-2081`).
+- `FieldValue.Evaluate` does pure string map lookups (`values.go:210-325`).
+- `FieldValue` **node identity** is the name: `EqualsWithoutChildren` compares `Field`
+  (`map_field_values.go:260-262`) and the semantic hash is `"field:"+Field`
+  (`semantic_hash.go:107`). Java's identity is ordinal-only (§3).
 - The planner's anchored RC is *explicitly specified* to emit byte-for-byte the key set
   `mergeRows` physically writes (`value_anchored_join_record.go:22-53`).
 
 You cannot move the planner to ordinal/group without simultaneously replacing **(a)** the
-execution row (name-keyed map → positional/typed tuple) and **(b)** `FieldValue` resolution
-(name lookup → `FieldPath` ordinal against the input `Type`). And because the memo
+execution row (name-keyed map → positional/typed tuple), **(b)** `FieldValue` resolution
+(name lookup → `FieldPath` ordinal against the input `Type`), and **(c)** `FieldValue` node
+identity (name equality/hash → ordinal — or the memo conflates duplicate-named columns the
+moment they can coexist; scheduled in Slice 3). And because the memo
 **re-enumerates all joins at once**, the N-way flip cannot be sub-divided by arity beyond a
 2-way wedge — the positional row, ordinal `FieldValue`, and alias-bijection interning must flip
 **together, atomically** (Slice 3). This is why the migration must be **staged with dark,
@@ -118,6 +141,13 @@ shadow-built precursors proven first**, not a big-bang.
 
 - Column reference: `FieldValue(childValue, FieldPath)`; `FieldPath` = list of `ResolvedAccessor`
   carrying the ordinal in the child `Type` (`values/FieldValue.java`, `Type.java:2249-2311`).
+- Identity: `ResolvedAccessor.equals`/`hashCode` compare the **ordinal only**
+  (`FieldValue.java:676-690`) — the display name is not semantic. Two same-named columns at
+  different ordinals are distinct; a rename does not change identity.
+- Nested references stay **collapsed**: one `FieldValue` with a multi-accessor `FieldPath`;
+  `FieldValue`-over-`FieldValue` is folded by
+  `simplification/ComposeFieldValueOverFieldValueRule.java`. There is no chained-node form in the
+  memo.
 - Join output: structural `Type` = concatenation of the quantifiers' `rangesOver` types; a leg
   column is `(quantifier ordinal, field ordinal)`.
 - Re-enumeration: `PartitionSelectRule` rebuilds result values via `TranslationMap` over
@@ -147,6 +177,15 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   (flipping early changes interning identity before P3 is ready). Hard part: the nil-`Child` leaf
   form has no child `Type` — thread `Type.Record` to construction sites or keep leaves on the
   name path.
+  **AS LANDED (#423 — delta from this spec, recorded per Round 5):** no stored
+  `[]ResolvedAccessor` — the ordinal is *derived on demand*: `resolveOrdinal()`
+  (`values.go:340-353`) reads `Child.Type().(*RecordType).FieldIndex(f.Field)`; `NewRecordType`
+  normalises `Fields[i].Ordinal == i`. Lazy derivation is sound **only on the non-join frontier**,
+  where nothing re-types a `FieldValue`'s child between plan-finalize and eval (Graefe's
+  load-bearing invariant, recorded on the Slice 1 branch); Slices 2–3 build merged-row references
+  with **eager** `ofOrdinalNumber` baking, and Slice 3 carries the representation ruling for
+  nested/buried paths (see Slice 3). The "for now" on `equals`/`hashCode` now has an owner:
+  **Slice 3** (see the node-identity flip there).
 - **P2 — Positional/typed runtime row in the executor** (~2 shifts, heaviest precursor). The
   NON-JOIN row producers (scans, index scans, covering index, projections) emit a typed positional
   row **alongside** the `map[string]any`; consumers still read the map; filters pass it through
@@ -181,13 +220,16 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     `observed==0` — an unasserted log, not a tracked measurement (Torvalds). The assertion that
     matters — shadow-predicted delta == the flip's *actual* member-count delta — is exactly what the
     spike omits; Slice 3 carries it as its dark→live equivalence pin.
-  - *Safety is Slice-3-gated, not shadowable.* The flip collapses two members differing only by an
+  - *Safety is flip-live-gated, not shadowable.* The flip collapses two members differing only by an
     alias bijection, discarding one; anything resolving the discarded member's aliases **by identity**
     (the name model) is orphaned. The shadow counts the collapse but never exercises it, so the only
-    thing that could break — external by-name resolution — is never touched. Certification lives in
-    §5's CTE-rename execution pins + the RFC-077 task-count baseline, which require the flip **live**
-    (hence Slice 1→3, after ordinal resolution is authoritative). Spike code preserved on
-    `feat/rfc173-p3-bijection-interning` for Slice 3 to reuse as its "before" harness.
+    thing that could break — external by-name resolution — is never touched. Certification is
+    **staged** (Round-5 correction — the canonical interning sequence in Slice 3 supersedes older
+    phrasings): the RFC-077 task-count baseline + the STAR planning wall-clock pin gate **Slice 3**
+    (bijection tier built, authoritative for merge selects); the CTE-rename execution pins certify at
+    **Slice 4**, when `InternsAliasAware` widens to all selects — they need the widened gate, not the
+    merge-select flip. Spike code preserved on `feat/rfc173-p3-bijection-interning` for Slice 3 to
+    reuse as its "before" harness.
 
 ### Slices
 
@@ -196,16 +238,37 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   map on that frontier. `AnchoredJoin` untouched. Reuse the inverted `producesMergedRows` test to
   find the safe frontier. Verify `UNION`/set-op (already positional,
   `remapUnionColumnsByPosition`) rides the ordinal row unchanged.
-- **Slice 2 — 2-way join ordinal output (the wedge)** (~2 shifts). A 2-way join has exactly one
-  bipartition, so `NewReEnumerationAnchoredRecord` **never fires** — only the seed matters
+- **Slice 2 — 2-way join ordinal output (the wedge)** (~2 shifts, floor). A 2-way join has exactly
+  one bipartition, so `NewReEnumerationAnchoredRecord` **never fires** — only the seed matters
   (verified: `rule_partition_select.go:48` returns on <3 quantifiers; outer joins are always
   binary, `cascades_translator.go:3367`). Build the 2-way result value as the ordinal
   concatenation of the two legs' types (`FieldValue.ofOrdinalNumber(QOV(leg), i)`); executor emits
-  the positional merged row; predicates resolve by `(quantifier ordinal, field ordinal)`; flip
-  2-way seed interning to alias-bijection. **Proves the full ordinal model end-to-end on real join
-  plans** while name-model still covers 3+-way. Port the correlated-scalar-subquery 2-leg seed
-  and single-source `UNNEST` here. Hard part: the ordinal-row ↔ name-row boundary adapter (a 2-way
-  ordinal join can be a *leg* of a 3-way name join during coexistence).
+  the positional merged row; predicates resolve by `(quantifier ordinal, field ordinal)`.
+  **Interning does NOT flip here** (Round-5 correction; supersedes the earlier "flip 2-way seed
+  interning" phrasing) — the bijection tier lands whole in Slice 3 with the folded P3, per the
+  canonical interning sequence there; Slice 2 joins keep name-model dedup. The wedge therefore
+  proves the ordinal **result value + positional row + ordinal predicate resolution** on live join
+  plans — not interning; that residual risk moves to Slice 3, mitigated by the banked spike
+  harness. Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.
+  **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5):** before any Slice 2 code,
+  enumerate every name-keyed row producer/consumer and alias-swap site and slot each into a slice.
+  The Step 2b blocker proved these must be mapped up front, not discovered mid-slice. Known
+  candidates to sweep: `projNames` source+alias double-writes, `qualifyTypeFallback`,
+  `ambiguousColumnMarker`, the union name-recovery gates, the `RowEvalContext` param/subquery
+  frontier, `ColumnAliasMap` (already being retired by the Slice 1 precursor).
+  **Coexistence scoping (the corrected hard part, Round 5):** the ordinal↔name boundary is NOT
+  just a row-format adapter. The name model *classifies leg dependencies by dotted-name prefixes*
+  (`MergeSeedLegsOfValue` reads `fv.Field[:dot]`, `value_correlation.go:47`;
+  `AddMergeSeedAliases`, `predicates/predicate_correlation.go:69`; `quantifierMergeSeedLegDeps`,
+  `rule_partition_select.go:728`) — an ordinal 2-way leg nested under a name-model 3+-way merge
+  emits references with **no dotted prefix and genuine (unhidden) correlations**, which those
+  classifiers silently mis-handle (wrong bipartition validity, wrong predicate placement), a
+  failure the row adapter cannot see. Ruling: **scope the ordinal path to 2-way joins that are
+  not consumed as a leg of a name-model merge select** (arity gate on the enclosing select at
+  translation); mixed nesting stays name-model until Slice 3 flips N-way. The adapter then only
+  bridges row format at the subquery/scan boundary; correlation-semantic bridging is explicitly
+  out of scope — that hazard is *why* the gate exists, and the gate itself carries a pin (a 2-way
+  join under a 3-way join must plan and execute name-model-identically before/after Slice 2).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~3 shifts). Replace the name-based re-stamp machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/
@@ -218,6 +281,31 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   together. Hard part: RFC-142 multi-source lateral `UNNEST` bipartition-validity is a **from-scratch
   rewrite** (recover the buried source from the `FieldValue`'s real child correlation, not a dotted
   `'A.ARR'` prefix), and its safety rests entirely on P2/P3 being proven first.
+  **Also atomic in this slice (Round-5 additions):**
+  - **`FieldValue` node-identity flip (name → ordinal).** Java compares accessors by ordinal ONLY
+    (`ResolvedAccessor.equals`/`hashCode`, `FieldValue.java:676-690`); Go compares by name
+    (`EqualsWithoutChildren`, `map_field_values.go:260-262`; `semantic_hash.go:107`). P1
+    deliberately deferred the flip ("for now") — Slice 3, which owns the interning flip, is the
+    owner. It CANNOT slip past Slice 4: the moment duplicate bare names coexist positionally
+    (§7's `SELECT *` fix), name-based identity conflates two genuinely different columns into one
+    memo member → wrong plans. Today that failure is *unconstructible* (the name model dedups
+    names first), which is exactly why no existing pin covers it; §5 adds the duplicate-name
+    identity pin.
+  - **Canonical interning sequence (single source of truth; supersedes all older phrasings):**
+    **Slice 2** — no interning change (name-model dedup everywhere). **Slice 3** — bijection tier
+    built (folded P3), authoritative for merge selects; gated by the task-count baseline, the STAR
+    planning wall-clock pin, and the shadow-delta assertion. **Slice 4** — `InternsAliasAware`
+    widened to ALL selects, gate deleted; CTE column-rename execution pins certify here.
+  - **Representation ruling — nested/buried ordinal paths.** Java holds ONE `FieldValue` with a
+    multi-accessor `FieldPath` and folds `FieldValue`-over-`FieldValue`
+    (`ComposeFieldValueOverFieldValueRule.java`); Go's as-landed P1 derives ONE ordinal per node,
+    so a buried leg reference would naïvely be a **chained** node pair
+    (`FieldValue(FieldValue(QOV, legOrdinal), fieldOrdinal)`) — a different tree shape than the
+    spec, visible to every ported rule pattern, simplification, and semantic compare. Ruling
+    (default; Graefe confirms at Slice 3 start): **port Java's collapsed form** — store the
+    multi-accessor path and port the compose rule — rather than enshrine chained nodes as a
+    permanent divergence. Decided explicitly here, not implicitly by whoever writes the
+    `TranslationMap` rebase.
 - **Slice 4 — Retire `AnchoredJoin` (deletions)** (~2 shifts). Delete
   `value_anchored_join_record.go` entirely; delete `RecordConstructorValue.AnchoredJoin` and its
   preservation through `WithChildren`/`Replace`/simplifier/`Equals`/`semantic_hash`; delete the
@@ -262,6 +350,15 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
    name map field-for-field on today's plans — this catches row *corruption*, but is **blind to
    wrong-plan-too-few-rows** (RFC-142's failure class: correct rows when the plan is correct; the
    bug is a wrong plan). Keep it, but do not treat it as the certificate.
+   **And keep it alive through the whole dual window (Round 5):** both representations are
+   emitted until Slice 4 regardless (risk 5 pays that cost), so make the overhead earn its keep —
+   in test builds, assert `ordinal result == name result` row-for-row across the yamsql/fuzz
+   corpus at **every** slice, with explicit carve-outs for the enumerated known-different shapes
+   (`SELECT *` collision, CTE column-rename, buried-reference). The item-2 pins certify the
+   *known* differences; this differential catches the *unknown* ones — precisely the coverage
+   class that would have caught Slice 1's Step 2b divergence before the spike tripped over it.
+   The anti-dark-diff argument at the top of §5 applies to plan-shape gates, not to row agreement
+   on shapes where the two models are supposed to agree.
 2. **Per-slice execution pins are the certificate.** Each slice that flips authority is gated by
    executing the specific shapes that the model change makes different, and asserting the *new,
    correct* behaviour:
@@ -269,7 +366,16 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
      must return the renamed columns (not NULL) **under ordinal resolution**.
    - Interning: the `partition_select_interning_baseline_test.go` task-count baseline
      (8999/30593 ±2%) must hold under alias-bijection — proving shared sub-joins still collapse
-     (no super-linear blowup).
+     (no super-linear blowup) — **plus (Round 5) a planning wall-clock bound on a
+     many-identical-legs STAR corpus**: bijection enumeration is combinatorial in same-typed
+     quantifiers, and a task count can stay flat while per-`Insert` enumeration cost blows up —
+     the task-count pin alone is blind to it. Both gate Slice 3.
+   - **Duplicate-name identity (Round 5, required):** after Slice 3's `FieldValue` node-identity
+     flip, a memo-level pin proving two same-named columns from different legs do NOT conflate
+     (distinct ordinals ⇒ distinct members ⇒ both planned and both returned); exercised
+     end-to-end at Slice 4 when `SELECT *` duplicate coexistence goes live. Today this failure is
+     unconstructible — the name model dedups the names first — which is exactly why no existing
+     pin covers the axis.
    - RFC-142: the 16-round codex revert-proof pins (buried `WHERE`, buried `GROUP BY`,
      table-first resolution, explicit-JOIN rejection, silent-zero-row, silent-wrong-grouping)
      must all pass under the ordinal buried-source recovery.
@@ -290,9 +396,11 @@ under the resolution model with targeted, revert-proof pins**, not by dark diffe
      resolution. Gated where the join's merged row becomes authoritative: **Slice 2** for the 2-way
      case, **Slice 3** for N-way. (Grouping keys ride the generic value path, so this is a
      ride-along, but it exercises exactly the name→ordinal flip on a merged row and must be pinned.)
-3. **The 2-way wedge (Slice 2) is the real de-risk** — it runs the full ordinal model on live
-   join plans (result value + positional row + ordinal predicate resolution + alias-bijection
-   interning) before the atomic N-way flip, so Slice 3 lands on proven mechanics.
+3. **The 2-way wedge (Slice 2) is the real de-risk** — it runs the ordinal model on live join
+   plans (result value + positional row + ordinal predicate resolution; interning stays
+   name-model until Slice 3, per the canonical sequence) before the atomic N-way flip, so Slice 3
+   lands on proven row/resolution mechanics and carries the interning risk itself, mitigated by
+   the banked spike harness.
 
 ---
 
@@ -341,14 +449,14 @@ The owner's hard constraint: extensions must keep working and be architecturally
 
 Extensions that **ride along** (preserved, re-verified by their suites before name paths delete):
 correlated scalar subquery (2-leg ordinal seed, Slice 2 — **and add the currently-missing
-at-most-one guard early**, `TODO.md:1125-1146`, it is a correctness gap not cleanup); CTE
+at-most-one guard early**, `TODO.md:1167-1179`, it is a correctness gap not cleanup); CTE
 column-rename (fixed by global alias-bijection, Slice 4); UNION/set-op by position (already
 positional — delete `aggregateNamesStableForUnion`/`unionBranchNormalizable` rather than migrate);
 grouped-aggregate UNION-by-name as a join leg (columns come from the leg's `rangesOver` `Type`);
 **`GROUP BY`/`HAVING` over a JOIN (RFC-088, @claude-flagged) — Go-only** (Java can't plan
 multi-table joins, `UnableToPlanException`), so it has no Java analog *like* RFC-142/FULL OUTER,
 but UNLIKE them it needs **no bespoke design**: grouping keys evaluate through the same generic
-`FieldValue.Evaluate`/`row.Datum` path (`streaming_cursors.go:214-249` `computeGroupKey`/
+`FieldValue.Evaluate`/`row.Datum` path (`streaming_cursors.go:214` `computeGroupKey`, `:267`
 `accumulateRow`), so it rides along once P1/P2 make ordinal resolution authoritative — it just must
 be PINNED (§5), not left implicit.
 
@@ -379,7 +487,8 @@ then deleting it in Slice 5. At most one of those was right; the destination say
    memo that stops deduplicating (super-linear blowup with arity). Mitigation: precursors proven
    by execution pins; 2-way wedge first.
 2. **Interning regression → plan blowup.** Alias-bijection must keep collapsing shared sub-joins;
-   pinned by the task-count baseline, not discovered in Slice 3.
+   pinned by the task-count baseline + the STAR planning wall-clock bound (§5), not discovered in
+   Slice 3.
 3. **Correlation-order budget.** Removing the exploration-hiding (Slice 5) is safe only if the
    local-bind subtraction is exactly Java's; a subtly-wrong subtraction reinflates ≥4-way STAR
    past the task budget.
@@ -389,9 +498,16 @@ then deleting it in Slice 5. At most one of those was right; the destination say
    and a positional row — real perf/memory overhead and a maintenance hazard **if parked
    mid-flight**. With staged merged PRs this window lives **on master across several merged PRs**
    (P2 through Slice 4), not on a side branch — that is the real, disclosed cost of incremental
-   merge: bounded (P2 measures + bounds the dual-emission overhead) and time-boxed (the P2→Slice 4
-   run must not stall — treat a parked dual-rep window on master as a release blocker), but it is
-   overhead carried in production code for the duration, stated plainly.
+   merge: bounded (Round-5 correction: the dual-emission cost benchmark is a **Slice 1 exit
+   obligation** — P2's scope note deferred it, so until it runs the bound is a claim, not a
+   measurement) and time-boxed (the P2→Slice 4 run must not stall — treat a parked dual-rep
+   window on master as a release blocker), but it is overhead carried in production code for the
+   duration, stated plainly. Mitigation-side upside: §5's dual-window corpus differential makes
+   the same overhead pay rent as a live oracle.
+6. **Estimates are floors (Round 5).** Slice 1 was "~1 shift" and, mid-slice, had already spawned
+   a Graefe-acked 7-site buried-reference precursor before its producer flip could land. Budget
+   every slice as a floor; risk 5's park-is-a-release-blocker rule is what keeps floor-slippage
+   from becoming an indefinite dual-rep window.
 
 ---
 
@@ -412,6 +528,7 @@ migration — it is not.)
 Query-engine change: Graefe-gated on BOTH the RFC and the implementation. This section tracks the
 RFC-level ack; each impl slice re-requests after its commit (an ack only covers the HEAD it saw).
 
+Rounds 1–4 (RFC v1–v5):
 - [x] **Graefe** — ACK (ordinal/group destination + 9-slice staging + delete-not-port verified
   against Java 4.12.11.0; ordering-propagation pin added per his condition).
 - [x] **Torvalds** — ACK (staging split real, §5 execution pins sound, both Go-only invariant
@@ -419,6 +536,10 @@ RFC-level ack; each impl slice re-requests after its commit (an ack only covers 
 - [x] **codex-review** — clean (doc-only, no defects).
 - [x] **@claude** — ACK ("sound migration plan"; caught RFC-088 groupby-over-join + 2 citations,
   all folded in).
+
+Round 5 (this revision — material content changes, full re-ack required before Slice 2 starts;
+Slice 1 continues under its own already-acked plan):
+- [ ] **Graefe** · - [ ] **Torvalds** · - [ ] **codex-review** · - [ ] **@claude**
 
 **Acceptance for the RFC ack:** all four acked with no outstanding NAK, and §5's per-slice
 execution pins are agreed as the certification mechanism (replacing the discredited dark-diff
@@ -462,5 +583,32 @@ groupby-over-join pin; two citation fixes).
   risk #5 now states plainly that the dual-rep window lives on master across the merged precursor
   PRs.
 
-**Gate satisfied.** Implementation may begin: **precursor P1** (ordinal `FieldPath` on `FieldValue`,
-dark/dual-mode) as the first staged merged PR, re-acked on its own HEAD.
+**Round 5 (RFC v6, this revision) — adversarial content re-review; RE-ACK PENDING (all four).**
+Independent full-content review (2026-07-01) after P1/P2 merged, P3 folded, Slice 1 mid-flight.
+Findings folded in:
+1. **`FieldValue` node-identity flip was created in P1 ("for now") and never scheduled** — now
+   owned by Slice 3, with a §5 duplicate-name identity pin. It is a wrong-plans landmine the
+   moment Slice 4 lets duplicate bare names coexist: Java identity is ordinal-only
+   (`FieldValue.java:676-690`), Go's is name-only (`map_field_values.go:260-262`,
+   `semantic_hash.go:107`), and name identity conflates duplicate-named columns in the memo.
+2. **Slice 2 ↔ folded-P3 interning contradiction** (Slice 2 said "flip 2-way seed interning";
+   the fold says the tier lands with its Slice 3 consumer) — resolved by the canonical interning
+   sequence in Slice 3 (no flip in Slice 2); §5.3's wedge claim corrected; the fold paragraph's
+   certification staging corrected (task-count + wall-clock at Slice 3; CTE-rename pins at
+   Slice 4 with the widened gate).
+3. **Coexistence is a correlation-semantics problem, not a row-format one** — the name model's
+   dotted-prefix dependency classifiers mis-handle prefix-less ordinal legs. Resolved by the
+   Slice 2 enclosing-arity scoping gate + its before/after pin.
+4. **Name-burial is not join-only** (proven by Slice 1's Step 2b blocker) — §1.1 item 5 added;
+   name-burial inventory added as a mandatory Slice 2 entry gate.
+5. **Nested/buried path representation undecided** (Java collapsed `FieldPath` vs chained Go
+   nodes) — ruling parked in Slice 3, default = port Java's collapsed form + compose rule.
+6. **§5 strengthened:** dual-window corpus differential (row-level, carve-outs enumerated) and
+   STAR planning wall-clock interning pin. **§8:** risk 5's benchmark claim corrected to a
+   Slice 1 exit obligation; risk 6 (estimates are floors) added. P1's as-landed delta recorded;
+   citation drift (mergeRows, qualifyAlias, `values.go` anchors, TODO.md guard ref,
+   `accumulateRow`) and the two out-of-tree files in the Paths note fixed.
+
+**Gate for Rounds 1–4 satisfied; Round 5 re-ack pending.** Slice 1 continues (its scope is
+unchanged by Round 5); **Slice 2 must not start until Round 5 is re-acked** — it consumes three
+Round-5 rulings (no-interning-flip, the scoping gate, the entry-gate inventory).
