@@ -87,8 +87,9 @@ item's acceptance criterion in §5 is "the grep returns zero."
   first-member approximation", never "not a Cascades invariant under merging".
 
 - **A3 — A1's parse-swallow class recurs in sibling combinators** (found by @claude's review
-  of #436). `ConcatCursors` (cursor_combinators.go:341-353) and `FlatMapPipelinedWithCheck`
-  (:560-578) still swallow `UnmarshalVT` failures and silently restart — the wrong-results
+  of #436). The `UnmarshalVT` fallback branches in the CONSTRUCTORS of `ConcatCursors`
+  (cursor_combinators.go:318, pre-#436 numbering) and `FlatMapPipelinedWithCheck` (:537) —
+  not the `OnNext` bodies — still swallow parse failures and silently restart — the wrong-results
   divergence without the panic risk (no enum-state field). Fix in flight on
   `fix/sibling-continuation-parse-errors`: full audit of every continuation-deserializing
   constructor in `pkg/recordlayer`, per-combinator Java-matched errors, pinned per #436's
@@ -284,8 +285,10 @@ regrowing while attention is on 173).
 - **B1/B2:** the F2 CI gate exists and passes — `(day|night|swing)shift-[0-9]+` and
   reviewer-attribution patterns return zero hits in the comments of **every tracked Go file
   in the repo** (`git ls-files '*.go'`), test files included. The ONLY exclusion is
-  generated code, detected **by Go's official marker convention** (a first-comment line
-  matching `^// Code generated .* DO NOT EDIT\.$`) — never by path patterns. Path lists
+  generated code, detected **by Go's official marker convention**: ANY leading comment line
+  before the `package` clause matching `^// Code generated .* DO NOT EDIT\.$` — not just the
+  first line (protobuf output puts a license header first; `gen/catalog_data.pb.go` carries
+  the marker at line 15) — and never by path patterns. Path lists
   under-exclude (`wire/types/*_generated.go`, `api/mocks_*.go` carry the marker but match no
   `gen/`/`.pb.go` pattern — codex round-3 catch) exactly as directory lists under-include
   (`tools/bazelscaleset` — round-2 catch). Scope by property on both sides: tracked-file set
@@ -356,5 +359,11 @@ regrowing while attention is on 173).
   generator refresh. Folded: scope by property on both sides — include = tracked-file set
   (`git ls-files '*.go'`), exclude = Go's `// Code generated … DO NOT EDIT.` marker (§2 F2,
   §5 B1/B2). Three rounds, one lesson: never define scope by enumeration.
+- **codex — round 4: one P2 + one P3 (2026-07-02, both folded).** P2: "first-comment line"
+  marker detection misses generated files with a license header above the marker
+  (`gen/catalog_data.pb.go`:15) — corrected to Go's actual convention, any leading comment
+  line before `package`. P3: A3's citations pointed at the `OnNext` bodies; the swallow
+  sites are the constructors' `UnmarshalVT` fallbacks (:318, :537) — corrected,
+  function-anchored.
 - (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface) at execution time, per-PR.
 - (pending) @claude — PR #439.
