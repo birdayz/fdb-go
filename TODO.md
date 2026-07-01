@@ -64,10 +64,12 @@ validation gate.
     UNBLOCKS Step 2b — the ordinal flip's ~15 failing derived/recursive cases now resolve clean.
     - [ ] Follow-up (Graefe, non-blocking, PRE-EXISTING — not introduced): (a) an un-aliased QUALIFIED
       seed projection with no column-alias list folds a qualified name into `outCols`
-      (`cascades_translator.go` recursive-CTE re-keying). Fix when a slice touches the area.
+      (`cascades_translator.go` recursive-CTE re-keying); (c) a LENGTH-MISMATCHED recursive-CTE
+      column-alias list is silently ignored rather than a loud error (Graefe delta-ack residual —
+      SQL says it should be an error). Fix when a slice touches the area.
       (b) `SELECT *` seed + column-alias list: **FIXED** in the Slice-1 gauntlet round (twice-flagged,
       codex P2 + Graefe) — seed schema derived via `derivedOutputColumns` so the alias list applies;
-      pinned by `TestFDB_RecursiveCTEStarSeedAliases_RFC173`.
+      pinned by `TestFDB_RecursiveCTEStarSeedAliases_RFC173`. Graefe delta-ACK on `70b024e87`.
   - [x] Step 2b — ordinal resolution AUTHORITATIVE on the non-join frontier (`f0b9e206c`): producers
     flow `PositionalRow` (gate `qr.Positional != nil`, propagates along the frontier, stops at
     join/aggregate boundaries), `executeMap` gap closed, sort ValueExpr keys ordinal (named-key

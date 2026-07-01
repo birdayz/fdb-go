@@ -120,6 +120,9 @@ func runPhase(t *testing.T, entries []plandiff.RunQuery) []outcome {
 	out := make([]outcome, len(entries))
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
+	// NOTE: `i` and `q` are per-iteration variables (Go >= 1.22 loopvar
+	// semantics; this module is on 1.26) — each goroutine captures its own
+	// copy, so out[i] is always the outcome of entry i. No rebind needed.
 	for i, q := range entries {
 		wg.Add(1)
 		go func() {
