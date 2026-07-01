@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 
@@ -92,7 +93,10 @@ func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("inunionplan|"))
 	// bindingNames excluded — only their COUNT is structural (see EqualsWithoutChildren).
-	h.Write([]byte{byte(len(p.bindingNames))})
+	// Full-width (not byte()) so a high-arity IN can't collide mod 256 (codex P3).
+	var cnt [8]byte
+	binary.LittleEndian.PutUint64(cnt[:], uint64(len(p.bindingNames)))
+	h.Write(cnt[:])
 	if p.reverse {
 		h.Write([]byte{1})
 	}

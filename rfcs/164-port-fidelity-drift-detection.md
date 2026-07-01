@@ -264,11 +264,18 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   (`physical_in_join_wrapper.go` / the InJoin implement rule) — same class as RFC-167 Phase 1b
   comprehensive tie-resolution; the full IN-list Explain-stability seed is re-added once it lands.
   PRE-EXISTING LOOSENESS (flagged by Graefe + Torvalds, NOT introduced here, orthogonal): neither
-  InJoin nor InUnion folds `inValues` into identity, and the inner index scan compares only its
-  `RangeType`, so `a IN (1,2,3)` and `a IN (4,5,6)` over the same index are Equals- and Hash-equal.
-  Harmless for replan-determinism (same query → same values), but a latent WRONG-CACHE-HIT if
-  literal IN-lists reach a `PlanHash`-keyed plan cache unparameterized — confirm IN-lists are
-  parameterized (ConstantObjectValue) before the cache, or fold `inValues` into identity.
+  InJoin nor InUnion folds `inValues` into identity, the inner index scan compares only its
+  `RangeType`, and InUnion additionally omits `comparisonKeys` from Equals/Hash — so `a IN (1,2,3)`
+  and `a IN (4,5,6)` over the same index are Equals/Hash-equal, and same-count InUnions differing
+  only in merge-key (`ORDER BY x` vs `ORDER BY y`) collide too. Harmless for replan-determinism
+  (same query → same values/keys), but a latent WRONG-CACHE-HIT if literal IN-lists reach a
+  `PlanHash`-keyed plan cache unparameterized — confirm IN-lists are parameterized
+  (ConstantObjectValue) before the cache, or fold `inValues` + `comparisonKeys` into identity.
+- [ ] **FOLLOW-UP pin (Graefe + Torvalds, deferred from the InJoin/InUnion alias fix):** a focused
+  memo-dedup safety pin — real SQL `a IN (…) AND b IN (…)` → extracted plan → assert ALL binding
+  aliases are bound (no double-bind) AND `PlanHash` is stable across replans. This pins the most
+  subtle load-bearing invariant of the alias-invariance change (the memo only dedups complete,
+  internally-consistent InJoin chains; the broken double-bind shape is never constructed).
 - [ ] **Map-iteration lint** — ship the **CI grep** banning bare `range someMap` in
   plan-affecting code first (80% value, 5% cost); defer the nogo analyzer (gold-plating).
 - **Effort:** ~1–2 days. **Gate:** Graefe (cost/determinism) + Torvalds (lint).
