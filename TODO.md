@@ -54,16 +54,23 @@ validation gate.
   - [x] Step 2a — Evaluate ordinal read path (`values.OrdinalRow`, `evaluateOrdinal` no-fallback +
     loud `OrdinalResolutionError`, `Evaluate`/`evaluateCorrelated` ordinal branches), committed
     `f0037e3db`, dark + unit-tested.
+  - [x] **Buried-reference fix — retire the ColumnAliasMap source-name reverse-map** (`a58c54c61`,
+    Graefe design-ACK + impl-ACK, codex clean; @claude at PR time). Derived-table/CTE refs now resolve
+    to the OUTPUT column (Java parity) across 7 sites; deleted `rewriteProjectionAliases`; re-keyed the
+    recursive-CTE temp table to output names (`recursiveRemapValues` never persists a qualified key);
+    2 beyond-plan root-cause fixes (`validateTablesAndColumnsInner` skip, executor dedup on the
+    projection OUTPUT schema). **4 RFC-082 divergences LIFTED** (real-Java conformance validated Go now
+    returns identical rows where it previously 42703-rejected). Name-model-safe (53/53 green). This
+    UNBLOCKS Step 2b — the ordinal flip's ~15 failing derived/recursive cases now resolve clean.
+    - [ ] Follow-up (Graefe, non-blocking, PRE-EXISTING — not introduced): (a) an un-aliased QUALIFIED
+      seed projection with no column-alias list folds a qualified name into `outCols`; (b) `SELECT *`
+      seed + a column-alias list drops the aliases on the length-mismatch guard (`cascades_translator.go`
+      recursive-CTE re-keying). File a ticket; fix when a slice touches the area.
   - [ ] Step 2b — flip the non-join producers to flow `PositionalRow` authoritatively (gate:
-    `qr.Positional != nil`, which auto-excludes merged rows) + fix the `executeMap` Positional-drop
-    gap (`executor_new_plans.go:448`). **BLOCKED on ⛔ buried-reference fix.**
-  - [ ] ⛔ **Buried source references in derived-table / recursive-CTE resolution** (found by the
-    Step 2b spike, reverted). `SELECT sub.v FROM (SELECT id AS v FROM a) sub` resolves `sub.v` to the
-    SOURCE `id`, not the OUTPUT `v`; the name map tolerates it (Datum carries both keys), the ordinal
-    model correctly loud-errors. ~15 derived-table + recursive-CTE tests. Fix = translator resolves
-    qualified derived-table/CTE refs to the output column positionally (Java parity) + `executeProjection`
-    types the positional row by OUTPUT names (`posNames`). Needs Java study + Graefe ACK. Full root
-    cause in RFC §4 Slice 1 Step 2b. Simple single-table + unqualified CTE-rename already resolve clean.
+    `qr.Positional != nil`, which auto-excludes merged rows) + `executeProjection` `posNames` (type the
+    positional row by OUTPUT names) + fix the `executeMap` Positional-drop gap
+    (`executor_new_plans.go:448`). **UNBLOCKED** (buried refs fixed). Re-run the spike; the ~15
+    derived/recursive tests should now resolve via ordinal.
   - [ ] §5 pins: CTE-rename preserve (`TestFDB_CTEChainedColumnAliases` etc. green under ordinal),
     ordering pin (no spurious sort on index-ordered scan), P2 projection e2e shadow + dual-emission
     benchmark (P2 carry-forward), P1 absent-field → loud internal error (P1 carry-forward, per Graefe

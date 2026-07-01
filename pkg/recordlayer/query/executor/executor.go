@@ -3795,7 +3795,13 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 				if i < len(aliases) && aliases[i] != "" {
 					out[i] = strings.ToUpper(aliases[i])
 				} else {
-					out[i] = projectionColumnName(pv)
+					// Upper-case symmetrically with the aliased branch: dedup keys
+					// (queryResultKeyForCols) do a raw, no-fold lookup against the
+					// UPPER-cased datum keys, so a mixed-case Field here would miss
+					// every key and collapse distinct rows / break cycle detection
+					// (Torvalds). projectionColumnName already uppers the non-field
+					// path; this makes the field path explicit too.
+					out[i] = strings.ToUpper(projectionColumnName(pv))
 				}
 			}
 			return out
