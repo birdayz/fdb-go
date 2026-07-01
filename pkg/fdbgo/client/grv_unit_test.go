@@ -45,12 +45,16 @@ func TestGRVCache_TryCacheStaleVersion(t *testing.T) {
 	}
 }
 
-func TestGRVCache_SystemImmediateBypass(t *testing.T) {
+func TestGRVCache_SystemImmediateServesCache(t *testing.T) {
 	t.Parallel()
+	// #16: C++'s cache gate does NOT exclude SYSTEM_IMMEDIATE — rkThrottlingCooledDown(IMMEDIATE)
+	// returns true (NativeAPI.actor.cpp:7485-7486, IMMEDIATE bypasses ratekeeper), so an opted-in
+	// IMMEDIATE read is served from a fresh cache exactly like DEFAULT. (Was TestGRVCache_SystemImmediateBypass,
+	// which pinned the pre-#16 divergence where Go excluded IMMEDIATE.)
 	c := &grvCache{}
 	c.updateFromGRV(time.Now(), 9999)
-	if _, ok := c.tryCache(grvPrioritySystemImmediate); ok {
-		t.Error("SYSTEM_IMMEDIATE must always miss the cache (must contact proxy)")
+	if v, ok := c.tryCache(grvPrioritySystemImmediate); !ok || v != 9999 {
+		t.Errorf("SYSTEM_IMMEDIATE must serve a fresh cache (#16); got (%d, %v), want (9999, true)", v, ok)
 	}
 }
 

@@ -1,6 +1,9 @@
 # RFC-170: Register watches at the committed version, not the read version
 
-**Status:** Draft — needs FDB-C-dev design ACK before implementation.
+**Status:** DESIGN ACK (FDB-C-dev) — ready for implementation. The deferral-to-post-commit design
+(watch RPC stamped with `committedVersion > 0 ? committedVersion : readVersion`, activated by a
+per-incarnation commit-completion signal keyed by `readGen`) matches C++ `setupWatches`
+(`NativeAPI.actor.cpp:6418`, called post-commit at `:6917`) and `commitAndWatch` (`:6909-6918`).
 **Item:** FDB client bug-hunt (2026-06-30), finding #1 (HIGH). See `shifts/2026-06-30-fdbgo-client-bughunt.md`.
 **Spec:** libfdb_c 7.3.77 (`/tmp/fdbsrc`).
 

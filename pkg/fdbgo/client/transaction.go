@@ -804,7 +804,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	defer opCancel() // dials complete within this function; the reply wait uses the timer
 
 	// Locate shard.
-	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId, tx.spanContext)
+	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId, tx.spanContext, false)
 	if locErr != nil {
 		return nil, nil, tx.mapTimeout(ctx, fmt.Errorf("locate key: %w", locErr))
 	}
@@ -937,7 +937,7 @@ func (p *PendingGet) resolve() ([]byte, error) {
 		}
 		val, _, err := parseGetValueReply(resp.Body)
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId)
+			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId, false)
 			return p.resolveFull()
 		}
 		// RFC-114: pipelined GetValue round-trip latency — the path the fdb facade
@@ -2359,7 +2359,7 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 	// ReadYourWrites.actor.cpp:1843-1848) — bound the locate by SetTimeout (RFC-112).
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext)
+	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext, false)
 	if err != nil {
 		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
 		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.

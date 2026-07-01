@@ -97,38 +97,62 @@ type LocationResult struct {
 	ShardEnd   []byte
 }
 
-// locate finds the storage servers responsible for a key.
-// On cache miss, queries a commit proxy.
-// Returns the servers AND the shard boundaries so callers can clamp requests.
-// O(log N) via binary search on the sorted entries.
-func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext) (LocationResult, error) {
+// locate finds the storage servers responsible for a key (O(log N) binary search on the sorted entries;
+// on cache miss it queries a commit proxy). Returns the servers AND the shard boundaries so callers can
+// clamp requests. isBackward selects the shard for a BACKWARD key selector (offset<=0 && !orEqual, C++
+// FDBTypes.h:659-661): on a shard boundary it resolves to the shard ENDING at key (holding keyBefore(key)),
+// matching C++ getKey's Reverse{k.isBackward()} threading (NativeAPI.actor.cpp:3786-3788 →
+// getCachedLocation:1944-1955). Forward callers pass false.
+func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool) (LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled specially in C++ client.
 	// Don't send GetKeyServerLocationsRequest for it — clamp to normal key range.
 	if len(key) >= 2 && key[0] == 0xff && key[1] == 0xff {
 		// Use the last known storage server for system keys.
 		// This matches C++ behavior where system keys are resolved internally.
 		key = []byte{0xff}
+		// The clamp collapses the whole \xff\xff system keyspace to the single 0xff sentinel, so a
+		// BACKWARD selector's keyBefore precision is already gone — force a FORWARD lookup of the sentinel
+		// (the pre-#10 routing). Applying a backward lookup here would find the last USER shard ending at
+		// 0xff instead of the system shard containing 0xff, wrong-shard/retry-ing on a multi-SS cluster
+		// where user and system shards differ (codex #10 P2). System-key routing is C++-internal anyway.
+		isBackward = false
 	}
 
 	// Check cache first. Binary search for the entry where begin <= key.
 	lc.mu.RLock()
-	if result, ok := lc.lookupLocked(tenantId, key); ok {
+	if result, ok := lc.lookupLocked(tenantId, key, isBackward); ok {
 		lc.mu.RUnlock()
 		return result, nil
 	}
 	lc.mu.RUnlock()
 
 	// Cache miss — query commit proxy.
-	return lc.refresh(db, ctx, key, tenantId, span)
+	return lc.refresh(db, ctx, key, tenantId, span, isBackward)
 }
 
 // lookupLocked finds the entry containing key for the given tenant.
 // Caller must hold at least lc.mu.RLock(). O(log N).
-func (lc *locationCache) lookupLocked(tenantId int64, key []byte) (LocationResult, bool) {
+func (lc *locationCache) lookupLocked(tenantId int64, key []byte, isBackward bool) (LocationResult, bool) {
 	// searchIndex returns the first entry with begin >= key for this tenant.
 	// The containing entry (begin <= key) is at idx-1, unless idx itself
 	// has begin == key (exact match).
 	idx := lc.searchIndex(tenantId, key)
+
+	if isBackward {
+		// Backward selector (offset<=0 && !orEqual): resolve keyBefore(key) = the largest key' < key. It
+		// lives in the shard [begin, end) with begin < key && key <= end — on a shard boundary (key == a
+		// shard's begin) that is the PREVIOUS shard, whose end == key, NOT the shard beginning at key.
+		// searchIndex returns the first entry with begin >= key, so that previous shard is at idx-1.
+		// Mirrors C++ getCachedLocation's rangeContainingKeyBefore (NativeAPI.actor.cpp:1944-1955).
+		if idx > 0 {
+			e := &lc.entries[idx-1]
+			if e.tenantId == tenantId && bytes.Compare(key, e.begin) > 0 &&
+				(e.end == nil || bytes.Compare(key, e.end) <= 0) {
+				return LocationResult{Servers: e.servers, ShardBegin: e.begin, ShardEnd: e.end}, true
+			}
+		}
+		return LocationResult{}, false
+	}
 
 	// Check idx (exact match: entry.begin == key).
 	if idx < len(lc.entries) {
@@ -163,12 +187,25 @@ func (lc *locationCache) lookupLocked(tenantId int64, key []byte) (LocationResul
 
 // invalidate removes the cached entry containing the given key for the given tenant.
 // Called on wrong_shard_server errors for point lookups. O(log N).
-func (lc *locationCache) invalidate(key []byte, tenantId int64) {
+func (lc *locationCache) invalidate(key []byte, tenantId int64, isBackward bool) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
 	// Binary search: find the entry that might contain key.
 	idx := lc.searchIndex(tenantId, key)
+
+	if isBackward {
+		// Invalidate the shard a BACKWARD selector resolved to (whose end == key on a shard boundary; see
+		// lookupLocked's backward branch). It is at idx-1 with begin < key && key <= end.
+		if idx > 0 {
+			e := &lc.entries[idx-1]
+			if e.tenantId == tenantId && bytes.Compare(key, e.begin) > 0 &&
+				(e.end == nil || bytes.Compare(key, e.end) <= 0) {
+				lc.entries = append(lc.entries[:idx-1], lc.entries[idx:]...)
+			}
+		}
+		return
+	}
 
 	// Check exact match at idx.
 	if idx < len(lc.entries) {
@@ -272,10 +309,10 @@ func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
 // reused across the queryLocations proxy retries — matching C++ getKeyLocation_internal
 // (NativeAPI.actor.cpp:3017 `Span("NAPI:getKeyLocation", spanContext)`, built once
 // before basicLoadBalance).
-func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext) (LocationResult, error) {
+func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64, span types.SpanContext, isBackward bool) (LocationResult, error) {
 	child := childSpanContext(span)
 	entries, err := lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
-		return buildGetKeyServerLocationsRequest(key, tenantId, child, replyToken)
+		return buildGetKeyServerLocationsRequest(key, isBackward, tenantId, child, replyToken)
 	})
 	if err != nil {
 		return LocationResult{}, err
@@ -567,9 +604,14 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 // Single-key lookup: no End field set. `span` is the getKeyLocation child span
 // (derived once in refresh, reused across proxy retries) — stamped verbatim, matching
 // C++ GetKeyServerLocationsRequest(span.context,…) (NativeAPI.actor.cpp:3037).
-func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
+// buildGetKeyServerLocationsRequest builds a single-key location request. reverse mirrors C++
+// getKeyLocation_internal's Reverse{k.isBackward()} (NativeAPI.actor.cpp:3008-3037): for a BACKWARD key
+// selector (offset<=0, !orEqual) anchored exactly on a shard boundary the proxy must return the shard
+// ENDING at the key (the one holding keyBefore(key)), not the shard beginning at it.
+func buildGetKeyServerLocationsRequest(key []byte, reverse bool, tenantId int64, span types.SpanContext, replyToken transport.UID) []byte {
 	req := types.GetKeyServerLocationsRequest{
 		Begin:            key,
+		Reverse:          reverse,
 		Limit:            100,
 		SpanContext:      span,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
