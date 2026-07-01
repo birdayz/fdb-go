@@ -1,6 +1,10 @@
 package executor
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"reflect"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
 // PositionalRow is the RFC-173 P2 typed positional runtime row: field values
 // indexed by ORDINAL, paired with the RecordType that names and types each slot.
@@ -63,4 +67,52 @@ func (r *PositionalRow) GetByName(name string) (any, bool) {
 		return nil, false
 	}
 	return r.Get(i)
+}
+
+// positionalRowFromMap builds a PositionalRow for typ by reading each named field
+// from the legacy name-keyed map — the dual-emission bridge every row producer
+// uses to emit the positional row ALONGSIDE its existing map[string]any during the
+// dark/dual migration window. A field absent from the map becomes a nil slot (SQL
+// NULL), matching the map's missing-key = NULL semantics; an anonymous field
+// (empty name) is left nil (not name-addressable). Field names follow the
+// upper-case identifier-folding convention the map keys already use.
+func positionalRowFromMap(typ *values.RecordType, m map[string]any) *PositionalRow {
+	row := NewPositionalRow(typ)
+	if typ == nil || m == nil {
+		return row
+	}
+	for i, f := range typ.Fields {
+		if f.Name == "" {
+			continue
+		}
+		if v, ok := m[f.Name]; ok {
+			row.Slots[i] = v
+		}
+	}
+	return row
+}
+
+// shadowMismatch is the RFC-173 P2 dual-mode shadow assert: it returns the name of
+// the first field where the positional row DISAGREES with the name-keyed map, or
+// "" if they agree on every named field of the row's type. A field the map omits
+// reads as nil on both sides (map missing-key = NULL, unset slot = nil), so
+// agreement holds for absent fields. Used to certify — per row, on every plan —
+// that the positional representation faithfully mirrors the name-keyed map before
+// the ordinal model is made authoritative (RFC-173 §5, execution-based validation).
+// Comparison is reflect.DeepEqual so list/bytes/message values compare correctly.
+func shadowMismatch(row *PositionalRow, m map[string]any) string {
+	if row == nil || row.Type == nil {
+		return ""
+	}
+	for i, f := range row.Type.Fields {
+		if f.Name == "" {
+			continue
+		}
+		pos, _ := row.Get(i)
+		named := m[f.Name] // absent -> nil
+		if !reflect.DeepEqual(pos, named) {
+			return f.Name
+		}
+	}
+	return ""
 }

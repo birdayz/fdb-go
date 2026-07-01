@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -71,5 +72,45 @@ func TestPositionalRow_RFC173P2(t *testing.T) {
 	// Nil type yields an empty row.
 	if r := NewPositionalRow(nil); len(r.Slots) != 0 {
 		t.Errorf("NewPositionalRow(nil) slots = %d, want 0", len(r.Slots))
+	}
+}
+
+// TestPositionalRow_ShadowAssert_RFC173P2 pins the dual-emission bridge
+// (positionalRowFromMap) and the shadow assert (shadowMismatch): a row built from
+// a name-keyed map agrees with it field-for-field (including list values and
+// absent=NULL fields), and a divergent row is caught.
+func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
+	t.Parallel()
+	typ := values.NewRecordType("R", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "NAME", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "TAGS", FieldType: values.UnknownType, Ordinal: 2},
+	})
+	m := map[string]any{"ID": int64(7), "NAME": "alice", "TAGS": []any{"a", "b"}}
+
+	// Round-trip: the built row shadow-agrees with the source map on every field.
+	row := positionalRowFromMap(typ, m)
+	if bad := shadowMismatch(row, m); bad != "" {
+		t.Fatalf("round-trip shadow mismatch on field %q", bad)
+	}
+	// List value survives via reflect.DeepEqual (not ==).
+	if v, _ := row.Get(2); !reflect.DeepEqual(v, []any{"a", "b"}) {
+		t.Fatalf("list slot = %v, want [a b]", v)
+	}
+
+	// A field the map omits -> nil slot -> still agrees (NULL on both sides).
+	m2 := map[string]any{"ID": int64(7)}
+	row2 := positionalRowFromMap(typ, m2)
+	if bad := shadowMismatch(row2, m2); bad != "" {
+		t.Fatalf("absent-field shadow mismatch on %q (absent must be NULL both sides)", bad)
+	}
+	if v, ok := row2.Get(1); !ok || v != nil {
+		t.Fatalf("absent NAME slot = (%v,%v), want (nil,true)", v, ok)
+	}
+
+	// TEETH: a divergent positional row is caught by the shadow assert.
+	row.Set(1, "MALLORY")
+	if bad := shadowMismatch(row, m); bad != "NAME" {
+		t.Fatalf("shadow assert should catch divergence at NAME, got %q", bad)
 	}
 }
