@@ -110,6 +110,12 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 		// Use the last known storage server for system keys.
 		// This matches C++ behavior where system keys are resolved internally.
 		key = []byte{0xff}
+		// The clamp collapses the whole \xff\xff system keyspace to the single 0xff sentinel, so a
+		// BACKWARD selector's keyBefore precision is already gone — force a FORWARD lookup of the sentinel
+		// (the pre-#10 routing). Applying a backward lookup here would find the last USER shard ending at
+		// 0xff instead of the system shard containing 0xff, wrong-shard/retry-ing on a multi-SS cluster
+		// where user and system shards differ (codex #10 P2). System-key routing is C++-internal anyway.
+		isBackward = false
 	}
 
 	// Check cache first. Binary search for the entry where begin <= key.

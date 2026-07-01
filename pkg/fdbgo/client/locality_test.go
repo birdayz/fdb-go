@@ -146,6 +146,56 @@ func TestLookupLocked_BackwardSelectorOnBoundary(t *testing.T) {
 	}
 }
 
+// TestLocate_SystemKeyClampIgnoresBackward pins the codex #10 P2: locate clamps the \xff\xff system
+// keyspace to the single 0xff sentinel, so a BACKWARD selector on allKeysEnd must NOT then apply a
+// backward lookup to the sentinel — that would route to the last USER shard ending at 0xff instead of the
+// SYS shard containing 0xff (wrong-shard/retry on a multi-SS cluster). Revert-proof: dropping the
+// `isBackward = false` after the clamp resolves to USER.
+func TestLocate_SystemKeyClampIgnoresBackward(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{
+		maxSize: 1000,
+		entries: []locationEntry{
+			{tenantId: NoTenantID, begin: []byte("a"), end: []byte{0xff}, servers: []ServerInfo{{Address: "USER"}}},
+			{tenantId: NoTenantID, begin: []byte{0xff}, end: []byte{0xff, 0xff, 0xff}, servers: []ServerInfo{{Address: "SYS"}}},
+		},
+	}
+	// Backward selector on allKeysEnd (0xff 0xff), clamped to 0xff → must land on SYS, not USER.
+	loc, err := lc.locate(nil, context.Background(), []byte{0xff, 0xff}, NoTenantID, types.SpanContext{}, true)
+	if err != nil {
+		t.Fatalf("locate: %v", err)
+	}
+	if len(loc.Servers) == 0 || loc.Servers[0].Address != "SYS" {
+		t.Fatalf("backward getKey on allKeysEnd (clamped to 0xff) must route to the SYS shard, not the USER shard ending at 0xff; got %v (codex #10 P2)", loc.Servers)
+	}
+}
+
+// TestInvalidate_BackwardSelectorEvictsShardEndingAtKey pins the backward branch of invalidate (Torvalds
+// gap on #10): getKey's wrong-shard invalidate for a BACKWARD selector must evict the shard ENDING at the
+// boundary key (the one it resolved to), not the one beginning at it. [a,m)@SSA + [m,z)@SSB:
+// invalidate("m", backward) evicts SSA. Revert-proof: dropping the backward branch in invalidate uses the
+// forward logic → evicts SSB (wrong) → SSA stays cached → the getKey loop keeps hitting the stale shard.
+func TestInvalidate_BackwardSelectorEvictsShardEndingAtKey(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{
+		maxSize: 1000,
+		entries: []locationEntry{
+			{tenantId: NoTenantID, begin: []byte("a"), end: []byte("m"), servers: []ServerInfo{{Address: "SSA"}}},
+			{tenantId: NoTenantID, begin: []byte("m"), end: []byte("z"), servers: []ServerInfo{{Address: "SSB"}}},
+		},
+	}
+	lc.invalidate([]byte("m"), NoTenantID, true) // backward: evict the shard ending at m (SSA)
+
+	lc.mu.RLock()
+	defer lc.mu.RUnlock()
+	if _, ok := lc.lookupLocked(NoTenantID, []byte("m"), true); ok {
+		t.Fatal("backward invalidate must evict the shard ending at m (SSA); it is still cached (#10)")
+	}
+	if r, ok := lc.lookupLocked(NoTenantID, []byte("m"), false); !ok || r.Servers[0].Address != "SSB" {
+		t.Fatalf("backward invalidate must NOT evict the forward shard SSB; got ok=%v %v", ok, r.Servers)
+	}
+}
+
 // TestLocateTenantIsolation verifies that entries from different tenants don't
 // interfere with each other.
 func TestLocateTenantIsolation(t *testing.T) {
