@@ -280,13 +280,22 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   plan-affecting code first (80% value, 5% cost); defer the nogo analyzer (gold-plating).
 - **Effort:** ~1–2 days. **Gate:** Graefe (cost/determinism) + Torvalds (lint).
 
-### [ ] WS-5 — Audit & enumerate the Go-only divergences (process)
+### [x] WS-5 — Audit & enumerate the Go-only divergences (process)
 Enumerate each place Go left the Java architecture — the simplified `RequestedSortOrder`
 enum, the scalar cost fallback, the hand-rolled `AggregateDataAccessRule`, the per-wrapper
 relink — in `DIVERGENCES.md` with the question **"what invariant does the Java carry that
 this drops?"** **Acceptance:** the known reservoirs are written down, each tagged "covered
 by WS-2/4 invariant" or "tracked TODO". This checkbox means *known reservoirs documented*,
 **not** "all divergences found" (un-completable by nature). **Gate:** Graefe.
+DONE: `DIVERGENCES.md` "RFC-164 WS-5 — Go-only divergence reservoir audit" — a table of the
+six reservoirs (simplified `RequestedSortOrder`; scalar cost fallback + Go-only tiebreakers;
+hand-rolled `AggregateDataAccessRule`; per-wrapper relink / RFC-070 shells; Go-only physical-
+filter builders; `WithPrimaryKeyIntersector` discards `requestedOrderings`), each with the Java
+invariant it drops, the risk class (wrong-rows / nondeterminism / panic), and a COVERED (naming
+the WS-2/4 invariant + pin) or TRACKED tag.
+These are the concrete reservoirs this RFC's own §1 flavor table + the DIVERGENCES.md
+"Intentional Architectural Decisions" section already surface; each is now tied to its
+structural net or a tracked follow-up. New reservoirs get the same treatment (method noted).
 
 ---
 
