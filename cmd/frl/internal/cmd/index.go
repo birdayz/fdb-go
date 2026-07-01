@@ -23,6 +23,9 @@ func newIndexCmd() *cobra.Command {
 		newIndexLsCmd(),
 		newIndexDescribeCmd(),
 		newIndexScanCmd(),
+		newIndexBuildCmd(),
+		newIndexRebuildCmd(),
+		newIndexSetStateCmd(),
 	)
 	return c
 }

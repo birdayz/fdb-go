@@ -31,6 +31,8 @@ func newRecordCmd() *cobra.Command {
 		newRecordGetCmd(),
 		newRecordScanCmd(),
 		newRecordCountCmd(),
+		newRecordPutCmd(),
+		newRecordDeleteCmd(),
 	)
 	return c
 }

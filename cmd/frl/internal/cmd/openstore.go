@@ -197,6 +197,29 @@ func (t *storeTarget) subspace() (subspace.Subspace, error) {
 	return parseKeyspacePath(t.cfgCtx.GetKeyspacePath())
 }
 
+// resolveMetaSource is the single metadata-resolution order for a
+// target: relational addressing (catalogSource, schema-pinned template
+// version) → --meta-file → the context's metadata source. Shared by
+// withStore and the commands that manage their own transactions
+// (index build).
+func resolveMetaSource(target *storeTarget, rec *recordlayer.FDBDatabase) (meta.Source, error) {
+	switch {
+	case target.relational():
+		return &catalogSource{db: rec, database: target.database, schema: target.schema}, nil
+	case target.metaFile != "":
+		return &meta.FileSource{Path: target.metaFile}, nil
+	default:
+		src, err := meta.FromContext(target.cfgCtx, rec, parseKeyspacePath)
+		if err != nil {
+			if errors.Is(err, meta.ErrMissingSource) {
+				return nil, fmt.Errorf("%w (context %q)", err, target.cfgCtx.GetName())
+			}
+			return nil, err
+		}
+		return src, nil
+	}
+}
+
 // resolveContextAndOverride is the legacy prelude retained for commands
 // that only take --context/--meta-file (sql, meta catalog). Store-
 // touching commands use storeAddressFlags.resolve instead.
@@ -311,20 +334,9 @@ func withStore[T any](
 	}
 	rec := recordlayer.NewFDBDatabase(db)
 
-	var src meta.Source
-	switch {
-	case target.relational():
-		src = &catalogSource{db: rec, database: target.database, schema: target.schema}
-	case target.metaFile != "":
-		src = &meta.FileSource{Path: target.metaFile}
-	default:
-		src, err = meta.FromContext(cfgCtx, rec, parseKeyspacePath)
-		if err != nil {
-			if errors.Is(err, meta.ErrMissingSource) {
-				return zero, fmt.Errorf("%w (context %q)", err, cfgCtx.GetName())
-			}
-			return zero, err
-		}
+	src, err := resolveMetaSource(target, rec)
+	if err != nil {
+		return zero, err
 	}
 	md, err := src.Load(ctx)
 	if err != nil {

@@ -53,16 +53,21 @@ via `recordlayer.WriteRecordMetaData`; Java: `meta.toProto().writeTo(out)`).
 
 ## Command surface
 
-### Data (read-only)
+### Data
 
 ```
-frl record get <pk>                          # single record by PK
+frl record get <pk> [--type T]               # single record by PK (composite: 1,1)
 frl record scan [--type T] [--reverse] [--limit N]  # newline-delimited JSON envelopes
 frl record count [--type T] [-o json]        # via atomic count index
+frl record put --type T '<json>' [--dry-run] --yes   # write (guarded)
+frl record delete <pk> [--dry-run] --yes             # write (guarded)
 
 frl index ls [--no-fdb] [-o json]            # name, type, state, record types
 frl index describe <name> [-o json]          # full definition from metadata
 frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
+frl index build <name> --yes                 # online build, resumable (write)
+frl index rebuild <name> --yes               # clear + build from scratch (write)
+frl index set-state <name> <state> --yes     # READABLE/WRITE_ONLY/DISABLED (write)
 ```
 
 ### Store
@@ -70,6 +75,9 @@ frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
 ```
 frl store info [-o json]                     # DataStoreInfo header, no metadata needed
 frl store dump [--subspace L] [--limit N]    # tuple-decoded forensic view; filter by subspace label
+frl store lock <state> [--reason R] --yes    # header lock (write)
+frl store unlock --yes                       # clear the lock (write)
+frl store truncate --yes                     # delete EVERY record (double-gated)
 ```
 
 ### Metadata
@@ -82,6 +90,7 @@ frl meta types describe <name>               # PK, type key, proto msg, indexes
 frl meta validate --file <f> [-o json]       # standalone .pb validation
 frl meta evolve-check --old <f> --new <f> [-o json]  # MetaDataEvolutionValidator (CI-friendly)
 frl meta diff <old> <new> [-o json]          # diff (text: +/-/~, json: sections.added/removed/changed)
+frl meta apply --file <f> --yes              # validate + persist into FDBMetaDataStore (write)
 ```
 
 ### Context + navigation + escape
@@ -198,8 +207,7 @@ Tab-complete covers:
 
 ## What's not yet wired
 
-Writes (`record put`, `record delete`, `meta apply`, `store truncate` /
-`lock`, `index build` / `rebuild` / `set-state`), layered addressing
-(`--database`/`--schema` on record/index/store commands), `sql` output
-formats, `config add-context`. See `rfcs/174-frl-cli-v2.md` at the repo
-root for the full v2 design, slice plan, and review record.
+`config add-context`, Path B metadata for `meta get`/`meta types`/`index
+describe` (file sources only until RFC-174 Slice 5), `frl status`. See
+`rfcs/174-frl-cli-v2.md` at the repo root for the full v2 design, slice
+plan, and review record.

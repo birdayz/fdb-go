@@ -31,6 +31,9 @@ func newStoreCmd() *cobra.Command {
 	c.AddCommand(
 		newStoreInfoCmd(),
 		newStoreDumpCmd(),
+		newStoreLockCmd(),
+		newStoreUnlockCmd(),
+		newStoreTruncateCmd(),
 	)
 	return c
 }

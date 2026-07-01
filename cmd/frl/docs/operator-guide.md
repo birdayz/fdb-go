@@ -246,19 +246,51 @@ features or bug fixes.
 Nowhere. Every command reads the cluster file + metadata source fresh.
 
 **Q: Does `frl` write to FDB?**
-Two commands can. **`frl sql` executes arbitrary SQL** — including
-`INSERT`, `DELETE`, `CREATE DATABASE`, and DDL — against the relational
-layer; there is no read-only guard. **`frl fdb up`** configures a local
-Docker FoundationDB (`configure new single memory`) and writes a context
-into your frl config. Everything else is read-only: `store info/dump`,
-`record get/scan/count`, `index ls/describe/scan`, `meta
-get/validate/evolve-check/diff`, `meta types ls/describe`, `meta
-catalog …`, `keyspace resolve`, `tx read-version` — and read-only
-commands open stores with rebuild checks disabled, so even a newer
-`--meta-file` cannot make them mutate the store they inspect. The
-record-layer write wave (`record put/delete`, `index
-build/rebuild/set-state`, `meta apply`, `store lock/truncate`) lands in
-RFC-174 Slice 4 with confirmation flags and dry-run support.
+Read commands never do — they open stores with rebuild checks disabled,
+so even a newer `--meta-file` cannot make them mutate the store they
+inspect (`store info/dump`, `record get/scan/count`, `index
+ls/describe/scan`, `meta get/validate/evolve-check/diff`, `meta types
+ls/describe`, `meta catalog …`, `keyspace resolve`, `tx read-version`).
+The write surface is explicit: **`frl sql`** executes arbitrary SQL
+(INSERT/DELETE/DDL, no read-only guard); **`frl fdb up`** configures a
+local Docker FDB and writes a context; and the guarded record-layer
+write commands below.
+
+## Write commands
+
+Every mutating command requires `--yes` or an interactive confirmation,
+and none can ever target `__SYS/CATALOG` (the relational layer's own
+bookkeeping — evolve schemas through SQL DDL instead).
+
+- **`record put --type T '<json>'`** / **`record delete <pk>`** — both
+  take `--dry-run` (runs every validation through the store's dry-run
+  primitives, writes nothing) and both are confirm-gated. Deleting an
+  already-absent record exits 0 ("already absent") — after a
+  maybe-committed retry the first attempt may have landed. **Caution:
+  `record put` bypasses SQL-level constraints** not encoded in
+  `RecordMetaData`. Record-layer index maintenance and uniqueness hold
+  transactionally, but relational-only invariants (e.g. anything the
+  SQL layer enforces at statement level) do not — prefer `frl sql
+  INSERT` for relational stores unless you know why you need the
+  record-layer path.
+- **`index build <name>`** — online index build with resumable
+  range-set progress; safe to interrupt, rerun resumes.
+  `--max-retries` defaults to 100 (enables throttling + adaptive
+  batch-halving), `--rps`/`--limit` tune load, `--time-limit` bounds a
+  pass. `index rebuild` clears and starts over; `index set-state`
+  flips READABLE / WRITE_ONLY / DISABLED (READABLE refuses unless the
+  index is fully built).
+- **`meta apply --file new.pb`** — validates against the
+  FDBMetaDataStore's current metadata (same gate as `evolve-check`,
+  same `--allow-*` knobs) and persists on pass. Requires
+  `meta_store_keyspace` in the context or `--meta-store-keyspace`;
+  `--force-initial` bootstraps an empty store. Path A setups have
+  nothing in FDB to apply to.
+- **`store lock <state> [--reason …]`** / **`store unlock`** — set or
+  clear the header lock (`forbid-record-update` / `full-store`);
+  `store info` shows it. **`store truncate`** deletes every record —
+  double-gated: `--yes` is always required, and a terminal additionally
+  asks you to type the store address back.
 
 **Q: What are `frl sql` and `frl meta catalog`?**
 The relational-layer side of the CLI. `frl sql` is a psql-style REPL
