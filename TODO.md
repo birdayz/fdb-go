@@ -66,16 +66,30 @@ validation gate.
       seed projection with no column-alias list folds a qualified name into `outCols`; (b) `SELECT *`
       seed + a column-alias list drops the aliases on the length-mismatch guard (`cascades_translator.go`
       recursive-CTE re-keying). File a ticket; fix when a slice touches the area.
-  - [ ] Step 2b — flip the non-join producers to flow `PositionalRow` authoritatively (gate:
-    `qr.Positional != nil`, which auto-excludes merged rows) + `executeProjection` `posNames` (type the
-    positional row by OUTPUT names) + fix the `executeMap` Positional-drop gap
-    (`executor_new_plans.go:448`). **UNBLOCKED** (buried refs fixed). Re-run the spike; the ~15
-    derived/recursive tests should now resolve via ordinal.
-  - [ ] §5 pins: CTE-rename preserve (`TestFDB_CTEChainedColumnAliases` etc. green under ordinal),
-    ordering pin (no spurious sort on index-ordered scan), P2 projection e2e shadow + dual-emission
-    benchmark (P2 carry-forward), P1 absent-field → loud internal error (P1 carry-forward, per Graefe
-    NOT SemanticException).
-  - [ ] Slice 1 impl gauntlet (Graefe + Torvalds + codex + @claude) → PR.
+  - [x] Step 2b — ordinal resolution AUTHORITATIVE on the non-join frontier (`f0b9e206c`): producers
+    flow `PositionalRow` (gate `qr.Positional != nil`, propagates along the frontier, stops at
+    join/aggregate boundaries), `executeMap` gap closed, sort ValueExpr keys ordinal (named-key
+    comparators positional-first with documented Datum fallback — comparator semantics, not eval).
+    Verified by the AUTHORITY PROOF (`TestFrontierOrdinalAuthority_RFC173Slice1`: wrong Datum vs
+    correct Positional → must read positional; Datum-only key → loud error).
+  - [x] §5 pins: CTE-rename green VIA ordinal · no-spurious-sort EXPLAIN pin
+    (`TestFDB_RFC173Slice1_NoSpuriousSort`) · GROUP BY/HAVING/ORDER BY frontier pin · P2 projection
+    e2e shadow (`TestExecuteProjection_ShadowAndOutputNames_RFC173`) · **dual-emission benchmark
+    (Round-5 Slice 1 EXIT OBLIGATION, satisfied `4d5095088`)**: +71% window overhead after the
+    `positionalTypeCache` fix (positional build now CHEAPER than the map build → Slice 4 ends
+    net-faster) · P1 absent-field → loud `OrdinalResolutionError` (per Graefe, NOT SemanticException).
+  - [x] **Round-5 (#434) impact executed** (`228e35d19` merge + `c4b00b83f`): no rework of solved
+    parts (findings 1/2/3/5 → Slices 2–4; finding 4 validates the buried-ref work). **§5 dual-window
+    corpus differential implemented** (`pkg/relational/conformance/dualwindow`: all 1617 plandiff
+    entries under ordinal vs name model — emission-suppression oracle `DisablePositionalEmission`,
+    carve-outs empty). **FIRST CATCH on run 1:** recursive-CTE computed-column (`SELECT n + 1`)
+    silently stalled recursion (count 2, Java says 10 — pre-existing silent-wrong in
+    `rfc082KnownRed`); fixed via the shared `values.ProjectionColumnName` naming contract
+    (`legPhysicalOutputNames` — the wrap reads PHYSICAL keys; wrap kept because an alias-override
+    leaks qualified keys and regressed the RFC-130 budget). Known-red lock SHRANK (entry removed,
+    real-Java-validated). Pinned: `TestFDB_RecursiveCTEComputedColumn_RFC173` (count AND values).
+    Differential: 1617 entries, 0 carve-outs, 0 mismatches. All 54 targets green.
+  - [ ] Slice 1 impl gauntlet (Graefe + Torvalds + codex on the branch HEAD) → PR → @claude → merge.
 - [ ] **Slice 2 2-way wedge**
   (builds `appendNullLeg` + join-producer positional dual-emission; commits to eager
   `FieldValue.ofOrdinalNumber` baking — lazy resolveOrdinal is sound ONLY on the non-join frontier,
