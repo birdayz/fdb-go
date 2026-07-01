@@ -369,7 +369,24 @@ clamp). NOTE the single-key `AddReadConflictKey`/`AddWriteConflictKey` variants 
 2004 legal-range check) but their fix needs the API-shape decision (no error return to surface 2004) —
 kept as a separate follow-up, not fixed piecemeal.
 
-**Codex caught 19 real issues across 12 review rounds the persona reviewers missed** — critical-gate
+**Round 20 — codex re-review #12 (on the restructure HEAD `6a76e4d70`) found the setup-read slot
+leak** (P2, watch-area again — the restructure's own edge). `WatchSetup` minted `watchCtx` but the
+blocking setup reads still ran on the CALLER `ctx`: `ensureReadVersion(ctx)` + `ryw.get(ctx, key)`
+(readpath.go:1127,1154). A Cancel()/reset() during a stuck value read cancels `watchCtx` (via
+`cancelWatches`) but NOT the caller ctx, so the read stayed parked and the reserved slot stayed charged
+until the caller ctx / RPC timeout — a starve under a low `MAX_WATCHES`. C++'s watch actor wraps its
+setup waits in `catch{ cx->decreaseWatchCounter(); throw; }` (NativeAPI.actor.cpp:5637-5682), so
+cancelling the actor on a txn reset releases the counter AT ONCE. Fix: thread `watchCtx` (a child of
+the caller ctx, so caller cancellation still propagates) through both setup reads + a `watchSetupErr`
+helper that maps a txn Cancel to transaction_cancelled (1025), matching the entry-check precedence.
+Regression `TestWatchSetup_CancelUnblocksStuckSetupRead` — holds the value-read reply FOREVER, Cancels,
+asserts Watch returns 1025 + the slot frees, all while the reply is still held (proves the CANCEL, not
+the reply, unblocked the read — the dimension `TestWatchSetup_CancelDuringValueRead_ReleasesSlot`
+missed by releasing the reply). Revert-proven: without the fix it FAILS at 24.7s ("Watch did not return
+after Cancel"). Passes under `-race` with the whole watch suite. This is the restructure's own
+follow-up edge; re-review #13 owed on the new HEAD.
+
+**Codex caught 20 real issues across 13 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

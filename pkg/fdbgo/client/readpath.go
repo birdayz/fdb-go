@@ -1112,22 +1112,28 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	}
 
 	// Mint THIS watch's own cancellable context HERE — right after the acquire and BEFORE the blocking
-	// GRV / value read below (codex). A Cancel()/reset() during that blocking setup cancels THIS
-	// context, so WatchPoll observes it and drains, releasing the slot. watchCancel is the SCOPED
-	// cancel (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll
-	// defers it on completion, and the fdb facade wires the Watch future's Cancel() to it — so one
-	// watch is freed without touching siblings (round 18). The async WatchPoll USES this context,
-	// never a lazy fetch (which races Cancel/reset — RFC-115 §4).
+	// GRV / value read below (codex). Those reads RUN on watchCtx (below), so a Cancel()/reset() during
+	// setup cancels THIS context and the setup-error path releases the slot at once; a Cancel during the
+	// async poll is observed by WatchPoll, which drains and releases. watchCancel is the SCOPED cancel
+	// (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll defers it on
+	// completion, and the fdb facade wires the Watch future's Cancel() to it — so one watch is freed
+	// without touching siblings (round 18). The async WatchPoll USES this context, never a lazy fetch
+	// (which races Cancel/reset — RFC-115 §4).
 	watchCtx, watchCancel := tx.newWatchCtx(ctx)
 
-	// A Cancel that ran before the mint above (its cancelWatches was a no-op) is caught here by
-	// ensureReadVersion's leading checkCancelled (transaction.go:622) → the slot + this watch's
-	// context are released by the error path. A Cancel DURING this GRV / the value read cancels this
-	// watch's context, so WatchPoll drains and releases it.
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	// The blocking setup reads (GRV here, value read below) run on watchCtx — NOT the caller ctx — so a
+	// Cancel()/reset() DURING setup (which cancels watchCtx via cancelWatches) unblocks the read and
+	// releases the reserved slot PROMPTLY, matching C++'s watch actor: its setup waits are inside a
+	// `catch (Error& e){ cx->decreaseWatchCounter(); throw; }`, so cancelling the watch actor on a txn
+	// reset decrements the watch counter at once (NativeAPI.actor.cpp:5637-5682). watchCtx is a CHILD of
+	// ctx, so the caller's own ctx cancellation still propagates. Using the caller ctx here instead
+	// (the bug) left the slot charged until the caller ctx / RPC timeout when a stuck read raced a
+	// Cancel — a starve under a low MAX_WATCHES (codex). A Cancel that ran BEFORE the mint above (its
+	// cancelWatches was a no-op) is caught by ensureReadVersion's leading checkCancelled.
+	if err := tx.ensureReadVersion(watchCtx); err != nil {
 		tx.db.releaseWatch()
 		watchCancel() // setup failed — cancel+deregister THIS watch's context
-		return nil, 0, types.SpanContext{}, nil, nil, err
+		return nil, 0, types.SpanContext{}, nil, nil, tx.watchSetupErr(err)
 	}
 	tx.readVersionMu.Lock()
 	readVersion := tx.readVersion
@@ -1151,16 +1157,30 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// reading only barriers on watch-setup completion (codex P2 on RFC-098,
 	// resolved the opposite way the finding suggested: the C++ source shows
 	// watch errors are deliberately excluded).
-	value, err := tx.ryw.get(ctx, key, tx.getValue)
+	value, err := tx.ryw.get(watchCtx, key, tx.getValue)
 	if err != nil {
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
 		watchCancel()        // cancel+deregister THIS watch's context
-		return value, readVersion, span, nil, nil, err
+		return value, readVersion, span, nil, nil, tx.watchSetupErr(err)
 	}
 	// watchCtx/watchCancel were minted synchronously above (before this blocking read), so a
-	// Cancel/reset during setup cancels the very context WatchPoll holds; WatchPoll defers watchCancel
-	// to deregister on completion, and the facade wires the future's Cancel() to it.
+	// Cancel/reset during setup cancels the very context the read (above) and WatchPoll hold; WatchPoll
+	// defers watchCancel to deregister on completion, and the facade wires the future's Cancel() to it.
 	return value, readVersion, span, watchCtx, watchCancel, nil
+}
+
+// watchSetupErr maps a setup-read failure to the faithful terminal error. The blocking GRV / value
+// read run on watchCtx (a child of the caller ctx); a Cancel()/reset() during setup cancels watchCtx
+// via cancelWatches, so the read surfaces context.Canceled. When the txn itself was Cancel()ed, that
+// out-ranks the raw ctx error as transaction_cancelled (1025) — the SAME precedence WatchSetup's entry
+// checks enforce (checkCancelled before ctx.Err) and what C++'s watch actor observes after
+// resetPromise fires (NativeAPI.actor.cpp:5678). A caller-ctx cancellation or any other read error is
+// returned as-is.
+func (tx *Transaction) watchSetupErr(err error) error {
+	if cerr := tx.checkCancelled(); cerr != nil {
+		return cerr // transaction_cancelled (1025)
+	}
+	return err
 }
 
 // WatchPoll performs the ASYNCHRONOUS long-poll part of a watch: locate the
