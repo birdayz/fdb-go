@@ -212,12 +212,36 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     (query-side dedup preserved); hash stays names-only. **Fork A (concretely type both leaves) was
     REJECTED**: anti-Java, and makes index selection depend on two independently-built RecordTypes
     being byte-identical (drift → silent full scan, green CI, latent planner bug).
-  - **Step 2 — Evaluate ordinal read path + producer flip (TODO).** `FieldValue.Evaluate` resolves
-    via ordinal against the runtime `PositionalRow` on the `!producesMergedRows` frontier; the
-    non-join producers (scan/filter/projection/sort) flow the `PositionalRow` authoritatively. Per
-    Graefe: **NO name-map fallback on the authoritative frontier** (authority + silent fallback = a
-    resolution bug never surfaces); a runtime resolveOrdinal `!ok` is a **loud internal error** (a
-    malformed plan — 42703 is caught at plan time), NOT a `SemanticException`.
+  - **Step 2a — Evaluate ordinal read path (DONE, dark, `f0037e3db`).** `values.OrdinalRow`
+    interface (`Get(ordinal)`, `GetByName(name)`; structurally satisfied by `executor.PositionalRow`),
+    `evaluateOrdinal` (no name-map fallback, loud `OrdinalResolutionError` on miss),
+    `FieldValue.Evaluate` + `evaluateCorrelated` (refactored to `(any,error)`) ordinal branches.
+    Unit-tested; no producer flows an `OrdinalRow` yet.
+  - **Step 2b — producer flip (BLOCKED on the buried-reference fix below).** The non-join producers
+    (scan/filter/projection/sort) flow the `PositionalRow` authoritatively on the `qr.Positional != nil`
+    frontier gate (join producers `mergeRows`/`qualifyOuterRow` don't emit `Positional`, so merged
+    rows are auto-excluded — a precise self-excluding gate, verified). Wiring: a `Positional OrdinalRow`
+    field on `RowEvalContext` (param/subquery frontier) + a bare-`OrdinalRow` case in `evaluateCorrelated`
+    (the single-quantifier frontier row). Per Graefe: **NO name-map fallback**; a runtime resolveOrdinal
+    `!ok` is a **loud internal error** (42703 is caught at plan time), NOT a `SemanticException`.
+  - **⛔ BLOCKER (found by the Step 2b spike, reverted to `f0037e3db`): buried source references in
+    derived-table / recursive-CTE column resolution.** The projection flip is correct in principle
+    (Graefe's no-fallback surfaced a real divergence) but loud-errors on ~15 derived-table + recursive-CTE
+    tests: `SELECT sub.v FROM (SELECT id AS v FROM a) sub` resolves the outer `sub.v` to a `FieldValue`
+    referencing the **source** column `id`, not the derived **output** column `v`. The name map tolerates
+    it — `executeProjection` writes the Datum under BOTH the source key (`projNames`, from
+    `projectionColumnName`→`fv.Field`) and the alias key — so `Datum["ID"]` resolves; the ordinal model
+    correctly rejects it (`GetByName("ID")` misses the `[V]`-typed positional row → loud). **Root cause:**
+    Go's derived-table/CTE resolution (`cascades_translator.go` `cteColumnsScope`/`derivedOutputColumns`)
+    "sees through" the alias to the underlying column; Java keeps the reference as the derived table's
+    output column (ordinal 0). This is exactly the buried-alias divergence RFC-173 exists to fix — but it
+    is a **translator/resolver change spanning derived tables + recursive CTEs**, needing Java study of
+    derived-table column resolution + a Graefe ACK, not an inline fix. Simple single-table SELECTs and
+    UNQUALIFIED CTE renames (`SELECT product FROM priced(product,cost)…`) already resolve cleanly. **Two
+    coupled fixes Step 2b must carry:** (i) resolve qualified derived-table/CTE refs to the OUTPUT column
+    positionally (translator); (ii) `executeProjection` must type the positional row by the OUTPUT names
+    (alias-preferring `posNames`, separate from the Datum's source-keyed `projNames` — the flat CTE-rename
+    case already needs this and it is verified sound).
   - **LOAD-BEARING INVARIANT (Graefe, required):** lazy resolveOrdinal-at-eval is semantically
     identical to Java's eager plan-time ordinal baking **only because nothing re-types the
     passed-through base record on the non-join frontier**. This invariant MUST hold; the moment a

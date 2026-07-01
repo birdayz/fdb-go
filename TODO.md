@@ -51,9 +51,19 @@ validation gate.
   - [x] Step 1 — type the scan quantifier + names-only scan match (Fork B), committed `d42220b2a`,
     all 53 targets green, Graefe design-ACK + fork-ruling. Fixed latent `GetResultValue` flowedType
     discard. Still DARK (resolveOrdinal has zero authoritative callers). See RFC §4 Slice 1 Step 1.
-  - [ ] Step 2 — Evaluate ordinal read path (`values.OrdinalRow` interface, NO name-fallback, loud
-    error on `!ok`) + flip the non-join producers to flow `PositionalRow` authoritatively + fix the
-    `executeMap` Positional-drop gap (`executor_new_plans.go:448`).
+  - [x] Step 2a — Evaluate ordinal read path (`values.OrdinalRow`, `evaluateOrdinal` no-fallback +
+    loud `OrdinalResolutionError`, `Evaluate`/`evaluateCorrelated` ordinal branches), committed
+    `f0037e3db`, dark + unit-tested.
+  - [ ] Step 2b — flip the non-join producers to flow `PositionalRow` authoritatively (gate:
+    `qr.Positional != nil`, which auto-excludes merged rows) + fix the `executeMap` Positional-drop
+    gap (`executor_new_plans.go:448`). **BLOCKED on ⛔ buried-reference fix.**
+  - [ ] ⛔ **Buried source references in derived-table / recursive-CTE resolution** (found by the
+    Step 2b spike, reverted). `SELECT sub.v FROM (SELECT id AS v FROM a) sub` resolves `sub.v` to the
+    SOURCE `id`, not the OUTPUT `v`; the name map tolerates it (Datum carries both keys), the ordinal
+    model correctly loud-errors. ~15 derived-table + recursive-CTE tests. Fix = translator resolves
+    qualified derived-table/CTE refs to the output column positionally (Java parity) + `executeProjection`
+    types the positional row by OUTPUT names (`posNames`). Needs Java study + Graefe ACK. Full root
+    cause in RFC §4 Slice 1 Step 2b. Simple single-table + unqualified CTE-rename already resolve clean.
   - [ ] §5 pins: CTE-rename preserve (`TestFDB_CTEChainedColumnAliases` etc. green under ordinal),
     ordering pin (no spurious sort on index-ordered scan), P2 projection e2e shadow + dual-emission
     benchmark (P2 carry-forward), P1 absent-field → loud internal error (P1 carry-forward, per Graefe
