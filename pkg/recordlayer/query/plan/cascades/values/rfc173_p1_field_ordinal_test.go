@@ -43,6 +43,30 @@ func TestFieldValue_ResolveOrdinal_RFC173P1(t *testing.T) {
 	}
 }
 
+// TestFieldValue_ResolveOrdinal_RawDivergentRecord_RFC173P1 pins the robustness
+// Torvalds + Graefe converged on in P1 review: resolveOrdinal returns the SLICE
+// POSITION (RecordType.FieldIndex), which is the Java ordinal, so it is sound even
+// for a RAW RecordType that bypassed NewRecordType's normalization and carries a
+// stored Field.Ordinal that diverges from position. This is the axis the
+// enforcement test can't reach (NewRecordType normalizes the divergence away).
+func TestFieldValue_ResolveOrdinal_RawDivergentRecord_RFC173P1(t *testing.T) {
+	t.Parallel()
+	// Raw record (bypasses NewRecordType): field "b" is at slice position 1 but
+	// carries a stored Ordinal 0. resolveOrdinal must still return position 1.
+	raw := &RecordType{RecordName: "M", Fields: []Field{
+		{Name: "a", FieldType: NotNullLong, Ordinal: 1},
+		{Name: "b", FieldType: NotNullLong, Ordinal: 0},
+	}}
+	fv := NewFieldValue(NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("raw"), raw), "b", NotNullLong)
+	ord, ok := fv.resolveOrdinal()
+	if !ok || ord != 1 {
+		t.Fatalf("raw-record resolveOrdinal(b) = (%d,%v), want (1,true) — the SLICE POSITION, not the stored Ordinal 0", ord, ok)
+	}
+	if g, _ := raw.GetField(ord); g.Name != "b" {
+		t.Fatalf("raw round-trip: GetField(%d).Name = %q, want b", ord, g.Name)
+	}
+}
+
 // TestFieldValue_OrdinalOrderingPrecondition_RFC173P1 pins the soundness
 // invariant the ordinal substrate rests on: ordinal access (resolveOrdinal ->
 // declared Field.Ordinal) must agree with slice-position access (GetField) — and

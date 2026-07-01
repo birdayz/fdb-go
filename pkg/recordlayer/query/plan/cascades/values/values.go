@@ -345,11 +345,11 @@ func (f *FieldValue) resolveOrdinal() (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	fld, ok := rt.LookupField(f.Field)
-	if !ok {
-		return 0, false
-	}
-	return fld.Ordinal, true
+	// Return the field's SLICE POSITION (FieldIndex), not a stored Field.Ordinal —
+	// position IS the Java ordinal (Type.Record.computeFieldNameToOrdinal is list
+	// position), and it is sound even for a raw RecordType that bypassed
+	// NewRecordType's normalization (RFC-173 P1 review: Torvalds/Graefe converged).
+	return rt.FieldIndex(f.Field)
 }
 
 // NewFieldValue constructs a FieldValue with a child (base) value.
