@@ -1,9 +1,9 @@
 # RFC-173: Migrate join column resolution from name-based `AnchoredJoin` to Java's ordinal/group model
 
-**Status:** ACKED THROUGH ROUND 4 (Graefe ✅ · Torvalds ✅ · codex ✅ · @claude ✅; see §10 review
-log); **Round 5 (adversarial content re-review, 2026-07-01) folded into this revision — re-ack
-in progress, state tracked in the §10 Round-5 checklist (the single source of truth); Slice 2
-must not start until all four ack.** Progress: P1 merged (#423), P2 merged (#427),
+**Status:** review/ack state lives ONLY in the §10 checklists (the single source of truth —
+this line deliberately does not restate it). Round 5 (adversarial content re-review, 2026-07-01)
+is folded into this revision; **Slice 2 starts only when all four Round-5 boxes in §10 are
+checked.** Progress: P1 merged (#423), P2 merged (#427),
 P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
 Step 2b blocked on the buried-reference precursor, Graefe-acked 7-site plan, recorded in that
 branch's §4 Slice 1 log). Each staged PR re-acked on its own HEAD.
