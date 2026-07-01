@@ -43,7 +43,7 @@ func TestLocateBinarySearch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := lc.locate(nil, ctx, tc.key, NoTenantID, types.SpanContext{})
+			result, err := lc.locate(nil, ctx, tc.key, NoTenantID, types.SpanContext{}, false)
 			if err != nil {
 				t.Fatalf("locate(%q): %v", tc.key, err)
 			}
@@ -66,7 +66,7 @@ func TestLocateEmptyCache(t *testing.T) {
 	lc := &locationCache{maxSize: 1000}
 
 	lc.mu.RLock()
-	_, ok := lc.lookupLocked(NoTenantID, []byte("anything"))
+	_, ok := lc.lookupLocked(NoTenantID, []byte("anything"), false)
 	lc.mu.RUnlock()
 
 	if ok {
@@ -88,7 +88,7 @@ func TestLocateSingleEntry(t *testing.T) {
 	ctx := context.Background()
 
 	// Hit: key inside range.
-	result, err := lc.locate(nil, ctx, []byte("p"), NoTenantID, types.SpanContext{})
+	result, err := lc.locate(nil, ctx, []byte("p"), NoTenantID, types.SpanContext{}, false)
 	if err != nil {
 		t.Fatalf("locate(p): %v", err)
 	}
@@ -98,7 +98,7 @@ func TestLocateSingleEntry(t *testing.T) {
 
 	// Miss: key before range.
 	lc.mu.RLock()
-	_, ok := lc.lookupLocked(NoTenantID, []byte("a"))
+	_, ok := lc.lookupLocked(NoTenantID, []byte("a"), false)
 	lc.mu.RUnlock()
 	if ok {
 		t.Fatal("expected miss for key before range")
@@ -106,10 +106,43 @@ func TestLocateSingleEntry(t *testing.T) {
 
 	// Miss: key at or after end.
 	lc.mu.RLock()
-	_, ok = lc.lookupLocked(NoTenantID, []byte("z"))
+	_, ok = lc.lookupLocked(NoTenantID, []byte("z"), false)
 	lc.mu.RUnlock()
 	if ok {
 		t.Fatal("expected miss for key at end boundary")
+	}
+}
+
+// TestLookupLocked_BackwardSelectorOnBoundary pins finding #10: a BACKWARD key selector (offset<=0 &&
+// !orEqual) anchored EXACTLY on a shard boundary must resolve to the shard ENDING at the key (the one
+// holding keyBefore(key)), not the shard beginning at it. Two adjacent shards [a,m)@SSA and [m,z)@SSB:
+// forward "m" → SSB (begins at m); backward "m" → SSA (ends at m). Mirrors C++ getCachedLocation's
+// rangeContainingKeyBefore (NativeAPI.actor.cpp:1944-1955). Revert-proof: dropping the isBackward branch
+// in lookupLocked makes backward "m" resolve to SSB — the wrong SS, which sends getKey's loop re-locating
+// forever (the livelock this closes).
+func TestLookupLocked_BackwardSelectorOnBoundary(t *testing.T) {
+	t.Parallel()
+	lc := &locationCache{
+		maxSize: 1000,
+		entries: []locationEntry{
+			{tenantId: NoTenantID, begin: []byte("a"), end: []byte("m"), servers: []ServerInfo{{Address: "SSA"}}},
+			{tenantId: NoTenantID, begin: []byte("m"), end: []byte("z"), servers: []ServerInfo{{Address: "SSB"}}},
+		},
+	}
+	lc.mu.RLock()
+	defer lc.mu.RUnlock()
+
+	// Forward "m" → the shard BEGINNING at m (SSB).
+	if r, ok := lc.lookupLocked(NoTenantID, []byte("m"), false); !ok || r.Servers[0].Address != "SSB" {
+		t.Fatalf("forward lookup of boundary key m: got ok=%v %v, want SSB", ok, r.Servers)
+	}
+	// Backward "m" → the shard ENDING at m (SSA); keyBefore(m) lives in [a,m).
+	if r, ok := lc.lookupLocked(NoTenantID, []byte("m"), true); !ok || r.Servers[0].Address != "SSA" {
+		t.Fatalf("backward lookup of boundary key m must resolve to the shard ENDING at m (SSA); got ok=%v %v (#10)", ok, r.Servers)
+	}
+	// Backward "p" (strictly inside [m,z)) → SSB, same as forward — only the boundary differs.
+	if r, ok := lc.lookupLocked(NoTenantID, []byte("p"), true); !ok || r.Servers[0].Address != "SSB" {
+		t.Fatalf("backward lookup of interior key p: got ok=%v %v, want SSB", ok, r.Servers)
 	}
 }
 
@@ -131,24 +164,24 @@ func TestLocateTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Each tenant should get its own server.
-	r1, err := lc.locate(nil, ctx, []byte("m"), NoTenantID, types.SpanContext{})
+	r1, err := lc.locate(nil, ctx, []byte("m"), NoTenantID, types.SpanContext{}, false)
 	if err != nil || r1.Servers[0].Address != "default-tenant" {
 		t.Fatalf("NoTenantID: want default-tenant, got %v (err=%v)", r1.Servers, err)
 	}
 
-	r2, err := lc.locate(nil, ctx, []byte("m"), 42, types.SpanContext{})
+	r2, err := lc.locate(nil, ctx, []byte("m"), 42, types.SpanContext{}, false)
 	if err != nil || r2.Servers[0].Address != "tenant-42" {
 		t.Fatalf("tenant 42: want tenant-42, got %v (err=%v)", r2.Servers, err)
 	}
 
-	r3, err := lc.locate(nil, ctx, []byte("m"), 99, types.SpanContext{})
+	r3, err := lc.locate(nil, ctx, []byte("m"), 99, types.SpanContext{}, false)
 	if err != nil || r3.Servers[0].Address != "tenant-99" {
 		t.Fatalf("tenant 99: want tenant-99, got %v (err=%v)", r3.Servers, err)
 	}
 
 	// Unknown tenant should miss.
 	lc.mu.RLock()
-	_, ok := lc.lookupLocked(77, []byte("m"))
+	_, ok := lc.lookupLocked(77, []byte("m"), false)
 	lc.mu.RUnlock()
 	if ok {
 		t.Fatal("expected miss for unknown tenant 77")
@@ -251,7 +284,7 @@ func TestInvalidateBinarySearch(t *testing.T) {
 	}
 
 	// Invalidate key "e" — falls in [d, g) shard.
-	lc.invalidate([]byte("e"), NoTenantID)
+	lc.invalidate([]byte("e"), NoTenantID, false)
 
 	if len(lc.entries) != 2 {
 		t.Fatalf("expected 2 entries after invalidate, got %d", len(lc.entries))
@@ -279,7 +312,7 @@ func TestInvalidateExactBegin(t *testing.T) {
 	}
 
 	// Invalidate key "d" — exact begin of second shard.
-	lc.invalidate([]byte("d"), NoTenantID)
+	lc.invalidate([]byte("d"), NoTenantID, false)
 
 	if len(lc.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(lc.entries))
@@ -301,13 +334,13 @@ func TestInvalidateMiss(t *testing.T) {
 	}
 
 	// Key "a" is before the only shard — should be a no-op.
-	lc.invalidate([]byte("a"), NoTenantID)
+	lc.invalidate([]byte("a"), NoTenantID, false)
 	if len(lc.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(lc.entries))
 	}
 
 	// Key "z" is after the shard — no-op.
-	lc.invalidate([]byte("z"), NoTenantID)
+	lc.invalidate([]byte("z"), NoTenantID, false)
 	if len(lc.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(lc.entries))
 	}
@@ -318,7 +351,7 @@ func TestInvalidateEmptyCache(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
-	lc.invalidate([]byte("a"), NoTenantID) // should not panic
+	lc.invalidate([]byte("a"), NoTenantID, false) // should not panic
 	if len(lc.entries) != 0 {
 		t.Fatalf("expected 0 entries, got %d", len(lc.entries))
 	}
@@ -338,7 +371,7 @@ func TestInvalidateTenantIsolation(t *testing.T) {
 	}
 
 	// Invalidate for tenant 42 only.
-	lc.invalidate([]byte("m"), 42)
+	lc.invalidate([]byte("m"), 42, false)
 
 	if len(lc.entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(lc.entries))

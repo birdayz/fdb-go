@@ -204,7 +204,7 @@ func TestSetTimeout_BoundsHungLocate(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 
-	db.db.locCache.invalidate(key, NoTenantID) // force a cache-miss locate
+	db.db.locCache.invalidate(key, NoTenantID, false) // force a cache-miss locate
 	dd.armAll()
 
 	tx := db.CreateTransaction()
@@ -257,7 +257,7 @@ func TestSetTimeout_BoundsHungMetrics(t *testing.T) {
 	}
 
 	check := func(name string, run func(tx *Transaction) error) {
-		db.db.locCache.invalidate(begin, NoTenantID)
+		db.db.locCache.invalidate(begin, NoTenantID, false)
 		dd.armAll()
 		tx := db.CreateTransaction()
 		tx.SetTimeout(300)

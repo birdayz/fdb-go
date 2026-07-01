@@ -138,7 +138,7 @@ func TestBuildGetKeyServerLocationsRequest_RoundTrip(t *testing.T) {
 		Flags:   traceFlagSampled,
 	}
 
-	body := buildGetKeyServerLocationsRequest(key, tenantID, span, replyToken)
+	body := buildGetKeyServerLocationsRequest(key, false, tenantID, span, replyToken)
 
 	var req types.GetKeyServerLocationsRequest
 	if err := req.UnmarshalFDB(body); err != nil {

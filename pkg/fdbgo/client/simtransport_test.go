@@ -181,7 +181,7 @@ func newSimTestDB(t *testing.T, ctx context.Context) (*Database, *simDialer) {
 // through cleanly during the relocate-and-retry.
 func storageAddrFor(t *testing.T, db *Database, ctx context.Context, key []byte) string {
 	t.Helper()
-	loc, err := db.db.locCache.locate(db.db, ctx, key, NoTenantID, types.SpanContext{})
+	loc, err := db.db.locCache.locate(db.db, ctx, key, NoTenantID, types.SpanContext{}, false)
 	if err != nil {
 		t.Fatalf("locate %q: %v", key, err)
 	}

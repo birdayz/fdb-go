@@ -176,7 +176,12 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			return []byte{}, nil
 		}
 
-		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.spanContext)
+		// A BACKWARD key selector (offset<=0 && !orEqual, C++ KeySelectorRef::isBackward FDBTypes.h:659-661)
+		// on a shard boundary must resolve to the shard ENDING at the key, not the one beginning at it —
+		// else it routes to the wrong SS and re-locates forever (livelock). Thread it through the location
+		// lookup + proxy request + invalidate, mirroring C++ getKey's Reverse{k.isBackward()} (NativeAPI:3786).
+		isBackward := !orEqual && offset <= 0
+		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.spanContext, isBackward)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -207,7 +212,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 					// getRange; the read path never surfaces 1006 to the app).
 					return nil, &wire.FDBError{Code: ErrTransactionTooOld}
 				}
-				tx.db.locCache.invalidate(selectorKey, tx.tenantId)
+				tx.db.locCache.invalidate(selectorKey, tx.tenantId, isBackward)
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 					return nil, err
 				}
@@ -403,7 +408,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext, false)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -433,7 +438,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(key, tx.tenantId)
+			tx.db.locCache.invalidate(key, tx.tenantId, false)
 			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 				return nil, err
 			}
@@ -1284,7 +1289,7 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 		if err := watchCtx.Err(); err != nil {
 			return err
 		}
-		loc, locErr := tx.db.locCache.locate(tx.db, watchCtx, key, tx.tenantId, span)
+		loc, locErr := tx.db.locCache.locate(tx.db, watchCtx, key, tx.tenantId, span, false)
 		if locErr != nil {
 			return fmt.Errorf("locate key: %w", locErr)
 		}
@@ -1307,7 +1312,7 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 			if wrongShardRetries > MaxWrongShardRetries {
 				return &wire.FDBError{Code: ErrAllAlternativesFailed}
 			}
-			tx.db.locCache.invalidate(key, tx.tenantId)
+			tx.db.locCache.invalidate(key, tx.tenantId, false)
 		} else {
 			wrongShardRetries = 0 // a completed round-trip clears the relocate budget
 		}

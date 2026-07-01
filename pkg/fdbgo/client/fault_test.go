@@ -1001,7 +1001,7 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	}
 
 	// Force the next read to re-locate (else a cache hit would skip queryLocations).
-	db.db.locCache.invalidate(key, NoTenantID)
+	db.db.locCache.invalidate(key, NoTenantID, false)
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
