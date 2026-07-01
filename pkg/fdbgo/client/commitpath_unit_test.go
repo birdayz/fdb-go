@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/binary"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"testing"
 	"time"
@@ -346,23 +347,50 @@ func TestMutationLayout_BitIdenticalRoundTrip(t *testing.T) {
 }
 
 // ============================================================================
-// jitterBackoff — ±10% jitter on the dummy-transaction retry sleep.
+// dummyRetryBackoff — C++ getBackoff law (backoff × random01(), NativeAPI:6109)
+// on the dummy-transaction retry sleep.
 // ============================================================================
 
-func TestJitterBackoff_Bounds(t *testing.T) {
+// TestDummyRetryBackoff_Law pins the C++ getBackoff law: the sleep is d × rand01, uniform in
+// [0, d). This is the fix for the pre-existing ±10% [0.9,1.1) divergence — the discriminating
+// assertion is that a small rand01 (0.1) yields 0.1×d, which is BELOW the old 0.9×d floor. A
+// rand01 near 1 approaches d; rand01=0 yields 0. Revert-proof: restoring `0.9 + 0.2*rand01`
+// makes the 0.1 and 0.0 cases exceed the expected values.
+func TestDummyRetryBackoff_Law(t *testing.T) {
 	t.Parallel()
 	base := 100 * time.Millisecond
-	floor := time.Duration(float64(base) * 0.9)
-	ceiling := time.Duration(float64(base)*1.1) + time.Microsecond // tiny float fudge
-	// 1000 samples should cover both extremes of the [0.9, 1.1) range.
-	var minSeen, maxSeen time.Duration = base * 2, 0
-	for i := 0; i < 1000; i++ {
-		got := jitterBackoff(base)
-		if got < floor {
-			t.Errorf("jitterBackoff = %v, below floor %v", got, floor)
+	cases := []struct {
+		rand01 float64
+		want   time.Duration
+	}{
+		{0.0, 0},                     // C++ random01() can return 0 → sleep 0 (impossible under old ±10%)
+		{0.1, 10 * time.Millisecond}, // 0.1×base — BELOW the old 0.9×base floor: the discriminating case
+		{0.5, 50 * time.Millisecond},
+		{0.999, time.Duration(float64(base) * 0.999)}, // approaches base
+	}
+	for _, c := range cases {
+		if got := dummyRetryBackoff(base, c.rand01); got != c.want {
+			t.Errorf("dummyRetryBackoff(%v, %v) = %v, want %v", base, c.rand01, got, c.want)
 		}
-		if got > ceiling {
-			t.Errorf("jitterBackoff = %v, above ceiling %v", got, ceiling)
+	}
+}
+
+// TestDummyRetryBackoff_SpreadWiderThanOldBand samples the production draw and proves the sleep
+// distribution covers the FULL [0, base) range — in particular values below the old 0.9×base
+// floor — confirming the law is uniform-over-the-whole-backoff, not the old narrow band.
+func TestDummyRetryBackoff_SpreadWiderThanOldBand(t *testing.T) {
+	t.Parallel()
+	base := 100 * time.Millisecond
+	oldFloor := time.Duration(float64(base) * 0.9)
+	var minSeen, maxSeen time.Duration = base * 2, 0
+	sawBelowOldFloor := false
+	for i := 0; i < 2000; i++ {
+		got := dummyRetryBackoff(base, rand.Float64())
+		if got < 0 || got >= base {
+			t.Fatalf("dummyRetryBackoff out of [0,base): %v", got)
+		}
+		if got < oldFloor {
+			sawBelowOldFloor = true
 		}
 		if got < minSeen {
 			minSeen = got
@@ -371,25 +399,19 @@ func TestJitterBackoff_Bounds(t *testing.T) {
 			maxSeen = got
 		}
 	}
-	// Sanity: spread of 1000 samples should reach BOTH halves of the band.
-	// Probability of failure (all samples in just one half) ~= 2^-999.
-	if minSeen >= base {
-		t.Errorf("1000 samples never went below base — RNG dead? min=%v", minSeen)
-	}
-	if maxSeen <= base {
-		t.Errorf("1000 samples never went above base — RNG dead? max=%v", maxSeen)
+	if !sawBelowOldFloor {
+		t.Errorf("2000 samples never dipped below the old 0.9×base floor (%v) — law not widened? min=%v", oldFloor, minSeen)
 	}
 }
 
-func TestJitterBackoff_ZeroAndNegative(t *testing.T) {
+func TestDummyRetryBackoff_ZeroAndNegative(t *testing.T) {
 	t.Parallel()
-	// d <= 0 must short-circuit (multiplying by random factor would still
-	// give 0, but the explicit guard documents the contract).
-	if got := jitterBackoff(0); got != 0 {
-		t.Errorf("jitterBackoff(0) = %v, want 0", got)
+	// d <= 0 short-circuits (the guard documents the contract; backoff is always > 0 in practice).
+	if got := dummyRetryBackoff(0, 0.5); got != 0 {
+		t.Errorf("dummyRetryBackoff(0) = %v, want 0", got)
 	}
-	if got := jitterBackoff(-1); got != -1 {
-		t.Errorf("jitterBackoff(-1) = %v, want -1", got)
+	if got := dummyRetryBackoff(-1, 0.5); got != -1 {
+		t.Errorf("dummyRetryBackoff(-1) = %v, want -1", got)
 	}
 }
 
