@@ -1,10 +1,28 @@
 # RFC-174: frl CLI v2 — layered store addressing, scriptable SQL, honest writes
 
-**Status:** Draft
-**Gate:** Torvalds + codex + @claude. This is **not** a query-engine change — no
+**Status:** Draft — Graefe ACK + FDB C++ dev ACK (conditions folded, see Review record); codex
+review pending on the PR.
+**Gate:** Graefe + FDB C++ dev + codex (user-requested reviewer set for this RFC) + Torvalds +
+@claude on the implementation PRs. This is **not** a query-engine change — no
 Cascades/planner/executor code is touched; the `\explain` feature (§3.3) consumes the existing
 SQL `EXPLAIN` surface as a client. If any slice turns out to need planner introspection beyond
 what `EXPLAIN` already returns, that slice gets a Graefe review before implementation.
+**Review record:**
+*Graefe ACK* with 4 conditions, all folded: (G1) catalog metadata resolves via `LoadSchema`
+(schema-pinned template version), never `LoadSchemaTemplate` (latest) — §3.1; (G2) read-only
+commands open stores with `SetSkipPossiblyRebuild(true)` — §3.1, and the audit exposed this as
+a **live v1 bug** now in Slice 0; (G3) `\explain` renders EXPLAIN output verbatim — any
+plan-*interpretation* feature (scan-type warnings, index-use detection) is pre-declared a
+query-engine change requiring Graefe review before implementation — §3.2; (G4) `record put`'s
+SQL-constraint bypass documented in the operator guide — §3.3.
+*FDB C++ dev ACK* with 4 conditions, all folded: (C1) `index build` defaults `--max-retries`
+to Java's 100 — at the Go builder default of 0 the rps throttle and adaptive limit-halving are
+dead code (`online_indexer.go:378-379,886`) — §3.3; (C2) `PartlyBuiltError` surfaced with the
+rebuild/takeover remediation, kill-and-resume e2e includes a resume-with-different-method case
+— §3.3/§5; (C3) `record delete` treats already-deleted-on-maybe-committed-retry as success —
+§3.3; (C4) `fdb up`'s `configure new` retry treats "Database already exists" as success (the
+command is not idempotent; a success-then-nonzero-exit currently fails a healthy cluster,
+`fdb.go:72-80`) — another **live v1 bug**, now in Slice 0.
 **Origin:** full assessment of `cmd/frl` (all ~10.7k LOC read; live end-to-end run against a
 throwaway FDB via `frl fdb up`; file-by-file sweep; comparison against Java's
 `fdb-relational-cli`). Four live bugs, three doc/impl contradictions, one structural gap.
@@ -137,10 +155,22 @@ frl store info  --database /demo --schema main
 ```
 
 Resolution for the relational form: keyspace = `RelationalKeyspace.SchemaSubspace(db, schema)`;
-metadata = the schema's catalog template via the exact path `meta catalog get` uses
-(`runCatalogQuery` + `SchemaTemplateCatalog().LoadSchemaTemplate`). Implementation is a third
-`meta.Source` (`CatalogSource`) plus a keyspace resolver — both slot into the existing
-`withStore` plumbing (`openstore.go:121`) without touching the command bodies.
+metadata = **`RecordLayerStoreCatalog.LoadSchema(txn, db, schema)`** — which resolves the
+template **at the version the schema is pinned to** (`fdb_store_catalog.go:214-215`, via
+`LoadSchemaTemplateAtVersion`), exactly as the SQL executor does. Not
+`SchemaTemplateCatalog().LoadSchemaTemplate` (latest version): latest-version metadata against
+an older store header would trip `checkPossiblyRebuild` (`store_builder.go:183`) and make a
+"read-only" command **write** — header bump, index clears/rebuild marks (Graefe G1).
+Implementation is a third `meta.Source` (`CatalogSource`) plus a keyspace resolver — both slot
+into the existing `withStore` plumbing (`openstore.go:121`) without touching the command bodies.
+
+**Read commands must never mutate a store** (Graefe G2). All read-only commands open with
+`SetSkipPossiblyRebuild(true)` (`store_builder.go:691`). The audit exposed this as a **live v1
+bug**, not just a v2 requirement: today's `withStore` (`openstore.go:159-164`) opens with plain
+`.Open()` inside a read-write `rec.Run` transaction, so a `--meta-file` newer than the store
+header makes `record scan` rewrite the header and clear/rebuild indexes. Fixed in Slice 0 with
+a regression e2e: open a store, present newer metadata, run `record scan`, assert the store
+header and index states are byte-identical before/after.
 
 Config gains the same duality. `Context` gets optional `database` + `schema` fields as an
 alternative to `keyspace_path` + `metadata` (additive proto change, v1 configs stay valid;
@@ -173,6 +203,11 @@ grammar. The slash-path form stays as sugar for the all-strings case.
 - **`\explain`**: re-run the previous statement wrapped in `EXPLAIN`, render the plan. One
   meta-command, pure client of the existing EXPLAIN surface — the "did my query use the index?"
   loop without leaving the prompt. (Java-CLI parity in spirit: `PlannerDebuggerCommandHandler`.)
+  **Boundary rule (Graefe G3): rendering ≠ interpreting.** `\explain` prints EXPLAIN's output
+  verbatim. Any feature that *interprets* plan output — full-scan warnings, "index used"
+  detection, plan-shape assertions — would either string-match plan text (forbidden by repo
+  rules) or need structured plan output from the engine; both are query-engine changes and go
+  to Graefe as an RFC before implementation. None ships in this RFC.
 
 ### 3.3 The write wave (honest, guarded)
 
@@ -184,7 +219,15 @@ guide) in Slice 0. The deferred write set ships with the guardrails v1 promised:
   throttling/limit knobs exposed as flags. `index set-state <name> <state>` and
   `index rebuild` (clear + build) round it out. This is the #1 operator task the CLI can see
   today (`index ls` shows `WRITE_ONLY`) but cannot fix. All state-mutating forms require
-  `--yes` or an interactive confirm.
+  `--yes` or an interactive confirm. Two conditions from the FDB C++ dev review:
+  - **`--max-retries` defaults to 100 (Java's default), not the Go builder's 0** (C1). At 0,
+    the rps throttle and adaptive limit-halving never engage (`online_indexer.go:378-379,886`)
+    — a single `transaction_too_large`/`transaction_too_old` escaping the client retry loop
+    would abort the whole build with no back-off.
+  - **`PartlyBuiltError` is surfaced with its remediation** (C2): resuming with different
+    build settings throws it by design (`online_indexer.go:1054-1133`); the CLI renders the
+    conflict (existing stamp vs requested) and the escape hatches (`index rebuild` to start
+    over, or matching flags to take over) instead of dumping the raw error.
 - **`frl meta apply --file <f>`** — runs the `MetaDataEvolutionValidator` gate (same code as
   `evolve-check`, same `--allow-*` flags) and on pass writes via
   `FDBMetaDataStore.SaveRecordMetaData` (`metadata_store.go:36`). Refuses on validation failure.
@@ -192,6 +235,13 @@ guide) in Slice 0. The deferred write set ships with the guardrails v1 promised:
 - **`frl record put --type T <json>`** (protojson parsed against metadata) and
   **`frl record delete <pk>`** — `--dry-run` prints what would be written/deleted (the dry-run
   store primitives exist, `store_api.go:233,353`); delete requires `--yes` or confirm.
+  **`record delete` treats already-deleted-on-retry as success** (C3): after a
+  maybe-committed retry (`commit_unknown_result` resolved by the client's idempotency
+  barrier), re-execution sees the record absent — that's the delete having landed, not a
+  failure, and must exit 0. **`record put` bypasses SQL-level constraints** not encoded in
+  `RecordMetaData` (Graefe G4) — record-layer index maintenance and uniqueness hold
+  transactionally, but relational-only invariants don't; documented prominently in the
+  operator guide's write-commands section.
 - **`frl store lock|unlock|truncate`** — truncate behind interactive confirm **and** `--yes`,
   never one flag alone.
 
@@ -233,10 +283,17 @@ the relational executor itself uses.
 Sliced so every slice merges green and independently useful. E2E harness lands *before* the big
 slices so they arrive with a net.
 
-- **Slice 0 — bugs + truth (< 1 shift):** fix the four live bugs (each with a regression test:
-  `%x` on `fdb.Key`, ANSI-on-pipe asserted by scanning captured output for `\x1b`, the
-  `--Database` message, README pointer); operator-guide/README/config.proto truth pass;
-  `meta diff` full-proto comparison + symmetric JSON (it's a correctness bug, not a feature).
+- **Slice 0 — bugs + truth (≈ 1 shift):** fix the **six** live bugs, each with a regression
+  test: (1) `%x` on `fdb.Key` hex garbage; (2) ANSI-on-pipe (asserted by scanning captured
+  output for `\x1b`); (3) the `--Database` message; (4) README pointer; (5) **read commands
+  can mutate stores** — `withStore` opens without `SetSkipPossiblyRebuild(true)` inside a RW
+  transaction, so newer `--meta-file` metadata rewrites the store header from `record scan`
+  (Graefe G2; e2e: stale-store + newer metadata + scan → header/index states byte-identical);
+  (6) **`fdb up` configure retry fails healthy clusters** — `configure new` is not idempotent,
+  a success-then-nonzero-exit makes every retry return "Database already exists" until the
+  15-attempt loop fails (FDB C++ dev C4; treat that response as success). Plus
+  operator-guide/README/config.proto truth pass and `meta diff` full-proto comparison +
+  symmetric JSON (correctness bugs, not features).
 - **Slice 1 — CI e2e (1 shift):** wire the integration suite into CI (Docker is available there —
   the rest of the repo's FDB tests prove it): either Bazel-ize with the testcontainer pattern the
   repo already uses, or a `just frl-e2e` step in `ci.yml`. Add e2e coverage for `sql`
@@ -266,7 +323,9 @@ slices so they arrive with a net.
 - Diff (S4→S0): matrix test flipping each compared attribute (unique, options, predicate,
   subspace key, since-version, type-key) — each must surface in text *and* JSON.
 - Writes (S4): dry-run writes nothing (assert via `store dump` before/after); confirm gates
-  refuse without `--yes`; `__SYS/CATALOG` write-target rejection.
+  refuse without `--yes`; `__SYS/CATALOG` write-target rejection; kill-and-resume `index
+  build` **including a resume-with-different-method case** asserting the rendered
+  `PartlyBuiltError` remediation (C2); `record delete` idempotent-retry semantics (C3).
 - Unit tests stay FDB-free as today; everything touching a store goes through the
   testcontainer suite per repo rules (`t.Parallel()`, 2-minute container timeouts).
 
@@ -282,8 +341,12 @@ slices so they arrive with a net.
 - **`keyspace_tuple` syntax churn.** Additive config fields only; the v1 slash-path form is
   untouched. Tagged-object JSON avoids inventing an escape grammar we'd have to support forever.
 - **Long-running `index build` in a CLI process.** The `OnlineIndexer` owns transaction batching
-  and retry; the CLI only renders progress. Ctrl-C mid-build is safe by construction — index
-  build state is resumable (that's the point of the range-set bookkeeping); pin with a
-  kill-and-resume e2e.
+  and retry; the CLI only renders progress. Kill-safety verified against the client
+  (FDB C++ dev review): per-range work — index entries, range-set insert, progress counter —
+  commits in one transaction (`online_indexer.go:1214-1335`); the pure-Go client implements
+  the C++ idempotency barrier for `commit_unknown_result` (`client/commitpath.go:24,106`,
+  matching `NativeAPI.actor.cpp:6731-6773`), and the retry re-reads `FirstMissingRange` at a
+  fresh read version, so a landed ambiguous commit is skipped — no double-count even for
+  non-idempotent COUNT/SUM index types. Pin with a kill-and-resume e2e (§5).
 - **fang.** If error-message rewording count hits six, replace the error renderer. Tracked in
   §3.2; not a blocker for any slice.
