@@ -164,6 +164,30 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   `SemanticEqualsUnderAliasMap`/`MemoEqual` machinery to Java's `containsInMemo` semantics. Runs
   **dark**. Hard part: prune the bijection enumeration by correlation/type as Java does, or
   interning gets expensive; certify it does **not** reintroduce the CTE column-rename NULL-read.
+  **FOLDED INTO SLICE 3** (gauntlet call, PR #429: Graefe + Torvalds + codex ACK-with-fold; @claude
+  n/a). The dark-shadow spike (a nil-in-prod `InternShadowObserver` hook at `Reference.Insert` +
+  corpus measurement) proved the mechanism and quantified the win, but is transitional scaffolding
+  deleted at the flip — it must land **with its Slice 3 consumer**, not stranded N shifts ahead.
+  **Analysis banked for Slice 3:**
+  - *Mechanism verified:* the shadow re-runs tier-3's exact predicate
+    (`HashCodeWithoutChildren()==eHash && MemoEqual(m,e)`) minus the `aliasAware` gate, scoped to
+    `!aliasAware`, so a `would=true` is precisely the extra dedup the global-bijection flip newly
+    authorizes.
+  - *Magnitude:* ≈259 extra dedups over 1500 planned fuzz corpus expressions (9391 non-opted-in
+    Inserts). **Approximate, and an under-count** — it shadows `Insert` only, not `InsertFinal`, and
+    live dedup mutates the member set later comparisons see (Graefe). Treat as an order-of-magnitude
+    "before" baseline, not a pinned number.
+  - *Slice 3 MUST assert the delta.* The spike's corpus test only `t.Logf`s 259 and fails on
+    `observed==0` — an unasserted log, not a tracked measurement (Torvalds). The assertion that
+    matters — shadow-predicted delta == the flip's *actual* member-count delta — is exactly what the
+    spike omits; Slice 3 carries it as its dark→live equivalence pin.
+  - *Safety is Slice-3-gated, not shadowable.* The flip collapses two members differing only by an
+    alias bijection, discarding one; anything resolving the discarded member's aliases **by identity**
+    (the name model) is orphaned. The shadow counts the collapse but never exercises it, so the only
+    thing that could break — external by-name resolution — is never touched. Certification lives in
+    §5's CTE-rename execution pins + the RFC-077 task-count baseline, which require the flip **live**
+    (hence Slice 1→3, after ordinal resolution is authoritative). Spike code preserved on
+    `feat/rfc173-p3-bijection-interning` for Slice 3 to reuse as its "before" harness.
 
 ### Slices
 
