@@ -1,6 +1,7 @@
 # RFC-171: Transaction.reset() must clear non-persistent options (port C++ reset semantics)
 
-**Status:** Draft — needs FDB-C-dev design ACK before implementation (the OnError-retry path is the risky part).
+**Status:** DESIGN ACK (FDB-C-dev) — ready for implementation. Key resolved point: `onError` PRESERVES
+per-txn persistent options; only user `Reset()` reverts them to DB defaults (see CORRECTION below).
 **Item:** FDB client bug-hunt (2026-06-30) re-run, findings: `txn-options-lifecycle` (HIGH) +
 `snapshot-ryw` (MEDIUM, same root). See `shifts/2026-06-30-fdbgo-client-bughunt.md`.
 **Spec:** libfdb_c 7.3.77 (`/tmp/fdbsrc`).
@@ -28,9 +29,30 @@ code; persistence flag is separate), `access_system_keys`, `read_your_writes_dis
 cleared by reset. And even the persistent ones revert to the **Database** defaults, not the per-txn
 overrides (the per-txn `setOption` entries were cleared).
 
-Crucially, C++ clears these on **BOTH** paths: user `reset()` AND the `OnError` retry
-(`RYWImpl::onError :1521 → resetRyow() → options.reset(tr)`). Go's single shared `reset()`
-preserves them on both.
+### CORRECTION (FDB-C-dev design review): `reset()` and `onError` DIVERGE on the persistent set
+The earlier draft claimed C++ clears **everything** on BOTH paths. That is wrong for the
+**persistent** options. The two paths share `resetRyow()` (`ReadYourWrites.actor.cpp:2699-2727`:
+`options.reset(tr)` memsets the NON-persistent RYW option fields, then `applyPersistentOptions()`
+re-applies the `persistentOptions` vector) — but they set up that vector **differently**:
+
+- **User `reset()`** (`:2735-2757`): `persistentOptions.clear()` + `sensitivePersistentOptions.clear()`,
+  then re-copies **`getTransactionDefaults()`** (the DB-level defaults) into `persistentOptions`, then
+  `resetRyow()`. → persistent options revert to **DB defaults**; per-txn `setOption` values are LOST.
+- **`onError` retry** (`RYWImpl::onError :1521 → resetRyow()` only): does **NOT** clear
+  `persistentOptions`. `applyPersistentOptions()` re-applies the **existing** vector, which still holds
+  the user's per-txn persistent `setOption`s. → per-txn `timeout` / `retry_limit` / `max_retry_delay` /
+  `auth_token` **SURVIVE** a retry.
+
+So the correct partition is:
+- **Non-persistent options** (readSystemKeys, writeSystemKeys, rywDisabled, sizeLimit, priority,
+  lockAware, snapshotRYWDisable, tags, …): CLEARED on BOTH paths (via `options.reset(tr)` in
+  `resetRyow`).
+- **Persistent options** (timeout, retry_limit, max_retry_delay, auth_token): user `reset()` → DB
+  defaults; `onError` retry → **preserved per-txn values**.
+
+Go's single shared `reset()` preserves **everything** on both paths — so it is wrong on TWO axes: it
+fails to clear the non-persistent set on either path, AND (once fixed) must NOT revert persistent
+options to DB defaults on the `onError` path the way it does for user `reset()`.
 
 ### Concrete divergences
 - **Over-permission (safety):** `SetReadSystemKeys(); Reset(); Get(\xff"foo")` → Go keeps
@@ -44,15 +66,22 @@ preserves them on both.
   reads keep bypassing pending writes; libfdb_c re-enables (DB default) so they see pending writes.
 - **Priority / lock_aware** likewise persist in Go, revert in C++.
 
-## Why this needs design review (not a quick patch)
-The faithful fix changes `reset()` to set the non-persistent option fields back to the **Database
-defaults** (`db.TransactionDefaults`), keeping only the persistent set. But `reset()` is shared by
-user `Reset()` AND the `OnError` retry loop, so this changes retry behavior: a per-transaction
-`SetReadSystemKeys`/`SetSizeLimit`/`SetSnapshotRYWDisable`/priority will **no longer survive a
-retry** (matching C++). Existing Go tests/behaviors may rely on the preservation. The exact
-persistent-vs-non-persistent partition, and whether the per-txn `timeout`/`retry_limit` should
-revert to DB defaults (C++ says yes — they re-apply DB defaults, not per-txn), need FDB-C-dev
-sign-off.
+## Why this needs design review (not a quick patch) — RESOLVED, DESIGN ACK
+The faithful fix sets the non-persistent option fields back to the **Database defaults**
+(`db.TransactionDefaults`) on BOTH paths, and — the subtle part — handles the persistent set
+DIFFERENTLY per path (see the CORRECTION above): user `Reset()` reverts persistent options to DB
+defaults; the `OnError` retry PRESERVES the per-txn persistent values. Go's single shared `reset()`
+therefore must be **split / parameterized**: both paths clear the non-persistent set, but only the
+user-`Reset()` path reseeds `persistentOptions` from `getTransactionDefaults()`; the `OnError` path
+re-applies the un-cleared per-txn `persistentOptions`. A per-transaction
+`SetReadSystemKeys`/`SetSizeLimit`/`SetSnapshotRYWDisable`/priority will **no longer survive a retry**
+(non-persistent → cleared, matching C++), but a per-transaction `SetTimeout`/`SetRetryLimit`/
+`SetMaxRetryDelay` **WILL** survive a retry (persistent, preserved on `onError`) and revert only on a
+user `Reset()`. Existing Go tests/behaviors that rely on blanket preservation must be re-framed.
+
+**Status:** FDB-C-dev DESIGN ACK obtained — the per-path persistent partition above is confirmed
+against `ReadYourWrites.actor.cpp:2699-2757` (resetRyow / reset) and `:1521` (RYWImpl::onError →
+resetRyow). Proceed to implementation behind the Torvalds + codex + @claude gauntlet.
 
 ## Proposed design
 1. Enumerate the option fields by persistence (from `fdb.options`):
@@ -68,11 +97,16 @@ sign-off.
      `timeout`/`retry_limit`/`max_retry_delay`/`auth_token` are `persistent="true"`). So Go's
      preservation of `tags` across reset/retry — and its `reset()` comment claiming "C++ keeps tags across
      retries" — are THEMSELVES the divergence to FIX here, not to confirm.
-2. `reset()` resets the non-persistent fields to the values derived from `db.TransactionDefaults`
-   (the Database-level defaults the client already tracks: `SetDefaultReadSystemKeys`,
-   `SetTransactionTimeout`, `SetTransactionSizeLimit`, …), and re-applies the persistent DB
-   defaults — mirroring `options.reset(tr)` + the `getTransactionDefaults()` re-copy.
-3. Both `Reset()` and the `OnError` retry get the cleared semantics (they already share `reset()`).
+2. **Both paths** reset the non-persistent fields to `db.TransactionDefaults` (the Database-level
+   defaults the client already tracks: `SetDefaultReadSystemKeys`, `SetTransactionSizeLimit`, …) —
+   mirroring `options.reset(tr)` in `resetRyow()`.
+3. **The persistent set diverges per path** (the fix, not a shared behavior):
+   - **user `Reset()`** reseeds the persistent options (`timeout`, `retryLimit`, `maxRetryDelay`,
+     `auth_token`) from the **DB defaults** — mirroring `persistentOptions.clear()` +
+     `getTransactionDefaults()` re-copy (`ReadYourWrites.actor.cpp:2744-2751`).
+   - **`OnError` retry** PRESERVES the per-txn persistent values — mirroring `resetRyow()`'s
+     `applyPersistentOptions()` over the un-cleared vector (`:2723`). So Go must thread a flag (or
+     split into `resetForUser()` vs `resetForRetry()`) rather than route both through one `reset()`.
 
 ## Test plan
 - **Differential (single handle reused via Reset):** the over-permission repro

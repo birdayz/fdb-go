@@ -1,6 +1,8 @@
 # RFC-172: Commit from the coalesced RYW write map (finding #28)
 
-**Status:** DRAFT — needs FDB C++ client developer DESIGN ACK before implementation.
+**Status:** DESIGN ACK (FDB-C-dev) — ready for implementation. Required corrections folded in: the fold
+gate is `isNonAssociativeOp`/`NON_ASSOCIATIVE_MASK` (ADD/OR/XOR/MAX/MIN/MINV2 fold only on EQUAL operand
+length, not "always"), and 2101 is `transaction_too_large` (a byte-size limit, not a mutation count).
 **Severity:** HIGH (app-breaking behavioral divergence). **Wire risk:** HIGHEST (the commit mutation vector).
 **Scope:** RYW-enabled commits only (`!rywDisabled`); the RYW-disabled path already commits its op log 1:1
 and stays as the control.
@@ -13,20 +15,39 @@ call). libfdb_c does NOT commit its append log: `ReadYourWritesTransaction::comm
 called from the commit actor at `:1392`). The write map folds same-key writes at INSERT time.
 
 **Consequence (app-breaking):** a transaction that increments ONE counter key 150k times (or overwrites
-one key repeatedly) works on libfdb_c/Java (folds to a single mutation) and FAILS on Go with `2101`
-(`transaction_too_large`) because Go ships 150k mutations. The final DB state is identical either way; the
-divergence is the committed mutation COUNT/SIZE, which trips Go's 2101 where C++ stays under the limit.
-Verified vs the cgo differential.
+one key repeatedly) works on libfdb_c/Java (folds to a single mutation) and FAILS on Go with `2101`.
+`2101` is **`transaction_too_large`** — a pure **byte-size** limit: the commit gate compares the
+transaction's serialized size against `options.sizeLimit` (default 10 MB), via `tr.expectedSize()` /
+`getSize()` over the mutation vector (`NativeAPI.actor.cpp:6835`, `:7728`; `error_definitions.h:240`).
+There is **no distinct mutation-COUNT limit** at 2101 — the earlier "too many mutations" framing was a
+misnomer. The final DB state is identical either way; the divergence is the serialized BYTE size of the
+committed mutation vector: Go ships the 150k-entry unfolded log (huge → trips the byte limit), libfdb_c
+ships the single folded `ADD 150000` (tiny → under the limit). Verified vs the cgo differential.
 
 ## C++ mechanism (7.3.77)
 
-**Fold, at insert time — `WriteMap::coalesceOver` (`WriteMap.cpp:480-495`):**
-- Same op type, associative (`ADD`, `OR`, `AND`, `MIN`, `MAX`, `BYTE_MIN`, `BYTE_MAX`, `MINV2`, `ANDV2`,
-  `APPEND_IF_FITS`): `stack.poppush(coalesce(existing, new))` — **replaces** the stack top with the
-  combined op (150k `ADD 1` → one `ADD 150000`).
-- **Exceptions that PUSH (keep both) instead of fold:** `CompareAndClear`; a non-associative op whose new
-  operand SIZE differs from the existing; two DIFFERENT atomic op types. (`SetValue`/`ClearRange` are
-  absolute — they reset the stack; versionstamped/unreadable ops push.)
+**Fold, at insert time — `WriteMap::coalesceOver` (`WriteMap.cpp:480-494`).** The decision is a literal
+port of these two branches; the impl MUST gate on `isNonAssociativeOp` (`NON_ASSOCIATIVE_MASK`,
+`CommitTransaction.h:576-578`), NOT on a hand-listed "associative" set (the earlier draft got this
+backwards — corrected here per the FDB-C-dev design review):
+
+- **Same type AND newEntry is NOT `CompareAndClear`:**
+  - if `isNonAssociativeOp(type)` **and** the existing top has a value **and** the two operand byte
+    lengths **DIFFER** → **PUSH** (keep both); else → **FOLD** (`poppush(coalesce(existing,new))`).
+  - `NON_ASSOCIATIVE_MASK` = `AddValue | Or | Xor | Max | Min | MinV2 | SetVersionstampedKey |
+    SetVersionstampedValue | CompareAndClear`. So `ADD/OR/XOR/MAX/MIN/MINV2` fold **only when the new
+    operand's byte length equals the existing top's** — a Go port that folds them unconditionally ships
+    wrong bytes the moment operand widths differ.
+  - The **only unconditional same-type folds** (associative — NOT in the mask) are
+    `And, AndV2, ByteMin, ByteMax, AppendIfFits`. (The 150k-`ADD 1` headline still folds: all operands
+    are 8 bytes → equal length → fold. The finding is real; the fold *condition* was mis-stated.)
+- **Different type, OR newEntry IS `CompareAndClear`:**
+  - if BOTH `existing` and `new` are atomic ops (`isAtomicOp`) → **PUSH** (two different atomic types
+    keep both); else (the existing top is an absolute `SetValue`) → **FOLD** via `coalesce`.
+  - Therefore `CompareAndClear` PUSHes over another atomic (`WriteMap.cpp:490-491`) but FOLDs over a
+    pending `SetValue` (`coalesce`, `WriteMap.cpp:374-384`) — it is NOT an unconditional keep-both.
+- `SetValue`/`ClearRange` are absolute; versionstamped ops are in the mask (push on size-mismatch, and
+  they carry unreadable/`is_unreadable` stickiness handled by the write map).
 
 **Materialize, at commit — `writeRangeToNativeTransaction` (`:1997-2071`):**
 1. **Clears FIRST** (`:2004-2018`): emit `tr.clear` for every cleared sub-range, before any set/atomic
