@@ -439,6 +439,23 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   duplicated columns coexist positionally) — a deliberate correctness improvement that moves
   goldens (§7). Hard part: output column order/reversal (`cascades_generator.go:2733-2876`) must
   now derive from result-value `Type` ordinals.
+  **Slice-4 kill list (Slice-1 gauntlet obligations — Graefe + Torvalds, recorded):**
+  - The sort named-key COMPARATOR fallback (`sortKeyFromResult`/`compareByField`
+    positional-first → Datum) is a documented coexistence tolerance, differential-blind — when the
+    Datum retires it must **die loud**, not linger as a nil-yielding path.
+  - The §5 dual-window differential (`pkg/relational/conformance/dualwindow`) + the
+    `DisablePositionalEmission` oracle retire WITH the name map.
+  - `legPhysicalOutputNames` / read-by-rendered-name in the recursive-CTE normalization must not
+    outlive the window: the end state reads leg slot *i* by ordinal (`ofOrdinalNumber` over the leg
+    quantifier, built in Slices 2–3).
+  - Bound `positionalTypeCache` (descriptor-keyed sync.Map): a dynamicpb miss Stores forever — a
+    slow leak in a long-lived multi-tenant process. Bound or evict before Slice 4 ships.
+  - `recursiveRemapValues`' first-dot split turns a qualified COMPUTED physical name
+    (`"(B.ID + 1)"`) into garbage (`QOV("(B")`) — pre-existing class, dies with the name machinery;
+    until then the ordinal model loud-errors it and the differential watches.
+  **Slices 2–3 standing obligation (Graefe):** every NEW positional-row birth site added for the
+  join producers must extend the `DisablePositionalEmission` oracle gate, or the §5 differential
+  silently loses coverage of the new frontier.
 - **Slice 5 — Correlation-closure invariant always-on** (~1.5 shifts). Delete the
   exploration-hiding / re-exposure duality (§1.1 item 2). Make `computeCorrelatedTo` subtract
   locally-bound aliases when `canCorrelate` (Java parity). **Now** turn RFC-164 WS-2's

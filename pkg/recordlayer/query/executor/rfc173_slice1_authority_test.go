@@ -1,102 +1,148 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+// authorityRow builds the discriminating frontier row: the name-keyed Datum is
+// DELIBERATELY WRONG (V -> 999, plus a stale ID key the positional type doesn't
+// carry) while the positional row is correct (V -> 42 at ordinal 0). Any
+// resolution that reads the Datum yields 999; only ordinal resolution yields 42.
+func authorityRow() QueryResult {
+	return QueryResult{
+		Datum: map[string]any{"V": int64(999), "ID": int64(999)},
+		Positional: &PositionalRow{
+			Type:  positionalTypeFromNames([]string{"V"}),
+			Slots: []any{int64(42)},
+		},
+	}
+}
+
+// authorityInner binds the discriminating row into a temp table and returns the
+// scan plan over it — the storeless inner used to drive each REAL dispatch site
+// through ExecutePlan.
+func authorityInner(t *testing.T, evalCtx *EvaluationContext, alias string) plans.RecordQueryPlan {
+	t.Helper()
+	corr := values.NamedCorrelationIdentifier(alias)
+	tt := evalCtx.GetOrCreateTempTable(corr, nil)
+	if err := tt.Add(authorityRow()); err != nil {
+		t.Fatalf("temp table add: %v", err)
+	}
+	return plans.NewRecordQueryTempTableScanPlan(corr)
+}
+
+func authorityCollect(t *testing.T, p plans.RecordQueryPlan, evalCtx *EvaluationContext) []QueryResult {
+	t.Helper()
+	cursor, err := ExecutePlan(context.Background(), p, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+	rows, err := CollectAll(context.Background(), cursor)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	return rows
+}
+
 // TestFrontierOrdinalAuthority_RFC173Slice1 is the RFC-173 Slice 1 AUTHORITY
-// PROOF: it proves the non-join frontier resolves columns by ORDINAL against the
-// positional row, NOT by name against the Datum map. The crafted row's name-keyed
-// Datum is DELIBERATELY WRONG (V -> 999); only the positional row is correct
-// (V -> 42 at ordinal 0). The projection, filter, and map resolution the executor
-// uses (frontierRowContext + Value.Evaluate / predicate.Eval — the exact
-// production code executeProjection/executeFilter/executePredicatesFilter/executeMap
-// run per row) must return the POSITIONAL value. Were the flip silently dark
-// (execution still reading the Datum), every assertion here would read 999 and the
-// full suite would still pass — this test is the guard against that.
+// PROOF, driven END-TO-END through ExecutePlan so each PRODUCTION dispatch site
+// (executeProjection, executeFilter, executePredicatesFilter, executeMap) runs
+// its real per-row code over a frontier row whose Datum is deliberately WRONG
+// (V->999) and whose Positional is correct (V->42). If any site's
+// `qr.Positional != nil` dispatch were deleted (the silently-dark-flip
+// scenario), that site would read the Datum's 999 and its subtest here would
+// fail — the whole suite otherwise stays green on agreeing rows, which is
+// exactly why this test exists (Torvalds review catch: the previous version
+// called the dispatch HELPER directly and would not have noticed a deleted
+// production dispatch).
 func TestFrontierOrdinalAuthority_RFC173Slice1(t *testing.T) {
 	t.Parallel()
-
-	// Positional row: renamed OUTPUT column V at ordinal 0 = 42. The name-keyed
-	// Datum is deliberately wrong: V -> 999, plus a stale ID key the ordinal type
-	// doesn't carry.
-	pos := &PositionalRow{
-		Type:  positionalTypeFromNames([]string{"V"}),
-		Slots: []any{int64(42)},
-	}
-	badDatum := map[string]any{"V": int64(999), "ID": int64(999)}
-	qr := QueryResult{Datum: badDatum, Positional: pos}
-
 	fieldV := values.NewFlatFieldValue("V", values.UnknownType)
-	emptyEC := EmptyEvaluationContext()
 
-	// (1) PROJECTION path: the frontier row context is the bare positional row (no
-	// binding context), and Value.Evaluate must read 42, not the Datum's 999.
-	projCtx := frontierRowContext(qr.Positional, emptyEC, hasBindingContext(emptyEC))
-	if _, isBare := projCtx.(*PositionalRow); !isBare {
-		t.Fatalf("with no binding context the frontier must flow the bare positional row, got %T", projCtx)
-	}
-	got, err := fieldV.Evaluate(projCtx)
-	if err != nil {
-		t.Fatalf("projection eval: %v", err)
-	}
-	if got != int64(42) {
-		t.Fatalf("projection read %v — wants 42 (positional), not 999 (Datum): ordinal resolution is NOT authoritative (silently-dark flip)", got)
-	}
-
-	// (2) FILTER path: predicate `V = 42` must be TRUE against the positional row.
-	// If the frontier read the Datum, V would be 999 and the predicate FALSE.
-	pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
-		Type:    predicates.ComparisonEquals,
-		Operand: &values.ConstantValue{Value: int64(42), Typ: values.TypeInt},
+	t.Run("projection", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{fieldV}, authorityInner(t, evalCtx, "auth_proj"))
+		rows := authorityCollect(t, proj, evalCtx)
+		if len(rows) != 1 {
+			t.Fatalf("got %d rows, want 1", len(rows))
+		}
+		m := rows[0].Datum.(map[string]any)
+		if m["V"] != int64(42) {
+			t.Fatalf("executeProjection read %v — wants 42 (positional), not 999 (Datum): the production dispatch is not ordinal-authoritative", m["V"])
+		}
 	})
-	res, err := pred.Eval(projCtx)
-	if err != nil {
-		t.Fatalf("filter eval: %v", err)
-	}
-	if res != predicates.TriTrue {
-		t.Fatalf("filter `V = 42` = %v — the frontier resolved V to the Datum's 999, not the positional 42", res)
-	}
 
-	// (3) MAP path: a RecordConstructorValue (the Map plan's result value) over the
-	// frontier row must carry the positional value.
-	rc := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "OUT", Value: fieldV})
-	out, err := rc.Evaluate(projCtx)
-	if err != nil {
-		t.Fatalf("map eval: %v", err)
-	}
-	if m, ok := out.(map[string]any); !ok || m["OUT"] != int64(42) {
-		t.Fatalf("map produced %v — wants OUT=42 (positional)", out)
-	}
+	t.Run("filter", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		// `V = 42` keeps the row ONLY under ordinal resolution (Datum says 999).
+		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(42), Typ: values.TypeInt},
+		})
+		filter := plans.NewRecordQueryFilterPlan(
+			[]predicates.QueryPredicate{pred}, authorityInner(t, evalCtx, "auth_filter"))
+		rows := authorityCollect(t, filter, evalCtx)
+		if len(rows) != 1 {
+			t.Fatalf("executeFilter kept %d rows, want 1 — `V = 42` must be TRUE via positional (Datum's 999 would drop the row)", len(rows))
+		}
+	})
 
-	// (4) WRAPPED (RowContextPositional) path: with a param present the frontier
-	// wraps so an outer correlation resolves via the binder — but the frontier
-	// quantifier's own column still resolves against Positional, ahead of the
-	// name-keyed Datum. RowEvalContext.Positional must precede RowEvalContext.Datum.
-	ecWithParam := EmptyEvaluationContext().WithParams([]any{int64(7)})
-	wrapped := frontierRowContext(qr.Positional, ecWithParam, hasBindingContext(ecWithParam))
-	if _, isRow := wrapped.(*values.RowEvalContext); !isRow {
-		t.Fatalf("with a param present the frontier must wrap in *RowEvalContext, got %T", wrapped)
-	}
-	got, err = fieldV.Evaluate(wrapped)
-	if err != nil {
-		t.Fatalf("wrapped projection eval: %v", err)
-	}
-	if got != int64(42) {
-		t.Fatalf("wrapped projection read %v — RowEvalContext.Positional must precede the name-keyed Datum", got)
-	}
+	t.Run("predicates_filter", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		pred := predicates.NewComparisonPredicate(fieldV, predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: int64(42), Typ: values.TypeInt},
+		})
+		pfilter := plans.NewRecordQueryPredicatesFilterPlan(
+			authorityInner(t, evalCtx, "auth_pfilter"), []predicates.QueryPredicate{pred})
+		rows := authorityCollect(t, pfilter, evalCtx)
+		if len(rows) != 1 {
+			t.Fatalf("executePredicatesFilter kept %d rows, want 1 — `V = 42` must be TRUE via positional", len(rows))
+		}
+	})
 
-	// (5) A miss on the positional frontier is LOUD, never a silent Datum fallback
-	// (Graefe: no name-map fallback). Referencing ID — absent from the [V] positional
-	// type but present (=999) in the Datum — must raise OrdinalResolutionError, NOT
-	// silently return 999.
-	fieldID := values.NewFlatFieldValue("ID", values.UnknownType)
-	var ore *values.OrdinalResolutionError
-	if _, err = fieldID.Evaluate(projCtx); !errors.As(err, &ore) {
-		t.Fatalf("frontier miss on ID must be a loud OrdinalResolutionError (no name-map fallback), got %v", err)
-	}
+	t.Run("map", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		rc := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "OUT", Value: fieldV})
+		mp := plans.NewRecordQueryMapPlan(authorityInner(t, evalCtx, "auth_map"), rc)
+		rows := authorityCollect(t, mp, evalCtx)
+		if len(rows) != 1 {
+			t.Fatalf("got %d rows, want 1", len(rows))
+		}
+		m := rows[0].Datum.(map[string]any)
+		if m["OUT"] != int64(42) {
+			t.Fatalf("executeMap read %v — wants OUT=42 (positional), not 999 (Datum)", m["OUT"])
+		}
+	})
+
+	t.Run("loud_miss_no_fallback", func(t *testing.T) {
+		t.Parallel()
+		evalCtx := EmptyEvaluationContext()
+		// ID exists ONLY in the (wrong) Datum, not in the [V] positional type: the
+		// projection must LOUD-error (no name-map fallback, Graefe), never return 999.
+		proj := plans.NewRecordQueryProjectionPlan(
+			[]values.Value{values.NewFlatFieldValue("ID", values.UnknownType)},
+			authorityInner(t, evalCtx, "auth_miss"))
+		cursor, err := ExecutePlan(context.Background(), proj, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
+		if err != nil {
+			t.Fatalf("ExecutePlan: %v", err)
+		}
+		_, err = CollectAll(context.Background(), cursor)
+		var ore *values.OrdinalResolutionError
+		if !errors.As(err, &ore) {
+			t.Fatalf("frontier miss on ID must surface a loud OrdinalResolutionError through the cursor (no name-map fallback), got %v", err)
+		}
+	})
 }

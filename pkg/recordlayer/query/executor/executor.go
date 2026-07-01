@@ -939,7 +939,7 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0
+	needsRowCtx := hasBindingContext(evalCtx)
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {

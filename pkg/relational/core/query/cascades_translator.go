@@ -3830,6 +3830,26 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	for i, n := range extractOutputProjectionNames(seedBranches[0]) {
 		seedOut[i] = strings.ToUpper(n)
 	}
+	// A projection-less seed (`SELECT * FROM t`) exposes no projection columns,
+	// which silently DROPPED an explicit CTE column-alias list
+	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
+	// gate below never length-matched, the temp table stayed keyed by the base
+	// columns, and a recursive reference to `a` was a silent NULL under the name
+	// model / a loud OrdinalResolutionError under the ordinal model (codex P2 +
+	// Graefe's pre-existing corner, RFC-173 Slice 1 gauntlet). Derive the seed
+	// schema from the operator's output — table columns for a scan
+	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
+	// onto it.
+	if len(seedSrc) == 0 && len(c.ColumnAliases) > 0 {
+		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 {
+			seedSrc = make([]string, len(fields))
+			seedOut = make([]string, len(fields))
+			for i, f := range fields {
+				seedSrc[i] = f.Name
+				seedOut[i] = f.Name
+			}
+		}
+	}
 	outCols := seedOut
 	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
 		outCols = c.ColumnAliases // already upper-cased

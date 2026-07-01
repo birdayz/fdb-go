@@ -63,9 +63,11 @@ validation gate.
     returns identical rows where it previously 42703-rejected). Name-model-safe (53/53 green). This
     UNBLOCKS Step 2b — the ordinal flip's ~15 failing derived/recursive cases now resolve clean.
     - [ ] Follow-up (Graefe, non-blocking, PRE-EXISTING — not introduced): (a) an un-aliased QUALIFIED
-      seed projection with no column-alias list folds a qualified name into `outCols`; (b) `SELECT *`
-      seed + a column-alias list drops the aliases on the length-mismatch guard (`cascades_translator.go`
-      recursive-CTE re-keying). File a ticket; fix when a slice touches the area.
+      seed projection with no column-alias list folds a qualified name into `outCols`
+      (`cascades_translator.go` recursive-CTE re-keying). Fix when a slice touches the area.
+      (b) `SELECT *` seed + column-alias list: **FIXED** in the Slice-1 gauntlet round (twice-flagged,
+      codex P2 + Graefe) — seed schema derived via `derivedOutputColumns` so the alias list applies;
+      pinned by `TestFDB_RecursiveCTEStarSeedAliases_RFC173`.
   - [x] Step 2b — ordinal resolution AUTHORITATIVE on the non-join frontier (`f0b9e206c`): producers
     flow `PositionalRow` (gate `qr.Positional != nil`, propagates along the frontier, stops at
     join/aggregate boundaries), `executeMap` gap closed, sort ValueExpr keys ordinal (named-key
@@ -89,7 +91,14 @@ validation gate.
     leaks qualified keys and regressed the RFC-130 budget). Known-red lock SHRANK (entry removed,
     real-Java-validated). Pinned: `TestFDB_RecursiveCTEComputedColumn_RFC173` (count AND values).
     Differential: 1617 entries, 0 carve-outs, 0 mismatches. All 54 targets green.
-  - [ ] Slice 1 impl gauntlet (Graefe + Torvalds + codex on the branch HEAD) → PR → @claude → merge.
+  - [~] Slice 1 impl gauntlet: **Graefe ACK** (all 5 design conditions verified; 4 recorded
+    obligations → RFC Slice-4 kill list + Slices 2–3 oracle-gate obligation). **Torvalds fix-first →
+    all items done**: (1) authority proof rewritten E2E through ExecutePlan per dispatch site
+    (projection/filter/predicates-filter/map + loud-miss — a deleted production dispatch now fails
+    the test), (2) stale reverted-shape comment rewritten, (3) `unionProjectionColumnName` delegated
+    to the shared contract, (4) `executeFilter` uses `hasBindingContext`. **codex: one P2 — the
+    `SELECT *`-seed alias drop — FIXED** (+ pinned). → re-request codex + Torvalds on the fix HEAD,
+    then PR → @claude → merge.
 - [ ] **Slice 2 2-way wedge**
   (builds `appendNullLeg` + join-producer positional dual-emission; commits to eager
   `FieldValue.ofOrdinalNumber` baking — lazy resolveOrdinal is sound ONLY on the non-join frontier,

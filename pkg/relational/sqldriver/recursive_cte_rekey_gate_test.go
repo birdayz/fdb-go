@@ -106,15 +106,17 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 
 // TestFDB_RecursiveCTEComputedColumn_RFC173 pins the dual-window differential's
 // first catch: a recursive CTE whose recursive leg projects a COMPUTED expression
-// (`SELECT n + 1`). The leg's normalization used to WRAP a projection re-reading
-// the leg output by its LOGICAL column name ("N + 1"), but the physical row is
-// keyed by the PHYSICAL name (projectionColumnName/ExplainValue → "(N + 1)") — a
-// mismatch the tolerant name map absorbed as a silent NULL, so `WHERE n < 10`
-// stopped the recursion one level early and count(*) returned 2 instead of 10.
-// Every suite recursive CTE used bare columns (logical == physical), so this
-// dimension was unprobed until the §5 differential flagged it. The fix
-// (normalizeLegToOutputColumns) overrides the leg projection's aliases
-// POSITIONALLY — nothing is re-read by name, so the mismatch site is gone.
+// (`SELECT n + 1`). The leg's normalization WRAP re-read the leg output by its
+// LOGICAL column name ("N + 1"), but the physical row is keyed by the PHYSICAL
+// name (values.ProjectionColumnName → "(N + 1)") — a mismatch the tolerant name
+// map absorbed as a silent NULL, so `WHERE n < 10` stopped the recursion one
+// level early and count(*) returned 2 instead of 10. Every suite recursive CTE
+// used bare columns (logical == physical), so this dimension was unprobed until
+// the §5 differential flagged it. The fix KEEPS the wrap — it is what strips
+// qualified keys before the temp-table insert (see normalizeLegToOutputColumns)
+// — but makes it read by the PHYSICAL names (legPhysicalOutputNames, via the
+// shared values.ProjectionColumnName naming contract), so reader and writer
+// cannot drift.
 func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -160,4 +162,53 @@ func TestFDB_RecursiveCTEComputedColumn_RFC173(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.Equal([]int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}))
+}
+
+// TestFDB_RecursiveCTEStarSeedAliases_RFC173 pins the twice-flagged (codex P2 +
+// Graefe pre-existing corner) star-seed alias drop: a projection-less seed
+// (`SELECT * FROM t`) exposed no projection columns, so an explicit CTE
+// column-alias list (`cte(a, b)`) never length-matched the alias gate and was
+// silently dropped — the temp table stayed keyed by the base columns and a
+// recursive reference to `a` was a silent NULL under the name model / a loud
+// OrdinalResolutionError under the ordinal model. The fix derives the seed
+// schema from the operator's output (table columns for a scan) so the alias
+// list applies and the seed normalizes onto it.
+func TestFDB_RecursiveCTEStarSeedAliases_RFC173(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	dbPath := "/rcte_star_seed"
+	setup := openTestDB(t, dbPath)
+	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		"CREATE SCHEMA TEMPLATE rcte_star_tmpl "+
+			"CREATE TABLE t (id BIGINT NOT NULL, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx,
+		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_star_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
+
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer db.Close()
+
+	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)")).Error().NotTo(gomega.HaveOccurred())
+
+	rows, err := db.QueryContext(ctx,
+		"WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL SELECT a + 1, b FROM cte WHERE a < 3) SELECT a, b FROM cte ORDER BY a")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	defer rows.Close()
+	type row struct{ a, b int64 }
+	var got []row
+	for rows.Next() {
+		var r row
+		g.Expect(rows.Scan(&r.a, &r.b)).To(gomega.Succeed())
+		got = append(got, r)
+	}
+	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
+	g.Expect(got).To(gomega.Equal([]row{{1, 10}, {2, 10}, {3, 10}}),
+		"star-seed CTE aliases must apply: recursion counts a to 3 with b carried")
 }
