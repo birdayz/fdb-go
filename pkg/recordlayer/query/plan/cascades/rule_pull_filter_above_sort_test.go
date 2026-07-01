@@ -67,8 +67,8 @@ func TestPullFilterAboveSortRule_FixpointTerminates(t *testing.T) {
 	}
 	src := expressions.NewLogicalSortExpression(keys, innerFQ)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPullFilterAboveSortRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPullFilterAboveSortRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

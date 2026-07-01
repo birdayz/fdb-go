@@ -92,9 +92,9 @@ func TestSortDedupKeysRule_CooperatesWithConstantKeysElim(t *testing.T) {
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
 	}
-	progress, converged := FixpointApply(rules, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner(rules, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+		t.Fatalf("exploration did not converge — tasks=%d", progress)
 	}
 	// Look for a bare Scan in the Reference.
 	foundBareScan := false
@@ -142,8 +142,8 @@ func TestSortDedupKeysRule_FixpointTerminates(t *testing.T) {
 	}
 	src := expressions.NewLogicalSortExpression(keys, q)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewSortDedupKeysRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewSortDedupKeysRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

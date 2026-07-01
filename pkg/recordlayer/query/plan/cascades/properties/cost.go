@@ -22,13 +22,14 @@
 //   - Sub-Reference recursion picks the FIRST member's cost, not the
 //     cheapest. Two reasons: (a) recursion through the cheapest is
 //     well-defined for a DAG but exponential without memoisation, and
-//     the seed prefers correctness-first-perf-later; (b) FixpointApply
-//     fires every rule on every Reference until convergence, so by the
-//     time we cost anything every Reference's first member is the
-//     original input — we cost the unoptimised sub-tree consistently
-//     across siblings, which is what "compare members at THIS Reference"
-//     wants. The full Memo + cost-driven extraction (B6) replaces this
-//     with proper memoisation.
+//     the seed prefers correctness-first-perf-later; (b) exploration
+//     rules only ADD members — Reference.Insert appends, the original
+//     input expression stays at index 0 — so this costs the
+//     unoptimised sub-tree consistently across siblings, which is what
+//     "compare members at THIS Reference" wants. The planner's winner
+//     stamping + selector-driven extraction
+//     (ExtractBestPlanFromSelector) is the production path that avoids
+//     re-costing.
 //
 //   - Tunable constants are package-level. Re-tune as B6 + Batch A land.
 //     Calibration target: a Filter under a Sort should beat a Sort

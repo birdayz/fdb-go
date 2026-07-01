@@ -225,7 +225,7 @@ func TestMemoMerge_FiresThroughRealPlanner(t *testing.T) {
 		}))
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	_, conv := p.Explore(union)
+	_, conv := exploreRewriting(p, union)
 	if !conv {
 		t.Fatal("planner did not converge")
 	}

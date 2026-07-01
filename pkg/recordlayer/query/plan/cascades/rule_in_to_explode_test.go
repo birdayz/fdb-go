@@ -324,7 +324,7 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 	rules = append(rules, NewInComparisonToExplodeRule())
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
-	if _, conv := p.Explore(ref); !conv {
+	if _, conv := exploreRewriting(p, ref); !conv {
 		t.Fatal("planner did not converge")
 	}
 

@@ -93,16 +93,18 @@ func TestBatchA_CostExtraction_PicksPhysicalOverLogical(t *testing.T) {
 	)
 	ref := expressions.InitialOf(filter)
 
-	rules := []ExpressionRule{
-		NewPrimaryScanRule(),
-		NewImplementFilterRule(),
-	}
-	p := NewPlanner(rules, nil)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	// Physical wrappers are produced during PLANNING in the production
+	// pipeline, so register the Batch A rules as planning rules.
+	p := NewPlanner(DefaultExpressionRules(), nil).
+		WithPlanningExpressionRules([]ExpressionRule{
+			NewPrimaryScanRule(),
+			NewImplementFilterRule(),
+		})
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
-	// After Explore, OPTIMIZE picks the cheapest. With CostHinter
+	// Plan's OPTIMIZE phase picks the cheapest. With CostHinter
 	// applying the physical-wrapper discount, the physical filter
 	// wrapper should win over the logical filter.
 	best := p.BestMember(ref)
@@ -243,9 +245,9 @@ func TestImplementFilterRule_FiresOverPhysicalUnion(t *testing.T) {
 func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	t.Parallel()
 	// End-to-end through the task-stack Planner: Filter(P, Scan) with
-	// PrimaryScanRule + ImplementFilterRule in the rule set converges
-	// to a Reference holding both the original logical Filter AND a
-	// physical FilterPlan-over-ScanPlan member.
+	// PrimaryScanRule + ImplementFilterRule as PLANNING rules yields a
+	// Reference holding a physical FilterPlan-over-ScanPlan member
+	// alongside the logical shapes.
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
 	filter := expressions.NewLogicalFilterExpression(
@@ -254,23 +256,25 @@ func TestPlannerWithBatchA_ImplementsFilterOverScan(t *testing.T) {
 	)
 	ref := expressions.InitialOf(filter)
 
-	rules := []ExpressionRule{
-		NewPrimaryScanRule(),
-		NewImplementFilterRule(),
-	}
-	p := NewPlanner(rules, nil)
-	if _, conv := p.Explore(ref); !conv {
-		t.Fatal("planner did not converge")
+	// Physical wrappers are produced during PLANNING in the production
+	// pipeline, so register the Batch A rules as planning rules.
+	p := NewPlanner(DefaultExpressionRules(), nil).
+		WithPlanningExpressionRules([]ExpressionRule{
+			NewPrimaryScanRule(),
+			NewImplementFilterRule(),
+		})
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
 	}
 
 	foundPhysFilter := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		if _, ok := m.(*physicalPredicatesFilterWrapper); ok {
 			foundPhysFilter = true
 			break
 		}
 	}
 	if !foundPhysFilter {
-		t.Fatalf("planner did not produce a physical PredicatesFilterPlan wrapper after rules; %d members", len(ref.Members()))
+		t.Fatalf("planner did not produce a physical PredicatesFilterPlan wrapper after rules; %d members", len(ref.AllMembers()))
 	}
 }

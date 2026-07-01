@@ -72,8 +72,8 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 	// wrapped in sub-SelectExpressions — the ExistentialValuePredicate references
 	// the existential's alias, and wrapping would change the structure
 	// downstream rules expect. Java handles this in the exploration
-	// phase where Memo-level dedup prevents interference; Go's fixpoint
-	// architecture requires an explicit guard.
+	// phase where Memo-level dedup prevents interference; Go's weaker
+	// per-Reference dedup requires an explicit guard.
 	for _, q := range quantifiers {
 		if q.Kind() != expressions.QuantifierForEach {
 			return
@@ -106,8 +106,8 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 	// sub-SelectExpressions. Re-firing would re-create it, and the cycle
 	// PartitionBinary → SelectMerge → PartitionBinary would grow the memo
 	// without bound (MaxTasks cap hit). Java has no such guard — it relies on
-	// memo interning to dedup the identical re-partition; Go's fixpoint needs
-	// the explicit check.
+	// memo interning to dedup the identical re-partition; Go's weaker
+	// per-Reference dedup needs the explicit check.
 	//
 	// The match is on the QUANTIFIER ALIAS SET, not "any predicate-less binary
 	// in the group": a join group holds several DISTINCT bipartitions of the

@@ -33,7 +33,7 @@ func TestMemoMerge_MultiWayJoinNoPanic(t *testing.T) {
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	// Must not panic, and must converge.
-	_, conv := p.Explore(join)
+	_, conv := exploreRewriting(p, join)
 	if !conv {
 		t.Fatal("planner did not converge on multi-way join")
 	}

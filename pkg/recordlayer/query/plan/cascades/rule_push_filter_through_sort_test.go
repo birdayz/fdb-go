@@ -66,8 +66,8 @@ func TestPushFilterThroughSortRule_FixpointTerminates(t *testing.T) {
 	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(sort))
 	src := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, sortQ)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPushFilterThroughSortRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterThroughSortRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

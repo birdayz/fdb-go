@@ -56,10 +56,10 @@ func BenchmarkConvert_NestedTree(b *testing.B) {
 	}
 }
 
-// BenchmarkConvertAndOptimise measures the C1 → B5 pipeline:
-// Convert + Planner.Explore over the curated default rule set on a
-// representative tree. This is the latency the SQL engine pays per
-// query plan-time today (modulo the parser).
+// BenchmarkConvertAndOptimise measures the Convert + Planner.Plan
+// pipeline over the curated default rule set on a representative
+// tree. This is the latency the SQL engine pays per query plan-time
+// today (modulo the parser).
 func BenchmarkConvertAndOptimise(b *testing.B) {
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	src := logical.NewProject(
@@ -83,6 +83,6 @@ func BenchmarkConvertAndOptimise(b *testing.B) {
 		}
 		ref := expressions.InitialOf(got)
 		p := cascades.NewPlanner(rules, nil)
-		p.Explore(ref)
+		_, _, _ = p.Plan(ref)
 	}
 }

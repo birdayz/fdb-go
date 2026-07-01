@@ -103,9 +103,9 @@ func TestSortMergeRule_TriplyNested_FlattensViaFixpoint(t *testing.T) {
 		midSortQ,
 	)
 	ref := expressions.InitialOf(topSort)
-	progress, converged := FixpointApply([]ExpressionRule{NewSortMergeRule()}, ref, 16)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewSortMergeRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d", progress)
+		t.Fatalf("exploration did not converge — tasks=%d", progress)
 	}
 	// Look for the flat Sort([k1]) over Scan.
 	flatFound := false
@@ -123,7 +123,7 @@ func TestSortMergeRule_TriplyNested_FlattensViaFixpoint(t *testing.T) {
 		}
 	}
 	if !flatFound {
-		t.Fatalf("FixpointApply did not produce Sort([k1]) over Scan; members=%d", len(ref.Members()))
+		t.Fatalf("exploration did not produce Sort([k1]) over Scan; members=%d", len(ref.Members()))
 	}
 }
 

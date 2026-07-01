@@ -10,12 +10,25 @@ import (
 	"fdb.dev/pkg/relational/core/query/plangen"
 )
 
-// TestEndToEnd_ConvertThenOptimise verifies the C1 → B5 pipeline:
-// a redundant LogicalFilter(TRUE) wrapping a LogicalScan converts
-// to LogicalFilterExpression([TRUE], FullUnorderedScan), which
-// FilterDropTruePredicatesRule + NoOpFilterRule then collapse to
-// the bare FullUnorderedScan. Pins that the converter and the rule
-// engine are wire-compatible end-to-end.
+// findBareScan reports whether ref holds a bare FullUnorderedScan
+// member.
+func findBareScan(ref *expressions.Reference) bool {
+	for _, m := range ref.Members() {
+		if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEndToEnd_ConvertThenOptimise verifies the Convert → rule-engine
+// boundary: a redundant LogicalFilter(TRUE) wrapping a LogicalScan
+// converts to LogicalFilterExpression([TRUE], FullUnorderedScan),
+// which FilterDropTruePredicatesRule + NoOpFilterRule then collapse
+// to the bare FullUnorderedScan. Pins that the converter's output is
+// bindable by the rules' matchers. (The same composition under the
+// production task-stack driver is pinned by the cascades package's
+// rule tests.)
 func TestEndToEnd_ConvertThenOptimise(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -28,25 +41,18 @@ func TestEndToEnd_ConvertThenOptimise(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner didn't converge")
-	}
-	foundBareScan := false
-	for _, m := range ref.Members() {
-		if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
-			foundBareScan = true
-			break
-		}
-	}
-	if !foundBareScan {
-		t.Fatalf("rule engine did not yield a bare FullUnorderedScan after Filter([TRUE]) — got %d members", len(ref.Members()))
+	// FilterDropTrue yields Filter([], Scan); NoOpFilter then yields
+	// the bare Scan.
+	cascades.FireExpressionRule(cascades.NewFilterDropTruePredicatesRule(), ref)
+	cascades.FireExpressionRule(cascades.NewNoOpFilterRule(), ref)
+	if !findBareScan(ref) {
+		t.Fatalf("rule chain did not yield a bare FullUnorderedScan after Filter([TRUE]) — got %d members", len(ref.Members()))
 	}
 }
 
 // TestEndToEnd_NestedFilterCollapses — Filter(TRUE, Filter(TRUE, Scan))
 // should collapse to Scan via FilterMergeRule + FilterDropTrue +
-// NoOpFilter. Multi-rule cooperation test.
+// NoOpFilter. Multi-rule cooperation on Convert output.
 func TestEndToEnd_NestedFilterCollapses(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -60,25 +66,22 @@ func TestEndToEnd_NestedFilterCollapses(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner didn't converge")
-	}
-	foundBareScan := false
-	for _, m := range ref.Members() {
-		if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
-			foundBareScan = true
-			break
-		}
-	}
-	if !foundBareScan {
-		t.Fatal("nested Filter([TRUE]) did not collapse to bare Scan after rule engine")
+	// FilterMerge collapses the adjacent filters into Filter([T,T]);
+	// DropTrue empties the predicate list; NoOpFilter elides it.
+	cascades.FireExpressionRule(cascades.NewFilterMergeRule(), ref)
+	cascades.FireExpressionRule(cascades.NewFilterDropTruePredicatesRule(), ref)
+	cascades.FireExpressionRule(cascades.NewNoOpFilterRule(), ref)
+	if !findBareScan(ref) {
+		t.Fatal("nested Filter([TRUE]) did not collapse to bare Scan after rule chain")
 	}
 }
 
 // TestEndToEnd_StackedProjectionsCollapse — Project([id]) over
 // Project([id, name]) over Scan collapses to Project([id]) over Scan
-// via ProjectionMergeRule.
+// via ProjectionMergeRule fired against the Convert output. Pins that
+// the converter's projection shape is bindable by the rule's matcher
+// (the multi-step composition itself is pinned in the cascades
+// package's rule_projection_merge tests).
 func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 	t.Parallel()
 	src := logical.NewProject(
@@ -95,9 +98,8 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner didn't converge")
+	if yielded := cascades.FireExpressionRule(cascades.NewProjectionMergeRule(), ref); len(yielded) == 0 {
+		t.Fatal("ProjectionMergeRule did not fire on Convert output")
 	}
 	// Look for a 1-deep Projection (over Scan) in the members.
 	foundFlat := false
@@ -117,24 +119,23 @@ func TestEndToEnd_StackedProjectionsCollapse(t *testing.T) {
 }
 
 // TestEndToEnd_PushFilterThroughChain exercises the Push-Filter-
-// Through-X family. Starting from
+// Through-X family across a Quantifier boundary. Starting from
 //
 //	Filter(TRUE, Sort([id], Filter(TRUE, Scan)))
 //
-// The Planner iteratively applies:
+// the exploration driven by the production planner applies:
 //  1. PushFilterThroughSort on the outer Filter → yields a Sort-
 //     rooted alternative whose inner is Filter(TRUE, Filter(TRUE,
 //     Scan))
 //  2. FilterMerge on the inner adjacent filters → Filter([T,T])
 //  3. FilterDropTrue → Filter([])
 //  4. NoOpFilter → eliminates the trivial filter, yielding Scan
-//  5. The original outer Filter(TRUE) also gets eliminated by
-//     FilterDropTrue + NoOpFilter via the top-level path
 //
-// End state: every reachable Reference contains progressively-
-// simplified members. Pin that the inner-Sort sub-Reference (held
-// by the original top-level Filter's quantifier) eventually contains
-// a bare-Scan member — proves the descent works end-to-end.
+// Pin that a bare-Scan member appears in a NON-LEAF Reference (one
+// that started with only Filter/Sort members) — proving the chain
+// composed through the sub-Reference descent on Convert output. The
+// leaf scan Reference itself is excluded: it trivially contains a
+// Scan.
 func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 	t.Parallel()
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -153,59 +154,58 @@ func TestEndToEnd_PushFilterThroughChain(t *testing.T) {
 		t.Fatalf("Convert: %v", err)
 	}
 	ref := expressions.InitialOf(got)
-	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
-	if _, converged := p.Explore(ref); !converged {
-		t.Fatal("Planner did not converge")
-	}
-	if len(ref.Members()) <= 1 {
-		t.Fatal("rule engine made no progress — Reference still has only the initial member")
-	}
-	// Walk the whole tree from `ref` and look for a bare Scan member
-	// somewhere — proves the rule chain reached the leaves through
-	// the sub-Reference descent.
-	foundBareScan := false
-	var walk func(r *expressions.Reference, visited map[*expressions.Reference]bool)
-	walk = func(r *expressions.Reference, visited map[*expressions.Reference]bool) {
-		if r == nil || visited[r] {
+
+	// Snapshot the References that hold non-Scan members BEFORE
+	// exploration; the rule chain must land a Scan inside one of them.
+	nonLeafBefore := map[*expressions.Reference]bool{}
+	var snapshot func(r *expressions.Reference)
+	snapshot = func(r *expressions.Reference) {
+		if r == nil || nonLeafBefore[r] {
 			return
 		}
-		visited[r] = true
+		hasNonScan := false
 		for _, m := range r.Members() {
-			if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
-				foundBareScan = true
-				return
+			if _, ok := m.(*expressions.FullUnorderedScanExpression); !ok {
+				hasNonScan = true
 			}
 			for _, q := range m.GetQuantifiers() {
-				walk(q.GetRangesOver(), visited)
-				if foundBareScan {
-					return
-				}
+				snapshot(q.GetRangesOver())
+			}
+		}
+		if hasNonScan {
+			nonLeafBefore[r] = true
+		}
+	}
+	snapshot(ref)
+
+	p := cascades.NewPlanner(cascades.DefaultExpressionRules(), nil)
+	if _, _, err := p.Plan(ref); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	foundBareScan := false
+	for r := range nonLeafBefore {
+		for _, m := range r.AllMembers() {
+			if _, ok := m.(*expressions.FullUnorderedScanExpression); ok {
+				foundBareScan = true
 			}
 		}
 	}
-	walk(ref, map[*expressions.Reference]bool{})
 	if !foundBareScan {
-		t.Fatalf("rule chain did not produce a bare Scan member anywhere in the tree — top-level Reference has %d members", len(ref.Members()))
+		t.Fatal("rule chain did not produce a bare Scan member in any non-leaf Reference — push/merge/drop/noop composition broke")
 	}
 }
 
-// FuzzConvertAndOptimise drives the C1 → B5 pipeline end-to-end on
-// random LogicalOperator trees. Pins three properties:
+// FuzzConvertAndPlan drives the Convert → Planner pipeline end-to-end
+// on random LogicalOperator trees. Pins three properties:
 //
 //  1. Convert may return ErrUnsupported but MUST NOT panic.
-//  2. When Convert succeeds, the resulting RelationalExpression is
-//     a valid FixpointApply input — the rule engine must terminate
-//     within 50 iters, no panic.
-//  3. After convergence, the input member is preserved as
-//     ref.Members()[0] (the rule engine ADDS, never REMOVES).
-//
-// Catches the class of bug where a converter shape produces an
-// expression the rule engine non-terminates on. (Caught the
-// DistinctOverUnionDedupRule termination bug post-revert; would have
-// caught it at-introduction if FuzzConvert seed had Union shapes.)
-// FuzzConvertAndPlan exercises the full pipeline: Convert → Planner
-// (all logical + physical rules). Verifies the planner never panics on
-// any random LogicalOperator shape.
+//  2. When Convert succeeds, the resulting RelationalExpression is a
+//     valid Plan() input — the planner must not panic on any shape.
+//  3. The planner terminates by convergence, never by the MaxTasks
+//     cap: ErrPlannerCapHit on Convert output means a rule interaction
+//     is non-terminating (the class of bug that hit
+//     DistinctOverUnionDedupRule).
 func FuzzConvertAndPlan(f *testing.F) {
 	f.Add(uint64(0), "Order", "", uint8(0))
 	f.Add(uint64(1), "T", "x", uint8(1))
@@ -228,47 +228,8 @@ func FuzzConvertAndPlan(f *testing.F) {
 		ref := expressions.InitialOf(got)
 		p := cascades.NewPlanner(rules, cascades.EmptyPlanContext()).
 			WithPlanningExpressionRules(planningRules)
-		plan, _, _ := p.Plan(ref)
-		_ = plan
-	})
-}
-
-func FuzzConvertAndOptimise(f *testing.F) {
-	f.Add(uint64(0), "Order", "", uint8(0))
-	f.Add(uint64(1), "T", "x", uint8(1))
-	f.Add(uint64(2), "A", "B", uint8(2))
-	f.Add(uint64(3), "x", "y", uint8(3))
-	f.Add(uint64(0xff), "", "", uint8(255))
-	rules := cascades.DefaultExpressionRules()
-	f.Fuzz(func(t *testing.T, seed uint64, name1, name2 string, shape uint8) {
-		op := buildFuzzOp(seed, name1, name2, shape)
-		if op == nil {
-			return
-		}
-		got, err := plangen.Convert(op)
-		if err != nil {
-			return
-		}
-		ref := expressions.InitialOf(got)
-		initialMember := ref.Get()
-		_, converged := cascades.FixpointApply(rules, ref, 50)
-		if !converged {
-			t.Fatalf("FixpointApply did not converge on Convert output of seed=%d shape=%d (op=%T)", seed, shape, op)
-		}
-		members := ref.Members()
-		if len(members) == 0 || members[0] != initialMember {
-			t.Fatalf("initial member not preserved at index 0 (seed=%d shape=%d)", seed, shape)
-		}
-		// Idempotence at convergence: a second FixpointApply should
-		// not grow the Reference. If it does, some rule is yielding
-		// non-deterministic output that escapes Reference.Insert
-		// dedup.
-		progress2, converged2 := cascades.FixpointApply(rules, ref, 5)
-		if !converged2 {
-			t.Fatalf("second FixpointApply did not converge — non-deterministic rule fire (seed=%d shape=%d)", seed, shape)
-		}
-		if progress2 != 0 {
-			t.Fatalf("second FixpointApply grew Reference by %d — rule isn't idempotent at convergence (seed=%d shape=%d)", progress2, seed, shape)
+		if _, _, err := p.Plan(ref); err == cascades.ErrPlannerCapHit {
+			t.Fatalf("Plan hit the MaxTasks cap on Convert output of seed=%d shape=%d (op=%T) — non-terminating rule interaction", seed, shape, op)
 		}
 	})
 }

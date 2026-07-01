@@ -68,8 +68,8 @@ func TestPushFilterThroughIntersectionRule_FixpointTerminates(t *testing.T) {
 	keys := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
 	src := filterOverIntersection(pT, []string{"A", "B"}, keys)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPushFilterThroughIntersectionRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterThroughIntersectionRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

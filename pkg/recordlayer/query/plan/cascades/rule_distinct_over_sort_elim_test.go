@@ -54,8 +54,8 @@ func TestDistinctOverSortElimRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 	d := distinctOverSort("k")
 	ref := expressions.InitialOf(d)
-	progress, converged := FixpointApply([]ExpressionRule{NewDistinctOverSortElimRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewDistinctOverSortElimRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

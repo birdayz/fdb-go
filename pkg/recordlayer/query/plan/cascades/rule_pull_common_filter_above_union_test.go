@@ -97,8 +97,8 @@ func TestPullCommonFilterAboveUnionRule_FixpointTerminates(t *testing.T) {
 		[]expressions.Quantifier{mkChild("A"), mkChild("B")},
 	)
 	ref := expressions.InitialOf(src)
-	progress, converged := FixpointApply([]ExpressionRule{NewPullCommonFilterAboveUnionRule()}, ref, 50)
+	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPullCommonFilterAboveUnionRule()}, nil), ref)
 	if !converged {
-		t.Fatalf("FixpointApply did not converge — progress=%d, members=%d", progress, len(ref.Members()))
+		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
 }

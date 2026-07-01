@@ -14,11 +14,10 @@ import (
 // orders yield "rows of X passing P, ordered by k".
 //
 // Why we keep BOTH this AND PushFilterThroughSort: the two shapes
-// coexist as cost-model alternatives. Cost-driven extraction
-// (B4 follow-on) picks the cheaper one. Without cost, both stay;
-// FixpointApply terminates because Reference.Insert's SemanticEquals
-// fallback absorbs structurally-equivalent re-yields after the first
-// round.
+// coexist as cost-model alternatives. Cost-driven extraction picks
+// the cheaper one. Without cost, both stay; exploration terminates
+// because Reference.Insert's SemanticEquals fallback absorbs
+// structurally-equivalent re-yields after the first round.
 //
 // Optimization argument: depending on costs, either form can win:
 //   - Push (filter under sort): sort fewer rows
