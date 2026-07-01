@@ -379,7 +379,7 @@ func TestApproximateCommitSize_SizesSnapshotNotLiveBuffer(t *testing.T) {
 	tx.mutations = append([]Mutation{}, snapshot...)
 	tx.mutations = append(tx.mutations, Mutation{Type: MutSetValue, Key: []byte("big"), Value: make([]byte, 20_000_000)})
 
-	snapSize := tx.approximateCommitSize(snapshot)
+	snapSize := tx.approximateCommitSize(snapshot, nil)
 	if snapSize > sizeofMutationRef+100 {
 		t.Fatalf("approximateCommitSize sized the live buffer (%d), not the validated snapshot — a small commit would spuriously hit 2101", snapSize)
 	}

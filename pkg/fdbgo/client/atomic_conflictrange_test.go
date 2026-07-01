@@ -30,7 +30,7 @@ func buildAndParseWriteConflicts(t *testing.T, op MutationType, key, operand []b
 
 	tx.Atomic(op, key, operand)
 
-	body, _ := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, _ := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	// Do NOT return bufp to marshalBufPool: UnmarshalFDB's WriteConflictRanges ALIAS `body` (the pooled
 	// buffer), and this helper returns those ranges to the caller, which reads them after we return.
 	// Pooling the buffer here (the old `defer marshalBufPool.Put(bufp)`) let a concurrent parallel

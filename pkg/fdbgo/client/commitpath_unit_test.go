@@ -27,7 +27,7 @@ func TestBuildCommitTransactionRequest_Plain(t *testing.T) {
 	tx.readConflicts = []KeyRange{{Begin: []byte("rk"), End: []byte("rk\x00")}}
 	tx.writeConflicts = []KeyRange{{Begin: []byte("wk"), End: []byte("wk\x00")}}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest
@@ -70,7 +70,7 @@ func TestBuildCommitTransactionRequest_LockAware(t *testing.T) {
 	}
 	tx.writeConflicts = []KeyRange{{Begin: []byte("k"), End: []byte("k\x00")}}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest
@@ -102,7 +102,7 @@ func TestBuildCommitTransactionRequest_TenantPrefix(t *testing.T) {
 	tx.readConflicts = []KeyRange{{Begin: []byte("rk"), End: []byte("rk\x00")}}
 	tx.writeConflicts = []KeyRange{{Begin: []byte("wk"), End: []byte("wk\x00")}}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest
@@ -162,7 +162,7 @@ func TestBuildCommitTransactionRequest_TenantSkipsMetadataVersionKey(t *testing.
 		{Begin: append([]byte{}, metadataVersionKey...), End: []byte("\xff/metadataVersion\x00")},
 	}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest
@@ -189,7 +189,7 @@ func TestBuildCommitTransactionRequest_TenantAdjustsVersionstampOffset(t *testin
 		{Type: MutSetVersionstampedKey, Key: key, Value: []byte("v")},
 	}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest
@@ -309,7 +309,7 @@ func TestMutationLayout_BitIdenticalRoundTrip(t *testing.T) {
 		{Begin: []byte("counter"), End: []byte("counter\x00")},
 	}
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest

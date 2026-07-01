@@ -58,8 +58,9 @@ func TestConcurrent_ConflictReaders_NoRace(t *testing.T) {
 				// lock, then marshal exactly it.
 				tx.conflictMu.Lock()
 				muts := tx.mutations
+				wc := tx.writeConflicts
 				tx.conflictMu.Unlock()
-				_, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, muts)
+				_, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, muts, wc)
 				marshalBufPool.Put(bufp)
 			}
 		}()
@@ -218,7 +219,7 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 	prefix[7] = tenantID // 8-byte big-endian tenant id
 
 	for attempt := 0; attempt < 2; attempt++ {
-		body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations)
+		body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
 
 		// tx.mutations backing array must be byte-for-byte the originals — the
 		// prefix must NOT have been written through the zero-copy alias.
@@ -260,7 +261,7 @@ func TestBuildCommitRequest_MarshalsValidatedSnapshot(t *testing.T) {
 	tx.mutations = append(append([]Mutation{}, validated...),
 		Mutation{Type: MutSetValue, Key: []byte("racing-unvalidated"), Value: []byte("v")})
 
-	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, validated)
+	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, validated, tx.writeConflicts)
 	defer marshalBufPool.Put(bufp)
 
 	var req types.CommitTransactionRequest

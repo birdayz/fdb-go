@@ -1663,7 +1663,8 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// release — we only iterate [0:len) and a concurrent append writes beyond it.
 	tx.conflictMu.Lock()
 	muts := tx.mutations
-	nWriteConflicts := len(tx.writeConflicts)
+	writeConflictsSnap := tx.writeConflicts
+	nWriteConflicts := len(writeConflictsSnap)
 	// Re-read the invalid-atomic poison UNDER the snapshot lock, linearized with `muts` (codex): the
 	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
 	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
@@ -1692,6 +1693,20 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		}
 	}
 
+	// #28 (RFC-172): ship the COALESCED RYW write map, not the unfolded op-log. libfdb_c commits
+	// writeRangeToNativeTransaction's materialized vector (clears-first + per-key folded op stacks) plus
+	// coalesced write-conflict ranges, so a txn that hammers one key ships O(distinct keys) mutations, not
+	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. Scope: !rywDisabled only (the
+	// RYW-disabled path keeps no write map and ships its op-log 1:1, matching C++). Validation above stays
+	// over `muts` (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector
+	// is coalesced, and it is derived from the already-validated `muts` SNAPSHOT (coalesceCommitMutations
+	// replays it), so a Set racing this Commit can never ship or be sized unvalidated.
+	shipMuts, shipConflicts := muts, writeConflictsSnap[:nWriteConflicts]
+	if !tx.rywDisabled {
+		shipMuts = coalesceCommitMutations(muts)
+		shipConflicts = coalesceWriteConflicts(writeConflictsSnap[:nWriteConflicts])
+	}
+
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
 	// order (NativeAPI.actor.cpp:6797-6836):
 	//   - The read-only fast path returns BEFORE the size check (:6800): a txn with NO
@@ -1708,16 +1723,16 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// that fast path's condition) but BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
-	if tx.db != nil && (len(muts) > 0 || nWriteConflicts > 0) {
+	if tx.db != nil && (len(shipMuts) > 0 || len(shipConflicts) > 0) {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
 
-	if (len(muts) > 0 || nWriteConflicts > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(muts) > tx.sizeLimit {
+	if (len(shipMuts) > 0 || len(shipConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, shipConflicts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
-	if len(muts) == 0 && nWriteConflicts == 0 {
+	if len(shipMuts) == 0 && len(shipConflicts) == 0 {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
 		// Reset for reuse (matches C client behavior).
@@ -1755,7 +1770,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
 	commitStart := time.Now()
-	if err := tx.commit(context.WithoutCancel(ctx), muts); err != nil {
+	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
 		return err
 	}
 
@@ -2314,7 +2329,7 @@ func (tx *Transaction) GetApproximateSize() int64 {
 // append-only snapshot (elements never mutated in place) captured by Commit before this runs, so
 // iterating it needs no lock; the conflict buffers are read live under conflictMu (the marshal
 // likewise ships them from a live snapshot, so counting live conflicts matches what is sent).
-func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
+func (tx *Transaction) approximateCommitSize(muts []Mutation, writeConflicts []KeyRange) int64 {
 	// The transaction_too_large (2101) check uses the NATIVE commit accounting: each mutation charged
 	// sizeof(MutationRef) and each conflict range sizeof(KeyRangeRef) (the 44/24 under pack(4)). This
 	// deliberately does NOT apply GetApproximateSize's single-key-clear adjustment: in the native
@@ -2328,11 +2343,14 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation) int64 {
 		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
 	}
 	tx.conflictMu.Lock()
-	defer tx.conflictMu.Unlock()
-	for _, r := range tx.readConflicts {
+	readConflicts := tx.readConflicts
+	tx.conflictMu.Unlock()
+	for _, r := range readConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
-	for _, r := range tx.writeConflicts {
+	// writeConflicts is the caller-supplied snapshot (coalesced for a RYW commit, #28) so the 2101 gate
+	// sizes exactly the write-conflict-range set that ships — not the uncoalesced live tx.writeConflicts.
+	for _, r := range writeConflicts {
 		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
 	return size

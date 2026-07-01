@@ -158,7 +158,7 @@ func TestIntersectRanges(t *testing.T) {
 // vectors, deep-copied out of the pooled buffer so the caller can read them after the buffer is returned.
 func marshaledConflictRanges(t *testing.T, tx *Transaction) (reads, writes []types.KeyRangeRef) {
 	t.Helper()
-	body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations)
+	body, poolBuf := buildCommitTransactionRequest(tx, transport.UID{}, tx.mutations, tx.writeConflicts)
 	defer marshalBufPool.Put(poolBuf)
 	var req types.CommitTransactionRequest
 	if err := req.UnmarshalFDB(body); err != nil {

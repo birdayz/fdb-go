@@ -294,6 +294,106 @@ func (c *rywCache) clearRange(begin, end []byte) {
 	c.unreadableRanges = subtractRangeList(c.unreadableRanges, begin, end)
 }
 
+// materializeCommit builds the coalesced commit mutation vector from the RYW write map — a port of C++
+// ReadYourWritesTransaction::writeRangeToNativeTransaction over the whole key space
+// (StringRef()..allKeys.end, ReadYourWrites.actor.cpp:1392 → :1997-2071). Two passes, matching C++:
+//   - pass 1: emit every cleared range as a ClearRange mutation. Clears go FIRST ("because of keys that
+//     are both cleared and set to a new value") — the clears-then-ops order lets a Set inside a cleared
+//     range win, so no cleared range needs splitting around operation keys.
+//   - pass 2: per operation key in sorted order emit the coalesced op — a present value → Set; an absent
+//     value (a matched CompareAndClear) → single-key Clear (C++ SetValue-absent → tr.clear(key)); a
+//     pending atomic chain → one atomicOp per folded stack entry.
+//
+// The result is [all clears in range order] ++ [all ops in key order]. The fold already happened at insert
+// time (coalesceOverAtomics + the site-B/C value-fold), so this walk ships the same bytes libfdb_c does.
+// Caller must NOT hold c.mu.
+func (c *rywCache) materializeCommit() []Mutation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Mutation, 0, len(c.cleared)+len(c.writes))
+	// Pass 1 — clears (c.cleared is kept sorted + non-overlapping by addClearedRangeLocked).
+	for _, r := range c.cleared {
+		out = append(out, Mutation{Type: MutClearRange, Key: r.begin, Value: r.end})
+	}
+	// Pass 2 — per-key operations in sorted key order.
+	c.ensureSortedLocked()
+	for _, k := range c.sortedKeys {
+		e := c.writes[k]
+		key := []byte(k)
+		switch {
+		case e.hasAtomics:
+			for _, m := range e.atomics {
+				out = append(out, Mutation{Type: m.typ, Key: key, Value: m.param})
+			}
+		case e.absent:
+			// A matched CompareAndClear resolved to "no value" → C++ SetValue(absent) → tr.clear(key),
+			// i.e. a single-key ClearRange [key, key+\x00). (An absent entry is an operation key in the
+			// write map, emitted in pass 2, NOT a cleared range from pass 1.)
+			end := make([]byte, len(key)+1)
+			copy(end, key)
+			out = append(out, Mutation{Type: MutClearRange, Key: key, Value: end})
+		default:
+			out = append(out, Mutation{Type: MutSetValue, Key: key, Value: e.value})
+		}
+	}
+	return out
+}
+
+// coalesceCommitMutations replays a validated mutation snapshot through a throwaway RYW write map and
+// materializes it, yielding the coalesced commit vector libfdb_c ships (RFC-172 / #28). Working from the
+// SNAPSHOT rather than the live tx.ryw keeps the shipped set byte-identical to the set Commit just
+// validated: the write map is a pure function of the op-log — the site-B/C value-fold and the
+// coalesceOverAtomics chain-fold use only LOCAL write state, never DB reads — so the replay reproduces
+// tx.ryw exactly, while a Set racing this Commit on another goroutine (appended to tx.mutations beyond the
+// snapshot) is simply absent and can never ship unvalidated. Single-key clears are stored in the op-log as
+// MutClearRange(k, k+\x00), so clearRange reproduces the original clear().
+func coalesceCommitMutations(muts []Mutation) []Mutation {
+	var wm rywCache
+	for _, m := range muts {
+		switch m.Type {
+		case MutSetValue:
+			wm.set(m.Key, m.Value)
+		case MutClearRange:
+			wm.clearRange(m.Key, m.Value)
+		default:
+			wm.atomic(m.Type, m.Key, m.Value)
+		}
+	}
+	return wm.materializeCommit()
+}
+
+// coalesceWriteConflicts sorts and merges write-conflict ranges (overlapping AND adjacent), matching C++'s
+// contiguous is_conflict_range segment emission in writeRangeToNativeTransaction pass 2
+// (ReadYourWrites.actor.cpp:2022-2033, 2069-2071). The per-op tx.writeConflicts list is uncoalesced, so a
+// key hammered N times carries N identical [k,k+\x00) ranges; without this they ship N-fold and trip 2101
+// on size just like the unfolded mutations. Adjacent merge ([a,b)+[b,c)→[a,c)) mirrors C++ treating
+// touching conflict segments as one range. Returns a fresh slice; input is not mutated.
+func coalesceWriteConflicts(in []KeyRange) []KeyRange {
+	if len(in) <= 1 {
+		return in
+	}
+	rs := make([]KeyRange, len(in))
+	copy(rs, in)
+	sort.Slice(rs, func(i, j int) bool {
+		if cmp := bytes.Compare(rs[i].Begin, rs[j].Begin); cmp != 0 {
+			return cmp < 0
+		}
+		return bytes.Compare(rs[i].End, rs[j].End) < 0
+	})
+	out := rs[:1]
+	for _, r := range rs[1:] {
+		last := &out[len(out)-1]
+		if bytes.Compare(r.Begin, last.End) <= 0 { // overlapping OR adjacent
+			if bytes.Compare(r.End, last.End) > 0 {
+				last.End = r.End
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // atomic records an atomic mutation.
 func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	c.mu.Lock()
