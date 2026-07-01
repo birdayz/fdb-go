@@ -242,9 +242,11 @@ Pinned deterministically: `TestWatchSetup_CancelledTxnDoesNotLeakSlot` (round-11
 1. **Poison re-check (round 10, transaction.go Commit snapshot):** block the read barrier (hold a
    pipelined GetValue reply via the simDialer intercept so Commit parks past the entry poison check),
    inject `Atomic(badOp)`, release → assert Commit returns 2018; revert-prove by removing the re-read.
-2. **Watch-ctx-early (round 12, readpath.go):** hold the WatchSetup value-read reply (sim intercept),
-   `Cancel()` mid-read, release → assert the slot is released (a second watch under cap=1 succeeds);
-   revert-prove by binding getWatchCtx late.
+2. **Watch-ctx-early (round 12, readpath.go):** ✅ DONE — `TestWatchSetup_CancelDuringValueRead_
+   ReleasesSlot` (watch_ctx_fault_test.go): holds the WatchSetup value-read reply via the simDialer
+   intercept, Cancel()s mid-read, releases → asserts the slot is freed (2nd watch under cap=1
+   succeeds). Revert-proof: with getWatchCtx bound late, the watch long-polls forever holding the
+   slot and Watch never drains (the wait times out).
 3. **Conflict atomicity (round 12, transaction.go):** drive a concurrent `AddReadConflictRange`
    (filtered into ≥2 sub-ranges) vs a Commit snapshot; assert the shipped read-conflict set is
    all-or-none. Needs a Commit-snapshot injection point.
