@@ -7,6 +7,9 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -274,5 +277,97 @@ func TestIntegration_LayeredAddressing_RecordGetWithType(t *testing.T) {
 	}
 	if !strings.Contains(out, "beta") {
 		t.Errorf("record get 2 --type ITEMS missing beta:\n%s", out)
+	}
+}
+
+// -o machine formats end-to-end: ndjson parses line-by-line, csv has
+// the header row, and both keep stdout free of the footer.
+func TestIntegration_SQL_OutputFormats(t *testing.T) {
+	setupSQLFixture(t)
+
+	out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+		"-o", "ndjson", "-c", "SELECT id, name FROM items WHERE id <= 2 ORDER BY id")
+	if err != nil {
+		t.Fatalf("sql -o ndjson: %v\noutput: %s", err, out)
+	}
+	// runCmd merges stdout+stderr; the footer line starts with "(" and
+	// must not break line-by-line JSON parsing of the data lines.
+	dataLines := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "(") {
+			continue // footer (stderr)
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Fatalf("ndjson line not JSON: %v\nline: %q", err, line)
+		}
+		dataLines++
+	}
+	if dataLines != 2 {
+		t.Errorf("ndjson data lines = %d; want 2\n%s", dataLines, out)
+	}
+
+	out, err = runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+		"-o", "csv", "-c", "SELECT id, name FROM items WHERE id = 1")
+	if err != nil {
+		t.Fatalf("sql -o csv: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "ID,NAME") || !strings.Contains(out, "1,alpha") {
+		t.Errorf("csv output missing header/row:\n%s", out)
+	}
+}
+
+// \d <table> and \explain against the live catalog, via the runner
+// directly (the REPL readline loop needs a real TTY; the meta-command
+// dispatch is the logic under test).
+func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
+	setupSQLFixture(t)
+	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/frlsql", "main"))
+	if err != nil {
+		t.Fatalf("open fdbsql: %v", err)
+	}
+	defer db.Close()
+	var out, errOut bytes.Buffer
+	r := &sqlRunner{
+		db: db, out: &out, errOut: &errOut, ctx: context.Background(),
+		clusterFile: fixture.clusterFilePath,
+		database:    "/frlsql", schema: "main",
+		st: plainSQLStyles(), format: sqlFormatTable, timing: true,
+	}
+	defer r.close()
+
+	if r.runMeta(`\d items`) {
+		t.Fatal(`\d items stopped the REPL`)
+	}
+	got := out.String()
+	if errOut.Len() > 0 {
+		t.Fatalf(`\d items errored: %s`, errOut.String())
+	}
+	if !strings.Contains(got, "ID") || !strings.Contains(got, "NAME") ||
+		!strings.Contains(got, "primary key: ID") {
+		t.Errorf(`\d items missing columns or PK:\n%s`, got)
+	}
+
+	// \d for an unknown table names the candidates.
+	errOut.Reset()
+	r.runMeta(`\d nope`)
+	if !strings.Contains(errOut.String(), "available") {
+		t.Errorf(`\d nope should list available tables, got: %s`, errOut.String())
+	}
+
+	// \explain re-runs the last query wrapped in EXPLAIN and renders a
+	// plan row (verbatim — no interpretation).
+	out.Reset()
+	errOut.Reset()
+	if err := r.execute("SELECT id FROM items WHERE id = 1"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	out.Reset()
+	r.runMeta(`\explain`)
+	if errOut.Len() > 0 {
+		t.Fatalf(`\explain errored: %s`, errOut.String())
+	}
+	if !strings.Contains(strings.ToUpper(out.String()), "SCAN") {
+		t.Errorf(`\explain output has no plan text:\n%s`, out.String())
 	}
 }

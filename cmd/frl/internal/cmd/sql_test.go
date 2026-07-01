@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -315,5 +316,137 @@ func TestPadCell(t *testing.T) {
 	// Over-sized input is returned verbatim — never truncates.
 	if got := padCell("overlong", 3); got != "overlong" {
 		t.Errorf("padCell truncated: %q", got)
+	}
+}
+
+// The machine formats must be parseable and style-free regardless of
+// profile. renderCollected is exercised directly with in-memory rows.
+func TestRenderCollected_Formats(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID", "NAME"}
+	data := [][]any{
+		{int64(1), "alpha"},
+		{int64(2), nil},
+	}
+
+	t.Run("csv", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatCSV}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("csv: %v", err)
+		}
+		want := "ID,NAME\n1,alpha\n2,\n"
+		if out.String() != want {
+			t.Errorf("csv = %q; want %q", out.String(), want)
+		}
+	})
+
+	t.Run("ndjson", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatNDJSON}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("ndjson: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("ndjson lines = %d; want 2:\n%s", len(lines), out.String())
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(lines[1]), &obj); err != nil {
+			t.Fatalf("ndjson line 2 not JSON: %v", err)
+		}
+		if obj["NAME"] != nil {
+			t.Errorf("NULL must encode as JSON null, got %v", obj["NAME"])
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatJSON}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("json: %v", err)
+		}
+		var arr []map[string]any
+		if err := json.Unmarshal(out.Bytes(), &arr); err != nil {
+			t.Fatalf("json output not an array: %v\n%s", err, out.String())
+		}
+		if len(arr) != 2 || arr[0]["ID"] != float64(1) {
+			t.Errorf("json = %v", arr)
+		}
+	})
+
+	t.Run("expanded table", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatTable, expanded: true}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("expanded: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "-[ RECORD 1 ]-") || !strings.Contains(got, "-[ RECORD 2 ]-") {
+			t.Errorf("expanded output missing record headers:\n%s", got)
+		}
+		if !strings.Contains(got, "NAME") || !strings.Contains(got, "alpha") {
+			t.Errorf("expanded output missing column/value:\n%s", got)
+		}
+	})
+}
+
+// The footer routes to stderr for machine formats and is suppressed by
+// \timing off — stdout must stay parseable.
+func TestSQLFooter_Routing(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	r := &sqlRunner{
+		st: plainSQLStyles(), out: &out, errOut: &errOut,
+		format: sqlFormatNDJSON, timing: true,
+	}
+	r.footer("(1 row)")
+	if out.Len() != 0 {
+		t.Errorf("machine-format footer leaked to stdout: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "(1 row)") {
+		t.Errorf("footer missing from stderr: %q", errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	r.timing = false
+	r.footer("(1 row)")
+	if out.Len()+errOut.Len() != 0 {
+		t.Errorf("timing off must suppress the footer, got %q / %q", out.String(), errOut.String())
+	}
+}
+
+// \x, \timing, and \explain-without-history are pure runner state — no
+// FDB needed.
+func TestRunMeta_Toggles(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	r := &sqlRunner{st: plainSQLStyles(), out: &out, errOut: &errOut, timing: true}
+
+	if r.runMeta(`\x`) {
+		t.Fatal(`\x must not stop the REPL`)
+	}
+	if !r.expanded || !strings.Contains(out.String(), "expanded display is on") {
+		t.Errorf(`\x did not enable expanded mode: %q`, out.String())
+	}
+	r.runMeta(`\x`)
+	if r.expanded {
+		t.Error(`second \x did not toggle expanded off`)
+	}
+
+	r.runMeta(`\timing`)
+	if r.timing {
+		t.Error(`\timing did not toggle off`)
+	}
+
+	errOut.Reset()
+	r.runMeta(`\explain`)
+	if !strings.Contains(errOut.String(), "no previous query") {
+		t.Errorf(`\explain without history should hint, got %q`, errOut.String())
 	}
 }
