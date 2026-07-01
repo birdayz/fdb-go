@@ -73,13 +73,20 @@ func (p *RecordQueryInJoinPlan) EqualsWithoutChildren(other RecordQueryPlan) boo
 	if !ok {
 		return false
 	}
-	return p.bindingName == o.bindingName && p.sorted == o.sorted && p.reverse == o.reverse
+	// bindingName is DELIBERATELY excluded: it is an internal correlation alias
+	// minted by UniqueCorrelationIdentifier (a process-global counter), so two
+	// structurally-identical InJoins that differ only in the arbitrary alias are
+	// the SAME plan. Including it made every replanned IN-query non-equal and
+	// differently-hashed → plan-cache churn + nondeterministic Explain (RFC-164
+	// WS-4). Identity is alias-invariant; the real alias is retained on the field
+	// for execution (GetBindingName), which is unaffected.
+	return p.sorted == o.sorted && p.reverse == o.reverse
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("injoinplan|"))
-	h.Write([]byte(p.bindingName))
+	// bindingName excluded — see EqualsWithoutChildren (alias-invariant identity).
 	if p.sorted {
 		h.Write([]byte{1})
 	}
@@ -102,7 +109,10 @@ func (p *RecordQueryInJoinPlan) Explain() string {
 			dir = " ASC"
 		}
 	}
-	return fmt.Sprintf("InJoin(%s, binding=%s%s)", inner, p.bindingName, dir)
+	// The binding correlation alias (a process-global unique counter) is NOT
+	// rendered — it varies per planning invocation and would make the Explain
+	// nondeterministic (RFC-164 WS-4); "binding" marks its presence structurally.
+	return fmt.Sprintf("InJoin(%s, binding%s)", inner, dir)
 }
 
 var _ RecordQueryPlan = (*RecordQueryInJoinPlan)(nil)

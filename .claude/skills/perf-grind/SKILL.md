@@ -126,7 +126,7 @@ Before touching any code, run `EXPLAIN SELECT ...` to see the Cascades physical 
 
 ```sql
 EXPLAIN SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id
--- → Project([ID, AMOUNT], InMemorySort([ID ASC], InJoin(IndexScan(IDX_CUSTOMER, [=]), binding=q$76 ASC)))
+-- → Project([ID, AMOUNT], InMemorySort([ID ASC], InJoin(IndexScan(IDX_CUSTOMER, [=]), binding ASC)))
 ```
 
 If the plan looks right but the query is slow, the issue is in the executor (scan range resolution, QOV binding, etc.). If the plan is wrong (full scan instead of index), the issue is in plan selection (cost model, rule firing, winner promotion).
