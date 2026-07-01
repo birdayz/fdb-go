@@ -1885,7 +1885,7 @@ func (tx *Transaction) Reset() {
 	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
 	// spans retries).
 	tx.metricStart = time.Time{}
-	tx.reset()
+	tx.reset(true) // user Reset(): persistent options (timeout/retryLimit/maxRetryDelay) revert to DB defaults
 }
 
 // regenerateSpan refreshes the transaction's trace span — a fresh span per
@@ -2257,7 +2257,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset()
+		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
 		return nil
 
 	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
@@ -2274,7 +2274,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset()
+		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
 		return nil
 
 	case ErrCommitUnknownResult, ErrClusterVersionChanged:
@@ -2302,7 +2302,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset()
+		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
 		tx.conflictMu.Lock()
 		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
 		tx.conflictMu.Unlock()
@@ -2323,7 +2323,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset()
+		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
 		return nil
 	}
 }
@@ -3128,7 +3128,11 @@ func (tx *Transaction) postCommitReset() {
 	// committedVersion and txnBatchId preserved intentionally.
 }
 
-func (tx *Transaction) reset() {
+// reset restores the transaction to a fresh state for reuse. userReset distinguishes the two C++ paths
+// (RFC-171 / #9/#14): true = user Reset() (persistentOptions.clear() + getTransactionDefaults re-copy →
+// persistent options revert to DB defaults); false = OnError retry (resetRyow's applyPersistentOptions →
+// per-txn persistent options PRESERVED). Non-persistent options are cleared to DB defaults on both.
+func (tx *Transaction) reset(userReset bool) {
 	tx.cancelWatches()
 	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
@@ -3161,14 +3165,24 @@ func (tx *Transaction) reset() {
 	tx.pendingReads = nil
 	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
+	// RFC-171 (#9/#14): re-apply the Database-level option defaults. NON-persistent options
+	// (readSystemKeys, sizeLimit, priority, rywDisabled, tags, …) are cleared to their DB defaults on BOTH
+	// paths; PERSISTENT options (timeout, retryLimit, maxRetryDelay) revert to DB defaults ONLY on a user
+	// Reset() and are PRESERVED on the OnError retry — porting C++ resetRyow (options.reset(tr) +
+	// applyPersistentOptions) vs user reset()'s persistentOptions.clear()+getTransactionDefaults re-copy.
+	// Runs BEFORE the deadline recompute below, which reads the (possibly reset) tx.timeout.
+	tx.applyOptionDefaults(userReset)
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
 	// onError does NOT update creationTime, so the timeout is an overall
 	// budget across all retries. Only user-facing Reset() updates creationTime.
+	// A user Reset() that cleared timeout to the (0) DB default clears the deadline too.
 	if tx.timeout > 0 {
 		tx.deadline = tx.creationTime.Add(tx.timeout)
+	} else {
+		tx.deadline = time.Time{}
 	}
-	// Clear accumulated proxy tag throttle duration on retry.
-	// Tags themselves are preserved across reset (C++ keeps tags across retries).
+	// Clear accumulated proxy tag throttle duration on retry (tags themselves are cleared to the DB
+	// default by applyOptionDefaults above — they are NON-persistent, C++ TransactionOptions::clear).
 	tx.proxyTagThrottledDuration = 0
 	// End the prior attempt's "Transaction" otel span and generate a fresh wire span
 	// per attempt (≈ C++ generateSpanID at cloneAndReset, RFC-115 §4). An injected
@@ -3176,10 +3190,53 @@ func (tx *Transaction) reset() {
 	// attempt's first GRV re-starts a fresh Transaction span (ensureTxSpan).
 	tx.endTxSpan()
 	tx.regenerateSpan()
-	// Preserved across reset (match C++ persistent option re-application):
-	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled,
-	// snapshotRYWDisableCount, tenantId, creationTime, tags.
+	// Option lifecycle is now handled by applyOptionDefaults above (RFC-171 / #9,#14): NON-persistent
+	// options (priority, causalReadRisky, lockAware, readLockAware, sizeLimit, rywDisabled,
+	// snapshotRYWDisableCount, readSystemKeys, writeSystemKeys, bypassUnreadable, tags) are cleared to DB
+	// defaults on BOTH paths; PERSISTENT options (timeout, retryLimit, maxRetryDelay) revert to DB defaults
+	// on a user Reset() and are preserved on OnError. tenantId (construction-time), creationTime, retryCount
+	// and backoff are managed by the callers (Reset()/OnError), not here.
+}
+
+// applyOptionDefaults re-applies the Database-level option defaults after a reset (RFC-171 / #9,#14),
+// porting C++ resetRyow's options.reset(tr) + applyPersistentOptions (ReadYourWrites.actor.cpp:2699-2727)
+// and user reset()'s persistentOptions.clear() + getTransactionDefaults re-copy (:2744-2751). Only
+// timeout/retry_limit/max_retry_delay/auth_token are persistent="true" in fdb.options; everything else is
+// NON-persistent. Non-persistent options are cleared to DB defaults on BOTH paths; persistent options
+// revert to DB defaults ONLY on a user Reset() (userReset), and are PRESERVED on the OnError retry.
+// bypassUnreadable is cleared by tx.ryw.reset() (a non-persistent RYW option); rywPoisonErr likewise.
+func (tx *Transaction) applyOptionDefaults(userReset bool) {
+	if tx.db == nil {
+		return
+	}
+	td := &tx.db.txDefaults
+	// Non-persistent → DB defaults, on BOTH reset() and OnError retry (C++ options.reset(tr) memset +
+	// re-copy of the non-persistent DB defaults).
+	tx.readSystemKeys = td.ReadSystemKeys
+	tx.writeSystemKeys = td.AccessSysKeys
+	if td.SizeLimit > 0 {
+		tx.sizeLimit = td.SizeLimit
+	} else {
+		tx.sizeLimit = transactionSizeLimit // C++ has no "disabled" state — default/ceiling is 10 MB
+	}
+	tx.priority = 0
+	tx.causalReadRisky = false
+	tx.lockAware = false
+	tx.readLockAware = false
+	tx.rywDisabled = false
+	tx.snapshotRYWDisableCount = 0
+	tx.tags = nil
+	if !userReset {
+		return // OnError retry: PRESERVE the per-txn persistent options (timeout / retryLimit / maxRetryDelay).
+	}
+	// user Reset(): persistent options revert to the DB defaults (C++ persistentOptions.clear() +
+	// getTransactionDefaults re-copy).
+	tx.timeout = time.Duration(td.Timeout) * time.Millisecond // 0 → disabled
+	tx.hasRetryLimit = td.HasRetryLimit
+	if td.HasRetryLimit {
+		tx.retryLimit = td.RetryLimit
+	}
+	tx.maxRetryDelay = time.Duration(td.MaxRetryDelay) * time.Millisecond
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows

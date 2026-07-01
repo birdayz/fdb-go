@@ -487,7 +487,7 @@ func TestReset_ClearsCommittedIdentity(t *testing.T) {
 	tx.hasCommitted = true
 	tx.nextWriteNoConflict = true
 
-	tx.reset()
+	tx.reset(false)
 
 	if tx.committedVersion != 0 || tx.hasCommitted || tx.txnBatchId != 0 {
 		t.Errorf("internal reset must clear committed identity: ver=%d has=%v batch=%d",
@@ -514,7 +514,7 @@ func TestReset_PreservesPersistentOptions(t *testing.T) {
 	tx.retryCount = 3
 	tx.backoff = 200 * time.Millisecond
 
-	tx.reset()
+	tx.reset(false)
 
 	if tx.priority != PriorityBatch || !tx.causalReadRisky || !tx.lockAware || !tx.readLockAware {
 		t.Error("reset clobbered priority / causalReadRisky / lockAware / readLockAware")
@@ -545,7 +545,7 @@ func TestReset_ClearsAccumulatedTagThrottle(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.proxyTagThrottledDuration = 1.5
-	tx.reset()
+	tx.reset(false)
 	if tx.proxyTagThrottledDuration != 0 {
 		t.Errorf("reset must clear proxyTagThrottledDuration, got %v", tx.proxyTagThrottledDuration)
 	}
@@ -559,7 +559,7 @@ func TestReset_ReAppliesTimeoutFromCreationTime(t *testing.T) {
 	tx.creationTime = creation
 	tx.deadline = time.Time{} // wipe to verify reset re-applies it
 
-	tx.reset()
+	tx.reset(false)
 
 	want := creation.Add(5 * time.Second)
 	if !tx.deadline.Equal(want) {
@@ -572,17 +572,20 @@ func TestReset_ReAppliesTimeoutFromCreationTime(t *testing.T) {
 	}
 }
 
-func TestReset_NoTimeoutLeavesDeadlineUntouched(t *testing.T) {
+func TestReset_NoTimeoutClearsDeadline(t *testing.T) {
 	t.Parallel()
+	// The deadline always reflects the current timeout: with no timeout (0), reset clears it. RFC-171 made
+	// this load-bearing — a user Reset() that reverts timeout to a 0 DB default MUST drop the prior
+	// deadline, else the reused handle spuriously times out at the stale deadline. (Pre-RFC-171 reset left
+	// the deadline untouched when timeout=0, which could leave a stale future/past deadline.)
 	tx := newTestTx()
 	tx.timeout = 0
-	originalDeadline := time.Now().Add(time.Hour) // arbitrary sentinel
-	tx.deadline = originalDeadline
+	tx.deadline = time.Now().Add(time.Hour) // a stale deadline with no backing timeout
 
-	tx.reset()
+	tx.reset(false)
 
-	if !tx.deadline.Equal(originalDeadline) {
-		t.Errorf("timeout=0: deadline must not be touched, got %v want %v", tx.deadline, originalDeadline)
+	if !tx.deadline.IsZero() {
+		t.Errorf("timeout=0: deadline must be cleared (deadline reflects the timeout), got %v", tx.deadline)
 	}
 }
 

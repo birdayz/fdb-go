@@ -80,7 +80,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 		tx := newTestTx()
 		tx.rywDisabled = true
 		tx.Clear([]byte("k"))
-		tx.reset()
+		tx.reset(false)
 		if got := tx.GetApproximateSize(); got != 0 {
 			t.Fatalf("after reset: got %d want 0", got)
 		}

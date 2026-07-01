@@ -146,7 +146,7 @@ func TestTransactionReset(t *testing.T) {
 	tx.Set([]byte("key"), []byte("val"))
 	tx.SetReadVersion(100)
 
-	tx.reset()
+	tx.reset(false)
 
 	if len(tx.mutations) != 0 {
 		t.Errorf("mutations not cleared: %d", len(tx.mutations))

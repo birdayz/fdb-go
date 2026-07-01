@@ -143,7 +143,7 @@ func TestConcurrent_ResetWhileSizing_NoRace(t *testing.T) {
 			if i%2 == 0 {
 				tx.postCommitReset()
 			} else {
-				tx.reset()
+				tx.reset(false)
 			}
 		}
 		stop.Store(true)
