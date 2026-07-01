@@ -89,7 +89,7 @@ func (rr goRangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client
 // For large ranges this can cause excessive memory usage. Prefer
 // Iterator() for streaming large result sets.
 func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
-	begin, end, err := resolveRange(rr.tx, rr.r)
+	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
 	if err != nil {
 		return nil, convertError(err)
 	}
@@ -117,7 +117,7 @@ func (rr goRangeResult) GetSliceOrPanic() []KeyValue {
 // Iterator returns a RangeIterator for streaming through results.
 // The iterator fetches data in batches according to the StreamingMode.
 func (rr goRangeResult) Iterator() RangeIterator {
-	begin, end, err := resolveRange(rr.tx, rr.r)
+	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
 	if err != nil {
 		return &goRangeIterator{err: convertError(err)}
 	}
@@ -296,7 +296,16 @@ func isTrivialSelector(ks KeySelector) bool {
 // resolveSelector resolves a key selector to raw bytes. Trivial selectors
 // (FirstGreaterOrEqual) are resolved locally; all others require a GetKey
 // round-trip to the database.
-func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
+//
+// snapshot must mirror the enclosing range read: a snapshot range read must
+// resolve its selectors via the SNAPSHOT GetKey, which adds no read-conflict
+// range. Resolving a snapshot range read's selector via the non-snapshot
+// GetKey registers a spurious read-conflict range and breaks snapshot
+// isolation — a snapshot-only transaction could fail commit with
+// not_committed(1020) where libfdb_c adds zero conflicts. C++ gates
+// addConflictRange on !snapshot and resolves the selector within the same
+// snapshot read (ReadYourWrites.actor.cpp:387-388).
+func resolveSelector(tx *transaction, ks KeySelector, snapshot bool) ([]byte, error) {
 	if isTrivialSelector(ks) {
 		// FirstGreaterOrEqual(k) — trivial, no round-trip needed.
 		// Defensive copy to avoid sharing caller's backing array.
@@ -313,7 +322,15 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 		copy(out, key)
 		return out, nil
 	}
-	// OrEqual values match the wire convention. Pass directly.
+	// OrEqual values match the wire convention. Pass directly. Snapshot range
+	// reads resolve via the snapshot GetKey so no read-conflict range is added.
+	if snapshot {
+		k, err := tx.inner.Snapshot().GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		if err != nil {
+			return nil, err
+		}
+		return k, nil
+	}
 	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 	if err != nil {
 		return nil, err
@@ -323,18 +340,20 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 
 // resolveRange extracts begin/end byte slices from a Range. For ExactRange
 // the keys are used directly. For non-trivial key selectors (anything other
-// than FirstGreaterOrEqual) the selector is resolved via GetKey.
-func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
+// than FirstGreaterOrEqual) the selector is resolved via GetKey — through the
+// snapshot GetKey when snapshot is true, so selector resolution adds no
+// read-conflict range for a snapshot range read.
+func resolveRange(tx *transaction, r Range, snapshot bool) (begin, end []byte, err error) {
 	if er, ok := r.(ExactRange); ok {
 		b, e := er.FDBRangeKeys()
 		return b.FDBKey(), e.FDBKey(), nil
 	}
 	bs, es := r.FDBRangeKeySelectors()
-	begin, err = resolveSelector(tx, bs.FDBKeySelector())
+	begin, err = resolveSelector(tx, bs.FDBKeySelector(), snapshot)
 	if err != nil {
 		return nil, nil, err
 	}
-	end, err = resolveSelector(tx, es.FDBKeySelector())
+	end, err = resolveSelector(tx, es.FDBKeySelector(), snapshot)
 	if err != nil {
 		return nil, nil, err
 	}
