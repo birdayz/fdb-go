@@ -139,7 +139,8 @@ Also written: **RFC-169** (getKey isBackward shard-location, Draft — needs mul
   `\x00\x00\x00\x00` (value) BEFORE offset parsing (C++ RYW:2251-2261), then the existing offset path
   works. Delicate (threads through versionstampKeyRange + validateVersionstampOffset); test by opening
   at API 510. Focused follow-up — wire-compat hard line says fix it, but no real app runs API<520.
-- **#22 sendGetValue fallback error-masking — UNCERTAIN, re-verify** before any change.
+- **#22 sendGetValue fallback error-masking — VERIFIED real but NARROW; fix designed + reverted
+  (needs a fragile multi-server test).** Full analysis + recipe under "Findings NOT yet fixed" below.
 
 ## #15 buffer-pool race — FIXED (round 23)
 
@@ -514,8 +515,22 @@ value, fully borne out.
   C++ withSuffix `\x00\x00` (key) / `\x00\x00\x00\x00` (value) for apiVersion<520
   (ReadYourWrites.actor.cpp:2251-2261). FIRST verify the Go client's minimum supported API version —
   if it floors at >=520 this is N/A; else add the <520 branch + differential at API 510/500.
-- **[LOW, UNCERTAIN — verify] sendGetValue sequential fallback swallows genuine FDB reply errors**
-  (`readpath.go:547`) — masks e.g. 1009 as all_alternatives_failed/1007.
+- **[LOW, VERIFIED real but NARROW — deferred for a proper multi-server test] #22 sendGetValue
+  fallback masks a genuine reply error.** VERIFIED vs C++: `getValue`'s catch propagates any non-
+  wrong_shard/all_alternatives error unchanged (`throw e`, NativeAPI.actor.cpp:3738), so a
+  future_version (1009) must surface. **But the exposure is narrower than first stated:** the Go HEDGE
+  path already surfaces a future_version reply directly via `parseGetValueReply` (readpath.go:563-565,
+  `result.err==nil` for a reply-carried error → not the fallback). The masking is ONLY reachable in the
+  fallback branch (`result.err != nil`), i.e. after the hedge CONN-FAILS or TIMES OUT **and** a
+  fallback replica then returns future_version — a narrow double-failure. There, the loop drops the
+  future_version and returns errReplyTimeout/1007 instead of 1009. **Fix (designed, not shipped):**
+  remember an `isFutureVersionOrProcessBehind` error in the fallback loop and surface it with precedence
+  version-err > timeout > 1007. **Why deferred:** a deterministic revert-prove needs a ≥3-server sim
+  with mixed per-server behavior (2 hedge arms drop/conn-fail, 1 fallback replica replies
+  `inlineErrorReply(1009)`) whose reachability depends on the container's replica count — a fragile,
+  focused test disproportionate to a LOW, narrow divergence in the sensitive read-failover path.
+  Shipping the fix without that test violates the no-untested-fix rule, so the code change was reverted;
+  this is the precise recipe for the next focused implementation.
 
 ## Axes that NEVER ran (session limit) — re-run after 7:10pm
 `size-limits`, `ryw-get`, `metadata-version`, `wire-encoding-parsers`, `grv-readversion` (partial),
