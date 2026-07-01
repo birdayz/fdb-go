@@ -86,6 +86,7 @@ go_test(
         "getrange_conflict_unit_test.go",
         "getrange_more_limit_test.go",
         "grv_cache_optin_test.go",
+        "grv_close_barrier_test.go",
         "grv_panic_test.go",
         "grv_test.go",
         "grv_unit_test.go",

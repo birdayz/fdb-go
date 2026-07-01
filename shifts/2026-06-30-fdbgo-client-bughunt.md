@@ -409,9 +409,19 @@ RYW/NativeAPI file:line for each). Follow-ups fixed in this round:
   it (prompt release on Cancel). Candidate follow-up: move the acquire to after the value read while
   keeping it synchronous (before the async poll) to match RYWImpl::watch exactly. Queued, not in scope.
 
-**Queued next-fix:** the grv-cache background-refresher `db.wg.Add(1)` (grv.go:295) can race Close's
-`wg.Wait()` (database.go:1028) at a zero counter → WaitGroup-misuse panic. Narrow (needs USE_GRV_CACHE
-opt-in racing Close); fix = a closed-guard shared with Close's cancel/Wait. `-race` repro owed.
+**Round 22 — grv-cache refresher Close barrier (new finding #25, LOW/robustness, Go-intrinsic).**
+The lazy GRV-cache background refresher's one-shot `db.wg.Add(1)` (grv.go) could race Close's
+`db.wg.Wait()` (database.go): the topology monitor keeps the wg counter ≥1 while alive, but Close's
+`cancel()` makes it Done to 0, and a concurrent USE_GRV_CACHE opt-in launching the refresher in that
+window Adds at a zero counter with a waiter registered → `sync: WaitGroup misuse: Add called
+concurrently with Wait` panic (a crash). Fix: `registerBackgroundGoroutine()` reserves the wg slot
+under `closeMu` gated on a `closed` flag that Close sets (under the same lock) BEFORE `cancel()`/
+`Wait()` — so the check-and-Add is atomic w.r.t. the store: either the Add lands before `closed` (the
+topology monitor still holds the counter ≥1, so no zero-counter Add; Close's Wait sees the slot) or
+`closed` is set first (the refresher skips, falling through to a real GRV — correct during shutdown).
+Deterministic regression `TestRegisterBackgroundGoroutine_SkipsAfterClose` (revert-proven: without the
+`closed` check it reserves a slot after Close) + `TestRegisterBackgroundGoroutine_ConcurrentCloseNoMisuse`
+(300-iteration concurrent register||Close stress, no panic). Owes its own client gauntlet.
 
 **Codex caught 21 real issues across 14 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.

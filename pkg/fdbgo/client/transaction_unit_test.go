@@ -677,6 +677,53 @@ func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
 	})
 }
 
+// TestCancel_StateVisibleWhenWatchCancelled pins codex #13's ordering deterministically (Torvalds
+// wanted a probe test): Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch
+// context observes the cancelled state at the instant it is cancelled. The store is sequenced-before
+// the context cancellation, whose Done()-close synchronizes-with the observing read (Go memory model),
+// making the state.Load guaranteed to see cancelled — that is exactly why watchSetupErr maps 1025 and
+// not context.Canceled. Uses many watches + parked observers: with the buggy order (cancelWatches
+// before the store), observers whose context is cancelled early in cancelWatches's loop run — on other
+// cores — while Cancel is still iterating, BEFORE the store, and record the non-cancelled state. Both
+// state.Load and Cancel's state.Store are atomic, so this is -race clean. Revert-proof: swap the two
+// lines in Cancel() and observers see the pre-store state → bad != 0.
+func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	const n = 512
+	ctxs := make([]context.Context, n)
+	for i := range ctxs {
+		ctxs[i], _ = tx.newWatchCtx(context.Background())
+	}
+	seen := make([]txState, n)
+	var start, done sync.WaitGroup
+	start.Add(n)
+	done.Add(n)
+	for i := range ctxs {
+		go func(i int) {
+			start.Done()
+			<-ctxs[i].Done()
+			seen[i] = txState(tx.state.Load()) // the state a setup read would observe in checkCancelled
+			done.Done()
+		}(i)
+	}
+	start.Wait()
+	time.Sleep(10 * time.Millisecond) // let every observer park on <-Done()
+	tx.Cancel()
+	done.Wait()
+	bad := 0
+	for _, s := range seen {
+		if s != txStateCancelled {
+			bad++
+		}
+	}
+	if bad != 0 {
+		t.Fatalf("%d/%d watch observers saw a non-cancelled state at cancellation — Cancel() stored the "+
+			"state AFTER cancelWatches(); it must store BEFORE so the Done()-close carries the "+
+			"happens-before edge (codex #13)", bad, n)
+	}
+}
+
 // TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
 // in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
 // a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its

@@ -319,6 +319,13 @@ type database struct {
 	closeOnce sync.Once
 	connected chan struct{}
 	wg        sync.WaitGroup
+	// closeMu guards `closed`, the barrier that stops the lazy GRV-cache background refresher from
+	// registering a wg slot once Close() has begun. Without it, the refresher's one-shot db.wg.Add(1)
+	// (grv.go) can race Close's db.wg.Wait() at a zero counter → "sync: WaitGroup misuse: Add called
+	// concurrently with Wait" panic. Close sets closed under this lock BEFORE cancel()/Wait(); the
+	// refresher launch checks it under the same lock, so the check-and-Add is atomic w.r.t. the store.
+	closeMu sync.Mutex
+	closed  bool
 }
 
 // defaultMaxOutstandingWatches mirrors CLIENT_KNOBS->DEFAULT_MAX_OUTSTANDING_WATCHES (ClientKnobs.cpp:120).
@@ -1022,8 +1029,34 @@ func (d *Database) GetDBInfo() *DBInfo {
 
 // Close shuts down the database connection. Idempotent.
 // Cancels background goroutines, waits for them to exit, closes all connections.
+// registerBackgroundGoroutine reserves a db.wg slot for a lazily-started background goroutine (the
+// GRV-cache refresher), returning true iff it was reserved. It returns FALSE once Close() has begun, so
+// a slot is never Add()ed after Close's db.wg.Wait() is (or is about to be) waiting — which, once the
+// topology-monitor slot has drained the counter toward zero, would panic with
+// "sync: WaitGroup misuse: Add called concurrently with Wait". The closed check and the Add share
+// closeMu with Close's `closed = true`, so the check-and-Add is atomic w.r.t. that store: either the
+// Add happens before closed is set (so the counter is still ≥1 from the topology monitor and Close's
+// Wait observes this slot) or closed is already set (so we skip). The caller's goroutine MUST
+// db.wg.Done() on exit.
+func (db *database) registerBackgroundGoroutine() bool {
+	db.closeMu.Lock()
+	defer db.closeMu.Unlock()
+	if db.closed {
+		return false
+	}
+	db.wg.Add(1)
+	return true
+}
+
 func (d *Database) Close() error {
 	d.db.closeOnce.Do(func() {
+		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
+		// refresher (register a new wg slot) after we've begun waiting. The refresher launch checks
+		// `closed` under closeMu and skips its Add when set (grv.go); taking the same lock here makes the
+		// check-and-Add atomic w.r.t. this store, so the Add never races Wait at a zero counter.
+		d.db.closeMu.Lock()
+		d.db.closed = true
+		d.db.closeMu.Unlock()
 		d.db.cancel()
 		d.db.wg.Wait()
 		d.db.connMu.Lock()

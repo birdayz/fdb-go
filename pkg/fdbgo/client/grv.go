@@ -291,9 +291,17 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 		// lag > MAX_VERSION_CACHE_LAG fell through to a real GRV and the cache never
 		// caught up, defeating the opt-in entirely for sparse workloads.
 		b.refreshOnce.Do(func() {
+			// Reserve the refresher's wg slot under the close barrier. If Close() has begun,
+			// registerBackgroundGoroutine returns false and we skip: starting a background goroutine +
+			// db.wg.Add(1) now would race Close's db.wg.Wait() at a zero counter (the topology monitor has
+			// Done'd) → "WaitGroup misuse: Add concurrently with Wait" panic. refreshOnce still marks this
+			// done (no retry) and tryCache below misses → the caller falls through to a real GRV, the
+			// right behavior during shutdown.
+			if !db.registerBackgroundGoroutine() {
+				return
+			}
 			b.refresherStarted.Store(true)
-			db.wg.Add(1)
-			go b.backgroundRefresher(db)
+			go b.backgroundRefresher(db) // does its own db.wg.Done() on exit
 		})
 		if v, ok := db.grvCache.tryCache(b.priority); ok {
 			db.metrics.countGRVCacheHit()
