@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -83,7 +84,11 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	for i, col := range c.groupCols {
 		if i < len(entry.Key) {
-			datum[col] = entry.Key[i]
+			// Normalize a UUID group key (tuple.UUID off the aggregate index)
+			// to the neutral [16]byte the value layer uses, matching the
+			// covering cursor — otherwise a residual HAVING/filter compare in
+			// cmpAny (which only knows [16]byte) would miss it.
+			datum[col] = tupleElementToUUID(entry.Key[i])
 		}
 	}
 
@@ -879,6 +884,15 @@ func compareValues(a, b any) int {
 				return 1
 			}
 			return 0
+		}
+	case [16]byte:
+		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
+		// wire encoding and the filter-path predicates.cmpAny use, so an
+		// in-memory sort of a non-indexed UUID column agrees with an ordered
+		// index scan. Without this arm the fmt.Sprintf("%v") fallback below would
+		// compare decimal-list strings ("[85 14 …]") in lexical, not byte, order.
+		if bv, ok := b.([16]byte); ok {
+			return bytes.Compare(av[:], bv[:])
 		}
 	}
 	as := fmt.Sprintf("%v", a)

@@ -10,6 +10,7 @@
 package executor
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
 	"fmt"
@@ -3556,6 +3557,15 @@ func compareAny(a, b any) int {
 			return -1
 		}
 		return 1
+	case [16]byte:
+		// UUID sorts by unsigned big-endian bytes — same order as the tuple.UUID
+		// wire encoding and predicates.cmpAny, so MIN/MAX-style ordering and the
+		// aggregate-sort path agree with an ordered index scan.
+		bv, ok := b.([16]byte)
+		if !ok {
+			return 0
+		}
+		return bytes.Compare(av[:], bv[:])
 	default:
 		return 0
 	}

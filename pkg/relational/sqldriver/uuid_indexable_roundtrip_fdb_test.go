@@ -108,6 +108,12 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	ck("eq_other", fmt.Sprintf("SELECT id FROM t WHERE v = '%s'", uuidV2), []int64{2})
 	ck("eq_reversed", fmt.Sprintf("SELECT id FROM t WHERE '%s' = v", uuidV3), []int64{3})
 	ck("ne", fmt.Sprintf("SELECT id FROM t WHERE v <> '%s'", uuidV1), []int64{2, 3})
+	// IS [NOT] DISTINCT FROM — null-safe (in)equality. These do NOT SARG an
+	// index (residual, via cmpAny), so the STRING comparand MUST still be typed
+	// to UUID or cmpAny sees string-vs-[16]byte, returns UNKNOWN, and every row
+	// reads as "distinct" — silently wrong on a supported operator. (Graefe r2.)
+	ck("not_distinct_from", fmt.Sprintf("SELECT id FROM t WHERE v IS NOT DISTINCT FROM '%s'", uuidV1), []int64{1})
+	ck("distinct_from", fmt.Sprintf("SELECT id FROM t WHERE v IS DISTINCT FROM '%s'", uuidV1), []int64{2, 3})
 	ck("in", fmt.Sprintf("SELECT id FROM t WHERE v IN ('%s', '%s')", uuidV1, uuidV3), []int64{1, 3})
 	ck("lt", fmt.Sprintf("SELECT id FROM t WHERE v < '%s'", uuidV3), []int64{1, 2})
 	ck("ge", fmt.Sprintf("SELECT id FROM t WHERE v >= '%s'", uuidV2), []int64{2, 3})
@@ -157,6 +163,85 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 		}
 	})
 
+	// ORDER BY a UUID column sorts in tuple space (unsigned big-endian) and
+	// surfaces canonical strings. [16]byte sorts identically to the canonical
+	// hex string, so ascending order is u1,u2,u3.
+	t.Run("order_by", func(t *testing.T) {
+		rows, err := db.QueryContext(ctx, "SELECT v FROM t ORDER BY v")
+		if err != nil {
+			t.Fatalf("ORDER BY v: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, s)
+		}
+		want := []string{uuidV1, uuidV2, uuidV3}
+		if len(got) != len(want) {
+			t.Fatalf("ORDER BY v = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("ORDER BY v[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	// DISTINCT dedups by the neutral [16]byte value and materializes canonical
+	// strings. Insert a duplicate of u1 (id=4) and confirm the distinct set.
+	t.Run("distinct", func(t *testing.T) {
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (4, '%s')", uuidV1))
+		t.Cleanup(func() { mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id = 4") })
+		rows, err := db.QueryContext(ctx, "SELECT DISTINCT v FROM t ORDER BY v")
+		if err != nil {
+			t.Fatalf("DISTINCT v: %v", err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, s)
+		}
+		want := []string{uuidV1, uuidV2, uuidV3}
+		if len(got) != len(want) {
+			t.Fatalf("DISTINCT v = %v, want %v (u1 deduped)", got, want)
+		}
+	})
+
+	// GROUP BY a UUID column: the group key is the neutral [16]byte, and the
+	// projected key materializes to the canonical string.
+	t.Run("group_by", func(t *testing.T) {
+		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (5, '%s')", uuidV1))
+		t.Cleanup(func() { mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id = 5") })
+		rows, err := db.QueryContext(ctx, "SELECT v, COUNT(*) FROM t GROUP BY v")
+		if err != nil {
+			t.Fatalf("GROUP BY v: %v", err)
+		}
+		defer rows.Close()
+		counts := map[string]int64{}
+		for rows.Next() {
+			var s string
+			var c int64
+			if err := rows.Scan(&s, &c); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			counts[s] = c
+		}
+		if counts[uuidV1] != 2 {
+			t.Errorf("GROUP BY: count(%s) = %d, want 2", uuidV1, counts[uuidV1])
+		}
+		if counts[uuidV2] != 1 || counts[uuidV3] != 1 {
+			t.Errorf("GROUP BY counts = %v, want u2:1 u3:1", counts)
+		}
+	})
+
 	// MIN/MAX over a UUID column is REJECTED — identically to Java. Java's
 	// NumericAggregationValue only registers MIN/MAX physical operators for
 	// INT/LONG/FLOAT/DOUBLE (no UUID, no STRING), so encapsulation fails the
@@ -171,6 +256,81 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "unable to encapsulate aggregate operation due to type mismatch") {
 			t.Fatalf("expected Java's aggregate type-mismatch rejection, got: %v", err)
+		}
+	})
+}
+
+// ORDER BY / DISTINCT on a NON-INDEXED UUID column forces the in-memory sort
+// path (executeInMemorySort), whose comparators (compareValues/compareAny) are
+// separate from the filter-path cmpAny. Without a [16]byte arm they fall back to
+// fmt.Sprintf("%v")/return-0 and mis-order (or don't order) UUIDs. An indexed
+// column would mask this via the ordered index scan, so this table deliberately
+// has NO index on v, and rows are inserted OUT of byte order.
+func TestFDB_UUIDNonIndexedSort(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_uuidsort")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidsort")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT NOT NULL, v UUID, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidsort/s WITH TEMPLATE uuidsort")
+	dsn := fmt.Sprintf("fdbsql:///testdb_uuidsort?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// Insert OUT of byte order (u3, u1, u2) and with a duplicate of u1.
+	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		"INSERT INTO t (id, v) VALUES (1, '%s'), (2, '%s'), (3, '%s'), (4, '%s')",
+		uuidV3, uuidV1, uuidV2, uuidV1))
+
+	strs := func(q string) []string {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+
+	t.Run("order_by_ascending_bytes", func(t *testing.T) {
+		got := strs("SELECT v FROM t ORDER BY v")
+		want := []string{uuidV1, uuidV1, uuidV2, uuidV3} // u1 appears twice (ids 2,4)
+		if len(got) != len(want) {
+			t.Fatalf("ORDER BY v = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("ORDER BY v = %v, want %v (unsigned big-endian byte order)", got, want)
+			}
+		}
+	})
+	t.Run("order_by_descending", func(t *testing.T) {
+		got := strs("SELECT v FROM t ORDER BY v DESC")
+		want := []string{uuidV3, uuidV2, uuidV1, uuidV1}
+		for i := range want {
+			if i < len(got) && got[i] != want[i] {
+				t.Fatalf("ORDER BY v DESC = %v, want %v", got, want)
+			}
+		}
+	})
+	t.Run("distinct_non_indexed", func(t *testing.T) {
+		got := strs("SELECT DISTINCT v FROM t ORDER BY v")
+		want := []string{uuidV1, uuidV2, uuidV3}
+		if len(got) != len(want) {
+			t.Fatalf("DISTINCT v = %v, want %v", got, want)
 		}
 	})
 }

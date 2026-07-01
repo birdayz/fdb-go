@@ -322,27 +322,29 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 
 // promoteStringComparandToUuid types a STRING comparand compared against a UUID
 // operand as UUID, mirroring Java (where the comparand is a java.util.UUID, not
-// a String) and the widenIntConstAgainstDouble sibling for the numeric SARG
-// case. A UUID column has no native proto/SQL primitive — `uuid_col = '<uuid>'`
-// arrives with the column typed UUID and the literal typed STRING. Without this
-// promotion the comparand evaluates to a Go string and the index-scan range
-// packs a 0x02 string tuple element that never matches the 0x30 UUID index
-// entry. Wrapping the STRING operand in a PromoteValue toward the UUID type
-// makes it parse to a neutral [16]byte at eval time (PromoteValue.Evaluate's
-// STRING_TO_UUID arm), which the executor's scan packer seeks as a tuple.UUID.
+// a String). A UUID column has no native proto/SQL primitive — `uuid_col =
+// '<uuid>'` arrives with the column typed UUID and the literal typed STRING.
+// Without this promotion the comparand evaluates to a Go string: an index-scan
+// range packs a 0x02 string tuple element that never matches the 0x30 UUID
+// entry, and the residual/filter path (predicates.cmpAny) has no string↔[16]byte
+// arm so it returns UNKNOWN. Wrapping the STRING operand in a PromoteValue
+// toward the UUID type makes it parse to a neutral [16]byte at eval time
+// (PromoteValue.Evaluate's STRING_TO_UUID arm), which the executor's scan packer
+// then seeks as a tuple.UUID and cmpAny compares as [16]byte==[16]byte.
 //
-// Only equality/ordering comparisons SARG an index, so only those are promoted.
+// This is comparand TYPING (a semantic property of the value), deliberately NOT
+// gated on the SARG operator whitelist the numeric widenIntConstAgainstDouble
+// sibling uses: for numerics cmpAny widens int↔float at compare time so a
+// non-SARG operator (e.g. IS DISTINCT FROM) still compares correctly unpromoted,
+// but cmpAny cannot compensate for string-vs-[16]byte, so EVERY comparison
+// operator that reaches here (=, <>, <, <=, >, >=, IS [NOT] DISTINCT FROM) must
+// type its comparand or return wrong rows. LIKE/STARTS_WITH/IN take separate
+// resolvers, so only genuine equality/ordering/distinct-from ops arrive.
+//
 // A col-vs-col UUID join (both sides already UUID) is left untouched — its
 // comparand already evaluates to [16]byte, so no string coercion is needed and
 // none is inserted (this is the INL-join-key case a positional mask got wrong).
-func promoteStringComparandToUuid(op predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
-	switch op {
-	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
-		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
-		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq:
-	default:
-		return left, right
-	}
+func promoteStringComparandToUuid(_ predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
 	lt, rt := left.Type(), right.Type()
 	if lt == nil || rt == nil {
 		return left, right
