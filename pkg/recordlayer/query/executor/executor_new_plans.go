@@ -38,7 +38,7 @@ func executeAggregateIndexScan(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
-	scanRange, err := scanComparisonsToTupleRange(idxPlan.GetScanComparisons(), evalCtx)
+	scanRange, err := scanComparisonsToTupleRange(idxPlan.GetScanComparisons(), scanBindContext(evalCtx))
 	if err != nil {
 		return nil, fmt.Errorf("executor: building scan range for %q: %w", idxPlan.GetIndexName(), err)
 	}
