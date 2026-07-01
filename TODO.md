@@ -16,6 +16,22 @@ merge independently; atomic Slice 3 as its own PR), RFC-ack → per-slice re-ack
 **~25–30 shifts**. See RFC-173 §4 for the slice order and §5 for the (execution-pin, not dark-diff)
 validation gate.
 
+### RFC-173 progress (slice tracker)
+
+- [x] **RFC** — `rfcs/173-ordinal-column-resolution.md`, all-four-acked, merged (#422).
+- [x] **P1 — ordinal `FieldPath` substrate** (dark): `FieldValue.resolveOrdinal` + `RecordType.FieldIndex`
+  (list-position = Java ordinal) + `NewRecordType` normalises `Fields[i].Ordinal == i`. All-four-acked,
+  merged (#423, `a20794e9b`).
+- [ ] **P2 — positional/typed runtime row** (NEXT; heaviest precursor, ~2 shifts). Emit a typed positional
+  row alongside the name-keyed `map[string]any` in every producer; build positional null-extension for the
+  Go-only outer joins here. **Carry-forward:** (a) [Graefe] when a resolution path becomes AUTHORITATIVE,
+  escalate `resolveOrdinal`'s absent-field / non-record decline from silent `(0,false)` to Java's
+  `SemanticException` (fail loud, not silent-wrong); (b) [@claude] `RecordType.FieldIndex` and `LookupField`
+  are near-duplicate linear scans — dedup (`LookupField` → `FieldIndex` + index) when P2 touches both.
+- [ ] P3 — alias-bijection interning · [ ] Slice 1 non-join ordinal · [ ] Slice 2 2-way wedge ·
+  [ ] Slice 3 atomic N-way flip · [ ] Slice 4 retire `AnchoredJoin` · [ ] Slice 5 closure invariant ·
+  [ ] Slice 6 extensions + ANSI headroom.
+
 ## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
 
 RFC-173 is a **detour**. We reached it while executing the RFC-164 umbrella (the `/goal`): WS-2
