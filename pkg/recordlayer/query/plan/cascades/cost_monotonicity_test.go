@@ -22,9 +22,22 @@ import (
 //     MORE rows. An equality bound out-selects a range; adding ANY bound only
 //     lowers selectivity (each factor is in (0,1)); empty/nil bounds are inert.
 //
-// Because boundSelectivity is the single source for equality-vs-range costing
-// (shared by both HintCost sites + scanLikeCost), pinning it here guards every
-// index-selection decision against a future edit silently re-inverting the order.
+// Scope (Graefe): this is LAYERED protection, not sole coverage. It pins the
+// in-boundSelectivity invariant — the load-bearing `selEq < selRng` catches a
+// future edit that re-applies FilterSelectivity (0.5) to an equality branch (the
+// exact #405 inversion) even if the constants stay correctly ordered. The actual
+// index MIS-PICK it caused is guarded at the plan level by
+// TestCostSelectivity_PrefersEqualityIndex (pkg/relational/core/embedded); this
+// test does not exercise the three callers (physical{,Index}ScanWrapper.HintCost,
+// scanLikeCost) that turn `sel` into a cardinality, nor scanLikeCost's
+// `fullBindUnique` 1-row short-circuit (the low-NDV secondary-index hazard) —
+// those remain a follow-up (RFC-164 WS-4).
+//
+// CAVEAT: this pins EqualityBoundSelectivity = 0.1 as a STATLESS high-NDV
+// assumption (boundSelectivity's own doc, planning_cost_model.go). The metamorphic
+// framing (selEq < selRng, monotonicity) survives a future per-column-NDV fix that
+// makes equality selectivity vary — the exact-value sibling TestBoundSelectivity
+// would not.
 func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 	t.Parallel()
 
@@ -85,9 +98,9 @@ func TestBoundSelectivity_CostMonotonicity(t *testing.T) {
 
 	// (4) Empty / nil bounds are inert — they must not change selectivity or count
 	// (a dropped/unbound scan column must not spuriously make an access look cheaper).
-	selWithInert, nWithInert, _ := boundSelectivity([]*predicates.ComparisonRange{predicates.EmptyComparisonRange(), eq, nil})
-	if selWithInert != selEq || nWithInert != 1 {
-		t.Errorf("empty/nil bounds must be skipped: sel=%v numBound=%d, want %v, 1", selWithInert, nWithInert, selEq)
+	selWithInert, nWithInert, allEqInert := boundSelectivity([]*predicates.ComparisonRange{predicates.EmptyComparisonRange(), eq, nil})
+	if selWithInert != selEq || nWithInert != 1 || !allEqInert {
+		t.Errorf("empty/nil bounds must be skipped: sel=%v numBound=%d allEquality=%v, want %v, 1, true", selWithInert, nWithInert, allEqInert, selEq)
 	}
 }
 
