@@ -842,6 +842,9 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 
 	entry := result.GetValue()
 	datum, pos := buildCoveringRow(c.columns, c.pkColumns, entry.IndexValues(), entry.PrimaryKey(), c.posType)
+	if DisablePositionalEmission { // §5 dual-window differential oracle gate
+		pos = nil
+	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum, Positional: pos}, result.GetContinuation()), nil
 }
 
@@ -936,12 +939,17 @@ func executeFilter(
 	}
 
 	preds := p.GetPredicates()
-	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0
+	needsRowCtx := hasBindingContext(evalCtx)
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any = qr.Datum
-			if m, ok := qr.Datum.(map[string]any); ok {
+			if qr.Positional != nil {
+				// RFC-173 Slice 1: the non-join frontier flows an authoritative
+				// ordinal row — resolve filter predicates by ordinal (loud on a
+				// miss, no name-map fallback).
+				rowCtx = frontierRowContext(qr.Positional, evalCtx, needsRowCtx)
+			} else if m, ok := qr.Datum.(map[string]any); ok {
 				switch {
 				case StrictReferenceCheck && qr.Complete:
 					// RFC-048 W1: a HAVING/filter reference to a name absent from
@@ -1374,14 +1382,26 @@ func executeProjection(
 	projections := p.GetProjections()
 	aliases := p.GetAliases()
 	needsRowCtx := len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0
-	// RFC-173 P2: the projection's output schema is row-invariant — compute the
-	// column names and the (dup-safe) positional RecordType ONCE, then emit a
-	// PositionalRow per row alongside the name-keyed map.
+	// RFC-173 Slice 1: on the positional frontier an outer correlation resolves via
+	// the eval context's binder before the bare-positional frontier fallback.
+	posNeedsCtx := hasBindingContext(evalCtx)
+	// RFC-173 P2/Slice 1: the projection's output schema is row-invariant — compute
+	// it ONCE. projNames keys the name-keyed Datum (source column name for a bare
+	// field ref, from projectionColumnName); posNames names the EMITTED positional
+	// row's slots by OUTPUT name (alias-preferring) so a downstream ordinal consumer
+	// resolves this derived table's OUTPUT columns, not the source column a field
+	// ref reads from — the buried-reference fix's ordinal counterpart.
 	projNames := make([]string, len(projections))
+	posNames := make([]string, len(projections))
 	for i, proj := range projections {
 		projNames[i] = projectionColumnName(proj)
+		if i < len(aliases) && aliases[i] != "" {
+			posNames[i] = strings.ToUpper(aliases[i])
+		} else {
+			posNames[i] = projNames[i]
+		}
 	}
-	projType := positionalTypeFromNames(projNames)
+	projType := positionalTypeFromNames(posNames)
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -1390,7 +1410,12 @@ func executeProjection(
 		projected := make(map[string]any, len(projections))
 		slots := make([]any, len(projections))
 		var rowCtx any = qr.Datum
-		if m, ok := qr.Datum.(map[string]any); ok {
+		if qr.Positional != nil {
+			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
+			// row — resolve projections by ordinal (loud on a miss, no name-map
+			// fallback), taking precedence over the name-keyed Datum.
+			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
+		} else if m, ok := qr.Datum.(map[string]any); ok {
 			switch {
 			case StrictReferenceCheck && qr.Complete:
 				// RFC-048 W1: a projection reading a name absent from a complete
@@ -1427,9 +1452,21 @@ func executeProjection(
 				}
 			}
 		}
+		// RFC-173 Slice 1: emit the ordinal row ONLY when the input is itself on
+		// the non-join frontier (carried a Positional). A projection OVER A JOIN
+		// re-emits join-qualified columns (ALIAS.COL) whose downstream references
+		// are correlated QOV(alias).col — a name-model, not-ordinal shape; emitting
+		// a Positional there would wrongly flip the consumer onto the ordinal path
+		// and miss (qualified name != bare field). Positional thus propagates along
+		// the frontier and stops at the join/aggregate boundary — the self-excluding
+		// gate the RFC specifies, enforced at emission.
+		var positional *PositionalRow
+		if qr.Positional != nil {
+			positional = &PositionalRow{Type: projType, Slots: slots}
+		}
 		return QueryResult{
 			Datum:      projected,
-			Positional: &PositionalRow{Type: projType, Slots: slots},
+			Positional: positional,
 			Record:     qr.Record,
 			PrimaryKey: qr.PrimaryKey,
 		}
@@ -3028,7 +3065,17 @@ func executeRecursiveLevelUnion(
 	var canonicalCols []string
 	if distinct {
 		seen = newBoundedSet[string](props.State)
-		if len(items) > 0 {
+		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
+		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
+		// seed datum can carry INERT extra keys (e.g. the source column a rename
+		// projects from — {SRC, N} for `reach(n)` seeded by `SELECT src`). Those
+		// inert keys are absent from the recursive leg's rows, so scraping ALL seed
+		// datum keys would wrongly treat a recursive row and a seed row with the
+		// same OUTPUT value as distinct (breaking cycle detection). The projection
+		// schema restricts the dedup to the real output columns. Fall back to
+		// scraping the datum when the seed has no projection (e.g. SELECT *).
+		canonicalCols = recursiveUnionOutputColumns(p.GetInitialState())
+		if len(canonicalCols) == 0 && len(items) > 0 {
 			if m, ok := items[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
 				for k := range m {
@@ -3135,14 +3182,17 @@ func executeRecursiveDfsJoin(
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
 	var seen *boundedSet[string]
-	// For UNION DISTINCT, extract the canonical column names from the
-	// root datum. The dedup key must use only these columns so that
-	// root rows (with 1 column) and recursive rows (which may carry
-	// extra join columns in the datum) produce matching keys.
+	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns. Prefer the root
+	// plan's projection OUTPUT schema: after the temp table is keyed under OUTPUT
+	// names, the root datum can carry INERT extra keys (the source column a rename
+	// projects from), absent from the recursive rows — scraping ALL root keys
+	// would then treat equal-output rows as distinct and break cycle detection.
+	// Fall back to scraping the root datum when there is no projection (SELECT *).
 	var canonicalCols []string
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
-		if len(rootRows) > 0 {
+		canonicalCols = recursiveUnionOutputColumns(p.GetRoot())
+		if len(canonicalCols) == 0 && len(rootRows) > 0 {
 			if m, ok := rootRows[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
 				for k := range m {
@@ -3415,8 +3465,8 @@ func sortByKeys(items []QueryResult, keys []string, directions []bool) {
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		for k, key := range keys {
-			vi := fieldFromDatum(items[i].Datum, key)
-			vj := fieldFromDatum(items[j].Datum, key)
+			vi := sortKeyFromResult(items[i], key)
+			vj := sortKeyFromResult(items[j], key)
 			cmp := compareAny(vi, vj)
 			if cmp == 0 {
 				continue
@@ -3453,8 +3503,8 @@ func partialSortTopK(items []QueryResult, keys []string, directions []bool, k in
 
 	less := func(a, b QueryResult) bool {
 		for i, key := range keys {
-			va := fieldFromDatum(a.Datum, key)
-			vb := fieldFromDatum(b.Datum, key)
+			va := sortKeyFromResult(a, key)
+			vb := sortKeyFromResult(b, key)
 			cmp := compareAny(va, vb)
 			if cmp == 0 {
 				continue
@@ -3533,11 +3583,11 @@ func comparePKTuples(a, b tuple.Tuple) int {
 	return 0
 }
 
+// projectionColumnName delegates to the shared naming contract in the values
+// package (values.ProjectionColumnName) so the planner/translator side can read
+// a projection's output by the exact key the executor writes.
 func projectionColumnName(v values.Value) string {
-	if fv, ok := v.(*values.FieldValue); ok {
-		return fv.Field
-	}
-	return strings.ToUpper(values.ExplainValue(v))
+	return values.ProjectionColumnName(v)
 }
 
 func fieldFromDatum(datum any, key string) any {
@@ -3545,6 +3595,32 @@ func fieldFromDatum(datum any, key string) any {
 		return m[strings.ToUpper(key)]
 	}
 	return nil
+}
+
+// sortEvalRow returns the row a sort-key Value expression should be evaluated
+// against: the RFC-173 Slice 1 authoritative ordinal positional row on the
+// non-join frontier (Value.Evaluate then resolves by ordinal, loud on a miss),
+// otherwise the name-keyed Datum. Mirrors the projection/filter dispatch.
+func sortEvalRow(qr QueryResult) any {
+	if qr.Positional != nil {
+		return qr.Positional
+	}
+	return qr.Datum
+}
+
+// sortKeyFromResult resolves a named sort key against a row, preferring the
+// RFC-173 Slice 1 ordinal positional row on the authoritative non-join frontier
+// (name->ordinal against the row's own type) over the name-keyed Datum map. This
+// is a comparator helper, not the FieldValue eval path, so a positional miss
+// falls back to the Datum lookup rather than loud-erroring — a missing key is a
+// NULL sort value exactly as the name-map lookup already yields.
+func sortKeyFromResult(qr QueryResult, key string) any {
+	if qr.Positional != nil {
+		if v, ok := qr.Positional.GetByName(strings.ToUpper(key)); ok {
+			return v
+		}
+	}
+	return fieldFromDatum(qr.Datum, key)
 }
 
 func compareAny(a, b any) int {
@@ -3689,11 +3765,14 @@ func executeInMemorySort(
 				var ci, cj any
 				if k.ValueExpr != nil {
 					var err error
-					if ci, err = k.ValueExpr.Evaluate(results[i].Datum); err != nil {
+					// RFC-173 Slice 1: evaluate the sort expression against the
+					// authoritative ordinal row on the non-join frontier (loud on a
+					// miss via FieldValue.evaluateOrdinal), else the name-keyed Datum.
+					if ci, err = k.ValueExpr.Evaluate(sortEvalRow(results[i])); err != nil {
 						sortErr = err
 						return false
 					}
-					if cj, err = k.ValueExpr.Evaluate(results[j].Datum); err != nil {
+					if cj, err = k.ValueExpr.Evaluate(sortEvalRow(results[j])); err != nil {
 						sortErr = err
 						return false
 					}
@@ -3743,6 +3822,14 @@ func executeInMemorySort(
 }
 
 func compareByField(qr QueryResult, field string) any {
+	// RFC-173 Slice 1: prefer the authoritative ordinal positional row on the
+	// non-join frontier; fall back to the name-keyed Datum otherwise (comparator
+	// helper — a positional miss is not the loud FieldValue eval path).
+	if qr.Positional != nil {
+		if v, ok := qr.Positional.GetByName(strings.ToUpper(field)); ok {
+			return v
+		}
+	}
 	m, ok := qr.Datum.(map[string]any)
 	if !ok {
 		return nil
@@ -3765,6 +3852,43 @@ func compareByField(qr QueryResult, field string) any {
 // canonical columns. This ensures root rows (which have only seed
 // columns) and recursive rows (which may carry extra join columns)
 // produce matching keys when their CTE-relevant values are equal.
+// recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
+// union leg by walking to its outermost projection plan and reading each slot's
+// alias (or the projection column name when unaliased), upper-cased. Returns nil
+// when no single-child path reaches a projection (e.g. a SELECT * seed), so the
+// caller falls back to scraping the runtime datum. Used to restrict UNION
+// DISTINCT dedup to the CTE's real output columns, ignoring inert datum keys the
+// temp-table normalization may carry.
+func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
+	for cur := p; cur != nil; {
+		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
+			projs := proj.GetProjections()
+			aliases := proj.GetAliases()
+			out := make([]string, len(projs))
+			for i, pv := range projs {
+				if i < len(aliases) && aliases[i] != "" {
+					out[i] = strings.ToUpper(aliases[i])
+				} else {
+					// Upper-case symmetrically with the aliased branch: dedup keys
+					// (queryResultKeyForCols) do a raw, no-fold lookup against the
+					// UPPER-cased datum keys, so a mixed-case Field here would miss
+					// every key and collapse distinct rows / break cycle detection
+					// (Torvalds). projectionColumnName already uppers the non-field
+					// path; this makes the field path explicit too.
+					out[i] = strings.ToUpper(projectionColumnName(pv))
+				}
+			}
+			return out
+		}
+		children := cur.GetChildren()
+		if len(children) != 1 {
+			return nil
+		}
+		cur = children[0]
+	}
+	return nil
+}
+
 func queryResultKeyForCols(qr QueryResult, cols []string) string {
 	if len(cols) == 0 {
 		return queryResultKey(qr)

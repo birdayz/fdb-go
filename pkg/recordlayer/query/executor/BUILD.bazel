@@ -53,6 +53,8 @@ go_test(
         "plan_column_names_test.go",
         "positional_row_test.go",
         "resultset_test.go",
+        "rfc173_projection_shadow_test.go",
+        "rfc173_slice1_authority_test.go",
         "vector_index_scan_integration_test.go",
     ],
     embed = [":executor"],
@@ -86,6 +88,8 @@ go_test(
         "flat_map_continuation_test.go",
         "positional_row.go",
         "positional_row_test.go",
+        "rfc173_slice1_authority_test.go",
+        "rfc173_projection_shadow_test.go",
     ],
     deps = [
         "//gen",

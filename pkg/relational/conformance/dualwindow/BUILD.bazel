@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "dualwindow_test",
+    srcs = ["dualwindow_test.go"],
+    deps = [
+        "//pkg/recordlayer/query/executor",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

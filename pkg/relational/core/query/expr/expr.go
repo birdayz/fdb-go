@@ -65,7 +65,6 @@ package expr
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -207,12 +206,11 @@ func (r *Resolver) ResolveIdentifier(qualifier, id semantic.Identifier) (values.
 	if err != nil {
 		return nil, err
 	}
+	// Resolve to the OUTPUT column name verbatim (Java's SemanticAnalyzer.lookup
+	// returns the output attribute as-is; FieldValue is indexed by the output
+	// column). Derived-table/CTE quantifiers expose their columns under the
+	// OUTPUT name the projection emits — no reverse-map to a source column.
 	field := col.Id.Name()
-	if src.ColumnAliasMap != nil {
-		if real, ok := src.ColumnAliasMap[strings.ToUpper(field)]; ok {
-			field = real
-		}
-	}
 	needsQualification := len(r.scope.Sources()) > 1
 	if !needsQualification && src.CorrelationName != "" {
 		isLocal := false
@@ -264,12 +262,8 @@ func (r *Resolver) ResolveColumnShadowingQualified(qualifier, id semantic.Identi
 	if !src.Shadowing || src.CorrelationName == "" {
 		return nil, false, nil
 	}
+	// OUTPUT column name verbatim (see ResolveIdentifier).
 	field := col.Id.Name()
-	if src.ColumnAliasMap != nil {
-		if real, ok := src.ColumnAliasMap[strings.ToUpper(field)]; ok {
-			field = real
-		}
-	}
 	corrID := values.NamedCorrelationIdentifier(src.CorrelationName)
 	return values.NewFieldValue(
 		values.NewQuantifiedObjectValue(corrID),

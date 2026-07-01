@@ -53,6 +53,20 @@ func (r *PositionalRow) Set(ordinal int, v any) bool {
 	return true
 }
 
+// TypeNames returns the row type's column names in ordinal order — diagnostics
+// for values.OrdinalResolutionError (via an optional-interface assertion), so a
+// loud resolution miss reports what the row actually carried.
+func (r *PositionalRow) TypeNames() []string {
+	if r == nil || r.Type == nil {
+		return nil
+	}
+	names := make([]string, len(r.Type.Fields))
+	for i, f := range r.Type.Fields {
+		names[i] = f.Name
+	}
+	return names
+}
+
 // GetByName resolves name -> ordinal via the row's RecordType (FieldIndex, P1's
 // sound list-position lookup) then reads that slot. This is the bridge the P2
 // shadow assert uses to compare positional access against the legacy name-keyed

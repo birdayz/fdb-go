@@ -5,8 +5,9 @@ this line deliberately does not restate it). Round 5 (adversarial content re-rev
 is folded into this revision; **Slice 2 starts only when all four Round-5 boxes in §10 are
 checked.** Progress: P1 merged (#423), P2 merged (#427),
 P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
-Step 2b blocked on the buried-reference precursor, Graefe-acked 7-site plan, recorded in that
-branch's §4 Slice 1 log). Each staged PR re-acked on its own HEAD.
+buried-reference precursor LANDED gauntlet-passed, Step 2b producer flip LANDED with the
+authority proof + §5 pins, dual-emission benchmark exit obligation SATISFIED; see the §4
+Slice 1 execution log). Each staged PR re-acked on its own HEAD.
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
@@ -242,7 +243,114 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   find the safe frontier. Verify `UNION`/set-op (already positional,
   `remapUnionColumnsByPosition`) rides the ordinal row unchanged. **Exit obligation (Round 5):**
   run the dual-emission per-row cost benchmark deferred from P2 (§4 P2 scope note; §8 risk 5)
-  before the ordinal path goes live.
+  before the ordinal path goes live. **SATISFIED (`4d5095088`):** `BenchmarkDualEmission_Order`
+  2318 ns/op vs map-only 1359 ns/op = **+71% migration-window per-row materialization**, after
+  fixing the real finding the benchmark surfaced — `protoToPositional` re-derived the
+  row-invariant `RecordType` per row (2.6× before the descriptor-keyed `positionalTypeCache`).
+  With the cache the positional build (848 ns/op) is CHEAPER than the map build, so Slice 4's map
+  retirement ends net-faster than pre-RFC-173. Slice 1 execution log:
+  - **Step 1 — type the scan quantifier (DONE, dark).** `translateScan` types the base-table scan
+    leaf with the table's canonical `RecordType` (`tableColumns`: proto-descriptor order, UPPER
+    names — the same order/case `protoToPositional` gives the runtime row, so a plan-time ordinal
+    matches the runtime slot by construction). Fixes a latent bug (`GetResultValue` discarded its own
+    `flowedType`). **Scan-leaf match reconciliation (Graefe fork ruling — Fork B):** Java flows
+    `Type.AnyRecord` (a constant TOP type) on BOTH the query scan (`RelationalExpression.
+    fromRecordQuery`) and the candidate scan (`ExpansionVisitor.createBaseRef`); the concrete record
+    type rides a `TypeFilter` ABOVE the scan, never the leaf, so `equalsWithoutChildren`'s flowedType
+    term is inert (`AnyRecord==AnyRecord`) and **recordTypes names discriminate**. Go's `UnknownType`
+    is the `AnyRecord` analog. Typing the query leaf broke that symmetry (concrete type on one leaf,
+    `UnknownType` on the candidate → subsumption failed → full scan). Fix: `FullUnorderedScan.
+    EqualsWithoutChildren` wildcards the flowedType term when either side is `UnknownType` (top
+    subsumes concrete — the subsumption direction); two concrete types still compare structurally
+    (query-side dedup preserved); hash stays names-only. **Fork A (concretely type both leaves) was
+    REJECTED**: anti-Java, and makes index selection depend on two independently-built RecordTypes
+    being byte-identical (drift → silent full scan, green CI, latent planner bug).
+  - **Step 2a — Evaluate ordinal read path (DONE, dark, `f0037e3db`).** `values.OrdinalRow`
+    interface (`Get(ordinal)`, `GetByName(name)`; structurally satisfied by `executor.PositionalRow`),
+    `evaluateOrdinal` (no name-map fallback, loud `OrdinalResolutionError` on miss),
+    `FieldValue.Evaluate` + `evaluateCorrelated` (refactored to `(any,error)`) ordinal branches.
+    Unit-tested; no producer flows an `OrdinalRow` yet.
+  - **Step 2b — producer flip (DONE, `f0b9e206c` — landed after the buried-reference precursor
+    below cleared the gauntlet).** The non-join producers (scan/filter/projection/sort/map) flow the
+    `PositionalRow` authoritatively on the `qr.Positional != nil` frontier gate (join producers
+    `mergeRows`/`qualifyOuterRow` don't emit `Positional`, so merged rows are auto-excluded — a
+    precise self-excluding gate, verified; producers re-emit it only when their INPUT carried one,
+    so the frontier propagates and stops at the join/aggregate boundary). Wiring: a
+    `Positional OrdinalRow` field on `RowEvalContext` (param/subquery frontier) + a bare-`OrdinalRow`
+    case in `evaluateCorrelated` (the single-quantifier frontier row); `executeProjection` types the
+    emitted positional row by OUTPUT names (alias-preferring `posNames`); `executeMap` dual-emits
+    (closing the P2 gap). Per Graefe: **NO name-map fallback**; a runtime resolveOrdinal `!ok` is a
+    **loud internal error** (42703 is caught at plan time), NOT a `SemanticException`. Sort named-key
+    COMPARATORS prefer positional and fall back to Datum — comparator semantics, not FieldValue eval
+    (ORDER BY may legitimately reference a source column that is only a Datum key during
+    coexistence). Verified by the AUTHORITY PROOF (`TestFrontierOrdinalAuthority_RFC173Slice1`: a row
+    whose Datum is deliberately WRONG and whose Positional is correct must resolve to the positional
+    value — the guard against a silently-dark flip) + the §5 pins
+    (`TestFDB_RFC173Slice1_NoSpuriousSort`, `TestFDB_RFC173Slice1_GroupByHavingOrderBy`, CTE-rename
+    green via ordinal) + a projection e2e shadow test
+    (`TestExecuteProjection_ShadowAndOutputNames_RFC173`, the @claude P2 carry-forward).
+  - **⛔ BLOCKER (RESOLVED — found by the Step 2b spike, fixed by the 7-site precursor
+    `a58c54c61`+`d8308f1d4`, gauntlet-passed: Graefe design+impl ACK, Torvalds ACK w/ nits fixed,
+    codex clean; 4 RFC-082 divergences lifted, real-Java-conformance-validated): buried source references in
+    derived-table / recursive-CTE column resolution.** The projection flip is correct in principle
+    (Graefe's no-fallback surfaced a real divergence) but loud-errors on ~15 derived-table + recursive-CTE
+    tests: `SELECT sub.v FROM (SELECT id AS v FROM a) sub` resolves the outer `sub.v` to a `FieldValue`
+    referencing the **source** column `id`, not the derived **output** column `v`. The name map tolerates
+    it — `executeProjection` writes the Datum under BOTH the source key (`projNames`, from
+    `projectionColumnName`→`fv.Field`) and the alias key — so `Datum["ID"]` resolves; the ordinal model
+    correctly rejects it (`GetByName("ID")` misses the `[V]`-typed positional row → loud). **Root cause:**
+    Go's derived-table/CTE resolution (`cascades_translator.go` `cteColumnsScope`/`derivedOutputColumns`)
+    "sees through" the alias to the underlying column; Java keeps the reference as the derived table's
+    output column (ordinal 0). This is exactly the buried-alias divergence RFC-173 exists to fix — but it
+    is a **translator/resolver change spanning derived tables + recursive CTEs**, needing Java study of
+    derived-table column resolution + a Graefe ACK, not an inline fix. Simple single-table SELECTs and
+    UNQUALIFIED CTE renames (`SELECT product FROM priced(product,cost)…`) already resolve cleanly. **Two
+    coupled fixes Step 2b must carry:** (i) resolve qualified derived-table/CTE refs to the OUTPUT column
+    positionally (translator); (ii) `executeProjection` must type the positional row by the OUTPUT names
+    (alias-preferring `posNames`, separate from the Datum's source-keyed `projNames` — the flat CTE-rename
+    case already needs this and it is verified sound).
+    - **Precise map (research-confirmed).** *Java model:* `sub.v` = `FieldValue.ofOrdinalNumber(QOV(sub),
+      ordinal-of-v)` over the derived quantifier's result, name `v` preserved — NEVER sees through to `id`
+      (`Expressions.rewireQov` at `Expressions.java:88-95`; `SemanticAnalyzer.lookup`/`resolveIdentifier`
+      returns the OUTPUT attribute verbatim, `SemanticAnalyzer.java:441-490`). Java is *already* the
+      ordinal model. *Go burial site:* `expr.go:210-215` (`ResolveIdentifier`) + twin `:267-272`
+      (`ResolveColumnShadowingQualified`): `ResolveColumnRef` returns the OUTPUT name `V`, then
+      `ColumnAliasMap` (`semantic/scope.go:41-45`) swaps it to the SOURCE `ID`. *Why STRUCTURAL, not a
+      one-liner:* the source-name convention is threaded through ~5 coordinated sites that must flip in
+      lockstep — the two `expr.go` consumers; the three `ColumnAliasMap` producers in `logical_predicate.go`
+      (`buildDerivedTableSource:321-343`, CTE-scope `:774-797`, `applyCTEColumnAliases:824-843`);
+      `rewriteProjectionAliases` (`logical_predicate.go:1987-2001`) which rewrites the derived projection to
+      emit under the SOURCE key; and the recursive-CTE temp-table normalization
+      (`cascades_translator.go:3842-3914`, `:3949+`) which hard-codes source names *because* `ColumnAliasMap`
+      reverse-maps predicates to source. The flip also touches the name-model coexistence path — hence the
+      Graefe design ACK before implementation.
+    - **Graefe design ACK (fix plan, blessed).** *Retire `ColumnAliasMap` entirely* — he traced every
+      consumer; NO cascades pushdown or index-matching rule reads the reverse-map, it is pure divergence.
+      *Land it as a NAME-MODEL-SAFE PRECURSOR* (decoupled from Step 2b's ordinal producer flip), so the
+      full suite stays green on the name model first, then the flip lands on the clean convention. But it
+      is **7 sites, not 5, and not free**: plain derived tables free-ride (executeProjection double-writes
+      `V` and `ID`, `cascades_translator.go:3876`), but the **recursive-CTE temp-table sites
+      (`cascades_translator.go:3842-3914`, `:3949+`) must be ACTIVELY re-keyed to OUTPUT names inside the
+      precursor** — killing the reverse-map without re-keying makes a recursive predicate say `UP` while the
+      temp datum says `PARENT` → cross-level miss → NULL rows; preserve the "never persist a qualified key
+      into the temp table" invariant (`:3866-3874`). *Refinement:* `rewriteProjectionAliases`
+      (`logical_predicate.go:1987`) is **DELETED**, not flipped — with output names retained there is nothing
+      to rewrite, and deleting it makes `executeProjection` emit output-key-only, collapsing the last
+      source-key assumption. *Gate before code:* pin a red→green recursive-CTE test proving **no qualified
+      key lands in the temp table** post-flip. The 7 sites: expr.go `:211-215` + `:268-272` (drop the swap);
+      the 3 `ColumnAliasMap` producers in `logical_predicate.go`; delete `rewriteProjectionAliases`; re-key
+      both recursive-CTE translator sites.
+  - **LOAD-BEARING INVARIANT (Graefe, required):** lazy resolveOrdinal-at-eval is semantically
+    identical to Java's eager plan-time ordinal baking **only because nothing re-types the
+    passed-through base record on the non-join frontier**. This invariant MUST hold; the moment a
+    rule can re-type a `FieldValue`'s child between plan-finalize and eval (joins), lazy is unsafe.
+    **Slices 2–3 commit to eager `FieldValue.ofOrdinalNumber` baking** for merged result values,
+    where the RFC already uses it — do not extend lazy resolution past the non-join frontier.
+  - **Faithful end state (Graefe, later slice, non-blocking):** the fully Java-faithful shape is
+    `AnyRecord` on the scan leaf + concrete type on a `LogicalTypeFilterExpression` ABOVE it (as Java
+    does), not a concrete type on the leaf. Slice 1 types the leaf directly as a pragmatic shortcut;
+    Fork B is the correct reconciliation with that choice. A later slice may migrate to
+    AnyRecord+TypeFilter if the leaf-typing shortcut ever costs more than it saves.
 - **Slice 2 — 2-way join ordinal output (the wedge)** (~2 shifts, floor). A 2-way join has exactly
   one bipartition, so `NewReEnumerationAnchoredRecord` **never fires** — only the seed matters
   (verified: `rule_partition_select.go:48` returns on <3 quantifiers; outer joins are always
@@ -331,6 +439,23 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   duplicated columns coexist positionally) — a deliberate correctness improvement that moves
   goldens (§7). Hard part: output column order/reversal (`cascades_generator.go:2733-2876`) must
   now derive from result-value `Type` ordinals.
+  **Slice-4 kill list (Slice-1 gauntlet obligations — Graefe + Torvalds, recorded):**
+  - The sort named-key COMPARATOR fallback (`sortKeyFromResult`/`compareByField`
+    positional-first → Datum) is a documented coexistence tolerance, differential-blind — when the
+    Datum retires it must **die loud**, not linger as a nil-yielding path.
+  - The §5 dual-window differential (`pkg/relational/conformance/dualwindow`) + the
+    `DisablePositionalEmission` oracle retire WITH the name map.
+  - `legPhysicalOutputNames` / read-by-rendered-name in the recursive-CTE normalization must not
+    outlive the window: the end state reads leg slot *i* by ordinal (`ofOrdinalNumber` over the leg
+    quantifier, built in Slices 2–3).
+  - Bound `positionalTypeCache` (descriptor-keyed sync.Map): a dynamicpb miss Stores forever — a
+    slow leak in a long-lived multi-tenant process. Bound or evict before Slice 4 ships.
+  - `recursiveRemapValues`' first-dot split turns a qualified COMPUTED physical name
+    (`"(B.ID + 1)"`) into garbage (`QOV("(B")`) — pre-existing class, dies with the name machinery;
+    until then the ordinal model loud-errors it and the differential watches.
+  **Slices 2–3 standing obligation (Graefe):** every NEW positional-row birth site added for the
+  join producers must extend the `DisablePositionalEmission` oracle gate, or the §5 differential
+  silently loses coverage of the new frontier.
 - **Slice 5 — Correlation-closure invariant always-on** (~1.5 shifts). Delete the
   exploration-hiding / re-exposure duality (§1.1 item 2). Make `computeCorrelatedTo` subtract
   locally-bound aliases when `canCorrelate` (Java parity). **Now** turn RFC-164 WS-2's

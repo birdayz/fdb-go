@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,28 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 	t.Run("derived_filter", func(t *testing.T) {
 		if got := ints("SELECT sub.v FROM (SELECT id AS v FROM a WHERE grp = 100) sub"); !eqi(got, []int64{1, 2}) {
 			t.Errorf("derived filter = %v, want [1 2]", got)
+		}
+	})
+	t.Run("undefined_column_over_derived_still_42703", func(t *testing.T) {
+		// RFC-173 buried-reference fix: projectionInputRedefinesColumns skips the
+		// base-scan column validation over an intervening derived projection, so
+		// the derived table's OUTPUT namespace [V] is authoritative — a column NOT
+		// in it (ZZZ) must still be rejected by the resolver, not silently pass
+		// through to `a`'s base columns (Torvalds coverage catch). The fail-open
+		// default in projectionInputRedefinesColumns must not swallow a real
+		// undefined-column error.
+		rows, err := db.QueryContext(ctx, "SELECT sub.zzz FROM (SELECT id AS v FROM a) sub")
+		if err == nil {
+			for rows.Next() {
+			}
+			err = rows.Err()
+			rows.Close()
+		}
+		if err == nil {
+			t.Fatal("undefined column ZZZ over a derived table must error, got nil")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+			t.Errorf("want a 42703 column-does-not-exist error, got: %v", err)
 		}
 	})
 	t.Run("derived_join_base", func(t *testing.T) {
