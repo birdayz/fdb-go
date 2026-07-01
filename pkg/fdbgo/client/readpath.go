@@ -934,7 +934,7 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	sawTimeout := isReplyTimeout(hedgeErr)
+	sawTimeout := isServerTimeout(hedgeErr)
 	var versionErr error
 	for i, server := range servers {
 		if i == bestIdx || i == secondIdx {
@@ -952,7 +952,7 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 			if versionErr == nil {
 				versionErr = err // remember, but keep trying — a later replica may still have the value
 			}
-		case isReplyTimeout(err):
+		case isServerTimeout(err):
 			sawTimeout = true // remember, keep scanning healthy replicas
 		case isWrongShardServer(err) || isAllAlternativesFailed(err):
 			return nil, err // definitive: all replicas share the shard assignment → re-locate
@@ -968,6 +968,18 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 	default:
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
+}
+
+// isServerTimeout reports whether a per-replica error is a slow/unreachable-server TIMEOUT — either an RPC
+// reply timeout (errReplyTimeout) or a wrapped context.DeadlineExceeded from a cold dial / RPC under the
+// db-scoped DefaultRPCTimeout. resolveFallback calls this only AFTER confirming the caller's read context
+// is still live (ctx.Err()==nil), so a DeadlineExceeded here is a per-server deadline, never caller
+// cancellation. Such a timeout must be remembered as a timeout — surfaced as errReplyTimeout so getValue
+// re-sends to the same location — NOT dropped and flattened to all_alternatives_failed (1006), which
+// getValueImpl absorbs via the wrong-shard invalidate+relocate path, the wrong retry response to a merely
+// slow server (codex).
+func isServerTimeout(err error) bool {
+	return isReplyTimeout(err) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {

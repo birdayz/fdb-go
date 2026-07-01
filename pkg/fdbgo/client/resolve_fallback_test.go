@@ -211,4 +211,32 @@ func TestResolveFallback(t *testing.T) {
 			t.Fatalf("a per-server dial DeadlineExceeded with a LIVE read ctx must fall back to a healthy replica; got val=%q err=%v", val, err)
 		}
 	})
+
+	t.Run("all_replicas_dial_timeout_surfaces_reply_timeout_not_all_alternatives", func(t *testing.T) {
+		t.Parallel()
+		// Every fallback replica dial-times-out (context.DeadlineExceeded) with a LIVE read ctx. Each is a
+		// per-server TIMEOUT, so the scan must surface errReplyTimeout (getValue re-sends to the same
+		// location) — NOT all_alternatives_failed (1006), which getValueImpl absorbs via the wrong-shard
+		// invalidate+relocate path, the wrong response to merely-slow servers. Revert-proof: dropping
+		// context.DeadlineExceeded from isServerTimeout flattens this to all_alternatives_failed.
+		_, err := resolveFallback(context.Background(), nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			return nil, context.DeadlineExceeded // per-server dial timeout, read ctx live
+		})
+		if !errors.Is(err, errReplyTimeout) {
+			t.Fatalf("all fallback replicas dial-timing-out (live ctx) must surface errReplyTimeout, not all_alternatives_failed; got %v", err)
+		}
+	})
+
+	t.Run("hedge_dial_timeout_seeds_reply_timeout_with_no_fallback", func(t *testing.T) {
+		t.Parallel()
+		// The HEDGE dial-timed-out (live read ctx) and no untried fallback replicas remain → the seed must
+		// carry it as a timeout and surface errReplyTimeout, not all_alternatives_failed.
+		two := []ServerInfo{srv("s0"), srv("s1")}
+		_, err := resolveFallback(context.Background(), context.DeadlineExceeded, two, 0, 1, func(ServerInfo) ([]byte, error) {
+			return nil, nil
+		})
+		if !errors.Is(err, errReplyTimeout) {
+			t.Fatalf("a hedge dial timeout (live ctx) with no fallback must seed errReplyTimeout; got %v", err)
+		}
+	})
 }
