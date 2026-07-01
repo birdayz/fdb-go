@@ -19,6 +19,39 @@ import (
 // — pure error-code predicates that drive the read-path retry decisions.
 // ============================================================================
 
+// TestKeySelectorIsBackward pins the C++ KeySelectorRef::isBackward() predicate (RFC-169, FDB-C-dev):
+// `!orEqual && offset <= 0` (FDBTypes.h:659-661). getKey routes a backward selector to the shard ENDING
+// at the key; getting the predicate wrong livelocks on a cross-server boundary. The discriminating case
+// is the four standard selectors: only lastLessThan is backward; lastLessOrEqual is NOT (orEqual=true).
+// Revert-proof: dropping the `!orEqual` term (→ `offset <= 0`) flips lastLessOrEqual to backward → the
+// LLE case reds; dropping `offset <= 0` (→ `!orEqual`) flips firstGreaterOrEqual to backward → FGE reds.
+func TestKeySelectorIsBackward(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		orEqual bool
+		offset  int32
+		want    bool
+	}{
+		// The four canonical KeySelectors (FDBTypes.h:672-685).
+		{"firstGreaterOrEqual (k,false,1)", false, 1, false},
+		{"firstGreaterThan (k,true,1)", true, 1, false},
+		{"lastLessOrEqual (k,true,0)", true, 0, false}, // NOT backward — orEqual=true (FDB-C-dev)
+		{"lastLessThan (k,false,0)", false, 0, true},   // the ONLY backward standard selector
+		// Off-selector edges: a negative offset with orEqual toggles the term.
+		{"negative offset, !orEqual", false, -3, true},
+		{"negative offset, orEqual", true, -3, false},
+		{"positive offset, !orEqual", false, 5, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := keySelectorIsBackward(tt.orEqual, tt.offset); got != tt.want {
+				t.Errorf("keySelectorIsBackward(orEqual=%v, offset=%d) = %v, want %v", tt.orEqual, tt.offset, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsWrongShardServer(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

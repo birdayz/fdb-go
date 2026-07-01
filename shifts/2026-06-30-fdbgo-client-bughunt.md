@@ -579,12 +579,13 @@ their own focused effort with a real cross-client differential test, not a tail-
   (or have WatchPoll observe tx state). Repro: `-race` with concurrent getWatchCtx||Cancel; +
   deterministic cancel-before-getWatchCtx leak. **Bounded fix but concurrency-careful; add a
   `-race` regression.**
-- **[MEDIUM] rywDisabled GetKey ignores isBackward in shard location** (`readpath.go:179`,
-  `locality.go` locate/lookupLocked — no reverse param). A backward selector on a cross-server
-  shard boundary loops wrong_shard → 1007 (livelock). C++ threads `Reverse{k.isBackward()}`
-  (NativeAPI:3788,1955,2022). NOT reproducible on single-container (needs multi-SS topology or
-  SimTransport). FIX = thread isBackward through locate/lookup/buildGetKeyServerLocationsRequest.
-  **RFC + multi-SS or SimTransport proof.**
+- **[MEDIUM] rywDisabled GetKey ignores isBackward in shard location** — ✅ **DONE** (RFC-169,
+  impl `6b72427bc` + review `0af735069`; FDB-C-dev design ACK 2026-07-01). Threaded isBackward through
+  `locate`/`lookupLocked`/`invalidate`/`buildGetKeyServerLocationsRequest`; predicate is now the
+  unit-pinned `keySelectorIsBackward` (`!orEqual && offset <= 0`). A deterministic end-to-end multi-SS
+  test is provably unachievable (DD nondeterminism → flaky; single-SS SimTransport self-heals / has no
+  distinct backward target) and a skippable one is forbidden — so the proof is the five revert-proven
+  decomposition unit tests (lookup/invalidate/system-clamp/request-stamp/predicate). See `rfcs/169`.
 
 ### Bounded ports (fix inline, single-container differential or client regression)
 - **[MEDIUM] too_many_watches (1032) never enforced; SetMaxWatches is a no-op**

@@ -131,6 +131,18 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // allKeysEnd is \xFF\xFF — the absolute end of the key space.
 var allKeysEnd = []byte{0xFF, 0xFF}
 
+// keySelectorIsBackward reports whether a key selector resolves BACKWARD (toward smaller keys) —
+// the exact C++ KeySelectorRef::isBackward() predicate, `!orEqual && offset <= 0` (FDBTypes.h:659-661).
+// It drives getKey's shard-location routing: a backward selector on a cross-server shard boundary must
+// resolve to the shard ENDING at the key (rangeContainingKeyBefore), else it routes to the wrong SS and
+// livelocks (RFC-169). Both terms are load-bearing: `lastLessThan(k)=(k,false,0)` is backward, but
+// `lastLessOrEqual(k)=(k,true,0)` is NOT (orEqual=true, FDBTypes.h:683) — dropping the `!orEqual` term
+// would mistag lastLessOrEqual as backward and route it to the shard the SS won't serve for it (whose
+// real isBackward() is false → rangeContaining, storageserver.actor.cpp:4504), mirroring the bug.
+func keySelectorIsBackward(orEqual bool, offset int32) bool {
+	return !orEqual && offset <= 0
+}
+
 // getKey resolves a key selector via the storage server.
 // Matches C++ NativeAPI.actor.cpp getKey(): loops until the selector is fully
 // resolved (offset==0 && orEqual==true). A storage server resolves the selector
@@ -176,11 +188,11 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 			return []byte{}, nil
 		}
 
-		// A BACKWARD key selector (offset<=0 && !orEqual, C++ KeySelectorRef::isBackward FDBTypes.h:659-661)
-		// on a shard boundary must resolve to the shard ENDING at the key, not the one beginning at it —
-		// else it routes to the wrong SS and re-locates forever (livelock). Thread it through the location
-		// lookup + proxy request + invalidate, mirroring C++ getKey's Reverse{k.isBackward()} (NativeAPI:3786).
-		isBackward := !orEqual && offset <= 0
+		// A BACKWARD key selector on a shard boundary must resolve to the shard ENDING at the key, not the
+		// one beginning at it — else it routes to the wrong SS and re-locates forever (livelock). Thread it
+		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
+		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
+		isBackward := keySelectorIsBackward(orEqual, offset)
 		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.spanContext, isBackward)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
