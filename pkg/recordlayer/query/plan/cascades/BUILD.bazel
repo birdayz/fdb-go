@@ -262,6 +262,7 @@ go_test(
         "memo_merge_multiway_test.go",
         "memo_merge_test.go",
         "memo_test.go",
+        "p3_intern_shadow_corpus_test.go",
         "partial_match_ref_test.go",
         "partial_match_test.go",
         "partition_select_interning_baseline_test.go",
