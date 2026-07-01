@@ -242,6 +242,21 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     positionally (translator); (ii) `executeProjection` must type the positional row by the OUTPUT names
     (alias-preferring `posNames`, separate from the Datum's source-keyed `projNames` — the flat CTE-rename
     case already needs this and it is verified sound).
+    - **Precise map (research-confirmed).** *Java model:* `sub.v` = `FieldValue.ofOrdinalNumber(QOV(sub),
+      ordinal-of-v)` over the derived quantifier's result, name `v` preserved — NEVER sees through to `id`
+      (`Expressions.rewireQov` at `Expressions.java:88-95`; `SemanticAnalyzer.lookup`/`resolveIdentifier`
+      returns the OUTPUT attribute verbatim, `SemanticAnalyzer.java:441-490`). Java is *already* the
+      ordinal model. *Go burial site:* `expr.go:210-215` (`ResolveIdentifier`) + twin `:267-272`
+      (`ResolveColumnShadowingQualified`): `ResolveColumnRef` returns the OUTPUT name `V`, then
+      `ColumnAliasMap` (`semantic/scope.go:41-45`) swaps it to the SOURCE `ID`. *Why STRUCTURAL, not a
+      one-liner:* the source-name convention is threaded through ~5 coordinated sites that must flip in
+      lockstep — the two `expr.go` consumers; the three `ColumnAliasMap` producers in `logical_predicate.go`
+      (`buildDerivedTableSource:321-343`, CTE-scope `:774-797`, `applyCTEColumnAliases:824-843`);
+      `rewriteProjectionAliases` (`logical_predicate.go:1987-2001`) which rewrites the derived projection to
+      emit under the SOURCE key; and the recursive-CTE temp-table normalization
+      (`cascades_translator.go:3842-3914`, `:3949+`) which hard-codes source names *because* `ColumnAliasMap`
+      reverse-maps predicates to source. The flip also touches the name-model coexistence path — hence the
+      Graefe design ACK before implementation.
   - **LOAD-BEARING INVARIANT (Graefe, required):** lazy resolveOrdinal-at-eval is semantically
     identical to Java's eager plan-time ordinal baking **only because nothing re-types the
     passed-through base record on the non-join frontier**. This invariant MUST hold; the moment a
