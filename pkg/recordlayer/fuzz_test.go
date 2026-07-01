@@ -369,6 +369,15 @@ func FuzzOrElseContinuation(f *testing.F) {
 		Continuation: []byte{0x00, 0x00, 0x00, 0x00},
 	}).MarshalVT()
 	f.Add(validOther)
+	// Out-of-range state: proto2 enums are closed in Java (unknown values land
+	// in unknown fields) but vtprotobuf assigns any varint, so this is reachable
+	// from wire input. Regression for a nil-active panic in orElseCursor.OnNext.
+	unknownState := gen.OrElseContinuation_State(99)
+	invalidState, _ := (&gen.OrElseContinuation{
+		State:        &unknownState,
+		Continuation: []byte{0x00, 0x00, 0x00, 0x01},
+	}).MarshalVT()
+	f.Add(invalidState)
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		primary := func(_ []byte) RecordCursor[int] {

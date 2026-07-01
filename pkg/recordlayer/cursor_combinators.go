@@ -172,25 +172,43 @@ func OrElseWithContinuation[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.OrElseContinuation
-		if err := cont.UnmarshalVT(continuation); err == nil && cont.State != nil {
-			c.state = *cont.State
-			switch c.state {
-			case gen.OrElseContinuation_USE_INNER:
-				c.primary = primaryFactory(cont.Continuation)
-				c.active = c.primary
-			case gen.OrElseContinuation_USE_OTHER:
-				c.active = alternativeFactory(cont.Continuation)
-			default:
-				c.primary = primaryFactory(cont.Continuation)
-			}
-		} else {
-			c.primary = primaryFactory(nil)
+		if err := cont.UnmarshalVT(continuation); err != nil {
+			// Java: throw new RecordCoreException("error parsing continuation", ex)
+			//           .addLogInfo("raw_bytes", ...)  (OrElseCursor's constructor).
+			// A corrupt continuation must fail, not silently restart from scratch.
+			return &errorCursor[T]{err: &ContinuationParseError{RawBytes: continuation, Cause: err}}
+		}
+		// GetState() defaults to UNDECIDED when the field is absent, matching
+		// Java proto2's parsed.getState().
+		c.state = cont.GetState()
+		switch c.state {
+		case gen.OrElseContinuation_UNDECIDED:
+			c.primary = primaryFactory(cont.Continuation)
+		case gen.OrElseContinuation_USE_INNER:
+			c.primary = primaryFactory(cont.Continuation)
+			c.active = c.primary
+		case gen.OrElseContinuation_USE_OTHER:
+			c.active = alternativeFactory(cont.Continuation)
+		default:
+			// vtprotobuf assigns any varint to the enum field (no closed-enum
+			// check), so out-of-range states are reachable from wire input.
+			// Java: throw new UnknownOrElseCursorStateException().
+			return &errorCursor[T]{err: &UnknownOrElseCursorStateError{}}
 		}
 	} else {
 		c.primary = primaryFactory(nil)
 	}
 
 	return c
+}
+
+// UnknownOrElseCursorStateError is returned when an OrElse continuation carries a
+// state value outside the known OrElseContinuation_State range. Matches Java's
+// OrElseCursor.UnknownOrElseCursorStateException.
+type UnknownOrElseCursorStateError struct{}
+
+func (e *UnknownOrElseCursorStateError) Error() string {
+	return "unknown state for OrElseCursor"
 }
 
 type orElseCursor[T any] struct {
@@ -201,7 +219,8 @@ type orElseCursor[T any] struct {
 }
 
 func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
-	if c.state == gen.OrElseContinuation_UNDECIDED {
+	switch c.state {
+	case gen.OrElseContinuation_UNDECIDED:
 		result, err := c.primary.OnNext(ctx)
 		if err != nil {
 			return result, err
@@ -220,8 +239,14 @@ func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 		_ = c.primary.Close()
 		c.active = c.alternativeFactory(nil)
 		return c.advanceActive(ctx)
+	case gen.OrElseContinuation_USE_INNER, gen.OrElseContinuation_USE_OTHER:
+		return c.advanceActive(ctx)
+	default:
+		// Matches Java's onNext default arm: throw new UnknownOrElseCursorStateException().
+		// Unreachable via the constructor (it rejects unknown states), kept as the
+		// same defensive guard Java has.
+		return RecordCursorResult[T]{}, &UnknownOrElseCursorStateError{}
 	}
-	return c.advanceActive(ctx)
 }
 
 func (c *orElseCursor[T]) advanceActive(ctx context.Context) (RecordCursorResult[T], error) {
