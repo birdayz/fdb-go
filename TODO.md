@@ -28,8 +28,11 @@ validation gate.
   **Scope (gauntlet-agreed):** the JOIN/lateral producers (`mergeRows`/`flatmap`/`explode`) and the
   outer-join null-extension primitive (`appendNullLeg`) move to **Slice 2/3** (they're restructured
   positional-native there; dual-emitting over the doomed AnchoredJoin merge would be throwaway).
-  **Deferred to Slice 1:** the dual-emission per-row cost benchmark (RFC §4 P2 hard part), when the
-  ordinal path first goes live. **Carry-forward:** (a) [Graefe] when a resolution path becomes
+  **Deferred to Slice 1** (before the ordinal path goes live): (i) the dual-emission per-row cost
+  benchmark (RFC §4 P2 hard part); (ii) [@claude] a dedicated **e2e shadow test for the projection
+  producer** (`executeProjection`), analogous to `TestBuildCoveringRow_ShadowAndCollision_RFC173P2`
+  — projection's `slots[i]=val` has no index arithmetic so risk is low, but pin it before Slice 1
+  makes ordinal access authoritative. **Carry-forward:** (a) [Graefe] when a resolution path becomes
   AUTHORITATIVE, escalate `resolveOrdinal`'s absent-field / non-record decline from silent
   `(0,false)` to Java's `SemanticException`; (b) [@claude] `RecordType.FieldIndex` and `LookupField`
   are near-duplicate scans — dedup (`LookupField` → `FieldIndex` + index) when a slice touches both.
