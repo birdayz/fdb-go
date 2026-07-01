@@ -53,11 +53,32 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 >   Pins: `TestNullsOrder_ExplicitPlacementRetainsSort` (plan: single + multi-key) + `TestFDB_OrderByNullsLast`
 >   (rows, both non-natural directions + multi-key). Full embedded + sqldriver green; an ad-hoc adversarial
 >   review sweep (not committed regressions) found nothing.
-> - **[ ] PLAN-NONDETERMINISM (medium, flaky plans / cache churn).** `expressions/reference.go`
->   `GetPartialMatchCandidates`/`GetAllPartialMatches` range over a Go map; equal-cost index ties (and the
->   `GetBest` first-wins NLJ join-order tie) resolve by map-iteration order → 2–3 distinct plans across 200 runs
->   of the same query. Java uses an insertion-ordered `LinkedHashMultimap`. Fix: deterministic candidate order.
->   `FuzzPlanner_Determinism` misses it (doesn't exercise equal-index ties). Rows are correct → medium.
+> - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
+>   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
+>   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
+>   Decoupled finding: the guard-generalization + Phase-4 ordering-gate (which re-rank to the Intersection) are a
+>   separate landing needing the full ordering machinery + 1M stress (a crude gate breaks vector cases; see RFC-167
+>   §4 IMPLEMENTATION FINDING).
+>   Full design + verified root cause + phased plan in **`rfcs/167-cascades-plan-determinism.md`** (the deeper
+>   layer is the RFC-070 nil-inner-shell architecture defeating Java's prune-to-one-concrete-member + planHash
+>   tie-break; an orthogonal pk-intersector ordering bug — `intersector_primary_key.go` dropping requestedOrderings
+>   — is a plausible wrong-rows risk that Phase 4 fixes). **Phase 0 (this change):** fixed the two map-iteration
+>   sources: (1) `expressions/reference.go`
+>   `partialMatchMap` is now iterated in first-insertion order (companion `partialMatchOrder` slice, mirrors
+>   Java `LinkedHashMultimap`); (2) `cascades_generator.go` `metadataPlanContext.GetMatchCandidates` now sorts
+>   `RecordMetaData.GetAllIndexes()` (a Go map) by index name. Pinned by `TestPlanDeterminism_EqualCostIndexTie`
+>   (2 indexes on one column, 200 runs, one plan). **REMAINING (multi-phase, tracked):** a multi-equality tie
+>   over several single-column indexes (`WHERE a=5 AND b=7 AND c=9` / idx_a,idx_b,idx_c) is still
+>   nondeterministic. Root cause: nil-inner *shell* wrappers (Fetch + PredicatesFilter push-through templates)
+>   are costed without their eventual inner → rank artificially cheap; and the extraction relink
+>   `findPhysicalPlan` (physical_wrapper.go) resolves a shell's inner to the FIRST physical member of the child
+>   reference by member-iteration order → on a cost tie the relinked index varies. Naive fixes tried and reverted:
+>   excluding all shell types from `OptimizeGroupTask` selection deterministically picks the cost-cheapest REAL
+>   plan, but that's an Intersection (e.g. `idx_a ∩ idx_b`) — a plan-shape regression vs the single-index plan
+>   the shell relink produced, AND exposes intersection mis-costing. The complete fix needs consistent shell
+>   handling + total-order tie resolution across selection AND `findPhysicalPlan` extraction, validated by 1M
+>   stress (it changes index selection broadly). Rows are always correct → medium. `FuzzPlanner_Determinism`
+>   misses both (doesn't exercise equal-index ties).
 >
 > **Latent (not reachable today):** `ValueIndexScanMatchCandidate.createsDuplicates` is a dead field (always
 > false) so fan-out value-index access never emits the per-leg PK Distinct Java applies — but the embedded
