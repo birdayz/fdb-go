@@ -6,6 +6,47 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 
 ---
 
+# ⛔ ALL WORK FROZEN — sole priority is RFC-173 (ordinal/group column-resolution migration)
+
+**Owner directive (2026-07-01): pause ALL other project work until RFC-173 lands.** Do NOT pick up
+any item below, any handover follow-up, or any new hunt — RFC-173 (`rfcs/173-ordinal-column-resolution.md`)
+is the exclusive focus. It retires the name-based `AnchoredJoin` column model for Java's ordinal/group
+model (the RFC-164 WS-2 root fix): one RFC, **staged merged PRs** (precursors P1/P2/P3/Slice 1 each
+merge independently; atomic Slice 3 as its own PR), RFC-ack → per-slice re-ack. Foundational,
+**~25–30 shifts**. See RFC-173 §4 for the slice order and §5 for the (execution-pin, not dark-diff)
+validation gate.
+
+## 🔖 RESUME AFTER 173 — where we pick up (do not lose this)
+
+RFC-173 is a **detour**. We reached it while executing the RFC-164 umbrella (the `/goal`): WS-2
+correlation-completeness turned out to be blocked on the column-resolution model, so 173 is both the
+unblocker and the substrate. When 173 lands, un-freeze and resume **in this order**:
+
+1. **RFC-164 WS-2 — FINISH IT.** Correlation-completeness invariant becomes always-on **for free** via
+   RFC-173 Slice 5 (closed-by-construction). Then re-evaluate the three **field-level** invariants
+   (set-op comparison-key columns, `COVERING ⇒ referenced-fields`, result-type consistency) — RFC-164
+   marked them "un-checkable on the untyped extracted plan"; RFC-173's **typed/ordinal rows likely
+   unblock them**. This is the direct continuation of what 173 detoured from.
+2. **RFC-164 WS-3** — `RecordQueryPlanVisitor` port + `comparandReadsField` audit (single-source-of-truth).
+   Mostly independent of 173.
+3. **RFC-164 WS-4** — map-iteration lint + **Phase-1b InJoin inner-tie determinism**; the latter is
+   **RFC-167 Phase 1b** (comprehensive tie-resolution), documented in merged #418. Plan shapes converge
+   to Java after 173, so re-check these against the new shapes.
+4. **RFC-164 WS-1** — generative Go-vs-Java row differential. Heavy-infra (live Java + FDB), multi-week.
+   Untouched by 173.
+5. **3 open Cascades hunt bugs** (from `hunt/cascades-bug-hunt`) — own focused Graefe cycle each.
+6. **INFRA — Nightly Fuzz** (see item directly below): dispatch-timing bug **AND two red nightly runs
+   (06-29, 06-30)**. ⚠️ The red runs are a live "red-CI-is-red" signal that arguably should NOT wait for
+   173 (a red fuzz could be a real bug, possibly in code 173 touches) — flag for the owner whether to
+   triage as a keep-the-lights-on exception to the freeze.
+7. Then the numbered-phase execution order below (lowest-numbered unchecked, gates satisfied).
+
+**RFC-164 `/goal` status:** WS-5 done (audit); WS-2 nil-child + WS-3 isCountStar + WS-4
+cost-monotonicity/IN-determinism landed (#411–#419); WS-2 correlation-completeness + field-level,
+WS-3 visitor, WS-4 map-lint/tie, WS-1 all remain → the list above.
+
+---
+
 # NEXT
 
 > ## [ ] INFRA — scheduled nightlies dispatch HOURS late ("nightly" fuzz runs at noon)
