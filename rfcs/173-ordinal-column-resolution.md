@@ -257,6 +257,22 @@ validation strategy the adversarial review corrected). Effort figures are rough.
       (`cascades_translator.go:3842-3914`, `:3949+`) which hard-codes source names *because* `ColumnAliasMap`
       reverse-maps predicates to source. The flip also touches the name-model coexistence path — hence the
       Graefe design ACK before implementation.
+    - **Graefe design ACK (fix plan, blessed).** *Retire `ColumnAliasMap` entirely* — he traced every
+      consumer; NO cascades pushdown or index-matching rule reads the reverse-map, it is pure divergence.
+      *Land it as a NAME-MODEL-SAFE PRECURSOR* (decoupled from Step 2b's ordinal producer flip), so the
+      full suite stays green on the name model first, then the flip lands on the clean convention. But it
+      is **7 sites, not 5, and not free**: plain derived tables free-ride (executeProjection double-writes
+      `V` and `ID`, `cascades_translator.go:3876`), but the **recursive-CTE temp-table sites
+      (`cascades_translator.go:3842-3914`, `:3949+`) must be ACTIVELY re-keyed to OUTPUT names inside the
+      precursor** — killing the reverse-map without re-keying makes a recursive predicate say `UP` while the
+      temp datum says `PARENT` → cross-level miss → NULL rows; preserve the "never persist a qualified key
+      into the temp table" invariant (`:3866-3874`). *Refinement:* `rewriteProjectionAliases`
+      (`logical_predicate.go:1987`) is **DELETED**, not flipped — with output names retained there is nothing
+      to rewrite, and deleting it makes `executeProjection` emit output-key-only, collapsing the last
+      source-key assumption. *Gate before code:* pin a red→green recursive-CTE test proving **no qualified
+      key lands in the temp table** post-flip. The 7 sites: expr.go `:211-215` + `:268-272` (drop the swap);
+      the 3 `ColumnAliasMap` producers in `logical_predicate.go`; delete `rewriteProjectionAliases`; re-key
+      both recursive-CTE translator sites.
   - **LOAD-BEARING INVARIANT (Graefe, required):** lazy resolveOrdinal-at-eval is semantically
     identical to Java's eager plan-time ordinal baking **only because nothing re-types the
     passed-through base record on the non-join frontier**. This invariant MUST hold; the moment a
