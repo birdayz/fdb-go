@@ -169,6 +169,32 @@ func TestBuildGetKeyServerLocationsRequest_RoundTrip(t *testing.T) {
 		t.Errorf("reply token: got {%x,%x}, want {%x,%x}",
 			first, second, replyToken.First, replyToken.Second)
 	}
+	// The round-trip above only exercises reverse=false and asserts every field EXCEPT Reverse — the
+	// #10 wire field. TestBuildGetKeyServerLocationsRequest_ReverseField below pins it on both values.
+}
+
+// TestBuildGetKeyServerLocationsRequest_ReverseField pins the #10 single-key wire field: a BACKWARD getKey
+// location request must set Reverse=true so the commit proxy resolves rangeContainingKeyBefore (the shard
+// ENDING at the key), matching C++ getKeyLocation_internal's
+// GetKeyServerLocationsRequest(span, tenant, key, {}, 100, isBackward, ...) (NativeAPI.actor.cpp:3037).
+// The forward round-trip above never asserts this field, so a dropped `Reverse: reverse` at the build site
+// would ship silently. Revert-proof: hardcode `Reverse: false` in buildGetKeyServerLocationsRequest → the
+// reverse=true case reds.
+func TestBuildGetKeyServerLocationsRequest_ReverseField(t *testing.T) {
+	t.Parallel()
+	const tenantID int64 = 7
+	replyToken := transport.UID{First: 1, Second: 2}
+	for _, reverse := range []bool{false, true} {
+		body := buildGetKeyServerLocationsRequest([]byte("k"), reverse, tenantID, types.SpanContext{}, replyToken)
+		var req types.GetKeyServerLocationsRequest
+		if err := req.UnmarshalFDB(body); err != nil {
+			t.Fatalf("reverse=%v: UnmarshalFDB: %v", reverse, err)
+		}
+		if req.Reverse != reverse {
+			t.Errorf("reverse=%v: round-tripped Reverse=%v, want %v (#10 backward getKey wire field)",
+				reverse, req.Reverse, reverse)
+		}
+	}
 }
 
 // ============================================================================
