@@ -679,12 +679,8 @@ func (v *PlanVisitor) VisitSimpleTable(termCtx *antlrgen.QueryTermDefaultContext
 		}
 	}
 
-	// (8) Derived table column-alias rewriting.
-	if sq.derivedQuery != nil {
-		if src, ok := buildDerivedTableSource(v.md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
-			rewriteProjectionAliases(op, src.ColumnAliasMap)
-		}
-	}
+	// (8) Derived-table references resolve to the OUTPUT column name verbatim;
+	// the projection already emits under that name — nothing to rewrite.
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {

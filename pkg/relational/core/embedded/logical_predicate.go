@@ -307,7 +307,6 @@ func buildDerivedTableSource(
 		}
 	}
 	columns := make([]semantic.Column, 0, len(projCols))
-	var colAliasMap map[string]string
 	for i, col := range projCols {
 		bareName := parseColRef(col).bare()
 		innerCol, found := innerTbl.LookupColumn(semantic.NewUnquoted(bareName))
@@ -318,12 +317,9 @@ func buildDerivedTableSource(
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
 		}
-		if !strings.EqualFold(outName, bareName) {
-			if colAliasMap == nil {
-				colAliasMap = make(map[string]string)
-			}
-			colAliasMap[strings.ToUpper(outName)] = strings.ToUpper(bareName)
-		}
+		// The virtual column carries the OUTPUT name the derived-table
+		// projection emits (Java resolves references to the output column
+		// verbatim — no reverse-map to the underlying source column).
 		columns = append(columns, semantic.Column{
 			Id:       semantic.NewUnquoted(outName),
 			Type:     innerCol.Type,
@@ -340,7 +336,6 @@ func buildDerivedTableSource(
 		Table:           virtualTable,
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
-		ColumnAliasMap:  colAliasMap,
 	}, true
 }
 
@@ -737,7 +732,6 @@ func buildCTEColumnSource(
 	}
 
 	var columns []semantic.Column
-	var aliasMap map[string]string
 	if innerSQ.projCols == nil {
 		allCols := innerTbl.Columns()
 		columns = make([]semantic.Column, len(allCols))
@@ -771,12 +765,8 @@ func buildCTEColumnSource(
 				}
 				return semantic.ScopeSource{}, false
 			}
-			if !strings.EqualFold(outName, bareName) {
-				if aliasMap == nil {
-					aliasMap = make(map[string]string)
-				}
-				aliasMap[strings.ToUpper(outName)] = strings.ToUpper(bareName)
-			}
+			// The virtual column carries the OUTPUT name the CTE body
+			// projection emits — references resolve to it verbatim.
 			columns = append(columns, semantic.Column{
 				Id:       semantic.NewUnquoted(outName),
 				Type:     innerCol.Type,
@@ -794,7 +784,6 @@ func buildCTEColumnSource(
 		Table:           virtualTable,
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
-		ColumnAliasMap:  aliasMap,
 	}, true
 }
 
@@ -817,11 +806,11 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 	origCols := tbl.Columns()
 
 	newCols := make([]semantic.Column, len(origCols))
-	aliasMap := make(map[string]string)
 	for i, col := range origCols {
 		if i < len(aliases) {
+			// The renamed column exposes the explicit CTE column alias as its
+			// OUTPUT name — references (a.node) resolve to it verbatim.
 			newName := functions.FullIdToName(aliases[i])
-			aliasMap[strings.ToUpper(newName)] = strings.ToUpper(col.Id.Name())
 			newCols[i] = semantic.Column{
 				Id:       semantic.NewUnquoted(newName),
 				Type:     col.Type,
@@ -840,7 +829,6 @@ func applyCTEColumnAliases(src semantic.ScopeSource, colAliases antlrgen.IFullId
 		Table:           newTable,
 		Alias:           src.Alias,
 		CorrelationName: src.CorrelationName,
-		ColumnAliasMap:  aliasMap,
 	}
 }
 
@@ -1494,23 +1482,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 		}
 	}
 
-	// NOTE: CTE column-alias rewriting is intentionally NOT applied here.
-	// The CTE alias wrapper (translateCTE → NewProject(origCols, aliases))
-	// stores values under BOTH the original key and the alias key in the
-	// executor's datum map. FieldValues created from the user's alias
-	// names (e.g. "d", "val") resolve correctly because the alias keys
-	// are present. Rewriting projection names to the underlying table
-	// columns (via ColumnAliasMap) is redundant for single-level CTEs
-	// and actively breaks chained CTEs: when CTE B reads from CTE A's
-	// aliased columns and CTE C reads from CTE B's aliased columns,
-	// the rewrite maps through only one level of aliasing, producing
-	// FieldValues that point to intermediate names absent from the
-	// output datum.
-	if sq.derivedQuery != nil {
-		if src, ok := buildDerivedTableSource(md, sq.tableName, sq.derivedQuery); ok && src.ColumnAliasMap != nil {
-			rewriteProjectionAliases(op, src.ColumnAliasMap)
-		}
-	}
+	// Derived-table/CTE references resolve to the OUTPUT column name verbatim
+	// (Java semantics); the projection already emits under that name, so there
+	// is nothing to rewrite back to a source column.
 
 	if len(sq.joins) > 0 {
 		if err := upgradeJoinOnPredicates(op, sq, md, schemaName, cteScopes); err != nil {
@@ -1772,7 +1746,6 @@ func buildSelectScope(
 					Table:           src.Table,
 					Alias:           aliasID,
 					CorrelationName: aliasID.Name(),
-					ColumnAliasMap:  src.ColumnAliasMap,
 				}) == nil
 			}
 			return false
@@ -1982,22 +1955,6 @@ func validateQualifiedStarSourcesFromClassification(cls *selectClassification, f
 		}
 	}
 	return nil
-}
-
-func rewriteProjectionAliases(op logical.LogicalOperator, aliasMap map[string]string) {
-	proj := findProjection(op)
-	if proj == nil {
-		return
-	}
-	for i, col := range proj.Projections {
-		upper := strings.ToUpper(col)
-		if real, ok := aliasMap[upper]; ok {
-			proj.Projections[i] = real
-			if i < len(proj.Aliases) && proj.Aliases[i] == "" {
-				proj.Aliases[i] = col
-			}
-		}
-	}
 }
 
 // upgradeFirstFilterExistsSubqueries walks the single-child chain

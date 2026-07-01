@@ -3028,7 +3028,17 @@ func executeRecursiveLevelUnion(
 	var canonicalCols []string
 	if distinct {
 		seen = newBoundedSet[string](props.State)
-		if len(items) > 0 {
+		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
+		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
+		// seed datum can carry INERT extra keys (e.g. the source column a rename
+		// projects from — {SRC, N} for `reach(n)` seeded by `SELECT src`). Those
+		// inert keys are absent from the recursive leg's rows, so scraping ALL seed
+		// datum keys would wrongly treat a recursive row and a seed row with the
+		// same OUTPUT value as distinct (breaking cycle detection). The projection
+		// schema restricts the dedup to the real output columns. Fall back to
+		// scraping the datum when the seed has no projection (e.g. SELECT *).
+		canonicalCols = recursiveUnionOutputColumns(p.GetInitialState())
+		if len(canonicalCols) == 0 && len(items) > 0 {
 			if m, ok := items[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
 				for k := range m {
@@ -3135,14 +3145,17 @@ func executeRecursiveDfsJoin(
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
 	var seen *boundedSet[string]
-	// For UNION DISTINCT, extract the canonical column names from the
-	// root datum. The dedup key must use only these columns so that
-	// root rows (with 1 column) and recursive rows (which may carry
-	// extra join columns in the datum) produce matching keys.
+	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns. Prefer the root
+	// plan's projection OUTPUT schema: after the temp table is keyed under OUTPUT
+	// names, the root datum can carry INERT extra keys (the source column a rename
+	// projects from), absent from the recursive rows — scraping ALL root keys
+	// would then treat equal-output rows as distinct and break cycle detection.
+	// Fall back to scraping the root datum when there is no projection (SELECT *).
 	var canonicalCols []string
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
-		if len(rootRows) > 0 {
+		canonicalCols = recursiveUnionOutputColumns(p.GetRoot())
+		if len(canonicalCols) == 0 && len(rootRows) > 0 {
 			if m, ok := rootRows[0].Datum.(map[string]any); ok {
 				canonicalCols = make([]string, 0, len(m))
 				for k := range m {
@@ -3765,6 +3778,37 @@ func compareByField(qr QueryResult, field string) any {
 // canonical columns. This ensures root rows (which have only seed
 // columns) and recursive rows (which may carry extra join columns)
 // produce matching keys when their CTE-relevant values are equal.
+// recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
+// union leg by walking to its outermost projection plan and reading each slot's
+// alias (or the projection column name when unaliased), upper-cased. Returns nil
+// when no single-child path reaches a projection (e.g. a SELECT * seed), so the
+// caller falls back to scraping the runtime datum. Used to restrict UNION
+// DISTINCT dedup to the CTE's real output columns, ignoring inert datum keys the
+// temp-table normalization may carry.
+func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
+	for cur := p; cur != nil; {
+		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
+			projs := proj.GetProjections()
+			aliases := proj.GetAliases()
+			out := make([]string, len(projs))
+			for i, pv := range projs {
+				if i < len(aliases) && aliases[i] != "" {
+					out[i] = strings.ToUpper(aliases[i])
+				} else {
+					out[i] = projectionColumnName(pv)
+				}
+			}
+			return out
+		}
+		children := cur.GetChildren()
+		if len(children) != 1 {
+			return nil
+		}
+		cur = children[0]
+	}
+	return nil
+}
+
 func queryResultKeyForCols(qr QueryResult, cols []string) string {
 	if len(cols) == 0 {
 		return queryResultKey(qr)

@@ -3814,6 +3814,40 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
+	// outCols: the CTE's OUTPUT column names — the schema every reference to
+	// the CTE resolves against (the recursive branch's self-reference predicates
+	// AND the Main query). Standard SQL: the seed's projection defines these
+	// names, overridden by an explicit column-alias list `WITH RECURSIVE d(a, b)`.
+	//
+	// The temp table is keyed under these OUTPUT names. Identifier resolution
+	// keeps OUTPUT names (the source-name reverse-map is retired, RFC-173), so a
+	// recursive predicate `b.id = a.up` reads field UP — the CTE's OUTPUT column —
+	// not the seed's source PARENT. The temp table (which the self-reference scans)
+	// must therefore be keyed by UP for the join predicate to match. Both legs are
+	// normalized to emit these names; nothing renames the temp table afterwards.
+	seedSrc := extractOuterProjectionColumns(seedBranches[0])
+	seedOut := make([]string, len(seedSrc))
+	for i, n := range extractOutputProjectionNames(seedBranches[0]) {
+		seedOut[i] = strings.ToUpper(n)
+	}
+	outCols := seedOut
+	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
+		outCols = c.ColumnAliases // already upper-cased
+	}
+
+	// Normalize the SEED to the OUTPUT schema when a column-alias list renames it
+	// beyond the seed's own output names — read each seed source column, re-emit
+	// under the OUTPUT name. Skipped when they already coincide (no alias list, or
+	// the seed uses AS matching the list), keeping the common recursive-CTE plan
+	// unchanged. The read Values never persist a qualified key (recursiveRemapValues).
+	if len(seedSrc) > 0 && len(outCols) == len(seedSrc) && !equalFoldSlices(outCols, seedOut) {
+		seedExpr = expressions.NewLogicalProjectionExpressionWithAliases(
+			recursiveRemapValues(seedSrc),
+			append([]string(nil), outCols...),
+			expressions.ForEachQuantifier(expressions.InitialOf(seedExpr)),
+		)
+	}
+
 	// Wrap seed in TempTableInsert.
 	seedRef := expressions.InitialOf(seedExpr)
 	seedInsert := expressions.NewTempTableInsertExpression(
@@ -3822,11 +3856,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 
 	// Translate the recursive leg with the CTE self-reference resolving
 	// to a TempTableScanExpression(scanAlias). The self-reference temp table
-	// carries the seed's ORIGINAL column names (see the normalization note
-	// below), so a join leg referencing the CTE inside the recursive branch
-	// (e.g. FROM descendants AS a, t AS b) anchors on those columns (RFC-077 7.6).
+	// carries the CTE's OUTPUT column names, so a join leg referencing the CTE
+	// inside the recursive branch (e.g. FROM descendants AS a, t AS b) anchors on
+	// those columns (RFC-077 7.6).
 	t.cteExprScope[cteName] = expressions.NewTempTableScanExpression(scanAlias)
-	t.cteColumnsScope[cteName] = fieldsFromColumnNames(extractOuterProjectionColumns(seedBranches[0]))
+	t.cteColumnsScope[cteName] = fieldsFromColumnNames(outCols)
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
 		recursiveExpr = t.translateOp(recursiveBranches[0])
@@ -3839,76 +3873,28 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// Normalize the recursive leg's output columns to match the seed's
-	// schema. In standard SQL, the CTE's output column names are defined
-	// by the seed. The recursive branch often uses qualified column
-	// references (e.g. SELECT b.id, b.parent) which produce datum keys
-	// like "B.ID" instead of the seed's unqualified "ID". Without this
-	// normalization, the outer query (and DFS recursion) can't find the
-	// expected columns, yielding NULL for every row.
+	// Normalize the recursive leg's output columns to the CTE's OUTPUT schema
+	// (outCols). In standard SQL, the CTE's output column names are defined by
+	// the seed (and any column-alias list). The recursive branch often uses
+	// qualified column references (e.g. SELECT b.id, b.parent) which produce
+	// datum keys like "B.ID"; without this normalization the outer query (and
+	// DFS recursion) can't find the expected columns, yielding NULL for every row.
 	//
-	// The temp table MUST use the seed's original column names (not the
-	// CTE column aliases). The semantic analyzer's ColumnAliasMap
-	// reverse-maps aliased references (e.g. `a.up`) back to the
-	// original column names (e.g. `A.PARENT`) in the WHERE predicate's
-	// FieldValues. So the temp table datum keys must be the originals
-	// for the recursive branch's join predicates to match.
-	seedCols := extractOuterProjectionColumns(seedBranches[0])
+	// The temp table is keyed under outCols so it agrees with the recursive
+	// predicates, which read the CTE's OUTPUT columns (the source-name reverse-map
+	// is retired, RFC-173). recursiveRemapValues never persists a qualified key:
+	// each read is FieldValue{Field: <bare>, Child: QOV(<qualifier>)} — it reads
+	// the qualified datum key ("B.ID") while projectionColumnName returns the BARE
+	// field, so the qualified key (which would collide with the next recursion
+	// level's same-qualified join side and stall the recursion one level early) is
+	// never copied in. executeProjection also emits the value under the bare body
+	// column; when that differs from the OUTPUT name it is an INERT extra key
+	// (unqualified, re-qualified under the scan alias at the next level).
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
-	if len(seedCols) > 0 && len(recCols) > 0 && len(seedCols) == len(recCols) {
-		// ALWAYS wrap the recursive leg in a normalization projection that reads
-		// the body's output columns and re-emits them under the seed's schema
-		// column names (the projection's aliases). This is what lets the Go-only
-		// PushProjectionBelowJoinRule be removed — it was the only other
-		// mechanism that narrowed the recursive body's columns (RFC-042 L1).
-		//
-		// When the recursive body is a join, its output is the merged
-		// source-anchored join RC row carrying QUALIFIED keys (B.ID, A.ID, ...). The
-		// load-bearing fix is that we never copy a qualified key into the temp
-		// table: each remap value is FieldValue{Field: <bare col>, Child:
-		// QOV(<qualifier>)} — evaluateCorrelated reads the qualified datum key
-		// ("B.ID") while projectionColumnName returns the BARE field. So the
-		// qualified key (which would collide with the NEXT recursion level's
-		// same-qualified join side and clobber the live row, stalling the
-		// recursion one level early — the exact bug that produced missing
-		// deepest descendants) is gone.
-		//
-		// Emit-key precision: executeProjection stores the value under BOTH the
-		// projectionColumnName (the bare body column) AND the alias (the seed
-		// name). When the recursive branch projects the same column names as the
-		// seed (the common case, e.g. seed `id`, body `b.id` → both "ID"), those
-		// coincide and the row has exactly the clean schema column. When they
-		// differ (a column rename across the recursive boundary, e.g. seed `n`,
-		// body `e.dst`), the bare body name ("DST") is also emitted as an extra
-		// key — but it is INERT: it is unqualified, so the next level's temp
-		// scan re-qualifies it under the scan alias and the live join side wins
-		// the bare key; it cannot clobber the recursion the way a qualified
-		// collision did. (A future cleanup could drop the extra key by teaching
-		// executeProjection to emit alias-only for an aliased correlated field.)
-		remapVals := make([]values.Value, len(recCols))
-		for i, rc := range recCols {
-			ru := strings.ToUpper(rc)
-			var rv values.Value
-			if dot := strings.IndexByte(ru, '.'); dot >= 0 {
-				qualifier := ru[:dot]
-				col := ru[dot+1:]
-				rv = &values.FieldValue{
-					Field: col,
-					Typ:   values.UnknownType,
-					Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(qualifier)),
-				}
-			} else {
-				rv = &values.FieldValue{Field: ru, Typ: values.UnknownType}
-			}
-			remapVals[i] = rv
-		}
-		remapAliases := make([]string, len(seedCols))
-		for i, sc := range seedCols {
-			remapAliases[i] = strings.ToUpper(sc)
-		}
+	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
 		recursiveExpr = expressions.NewLogicalProjectionExpressionWithAliases(
-			remapVals,
-			remapAliases,
+			recursiveRemapValues(recCols),
+			append([]string(nil), outCols...),
 			expressions.ForEachQuantifier(expressions.InitialOf(recursiveExpr)),
 		)
 	}
@@ -3946,53 +3932,18 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		)
 	}
 
-	// Apply CTE column aliases as a rename projection over the
-	// recursive union's output. The temp table internally uses the
-	// seed's original column names (ID, PARENT) because the semantic
-	// analyzer's ColumnAliasMap reverse-maps aliased references
-	// (`a.up` → `A.PARENT`) in the recursive branch's predicates.
-	// The rename only applies to the outward-facing datum so the
-	// main query can reference the aliased names (NODE, UP).
-	var cteResult expressions.RelationalExpression = recUnion
-	if len(c.ColumnAliases) > 0 && len(seedCols) > 0 && len(seedCols) == len(c.ColumnAliases) {
-		needsRename := false
-		for i := range seedCols {
-			if !strings.EqualFold(seedCols[i], c.ColumnAliases[i]) {
-				needsRename = true
-				break
-			}
-		}
-		if needsRename {
-			renameVals := make([]values.Value, len(seedCols))
-			for i, sc := range seedCols {
-				renameVals[i] = &values.FieldValue{
-					Field: strings.ToUpper(sc),
-					Typ:   values.UnknownType,
-				}
-			}
-			renameAliases := make([]string, len(c.ColumnAliases))
-			for i, a := range c.ColumnAliases {
-				renameAliases[i] = strings.ToUpper(a)
-			}
-			cteResult = expressions.NewLogicalProjectionExpressionWithAliases(
-				renameVals,
-				renameAliases,
-				expressions.ForEachQuantifier(expressions.InitialOf(recUnion)),
-			)
-		}
-	}
+	// No outward rename projection is needed: the temp table (and therefore the
+	// recursive union's output) is already keyed under the CTE's OUTPUT column
+	// names (outCols) — the column-alias list, when present, was baked into
+	// outCols and applied to BOTH legs before the temp-table inserts.
+	cteResult := recUnion
 
-	// Register the (possibly-renamed) result so that the Main query's
-	// scan of the CTE name resolves to it. The OUTWARD column schema (the names
-	// the Main query references) is the CTE column aliases when present, else the
-	// seed's columns — so a CTE reference used as a JOIN LEG in the Main query
-	// anchors instead of falling back to the opaque merge (RFC-077 7.6).
+	// Register the result so the Main query's scan of the CTE name resolves to
+	// it. The OUTWARD column schema is outCols — so a CTE reference used as a JOIN
+	// LEG in the Main query anchors instead of falling back to the opaque merge
+	// (RFC-077 7.6).
 	t.cteExprScope[cteName] = cteResult
-	outwardCols := extractOuterProjectionColumns(seedBranches[0])
-	if len(c.ColumnAliases) > 0 {
-		outwardCols = c.ColumnAliases
-	}
-	t.cteColumnsScope[cteName] = fieldsFromColumnNames(outwardCols)
+	t.cteColumnsScope[cteName] = fieldsFromColumnNames(outCols)
 	result := t.translateOp(c.Main)
 	delete(t.cteExprScope, cteName)
 	delete(t.cteColumnsScope, cteName)
@@ -4014,15 +3965,75 @@ func fieldsFromColumnNames(names []string) []values.Field {
 	return fields
 }
 
-// extractOuterProjectionColumns returns the column names from the
+// extractOuterProjectionColumns returns the SOURCE column names from the
 // outermost LogicalProject in a logical operator tree. Returns nil if
 // no LogicalProject is found. Used by translateRecursiveCTE to detect
-// schema mismatches between seed and recursive branches.
+// schema mismatches between seed and recursive branches. These are the
+// READ side (what the branch's projection pulls from its input); the
+// OUTPUT names a reference resolves against are extractOutputProjectionNames.
 func extractOuterProjectionColumns(op logical.LogicalOperator) []string {
 	if p, ok := op.(*logical.LogicalProject); ok {
 		return p.Projections
 	}
 	return nil
+}
+
+// extractOutputProjectionNames returns the OUTPUT column names of the outermost
+// LogicalProject — the alias when present, else the source column name. These
+// are the names a reference to the branch resolves against (Java resolves to the
+// output attribute verbatim). Returns nil if no LogicalProject is found.
+func extractOutputProjectionNames(op logical.LogicalOperator) []string {
+	p, ok := op.(*logical.LogicalProject)
+	if !ok {
+		return nil
+	}
+	out := make([]string, len(p.Projections))
+	for i := range p.Projections {
+		if i < len(p.Aliases) && p.Aliases[i] != "" {
+			out[i] = p.Aliases[i]
+		} else {
+			out[i] = p.Projections[i]
+		}
+	}
+	return out
+}
+
+// recursiveRemapValues builds the read-side Values for a recursive-CTE leg's
+// normalization projection. Each source column becomes a FieldValue: a dotted
+// reference (a join body's "B.ID") reads the QUALIFIED datum key via a
+// QuantifiedObjectValue child while projectionColumnName returns the BARE field,
+// so a qualified key is never persisted into the temp table (a qualified key
+// would collide with the next recursion level's same-qualified join side and
+// stall the recursion one level early). A bare column reads the bare key.
+func recursiveRemapValues(cols []string) []values.Value {
+	out := make([]values.Value, len(cols))
+	for i, c := range cols {
+		cu := strings.ToUpper(c)
+		if dot := strings.IndexByte(cu, '.'); dot >= 0 {
+			out[i] = &values.FieldValue{
+				Field: cu[dot+1:],
+				Typ:   values.UnknownType,
+				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(cu[:dot])),
+			}
+		} else {
+			out[i] = &values.FieldValue{Field: cu, Typ: values.UnknownType}
+		}
+	}
+	return out
+}
+
+// equalFoldSlices reports whether two string slices are element-wise equal
+// under ASCII case folding.
+func equalFoldSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // logicalOpReferencesCTE walks a LogicalOperator tree and reports
