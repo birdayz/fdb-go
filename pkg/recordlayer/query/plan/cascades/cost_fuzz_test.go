@@ -15,15 +15,20 @@ import (
 // negative values on optimised trees.
 //
 // The legacy FixpointApply-era fuzzer additionally asserted best-cost
-// MONOTONICITY across iterations. That invariant was an artifact of
-// the memo-less legacy fixpoint engine and does NOT hold under the
-// production driver: RFC-037 cross-group memo merges re-point a child
-// group's canonical member list, so EstimateCost's documented
-// first-member recursion (properties/cost.go) can price the SAME
-// unchanged parent expression higher after a merge. Plan SELECTION is
-// unaffected — alternatives are ranked through the same merged child
-// groups, and extraction uses winners/GetBest — so absolute growth of
-// the approximation is not a correctness signal.
+// MONOTONICITY across iterations. Monotonicity IS a Cascades invariant
+// — with child costs taken from group winners, a merge takes the min of
+// the merged winners and root best-cost is non-increasing. What breaks
+// it here is EstimateCost's documented FIRST-MEMBER approximation
+// (properties/cost.go): child References are priced at their first
+// member, so an RFC-037 cross-group merge that re-points a child's
+// canonical member list can price the SAME unchanged parent higher.
+// The pin cannot hold under that approximation — not under Cascades.
+// Plan SELECTION is unaffected: alternatives are ranked through the
+// same merged child groups, and extraction uses winners/GetBest.
+// RESTORE the monotonicity pin when child costing moves to winners
+// (BestMemberCostWith exists; the properties package doc promises it)
+// — it is a free oracle — and retire this fuzzer's weaker half.
+// Registered in RFC-174 §2 A2.
 func FuzzCostSanity(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add(make([]byte, 8))
