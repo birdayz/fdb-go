@@ -240,7 +240,7 @@ func TestCommit_NonTenantWriteOnlyInjectsSelfConflictToWire(t *testing.T) {
 	tx := newTestTx()
 	tx.tenantId = NoTenantID
 	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk"))) // write-only: one write conflict, no reads
-	tx.maybeMakeSelfConflicting()
+	tx.maybeMakeSelfConflicting(tx.writeConflicts)
 	reads, writes := marshaledConflictRanges(t, tx)
 	if !anySelfConflictRange(reads) || !anySelfConflictRange(writes) {
 		t.Fatalf("non-tenant write-only commit must ship the \\xFF/SC/ range in BOTH conflict vectors; reads=%v writes=%v",
@@ -260,7 +260,7 @@ func TestCommit_TenantSkipsSelfConflict(t *testing.T) {
 	tx := newTestTx()
 	tx.tenantId = 42
 	tx.addWriteConflict([]byte("wk"), keyAfterBytes([]byte("wk"))) // write-only: one write conflict, no reads
-	tx.maybeMakeSelfConflicting()
+	tx.maybeMakeSelfConflicting(tx.writeConflicts)
 	reads, writes := marshaledConflictRanges(t, tx)
 	if len(reads) != 0 {
 		t.Fatalf("tenant write-only commit must ship 0 read conflict ranges (gate must skip SC injection); got %d", len(reads))
@@ -281,7 +281,7 @@ func TestCommit_IntersectingConflictsSkipSelfConflict(t *testing.T) {
 	tx.tenantId = NoTenantID
 	tx.addWriteConflict([]byte("a"), []byte("z"))
 	tx.addReadConflict([]byte("m"), []byte("n")) // [m,n) ⊂ [a,z): the real ranges already intersect
-	tx.maybeMakeSelfConflicting()
+	tx.maybeMakeSelfConflicting(tx.writeConflicts)
 	reads, writes := marshaledConflictRanges(t, tx)
 	if anySelfConflictRange(reads) || anySelfConflictRange(writes) {
 		t.Fatal("already-intersecting real conflict ranges must NOT get a \\xFF/SC/ range")

@@ -233,10 +233,15 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	tx.mutations = []Mutation{{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")}}
 	tx.writeConflicts = []KeyRange{{Begin: []byte("k"), End: []byte("k\x00")}}
 
-	// Commit's flow: size-time snapshot → maybeMakeSelfConflicting (returns the SC range) → finalizeShip.
+	// Commit's flow: freeze the PRE-SC write snapshot (mirroring Commit's writeConflictsSnap), then
+	// maybeMakeSelfConflicting (decides on the snapshot, returns the SC range), then finalizeShip from the
+	// SAME pre-SC snapshot. Feeding the pre-SC snapshot (NOT live tx.writeConflicts, which maybeMakeSelf-
+	// Conflicting mutates to contain the SC) makes SC enter ONLY via the `sc` param — so this test reds if
+	// the P1 sc-append is reverted (Torvalds round-3).
 	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
-	sc, scAdded := tx.maybeMakeSelfConflicting()
-	shipConflicts := finalizeShipConflicts(tx.writeConflicts, sc, scAdded, coalesced)
+	writeSnap := append([]KeyRange(nil), tx.writeConflicts...)
+	sc, scAdded := tx.maybeMakeSelfConflicting(writeSnap)
+	shipConflicts := finalizeShipConflicts(writeSnap, sc, scAdded, coalesced)
 
 	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, shipConflicts)
 	defer marshalBufPool.Put(bufp)
@@ -252,6 +257,30 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	}
 	if !scOnWire {
 		t.Fatal("#28 P1: shipped commit request is missing the \\xff/SC/ self-conflict range")
+	}
+}
+
+// TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot pins codex #28 round-3: the SC injection decision
+// must use the FROZEN write snapshot that ships, NOT live tx.writeConflicts. A Set racing this Commit after
+// the snapshot (excluded from the shipped writes) must not flip the decision — else the frozen writes ship
+// with no intersecting range and no \xff/SC/ key, breaking the commit_unknown_result barrier. Revert-proof:
+// deciding on live tx.writeConflicts (which here holds the racing write intersecting the read) suppresses SC.
+func TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	tx.tenantId = NoTenantID
+	// A read on "b"; the frozen write snapshot is just [a] (does NOT intersect the read → SC should inject).
+	tx.readConflicts = []KeyRange{{Begin: []byte("b"), End: []byte("b\x00")}}
+	writeSnap := []KeyRange{{Begin: []byte("a"), End: []byte("a\x00")}}
+	// A Set on "b" races Commit AFTER the snapshot → appended to LIVE tx.writeConflicts (not writeSnap). It
+	// intersects the read range "b", so a LIVE-based decision would wrongly skip SC.
+	tx.writeConflicts = []KeyRange{
+		{Begin: []byte("a"), End: []byte("a\x00")},
+		{Begin: []byte("b"), End: []byte("b\x00")},
+	}
+	if _, scAdded := tx.maybeMakeSelfConflicting(writeSnap); !scAdded {
+		t.Fatal("#28 round-3: SC decision must use the frozen write snapshot [a] (which ships), not live " +
+			"tx.writeConflicts — a racing Set on read key \"b\" wrongly suppressed the self-conflict range")
 	}
 }
 

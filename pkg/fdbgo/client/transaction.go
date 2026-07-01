@@ -1741,13 +1741,15 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// read-only fast path and the size check above — exactly as C++ places it after its own read-only
 	// return and transaction_too_large check. See maybeMakeSelfConflicting for the full rationale.
 	//
-	// #28 P1/P2b: the \xff/SC/ range it appends is added AFTER the 2101 gate (so unsized, matching C++) but
-	// MUST ship — pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the
-	// size-time `sizeConflicts` snapshot predates it. finalizeShipConflicts folds JUST that range into the
-	// SIZED snapshot (not a live re-read of tx.writeConflicts), so the RFC-090 self-conflicting retry can
-	// still detect an already-applied commit WITHOUT shipping a racing Set's unvalidated/unsized conflict
-	// range (codex #28 P2b).
-	sc, scAdded := tx.maybeMakeSelfConflicting()
+	// #28 P1/P2b: the \xff/SC/ range it appends is added AFTER the 2101 gate (so unsized, matching C++
+	// makeSelfConflicting at NativeAPI.actor.cpp:6860, which follows the size check at :6836) but MUST ship —
+	// pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the size-time
+	// `sizeConflicts` snapshot predates it. The SC DECISION and the ship both work from the frozen
+	// writeConflictsSnap (the shipped set), not live tx.writeConflicts: maybeMakeSelfConflicting decides on
+	// the snapshot (codex round-3), and finalizeShipConflicts folds JUST the returned range into it (not a
+	// live re-read), so the RFC-090 self-conflicting retry detects an already-applied commit WITHOUT shipping
+	// a racing Set's unvalidated/unsized conflict range (codex P2b).
+	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
 
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
@@ -2634,16 +2636,22 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 // tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a separate
 // subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and the finding's
 // primary scenario. Callers (Commit) must NOT hold conflictMu — this takes it.
-// Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one (write-only non-tenant
-// commit whose ranges don't already intersect), so Commit can ship it on the SIZED conflict snapshot
-// (#28 P2b) rather than re-reading the live tx.writeConflicts.
-func (tx *Transaction) maybeMakeSelfConflicting() (KeyRange, bool) {
+// writeSnap is the FROZEN write-conflict snapshot that actually ships (writeConflictsSnap[:nWriteConflicts]).
+// The intersect decision uses it — NOT live tx.writeConflicts — so a Set racing this Commit after the
+// snapshot (excluded from the shipped writes AND the frozen `muts`) cannot flip the SC decision away from
+// what ships: otherwise a racing write intersecting a read range could make scAdded=false while the shipped
+// frozen writes carry NO intersecting range and NO \xFF/SC/ key, leaving the request non-self-conflicting
+// and breaking the commit_unknown_result barrier (codex #28 round-3). Read side stays live — it matches the
+// live read conflicts buildCommitTransactionRequest ships, and a racing Get only over-conflicts (harmless).
+// Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one, so Commit can ship it on
+// the SIZED snapshot (#28 P2b) rather than re-reading live tx.writeConflicts.
+func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange, bool) {
 	if tx.tenantId != NoTenantID {
 		return KeyRange{}, false
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
-	if !conflictRangesIntersect(tx.writeConflicts, tx.readConflicts) {
+	if !conflictRangesIntersect(writeSnap, tx.readConflicts) {
 		return tx.makeSelfConflictingLocked(), true
 	}
 	return KeyRange{}, false
