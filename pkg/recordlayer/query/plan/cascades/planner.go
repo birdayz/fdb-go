@@ -840,11 +840,14 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 // The contiguity anchor (start exactly at len(bound equality prefix)) is what
 // distinguishes the plannable partition-INEQUALITY case (WHERE zone='z1' AND
 // region>'r1' — bound prefix [zone], residual {region} at index 1 = boundLen 1)
-// from the out-of-scope leading-column-unbound case (WHERE region='r1', zone
-// unbound — bound prefix [], residual {region} at index 1 ≠ boundLen 0), which
-// stays unplannable (TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual).
-// A residual touching any non-partition column (or a non-contiguous set) is not
-// certified here and stays on the OLD InsertFinal path.
+// from the out-of-scope leading-column-GAP case (WHERE region='r1', zone unbound
+// — bound prefix [], residual {region} at index 1 ≠ boundLen 0), which stays
+// unplannable (TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual). The
+// discriminator is the GAP, not mere unboundedness: a leading INEQUALITY (WHERE
+// zone>'z1' — bound prefix [], residual {zone} at index 0 = boundLen 0) has no gap
+// and IS admitted (LeadingInequalityResidual). A residual touching any
+// non-partition column (or a non-contiguous set) is not certified here and stays
+// on the OLD InsertFinal path.
 func residualIsPartitionContiguous(
 	f *expressions.LogicalFilterExpression,
 	plan *plans.RecordQueryVectorIndexPlan,
