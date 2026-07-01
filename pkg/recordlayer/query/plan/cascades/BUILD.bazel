@@ -233,6 +233,7 @@ go_test(
         "compensation_test.go",
         "correlated_intersection_guard_test.go",
         "cost_fuzz_test.go",
+        "cost_monotonicity_test.go",
         "cost_selectivity_test.go",
         "cross_product_test.go",
         "data_access_types_test.go",

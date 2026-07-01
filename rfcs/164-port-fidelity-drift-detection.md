@@ -227,9 +227,22 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   sites + three properties, not one switch). **Gate:** Graefe + Torvalds.
 
 ### [ ] WS-4 — Property/metamorphic tests for the Go-only paths (no Java oracle exists)
-- [ ] **Cost monotonicity** — encode `equality selectivity ≤ range selectivity` (and "a
-  more selective predicate never estimates more rows") as an invariant in
-  `FuzzCostMonotonicity` (it exists but never encoded this, so COST-SELECTIVITY slipped).
+- [x] **Cost monotonicity** — encode `equality selectivity ≤ range selectivity` (and "a
+  more selective predicate never estimates more rows"). LANDED as `TestBoundSelectivity_
+  CostMonotonicity`, a focused property test on `boundSelectivity` — the SINGLE-SOURCE
+  equality-vs-range costing function (shared by both HintCost sites + scanLikeCost) where
+  COST-SELECTIVITY (#405) actually lived. It pins (1) the constant ordering
+  `EqualityBoundSelectivity < RangeSelectivity < FilterSelectivity` and (2) `boundSelectivity`
+  monotonicity: an equality out-selects a range, adding ANY bound only lowers selectivity, and
+  empty/nil bounds are inert. Chosen over encoding it inside `FuzzCostMonotonicity` because that
+  fuzz checks a DIFFERENT property (the optimiser's best cost never GROWS across iterations, not
+  the selectivity ordering) — a direct property test on the exact function the bug inverted is a
+  stronger, clearer pin than a fuzz assertion over random plans. LAYERED protection (Graefe): it
+  pins the in-`boundSelectivity` invariant; the actual index MIS-PICK #405 caused is guarded at
+  the plan level by `TestCostSelectivity_PrefersEqualityIndex`. FOLLOW-UP: `scanLikeCost`'s
+  `fullBindUnique` 1-row short-circuit (the low-NDV secondary-index hazard — a whole-index
+  equality bind that selects a large bucket must NOT be costed as a 1-row point probe) is the one
+  COST-SELECTIVITY-adjacent path still unpinned.
 - [ ] **Determinism under cost-tied access paths** — **commit a deterministic seed** that
   hits an equal-cost index tie; acceptance = that seed goes red on the mutation.
   `FuzzPlanner_Determinism` passed only because it never *randomly* hit a tie; relying on
