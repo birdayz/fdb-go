@@ -239,9 +239,11 @@ Pinned deterministically: `TestWatchSetup_CancelledTxnDoesNotLeakSlot` (round-11
 
 **CONCURRENCY TEST-DEBT (3 correct-by-construction linearizations needing fault-injection regressions
 — a focused follow-up; the fixes are landed + commented, these PIN them against future regressions):**
-1. **Poison re-check (round 10, transaction.go Commit snapshot):** block the read barrier (hold a
-   pipelined GetValue reply via the simDialer intercept so Commit parks past the entry poison check),
-   inject `Atomic(badOp)`, release → assert Commit returns 2018; revert-prove by removing the re-read.
+1. **Poison re-check (round 10, transaction.go Commit snapshot):** ✅ DONE —
+   `TestCommit_RechecksInvalidAtomicPoison_SetDuringReadBarrier` (poison_recheck_fault_test.go): drops
+   the pipelined barrier read's reply so Commit's Resolve re-drives and parks on the HELD re-send
+   reply (past the entry poison check), injects `Atomic(badOp)`, releases → asserts 2018. Deterministic
+   (3/3). Revert-proof: without the re-read, Commit succeeds despite the invalid atomic.
 2. **Watch-ctx-early (round 12, readpath.go):** ✅ DONE — `TestWatchSetup_CancelDuringValueRead_
    ReleasesSlot` (watch_ctx_fault_test.go): holds the WatchSetup value-read reply via the simDialer
    intercept, Cancel()s mid-read, releases → asserts the slot is freed (2nd watch under cap=1
