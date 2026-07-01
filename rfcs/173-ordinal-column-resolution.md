@@ -77,9 +77,11 @@ Everything downstream is scaffolding around one string contract, and it costs us
    the plans are closed.
 2. **An exploration-hiding / partition-re-exposure correlation duality** exists *only* because the
    anchored RC self-binds leg QOVs that name-resolution must hide from the global correlation
-   order yet re-expose for predicate/quantifier classification (`value_correlation.go:88-98`,
-   `GetCorrelatedToOfAnchoredJoinLegs`, `predicates.AddMergeSeedAliases`,
-   `rule_partition_select.go` `quantifierMergeSeedLegDeps`). Pure accidental complexity.
+   order yet re-expose for predicate/quantifier classification (hiding: the `AnchoredJoin` skip
+   inside `GetCorrelatedToOfValue`, `value_correlation.go:96-98`; re-exposure:
+   `GetCorrelatedToOfAnchoredJoinLegs`, `value_correlation.go:132`,
+   `predicates.AddMergeSeedAliases`, `rule_partition_select.go` `quantifierMergeSeedLegDeps`).
+   Pure accidental complexity.
 3. **It fights ANSI SQL.** ANSI column correspondence is scope-and-name with *positional*
    disambiguation — `UNION`/`INTERSECT`/`EXCEPT` match columns **by position, not name**;
    `JOIN … USING`/`NATURAL` coalesce; derived tables rename (`FROM (…) AS t(a,b)`); duplicate
@@ -556,7 +558,12 @@ Slice 1 continues under its own already-acked plan):
 - [x] **Torvalds** — ACK on `dcf493dae` (three nits fixed: risk-2 pre-fold clause,
   `semantic_hash.go:108`, LEFT-JOIN hazard ref `:346-358`; Slice 1 benchmark exit obligation
   added per his suggestion).
-- [ ] **codex-review** (in flight) · - [ ] **@claude** (PR review)
+- [x] **codex-review** — round 1 caught the Round-5 ack-state contradiction (header/log restated
+  the checklist; fixed by making the checklist the single source of truth, `e7572be78`); delta
+  re-review clean ("no actionable correctness issues", posted on PR #434).
+- [x] **@claude** — ACK on `e7572be78` (PR #434: all six findings "sound and land consistently";
+  13/14 citations exact; two cosmetic nits — the `GetCorrelatedToOfAnchoredJoinLegs` citation
+  drift and the Slice 1 "scope unchanged" wording — folded into this revision).
 
 **Acceptance for the RFC ack:** all four acked with no outstanding NAK, and §5's per-slice
 execution pins are agreed as the certification mechanism (replacing the discredited dark-diff
@@ -627,7 +634,8 @@ Findings folded in:
    citation drift (mergeRows, qualifyAlias, `values.go` anchors, TODO.md guard ref,
    `accumulateRow`) and the two out-of-tree files in the Paths note fixed.
 
-**Gate for Rounds 1–4 satisfied; Round 5 re-ack per the checklist above.** Slice 1 continues
-(its scope is unchanged by Round 5); **Slice 2 must not start until all four Round-5 boxes are
-checked** — it consumes three Round-5 rulings (no-interning-flip, the scoping gate, the
-entry-gate inventory).
+**Gate for Rounds 1–4 satisfied; Round 5 re-ack per the checklist above.** Slice 1 continues —
+its re-ack **gating** is unchanged by Round 5 (it runs under its own already-acked plan), though
+it did pick up the benchmark exit obligation (§4); **Slice 2 must not start until all four
+Round-5 boxes are checked** — it consumes three Round-5 rulings (no-interning-flip, the scoping
+gate, the entry-gate inventory).
