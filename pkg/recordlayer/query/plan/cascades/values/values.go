@@ -207,10 +207,60 @@ func (f *FieldValue) Type() Type {
 	return f.Typ
 }
 
+// OrdinalRow is the RFC-173 ordinal-model runtime row FieldValue.Evaluate reads
+// on the authoritative (non-join) frontier, in place of the legacy name-keyed
+// map[string]any. It is satisfied structurally by executor.PositionalRow, which
+// lives in a higher layer — the interface here avoids the import cycle.
+//
+// Get(ordinal) is the primary path: a FieldValue with a typed child resolves its
+// column to an ordinal (resolveOrdinal, against the child Type) and reads the
+// slot positionally — Java's MessageHelpers.getFieldValueForFieldOrdinals.
+// GetByName(name) serves a Go-only FLAT FieldValue (nil child, no child Type to
+// resolve against): it resolves name->ordinal against the ROW's own Type (the
+// authoritative positional type — e.g. a CTE's renamed columns, positionally
+// aligned to the slots), NOT the legacy name map. Both loud-error (never a
+// silent NULL) on a miss: on the authoritative frontier column existence is
+// validated at plan time (42703), so a runtime miss is a malformed plan.
+type OrdinalRow interface {
+	Get(ordinal int) (any, bool)
+	GetByName(name string) (any, bool)
+}
+
+// OrdinalResolutionError is the loud internal error (RFC-173 Slice 1) raised when
+// a FieldValue's column cannot be resolved against the authoritative ordinal
+// runtime row. Per Graefe: authority + a silent name-map fallback means a
+// resolution bug never surfaces, so this is a query error, not a NULL. Ordinal
+// is the resolved ordinal, or -1 for a flat-reference (name->ordinal) miss.
+type OrdinalResolutionError struct {
+	Field   string
+	Ordinal int
+}
+
+func (e *OrdinalResolutionError) Error() string {
+	return fmt.Sprintf("RFC-173 ordinal resolution: field %q not resolvable in the runtime row (ordinal %d) — malformed plan", e.Field, e.Ordinal)
+}
+
+// evaluateOrdinal reads f's column from an ordinal-model runtime row. It is the
+// authoritative frontier's resolution — NO name-map fallback (Graefe). A typed
+// child yields an ordinal (resolveOrdinal) read positionally; a flat reference
+// falls to the row's own type (GetByName). A miss on either is loud.
+func (f *FieldValue) evaluateOrdinal(row OrdinalRow) (any, error) {
+	if ord, ok := f.resolveOrdinal(); ok {
+		if v, inRange := row.Get(ord); inRange {
+			return v, nil
+		}
+		return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: ord}
+	}
+	if v, ok := row.GetByName(f.Field); ok {
+		return v, nil
+	}
+	return nil, &OrdinalResolutionError{Field: f.Field, Ordinal: -1}
+}
+
 func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if f.Child != nil {
 		if qov, isQOV := f.Child.(*QuantifiedObjectValue); isQOV {
-			return f.evaluateCorrelated(qov, evalCtx), nil
+			return f.evaluateCorrelated(qov, evalCtx)
 		}
 		cv, err := f.Child.Evaluate(evalCtx)
 		if err != nil {
@@ -220,6 +270,11 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	}
 	if evalCtx == nil {
 		return nil, nil
+	}
+	// RFC-173 Slice 1: an ordinal-model row is authoritative on the non-join
+	// frontier — resolve by ordinal, no name-map fallback.
+	if row, ok := evalCtx.(OrdinalRow); ok {
+		return f.evaluateOrdinal(row)
 	}
 	if row, ok := evalCtx.(map[string]any); ok {
 		return row[f.Field], nil
@@ -244,28 +299,33 @@ func mapKeys(m map[string]any) []string {
 	return ks
 }
 
-func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) any {
+func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
 	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
 	switch ctx := evalCtx.(type) {
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
+				// RFC-173 Slice 1: a quantifier bound to an ordinal-model row
+				// resolves by ordinal, no name fallback.
+				if row, ok := bound.(OrdinalRow); ok {
+					return f.evaluateOrdinal(row)
+				}
 				if bm, ok := bound.(map[string]any); ok {
 					if v, ok := bm[f.Field]; ok {
-						return v
+						return v, nil
 					}
 					lower := strings.ToLower(f.Field)
 					if v, ok := bm[lower]; ok {
-						return v
+						return v, nil
 					}
-					return nil
+					return nil, nil
 				}
-				return bound
+				return bound, nil
 			}
 		}
 		if ctx.Datum != nil {
 			if v, ok := ctx.Datum[qualKey]; ok {
-				return v
+				return v, nil
 			}
 			// Already-qualified field (e.g. "T3.ID") accessed through a merge
 			// quantifier: a re-enumerated N-way join collapses a buried table
@@ -277,51 +337,54 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 			// (bm[f.Field]) by resolving the qualified field directly. (RFC-043.)
 			if strings.Contains(f.Field, ".") {
 				if v, ok := ctx.Datum[strings.ToUpper(f.Field)]; ok {
-					return v
+					return v, nil
 				}
 				if v, ok := ctx.Datum[f.Field]; ok {
-					return v
+					return v, nil
 				}
 			}
 		}
-		return nil
+		return nil, nil
 	case CorrelationBinder:
 		if bound, ok := ctx.GetCorrelationBinding(qov.Correlation); ok {
+			if row, ok := bound.(OrdinalRow); ok {
+				return f.evaluateOrdinal(row)
+			}
 			if bm, ok := bound.(map[string]any); ok {
 				if v, ok := bm[f.Field]; ok {
-					return v
+					return v, nil
 				}
 				lower := strings.ToLower(f.Field)
 				if v, ok := bm[lower]; ok {
-					return v
+					return v, nil
 				}
-				return nil
+				return nil, nil
 			}
-			return bound
+			return bound, nil
 		}
-		return nil
+		return nil, nil
 	case map[CorrelationIdentifier]map[string]any:
 		if sub, ok := ctx[qov.Correlation]; ok {
-			return sub[f.Field]
+			return sub[f.Field], nil
 		}
-		return nil
+		return nil, nil
 	case map[string]any:
 		if v, ok := ctx[qualKey]; ok {
-			return v
+			return v, nil
 		}
 		// Already-qualified field accessed through a merge quantifier — see the
 		// *RowEvalContext branch above for the rationale. (RFC-043.)
 		if strings.Contains(f.Field, ".") {
 			if v, ok := ctx[strings.ToUpper(f.Field)]; ok {
-				return v
+				return v, nil
 			}
 			if v, ok := ctx[f.Field]; ok {
-				return v
+				return v, nil
 			}
 		}
-		return nil
+		return nil, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // resolveOrdinal returns the 0-based ordinal of f.Field within the record type
