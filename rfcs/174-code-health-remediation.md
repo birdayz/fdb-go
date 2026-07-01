@@ -86,6 +86,14 @@ item's acceptance criterion in §5 is "the grep returns zero."
   `FuzzCostSanity`'s weaker half. Permanent docs must say "not an invariant of the
   first-member approximation", never "not a Cascades invariant under merging".
 
+- **A3 — A1's parse-swallow class recurs in sibling combinators** (found by @claude's review
+  of #436). `ConcatCursors` (cursor_combinators.go:341-353) and `FlatMapPipelinedWithCheck`
+  (:560-578) still swallow `UnmarshalVT` failures and silently restart — the wrong-results
+  divergence without the panic risk (no enum-state field). Fix in flight on
+  `fix/sibling-continuation-parse-errors`: full audit of every continuation-deserializing
+  constructor in `pkg/recordlayer`, per-combinator Java-matched errors, pinned per #436's
+  pattern.
+
 ### Track B — process noise in permanent source (violates CLAUDE.md's explicit bans)
 
 - **B1 — reviewer attributions in library code.** ~53 comment lines mentioning `codex` and 6
@@ -215,10 +223,12 @@ item's acceptance criterion in §5 is "the grep returns zero."
   warns about (match the property, not the observable). Extend `docs_consistency_test.go` (or
   add a sibling `source_hygiene_test.go`) to fail on `(day|night|swing)shift-[0-9]+` and
   reviewer-attribution patterns (`(codex[:)]`, `(Torvalds`, `audit #N`) in **the comments of
-  every tracked Go file** (`git ls-files '*.go'`, `_test.go` included; only generated code and
-  `fdb-record-layer/` excluded) — B2's inventory includes test files, CLAUDE.md's ban covers
-  all code comments, and violations live outside `pkg/` too (`tools/bazelscaleset`), so any
-  narrower gate passes with violations standing (codex P2 ×2 on this RFC). Lands in the
+  every tracked Go file** (`git ls-files '*.go'`, `_test.go` included; excluded only files
+  bearing Go's `// Code generated … DO NOT EDIT.` marker) — B2's inventory includes test
+  files, CLAUDE.md's ban covers all code comments, violations live outside `pkg/`
+  (`tools/bazelscaleset`), and generated files exist outside the obvious `gen/`/`.pb.go`
+  paths, so any enumerated scope — on either the include or exclude side — passes with
+  violations standing or breaks on a generator refresh (codex P2 ×3 on this RFC). Lands in the
   same PR as the B1/B2 sweeps (gate + zero-state together, so it's born green and stays
   green).
 - **F3 — codify the red-nightly freeze exception.** A1 sat red for three days because the
@@ -267,12 +277,19 @@ regrowing while attention is on 173).
   + committed corpus entry; corrupt-continuation now surfaces a typed error matching Java's.
 - **A2:** `grep -rn "FixpointApply\|func (p \*Planner) Explore(" pkg/` → zero in non-test code;
   no behavioral test coverage lost (triage table in the PR).
+- **A3:** every continuation-deserializing cursor constructor in `pkg/recordlayer` either
+  surfaces a typed parse error matching its Java counterpart or documents Java-verified
+  restart tolerance at the call site; the PR carries the full audit table (fixed /
+  already-clean / Java-tolerates per constructor).
 - **B1/B2:** the F2 CI gate exists and passes — `(day|night|swing)shift-[0-9]+` and
   reviewer-attribution patterns return zero hits in the comments of **every tracked Go file
-  in the repo** (`git ls-files '*.go'`), test files included; excluded only: `gen/`,
-  `*/parser/gen/`, `*.pb.go`, `fdb-record-layer/`. Not a directory list — `tools/`,
-  `example/`, and root-level Go files are in scope (codex round-2 catch:
-  `tools/bazelscaleset` carries attribution comments).
+  in the repo** (`git ls-files '*.go'`), test files included. The ONLY exclusion is
+  generated code, detected **by Go's official marker convention** (a first-comment line
+  matching `^// Code generated .* DO NOT EDIT\.$`) — never by path patterns. Path lists
+  under-exclude (`wire/types/*_generated.go`, `api/mocks_*.go` carry the marker but match no
+  `gen/`/`.pb.go` pattern — codex round-3 catch) exactly as directory lists under-include
+  (`tools/bazelscaleset` — round-2 catch). Scope by property on both sides: tracked-file set
+  in, generated-marker out.
 - **B3/B4/B5:** no comment in `cascades/` or `pkg/fdbgo` describes retired code as current;
   `cost.go` rule-count references derived or deleted; relocated rationale landed in the RFCs
   cited (RFC-150/151 for B3; per-field RFC pointers for B4).
@@ -330,12 +347,14 @@ regrowing while attention is on 173).
   (zero option-backing fields on `Transaction`); §4 freeze paragraph resolved into the owner's
   actual decision. F2 comment-scope note: gate scopes to comments, not string literals
   (allowlist covers residue).
-- **codex — two P2 findings (2026-07-02, both folded).** Round 1: B2's inventory includes
+- **codex — three P2 findings (2026-07-02, all folded).** Round 1: B2's inventory includes
   `_test.go` files but the F2 gate/criterion scoped to non-test comments. Round 2: the
   widened criterion still listed only `pkg/ cmd/ conformance/` while tracked Go files with
-  violations exist outside (`tools/bazelscaleset`). Folded: gate + sweeps cover the comments
-  of every tracked Go file (`git ls-files '*.go'`), only generated code excluded (§2 F2,
-  §5 B1/B2). Both rounds were the same lesson: define the scope by the tracked-file set, not
-  by an enumerated directory list.
+  violations exist outside (`tools/bazelscaleset`). Round 3: the exclusion list was ALSO an
+  enumeration — tracked generated files exist outside `gen/`/`.pb.go`
+  (`wire/types/*_generated.go`, `api/mocks_*.go`); a literal implementation would fail on a
+  generator refresh. Folded: scope by property on both sides — include = tracked-file set
+  (`git ls-files '*.go'`), exclude = Go's `// Code generated … DO NOT EDIT.` marker (§2 F2,
+  §5 B1/B2). Three rounds, one lesson: never define scope by enumeration.
 - (pending) FDB-C-dev — Tracks B1/B4/E (fdbgo surface) at execution time, per-PR.
 - (pending) @claude — PR #439.
