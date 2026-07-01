@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -83,7 +84,11 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 
 	for i, col := range c.groupCols {
 		if i < len(entry.Key) {
-			datum[col] = entry.Key[i]
+			// Normalize a UUID group key (tuple.UUID off the aggregate index)
+			// to the neutral [16]byte the value layer uses, matching the
+			// covering cursor — otherwise a residual HAVING/filter compare in
+			// cmpAny (which only knows [16]byte) would miss it.
+			datum[col] = tupleElementToUUID(entry.Key[i])
 		}
 	}
 
@@ -153,7 +158,12 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 				if err != nil {
 					panic(err)
 				}
-				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092). See executor.go widenInt32.
+				// widenInt32 (RFC-092) + uuidToTupleElement: a UUID group/PK
+				// comparison key arrives as a neutral [16]byte the tuple packer
+				// can't encode; convert it to tuple.UUID so compareKeys' Pack
+				// doesn't panic on a multi-aggregate intersection over a UUID
+				// GROUP BY key (RFC-162). Mirrors mergeSortCursor.extractKey.
+				t[i] = uuidToTupleElement(widenInt32(v))
 			}
 			return t
 		}
@@ -760,6 +770,12 @@ func (m *mergeSortCursor) extractKey(qr QueryResult) string {
 			t[i] = tv
 		case int32:
 			t[i] = int64(tv)
+		case [16]byte:
+			// A UUID merge key must pack as a tuple.UUID (0x30 + 16 bytes) so the
+			// packed-tuple ordering the merge relies on matches the unsigned
+			// big-endian UUID order — the fmt.Sprintf default below would pack a
+			// decimal-list string ("[16]uint8:[85 14 …]") that sorts lexically.
+			t[i] = tuple.UUID(tv)
 		default:
 			t[i] = fmt.Sprintf("%T:%v", v, v)
 		}
@@ -879,6 +895,15 @@ func compareValues(a, b any) int {
 				return 1
 			}
 			return 0
+		}
+	case [16]byte:
+		// UUID sorts by unsigned big-endian bytes — the same order the tuple.UUID
+		// wire encoding and the filter-path predicates.cmpAny use, so an
+		// in-memory sort of a non-indexed UUID column agrees with an ordered
+		// index scan. Without this arm the fmt.Sprintf("%v") fallback below would
+		// compare decimal-list strings ("[85 14 …]") in lexical, not byte, order.
+		if bv, ok := b.([16]byte); ok {
+			return bytes.Compare(av[:], bv[:])
 		}
 	}
 	as := fmt.Sprintf("%v", a)

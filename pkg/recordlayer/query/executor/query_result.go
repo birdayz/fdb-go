@@ -2,7 +2,6 @@ package executor
 
 import (
 	"encoding/binary"
-	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -99,35 +98,37 @@ func protoFieldToGo(fd protoreflect.FieldDescriptor, v protoreflect.Value) any {
 	if fd.IsMap() {
 		return v.Interface()
 	}
-	// UUID columns are stored as the tuple_fields.UUID message; the SQL layer
-	// surfaces them as the canonical 36-char string (matches Java's
-	// getString(uuidColumn)), not the raw proto message.
+	// UUID columns are stored as the tuple_fields.UUID message. Surface the
+	// value as a neutral 16-byte array ([16]byte, msb‖lsb big-endian —
+	// matching Java's java.util.UUID and the tuple.UUID wire layout) rather
+	// than the canonical string. This lets the filter path compare
+	// [16]byte==[16]byte (predicates.cmpAny) and the index-scan-range packer
+	// seek the exact 0x30 entry; the [16]byte → canonical-string conversion
+	// happens once, at the result-materialization boundary. Returning a string
+	// here instead would make `WHERE v = '<uuid>'` and INL UUID join keys pack
+	// a 0x02 string that never matches the 0x30 index entry.
 	if fd.Kind() == protoreflect.MessageKind {
 		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
-			return uuidMessageToString(v.Message())
+			return uuidMessageToBytes(v.Message())
 		}
 	}
 	return scalarProtoToGo(fd.Kind(), v)
 }
 
-// uuidMessageToString renders a tuple_fields.UUID message (most/least
-// _significant_bits) as the canonical 36-char lower-case UUID string.
-func uuidMessageToString(msg protoreflect.Message) string {
+// uuidMessageToBytes reads a tuple_fields.UUID message (most/least
+// _significant_bits) into a neutral 16-byte array, msb‖lsb big-endian — the
+// same layout tuple.UUID and Java's java.util.UUID use.
+func uuidMessageToBytes(msg protoreflect.Message) [16]byte {
 	fields := msg.Descriptor().Fields()
 	mostFD := fields.ByName("most_significant_bits")
 	leastFD := fields.ByName("least_significant_bits")
-	if mostFD == nil || leastFD == nil {
-		return ""
-	}
 	var b [16]byte
+	if mostFD == nil || leastFD == nil {
+		return b
+	}
 	binary.BigEndian.PutUint64(b[0:8], uint64(msg.Get(mostFD).Int()))   //nolint:gosec
 	binary.BigEndian.PutUint64(b[8:16], uint64(msg.Get(leastFD).Int())) //nolint:gosec
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		binary.BigEndian.Uint32(b[0:4]),
-		binary.BigEndian.Uint16(b[4:6]),
-		binary.BigEndian.Uint16(b[6:8]),
-		binary.BigEndian.Uint16(b[8:10]),
-		b[10:16])
+	return b
 }
 
 func scalarProtoToGo(kind protoreflect.Kind, v protoreflect.Value) any {

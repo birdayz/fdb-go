@@ -277,6 +277,8 @@ go_test(
         "update_set_null_index_probe_test.go",
         "update_undefined_column_probe_test.go",
         "update_unique_violation_probe_test.go",
+        "uuid_audit_regressions_fdb_test.go",
+        "uuid_indexable_roundtrip_fdb_test.go",
         "vector_multipartition_e2e_fdb_test.go",
         "vector_param_rank_e2e_fdb_test.go",
         "vector_search_e2e_fdb_test.go",

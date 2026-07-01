@@ -111,7 +111,22 @@ func simplifyChildren(v Value) Value {
 	case *PromoteValue:
 		c := SimplifyValue(x.Child)
 		if cv, ok := c.(*ConstantValue); ok {
-			return &ConstantValue{Value: cv.Value, Typ: x.Target}
+			// Fold a promoted constant to a constant of the target type. Most
+			// promotions are representation-preserving at the Go level (an int
+			// stays int64; cmpAny widens numerics at compare time), so keeping
+			// cv.Value and just re-tagging the type is correct there. But
+			// STRING→UUID actually reshapes the value (canonical string →
+			// neutral [16]byte); re-tagging alone would leave a string
+			// mislabeled UUID, and the index-scan packer would then seek a 0x02
+			// string that never matches the 0x30 UUID entry. Apply the promotion
+			// via Evaluate so the folded constant carries the right runtime
+			// representation. On a promotion error (e.g. an invalid UUID
+			// literal) keep the Promote node so the error surfaces at execution,
+			// exactly as Java's PromoteValue does.
+			if folded, err := (&PromoteValue{Child: cv, Target: x.Target}).Evaluate(nil); err == nil {
+				return &ConstantValue{Value: folded, Typ: x.Target}
+			}
+			return NewPromoteValue(cv, x.Target)
 		}
 		if c == x.Child {
 			return v

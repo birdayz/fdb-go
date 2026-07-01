@@ -1564,6 +1564,26 @@ func pageContinuationState(cont recordlayer.RecordCursorContinuation, reason rec
 	return true, nil, nil // ReturnLimitReached (LIMIT 0) — clean done
 }
 
+// materializeDriverValue converts the neutral in-engine representation of a
+// UUID (a [16]byte, or a tuple.UUID read straight off a covering index) into
+// the canonical 36-char string the SQL client expects. This is the ONE place a
+// UUID leaves the value layer as a string — every internal path (filter
+// compare, index-scan-range pack, INL join key) keeps it as [16]byte so
+// equality/ordering stay wire-consistent with the tuple.UUID index encoding
+// (RFC-162, Graefe decision (b)). A fixed [16]byte / tuple.UUID at this boundary
+// is unambiguously a UUID: BYTES columns surface as a []byte slice, never a
+// 16-array, so the type switch never misfires.
+func materializeDriverValue(v any) any {
+	switch u := v.(type) {
+	case [16]byte:
+		return tuple.UUID(u).String()
+	case tuple.UUID:
+		return u.String()
+	default:
+		return v
+	}
+}
+
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
@@ -1635,7 +1655,7 @@ func (r *paginatingRows) fetchPage() error {
 				if err != nil {
 					return nil, err
 				}
-				row[i] = v
+				row[i] = materializeDriverValue(v)
 			}
 			r.buf = append(r.buf, row)
 		}
@@ -2201,8 +2221,12 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 			nullable = api.ColumnNoNulls
 		}
 		cols[i] = executor.ColumnDef{
-			Name:     strings.ToUpper(string(fd.Name())),
-			TypeName: protoKindToTypeName(fd.Kind()),
+			Name: strings.ToUpper(string(fd.Name())),
+			// Route through protoFieldTypeName (descriptor-aware) so a bare
+			// SELECT * reports a UUID column as "OTHER" — the same JDBC name the
+			// projection path (valueTypeName) and Java (Types.OTHER) use — rather
+			// than the "UNKNOWN" protoKindToTypeName's MessageKind default gives.
+			TypeName: protoFieldTypeName(rt.Descriptor, string(fd.Name())),
 			Nullable: nullable,
 		}
 	}
@@ -3054,6 +3078,11 @@ func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
 			return "DATE"
 		case values.TypeCodeTimestamp:
 			return "TIMESTAMP"
+		case values.TypeCodeUuid:
+			// JDBC getColumnTypeName for a UUID is the catch-all "OTHER"
+			// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
+			// field-path protoFieldTypeName so all metadata paths agree.
+			return "OTHER"
 		}
 	}
 	return ""

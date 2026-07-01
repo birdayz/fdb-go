@@ -68,6 +68,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -312,9 +314,68 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		return nil, fmt.Errorf("expr.ResolveComparison: operand is nil")
 	}
 	left, right = widenIntConstAgainstDouble(op, left, right)
+	left, right = promoteStringComparandToUuid(op, left, right)
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
 		Type: op, Operand: right,
 	}), nil
+}
+
+// promoteStringComparandToUuid types a STRING comparand compared against a UUID
+// operand as UUID, mirroring Java (where the comparand is a java.util.UUID, not
+// a String). A UUID column has no native proto/SQL primitive — `uuid_col =
+// '<uuid>'` arrives with the column typed UUID and the literal typed STRING.
+// Without this promotion the comparand evaluates to a Go string: an index-scan
+// range packs a 0x02 string tuple element that never matches the 0x30 UUID
+// entry, and the residual/filter path (predicates.cmpAny) has no string↔[16]byte
+// arm so it returns UNKNOWN. Wrapping the STRING operand in a PromoteValue
+// toward the UUID type makes it parse to a neutral [16]byte at eval time
+// (PromoteValue.Evaluate's STRING_TO_UUID arm), which the executor's scan packer
+// then seeks as a tuple.UUID and cmpAny compares as [16]byte==[16]byte.
+//
+// This is comparand TYPING (a semantic property of the value), deliberately NOT
+// gated on the SARG operator whitelist the numeric widenIntConstAgainstDouble
+// sibling uses: for numerics cmpAny widens int↔float at compare time so a
+// non-SARG operator (e.g. IS DISTINCT FROM) still compares correctly unpromoted,
+// but cmpAny cannot compensate for string-vs-[16]byte, so EVERY comparison
+// operator that reaches here (=, <>, <, <=, >, >=, IS [NOT] DISTINCT FROM) must
+// type its comparand or return wrong rows. LIKE/STARTS_WITH/IN take separate
+// resolvers, so only genuine equality/ordering/distinct-from ops arrive.
+//
+// A col-vs-col UUID join (both sides already UUID) is left untouched — its
+// comparand already evaluates to [16]byte, so no string coercion is needed and
+// none is inserted (this is the INL-join-key case a positional mask got wrong).
+func promoteStringComparandToUuid(_ predicates.ComparisonType, left, right values.Value) (values.Value, values.Value) {
+	lt, rt := left.Type(), right.Type()
+	if lt == nil || rt == nil {
+		return left, right
+	}
+	if values.IsUuid(lt) && promotableToUuid(rt) {
+		return left, values.NewPromoteValue(right, lt)
+	}
+	if values.IsUuid(rt) && promotableToUuid(lt) {
+		return values.NewPromoteValue(left, rt), right
+	}
+	return left, right
+}
+
+// promotableToUuid reports whether a comparand of type t, compared against a
+// UUID operand, should be typed UUID. STRING is the literal case
+// (`uuid_col = '<uuid>'`); UNKNOWN covers a bound parameter (`uuid_col = ?`,
+// ParameterValue.Typ stays UnknownType until inference — which never types it
+// UUID) reached via the exported planner path (the sqldriver substitutes `?`
+// as text, so it lands as a STRING there, but PlanRecordQueryWithMetadata +
+// ParameterValue bindings do not). Wrapping either in PromoteValue(UUID) is
+// safe: PromoteValue.Evaluate parses a bound string to [16]byte and passes a
+// non-string (already-[16]byte, or a genuinely mismatched value) through
+// unchanged, so a non-string parameter degrades to the same UNKNOWN compare it
+// gave before — never a wrong-typed tuple probe.
+func promotableToUuid(t values.Type) bool {
+	switch t.Code() {
+	case values.TypeCodeString, values.TypeCodeUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 // widenIntConstAgainstDouble fixes a cross-type index-SARG hole: when one operand
@@ -480,6 +541,13 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// IN sub-probe packs the right tuple type (else `d IN (5,7)` over a DOUBLE
 	// index misses everything — int and double tuple elements don't interleave).
 	widenIntToDouble := left.Type() != nil && left.Type().Code() == values.TypeCodeDouble
+	// Same SARG-type fix for a UUID column: parse each STRING element to the
+	// neutral [16]byte the value layer carries UUIDs as, so `uuid_col IN
+	// ('<u1>','<u2>')` packs a tuple.UUID per sub-probe (the InJoin binds each
+	// element and the executor's scan packer converts [16]byte→tuple.UUID) and
+	// the residual path compares [16]byte==[16]byte. Mirrors the equality
+	// PromoteValue arm in promoteStringComparandToUuid.
+	parseStringToUUID := left.Type() != nil && values.IsUuid(left.Type())
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
 		lit, ok := values.EvaluateConstant(v)
@@ -494,6 +562,16 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 				lit = float64(n)
 			case int:
 				lit = float64(n)
+			}
+		}
+		if parseStringToUUID {
+			if s, sok := lit.(string); sok {
+				u, perr := uuid.Parse(s)
+				if perr != nil {
+					// Java verbatim wording (SemanticException INVALID_UUID_VALUE).
+					return nil, fmt.Errorf("Invalid UUID value for the UUID type %s", s)
+				}
+				lit = [16]byte(u)
 			}
 		}
 		list = append(list, lit)
@@ -637,6 +715,14 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.NotNullInt
 	case "STRING", "ENUM":
 		return values.TypeString
+	case "UUID":
+		// UUID is a first-class scalar (Java's DataType.Primitives.UUID),
+		// stored as the tuple_fields.UUID message. Carrying the real UUID
+		// type — not Unknown — lets the predicate builder promote a STRING
+		// comparand (`uuid_col = '<uuid>'`) to UUID so the index-scan range
+		// packs a tuple.UUID and the non-boolean predicate gate rejects a
+		// bare `WHERE uuid_col`.
+		return values.NullableUuid
 	case "BOOL":
 		return values.TypeBool
 	case "FLOAT", "DOUBLE":

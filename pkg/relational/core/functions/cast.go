@@ -121,6 +121,11 @@ func CastValue(v any, typeName string) (any, error) {
 				return "true", nil
 			}
 			return "false", nil
+		case [16]byte:
+			// A UUID flows through the engine as a neutral [16]byte (RFC-162);
+			// CAST(uuid AS STRING) renders the canonical 36-char form, matching
+			// Java's UUID.toString().
+			return uuid.UUID(n).String(), nil
 		}
 	case typeName == "UUID":
 		// CAST(<expr> AS UUID): only string → UUID is supported (matches

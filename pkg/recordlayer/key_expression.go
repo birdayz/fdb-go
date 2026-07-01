@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -360,9 +361,34 @@ func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value
 		return value.Bytes(), nil
 	case protoreflect.EnumKind:
 		return int64(value.Enum()), nil
+	case protoreflect.MessageKind:
+		// A tuple_fields.UUID message is a SCALAR tuple element (a 16-byte UUID),
+		// not a nested message — Java's TupleFieldsHelper treats it the same way
+		// (isTupleField → fromProto → java.util.UUID). Reproduce Java's encoding
+		// exactly so a Go-written UUID index entry is byte-identical to Java's.
+		if msg := value.Message(); msg.Descriptor().FullName() == uuidProtoFullName {
+			return uuidMessageToTuple(msg), nil
+		}
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("unsupported field type %s for key expression", kind)}
 	default:
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("unsupported field type %s for key expression", kind)}
 	}
+}
+
+// uuidMessageToTuple converts a tuple_fields.UUID proto message (sfixed64
+// most_significant_bits = field 1, least_significant_bits = field 2) into a
+// 16-byte tuple.UUID, MSB||LSB big-endian. This reproduces Java's
+// TupleFieldsHelper.fromProto → new java.util.UUID(msb, lsb), which the tuple
+// layer encodes as 0x30 + msb(8B BE) + lsb(8B BE) (TupleUtil.UUID_CODE) — so a
+// Go-written UUID index entry / primary key is byte-identical to Java's.
+func uuidMessageToTuple(msg protoreflect.Message) tuple.UUID {
+	fields := msg.Descriptor().Fields()
+	msb := msg.Get(fields.ByNumber(1)).Int()
+	lsb := msg.Get(fields.ByNumber(2)).Int()
+	var u tuple.UUID
+	binary.BigEndian.PutUint64(u[0:8], uint64(msb))
+	binary.BigEndian.PutUint64(u[8:16], uint64(lsb))
+	return u
 }
 
 // FieldNames returns the field name accessed by this expression

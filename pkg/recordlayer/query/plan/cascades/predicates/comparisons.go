@@ -675,6 +675,22 @@ func cmpAny(a, b any) (int, bool) {
 		}
 		return bytes.Compare(av, bv), true
 	}
+	// UUID comparison. A UUID flows through the value layer as a neutral
+	// 16-byte array ([16]byte — matches Java's java.util.UUID; no `tuple`
+	// import keeps this package wire-agnostic). Both the record-read path
+	// (protoFieldToGo) and the index-entry-read path (normalized off the
+	// executor's tuple.UUID) hand us [16]byte, and a promoted comparand
+	// (PromoteValue string→UUID) evaluates to [16]byte too. Compare
+	// lexicographically — bytes.Compare gives the same unsigned big-endian
+	// order the tuple UUID wire encoding uses, so filter-path ordering
+	// agrees with index-scan-range ordering.
+	if av, ok := a.([16]byte); ok {
+		bv, ok2 := b.([16]byte)
+		if !ok2 {
+			return 0, false
+		}
+		return bytes.Compare(av[:], bv[:]), true
+	}
 	return 0, false
 }
 
@@ -845,6 +861,13 @@ func formatCompareOperand(v any) string {
 		}
 		buf = append(buf, '\'')
 		return string(buf)
+	case [16]byte:
+		// A UUID comparand flows as a neutral [16]byte (RFC-162); render the
+		// canonical 8-4-4-4-12 form (matching tuple.UUID.String and the
+		// driver-facing string) instead of the %v Go array literal, so EXPLAIN
+		// of a residual UUID filter (e.g. `v <> '<uuid>'`, IS DISTINCT FROM) is
+		// readable and injective.
+		return fmt.Sprintf("'%x-%x-%x-%x-%x'", x[0:4], x[4:6], x[6:8], x[8:10], x[10:16])
 	case []any:
 		// IN-list: `(e1, e2, e3)` — same rendering style as SQL.
 		parts := make([]string, len(x))

@@ -765,3 +765,58 @@ func TestResolver_Nil_InputPanics(t *testing.T) {
 		_ = expr.New(a, nil)
 	}()
 }
+
+// UUID comparand typing: a UUID operand compared against a STRING literal OR a
+// bound `?` parameter (ParameterValue, Typ=UnknownType) must have the comparand
+// wrapped in PromoteValue(UUID). Without it the executor packs a string tuple
+// element that misses the 0x30 UUID index entry / residual-compares string vs
+// [16]byte — silently wrong rows. The parameter arm is the one the sqldriver
+// text-substitution masks (Codex r1): only the exported ParameterValue planner
+// path (walkPreparedParameter → ResolveComparison) exercises it.
+func TestResolver_ResolveComparison_PromotesUuidComparand(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	uuidOperand := func() values.Value {
+		return &values.ConstantValue{Value: [16]byte{}, Typ: values.NotNullUuid}
+	}
+	wantPromoted := func(t *testing.T, op predicates.ComparisonType, comparand values.Value) {
+		t.Helper()
+		pred, err := r.ResolveComparison(op, uuidOperand(), comparand)
+		if err != nil {
+			t.Fatalf("ResolveComparison: %v", err)
+		}
+		cp := pred.(*predicates.ComparisonPredicate)
+		pv, ok := cp.Comparison.Operand.(*values.PromoteValue)
+		if !ok {
+			t.Fatalf("op=%v comparand=%T, want *PromoteValue", op, cp.Comparison.Operand)
+		}
+		if !values.IsUuid(pv.Target) {
+			t.Fatalf("PromoteValue target code = %v, want UUID", pv.Target.Code())
+		}
+	}
+	// STRING literal, across every binary comparison op that reaches
+	// ResolveComparison (incl. the non-SARG IS [NOT] DISTINCT FROM).
+	for _, op := range []predicates.ComparisonType{
+		predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonLessThan, predicates.ComparisonLessThanOrEq,
+		predicates.ComparisonGreaterThan, predicates.ComparisonGreaterThanEq,
+		predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom,
+	} {
+		wantPromoted(t, op, &values.ConstantValue{Value: "550e8400-e29b-41d4-a716-446655440000", Typ: values.TypeString})
+	}
+	// Bound `?` parameter (Typ=UnknownType) — the masked path.
+	wantPromoted(t, predicates.ComparisonEquals, values.NewParameterValue(1))
+
+	// Negative: a UUID-vs-UUID comparison (col-vs-col INL join key) must NOT be
+	// promoted — both sides already evaluate to [16]byte, and a positional mask
+	// broke exactly this case.
+	pred, err := r.ResolveComparison(predicates.ComparisonEquals, uuidOperand(), uuidOperand())
+	if err != nil {
+		t.Fatalf("ResolveComparison uuid=uuid: %v", err)
+	}
+	cp := pred.(*predicates.ComparisonPredicate)
+	if _, isPromote := cp.Comparison.Operand.(*values.PromoteValue); isPromote {
+		t.Fatalf("uuid=uuid comparand should NOT be promoted, got %T", cp.Comparison.Operand)
+	}
+}

@@ -125,7 +125,7 @@ func (t *recordTypeTable) ensureColumnIndex() {
 			id := semantic.NewUnquoted(string(f.Name()))
 			col := semantic.Column{
 				Id:       id,
-				Type:     protoKindToSQL(f.Kind()),
+				Type:     protoFieldToSQL(f),
 				Nullable: isNullable(f),
 				// A repeated field is a SQL ARRAY. The Type string carries
 				// the element kind (protoKindToSQL maps the scalar Kind);
@@ -207,6 +207,29 @@ func isNullable(f protoreflect.FieldDescriptor) bool {
 		return false
 	}
 	return f.Cardinality() != protoreflect.Required
+}
+
+// uuidProtoMessageName is the fully-qualified tuple_fields.UUID message that
+// fdb-relational stores UUID column values in (canonical copy in
+// pkg/relational/core/functions.UUIDProtoMessageName; duplicated here to avoid
+// an import cycle through the functions package). Java treats UUID as a
+// first-class primitive (DataType.Primitives.UUID), so the column must resolve
+// to a UUID cascades type — not the generic "RECORD"/Unknown a bare MessageKind
+// would give — for `WHERE uuid_col = '<uuid>'` to type its comparand and hit
+// the index.
+const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
+
+// protoFieldToSQL maps a proto field to the seed's string-valued column Type,
+// recognizing the special tuple_fields.UUID message as the scalar "UUID" type
+// (Java's DataType.Primitives.UUID) before falling back to the coarse
+// kind-based mapping. Every other MessageKind stays "RECORD".
+func protoFieldToSQL(f protoreflect.FieldDescriptor) string {
+	if f.Kind() == protoreflect.MessageKind {
+		if msg := f.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
+			return "UUID"
+		}
+	}
+	return protoKindToSQL(f.Kind())
 }
 
 // protoKindToSQL maps a proto field kind to the seed's string-valued

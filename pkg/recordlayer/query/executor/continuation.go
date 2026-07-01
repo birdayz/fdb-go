@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -10,6 +11,71 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"google.golang.org/protobuf/proto"
 )
+
+// uuidContinuationTag marks a hex-encoded UUID inside a JSON-serialized
+// continuation payload. A UUID flows through the value layer as a neutral
+// [16]byte (RFC-162); unlike a []byte slice (which encoding/json base64-encodes),
+// a fixed [16]byte array marshals to a LOSSY JSON number list ([85,14,…]) and
+// decodes as []float64 — so a UUID sort/group key straddling a continuation
+// boundary would re-emerge mis-typed (wrong sort order, and rendered as a
+// number list instead of the canonical string). Tag it on encode and rebuild
+// the [16]byte on decode so the round-trip is type-preserving.
+const uuidContinuationTag = "__uuid16"
+
+// jsonSafeContinuationValue replaces a [16]byte / tuple.UUID with a tagged,
+// JSON-round-trippable form; all other values pass through unchanged.
+func jsonSafeContinuationValue(v any) any {
+	switch u := v.(type) {
+	case [16]byte:
+		return map[string]any{uuidContinuationTag: hex.EncodeToString(u[:])}
+	case tuple.UUID:
+		return map[string]any{uuidContinuationTag: hex.EncodeToString(u[:])}
+	default:
+		return v
+	}
+}
+
+// restoreContinuationValue is the decode inverse: a {uuidContinuationTag: hex}
+// object becomes the neutral [16]byte again; everything else is returned as-is.
+func restoreContinuationValue(v any) any {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return v
+	}
+	s, ok := m[uuidContinuationTag].(string)
+	if !ok {
+		return v
+	}
+	raw, derr := hex.DecodeString(s)
+	if derr != nil || len(raw) != 16 {
+		return v
+	}
+	var b [16]byte
+	copy(b[:], raw)
+	return b
+}
+
+// jsonSafeSlice / jsonSafeMap apply jsonSafeContinuationValue element-wise for
+// the two continuation payload shapes (aggregate keyVals; sort-buffer Datum).
+func jsonSafeSlice(in []any) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = jsonSafeContinuationValue(v)
+	}
+	return out
+}
+
+func jsonSafeDatum(d any) any {
+	in, ok := d.(map[string]any)
+	if !ok {
+		return d
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = jsonSafeContinuationValue(v)
+	}
+	return out
+}
 
 // encodeAggregateContinuation serializes the streaming aggregate
 // cursor's partial state using Java's AggregateCursorContinuation proto.
@@ -80,7 +146,7 @@ func encodeAggregateContinuation(
 			GroupKey string `json:"g"`
 			KeyVals  []any  `json:"k"`
 		}
-		groupKeyBytes, _ := json.Marshal(groupKeyPayload{GroupKey: groupKey, KeyVals: keyVals})
+		groupKeyBytes, _ := json.Marshal(groupKeyPayload{GroupKey: groupKey, KeyVals: jsonSafeSlice(keyVals)})
 
 		msg.PartialAggregationResults = &gen.PartialAggregationResult{
 			GroupKey:          groupKeyBytes,
@@ -123,12 +189,14 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		if jErr := json.Unmarshal(par.GroupKey, &payload); jErr == nil {
 			groupKey = payload.GroupKey
 			keyVals = payload.KeyVals
-			// JSON deserializes numbers as float64; convert back to int64
-			// for integer values (matching the Go SQL type system).
+			// Restore tagged UUIDs to [16]byte, then convert JSON float64
+			// numbers back to int64 for integer values (Go SQL type system).
 			for i, v := range keyVals {
+				v = restoreContinuationValue(v)
 				if f, ok := v.(float64); ok && f == float64(int64(f)) {
-					keyVals[i] = int64(f)
+					v = int64(f)
 				}
+				keyVals[i] = v
 			}
 		} else {
 			// Fallback: treat as raw group key string (legacy format).
@@ -225,7 +293,7 @@ func encodeSortContinuation(
 	}
 
 	for _, qr := range buf {
-		jsonBytes, jErr := json.Marshal(qr.Datum)
+		jsonBytes, jErr := json.Marshal(jsonSafeDatum(qr.Datum))
 		if jErr != nil {
 			continue
 		}
@@ -263,12 +331,14 @@ func decodeSortContinuation(data []byte) (innerContinuation []byte, buf []QueryR
 		if jErr := json.Unmarshal(sr.Message, &datum); jErr != nil {
 			continue
 		}
-		// JSON unmarshals numbers as float64. Convert back to int64
-		// for integer columns (matching the Go SQL type system).
+		// Restore tagged UUIDs to [16]byte, then convert JSON float64 numbers
+		// back to int64 for integer columns (matching the Go SQL type system).
 		for k, v := range datum {
+			v = restoreContinuationValue(v)
 			if f, ok := v.(float64); ok && f == float64(int64(f)) {
-				datum[k] = int64(f)
+				v = int64(f)
 			}
+			datum[k] = v
 		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {

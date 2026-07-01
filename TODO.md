@@ -1241,7 +1241,15 @@ value cols) instead of a plain key expression when INCLUDE is present; (3) wire
 def.IncludeClause().UidList() through parseIndexDefinition (ddl.go). Flip the reject +
 the sentinel when implemented. Same applies to the indexAsSelect / vector paths' INCLUDE.
 
-### [ ] metadata: UUID columns are not indexable — leaky XX000 (likely Go divergence, found 2026-06-28)
+### [x] metadata: UUID columns are indexable end-to-end — RFC-162 DONE (item 1021, PR #397)
+
+**DONE (PR #397, Graefe+Torvalds ACK'd).** UUID is now a first-class indexable primitive, write
+side AND read side. A UUID flows through the Cascades value layer as a neutral `[16]byte` (decision
+(b)); `tuple.UUID` only at the FDB wire boundary, canonical string only at the driver boundary.
+`CREATE INDEX` + `WHERE v = '<uuid>'` (all comparison ops incl. IS [NOT] DISTINCT FROM), IN, ranges,
+covering `SELECT v`, UUID PK, INL join on a UUID key, ORDER BY / DISTINCT / GROUP BY / merge-sort all
+work; MIN/MAX over UUID is rejected identically to Java. Pinned by
+`uuid_indexable_roundtrip_fdb_test.go` + friends. Historical design notes below.
 
 `CREATE INDEX ... ON t (uuid_col)` fails with a leaky internal error: `XX000: build
 RecordMetaData: ... index "T_V" validation failed: field "V" in "T" is a message
@@ -1260,7 +1268,53 @@ primitive (it has a natural tuple encoding/ordering), matching Java; at minimum
 replace the leaky XX000 with a clean user-facing SQLSTATE. Needs a record-layer /
 metadata change + Java-alignment; sentinel pins the current XX000 (flip when fixed).
 
-**DESIGN READY — see RFC-162 (needs Graefe ACK before impl).** Prototyped end-to-end and PROVED the
+**DONE — RFC-162 (Graefe design + impl ACK'd; PR #397).** Sites 1-2 LANDED: the validator accepts the
+tuple_fields.UUID message (`isTupleField`) and the maintainer writes the entry as a `tuple.UUID`
+(`scalarToInterface`→`uuidMessageToTuple`), byte-identical to Java — pinned by
+`recordlayer/uuid_key_encoding_test.go` (unit, wire format) + `indexable_types_probe` (CREATE INDEX +
+INSERT succeed). REMAINING = the read side. Mapped to exact sites — it is ONE ATOMIC change (each piece alone regresses
+something; UUID must flow as `tuple.UUID` end-to-end, string only at the driver boundary, per Graefe):
+- **A — field read.** `query_result.go protoFieldToGo` (~:107) currently renders a UUID field via
+  `uuidMessageToString`; change it to return the 16-byte `tuple.UUID` (reuse `uuidMessageToTuple`'s msb‖lsb
+  layout) so the FILTER path compares `tuple.UUID == tuple.UUID`.
+- **B — comparand. THE CRUX (substantial; Graefe impl review).** Two parts, both needed:
+  - **B1 (insertion):** wrap the comparand in `PromoteValue(literal, NotNullUuid)` where a UUID column
+    meets a STRING literal. NOTE: Go currently inserts NO comparison promotes at all — numeric promotion
+    (`int_col = 5.0`) is handled by `cmpAny` at runtime, and `PromoteValue` is only ever built by
+    tree-rebuild ops (map_field_values/replace/simplifier), never originally inserted for a comparison.
+    So B1 is a NEW pattern in the predicate builder (the comparand evaluated as STRING-typed today — that
+    is why the index probe packs a tuple string). `IsPromotable(String,Uuid)` already returns true
+    (promotionMap, type.go:896), so the lattice agrees; the gap is the missing insertion.
+  - **B2 (eval arm):** `PromoteValue.Evaluate` (values.go:2380) is a NO-OP today (delegates to Child).
+    Give it the single String→UUID arm Graefe approved: when `Target` IsUuid and the child evaluates to a
+    string, `uuid.Parse` → 16-byte `tuple.UUID`. With B1+B2 the index/PK probe, range/IN, and INL key all
+    pack `tuple.UUID` from the value's type (no out-of-band masks).
+- **C — materialization.** `cascades_generator.go paginatingRows` row build (~:1618) converts a
+  `tuple.UUID` column value → canonical string at the driver boundary (the ONE place string appears),
+  also covering the covering-index `tuple.UUID` from `IndexEntryObjectValue` — which stays a pure ordinal
+  extractor (Graefe).
+A without C regresses every `SELECT v`; B without A regresses the working full-scan `WHERE v=`. Land
+together + Graefe IMPL review. Then flip the `indexable_types_probe` transitional sentinel to the full
+round-trip + add the INL-join-key + MIN/MAX-ever + UUID-PK regressions. Until then, a UUID index must NOT
+be queried by `WHERE v='…'`.
+
+**ARCHITECTURE RESOLVED — Graefe DECISION: (b).** A UUID flows as a neutral `[16]byte` inside the
+Cascades value layer (`values` stays wire-agnostic — NO `tuple` import there). The `tuple.UUID`
+conversion lives ONLY at the wire boundaries that already import `tuple`: the scan-range packing
+(`scanComparisonsToTupleRange`, executor) and the index-entry write (`scalarToInterface`, recordlayer —
+already landed). Rationale: matches the `IndexEntryObjectValue` no-wire-coupling precedent + Java's
+neutral `java.util.UUID`; `[16]byte` and `tuple.UUID` compare identically (unsigned big-endian) in
+`cmpAny`, so zero semantic cost. CONCRETE TYPES this fixes:
+- A: `protoFieldToGo` UUID field → `[16]byte` (parse from the msb/lsb message; reuse the msb‖lsb layout).
+- B2: `PromoteValue.Evaluate` (values.go:2380) String→`[16]byte` via `uuid.Parse` (google/uuid is a
+  NEUTRAL lib — allowed in values; only `fdbgo/fdb/tuple` is the banned wire dep).
+- Executor scan-range packing: when the equality comparand evaluates to a `[16]byte`, append
+  `tuple.UUID(that)` to the probe tuple (the [16]byte→tuple.UUID conversion at the wire boundary).
+- C: `paginatingRows` materialization (cascades_generator.go ~:1618) `[16]byte` → canonical string.
+- `cmpAny`: ensure `[16]byte == [16]byte` (filter path) — likely already byte-compares; verify.
+Original design notes below.
+
+**DESIGN READY — see RFC-162.** Prototyped end-to-end and PROVED the
 approach (the index probe returns the right row), but it spans **6 sites across 3 packages** (incl. a
 sensitive Cascades `values` file) and touches the **wire format** — so it needs a Graefe design review
 first, not a rushed multi-site landing. WIRE VERIFIED: `tuple.UUID = msb‖lsb big-endian` =

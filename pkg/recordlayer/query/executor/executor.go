@@ -10,14 +10,17 @@
 package executor
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -550,6 +553,37 @@ func scanBindContext(evalCtx *EvaluationContext) values.ParameterBinder {
 	return evalCtx.RowContext(nil)
 }
 
+// uuidToTupleElement converts a neutral 16-byte UUID comparand ([16]byte —
+// the wire-agnostic representation a UUID carries through the value layer, see
+// values.PromoteValue.Evaluate and predicates.cmpAny) into a tuple.UUID at the
+// FDB wire boundary. Only a named tuple.UUID packs as the 0x30 UUID tuple
+// element; a bare [16]byte would panic the tuple packer ("unencodable
+// element"). Everything else (int64, string, float64, …) passes through
+// unchanged. This is the sole place the value-layer [16]byte crosses into wire
+// encoding on the scan-range path — symmetric with the index-entry write in
+// recordlayer.scalarToInterface, so the equality probe seeks the exact 0x30
+// bytes Java (and the maintainer) wrote.
+func uuidToTupleElement(v any) any {
+	if b, ok := v.([16]byte); ok {
+		return tuple.UUID(b)
+	}
+	return v
+}
+
+// tupleElementToUUID is the inverse of uuidToTupleElement: it normalizes a
+// tuple.UUID read back off an index entry / primary key into the neutral
+// [16]byte the value layer works with (cmpAny, PromoteValue, materialization).
+// Applied at the covering-index read boundary so a UUID column flows downstream
+// as [16]byte regardless of whether it was sourced from a stored record
+// (protoFieldToGo) or an index entry — the two must be interchangeable for
+// residual filters and INL join keys. Non-UUID tuple elements pass through.
+func tupleElementToUUID(v any) any {
+	if u, ok := v.(tuple.UUID); ok {
+		return [16]byte(u)
+	}
+	return v
+}
+
 func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, binder values.ParameterBinder) (recordlayer.TupleRange, error) {
 	if len(comparisons) == 0 {
 		return recordlayer.TupleRangeAllOf(nil), nil
@@ -573,6 +607,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 		if err != nil {
 			return recordlayer.TupleRange{}, err
 		}
+		val = uuidToTupleElement(val)
 		// `col = <NULL>` (a regular equality whose comparand evaluates to NULL —
 		// NOT `IS NULL`, handled above): SQL `NULL = x` is UNKNOWN for every row,
 		// so the probe matches NOTHING. Appending nil here would instead seek the
@@ -640,6 +675,7 @@ func scanComparisonsToTupleRange(comparisons []*predicates.ComparisonRange, bind
 			if err != nil {
 				return recordlayer.TupleRange{}, err
 			}
+			comparand = uuidToTupleElement(comparand)
 		}
 		// A NULL comparand makes an ordered inequality (<, <=, >, >=) UNKNOWN
 		// for every row (SQL 3VL) → unsatisfiable → empty result. We must NOT
@@ -799,7 +835,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	datum := make(map[string]any, len(c.columns)+len(c.pkColumns))
 	for i, col := range c.columns {
 		if i < len(vals) {
-			datum[strings.ToUpper(col)] = vals[i]
+			datum[strings.ToUpper(col)] = tupleElementToUUID(vals[i])
 		}
 	}
 	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id)).
@@ -811,7 +847,7 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	for i, col := range c.pkColumns {
 		idx := i + pkOffset
 		if idx < len(pk) {
-			datum[strings.ToUpper(col)] = pk[idx]
+			datum[strings.ToUpper(col)] = tupleElementToUUID(pk[idx])
 		}
 	}
 	return recordlayer.NewResultWithValue(QueryResult{Datum: datum}, result.GetContinuation()), nil
@@ -1812,7 +1848,12 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 				if err != nil {
 					panic(err)
 				}
-				t[i] = widenInt32(v) // tuple has no int32; widen (RFC-092)
+				// widenInt32: tuple has no int32 (RFC-092). uuidToTupleElement:
+				// a UUID comparison/PK key is a neutral [16]byte, which the tuple
+				// packer cannot encode — convert it to tuple.UUID, exactly as
+				// mergeSortCursor.extractKey does, so compareKeys' Pack doesn't
+				// panic on an intersection over a UUID key (RFC-162).
+				t[i] = uuidToTupleElement(widenInt32(v))
 			}
 			return t
 		}
@@ -2709,6 +2750,28 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		case int64:
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
 		}
+	case protoreflect.MessageKind:
+		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
+		// … and INSERT … SELECT flow the value through here (INSERT … VALUES uses
+		// functions.ConvertToProtoValue instead). Accept the neutral [16]byte
+		// (SET v = v, an index/record-sourced value) and the canonical string
+		// (SET v = '<uuid>'), building the same msb/lsb message Java writes —
+		// otherwise a valid UUID assignment fell through to the 22000 reject.
+		if msg := fd.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {
+			switch u := v.(type) {
+			case [16]byte:
+				return uuidBytesToProtoMessage(fd, u)
+			case uuid.UUID:
+				return uuidBytesToProtoMessage(fd, u)
+			case string:
+				parsed, perr := uuid.Parse(u)
+				if perr != nil {
+					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
+						"Invalid UUID value for the UUID type %s", u)
+				}
+				return uuidBytesToProtoMessage(fd, parsed)
+			}
+		}
 	}
 	// All promotable conversions are handled above, so anything reaching here is
 	// a genuinely incompatible assignment (e.g. a float64/DOUBLE into an integer
@@ -2717,6 +2780,24 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 	// the sibling ConvertToProtoValue fallthrough — not a generic Go error.
 	return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
 		"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+}
+
+// uuidBytesToProtoMessage builds a tuple_fields.UUID proto message (msb/lsb,
+// big-endian) from a 16-byte UUID — the write-side inverse of uuidMessageToBytes
+// and the mirror of functions.uuidStringToProtoMessage, so a UUID written via
+// UPDATE / INSERT…SELECT is byte-identical to one written via INSERT … VALUES.
+func uuidBytesToProtoMessage(fd protoreflect.FieldDescriptor, b [16]byte) (protoreflect.Value, error) {
+	msgDesc := fd.Message()
+	mostFD := msgDesc.Fields().ByName("most_significant_bits")
+	leastFD := msgDesc.Fields().ByName("least_significant_bits")
+	if mostFD == nil || leastFD == nil {
+		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
+			"UUID message descriptor missing most/least_significant_bits fields")
+	}
+	dyn := dynamicpb.NewMessage(msgDesc)
+	dyn.Set(mostFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(b[0:8]))))   //nolint:gosec
+	dyn.Set(leastFD, protoreflect.ValueOfInt64(int64(binary.BigEndian.Uint64(b[8:16])))) //nolint:gosec
+	return protoreflect.ValueOfMessage(dyn), nil
 }
 
 func executeTempTableScan(
@@ -3510,6 +3591,15 @@ func compareAny(a, b any) int {
 			return -1
 		}
 		return 1
+	case [16]byte:
+		// UUID sorts by unsigned big-endian bytes — same order as the tuple.UUID
+		// wire encoding and predicates.cmpAny, so MIN/MAX-style ordering and the
+		// aggregate-sort path agree with an ordered index scan.
+		bv, ok := b.([16]byte)
+		if !ok {
+			return 0
+		}
+		return bytes.Compare(av[:], bv[:])
 	default:
 		return 0
 	}
