@@ -1597,8 +1597,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	// A non-atomic op-code passed to Atomic() poisons the commit with invalid_mutation_type (2018),
 	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
-	// buffered, so nothing reaches the cluster. Non-retryable; returns without resetting.
+	// buffered, so nothing reaches the cluster. Non-retryable — mark the txn errored HERE too, so the
+	// post-failure state is identical whether the poison was set before commit entry (this common
+	// Atomic();Commit() path) or raced into the snapshot re-check below, which also errors it (codex).
+	// A manual caller that doesn't route through OnError then can't keep issuing ops on a dead txn.
 	if e := tx.invalidAtomicOpErr.Load(); e != nil {
+		tx.state.Store(int32(txStateErrored))
 		return e
 	}
 	if err := tx.checkTimeout(); err != nil {

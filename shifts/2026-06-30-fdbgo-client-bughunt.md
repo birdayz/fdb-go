@@ -288,7 +288,15 @@ into two structural fragilities, each with a decisive fix:
 If codex round 15 surfaces ANOTHER watch edge, do BOTH restructures together (one reviewed change) —
 they're the root, and incremental patching (4 rounds) is not converging on this area.
 
-**Codex caught 13 real issues across 8 review rounds the persona reviewers missed** — critical-gate
+**Round 15 — codex's 8th `--supersede` re-review found one more** (P3, NOT watch — the rounds-11–14
+watch patches HELD): the invalid-atomic poison's Commit-ENTRY early return left `tx.state` active,
+while the round-10 snapshot re-check marks it `txStateErrored` — so a manual caller (not routing
+through OnError) could keep issuing ops after a failed `Atomic(badOp);Commit()` depending on timing.
+Added `tx.state.Store(txStateErrored)` to the entry check (rywPoisonErr deliberately NOT changed — it
+is a per-op 2000 poison, and erroring it would turn subsequent ops into "not active" instead of
+2000). Pin: `TestCommit_InvalidAtomicMarksErrored`.
+
+**Codex caught 14 real issues across 9 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

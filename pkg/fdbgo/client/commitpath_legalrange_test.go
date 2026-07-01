@@ -116,3 +116,25 @@ func TestAtomic_InvalidOp_DefersToEarlierIllegalMutation(t *testing.T) {
 		t.Fatalf("Atomic(badOp) BEFORE Set(systemKey): the Atomic is first → 2018, got %d (%v)", c, err)
 	}
 }
+
+// TestCommit_InvalidAtomicMarksErrored pins that the invalid-atomic poison marks the transaction
+// errored on the COMMON path (poison set before Commit entry: Atomic(badOp); Commit()), matching the
+// snapshot re-check that also errors it — so the post-failure txn state does not depend on whether
+// the bad Atomic landed before commit entry or raced into the re-check (codex). Revert-proof: drop
+// the state.Store on the entry check and the txn stays active after the failed commit.
+func TestCommit_InvalidAtomicMarksErrored(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	tx := db.CreateTransaction()
+	tx.Atomic(MutClearRange, []byte("k"), []byte("v")) // invalid op-code → poison, set before Commit entry
+	if c := fdbCodeOf(tx.Commit(ctx)); c != ErrInvalidMutationType {
+		t.Fatalf("invalid-atomic commit must be invalid_mutation_type (2018), got %d", c)
+	}
+	if txState(tx.state.Load()) != txStateErrored {
+		t.Fatalf("after a failed invalid-atomic commit the txn must be errored (not active), got state %d", tx.state.Load())
+	}
+}
