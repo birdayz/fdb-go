@@ -343,3 +343,23 @@ leader-election metadata, not a client adoption gate (`monitorLeaderOneGeneratio
 with no quorum wait, `:604`/`:634`). Go's first-reply-wins therefore **matches** C++ semantics; adding a
 quorum would make Go *stricter* than libfdb_c — a conformance violation. (Cluster-file re-read is
 failure-gated in both, `:888-900` — RFC-111.)
+
+---
+
+## RFC-164 WS-5 — Go-only divergence reservoir audit
+
+The bounded WS-5 acceptance: the KNOWN reservoirs where Go left the Java architecture are
+written down with **"what invariant does Java carry that this drops?"** and each tagged
+*covered by a WS-2/4 invariant* or *tracked*. (Not "all divergences found" — un-completable.)
+
+| Go-only reservoir | Java invariant it drops | Risk class | Coverage |
+|---|---|---|---|
+| **Simplified `RequestedSortOrder`** (NULLS axis was elided) | Full sort order incl. NULL placement (ASC→NULLS FIRST etc.) | wrong rows on ORDER BY | **COVERED** — NULLS axis restored (RFC-165) + `rfc165_nulls_ordering_test.go`; the NULLS-ORDER hunt bug is fixed + pinned. |
+| **Scalar cost fallback + Go-only tiebreakers** (15b `compareFlatMapVsNLJ`, 15c `EstimateCostWith`) — no `advancePlannerStage`, so Go's flat member list has ties Java's prune-to-1-winner avoids | Structural single-winner selection; total-order tie resolution | nondeterministic / wrong index pick | **PARTIAL** — cost ORDERING pinned by WS-4 `TestBoundSelectivity_CostMonotonicity` (#405 class); equality-tie determinism pinned by `TestPlanDeterminism_*` (#409). **TRACKED:** the InJoin inner correlated-equality tie (WS-4 #2, OPEN — RFC-167 Phase 1b). |
+| **Hand-rolled `AggregateDataAccessRule`** (aggregate-index matching, not Java's generic data-access) | Guard(match)==consumer(build/execute) — one classifier | wrong agg result / wrong index match (COUNT-COL class) | **COVERED for the known drift** — WS-3 `expressions.IsCountStar` is now the single source of truth (planner + executor + translator, #413); group-key matcher deduped via `groupColEqualityIndex` (RFC-163). **TRACKED:** audit other guard/consumer pairs (WS-3); the `COUNT(NULL)` fold fidelity (Graefe follow-up). |
+| **Per-wrapper relink** (RFC-070 nil-inner shells across ~20 wrappers, vs Java's eager `memoizePlan` to concrete) | Every non-leaf plan has its child; deterministic relink to the cost winner; one final member | dropped/nil child (0 rows); nondeterministic plan/cache | **COVERED for the two proven classes** — WS-2 no-`<nil>`-child invariant (`ValidatePlanInvariants`, catches a dropped child on ANY wrapper, always-on) + WS-4 InJoin/InUnion binding-alias-invariant identity (#417). **TRACKED:** deterministic-relink-to-winner + prune-to-one-member (RFC-167 Phase 2/3); eliminate shells entirely (Phase 5, the north star). |
+| **Go-only physical-filter builders** (`ImplementIndexScanRule`, `ImplementSimpleSelectRule`, NLJ residual — extra paths past `Compensation`) | Index-only predicates never become an executable residual | panic / wrong plan on a vector `DistanceRank` residual | **COVERED** — `ImplementFilterRule` `!isIndexOnly()` gate (RFC-151) + the retained `validateNoIndexOnlyResidual` catch-all backstop (pinned by `TestVectorPlan_*`). **TRACKED end-state:** gate the remaining builders so the net can retire. |
+
+**Method for the next reservoir found:** name the Java invariant it drops, classify the risk
+(wrong-rows / nondeterminism / panic), and either wire a WS-2/4 structural invariant that makes
+the class un-shippable or file a tracked TODO — never leave it as a silent reservoir.
