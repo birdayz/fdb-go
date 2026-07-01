@@ -15,6 +15,10 @@ a **live v1 bug** now in Slice 0; (G3) `\explain` renders EXPLAIN output verbati
 plan-*interpretation* feature (scan-type warnings, index-use detection) is pre-declared a
 query-engine change requiring Graefe review before implementation — §3.2; (G4) `record put`'s
 SQL-constraint bypass documented in the operator guide — §3.3.
+*Codex round 1* (PR #435): three P2 findings, all folded — (P2-1) `meta apply` write-target
+specified for Path A contexts (§3.3); (P2-2) `record put` gets the same `--yes`/confirm gate as
+delete (§3.3); (P2-3) piped-output test asserts ASCII-only, not just ANSI-free (§5). Delta
+re-review requested.
 *FDB C++ dev ACK* with 4 conditions, all folded: (C1) `index build` defaults `--max-retries`
 to Java's 100 — at the Go builder default of 0 the rps throttle and adaptive limit-halving are
 dead code (`online_indexer.go:378-379,886`) — §3.3; (C2) `PartlyBuiltError` surfaced with the
@@ -232,9 +236,19 @@ guide) in Slice 0. The deferred write set ships with the guardrails v1 promised:
   `evolve-check`, same `--allow-*` flags) and on pass writes via
   `FDBMetaDataStore.SaveRecordMetaData` (`metadata_store.go:36`). Refuses on validation failure.
   Completes the schema-evolution story the operator guide sells but can't finish.
+  **Write target (codex P2-1):** the command writes to an `FDBMetaDataStore`, so it requires
+  one — either the context's `meta_store_keyspace` (Path B) or an explicit
+  `--meta-store-keyspace <path>` flag. A Path A context (`meta_file` only) has no store in FDB
+  to apply to; the command errors with exactly that explanation and points at the two options
+  (the flag, or the operator-guide section on migrating Path A → Path B). The old metadata for
+  the validator diff is read from the same store; `--force-initial` covers the
+  first-write-to-an-empty-store case.
 - **`frl record put --type T <json>`** (protojson parsed against metadata) and
   **`frl record delete <pk>`** — `--dry-run` prints what would be written/deleted (the dry-run
-  store primitives exist, `store_api.go:233,353`); delete requires `--yes` or confirm.
+  store primitives exist, `store_api.go:233,353`); **both** require `--yes` or an interactive
+  confirm (codex P2-2: put overwrites existing records and bypasses SQL-level constraints —
+  it gets the same gate as delete, not a lighter one). The confirm prompt for an overwriting
+  put shows the existing record's PK and type.
   **`record delete` treats already-deleted-on-retry as success** (C3): after a
   maybe-committed retry (`commit_unknown_result` resolved by the client's idempotency
   barrier), re-execution sees the record absent — that's the delete having landed, not a
@@ -318,8 +332,10 @@ slices so they arrive with a net.
 - Addressing (S2): cross-layer round-trip test is the headline pin (SQL-created store readable
   via record/index/store commands with both flag and config addressing; mutual-exclusion
   validation errors).
-- Scriptability (S3): piped output contains zero `\x1b` bytes; `-o ndjson` parses line-by-line
-  with `encoding/json`; footer-on-stderr in machine formats.
+- Scriptability (S3): piped table output contains zero `\x1b` bytes **and zero non-ASCII
+  bytes** (codex P2-3 — the ANSI check alone would pass with `─┼─` box-drawing still present;
+  off-TTY tables must be plain ASCII per §3.2); `-o ndjson` parses line-by-line with
+  `encoding/json`; footer-on-stderr in machine formats.
 - Diff (S4→S0): matrix test flipping each compared attribute (unique, options, predicate,
   subspace key, since-version, type-key) — each must surface in text *and* JSON.
 - Writes (S4): dry-run writes nothing (assert via `store dump` before/after); confirm gates
