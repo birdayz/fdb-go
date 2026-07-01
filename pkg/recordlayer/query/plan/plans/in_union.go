@@ -3,7 +3,6 @@ package plans
 import (
 	"fmt"
 	"hash/fnv"
-	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -80,24 +79,20 @@ func (p *RecordQueryInUnionPlan) EqualsWithoutChildren(other RecordQueryPlan) bo
 	if p.reverse != o.reverse {
 		return false
 	}
-	if len(p.bindingNames) != len(o.bindingNames) {
-		return false
-	}
-	for i := range p.bindingNames {
-		if p.bindingNames[i] != o.bindingNames[i] {
-			return false
-		}
-	}
-	return true
+	// bindingNames are internal correlation aliases minted by UniqueCorrelation-
+	// Identifier (a process-global counter); only their COUNT (the number of IN
+	// columns) is structural. Comparing the arbitrary names made every replanned
+	// IN-union plan non-equal → plan-cache churn + nondeterministic Explain (RFC-164
+	// WS-4, same class as RecordQueryInJoinPlan). Alias-invariant identity; the real
+	// names are retained on the field for execution (GetBindingNames).
+	return len(p.bindingNames) == len(o.bindingNames)
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("inunionplan|"))
-	for _, bn := range p.bindingNames {
-		h.Write([]byte(bn))
-		h.Write([]byte{0})
-	}
+	// bindingNames excluded — only their COUNT is structural (see EqualsWithoutChildren).
+	h.Write([]byte{byte(len(p.bindingNames))})
 	if p.reverse {
 		h.Write([]byte{1})
 	}
@@ -113,8 +108,9 @@ func (p *RecordQueryInUnionPlan) Explain() string {
 	if p.reverse {
 		dir = "DESC"
 	}
-	return fmt.Sprintf("InUnion(%s, bindings=[%s], %s)",
-		inner, strings.Join(p.bindingNames, ", "), dir)
+	// The binding correlation aliases (process-global counters) are not rendered —
+	// only the COUNT of IN bindings is structural (RFC-164 WS-4; see in_join.go).
+	return fmt.Sprintf("InUnion(%s, bindings=%d, %s)", inner, len(p.bindingNames), dir)
 }
 
 var _ RecordQueryPlan = (*RecordQueryInUnionPlan)(nil)

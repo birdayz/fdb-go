@@ -252,15 +252,23 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   the IN-list tie: `a IN (1,2,3)` over two identical indexes is NOT plan-deterministic, from
   TWO sources — (#1) the `RecordQueryInJoinPlan` binding correlation alias (a process-global
   `UniqueCorrelationIdentifier` counter) was folded into Explain + Equals + Hash, so every
-  replan produced a non-equal / differently-hashed plan → plan-cache churn — **FIXED** (identity
-  now alias-invariant; real alias retained for execution; pinned by
-  `TestRecordQueryInJoinPlan_BindingAliasInvariant`); and (#2 — **OPEN**) the InJoin's INNER
+  replan produced a non-equal / differently-hashed plan → plan-cache churn — **FIXED** for BOTH
+  the InJoin AND the InUnion (sorted/merge IN) path (`RecordQueryInUnionPlan` had the identical
+  churn, Graefe follow-up): identity is now alias-invariant (only the binding COUNT is
+  structural); real aliases retained for execution; pinned by
+  `TestRecordQuery{InJoin,InUnion}Plan_BindingAliasInvariant`; and (#2 — **OPEN**) the InJoin's INNER
   index-scan selection is itself a cost-tie (idx1↔idx2) that the Phase-1a `exprConcreteHash`
   tie-break resolves for the plain `a = 5` equality case but NOT through the InJoin inner path
   (~27/200 runs flip). Repro: `SELECT id FROM t WHERE a IN (1,2,3)` over two identical indexes
   on `a`. Fix direction: extend the deterministic winner tie-break to the InJoin inner selection
   (`physical_in_join_wrapper.go` / the InJoin implement rule) — same class as RFC-167 Phase 1b
   comprehensive tie-resolution; the full IN-list Explain-stability seed is re-added once it lands.
+  PRE-EXISTING LOOSENESS (flagged by Graefe + Torvalds, NOT introduced here, orthogonal): neither
+  InJoin nor InUnion folds `inValues` into identity, and the inner index scan compares only its
+  `RangeType`, so `a IN (1,2,3)` and `a IN (4,5,6)` over the same index are Equals- and Hash-equal.
+  Harmless for replan-determinism (same query → same values), but a latent WRONG-CACHE-HIT if
+  literal IN-lists reach a `PlanHash`-keyed plan cache unparameterized — confirm IN-lists are
+  parameterized (ConstantObjectValue) before the cache, or fold `inValues` into identity.
 - [ ] **Map-iteration lint** — ship the **CI grep** banning bare `range someMap` in
   plan-affecting code first (80% value, 5% cost); defer the nogo analyzer (gold-plating).
 - **Effort:** ~1–2 days. **Gate:** Graefe (cost/determinism) + Torvalds (lint).
