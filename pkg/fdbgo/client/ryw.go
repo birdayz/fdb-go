@@ -408,6 +408,40 @@ func coalesceWriteConflicts(in []KeyRange) []KeyRange {
 	return out
 }
 
+// coalesceCommitVectors decides the mutation vector + pre-self-conflict write-conflict vector to size and
+// ship for a commit (#28 / RFC-172). rawMuts is the already-validated op-log snapshot; rawConflicts is the
+// pre-SC write-conflict snapshot. Returns (shipMuts, sizeConflicts, coalesced). The op-log is coalesced
+// (write-map materialize + conflict merge) UNLESS RYW is disabled OR the txn carries a versionstamp op —
+// both keep the raw op-log 1:1: the 10-byte stamp is assigned at commit so it can't be keyed in the write
+// map (a later Set on the same template key must not drop the versionstamped op — C++ WriteMap::mutate
+// pushes it, WriteMap.cpp:139-148), and such txns are tiny (never near 2101). A versionstamp txn that also
+// hammers an unrelated key ships uncoalesced — safe (no wrong bytes, no dropped op), identical to pre-#28
+// and the rywDisabled path (FDB-C-dev delta ACK: non-blocking). Extracted from Commit as a PURE function so
+// the ship-decision is unit-testable / revert-provable outside Commit's inline flow (Torvalds).
+func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisabled bool) (shipMuts []Mutation, sizeConflicts []KeyRange, coalesced bool) {
+	if rywDisabled || mutationsHaveVersionstamp(rawMuts) {
+		return rawMuts, rawConflicts, false
+	}
+	return coalesceCommitMutations(rawMuts), coalesceWriteConflicts(rawConflicts), true
+}
+
+// finalizeShipConflicts appends the self-conflict range (added by maybeMakeSelfConflicting AFTER the 2101
+// gate, so it is unsized — matching C++, which adds it after the transaction_too_large check,
+// NativeAPI.actor.cpp:6858) to the SIZED write-conflict snapshot, re-coalescing when the txn coalesces.
+// Works from the snapshot (rawConflicts) — NOT a live re-read of tx.writeConflicts — so a Set racing this
+// Commit cannot ship an unvalidated/unsized conflict range whose mutation was excluded from the frozen
+// op-log (codex #28 P2b). Pure + unit-testable (Torvalds).
+func finalizeShipConflicts(rawConflicts []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
+	base := rawConflicts
+	if scAdded {
+		base = append(append(make([]KeyRange, 0, len(rawConflicts)+1), rawConflicts...), sc)
+	}
+	if coalesced {
+		return coalesceWriteConflicts(base)
+	}
+	return base
+}
+
 // atomic records an atomic mutation.
 func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	c.mu.Lock()

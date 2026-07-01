@@ -130,87 +130,128 @@ func TestCoalesceOverAtomics_FoldTable(t *testing.T) {
 	})
 }
 
-// TestCoalesceCommit_VersionstampTxnShipsRaw pins codex #28 P2: a SetVersionstampedKey followed by a Set on
-// the same TEMPLATE key can't go through the coalesced materialize — ryw.set replaces the entry, so the SVK
-// is dropped and the stamped-key write is lost (libfdb_c PUSHES the Set onto the unreadable SVK entry and
-// commits BOTH, WriteMap.cpp:139-146). The fix ships such txns' raw op-log (the mutationsHaveVersionstamp
-// gate in Commit). This test pins the detection AND demonstrates the drop hazard the gate avoids.
-func TestCoalesceCommit_VersionstampTxnShipsRaw(t *testing.T) {
+// TestCoalesceCommitVectors_Decision pins the #28 ship-DECISION that Commit delegates to
+// coalesceCommitVectors — the single source of "coalesce vs raw" (Torvalds: the decision must be pinned
+// outside Commit's inline flow, not reconstructed in a test). Revert-provable per row.
+func TestCoalesceCommitVectors_Decision(t *testing.T) {
 	t.Parallel()
-	// SVK and Set target the SAME template key (the zero-placeholder key with its 4-byte LE offset suffix,
-	// as when a read version isn't cached yet — codex's exact scenario). ryw.set replaces the entry, so
-	// the coalesced materialize would emit only the Set.
-	key := append([]byte("tmpl"), 0, 0, 0, 0)
-	svk := Mutation{Type: MutSetVersionstampedKey, Key: key, Value: []byte("sv")}
-	set := Mutation{Type: MutSetValue, Key: key, Value: []byte("v2")}
-	muts := []Mutation{svk, set}
+	conflicts := []KeyRange{{Begin: []byte("c"), End: []byte("c\x00")}}
 
-	if !mutationsHaveVersionstamp(muts) {
-		t.Fatal("mutationsHaveVersionstamp must flag the SVK so Commit ships the raw op-log")
-	}
-	// Demonstrate the hazard the gate avoids: materializing the keyed write map DROPS the SVK.
-	coalesced := coalesceCommitMutations(muts)
-	for _, m := range coalesced {
-		if m.Type == MutSetVersionstampedKey {
-			t.Fatal("unexpected: materialize kept the SVK — the hazard this gate guards is gone, revisit the gate")
+	t.Run("normal RYW txn coalesces", func(t *testing.T) {
+		t.Parallel()
+		// 3× ADD 1 on one unread key must fold to ONE mutation. Revert (force coalesced=false) → len 3.
+		muts := []Mutation{
+			{Type: MutAddValue, Key: []byte("c"), Value: le8(1)},
+			{Type: MutAddValue, Key: []byte("c"), Value: le8(1)},
+			{Type: MutAddValue, Key: []byte("c"), Value: le8(1)},
 		}
+		ship, _, coalesced := coalesceCommitVectors(muts, conflicts, false)
+		if !coalesced || len(ship) != 1 {
+			t.Fatalf("normal txn: coalesced=%v len(ship)=%d, want true/1", coalesced, len(ship))
+		}
+	})
+
+	t.Run("versionstamp txn ships raw with the SVK preserved", func(t *testing.T) {
+		t.Parallel()
+		// SVK then Set on the SAME template key: the keyed materialize would DROP the SVK (ryw.set replaces
+		// the entry), so the txn must ship raw. Revert (drop the mutationsHaveVersionstamp check) → coalesced
+		// materialize omits the SVK and this assertion fires (codex #28 P2).
+		key := append([]byte("tmpl"), 0, 0, 0, 0)
+		muts := []Mutation{
+			{Type: MutSetVersionstampedKey, Key: key, Value: []byte("sv")},
+			{Type: MutSetValue, Key: key, Value: []byte("v2")},
+		}
+		ship, _, coalesced := coalesceCommitVectors(muts, conflicts, false)
+		if coalesced {
+			t.Fatal("versionstamp txn must NOT coalesce (the keyed materialize drops the SVK)")
+		}
+		hasSVK := false
+		for _, m := range ship {
+			if m.Type == MutSetVersionstampedKey {
+				hasSVK = true
+			}
+		}
+		if !hasSVK {
+			t.Fatal("#28 P2: versionstamp txn's shipMuts dropped the SVK — must ship the raw op-log")
+		}
+	})
+
+	t.Run("rywDisabled ships raw", func(t *testing.T) {
+		t.Parallel()
+		muts := []Mutation{{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")}}
+		if _, _, coalesced := coalesceCommitVectors(muts, conflicts, true); coalesced {
+			t.Fatal("rywDisabled must ship the raw op-log (no write map)")
+		}
+	})
+}
+
+// TestFinalizeShipConflicts pins the #28 P1/P2b ship-conflict DECISION that Commit delegates to
+// finalizeShipConflicts: the self-conflict range is appended to the SIZED snapshot when added, and the
+// helper is PURE (works from its snapshot arg) so a racing Set's live conflict can never leak in.
+func TestFinalizeShipConflicts(t *testing.T) {
+	t.Parallel()
+	sized := []KeyRange{{Begin: []byte("a"), End: []byte("a\x00")}}
+	scBegin := append(append([]byte(nil), selfConflictPrefix...), 1, 2, 3)
+	sc := KeyRange{Begin: scBegin, End: keyAfterBytes(scBegin)}
+	hasSC := func(rs []KeyRange) bool {
+		for _, kr := range rs {
+			if bytes.HasPrefix(kr.Begin, selfConflictPrefix) {
+				return true
+			}
+		}
+		return false
 	}
-	// Confirmed dropped by materialize → the raw-ship path is load-bearing; it retains BOTH ops.
-	if len(muts) != 2 || muts[0].Type != MutSetVersionstampedKey || muts[1].Type != MutSetValue {
-		t.Fatalf("raw op-log must retain [SVK, Set]; got %v", muts)
+
+	// P1: when maybeMakeSelfConflicting added an SC range, it MUST ship (revert: drop the scAdded append → no SC).
+	out := finalizeShipConflicts(sized, sc, true, true)
+	if !hasSC(out) {
+		t.Fatal("#28 P1: finalizeShipConflicts must include the self-conflict range when scAdded")
+	}
+	if !hasSC(finalizeShipConflicts(sized, sc, true, false)) { // rywDisabled path too
+		t.Fatal("#28 P1: SC must ship on the raw (non-coalesced) path as well")
+	}
+	// No SC when none was added.
+	if hasSC(finalizeShipConflicts(sized, KeyRange{}, false, true)) {
+		t.Fatal("no SC range must appear when scAdded=false")
+	}
+	// P2b: the helper works ONLY from its snapshot arg — a range never passed in (a racing Set's) cannot
+	// leak into the shipped set. The sized range is present; nothing else non-SC is.
+	for _, kr := range out {
+		if !bytes.HasPrefix(kr.Begin, selfConflictPrefix) && !bytes.Equal(kr.Begin, []byte("a")) {
+			t.Fatalf("#28 P2b: unexpected range %q shipped — finalizeShipConflicts must use only the sized snapshot", kr.Begin)
+		}
 	}
 }
 
-// TestCommit_ShipsSelfConflictRange pins codex #28 P1: a write-only NON-tenant commit with no intersecting
-// read conflict gets a synthetic \xff/SC/ self-conflict range from maybeMakeSelfConflicting (RFC-090
-// idempotency). The shipped write-conflict set must be re-derived AFTER maybeMakeSelfConflicting — the
-// size-time snapshot predates it — else the SC range is dropped and a maybe-committed retry can't detect an
-// already-applied commit. Pins the SC range ABSENT before and PRESENT after (the Commit re-derive point).
-func TestCommit_ShipsSelfConflictRange(t *testing.T) {
+// TestCommit_ShipsSelfConflictRange_Wire pins that the #28 P1 fix reaches the WIRE: the conflicts produced
+// by Commit's helper flow (maybeMakeSelfConflicting → finalizeShipConflicts) carry the \xff/SC/ range in
+// the marshaled CommitTransactionRequest for a write-only non-tenant commit.
+func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
 	tx.tenantId = NoTenantID
 	tx.mutations = []Mutation{{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")}}
 	tx.writeConflicts = []KeyRange{{Begin: []byte("k"), End: []byte("k\x00")}}
 
-	scIn := func(rs []types.KeyRangeRef) bool {
-		for _, kr := range rs {
-			if bytes.HasPrefix(kr.Begin, selfConflictPrefix) {
-				return true
-			}
-		}
-		return false
-	}
+	// Commit's flow: size-time snapshot → maybeMakeSelfConflicting (returns the SC range) → finalizeShip.
+	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
+	sc, scAdded := tx.maybeMakeSelfConflicting()
+	shipConflicts := finalizeShipConflicts(tx.writeConflicts, sc, scAdded, coalesced)
 
-	// Mirror Commit's ORDER: the size-time conflict snapshot is taken FIRST (pre-SC), then
-	// maybeMakeSelfConflicting adds the \xff/SC/ range, then the SHIPPED conflicts are re-derived (the fix).
-	sizeConflicts := coalesceWriteConflicts(tx.writeConflicts)
-	tx.maybeMakeSelfConflicting()
-	shipConflicts := coalesceWriteConflicts(tx.writeConflicts)
-
-	// Precondition: the size-time snapshot (what the pre-fix code shipped) carries NO SC range.
-	scInRanges := func(rs []KeyRange) bool {
-		for _, kr := range rs {
-			if bytes.HasPrefix(kr.Begin, selfConflictPrefix) {
-				return true
-			}
-		}
-		return false
-	}
-	if scInRanges(sizeConflicts) {
-		t.Fatal("precondition: no \\xff/SC/ range in the size-time snapshot")
-	}
-
-	// The SHIPPED commit request (built from the re-derived conflicts) must carry the SC range on the wire.
 	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, shipConflicts)
 	defer marshalBufPool.Put(bufp)
 	var req types.CommitTransactionRequest
 	if err := req.UnmarshalFDB(body); err != nil {
 		t.Fatalf("UnmarshalFDB: %v", err)
 	}
-	if !scIn(req.Transaction.WriteConflictRanges) {
-		t.Fatal("#28 P1: shipped commit request is missing the \\xff/SC/ self-conflict range — Commit must " +
-			"re-derive shipConflicts AFTER maybeMakeSelfConflicting, not from the size-time snapshot")
+	scOnWire := false
+	for _, kr := range req.Transaction.WriteConflictRanges {
+		if bytes.HasPrefix(kr.Begin, selfConflictPrefix) {
+			scOnWire = true
+		}
+	}
+	if !scOnWire {
+		t.Fatal("#28 P1: shipped commit request is missing the \\xff/SC/ self-conflict range")
 	}
 }
 

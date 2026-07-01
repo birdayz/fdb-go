@@ -1698,24 +1698,10 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// coalesced write-conflict ranges, so a txn that hammers one key ships O(distinct keys) mutations, not
 	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. Validation above stays over `muts`
 	// (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector is coalesced,
-	// and it is derived from the already-validated `muts` SNAPSHOT (coalesceCommitMutations replays it), so
-	// a Set racing this Commit can never ship or be sized unvalidated.
-	//
-	// Scope: !rywDisabled AND no versionstamp op. The RYW-disabled path keeps no write map and ships its
-	// op-log 1:1 (matching C++). Versionstamp ops (SetVersionstamped{Key,Value}) are ALSO shipped 1:1: their
-	// stamped key/value is assigned at commit, so they cannot be safely keyed in the write map — a later Set
-	// on the same TEMPLATE key must NOT drop the versionstamped op (C++ WriteMap::mutate PUSHES it onto the
-	// unreadable entry's stack, WriteMap.cpp:139-146, so both ship). Rather than reproduce that stacking in
-	// the keyed cache, a txn carrying any versionstamp op ships its raw op-log (such txns are tiny and never
-	// approach 2101), sidestepping every versionstamp-materialization edge (codex #28 P2 + the double-SVK
-	// case). Non-versionstamp txns — including the 150k-op headline — get the full coalescing.
-	coalesce := !tx.rywDisabled && !mutationsHaveVersionstamp(muts)
-	shipMuts := muts
-	sizeConflicts := writeConflictsSnap[:nWriteConflicts]
-	if coalesce {
-		shipMuts = coalesceCommitMutations(muts)
-		sizeConflicts = coalesceWriteConflicts(writeConflictsSnap[:nWriteConflicts])
-	}
+	// and it is derived from the already-validated `muts` SNAPSHOT, so a Set racing this Commit can never
+	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
+	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow (Torvalds).
+	shipMuts, sizeConflicts, coalesced := coalesceCommitVectors(muts, writeConflictsSnap[:nWriteConflicts], tx.rywDisabled)
 
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
 	// order (NativeAPI.actor.cpp:6797-6836):
@@ -1754,23 +1740,15 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// makeSelfConflicting: C++ commitMutations (NativeAPI.actor.cpp:6858-6860), placed here — AFTER the
 	// read-only fast path and the size check above — exactly as C++ places it after its own read-only
 	// return and transaction_too_large check. See maybeMakeSelfConflicting for the full rationale.
-	tx.maybeMakeSelfConflicting()
-
-	// #28 P1 (codex): maybeMakeSelfConflicting above appends the synthetic \xff/SC/ self-conflict range to
-	// tx.writeConflicts (write-only non-tenant commits), AFTER the 2101 gate — matching C++, which adds it
-	// after the transaction_too_large check (NativeAPI.actor.cpp:6858) so it is NOT sized. But it MUST
-	// SHIP: pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the size-time
-	// `sizeConflicts` snapshot predates it. Re-derive the shipped conflicts from the now-updated
-	// tx.writeConflicts so the self-conflicting retry can still detect an already-applied commit
-	// (RFC-090). Conflict ranges are not validated, so re-snapshotting here (which also picks up any
-	// racing Set's conflict range) matches pre-#28's live read.
-	tx.conflictMu.Lock()
-	finalConflicts := tx.writeConflicts
-	tx.conflictMu.Unlock()
-	shipConflicts := finalConflicts
-	if coalesce {
-		shipConflicts = coalesceWriteConflicts(finalConflicts)
-	}
+	//
+	// #28 P1/P2b: the \xff/SC/ range it appends is added AFTER the 2101 gate (so unsized, matching C++) but
+	// MUST ship — pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the
+	// size-time `sizeConflicts` snapshot predates it. finalizeShipConflicts folds JUST that range into the
+	// SIZED snapshot (not a live re-read of tx.writeConflicts), so the RFC-090 self-conflicting retry can
+	// still detect an already-applied commit WITHOUT shipping a racing Set's unvalidated/unsized conflict
+	// range (codex #28 P2b).
+	sc, scAdded := tx.maybeMakeSelfConflicting()
+	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
 
 	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
 	// read version exists before commit, even for write-only transactions.
@@ -2656,15 +2634,19 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 // tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a separate
 // subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and the finding's
 // primary scenario. Callers (Commit) must NOT hold conflictMu — this takes it.
-func (tx *Transaction) maybeMakeSelfConflicting() {
+// Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one (write-only non-tenant
+// commit whose ranges don't already intersect), so Commit can ship it on the SIZED conflict snapshot
+// (#28 P2b) rather than re-reading the live tx.writeConflicts.
+func (tx *Transaction) maybeMakeSelfConflicting() (KeyRange, bool) {
 	if tx.tenantId != NoTenantID {
-		return
+		return KeyRange{}, false
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	if !conflictRangesIntersect(tx.writeConflicts, tx.readConflicts) {
-		tx.makeSelfConflictingLocked()
+		return tx.makeSelfConflictingLocked(), true
 	}
+	return KeyRange{}, false
 }
 
 // makeSelfConflictingLocked appends an ephemeral \xFF/SC/<random 16-byte UID> single-key range to BOTH
@@ -2679,7 +2661,7 @@ func (tx *Transaction) maybeMakeSelfConflicting() {
 // matches the raw-access dummy's conflict key. buildCommitTransactionRequest exempts ONLY the
 // metadataVersion key from tenant prefixing — it would prefix this \xFF/SC/ key — which is one reason the
 // tenant case is a separate follow-up rather than a trivial gate flip. Caller MUST hold conflictMu.
-func (tx *Transaction) makeSelfConflictingLocked() {
+func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 	sc := make([]byte, len(selfConflictPrefix)+16)
 	copy(sc, selfConflictPrefix)
 	binary.LittleEndian.PutUint64(sc[len(selfConflictPrefix):], rand.Uint64())
@@ -2692,7 +2674,9 @@ func (tx *Transaction) makeSelfConflictingLocked() {
 	wb := tx.conflictBufAlloc(len(sc) + len(end))
 	copy(wb, sc)
 	copy(wb[len(sc):], end)
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: wb[:len(sc)], End: wb[len(sc):]})
+	wcr := KeyRange{Begin: wb[:len(sc)], End: wb[len(sc):]}
+	tx.writeConflicts = append(tx.writeConflicts, wcr)
+	return wcr
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
