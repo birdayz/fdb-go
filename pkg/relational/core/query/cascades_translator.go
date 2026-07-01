@@ -524,6 +524,12 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
 		// text cannot (COUNT(NULL)'s arg "NULL" looks like an identifier). Literals resolve
 		// even where a column operand is left nil, so this catch is sound.
+		//
+		// This deliberately does NOT reuse expressions.IsCountStar (RFC-164 WS-3): that
+		// classifier answers "is this COUNT count-star?" for a SINGLE COUNT aggregate; here
+		// the question is union-branch NAME stability for ANY aggregate function, and the
+		// gate is a conservative any-constant-operand reject (SUM(1), MIN(NULL) too) — a
+		// different question at a different scope, not a fourth copy of the count-star rule.
 		if i < len(a.AggregateOperands) {
 			if _, isConst := a.AggregateOperands[i].(*values.ConstantValue); isConst {
 				return false
