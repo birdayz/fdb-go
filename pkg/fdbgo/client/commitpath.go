@@ -187,7 +187,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 				// the same per-code counters as any transaction. RFC-097.
 				dummyRetries++
 				tx.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
-				if backoffSleep(ctx, jitterBackoff(backoff)) != nil {
+				if backoffSleep(ctx, dummyRetryBackoff(backoff, rand.Float64())) != nil {
 					return // ctx cancelled — caller gave up
 				}
 				backoff = min(backoff*2, maxBackoff)
@@ -199,21 +199,19 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	}
 }
 
-// jitterBackoff returns d scaled by a uniform-random factor in [0.9, 1.1].
-// Under coordinated retry storms — multiple clients hitting the same hot
-// range simultaneously and all hitting commit_unknown_result — deterministic
-// exponential backoff causes thundering herds: every client sleeps the same
-// duration and all retries land on the proxy at the same instant. ±10%
-// jitter spreads them across a 200ms-wide window at d=1s, breaking the
-// lockstep. Cheap (one rand.Float64 per retry) and per-call independent so
-// goroutines on the same process also desync.
-func jitterBackoff(d time.Duration) time.Duration {
+// dummyRetryBackoff returns d scaled by rand01 ∈ [0,1) — the C++ getBackoff law
+// (NativeAPI.actor.cpp:6109, `returnedBackoff *= deterministicRandom()->random01()`).
+// C++ commitDummyTransaction retries via `wait(tr.onError(e))` (NativeAPI.actor.cpp:6331),
+// which calls getBackoff, so the dummy's sleep is uniform in [0, backoff) — NOT the ±10%
+// [0.9,1.1) band Go used before. Matching C++ is both faithful AND a strictly wider spread
+// than ±10%, so it breaks coordinated retry-storm thundering herds even better. The caller
+// passes rand.Float64() (a fresh draw per retry); rand01 is a parameter so the law is unit-
+// testable without a package-global seam.
+func dummyRetryBackoff(d time.Duration, rand01 float64) time.Duration {
 	if d <= 0 {
 		return d
 	}
-	// Range [0.9, 1.1).
-	factor := 0.9 + 0.2*rand.Float64()
-	return time.Duration(float64(d) * factor)
+	return time.Duration(float64(d) * rand01)
 }
 
 // onErrorRetryable reports whether OnError retries `code`. It is the SINGLE
