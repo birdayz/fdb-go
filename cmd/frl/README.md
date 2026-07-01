@@ -181,10 +181,12 @@ Tab-complete covers:
 
 ## Testing
 
-- `go test ./internal/...` — unit tests (no FDB needed)
-- `go test -tags=integration ./internal/cmd/...` — end-to-end against an
-  FDB testcontainer, covers every read-only command
-- `bazelisk test //cmd/frl/...` — Bazel-driven unit tests
+- `go test ./internal/...` — the full suite: unit tests plus end-to-end
+  tests against an FDB testcontainer (every read command, `sql`, and
+  `meta catalog`). Without Docker the e2e tests skip with the repo's one
+  allowed skip ("FDB not available (no Docker)"); unit tests always run.
+- `bazelisk test //cmd/frl/...` — the same suite under Bazel; this is
+  what CI runs via `bazelisk test //...`, so the e2e net gates merges.
 
 ## What's not yet wired
 

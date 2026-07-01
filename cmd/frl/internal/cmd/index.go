@@ -37,8 +37,9 @@ func newIndexLsCmd() *cobra.Command {
   frl index ls -o json
   frl index ls --meta-file ./meta.pb --no-fdb    # offline render`,
 		Long: "Opens the current context's store and prints one row per " +
-			"index: name, type, current state (readable / write-only / " +
-			"disabled / readable-unique-pending), the record types it " +
+			"index: name, type, current state (READABLE / WRITE_ONLY / " +
+			"DISABLED / READABLE_UNIQUE_PENDING — the record layer's " +
+			"canonical names, matching Java's), the record types it " +
 			"applies to, and the metadata version that last touched it. " +
 			"--no-fdb skips opening the store and shows STATE as '—' " +
 			"so that `--meta-file` can be used as a pure offline lister.\n\n" +
@@ -101,7 +102,7 @@ func renderIndexList(out io.Writer, md *recordlayer.RecordMetaData, stateFn func
 //	  {
 //	    "name": "Order$price",
 //	    "type": "value",
-//	    "state": "readable",        # or "—" when stateFn is nil
+//	    "state": "READABLE",        # or "—" when stateFn is nil
 //	    "record_types": ["Order"],  # or ["*"] for universal indexes
 //	    "last_modified_version": 1
 //	  },

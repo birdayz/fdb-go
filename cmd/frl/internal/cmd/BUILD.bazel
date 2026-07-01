@@ -60,6 +60,7 @@ go_test(
         "index_describe_test.go",
         "index_scan_test.go",
         "index_test.go",
+        "integration_test.go",
         "keyspace_test.go",
         "meta_catalog_test.go",
         "meta_diff_test.go",
@@ -69,6 +70,7 @@ go_test(
         "output_test.go",
         "record_render_test.go",
         "record_test.go",
+        "sql_integration_test.go",
         "sql_test.go",
         "store_dump_test.go",
         "store_test.go",
@@ -83,6 +85,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
     ],
 )

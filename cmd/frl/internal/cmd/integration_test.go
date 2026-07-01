@@ -1,13 +1,12 @@
-//go:build integration
-
 // Integration tests for the frl CLI. Spins up an FDB testcontainer once
 // per process, seeds a store via the recordlayer API, then drives cobra
 // commands end-to-end.
 //
-// Skipped by default (opt-in build tag) so `go test ./...` and
-// `bazelisk test //cmd/frl/...` stay fast. Run with:
-//
-//	go test -tags=integration ./cmd/frl/internal/cmd/...
+// No build tag: like every other FDB-backed suite in this repo these run
+// under `go test ./...` and `bazelisk test //...` (and therefore in CI —
+// RFC-174 Slice 1). Without Docker the container start fails, the
+// fixture stays nil, and each integration test skips with the one
+// allowed skip: "FDB not available (no Docker)".
 package cmd
 
 import (
@@ -53,8 +52,10 @@ func TestMain(m *testing.M) {
 		foundationdbtc.WithStorageEngine("memory"),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "integration setup: start FDB container: %v\n", err)
-		os.Exit(1)
+		// No Docker — run unit tests only; integration tests skip via
+		// bindConfig/requireFixture ("FDB not available (no Docker)").
+		fmt.Fprintf(os.Stderr, "frl integration fixture unavailable (running unit tests only): %v\n", err)
+		os.Exit(m.Run())
 	}
 
 	clusterFilePath, err := container.ClusterFilePath(ctx)
@@ -181,6 +182,7 @@ var (
 // and one seeded Order so record count returns a non-zero number.
 func setupCountFixture(t *testing.T) *integrationFixture {
 	t.Helper()
+	requireFixture(t)
 	countFixtureOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -270,12 +272,24 @@ func runCmd(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// requireFixture skips the calling test when the FDB testcontainer
+// couldn't be started (no Docker) — the one allowed skip — and returns
+// the fixture otherwise.
+func requireFixture(t *testing.T) *integrationFixture {
+	t.Helper()
+	if fixture == nil {
+		t.Skip("FDB not available (no Docker)")
+	}
+	return fixture
+}
+
 // bindConfig points FRL_CONFIG at the fixture config for the current test.
 // Using t.Setenv keeps tests serial for this bit (t.Setenv forbids Parallel),
 // which is fine — integration tests are serialised anyway via the single
-// seeded store.
+// seeded store. Skips when there is no fixture (no Docker).
 func bindConfig(t *testing.T) {
 	t.Helper()
+	requireFixture(t)
 	t.Setenv("FRL_CONFIG", fixture.configFilePath)
 }
 
@@ -420,8 +434,13 @@ func TestIntegration_IndexLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index ls: %v\nout:\n%s", err, out)
 	}
-	if !strings.Contains(out, "Order$price") || !strings.Contains(out, "readable") {
-		t.Errorf("index ls didn't show Order$price readable:\n%s", out)
+	// States render as the record layer's canonical uppercase names
+	// (READABLE / WRITE_ONLY / …) — the same identifiers Java logs.
+	// This assertion was lowercase "readable" from the day it was
+	// written and the renderer never produced it: red-since-birth,
+	// invisible because the tagged suite ran nowhere (RFC-174 Slice 1).
+	if !strings.Contains(out, "Order$price") || !strings.Contains(out, "READABLE") {
+		t.Errorf("index ls didn't show Order$price READABLE:\n%s", out)
 	}
 }
 
@@ -663,6 +682,7 @@ func TestIntegration_RecordScan_NewerMetadataDoesNotMutateStore(t *testing.T) {
 }
 
 func TestIntegration_StoreInfo_EmptyKeyspace(t *testing.T) {
+	requireFixture(t)
 	// Point at a keyspace that has no store at it yet. store info should
 	// return a clear "no store header" error rather than panic or hang.
 	// Reuses the primary fixture's cluster + meta.pb but overrides the
