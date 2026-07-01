@@ -44,6 +44,9 @@ type watchClient struct {
 	// watch establishes a watch on key inside a committed transaction and returns a channel
 	// that receives the watch result (nil = fired) when the long-poll resolves.
 	watch func(t *testing.T, key []byte) <-chan error
+	// watchSelfWrite Sets key=val AND watches key in the SAME committed transaction (finding #8) —
+	// the watch must register at the COMMITTED version so it stays pending until the next EXTERNAL change.
+	watchSelfWrite func(t *testing.T, key, val []byte) <-chan error
 }
 
 func goWatchClient() watchClient {
@@ -75,6 +78,21 @@ func goWatchClient() watchClient {
 				return nil, nil
 			}); err != nil {
 				t.Fatalf("go establish watch: %v", err)
+			}
+			ch := make(chan error, 1)
+			go func() { ch <- w.Get() }()
+			return ch
+		},
+		watchSelfWrite: func(t *testing.T, key, val []byte) <-chan error {
+			t.Helper()
+			var w gofdb.FutureNil
+			if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+				tx := txw.(gofdb.Transaction)
+				tx.Set(gofdb.Key(key), val) // self-write, THEN watch the same key in this txn
+				w = tx.Watch(gofdb.Key(key))
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("go self-write watch: %v", err)
 			}
 			ch := make(chan error, 1)
 			go func() { ch <- w.Get() }()
@@ -112,6 +130,20 @@ func cgoWatchClient() watchClient {
 				return nil, nil
 			}); err != nil {
 				t.Fatalf("cgo establish watch: %v", err)
+			}
+			ch := make(chan error, 1)
+			go func() { ch <- w.Get() }()
+			return ch
+		},
+		watchSelfWrite: func(t *testing.T, key, val []byte) <-chan error {
+			t.Helper()
+			var w cgofdb.FutureNil
+			if _, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+				tx.Set(cgofdb.Key(key), val)
+				w = tx.Watch(cgofdb.Key(key))
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("cgo self-write watch: %v", err)
 			}
 			ch := make(chan error, 1)
 			go func() { ch <- w.Get() }()
@@ -227,6 +259,44 @@ func TestDifferential_WatchRYWDisabled(t *testing.T) {
 	}
 	if goCode != 1034 {
 		t.Fatalf("watch RYW-disabled: want 1034 watches_disabled, both returned %d", goCode)
+	}
+}
+
+// TestDifferential_WatchSelfWriteStaysPending pins finding #8 / RFC-170: a transaction that WRITES a key
+// and then WATCHES the same key must register the watch at the txn's COMMITTED version — so it stays
+// PENDING until the next EXTERNAL change, exactly like libfdb_c, instead of firing on the txn's OWN write.
+// Before the fix the Go client registered the watch at the READ version (< committed version): the storage
+// server read the pre-write value, saw it differ from the watched value B, and fired the watch almost
+// immediately — a silent divergence (a watch that fires when it must not). Covers the seeded baseline
+// (k=A → Set B) and the absent baseline (k cleared → Set B); a genuine external change fires both.
+func TestDifferential_WatchSelfWriteStaysPending(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		seed func(t *testing.T, wc watchClient, key []byte) // establishes the pre-write baseline
+	}{
+		{"seeded", func(t *testing.T, wc watchClient, key []byte) { wc.set(t, key, []byte("A")) }},
+		{"absent", func(t *testing.T, wc watchClient, key []byte) { wc.clear(t, key) }},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, wc := range []watchClient{goWatchClient(), cgoWatchClient()} {
+				wc := wc
+				t.Run(wc.name, func(t *testing.T) {
+					t.Parallel()
+					key := watchKeyFor(t, wc)
+					tc.seed(t, wc, key)
+					ch := wc.watchSelfWrite(t, key, []byte("B")) // {Set(k,B); Watch(k)} in ONE txn
+					// No external change: the watch is registered at the committed value B, so both clients
+					// must stay pending (pre-fix Go fired here — the bug).
+					expectPending(t, wc.name+"/"+tc.name, ch, watchBlockWindow)
+					wc.set(t, key, []byte("C")) // a genuine EXTERNAL change → fires
+					expectFired(t, wc.name+"/"+tc.name, ch)
+				})
+			}
+		})
 	}
 }
 

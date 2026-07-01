@@ -431,6 +431,16 @@ type Transaction struct {
 	watchCancels map[uint64]context.CancelFunc
 	nextWatchID  uint64
 
+	// watchAct is the per-incarnation commit-completion signal for pending watches (RFC-170 / #8). A watch
+	// captures the CURRENT activation at setup; the async facade blocks on it (awaitWatchActivation) and
+	// registers the watch at the COMMITTED version instead of the read version — so a self-write-then-watch
+	// stays pending until the NEXT external change rather than firing on the txn's own write. Commit /
+	// read-only fast path / reset / Cancel all ROTATE it (fireWatchActivation Swaps a fresh one) so a
+	// reset-away watch can never be armed by a LATER incarnation's commit (the readGen-keying the RFC
+	// requires). Lazily created on first Watch/commit via watchActLoad (nil until then — the common
+	// watch-free txn pays nothing).
+	watchAct atomic.Pointer[watchActivation]
+
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
@@ -1732,6 +1742,10 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
 		// Reset for reuse (matches C client behavior).
+		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is 0 for a
+		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
+		// postCommitReset clears the read version.
+		tx.fireWatchActivation(0, false)
 		tx.hasCommitted = true
 		tx.postCommitReset()
 		return nil
@@ -1808,6 +1822,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if tx.committedVersion > 0 {
 		tx.db.grvCache.update(tx.committedVersion)
 	}
+
+	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs
+	// setupWatches AFTER commitMutations (NativeAPI.actor.cpp:6909-6918) with
+	// watchVersion = committedVersion > 0 ? committedVersion : readVersion. Fire BEFORE postCommitReset
+	// (which clears readVersion and rotates readGen) so a self-write-then-watch registers against the
+	// txn's own committed write and stays pending until the NEXT external change.
+	tx.fireWatchActivation(tx.committedVersion, false)
 
 	tx.hasCommitted = true
 
@@ -1967,12 +1988,80 @@ func (tx *Transaction) SetSpanParent(b []byte) error {
 // cancelWatches cancels ALL of the transaction's in-flight watches (Cancel()/reset()) — C++
 // resetRyow() sends transaction_cancelled through resetPromise to every pending watch.
 func (tx *Transaction) cancelWatches() {
+	// RFC-170 (#8): abandon this incarnation's watch activation FIRST (rotate + close with abandoned=true),
+	// so a watch parked in AwaitWatchCommit drains and never registers, AND the rotation stops a later
+	// incarnation's commit from arming this reset-away watch. Only the reset/Cancel/abort paths call
+	// cancelWatches (never commit-success, which fires with committedVersion), so abandoning here is safe.
+	tx.fireWatchActivation(0, true)
 	tx.watchMu.Lock()
 	cancels := tx.watchCancels
 	tx.watchCancels = nil
 	tx.watchMu.Unlock()
 	for _, c := range cancels {
 		c()
+	}
+}
+
+// watchActivation is one incarnation's commit-completion signal (RFC-170 / #8). `done` closes when the
+// incarnation's commit completes, the read-only fast path returns, or the txn is reset/cancelled; the
+// waiter then reads version/abandoned (the close is the happens-before). version is committedVersion (>0)
+// on a real commit, 0 for the read-only fallback; abandoned=true on reset/Cancel → the watch drains and
+// never registers.
+type watchActivation struct {
+	done      chan struct{}
+	version   int64
+	abandoned bool
+}
+
+// watchActLoad returns this incarnation's activation, lazily creating it on first use (a fresh handle
+// before any Watch/commit has nil watchAct). Race-safe via CAS so two concurrent Watch() calls share one.
+func (tx *Transaction) WatchActivation() *watchActivation {
+	if act := tx.watchAct.Load(); act != nil {
+		return act
+	}
+	fresh := &watchActivation{done: make(chan struct{})}
+	if tx.watchAct.CompareAndSwap(nil, fresh) {
+		return fresh
+	}
+	return tx.watchAct.Load()
+}
+
+// fireWatchActivation resolves this incarnation's pending watches and ROTATES to a fresh activation for the
+// next incarnation. Commit success passes (committedVersion, false); the read-only fast path (0, false)
+// (→ readVersion fallback); reset/Cancel/abort (0, true) (→ drain). Rotating on every resolution is what
+// stops a reset-away watch from being armed by a LATER incarnation's commit: after reset the old activation
+// is abandoned+closed and no longer current, so the next commit closes a DIFFERENT one. No-op (and no
+// allocation) when no watch touched this incarnation.
+func (tx *Transaction) fireWatchActivation(version int64, abandoned bool) {
+	if tx.watchAct.Load() == nil {
+		return
+	}
+	prev := tx.watchAct.Swap(&watchActivation{done: make(chan struct{})})
+	if prev == nil {
+		return
+	}
+	prev.version = version
+	prev.abandoned = abandoned
+	close(prev.done)
+}
+
+// awaitWatchActivation blocks until the watch's captured incarnation resolves, returning the version to
+// register the watch at — committedVersion, or readVersion when the txn didn't commit (C++ setupWatches'
+// `committedVersion > 0 ? committedVersion : readVersion`, NativeAPI.actor.cpp:6420). Returns an error when
+// the watch is abandoned (reset/Cancel → 1025) or its scoped context is cancelled, so the facade drains
+// without registering. RFC-170 (#8): the async facade calls this BEFORE WatchPoll.
+func (tx *Transaction) AwaitWatchCommit(watchCtx context.Context, act *watchActivation, readVersion int64) (int64, error) {
+	select {
+	case <-act.done:
+		if act.abandoned {
+			return 0, &wire.FDBError{Code: 1025} // transaction_cancelled — reset/Cancel drained this watch
+		}
+		if act.version > 0 {
+			return act.version, nil
+		}
+		return readVersion, nil
+	case <-watchCtx.Done():
+		return 0, watchCtx.Err()
 	}
 }
 
