@@ -523,9 +523,14 @@ func TestFDB_Metrics_LatencyRecorded(t *testing.T) {
 		if !(st.Max > 0 && st.Median > 0 && st.P99 > 0 && st.Mean > 0 && st.Min > 0) {
 			t.Errorf("%s latency: non-positive stat (min=%g max=%g median=%g p99=%g mean=%g)", name, st.Min, st.Max, st.Median, st.P99, st.Mean)
 		}
-		// Monotone: Min ≤ median ≤ p90 ≤ p99 ≤ Max (small slack on the quantile-vs-Max
-		// edge, where a bucket representative can sit a bucket-width above the true max).
-		if !(st.Min <= st.Median && st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
+		// Monotone: Min ≤ median ≤ p90 ≤ p99 ≤ Max. Min and Max are EXACT (LatencyStats doc: "C++
+		// DDSketchBase::min/max") while the quantiles are DDSketch estimates (±0.5% relative), so BOTH
+		// exact-vs-quantile edges need a bucket-width of slack — they are mirror images: a DDSketch
+		// median can sit up to a bucket-width BELOW the exact Min exactly as the p99 estimate can sit a
+		// bucket-width ABOVE the exact Max, when the sample is tiny and near-degenerate (all latencies
+		// clustered in ~one bucket). The median-vs-median edges (median≤p90≤p99) are sketch-vs-sketch and
+		// stay strict (DDSketch quantiles are monotone in q).
+		if !(st.Min <= st.Median*1.0201 && st.Median <= st.P90 && st.P90 <= st.P99 && st.P99 <= st.Max*1.0201) {
 			t.Errorf("%s latency: not ordered (min=%g median=%g p90=%g p99=%g max=%g)", name, st.Min, st.Median, st.P90, st.P99, st.Max)
 		}
 		if st.Sum <= 0 {
