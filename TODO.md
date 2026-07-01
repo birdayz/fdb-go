@@ -56,8 +56,11 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 > - **[x] VECTOR-PARTITION-INTERSECTION-K>1 (HIGH, wrong rows — was ACTIVE on master, pre-existing) — FIXED.**
 >   Pin: `TestFDB_VectorSearch_MultiPartition_InequalityResidualK2` (`WHERE zone='z1' AND region>'r1' … <=2` now
 >   returns `{21,22}`, was `{22}`). The fix is TWO pieces (piece 3 collapsed into piece 2 — the realization path
->   already existed): (1) targeted vector-leg gate `isSelfLimitingVectorScan` in `WithPrimaryKeyIntersector` drops
->   the invalid pk-keyed intersection (a self-limiting vector scan is (region,distance)-ordered, never pk-ordered);
+>   already existed): (1) exclude ALL `VectorIndexScanMatchCandidate` from the pk-intersection candidate set — one
+>   condition in `pushDataAccessTasks` (planner.go ~628), the single home for the rule — since a vector scan is
+>   distance-ordered (ordered-stream OR self-limiting per-partition), never pk-monotonic, so it can never be a valid
+>   pk-keyed sorted-merge leg (the earlier draft's plan-level `isSelfLimitingVectorScan` intersector guards were
+>   consolidated into this upstream candidate-level check — Torvalds/Graefe nit, provably equivalent);
 >   (2) `compensationSafeForYield` `residualIsPartitionContiguous` exception — a residual over the partition columns
 >   CONTIGUOUS immediately after the bound equality prefix selects whole partitions, so it composes safely as a Filter
 >   above the self-limiting scan; `ImplementFilterRule` (which has NO gate against a Filter over a self-limiting vector

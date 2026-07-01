@@ -830,12 +830,15 @@ func compensationSafeForYield(expr expressions.RelationalExpression) bool {
 }
 
 // residualIsPartitionContiguous reports whether every field the residual filter
-// f references is a PARTITION-key column of the vector scan, and the referenced
-// columns are exactly the contiguous run of partition columns immediately after
-// the scan's bound equality prefix. Such a residual selects WHOLE partitions, so
-// it composes safely as a Filter above a self-limiting per-partition top-k scan
-// (compensationSafeForYield): dropping entire partitions never disturbs the
-// per-partition top-k the maintainer already enforced.
+// f references is a LOCAL PARTITION-key column of the vector scan, and the
+// referenced columns are exactly the contiguous run of partition columns
+// immediately after the scan's bound equality prefix. Such a residual selects
+// WHOLE partitions, so it composes safely as a Filter above a self-limiting
+// per-partition top-k scan (compensationSafeForYield): dropping entire partitions
+// never disturbs the per-partition top-k the maintainer already enforced. The
+// LOCAL qualifier is enforced here (the field-locality reject below) so the
+// guarantee is self-contained — an outer-correlated field sharing a partition
+// column's name is not misattributed.
 //
 // The contiguity anchor (start exactly at len(bound equality prefix)) is what
 // distinguishes the plannable partition-INEQUALITY case (WHERE zone='z1' AND
@@ -859,6 +862,31 @@ func residualIsPartitionContiguous(
 	colIndex := make(map[string]int, len(partCols))
 	for i, c := range partCols {
 		colIndex[strings.ToUpper(c)] = i
+	}
+
+	// Field-locality: every residual field must belong to THIS filter's own scan.
+	// The field-name matching below is by bare name (FieldValue.Field), which is
+	// blind to the correlation root (FieldValue.Child) — so an OUTER-correlated
+	// field that coincidentally shares a partition column's name (e.g. a join
+	// residual `outer.region = ...` over a scan partitioned by `region`) would be
+	// misattributed as this scan's partition column, silently breaking the
+	// whole-partition guarantee. Reject any residual correlated to a non-local
+	// alias here so this function's safety is SELF-CONTAINED, not dependent on the
+	// separate OUTER-correlation guard later in compensationSafeForYield (query-
+	// parameter ConstantObjectValue aliases are execution constants, not row
+	// correlations — subtract them first, as that guard does).
+	local := make(map[values.CorrelationIdentifier]struct{}, len(f.GetQuantifiers()))
+	for _, q := range f.GetQuantifiers() {
+		local[q.GetAlias()] = struct{}{}
+	}
+	for _, pred := range f.GetPredicates() {
+		corr := predicates.GetCorrelatedToOfPredicate(pred)
+		deletePredicateConstantObjectAliases(pred, corr)
+		for alias := range corr {
+			if _, isLocal := local[alias]; !isLocal {
+				return false
+			}
+		}
 	}
 
 	residualFields := map[string]struct{}{}
