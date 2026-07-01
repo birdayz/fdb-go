@@ -1693,8 +1693,22 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 		t.cteScope[key] = body
 		return result
 	}
+	// Type the scan leaf with the table's canonical record type (RFC-173
+	// Slice 1). tableColumns sources fields from the proto descriptor in
+	// declaration order with UPPER-cased names — the SAME order and case the
+	// runtime PositionalRow carries (protoToPositional), so FieldValue.
+	// resolveOrdinal's plan-time ordinal matches the runtime slot by
+	// construction. Two scans of one table build structurally-equal
+	// RecordTypes (tableColumns is deterministic; RecordType.Equals is
+	// structural), so memo dedup on flowedType (FullUnorderedScanExpression.
+	// EqualsWithoutChildren) holds without a pointer cache. An unresolvable
+	// table (no metadata) degrades to UnknownType → name resolution, as before.
+	flowed := values.Type(values.UnknownType)
+	if cols := t.tableColumns(s.Table); len(cols) > 0 {
+		flowed = values.NewRecordType("", false, cols)
+	}
 	return expressions.NewFullUnorderedScanExpression(
-		[]string{s.Table}, values.UnknownType,
+		[]string{s.Table}, flowed,
 	)
 }
 

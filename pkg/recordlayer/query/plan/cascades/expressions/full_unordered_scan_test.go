@@ -34,6 +34,101 @@ func TestFullUnorderedScan_NilFlowedType(t *testing.T) {
 	}
 }
 
+// TestFullUnorderedScan_GetResultValueFlowsType_RFC173Slice1 pins the latent bug
+// Graefe caught in RFC-173 Slice 1: GetResultValue hard-coded
+// NewQuantifiedObjectValue → UnknownType, silently DISCARDING the scan's own
+// flowedType. That forced every single-table scan onto name resolution because
+// FieldValue.resolveOrdinal's `f.Child.Type().(*RecordType)` assertion failed on
+// the UnknownType QOV → (0,false). Java's scan quantifier always flows the record
+// type; ordinal resolution can only fire once the QOV carries it.
+func TestFullUnorderedScan_GetResultValueFlowsType_RFC173Slice1(t *testing.T) {
+	t.Parallel()
+	mkType := func() *values.RecordType {
+		return values.NewRecordType("", false, []values.Field{
+			{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "V", FieldType: values.UnknownType, Ordinal: 1},
+		})
+	}
+	scan := NewFullUnorderedScanExpression([]string{"T"}, mkType())
+
+	rv := scan.GetResultValue()
+	qov, ok := rv.(*values.QuantifiedObjectValue)
+	if !ok {
+		t.Fatalf("GetResultValue=%T, want *QuantifiedObjectValue", rv)
+	}
+	got, ok := qov.Type().(*values.RecordType)
+	if !ok {
+		t.Fatalf("scan result value Type=%T, want *RecordType (flowedType was discarded — the latent bug)", qov.Type())
+	}
+	if len(got.Fields) != 2 || got.Fields[0].Name != "ID" || got.Fields[1].Name != "V" {
+		t.Fatalf("flowed record type fields=%v, want [ID V] in order", got.Fields)
+	}
+
+	// An UnknownType/nil flowedType still degrades to name resolution — untyped
+	// seeds (no metadata) must NOT flow a *RecordType.
+	untyped := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	if _, ok := untyped.GetResultValue().Type().(*values.RecordType); ok {
+		t.Fatal("UnknownType scan must not flow a *RecordType — untyped seeds stay on the name path")
+	}
+
+	// Trap 2 (Graefe): two scans of one table build structurally-equal RecordTypes,
+	// so EqualsWithoutChildren (which compares flowedType) still dedups them in the
+	// memo — no pointer cache needed because RecordType.Equals is structural.
+	scanTwin := NewFullUnorderedScanExpression([]string{"T"}, mkType())
+	if !scan.EqualsWithoutChildren(scanTwin, EmptyAliasMap()) {
+		t.Fatal("two scans of one table with structurally-equal flowedType must dedup (EqualsWithoutChildren)")
+	}
+}
+
+// TestFullUnorderedScan_FlowedTypeWildcard_RFC173Slice1 pins Fork B (Graefe's
+// ruling): the scan-leaf flowedType is non-discriminating when either side is
+// UnknownType, matching Java's AnyRecord-on-both-leaves invariant. A typed query
+// scan (RFC-173 Slice 1) must still subsume/dedup against an UnknownType
+// candidate scan over the same record types — names discriminate, not the leaf
+// type — and they must hash identically so they share a memo bucket. Two
+// CONCRETE, structurally-different types over the same names stay distinct
+// (query-side dedup preserved).
+func TestFullUnorderedScan_FlowedTypeWildcard_RFC173Slice1(t *testing.T) {
+	t.Parallel()
+	typed := func() values.Type {
+		return values.NewRecordType("", false, []values.Field{
+			{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "V", FieldType: values.UnknownType, Ordinal: 1},
+		})
+	}
+
+	typedScan := NewFullUnorderedScanExpression([]string{"T"}, typed())
+	untypedScan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+
+	// Wildcard match: typed query scan vs UnknownType candidate scan (same names).
+	if !typedScan.EqualsWithoutChildren(untypedScan, EmptyAliasMap()) {
+		t.Fatal("typed scan must match UnknownType scan over the same record types (Fork B wildcard)")
+	}
+	if !untypedScan.EqualsWithoutChildren(typedScan, EmptyAliasMap()) {
+		t.Fatal("wildcard match must be symmetric")
+	}
+	// Same bucket: hash must be names-only so the wildcard match can even fire.
+	if typedScan.HashCodeWithoutChildren() != untypedScan.HashCodeWithoutChildren() {
+		t.Fatal("typed and untyped scans over the same types must hash identically (names-only hash)")
+	}
+
+	// Different record-type NAMES never match, regardless of leaf type.
+	if typedScan.EqualsWithoutChildren(
+		NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType), EmptyAliasMap()) {
+		t.Fatal("scans over different record types must not match even when one is UnknownType")
+	}
+
+	// Two CONCRETE structurally-different types over the same names stay distinct
+	// (both non-UnknownType → structural compare → query-side dedup preserved).
+	otherType := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+	})
+	if typedScan.EqualsWithoutChildren(
+		NewFullUnorderedScanExpression([]string{"T"}, otherType), EmptyAliasMap()) {
+		t.Fatal("two concrete, structurally-different scan types must NOT match (structural dedup)")
+	}
+}
+
 func TestFullUnorderedScan_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	s1 := NewFullUnorderedScanExpression([]string{"Order", "Customer"}, values.UnknownType)
