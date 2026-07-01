@@ -113,14 +113,16 @@ Current state: 46 test targets, 639+ SQL tests passing, 270 yamsql scenarios, 50
 > - **[~] PLAN-NONDETERMINISM (medium, flaky plans / cache churn) — RFC-167; Phase 0 + 1a done, rest designed.**
 >   Phase 1a (inner-aware shell hash, `exprConcreteHash` in `costExprHash`) FIXES the headline multi-equality tie
 >   (`a=5 AND b=7 AND c=9`), deterministic in-process AND cross-process, as pure tie-resolution (no plan change).
->   Decoupled finding: the guard-generalization + Phase-4 ordering-gate (which re-rank to the Intersection) are a
->   separate landing needing the full ordering machinery + 1M stress (a crude gate breaks vector cases; see RFC-167
->   §4 IMPLEMENTATION FINDING). **Phase 4 is BLOCKED on RFC-167 OQ#6:** both a crude and a proper per-leg pk-order
->   gate were tried and reverted — they correctly drop the value-range leg but ALSO drop the vector leg of a
->   partition-inequality vector intersection (its HintRichOrdering is distance-rank, not pk), making the query
->   unplannable. The correct gate must follow Java's `enumerateSatisfyingComparisonKeyValues` (per-candidate-type
->   participation) + resolve whether the vector leg actually arrives pk-ordered at the merge. Confirm OQ#2 first
->   (is the value-range pk-merge even reachable / wrong-rows, or does MaximumCoverageMatches prevent it?).
+>   Decoupled finding: the guard-generalization + VALUE-RANGE ordering-gate (which re-rank value-range shells to the
+>   Intersection) are a separate landing needing the full ordering machinery + 1M stress (see RFC-167 §4 IMPLEMENTATION
+>   FINDING). **OQ#6 is RESOLVED and the vector half is DONE** (VECTOR-PARTITION-INTERSECTION-K>1 above, fixed): a
+>   vector scan is distance-ordered and can NEVER be a valid pk-keyed intersection leg, so it is excluded from the
+>   intersection candidate set entirely (one condition in `pushDataAccessTasks`) and its residual composes as a Filter
+>   above the un-intersected self-limiting scan. That removed the false conflation an earlier crude per-leg gate hit
+>   (dropping the vector leg is a TRUE positive, not a symptom of a bad gate). REMAINING (value-range only): whether a
+>   VALUE-RANGE pk-merge is even reachable / wrong-rows or MaximumCoverageMatches prevents it (OQ#2), and the general
+>   per-leg pk-order gate for value-range intersections following Java's `enumerateSatisfyingComparisonKeyValues`
+>   (per-candidate-type participation) — the RFC-167 Phase 1b landing, needing the full ordering machinery + 1M stress.
 >   Full design + verified root cause + phased plan in **`rfcs/167-cascades-plan-determinism.md`** (the deeper
 >   layer is the RFC-070 nil-inner-shell architecture defeating Java's prune-to-one-concrete-member + planHash
 >   tie-break; an orthogonal pk-intersector ordering bug — `intersector_primary_key.go` dropping requestedOrderings
