@@ -332,6 +332,24 @@ non-watch one), both fixed red→green:
 **Codex caught 18 real issues across 11 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out. **The watch area (rounds 11-14, 16, 17 = SIX) needs the restructure now.**
 
+**Round 18 — codex's 11th re-review found the multi-watch over-cancel** (P2, 7th watch round): the
+round-17 future `Cancel()` → `CancelWatches` (txn-wide) cancels UNRELATED watches; codex requires
+per-watch cancellation. This is the exact limitation documented on the round-17 fix. **There is no
+minimal patch — round 18 REQUIRES the per-watch-context restructure.**
+
+**DECISION: DEFERRED the restructure to a focused, separately-reviewed change → RFC-168.** Rationale:
+the fix is an 8-return signature restructure of `WatchSetup`/`WatchPoll` + the per-txn watch fields +
+the facade, touching the most-fragile area (7 rounds) with subtle survives-commit / race-free / map-
+cleanup semantics. Landing it at the end of a very long review session, WITHOUT a fresh review cycle,
+risks a watch-lifecycle regression worse than round-18's niche multi-watch over-cancel. I started the
+restructure (newWatchCtx + cancelWatches core), judged the signature ripple too risky to land safely
+here, and reverted cleanly to round-17. **RFC-168 has the complete design + test plan** for the
+follow-up. The round-18 over-cancel ships as a documented known limitation (multi-watch cancellation
+scope) pending that restructure — the only outstanding codex item.
+
+**Codex caught 19 real issues across 12 review rounds the persona reviewers missed** — critical-gate
+value, fully borne out.
+
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order
 
 ### Architectural / needs design (write an RFC, route through FDB-C-dev first)
