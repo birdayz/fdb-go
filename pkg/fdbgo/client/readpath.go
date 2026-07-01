@@ -1098,6 +1098,12 @@ func parseGetValueReply(data []byte) ([]byte, float64, error) {
 //
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
+// RFC-170 (#8) note: this SYNCHRONOUS client API registers the watch at the READ version — it blocks in
+// WatchPoll until the watch fires, so it cannot wait for a commit that (by construction) can only happen
+// AFTER it returns. The committed-version deferral (register post-commit) is done by the ASYNC fdb facade
+// Watch (which returns a future and blocks that future's goroutine on the commit-completion signal). Callers
+// of this sync API that need committed-version semantics must commit before/around the watch (C++
+// setupWatches' committedVersion>0?committedVersion:readVersion applies at the facade, not here).
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 	value, readVersion, span, watchCtx, watchCancel, err := tx.WatchSetup(ctx, key)
 	if err != nil {
