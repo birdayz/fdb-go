@@ -54,7 +54,11 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation) error {
 	proxiesChanged := tx.db.waitProxiesChanged()
 
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
-		marshalBufPool.Put(poolBuf)
+		// Do NOT return poolBuf to the pool on a SendFrame error: the frame may have been enqueued
+		// just before the connection ctx was cancelled (SendFrame's post-enqueue ctx.Done path,
+		// conn.go:454), leaving writeLoop still reading `body` inside WriteFrame. Reusing the pooled
+		// buffer now would race that read (audit #15). Drop it — GC reclaims it once writeLoop lets go.
+		// (The success-path Put below is safe: WriteFrame copied body before errCh fired.)
 		replyHandle.Cancel()
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()

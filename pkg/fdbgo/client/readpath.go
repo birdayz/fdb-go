@@ -287,7 +287,8 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			start := time.Now()
 
 			if err := conn.SendFrame(gkToken, reqData); err != nil {
-				getKeyBufPool.Put(bufp)
+				// SendFrame error: DROP bufp, don't Put — the frame may be enqueued with writeLoop
+				// still reading reqData in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
@@ -481,7 +482,8 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			start := time.Now()
 
 			if err := conn.SendFrame(server.Token, body); err != nil {
-				getValueBufPool.Put(poolBuf)
+				// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
+				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
@@ -579,7 +581,8 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	start := time.Now()
 
 	if err := conn.SendFrame(server.Token, body); err != nil {
-		getValueBufPool.Put(poolBuf)
+		// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
+		// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
 		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 		replyHandle.Cancel()
 		tx.db.handleConnError(server.Address)
@@ -853,7 +856,8 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			start := time.Now()
 
 			if err := conn.SendFrame(gkvToken, body); err != nil {
-				getKeyValuesBufPool.Put(poolBuf)
+				// SendFrame error: DROP poolBuf, don't Put — the frame may be enqueued with writeLoop
+				// still reading body in WriteFrame (conn.go:454 post-enqueue ctx.Done race, audit #15).
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()

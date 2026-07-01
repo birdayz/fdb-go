@@ -141,7 +141,20 @@ Also written: **RFC-169** (getKey isBackward shard-location, Draft — needs mul
   at API 510. Focused follow-up — wire-compat hard line says fix it, but no real app runs API<520.
 - **#22 sendGetValue fallback error-masking — UNCERTAIN, re-verify** before any change.
 
-## Precise recipe — #15 buffer-pool race (LOW, ROOT-CAUSED, ready for a focused change)
+## #15 buffer-pool race — FIXED (round 23)
+
+**Fixed:** the 5 SendFrame callers that owned a POOLED body and `Put` it back on the SendFrame ERROR
+path (commitpath.go commit + readpath.go getKey/getValue×2/getKeyValues) now DROP the buffer on error
+instead of Put-ting it — because SendFrame's post-enqueue `ctx.Done` return (conn.go:454) leaves
+`writeLoop` still reading `body` in WriteFrame, so returning it to the pool races a concurrent reuse.
+The success-path `Put` stays (WriteFrame copied body before errCh fired). The other SendFrame callers
+(coordinator/grv/locality/metrics) use fresh `MarshalFDB()` allocations (no pool), and the watch path
+Puts nothing on error — so those 5 were the whole exposure. Deterministic pin:
+`TestSendFrame_PostEnqueueCtxDone_TransportStillOwnsBody` (transport) proves the enqueued writeReq
+still references `body` after the error return (the contract the fix rests on); passes under `-race`.
+Conservative: at worst one un-pooled buffer per rare send-error.
+
+### Original recipe (for reference)
 
 `SendFrame` (`transport/conn.go:431`) has TWO return paths: (a) via `errCh` (line 451) — the
 writeLoop ran `WriteFrame`, which **copies `body` into `c.wbuf`**, so `body` is safe to reuse

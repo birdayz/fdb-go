@@ -27,6 +27,7 @@ go_test(
         "conn_unit_test.go",
         "ping_test.go",
         "reply_pool_test.go",
+        "sendframe_body_ownership_test.go",
         "tls_test.go",
         "transport_test.go",
         "wirelog_test.go",
