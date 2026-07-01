@@ -60,8 +60,14 @@ sign-off.
      (+ `auth_token` when supported).
    - **Non-persistent (clear to DB default on reset):** `readSystemKeys`, `writeSystemKeys`,
      `rywDisabled`, `bypassUnreadable`, `lockAware`, `readLockAware`, `sizeLimit`, `priority`,
-     `causalReadRisky`, `snapshotRYWDisableCount`. (`tenantId` is set at construction, not an
-     option — keep; `tags` — confirm: C++ keeps tags across retries per the existing comment.)
+     `causalReadRisky`, `snapshotRYWDisableCount`, **and `tags` / `readTags`**. (`tenantId` is set at
+     construction, not an option — keep.)
+   - **CORRECTION (was backwards in the earlier draft):** `tags` is NON-persistent and C++ **clears** it
+     on reset — `TransactionOptions::clear()` sets `tags = readTags = TagSet{}`
+     (`NativeAPI.actor.cpp:6131-6144`), and `tag` is marked non-persistent in `fdb.options` (only
+     `timeout`/`retry_limit`/`max_retry_delay`/`auth_token` are `persistent="true"`). So Go's
+     preservation of `tags` across reset/retry — and its `reset()` comment claiming "C++ keeps tags across
+     retries" — are THEMSELVES the divergence to FIX here, not to confirm.
 2. `reset()` resets the non-persistent fields to the values derived from `db.TransactionDefaults`
    (the Database-level defaults the client already tracks: `SetDefaultReadSystemKeys`,
    `SetTransactionTimeout`, `SetTransactionSizeLimit`, …), and re-applies the persistent DB
