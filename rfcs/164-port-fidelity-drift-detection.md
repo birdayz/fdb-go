@@ -260,9 +260,17 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   index-scan selection is itself a cost-tie (idx1↔idx2) that the Phase-1a `exprConcreteHash`
   tie-break resolves for the plain `a = 5` equality case but NOT through the InJoin inner path
   (~27/200 runs flip). Repro: `SELECT id FROM t WHERE a IN (1,2,3)` over two identical indexes
-  on `a`. Fix direction: extend the deterministic winner tie-break to the InJoin inner selection
-  (`physical_in_join_wrapper.go` / the InJoin implement rule) — same class as RFC-167 Phase 1b
-  comprehensive tie-resolution; the full IN-list Explain-stability seed is re-added once it lands.
+  on `a`. NARROWED (investigation): the flip is in the InJoin inner PLANNING, UPSTREAM of
+  extraction — routing `extractChildPlanFromQuantifier` through the cost winner
+  (`findBestPhysicalPlan`, PlanningCostModelLess #17 tie-break) instead of the first-yielded
+  member (`findPhysicalPlan`) did NOT fix it (~24/200 still flip), so the tie is unresolved during
+  planning, not at extraction. I.e. the CORRELATED-equality inner data-access (`a = <in-binding>`
+  over idx1/idx2) does not get the deterministic candidate-ordering / winner tie-break the
+  CONSTANT-equality path (`a = 5`, Phase 0/1a) does — the InJoin inner Reference's winner isn't
+  deterministically resolved. Fix direction: give the InJoin inner data-access winner the same
+  deterministic total-order tie-break (RFC-167 Phase 1b comprehensive tie-resolution; the RFC
+  warns this needs the full ordering machinery — a crude gate breaks vector/partition cases, so it
+  is deliberately deferred). The full IN-list Explain-stability seed is re-added once it lands.
   PRE-EXISTING LOOSENESS (flagged by Graefe + Torvalds, NOT introduced here, orthogonal): neither
   InJoin nor InUnion folds `inValues` into identity, the inner index scan compares only its
   `RangeType`, and InUnion additionally omits `comparisonKeys` from Equals/Hash — so `a IN (1,2,3)`
