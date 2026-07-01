@@ -527,37 +527,10 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		}
 	}
 	if result.err != nil {
-		// Hedge failed — fall back to remaining servers sequentially.
-		// A reply timeout from any arm (hedge or a fallback) is REMEMBERED but
-		// does NOT stop the scan: a later replica may be healthy, and one slow
-		// server must not pre-empt an available one (codex). Only a definitive
-		// wrong_shard/all_alternatives reply ends the scan (all alternatives
-		// share the shard assignment, so re-locating is the right response).
-		sawTimeout := isReplyTimeout(result.err)
-		for i, server := range servers {
-			if i == bestIdx || i == secondIdx {
-				continue // already tried
-			}
-			val, err := tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
-			if err == nil {
-				return val, nil
-			}
-			if isReplyTimeout(err) {
-				sawTimeout = true
-				continue // remember it, keep trying healthy replicas
-			}
-			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-				return nil, err
-			}
-		}
-		// No replica succeeded. Prefer surfacing the timeout (so getValue
-		// re-sends without a pointless cache invalidation — the location is
-		// fine, the servers were slow) over flattening to 1006; only a genuine
-		// no-reachable-server outcome flattens.
-		if sawTimeout {
-			return nil, errReplyTimeout
-		}
-		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		// Hedge failed — fall back to remaining servers sequentially (see resolveFallback).
+		return resolveFallback(result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
+			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId)
+		})
 	}
 
 	val, penalty, err := parseGetValueReply(result.body)
@@ -932,6 +905,57 @@ func isFutureVersionOrProcessBehind(err error) bool {
 		return false
 	}
 	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
+}
+
+// resolveFallback runs the sequential fallback after the speculative hedge fails: it tries every replica
+// not already attempted (bestIdx/secondIdx) via trySingle and returns the first real value. When none
+// succeeds it surfaces the most-specific remembered error, with precedence:
+//
+//	future_version / process_behind  >  reply-timeout  >  all_alternatives_failed
+//
+// The version-error precedence is the fix for finding #22: a future_version (1009) / process_behind
+// (1037) reply from a fallback replica is a DEFINITIVE, retryable condition that C++ getValue propagates
+// unchanged — its catch re-throws any error that is not wrong_shard_server / all_alternatives_failed
+// (NativeAPI.actor.cpp:3738, `throw e`). The old loop matched only timeout / wrong_shard / all_alternatives
+// and let a version error fall through: silently dropped, then flattened to errReplyTimeout (1007) or
+// all_alternatives_failed (1006), hiding a retryable condition behind a less-actionable code. Timeout
+// still does NOT stop the scan (a slow replica must not pre-empt a healthy one — codex); only
+// wrong_shard/all_alternatives ends it early (all replicas share the shard assignment, so re-locating is
+// the right response). hedgeErr seeds the remembered timeout from the hedge arm's own failure — a
+// transport error, never a reply-carried version error (those surface directly via parseGetValueReply on
+// the hedge success path, so they never reach here).
+func resolveFallback(hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
+	sawTimeout := isReplyTimeout(hedgeErr)
+	var versionErr error
+	for i, server := range servers {
+		if i == bestIdx || i == secondIdx {
+			continue // already tried by the hedge
+		}
+		val, err := trySingle(server)
+		if err == nil {
+			return val, nil
+		}
+		switch {
+		case isFutureVersionOrProcessBehind(err):
+			if versionErr == nil {
+				versionErr = err // remember, but keep trying — a later replica may still have the value
+			}
+		case isReplyTimeout(err):
+			sawTimeout = true // remember, keep scanning healthy replicas
+		case isWrongShardServer(err) || isAllAlternativesFailed(err):
+			return nil, err // definitive: all replicas share the shard assignment → re-locate
+		}
+	}
+	switch {
+	case versionErr != nil:
+		return nil, versionErr
+	case sawTimeout:
+		// Prefer the timeout (getValue re-sends without a pointless cache invalidation — the location
+		// is fine, the servers were slow) over flattening to all_alternatives_failed.
+		return nil, errReplyTimeout
+	default:
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	}
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, span types.SpanContext, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
