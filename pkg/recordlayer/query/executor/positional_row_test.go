@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -112,5 +115,39 @@ func TestPositionalRow_ShadowAssert_RFC173P2(t *testing.T) {
 	row.Set(1, "MALLORY")
 	if bad := shadowMismatch(row, m); bad != "NAME" {
 		t.Fatalf("shadow assert should catch divergence at NAME, got %q", bad)
+	}
+}
+
+// TestProtoToPositional_ShadowsMap_RFC173P2 pins the first real producer wiring:
+// protoToPositional (which FromStoredRecord emits for every scanned row) mirrors
+// protoToMap field-for-field — set fields carry the value, unset fields are NULL
+// on both sides — over a real proto message with a mix of set and unset fields.
+func TestProtoToPositional_ShadowsMap_RFC173P2(t *testing.T) {
+	t.Parallel()
+	msg := &gen.TypedRecord{
+		Id:        proto.Int64(7),
+		ValInt64:  proto.Int64(42),
+		ValString: proto.String("alice"),
+		ValBool:   proto.Bool(true),
+		// remaining fields unset -> SQL NULL on both sides
+	}
+	m := protoToMap(msg)
+	row := protoToPositional(msg)
+
+	// The scan's positional row shadow-agrees with its name-keyed map on every field.
+	if bad := shadowMismatch(row, m); bad != "" {
+		t.Fatalf("protoToPositional shadow mismatch on field %q", bad)
+	}
+	// A set field resolves positionally (via the name bridge).
+	if v, ok := row.GetByName("VAL_STRING"); !ok || v != "alice" {
+		t.Fatalf("GetByName(VAL_STRING) = (%v,%v), want (alice,true)", v, ok)
+	}
+	// An unset field is NULL, present as a nil slot (not absent) — the positional
+	// row is dense over the schema, unlike the sparse map.
+	if v, ok := row.GetByName("VAL_INT32"); !ok || v != nil {
+		t.Fatalf("unset VAL_INT32 = (%v,%v), want (nil,true)", v, ok)
+	}
+	if _, present := m["VAL_INT32"]; present {
+		t.Fatal("protoToMap should omit the unset VAL_INT32 key (sparse map)")
 	}
 }

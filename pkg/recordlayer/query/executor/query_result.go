@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // uuidProtoMessageName is the fully-qualified tuple_fields.UUID message that
@@ -23,7 +24,14 @@ const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 // (when the row originated from a scan), and an optional primary key.
 // Mirrors Java's QueryResult.
 type QueryResult struct {
-	Datum      any
+	Datum any
+	// Positional is the RFC-173 P2 ordinal-model sibling of Datum: the same row
+	// as a typed PositionalRow (field values indexed by ordinal). Emitted ALONGSIDE
+	// the name-keyed Datum during the dark/dual migration window; nil until a
+	// producer populates it (scans do, via FromStoredRecord). No consumer reads it
+	// yet — the name-keyed Datum stays authoritative until Slice 1+. A shadow test
+	// pins that it mirrors Datum field-for-field.
+	Positional *PositionalRow
 	Record     *recordlayer.FDBStoredRecord[proto.Message]
 	PrimaryKey tuple.Tuple
 	// Complete marks a computed/synthetic row whose Datum key set is
@@ -45,9 +53,37 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 	datum := protoToMap(rec.Record)
 	return QueryResult{
 		Datum:      datum,
+		Positional: protoToPositional(rec.Record),
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
 	}
+}
+
+// protoToPositional is the RFC-173 P2 ordinal-model counterpart of protoToMap: it
+// builds a PositionalRow from a proto message, one slot per descriptor field in
+// declaration order (the field's ordinal), with an UPPER-cased field name and a
+// dark UnknownType (P2 shadows VALUES, not types — type refinement comes when the
+// ordinal model becomes authoritative). An unset field is a nil slot — matching
+// protoToMap omitting the key (SQL NULL) — so the positional row and the map agree
+// field-for-field (pinned by the shadow test). Emitted alongside the name-keyed
+// map; nothing reads it yet.
+func protoToPositional(msg proto.Message) *PositionalRow {
+	if msg == nil {
+		return nil
+	}
+	refl := msg.ProtoReflect()
+	fields := refl.Descriptor().Fields()
+	n := fields.Len()
+	rtFields := make([]values.Field, n)
+	slots := make([]any, n)
+	for i := 0; i < n; i++ {
+		fd := fields.Get(i)
+		rtFields[i] = values.Field{Name: strings.ToUpper(string(fd.Name())), FieldType: values.UnknownType, Ordinal: i}
+		if refl.Has(fd) {
+			slots[i] = protoFieldToGo(fd, refl.Get(fd))
+		}
+	}
+	return &PositionalRow{Type: values.NewRecordType("", false, rtFields), Slots: slots}
 }
 
 // protoToMap converts a proto.Message to map[string]any with
