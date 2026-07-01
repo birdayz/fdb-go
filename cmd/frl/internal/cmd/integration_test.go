@@ -794,3 +794,19 @@ func TestIntegration_RecordCount_JSON(t *testing.T) {
 		t.Errorf("JSON output missing expected count value (3):\n%s", out)
 	}
 }
+
+// --keyspace-tuple addresses the fixture store by its typed tuple path —
+// the escape hatch for keyspaces the slash-path syntax can't express
+// (RFC-174 §3.1). Same store, third addressing mode.
+func TestIntegration_KeyspaceTuple_AddressesFixtureStore(t *testing.T) {
+	bindConfig(t)
+	out, err := runCmd(t, "record", "scan", "--limit", "1",
+		"--keyspace-tuple", `["frl", "integration"]`,
+		"--meta-file", fixture.metaFilePath)
+	if err != nil {
+		t.Fatalf("record scan --keyspace-tuple: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+}

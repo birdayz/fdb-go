@@ -1,12 +1,11 @@
-# frl demo — stand up a working cluster in 5 steps
+# frl demo — stand up a working cluster in 4 steps
 
-A minimal end-to-end demo of `frl meta catalog` and `frl sql` against a
-real relational cluster. Bootstraps FDB in Docker, creates one
-database / schema / template, seeds 1 000 rows into an `orders`
-table, and walks through the commands worth trying first.
+A minimal end-to-end demo of `frl meta catalog`, `frl sql`, and layered
+addressing against a real relational cluster. Bootstraps FDB in Docker,
+creates one database / schema / template, seeds 1 000 rows into an
+`orders` table, and walks through the commands worth trying first.
 
-Everything here is read-only + demo data — nothing to roll back on the
-cluster, just `docker rm -f` when you're done.
+Everything here is demo data — `frl fdb down` when you're done.
 
 ## Prerequisites
 
@@ -18,30 +17,12 @@ cluster, just `docker rm -f` when you're done.
 
 ### 1. Start a single-node FDB cluster
 
-```sh
-docker run -d --name frl-demo --network host foundationdb/foundationdb:7.3.77
-sleep 3
-docker exec frl-demo fdbcli --exec 'configure new single memory'
-```
-
-Wait a couple seconds until `docker exec frl-demo fdbcli --exec 'status minimal'`
-says `The database is available.`
-
-### 2. Grab the cluster file + point frl at it
+One command — starts the container, configures it, writes and activates
+a frl context (progress on stderr; stdout is the cluster-file path,
+which you can also chain via `--cluster-file $(frl fdb up)`):
 
 ```sh
-mkdir -p /tmp/frl-demo
-docker cp frl-demo:/var/fdb/fdb.cluster /tmp/frl-demo/fdb.cluster
-
-cat > /tmp/frl-demo/config.yaml <<EOF
-current_context: demo
-contexts:
-  - name: demo
-    cluster_file: /tmp/frl-demo/fdb.cluster
-    keyspace_path: /unused  # unused — meta catalog + sql target /__SYS/CATALOG
-EOF
-
-export FRL_CONFIG=/tmp/frl-demo/config.yaml
+go run ./cmd/frl fdb up --name frl-demo --context frl-demo
 ```
 
 Smoke check:
@@ -50,7 +31,7 @@ Smoke check:
 go run ./cmd/frl tx read-version       # prints the current GRV
 ```
 
-### 3. Bootstrap the schema
+### 2. Bootstrap the schema
 
 ```sh
 go run ./cmd/frl sql --database /demo -f cmd/frl/demo/schema.sql
@@ -59,7 +40,7 @@ go run ./cmd/frl sql --database /demo -f cmd/frl/demo/schema.sql
 Creates `/demo`, template `orders_tpl` with one table `orders (order_id BIGINT,
 customer STRING, price DOUBLE)`, and binds `/demo/main` to that template.
 
-### 4. Load 1 000 rows
+### 3. Load 1 000 rows
 
 ```sh
 go run ./cmd/frl sql --database /demo --schema main -f cmd/frl/demo/seed.sql
@@ -69,7 +50,7 @@ Should print 10 × `OK (100 rows affected, …)` — the seed file is ten
 INSERT batches of 100 rows each, deterministic (`srand(42)`), rerunnable
 (the first line `DELETE FROM orders WHERE order_id >= 0` wipes prior state).
 
-### 5. Poke around
+### 4. Poke around
 
 ```sh
 # catalog discovery — no operator config needed beyond the cluster file
@@ -96,13 +77,19 @@ go run ./cmd/frl sql --database /demo --schema main
 # > INSERT ...;
 # > ROLLBACK;       — or COMMIT
 # > \q              — quit (also Ctrl-D)
+
+# Layered addressing — the record-layer x-ray on the SAME store the SQL
+# rows live in (keyspace + metadata resolved from the catalog):
+go run ./cmd/frl record scan  --database /demo --schema main --limit 3
+go run ./cmd/frl record get 1,1 --database /demo --schema main
+go run ./cmd/frl store info   --database /demo --schema main
+go run ./cmd/frl store dump   --database /demo --schema main --limit 20
 ```
 
 ## Tear down
 
 ```sh
-docker rm -f frl-demo
-rm -rf /tmp/frl-demo
+go run ./cmd/frl fdb down --name frl-demo
 ```
 
 ## What's actually in here
@@ -121,7 +108,7 @@ run the generator script in the commit that added this file (or:
 open the file, it's 10 almost-identical `INSERT INTO orders VALUES (...)`
 blocks; dup them).
 
-## Sanity-check expectations after step 4
+## Sanity-check expectations after step 3
 
 - `meta catalog databases` → shows `/__SYS` and `/demo`
 - `meta catalog schemas` → shows `/__SYS/CATALOG` and `/demo/main`

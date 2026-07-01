@@ -11,6 +11,7 @@ go_library(
         "index_describe.go",
         "index_scan.go",
         "keyspace.go",
+        "keyspace_tuple.go",
         "meta.go",
         "meta_catalog.go",
         "meta_diff.go",
@@ -49,6 +50,7 @@ go_library(
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/structpb",
     ],
 )
 
@@ -64,6 +66,7 @@ go_test(
         "index_test.go",
         "integration_test.go",
         "keyspace_test.go",
+        "keyspace_tuple_test.go",
         "meta_catalog_test.go",
         "meta_diff_test.go",
         "meta_test.go",
@@ -89,5 +92,6 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/structpb",
     ],
 )

@@ -101,16 +101,24 @@ frl tx read-version [-o json]                # current GRV (cluster smoke check)
 frl version [--short] [-o json]              # binary + Go toolchain version
 ```
 
-## Flags (current v1 surface)
+## Flags (shared surface)
 
 ```
---context <name>        # on all store-touching commands
---meta-file <path>      # overrides Context.metadata for this call
---no-fdb                # index ls only — metadata-only render
---reverse               # record scan, index scan — walk in reverse PK / key order
---subspace <label>      # store dump only — limit to one subspace
--o|--output text|json   # structured-output commands (see below)
+--context <name>          # on all store-touching commands
+--meta-file <path>        # overrides Context.metadata for this call
+--database + --schema     # relational addressing: keyspace + metadata from
+                          #   the catalog (schema-pinned template version)
+--cluster-file <path>     # overrides Context.cluster_file; chains with
+                          #   `frl sql --cluster-file $(frl fdb up) …`
+--keyspace-tuple <json>   # typed keyspace, e.g. '["myapp", 42, {"uuid": "…"}]'
+--no-fdb                  # index ls only — metadata-only render
+--reverse                 # record scan, index scan — walk in reverse PK / key order
+--subspace <label>        # store dump only — limit to one subspace
+-o|--output text|json     # structured-output commands (see below)
 ```
+
+Contexts support the same addressing modes: set exactly one of
+`keyspace_path`, `keyspace_tuple`, or `database` + `schema`.
 
 ## Structured output (`-o json`)
 

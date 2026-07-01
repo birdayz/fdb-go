@@ -12,6 +12,7 @@ import (
 	"fdb.dev/cmd/frl/internal/config"
 	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -26,11 +27,12 @@ import (
 // The modes are mutually exclusive per invocation; --database/--schema
 // override the context's keyspace_path + metadata entirely.
 type storeAddressFlags struct {
-	contextName string
-	metaFile    string
-	database    string
-	schema      string
-	clusterFile string
+	contextName   string
+	metaFile      string
+	database      string
+	schema        string
+	clusterFile   string
+	keyspaceTuple string // JSON array (--keyspace-tuple)
 }
 
 // register declares the flags on c. withMetaFile is false for commands
@@ -43,6 +45,7 @@ func (f *storeAddressFlags) register(c *cobra.Command, withMetaFile bool) {
 	c.Flags().StringVar(&f.database, "database", "", "relational database URI (with --schema; overrides keyspace_path)")
 	c.Flags().StringVar(&f.schema, "schema", "", "relational schema name (with --database)")
 	c.Flags().StringVar(&f.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
+	c.Flags().StringVar(&f.keyspaceTuple, "keyspace-tuple", "", `typed keyspace as a JSON array, e.g. '["myapp", 42, {"uuid": "…"}]'`)
 }
 
 // relational reports whether the relational addressing mode is active.
@@ -51,13 +54,17 @@ func (f *storeAddressFlags) relational() bool {
 }
 
 // validate enforces the mode rules: --database and --schema come as a
-// pair, and don't mix with --meta-file (two competing metadata sources).
+// pair, don't mix with --meta-file (two competing metadata sources) or
+// --keyspace-tuple (two competing keyspaces).
 func (f *storeAddressFlags) validate() error {
 	if (f.database == "") != (f.schema == "") {
 		return fmt.Errorf("relational addressing needs both flags — pass --database AND --schema")
 	}
 	if f.relational() && f.metaFile != "" {
 		return fmt.Errorf("conflicting metadata sources: --meta-file cannot be combined with --database/--schema (the catalog is the metadata source for relational stores)")
+	}
+	if f.relational() && f.keyspaceTuple != "" {
+		return fmt.Errorf("conflicting keyspaces: --keyspace-tuple cannot be combined with --database/--schema")
 	}
 	return nil
 }
@@ -87,13 +94,61 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 		}
 		cfgCtx = &configv1.Context{Name: "(cli-flag)"}
 	}
-	return &storeTarget{
+	if err := validateContextAddressing(cfgCtx); err != nil {
+		return nil, err
+	}
+	target := &storeTarget{
 		cfgCtx:          cfgCtx,
 		metaFile:        f.metaFile,
 		database:        f.database,
 		schema:          f.schema,
 		clusterFileFlag: f.clusterFile,
-	}, nil
+	}
+	if f.keyspaceTuple != "" {
+		t, err := tupleFromJSON(f.keyspaceTuple)
+		if err != nil {
+			return nil, err
+		}
+		target.keyspaceTuple = t
+	}
+	// Adopt the context's addressing when no flag overrides it: a
+	// context may carry database/schema (relational) or keyspace_tuple
+	// (typed path) instead of keyspace_path.
+	if !target.relational() && target.metaFile == "" && target.keyspaceTuple == nil {
+		if cfgCtx.GetDatabase() != "" {
+			target.database = cfgCtx.GetDatabase()
+			target.schema = cfgCtx.GetSchema()
+		} else if cfgCtx.GetKeyspaceTuple() != nil {
+			t, err := tupleFromListValue(cfgCtx.GetKeyspaceTuple())
+			if err != nil {
+				return nil, fmt.Errorf("context %q keyspace_tuple: %w", cfgCtx.GetName(), err)
+			}
+			target.keyspaceTuple = t
+		}
+	}
+	return target, nil
+}
+
+// validateContextAddressing enforces that a context declares exactly one
+// addressing mode: keyspace_path, keyspace_tuple, or database+schema.
+func validateContextAddressing(cfgCtx *configv1.Context) error {
+	if (cfgCtx.GetDatabase() == "") != (cfgCtx.GetSchema() == "") {
+		return fmt.Errorf("context %q sets only one of database/schema — they come as a pair", cfgCtx.GetName())
+	}
+	modes := 0
+	if cfgCtx.GetKeyspacePath() != "" {
+		modes++
+	}
+	if cfgCtx.GetKeyspaceTuple() != nil {
+		modes++
+	}
+	if cfgCtx.GetDatabase() != "" {
+		modes++
+	}
+	if modes > 1 {
+		return fmt.Errorf("context %q is ambiguous — set exactly one of keyspace_path, keyspace_tuple, or database+schema", cfgCtx.GetName())
+	}
+	return nil
 }
 
 // storeTarget is a fully-resolved store address: the config context
@@ -105,6 +160,7 @@ type storeTarget struct {
 	database        string
 	schema          string
 	clusterFileFlag string
+	keyspaceTuple   tuple.Tuple // typed keyspace (flag or context); nil → keyspace_path
 }
 
 func (t *storeTarget) relational() bool { return t.database != "" }
@@ -131,6 +187,9 @@ func (t *storeTarget) describe() string {
 func (t *storeTarget) subspace() (subspace.Subspace, error) {
 	if t.relational() {
 		return relationalStoreSubspace(t.database, t.schema)
+	}
+	if t.keyspaceTuple != nil {
+		return subspaceFromTuple(t.keyspaceTuple), nil
 	}
 	if t.cfgCtx.GetKeyspacePath() == "" {
 		return nil, fmt.Errorf("context %q has empty keyspace_path", t.cfgCtx.GetName())
