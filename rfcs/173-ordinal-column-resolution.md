@@ -1,6 +1,7 @@
 # RFC-173: Migrate join column resolution from name-based `AnchoredJoin` to Java's ordinal/group model
 
-**Status:** Draft — proposal for gauntlet review (Graefe + Torvalds + codex-review + @claude).
+**Status:** RFC-ACK COMPLETE — all four acked (Graefe ✅ · Torvalds ✅ · codex ✅ · @claude ✅; see
+§10 review log). Implementation may begin; each staged PR re-acked on its own HEAD.
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
@@ -131,7 +132,7 @@ shadow-built precursors proven first**, not a big-bang.
 
 ---
 
-## 4. Staged plan — 3 dark precursors + 6 slices (all on this one PR)
+## 4. Staged plan — 3 dark precursors + 6 slices (staged merged PRs, one RFC)
 
 Each precursor/slice ships green and is independently reviewable. Precursors ship **dark**
 (computed but non-authoritative) and are certified by **execution-based pins** (see §5 — the
@@ -356,7 +357,11 @@ then deleting it in Slice 5. At most one of those was right; the destination say
    correlations; gates the hard core.
 5. **Long dual-representation window** (P2 → Slice 4): the executor materializes both a name map
    and a positional row — real perf/memory overhead and a maintenance hazard **if parked
-   mid-flight**. This one PR must be driven to at least Slice 4 once P2 lands.
+   mid-flight**. With staged merged PRs this window lives **on master across several merged PRs**
+   (P2 through Slice 4), not on a side branch — that is the real, disclosed cost of incremental
+   merge: bounded (P2 measures + bounds the dual-emission overhead) and time-boxed (the P2→Slice 4
+   run must not stall — treat a parked dual-rep window on master as a release blocker), but it is
+   overhead carried in production code for the duration, stated plainly.
 
 ---
 
@@ -377,15 +382,13 @@ migration — it is not.)
 Query-engine change: Graefe-gated on BOTH the RFC and the implementation. This section tracks the
 RFC-level ack; each impl slice re-requests after its commit (an ack only covers the HEAD it saw).
 
-- [ ] **Graefe** — Cascades/Java-fidelity: is the ordinal/group destination and the 9-slice
-  staging (esp. the atomic Slice 3 boundary and the Slice 3/5 delete-not-port resolution in §6)
-  correct against Java 4.12.11.0?
-- [ ] **Torvalds** — is the staging real (each slice ships green, no parked dual-rep window), and
-  is the validation strategy (§5, execution pins not dark diffs) sound rather than ceremony?
-- [ ] **codex-review** (`codex review --base master`) — RFC self-consistency, missed coupling
-  sites, under-scoped slices.
-- [ ] **@claude** — cross-check the extension inventory (§6): any Go-only extension on a
-  name-resolution dependency not listed here.
+- [x] **Graefe** — ACK (ordinal/group destination + 9-slice staging + delete-not-port verified
+  against Java 4.12.11.0; ordering-propagation pin added per his condition).
+- [x] **Torvalds** — ACK (staging split real, §5 execution pins sound, both Go-only invariant
+  designs implementable; stale "one PR" phrasings fixed).
+- [x] **codex-review** — clean (doc-only, no defects).
+- [x] **@claude** — ACK ("sound migration plan"; caught RFC-088 groupby-over-join + 2 citations,
+  all folded in).
 
 **Acceptance for the RFC ack:** all four acked with no outstanding NAK, and §5's per-slice
 execution pins are agreed as the certification mechanism (replacing the discredited dark-diff
@@ -419,5 +422,15 @@ re-acked as they go.
 
 **Round 2 (RFC v3):** packaging adopted as staged merged PRs; Round-1 items (ordering pin, Go-only
 invariant designs, clock/paths) addressed. **Round 3 (RFC v4):** @claude fold-ins done (RFC-088
-groupby-over-join pin; two citation fixes). Re-requesting **Torvalds** (his condition met) as the
-last open ack. RFC-ack = all four ACK on this HEAD.
+groupby-over-join pin; two citation fixes).
+
+**Round 4 (RFC v5) — RFC-ACK COMPLETE (all four):**
+- **Graefe ✅ ACK** (ordering pin met) · **codex ✅ clean** · **@claude ✅ "sound"** (gap + citations
+  folded in) · **Torvalds ✅ ACK** — verified every §6 citation against live code, confirmed the
+  packaging split is real (not cosmetic) and both invariant designs are implementable. His two
+  must-fix doc defects (stale "one PR" phrasing in §4 header + risk #5) → **fixed** this revision;
+  risk #5 now states plainly that the dual-rep window lives on master across the merged precursor
+  PRs.
+
+**Gate satisfied.** Implementation may begin: **precursor P1** (ordinal `FieldPath` on `FieldValue`,
+dark/dual-mode) as the first staged merged PR, re-acked on its own HEAD.
