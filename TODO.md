@@ -47,8 +47,22 @@ validation gate.
   member-count-delta (the pin the spike omitted); (iii) certify no CTE-rename NULL-read via §5
   execution pins + RFC-077 task-count baseline (safety is flip-live-gated, un-shadowable). Full
   analysis banked in RFC §4 P3.
-- [ ] Slice 1 non-join ordinal · [ ] **Slice 2 2-way wedge**
-  (builds `appendNullLeg` + join-producer positional dual-emission) ·
+- [~] **Slice 1 non-join ordinal** (branch `feat/rfc173-slice1-ordinal-nonjoin`):
+  - [x] Step 1 — type the scan quantifier + names-only scan match (Fork B), committed `d42220b2a`,
+    all 53 targets green, Graefe design-ACK + fork-ruling. Fixed latent `GetResultValue` flowedType
+    discard. Still DARK (resolveOrdinal has zero authoritative callers). See RFC §4 Slice 1 Step 1.
+  - [ ] Step 2 — Evaluate ordinal read path (`values.OrdinalRow` interface, NO name-fallback, loud
+    error on `!ok`) + flip the non-join producers to flow `PositionalRow` authoritatively + fix the
+    `executeMap` Positional-drop gap (`executor_new_plans.go:448`).
+  - [ ] §5 pins: CTE-rename preserve (`TestFDB_CTEChainedColumnAliases` etc. green under ordinal),
+    ordering pin (no spurious sort on index-ordered scan), P2 projection e2e shadow + dual-emission
+    benchmark (P2 carry-forward), P1 absent-field → loud internal error (P1 carry-forward, per Graefe
+    NOT SemanticException).
+  - [ ] Slice 1 impl gauntlet (Graefe + Torvalds + codex + @claude) → PR.
+- [ ] **Slice 2 2-way wedge**
+  (builds `appendNullLeg` + join-producer positional dual-emission; commits to eager
+  `FieldValue.ofOrdinalNumber` baking — lazy resolveOrdinal is sound ONLY on the non-join frontier,
+  RFC §4 Slice 1 load-bearing invariant) ·
   [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning**) · [ ] Slice 4 retire `AnchoredJoin` ·
   [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
 

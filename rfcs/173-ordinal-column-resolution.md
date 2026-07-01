@@ -196,6 +196,39 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   map on that frontier. `AnchoredJoin` untouched. Reuse the inverted `producesMergedRows` test to
   find the safe frontier. Verify `UNION`/set-op (already positional,
   `remapUnionColumnsByPosition`) rides the ordinal row unchanged.
+  - **Step 1 — type the scan quantifier (DONE, dark).** `translateScan` types the base-table scan
+    leaf with the table's canonical `RecordType` (`tableColumns`: proto-descriptor order, UPPER
+    names — the same order/case `protoToPositional` gives the runtime row, so a plan-time ordinal
+    matches the runtime slot by construction). Fixes a latent bug (`GetResultValue` discarded its own
+    `flowedType`). **Scan-leaf match reconciliation (Graefe fork ruling — Fork B):** Java flows
+    `Type.AnyRecord` (a constant TOP type) on BOTH the query scan (`RelationalExpression.
+    fromRecordQuery`) and the candidate scan (`ExpansionVisitor.createBaseRef`); the concrete record
+    type rides a `TypeFilter` ABOVE the scan, never the leaf, so `equalsWithoutChildren`'s flowedType
+    term is inert (`AnyRecord==AnyRecord`) and **recordTypes names discriminate**. Go's `UnknownType`
+    is the `AnyRecord` analog. Typing the query leaf broke that symmetry (concrete type on one leaf,
+    `UnknownType` on the candidate → subsumption failed → full scan). Fix: `FullUnorderedScan.
+    EqualsWithoutChildren` wildcards the flowedType term when either side is `UnknownType` (top
+    subsumes concrete — the subsumption direction); two concrete types still compare structurally
+    (query-side dedup preserved); hash stays names-only. **Fork A (concretely type both leaves) was
+    REJECTED**: anti-Java, and makes index selection depend on two independently-built RecordTypes
+    being byte-identical (drift → silent full scan, green CI, latent planner bug).
+  - **Step 2 — Evaluate ordinal read path + producer flip (TODO).** `FieldValue.Evaluate` resolves
+    via ordinal against the runtime `PositionalRow` on the `!producesMergedRows` frontier; the
+    non-join producers (scan/filter/projection/sort) flow the `PositionalRow` authoritatively. Per
+    Graefe: **NO name-map fallback on the authoritative frontier** (authority + silent fallback = a
+    resolution bug never surfaces); a runtime resolveOrdinal `!ok` is a **loud internal error** (a
+    malformed plan — 42703 is caught at plan time), NOT a `SemanticException`.
+  - **LOAD-BEARING INVARIANT (Graefe, required):** lazy resolveOrdinal-at-eval is semantically
+    identical to Java's eager plan-time ordinal baking **only because nothing re-types the
+    passed-through base record on the non-join frontier**. This invariant MUST hold; the moment a
+    rule can re-type a `FieldValue`'s child between plan-finalize and eval (joins), lazy is unsafe.
+    **Slices 2–3 commit to eager `FieldValue.ofOrdinalNumber` baking** for merged result values,
+    where the RFC already uses it — do not extend lazy resolution past the non-join frontier.
+  - **Faithful end state (Graefe, later slice, non-blocking):** the fully Java-faithful shape is
+    `AnyRecord` on the scan leaf + concrete type on a `LogicalTypeFilterExpression` ABOVE it (as Java
+    does), not a concrete type on the leaf. Slice 1 types the leaf directly as a pragmatic shortcut;
+    Fork B is the correct reconciliation with that choice. A later slice may migrate to
+    AnyRecord+TypeFilter if the leaf-typing shortcut ever costs more than it saves.
 - **Slice 2 — 2-way join ordinal output (the wedge)** (~2 shifts). A 2-way join has exactly one
   bipartition, so `NewReEnumerationAnchoredRecord` **never fires** — only the seed matters
   (verified: `rule_partition_select.go:48` returns on <3 quantifiers; outer joins are always
