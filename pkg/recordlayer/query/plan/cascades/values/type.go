@@ -313,9 +313,12 @@ type Field struct {
 	// FieldType is the field's type. Never nil — anonymous /
 	// untyped fields use UnknownType.
 	FieldType Type
-	// Ordinal is the field's declared position (0-based). Two fields
-	// with the same Name but different Ordinals are distinct fields
-	// (same as Java's Record.Field.fieldIndex).
+	// Ordinal is the field's position in the record (0-based). It is the
+	// Java *ordinal* (Type.Record.computeFieldNameToOrdinal = list position),
+	// NOT the protobuf fieldIndex/tag. NewRecordType normalizes Ordinal to the
+	// slice position, so Fields[i].Ordinal == i; ordinal resolution reads the
+	// slice position directly (RecordType.FieldIndex) for soundness even on a
+	// raw RecordType. Anonymous fields share Name="" but have distinct Ordinals.
 	Ordinal int
 }
 
@@ -373,6 +376,15 @@ func NewRecordType(name string, nullable bool, fields []Field) *RecordType {
 			}
 			seenNames[f.Name] = struct{}{}
 		}
+		// RFC-173: a record's fields are positionally indexed — Field.Ordinal is
+		// the field's slice position, matching Java's Record (ordinal == index) and
+		// keeping GetField(ordinal) consistent with the declared Ordinal. Every prod
+		// construction site already sets Ordinal to the slice position (audited); we
+		// normalise here so the ordinal-resolution substrate (FieldValue.resolveOrdinal)
+		// is SOUND by construction — ordinal access can never read a different field
+		// than name access. A caller that passed a divergent Ordinal is corrected, not
+		// silently trusted.
+		f.Ordinal = i
 		out[i] = f
 	}
 	return &RecordType{
@@ -457,6 +469,25 @@ func (r *RecordType) LookupField(name string) (Field, bool) {
 		}
 	}
 	return Field{}, false
+}
+
+// FieldIndex returns the SLICE POSITION of the field named `name` plus a found
+// flag. This is the field's sound ordinal — mirroring Java's ordinal, which
+// Type.Record.computeFieldNameToOrdinal builds as the field's LIST POSITION
+// (IntStream.range + identity), not the protobuf fieldIndex. Unlike reading a
+// stored Field.Ordinal, position is correct even for a raw RecordType that was
+// built without NewRecordType's normalization (RFC-173 P1 review). Empty name
+// never matches (anonymous fields aren't addressable by name).
+func (r *RecordType) FieldIndex(name string) (int, bool) {
+	if name == "" {
+		return 0, false
+	}
+	for i, f := range r.Fields {
+		if f.Name == name {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // GetField returns the field at the given ordinal plus a found flag.

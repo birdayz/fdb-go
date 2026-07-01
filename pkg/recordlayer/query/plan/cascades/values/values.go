@@ -324,6 +324,34 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 	return nil
 }
 
+// resolveOrdinal returns the 0-based ordinal of f.Field within the record type
+// f.Child flows, mirroring Java's FieldValue.resolveFieldPath (name -> ordinal
+// against the input Type, FieldValue.java:273). Returns (ordinal, true) when
+// f.Child flows a RecordType containing f.Field; (0, false) for a nil-Child
+// leaf, a non-record child, or an absent/anonymous field.
+//
+// RFC-173 P1: the ordinal substrate for the name -> ordinal column-resolution
+// migration (retiring the name-based AnchoredJoin model). It is DARK — computed
+// but NOT authoritative; the name-lookup path in Evaluate stays the source of
+// truth until P2 provides a positional runtime row and P1's dual-mode assert has
+// proven the ordinal path agrees. Side-effect-free, so computing it can never
+// perturb planning. The nil-Child leaf (legacy flat field, no child type to
+// resolve against) is the case that stays on the name path — see RFC-173 §4 P1.
+func (f *FieldValue) resolveOrdinal() (int, bool) {
+	if f.Child == nil {
+		return 0, false
+	}
+	rt, ok := f.Child.Type().(*RecordType)
+	if !ok {
+		return 0, false
+	}
+	// Return the field's SLICE POSITION (FieldIndex), not a stored Field.Ordinal —
+	// position IS the Java ordinal (Type.Record.computeFieldNameToOrdinal is list
+	// position), and it is sound even for a raw RecordType that bypassed
+	// NewRecordType's normalization (RFC-173 P1 review: Torvalds/Graefe converged).
+	return rt.FieldIndex(f.Field)
+}
+
 // NewFieldValue constructs a FieldValue with a child (base) value.
 // Mirrors Java's FieldValue(childValue, FieldPath).
 func NewFieldValue(child Value, field string, typ Type) *FieldValue {
