@@ -1085,11 +1085,20 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
 	}
 
-	// transaction_cancelled (1025) out-ranks watch-setup work: check cancellation BEFORE charging the
-	// cap, so a Watch() on an already-Cancel()ed transaction returns 1025, NOT too_many_watches (1032)
-	// when MAX_WATCHES is 0/full (codex). Matches the contract that a cancelled txn rejects new work.
+	// Every TERMINAL setup error must out-rank the cap: a doomed watch must surface its real error,
+	// not have a full/0 cap mask it with too_many_watches (1032) (codex). These are the same checks
+	// ensureReadVersion/mapTimeout would make (just moved ahead of the acquire), in mapTimeout's
+	// precedence — txn-cancelled (1025), then the caller's own ctx cancellation/deadline, then the
+	// txn SetTimeout (1031). Ordering matches mapTimeout: a done caller ctx returns the caller's error
+	// rather than 1031 (transaction.go:107-116).
 	if cerr := tx.checkCancelled(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, cerr // transaction_cancelled (1025)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, 0, types.SpanContext{}, nil, cerr // caller ctx already cancelled / past its deadline
+	}
+	if terr := tx.checkTimeout(); terr != nil {
+		return nil, 0, types.SpanContext{}, nil, terr // transaction_timed_out (1031)
 	}
 
 	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++

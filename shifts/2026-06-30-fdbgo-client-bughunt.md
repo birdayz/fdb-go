@@ -270,7 +270,25 @@ whole class (failed/cancelled-watch cross-poisoning, concurrent-setup clear race
 focused redesign (risk: it underpins the round-4/7 watch-race fix); flagged for the next watch-area
 change. If codex round 14 surfaces another watch-ctx edge, do the redesign.
 
-**Codex caught 12 real issues across 7 review rounds the persona reviewers missed** — critical-gate
+**Round 14 — codex's 7th `--supersede` re-review found one more** (P2, watch-area again — 4th round):
+the slot acquire ran before the caller-ctx cancellation / txn-SetTimeout could be observed, so a
+full/0 cap masked the real terminal error (context.Canceled / 1031) with 1032. Added the caller
+`ctx.Err()` + `checkTimeout` gates before the acquire (with the round-13 `checkCancelled`), in
+mapTimeout precedence. Pin: `TestWatchSetup_TerminalErrorsOutrankCap`.
+
+**⚠ SHARPENED ARCHITECTURAL FLAG — watch-setup structure (rounds 11-14):** the recurring edges split
+into two structural fragilities, each with a decisive fix:
+- **Acquire ordering (rounds 13, 14):** the cap-charge vs terminal-error ordering keeps producing
+  edges. Decisive fix: **acquire LAST** — after ensureReadVersion + the value read — so EVERY terminal
+  error (cancel/ctx/timeout/read-failure) surfaces before the cap is touched and a doomed setup never
+  transiently holds a slot. Removes the pre-acquire gate duplication. Minor divergence: the cap then
+  counts setup-COMPLETE watches, not in-setup ones (client-side limit, not wire — acceptable).
+- **Shared watchCtx (round 13):** one ctx per txn → failed/cancelled-watch cross-poisoning. Decisive
+  fix: **per-watch cancellable context** (cancelWatches iterates a list; each watch owns its cancel).
+If codex round 15 surfaces ANOTHER watch edge, do BOTH restructures together (one reviewed change) —
+they're the root, and incremental patching (4 rounds) is not converging on this area.
+
+**Codex caught 13 real issues across 8 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

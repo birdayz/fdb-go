@@ -132,6 +132,37 @@ func TestWatchSetup_FailedSetupDoesNotPoisonNextWatch(t *testing.T) {
 	db.db.releaseWatch() // free the slot the second watch took (no WatchPoll runs here)
 }
 
+// TestWatchSetup_TerminalErrorsOutrankCap pins that a doomed watch surfaces its REAL terminal error
+// rather than having a full/0 cap mask it with too_many_watches (1032): the caller-ctx and
+// SetTimeout gates run BEFORE the slot acquire (codex). Revert-proof: charge the cap first and a
+// cancelled/timed-out setup returns 1032 instead of context.Canceled / 1031.
+func TestWatchSetup_TerminalErrorsOutrankCap(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	if err := db.SetMaxWatches(0); err != nil { // full cap: any acquire would be 1032
+		t.Fatalf("SetMaxWatches(0): %v", err)
+	}
+
+	// An already-cancelled caller context must surface as context.Canceled, not masked by the cap.
+	cctx, ccancel := context.WithCancel(ctx)
+	ccancel()
+	tx1 := db.CreateTransaction()
+	if _, _, _, _, err := tx1.WatchSetup(cctx, []byte(t.Name()+"_k1")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller ctx under a full cap must be context.Canceled, not 1032, got %v", err)
+	}
+
+	// An expired transaction SetTimeout must surface as transaction_timed_out (1031), not masked.
+	tx2 := db.CreateTransaction()
+	tx2.creationTime = time.Now().Add(-time.Second)
+	tx2.SetTimeout(500) // deadline anchored 500ms in the PAST
+	if _, _, _, _, err := tx2.WatchSetup(ctx, []byte(t.Name()+"_k2")); fdbCodeOf(err) != 1031 {
+		t.Fatalf("expired txn timeout under a full cap must be 1031, not 1032, got %v", err)
+	}
+}
+
 // TestWatchSetup_RejectsSystemAndOversizedKeys pins the eager legal-range + key-size validation
 // C++ RYW watch performs before registering (ReadYourWrites.actor.cpp:2450-2456). A normal
 // (non-system) transaction must not be able to register a watch on a \xff system key
