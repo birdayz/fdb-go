@@ -638,6 +638,25 @@ func TestCancel_CancelsActiveWatchContext(t *testing.T) {
 	}
 }
 
+// TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
+// in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
+// a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
+// slot until the key changes, starving future watches under a low MAX_WATCHES (codex). The retry path
+// already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
+// stays live after OnError.
+func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	watchCtx, _ := tx.getWatchCtx(context.Background())
+	if watchCtx.Err() != nil {
+		t.Fatal("setup: watch ctx should start live")
+	}
+	_ = tx.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — non-retryable
+	if watchCtx.Err() == nil {
+		t.Fatal("a terminal (non-retryable) OnError must cancel in-flight watch contexts to free their slots")
+	}
+}
+
 func TestGetWatchCtx_LazyAndIdempotent(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

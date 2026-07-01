@@ -2017,7 +2017,18 @@ func (tx *Transaction) backoffSleepBounded(ctx context.Context, delay time.Durat
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable
 // or ctx.Err() if ctx fires during the backoff sleep.
-func (tx *Transaction) OnError(ctx context.Context, err error) error {
+func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
+	// A TERMINAL OnError — any non-nil return, i.e. the txn is aborting, not retrying — must release
+	// any in-flight watch slots. A watch registered in Transact whose txn then fails non-retryably
+	// would otherwise keep long-polling and HOLD its outstanding-watch slot until the key changes, so
+	// under a low MAX_WATCHES one failed transaction starves every future watch (codex). The RETRY
+	// path (return nil) already cancels in-flight watches via reset()→cancelWatches; this defer covers
+	// the ABORT paths. cancelWatches is idempotent (no-op when no watch context is bound).
+	defer func() {
+		if rerr != nil {
+			tx.cancelWatches()
+		}
+	}()
 	// A cancelled txn can never be retried — C++ OnError races resetPromise and returns
 	// transaction_cancelled (1025) (ReadYourWrites.actor.cpp). Without this, OnError on a
 	// cancelled txn would reset-and-retry a retryable input error (return nil), reusing a

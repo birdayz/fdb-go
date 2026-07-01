@@ -163,6 +163,23 @@ func TestWatchSetup_TerminalErrorsOutrankCap(t *testing.T) {
 	}
 }
 
+// TestWatchSetup_CancellationOutranksKeyValidation pins that terminal txn/ctx state out-ranks the
+// key-legality validation: a Cancel()ed txn watching an ILLEGAL (system) key must return 1025, not
+// key_outside_legal_range (2004) — matching the other reads' entry-timebomb precedence (codex).
+// Revert-proof: with the key validation before the terminal checks, this returns 2004.
+func TestWatchSetup_CancellationOutranksKeyValidation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	tx := db.CreateTransaction()
+	tx.Cancel()
+	if _, _, _, _, err := tx.WatchSetup(ctx, []byte("\xff\x05")); fdbCodeOf(err) != 1025 {
+		t.Fatalf("cancelled txn + illegal key must be transaction_cancelled (1025), not 2004, got %v", err)
+	}
+}
+
 // TestWatchSetup_RejectsSystemAndOversizedKeys pins the eager legal-range + key-size validation
 // C++ RYW watch performs before registering (ReadYourWrites.actor.cpp:2450-2456). A normal
 // (non-system) transaction must not be able to register a watch on a \xff system key

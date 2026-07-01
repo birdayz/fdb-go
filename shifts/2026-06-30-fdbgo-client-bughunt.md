@@ -296,7 +296,26 @@ Added `tx.state.Store(txStateErrored)` to the entry check (rywPoisonErr delibera
 is a per-op 2000 poison, and erroring it would turn subsequent ops into "not active" instead of
 2000). Pin: `TestCommit_InvalidAtomicMarksErrored`.
 
-**Codex caught 14 real issues across 9 review rounds the persona reviewers missed** — critical-gate
+**Round 16 — codex's 9th `--supersede` re-review found two MORE** (both P2, watch-area again — so the
+whack-a-mole is NOT converged; round 15 was just a one-round detour), both fixed red→green:
+- **Terminal state vs key validation (readpath.go):** the terminal checks (cancelled/ctx/timeout,
+  rounds 13-14) ran AFTER the legal-range/key-size validation, so `Cancel();WatchSetup(illegalKey)`
+  returned 2004 instead of 1025. Moved them to the TOP of WatchSetup (C++ entry-timebomb precedence).
+  Pin: `TestWatchSetup_CancellationOutranksKeyValidation`.
+- **Watch slot leak on terminal abort (transaction.go) — A REAL BUG, not just ordering:** a watch
+  registered in Transact whose txn then fails non-retryably → OnError returned WITHOUT
+  reset/cancelWatches, so the long-poll kept the acquired slot until the key changed; under
+  MAX_WATCHES=1 one failed txn starved all future watches. Added a `defer` in OnError that
+  cancelWatches on any non-nil (abort) return (the retry path already does via reset). Pin:
+  `TestOnError_TerminalAbortCancelsWatches`.
+
+**⚠ WATCH-SETUP RESTRUCTURE IS NOW OVERDUE** — rounds 11, 12, 13, 14, 16 (five) all watch edges. The
+incremental patching is genuinely not converging on this area. NEXT watch finding → STOP patching and
+do the comprehensive restructure in ONE reviewed change: (1) terminal checks first, (2) validation,
+(3) per-watch cancellable context (not one-shared), (4) reads, (5) acquire LAST (after reads), (6)
+cancel-this-watch on setup error, (7) OnError/abort cancels all. Closes every edge class at once.
+
+**Codex caught 16 real issues across 10 review rounds the persona reviewers missed** — critical-gate
 value, fully borne out.
 
 ## Findings NOT yet fixed (all CONFIRMED unless noted) — priority order

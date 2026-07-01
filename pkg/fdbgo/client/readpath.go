@@ -1067,6 +1067,21 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 //     register incorrectly. So the read version is captured synchronously here and
 //     threaded through to sendWatch.
 func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int64, types.SpanContext, context.Context, error) {
+	// Terminal transaction/context state out-ranks ALL watch-setup work — matching C++'s entry
+	// timebomb (resetPromise fires before the op's own logic). So a Cancel()ed / timed-out txn or an
+	// already-cancelled caller ctx returns 1025 / the caller's error / 1031 BEFORE the watches-disabled
+	// and legal-range/key-size gates below (and before the cap acquire), the same precedence the other
+	// reads get via ensureReadVersion (codex: else Cancel();WatchSetup(illegalKey) wrongly returned
+	// 2004). mapTimeout precedence: txn-cancelled, then the caller's ctx, then the txn SetTimeout.
+	if cerr := tx.checkCancelled(); cerr != nil {
+		return nil, 0, types.SpanContext{}, nil, cerr // transaction_cancelled (1025)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, 0, types.SpanContext{}, nil, cerr // caller ctx already cancelled / past its deadline
+	}
+	if terr := tx.checkTimeout(); terr != nil {
+		return nil, 0, types.SpanContext{}, nil, terr // transaction_timed_out (1031)
+	}
 	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
 	// Returns watches_disabled (1034) immediately.
 	if tx.rywDisabled {
@@ -1083,22 +1098,6 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
 	if len(key) > getMaxWriteKeySize(key, rawAccess) {
 		return nil, 0, types.SpanContext{}, nil, &wire.FDBError{Code: 2102} // key_too_large
-	}
-
-	// Every TERMINAL setup error must out-rank the cap: a doomed watch must surface its real error,
-	// not have a full/0 cap mask it with too_many_watches (1032) (codex). These are the same checks
-	// ensureReadVersion/mapTimeout would make (just moved ahead of the acquire), in mapTimeout's
-	// precedence — txn-cancelled (1025), then the caller's own ctx cancellation/deadline, then the
-	// txn SetTimeout (1031). Ordering matches mapTimeout: a done caller ctx returns the caller's error
-	// rather than 1031 (transaction.go:107-116).
-	if cerr := tx.checkCancelled(); cerr != nil {
-		return nil, 0, types.SpanContext{}, nil, cerr // transaction_cancelled (1025)
-	}
-	if cerr := ctx.Err(); cerr != nil {
-		return nil, 0, types.SpanContext{}, nil, cerr // caller ctx already cancelled / past its deadline
-	}
-	if terr := tx.checkTimeout(); terr != nil {
-		return nil, 0, types.SpanContext{}, nil, terr // transaction_timed_out (1031)
 	}
 
 	// Reserve the outstanding-watch slot HERE — synchronously, at registration order — matching C++
