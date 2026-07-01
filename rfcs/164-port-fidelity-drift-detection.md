@@ -158,6 +158,21 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   don't assume it.
 - [ ] **Result-type / schema consistency** — declared result type == what children +
   projection produce (a `join_projection_coltype` regression already exists).
+- **FINDING — the three field-level invariants above (set-op comparison-key columns,
+  COVERING⇒referenced-fields, result-type consistency) are NOT checkable on the FINAL
+  extracted plan tree as written.** Probed empirically: a real physical plan's nodes carry
+  `*values.PrimitiveType` / `UnknownType`, never a `*RecordType` with named fields (e.g. a
+  `RecordQueryIndexPlan` for `SELECT id, x … WHERE x = 5` flows `*PrimitiveType`) — the
+  physical plan layer is effectively untyped at field granularity, and `RecordQueryPlan`
+  exposes no `WithChildren`. So a post-extraction "does the leg's output contain column X"
+  check has NO teeth (its resolvable-type precondition is never met on real plans; it would
+  be a fake-green checkbox). These invariants need a PREREQUISITE — either field-level type
+  propagation into physical plans (a WS-3 `RecordQueryPlanVisitor`-adjacent effort) OR check
+  them on the richer EXPRESSION tree (quantifiers + result values carry the types/correlations)
+  at/just-before extraction, where `bestExpr` is in hand. The no-`<nil>`-child invariant
+  works precisely because child-PRESENCE is the one structural property fully available on the
+  untyped plan tree. Re-scope: implement these three at the expression layer, or gate them on
+  type-carrying plans; do not add a toothless plan-tree version.
 - **NOT a structural invariant (do not add as one):** "DistinctRecords==true ⇒ has a
   Distinct node" is **unsound** — distinctness legitimately arises with no dedup operator
   (unique-index, PK, aggregate-index, streaming-agg, intersection; Java's own
@@ -180,10 +195,19 @@ slot), never a runtime mute — otherwise the first false positive hollows the c
   (`unique`/`covering` live on `physicalIndexScanWrapper`, not the plan) — migrate onto
   the plan as Java does (`getMatchCandidateMaybe().createsDuplicates()`), or thread it in.
   **Acceptance: a new plan type added without declaring its property fails to COMPILE.**
-- [ ] **One shared `isCountStar`** used by planner + executor (COUNT-COL was two copies);
-  and one **`comparandReadsField`/group-key matcher** shared by guard + consumer (the AGG
+- [x] **One shared `isCountStar`** used by planner + executor (COUNT-COL was two copies).
+  LANDED: `expressions.IsCountStar(AggregateSpec)` is the single source of truth, consumed by
+  the aggregate-index candidate (`aggregate_index_candidate.go`, 2 sites) AND the executor's
+  group cursors (`streaming_cursors.go`). The executor was the OUTLIER — its prior local copy
+  narrowly treated only a nil-VALUED constant operand as count-star, disagreeing with the
+  planner (and the translator's documented "a constant operand folds into count-star",
+  `cascades_translator.go`) on COUNT(1)/COUNT(TRUE). The shared rule (COUNT with no operand OR
+  a constant operand) aligns them; result-preserving (a non-null constant counts every row via
+  either the count-star total or the per-operand non-null count — full aggregate corpus green),
+  and pinned by `TestIsCountStar` (COUNT(*), COUNT(1), COUNT(NULL), COUNT(col) classification).
+  Still open: one **`comparandReadsField`/group-key matcher** shared by guard + consumer (the AGG
   guard≠consumer drift, already done in RFC-163 via `groupColEqualityIndex` — audit for
-  other guard/consumer pairs). This is the cheap first piece — land it early.
+  other guard/consumer pairs).
 - **Effort:** ~1–2 days (it's a wide refactor across every `RecordQuery*` type + dispatch
   sites + three properties, not one switch). **Gate:** Graefe + Torvalds.
 

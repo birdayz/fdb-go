@@ -43,6 +43,31 @@ type AggregateSpec struct {
 	OperandName string // canonical operand text for result-map keying (e.g. "PRICE*QTY")
 }
 
+// IsCountStar reports whether agg is a COUNT(*)-equivalent aggregate: COUNT with
+// no operand (COUNT(*)), or COUNT of a CONSTANT operand (COUNT(1), COUNT(NULL),
+// COUNT(TRUE)). A constant is identical for every row, so counting it counts
+// every row — the same value a COUNT(*) aggregate index stores. This is the
+// SINGLE SOURCE OF TRUTH for count-star classification (RFC-164 WS-3): the
+// planner's aggregate-index candidate (which decides whether an aggregate
+// matches a COUNT(*) index) and the executor's group cursors (which decide
+// whether to emit the group's total row count vs a per-operand non-null count)
+// MUST apply the SAME rule, or they drift — the "two copies" that produced the
+// COUNT-COL class. It codifies the translator's documented normalization ("a
+// constant operand folds into count-star", cascades_translator.go): the
+// aggregate-index candidate and the SQL→logical normalization already treat any
+// constant operand as count-star, so the executor uses this same rule rather
+// than an outlier narrow "constant is SQL NULL only" test.
+func IsCountStar(agg AggregateSpec) bool {
+	if agg.Function != AggCount {
+		return false
+	}
+	if agg.Operand == nil {
+		return true
+	}
+	_, isConstant := agg.Operand.(*values.ConstantValue)
+	return isConstant
+}
+
 // GroupByExpression groups input rows by groupingKeys and computes
 // aggregates over each group. Ports Java's GroupByExpression at the
 // structural level needed for the Cascades planner.

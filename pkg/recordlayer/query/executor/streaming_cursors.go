@@ -316,7 +316,7 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 		var val any
 		switch agg.Function {
 		case expressions.AggCount:
-			if isCountStar(agg) {
+			if expressions.IsCountStar(agg) {
 				val = gs.count
 			} else {
 				val = gs.counts[i]
