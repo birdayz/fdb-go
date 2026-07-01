@@ -56,6 +56,47 @@ func (ec *EvaluationContext) RowContext(datum map[string]any) *values.RowEvalCon
 	}
 }
 
+// RowContextPositional returns a RowEvalContext whose authoritative row is the
+// RFC-173 Slice 1 ordinal-model positional row (resolved by ordinal, no name-map
+// fallback), combined with this context's parameter bindings, correlation
+// bindings, and scalar subquery results. Use it on the non-join frontier when a
+// param / scalar subquery / outer correlation is in play; when none is, flow the
+// bare OrdinalRow directly. An outer correlation resolves via Correlations first;
+// only the (unbound) frontier quantifier reference falls to the positional row.
+func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values.RowEvalContext {
+	return &values.RowEvalContext{
+		Positional:       pos,
+		Binder:           ec,
+		Correlations:     ec,
+		ScalarSubqueries: ec.scalarSubqueries,
+	}
+}
+
+// frontierRowContext returns the eval context a row on the RFC-173 Slice 1
+// authoritative non-join ordinal frontier is resolved against: the bare
+// positional row (FieldValue resolves by ordinal, loud on a miss — NO name-map
+// fallback, Graefe) when no param / scalar-subquery / outer correlation binding
+// is in play, else a RowContextPositional so an outer correlation resolves via
+// the binder BEFORE the frontier quantifier falls to the positional row. Shared
+// by executeProjection / executeFilter / executePredicatesFilter / executeMap so
+// the frontier dispatch is identical across them. hasBindingCtx is
+// params||scalarSubqueries||bindings for the caller's evalCtx.
+func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBindingCtx bool) any {
+	if hasBindingCtx && ec != nil {
+		return ec.RowContextPositional(pos)
+	}
+	return pos
+}
+
+// hasBindingContext reports whether an eval context carries any resolvable
+// binding beyond a bare row — a param, a pre-evaluated scalar subquery, or a
+// correlation binding. It gates whether the RFC-173 positional frontier needs a
+// wrapping RowContextPositional (to resolve an outer correlation) or can flow the
+// bare ordinal row.
+func hasBindingContext(ec *EvaluationContext) bool {
+	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 || len(ec.bindings) > 0)
+}
+
 // RowContextStrict is RowContext with the RFC-048 W1 unresolved-reference
 // check armed. Use it only for rows whose key set is complete (QueryResult
 // .Complete) — see RowEvalContext.Strict. Callers gate on StrictReferenceCheck

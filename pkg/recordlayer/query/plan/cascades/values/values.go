@@ -279,12 +279,21 @@ func (f *FieldValue) Evaluate(evalCtx any) (any, error) {
 	if row, ok := evalCtx.(map[string]any); ok {
 		return row[f.Field], nil
 	}
-	if rc, ok := evalCtx.(*RowEvalContext); ok && rc.Datum != nil {
-		v, present := rc.Datum[f.Field]
-		if !present && rc.Strict && ReportUnresolvedReference != nil {
-			ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
+	if rc, ok := evalCtx.(*RowEvalContext); ok {
+		// RFC-173 Slice 1: an ordinal-model row on the RowEvalContext is
+		// authoritative on the non-join frontier — resolve by ordinal, no
+		// name-map fallback, loud on a miss (Graefe). It takes precedence over
+		// the name-keyed Datum.
+		if rc.Positional != nil {
+			return f.evaluateOrdinal(rc.Positional)
 		}
-		return v, nil
+		if rc.Datum != nil {
+			v, present := rc.Datum[f.Field]
+			if !present && rc.Strict && ReportUnresolvedReference != nil {
+				ReportUnresolvedReference(f.Field, mapKeys(rc.Datum))
+			}
+			return v, nil
+		}
 	}
 	return nil, nil
 }
@@ -302,6 +311,11 @@ func mapKeys(m map[string]any) []string {
 func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any) (any, error) {
 	qualKey := strings.ToUpper(qov.Correlation.String()) + "." + strings.ToUpper(f.Field)
 	switch ctx := evalCtx.(type) {
+	case OrdinalRow:
+		// RFC-173 Slice 1: a bare ordinal-model row IS the single non-join
+		// frontier quantifier's row — a correlated reference to that quantifier
+		// resolves by ordinal against it (no name-map fallback, loud on a miss).
+		return f.evaluateOrdinal(ctx)
 	case *RowEvalContext:
 		if ctx.Correlations != nil {
 			if bound, ok := ctx.Correlations.GetCorrelationBinding(qov.Correlation); ok {
@@ -322,6 +336,13 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				}
 				return bound, nil
 			}
+		}
+		// RFC-173 Slice 1: no explicit correlation binding matched, so the
+		// reference is to the frontier quantifier itself — resolve by ordinal
+		// against the authoritative positional row (Graefe: no name fallback,
+		// loud on a miss). Precedes the name-keyed Datum path.
+		if ctx.Positional != nil {
+			return f.evaluateOrdinal(ctx.Positional)
 		}
 		if ctx.Datum != nil {
 			if v, ok := ctx.Datum[qualKey]; ok {
@@ -879,7 +900,15 @@ type CorrelationBinder interface {
 // expressions that mix field references, prepared-statement parameters,
 // and correlation bindings (e.g. InJoin explode aliases).
 type RowEvalContext struct {
-	Datum            map[string]any
+	Datum map[string]any
+	// Positional is the RFC-173 Slice 1 authoritative ordinal-model row for the
+	// non-join frontier. When non-nil, FieldValue resolution goes through the
+	// ordinal path (resolveOrdinal / GetByName against the row's own type) BEFORE
+	// the name-keyed Datum — a loud OrdinalResolutionError on a miss, NO name-map
+	// fallback (Graefe). It is the single frontier quantifier's row: an outer
+	// correlation still resolves via Correlations first, and only an unbound
+	// (frontier) quantifier reference falls through to this row.
+	Positional       OrdinalRow
 	Binder           ParameterBinder
 	Correlations     CorrelationBinder
 	ScalarSubqueries map[CorrelationIdentifier]any // pre-evaluated scalar subquery results
