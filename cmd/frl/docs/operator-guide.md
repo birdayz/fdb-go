@@ -24,8 +24,14 @@ programmatically and don't persist it. Those apps want Path A. If you
 already adopted `FDBMetaDataStore` for schema-evolution reasons, Path B
 has zero extra steps.
 
-Both paths produce the same `RecordMetaData` for `frl`. Commands work
-identically.
+Both paths produce the same `RecordMetaData` for `frl`. Store-reading
+commands (`record get/scan/count`, `index ls/scan`) accept both paths.
+**Path B support is not yet universal**: `meta get`, `meta types
+ls/describe`, and `index describe` currently read `meta_file` sources
+only and reject `meta_store_keyspace` with a clear error (they open no
+FDB connection today; RFC-174 Slice 5 completes them). With Path B,
+point those commands at an exported file via `--meta-file` in the
+meantime.
 
 ---
 
@@ -43,7 +49,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 
 	"myapp/internal/schema" // whatever package builds your metadata today
 )
@@ -237,15 +243,29 @@ metadata you point it at. A new binary only ships for new `frl`
 features or bug fixes.
 
 **Q: Where does `frl` cache anything?**
-Nowhere yet. Every command reads the cluster file + metadata source
-fresh. If/when BSR-style remote schema sources return, they'll cache
-under `~/.frl/cache/`.
+Nowhere. Every command reads the cluster file + metadata source fresh.
 
 **Q: Does `frl` write to FDB?**
-No — every v1 command is read-only (`store info/dump`, `record
-get/scan/count`, `index ls/describe/scan`, `meta get/validate/
-evolve-check/diff`, `meta types ls/describe`, `keyspace resolve`,
-`tx read-version`). Future `store truncate` / `store destroy` /
-`index build` / `meta apply` commands will write, and those are
-designed separately with explicit confirmation flags and dry-run
-defaults.
+Two commands can. **`frl sql` executes arbitrary SQL** — including
+`INSERT`, `DELETE`, `CREATE DATABASE`, and DDL — against the relational
+layer; there is no read-only guard. **`frl fdb up`** configures a local
+Docker FoundationDB (`configure new single memory`) and writes a context
+into your frl config. Everything else is read-only: `store info/dump`,
+`record get/scan/count`, `index ls/describe/scan`, `meta
+get/validate/evolve-check/diff`, `meta types ls/describe`, `meta
+catalog …`, `keyspace resolve`, `tx read-version` — and read-only
+commands open stores with rebuild checks disabled, so even a newer
+`--meta-file` cannot make them mutate the store they inspect. The
+record-layer write wave (`record put/delete`, `index
+build/rebuild/set-state`, `meta apply`, `store lock/truncate`) lands in
+RFC-174 Slice 4 with confirmation flags and dry-run support.
+
+**Q: What are `frl sql` and `frl meta catalog`?**
+The relational-layer side of the CLI. `frl sql` is a psql-style REPL
+(also scriptable via `-c` / `-f` / stdin) over the `fdbsql`
+`database/sql` driver; `frl meta catalog databases/schemas/templates/get`
+reads the relational catalog at `__SYS/CATALOG` — schema auto-discovery
+with no `meta_file` wiring. Neither needs `keyspace_path` or a metadata
+source in the context; they address stores by `--database`/`--schema`.
+Plain-core clusters (no relational layer) get a clear "no relational
+catalog on this cluster" error pointing back at Path A/B.

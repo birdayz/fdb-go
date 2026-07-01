@@ -171,12 +171,19 @@ func TestDiffJSON_IndexAddedAndRemoved(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing indexes key:\n%s", buf.String())
 	}
-	// added
+	// added — objects with {name, detail}, mirroring the text output.
 	added, _ := idx["added"].([]any)
-	if len(added) != 1 || added[0] != "Order$quantity" {
-		t.Errorf("indexes.added = %v; want [Order$quantity]", added)
+	if len(added) != 1 {
+		t.Fatalf("indexes.added = %v; want one entry", added)
 	}
-	// removed
+	addedObj, _ := added[0].(map[string]any)
+	if addedObj["name"] != "Order$quantity" {
+		t.Errorf("indexes.added[0].name = %v; want Order$quantity", addedObj["name"])
+	}
+	if detail, _ := addedObj["detail"].(string); !strings.Contains(detail, "quantity") {
+		t.Errorf("indexes.added[0].detail = %q; want the indexed fields", detail)
+	}
+	// removed — names only.
 	removed, _ := idx["removed"].([]any)
 	if len(removed) != 1 || removed[0] != "Order$price" {
 		t.Errorf("indexes.removed = %v; want [Order$price]", removed)
@@ -259,8 +266,11 @@ func TestMetaDiffCmd_JSONEndToEnd(t *testing.T) {
 		t.Fatalf("missing indexes section:\n%s", out.String())
 	}
 	added, _ := idx["added"].([]any)
-	if len(added) != 1 || added[0] != "Order$added" {
-		t.Errorf("indexes.added = %v; want [Order$added]", added)
+	if len(added) != 1 {
+		t.Fatalf("indexes.added = %v; want one entry", added)
+	}
+	if obj, _ := added[0].(map[string]any); obj["name"] != "Order$added" {
+		t.Errorf("indexes.added[0].name = %v; want Order$added", added[0])
 	}
 }
 
@@ -434,5 +444,101 @@ func TestDiffSection_EntryShape(t *testing.T) {
 	}
 	if len(idx.Changed) != 0 {
 		t.Errorf("Changed = %v; want empty", idx.Changed)
+	}
+}
+
+// Matrix regression (RFC-174 Slice 0): every compared index/type
+// attribute, when flipped alone, must surface in BOTH the text and the
+// JSON output. The old diff compared only index type + expression
+// fields and type PKs — a flipped unique option, predicate, or
+// record-type key reported "(metadata is identical)", which is
+// dangerous for a tool whose stated job is deploy-time sanity.
+// (Subspace key is not diffable: Go's Index doesn't model it.)
+func TestDiff_AttributeMatrix_SurfacesInTextAndJSON(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string // fieldChange.Field identifier expected in output
+		mutateNew func(md *recordlayer.RecordMetaData)
+	}{
+		{"options", func(md *recordlayer.RecordMetaData) {
+			md.GetIndex("Order$price").Options = map[string]string{"unique": "true"}
+		}},
+		{"predicate", func(md *recordlayer.RecordMetaData) {
+			err := md.GetIndex("Order$price").SetPredicateProto(&gen.Predicate{
+				ConstantPredicate: &gen.ConstantPredicate{
+					Value: gen.ConstantPredicate_TRUE.Enum(),
+				},
+			})
+			if err != nil {
+				t.Fatalf("SetPredicateProto: %v", err)
+			}
+		}},
+		{"added_version", func(md *recordlayer.RecordMetaData) {
+			md.GetIndex("Order$price").AddedVersion++
+		}},
+		{"last_modified_version", func(md *recordlayer.RecordMetaData) {
+			md.GetIndex("Order$price").LastModifiedVersion++
+		}},
+		{"since_version", func(md *recordlayer.RecordMetaData) {
+			md.RecordTypes()["Order"].SinceVersion = 3
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			withIdx := func(b *recordlayer.RecordMetaDataBuilder) {
+				b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+			}
+			oldMD := buildMetaWith(t, withIdx)
+			newMD := buildMetaWith(t, withIdx)
+			tc.mutateNew(newMD)
+
+			var text bytes.Buffer
+			if err := writeMetaDiff(&text, oldMD, newMD); err != nil {
+				t.Fatalf("writeMetaDiff: %v", err)
+			}
+			if strings.Contains(text.String(), "identical") {
+				t.Fatalf("%s flip reported identical:\n%s", tc.name, text.String())
+			}
+			if !strings.Contains(text.String(), tc.name) {
+				t.Errorf("text diff does not name the %s change:\n%s", tc.name, text.String())
+			}
+
+			var jsonBuf bytes.Buffer
+			if err := writeMetaDiffJSON(&jsonBuf, oldMD, newMD); err != nil {
+				t.Fatalf("writeMetaDiffJSON: %v", err)
+			}
+			// The symmetric contract: the changed bucket must carry a
+			// {field, old, new} entry naming this attribute.
+			if !strings.Contains(jsonBuf.String(), `"field": "`+tc.name+`"`) {
+				t.Errorf("JSON diff missing {field:%q} change entry:\n%s", tc.name, jsonBuf.String())
+			}
+		})
+	}
+}
+
+// record_type_key flips via the builder (SetRecordTypeKey) — kept out of
+// the mutate-the-built-metadata matrix because the key participates in
+// Build() validation.
+func TestDiff_RecordTypeKeyChange(t *testing.T) {
+	t.Parallel()
+	oldMD := buildMetaWith(t)
+	newMD := buildMetaWith(t, func(b *recordlayer.RecordMetaDataBuilder) {
+		b.GetRecordType("Order").SetRecordTypeKey(int64(7))
+	})
+
+	var text bytes.Buffer
+	if err := writeMetaDiff(&text, oldMD, newMD); err != nil {
+		t.Fatalf("writeMetaDiff: %v", err)
+	}
+	if !strings.Contains(text.String(), "record_type_key") {
+		t.Errorf("text diff does not name the record_type_key change:\n%s", text.String())
+	}
+	var jsonBuf bytes.Buffer
+	if err := writeMetaDiffJSON(&jsonBuf, oldMD, newMD); err != nil {
+		t.Fatalf("writeMetaDiffJSON: %v", err)
+	}
+	if !strings.Contains(jsonBuf.String(), `"field": "record_type_key"`) {
+		t.Errorf("JSON diff missing record_type_key change:\n%s", jsonBuf.String())
 	}
 }

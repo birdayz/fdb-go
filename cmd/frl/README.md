@@ -1,8 +1,7 @@
 # frl
 
 Operator and developer CLI for the Go FoundationDB Record Layer. Separate
-Go module so library consumers of `github.com/birdayz/fdb-record-layer-go`
-don't inherit CLI deps.
+Go module so library consumers of `fdb.dev` don't inherit CLI deps.
 
 See **[docs/operator-guide.md](docs/operator-guide.md)** for the full
 wiring guide (Go + Java apps, both metadata paths). This README is a
@@ -15,7 +14,7 @@ Want to try it end-to-end against a live cluster in 5 steps? See
 ## Install
 
 ```sh
-go install github.com/birdayz/fdb-record-layer-go/cmd/frl@latest
+go install fdb.dev/cmd/frl@latest
 ```
 
 Or build inside the repo:
@@ -126,7 +125,7 @@ Fifteen commands emit machine-readable JSON on demand:
 | `meta types describe` | `{name, primary_key, record_type_key, proto_message, proto_field_count, indexes, multi_type_indexes, universal_indexes}` |
 | `meta validate` | `{file, valid}` |
 | `meta evolve-check` | `{old, new, valid}` |
-| `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` |
+| `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` — added: `{name, detail}`, removed: names, changed: `{name, changes: [{field, old, new}]}` |
 | `config view` | selected `Context` as protojson (snake_case; `-o yaml` is the default) |
 | `config get-contexts` | array of `{name, active}` |
 | `config current-context` | `{name}` |

@@ -46,6 +46,7 @@ go_library(
         "@com_github_spf13_cobra//:cobra",
         "@land_charm_lipgloss_v2//:lipgloss",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
     ],
 )
