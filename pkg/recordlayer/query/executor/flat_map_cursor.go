@@ -43,8 +43,8 @@ type flatMapCursor struct {
 	// construction from resultValue (nil = name-model flatMap, today's path
 	// bit-identically). When enabled, computeResult births the positional
 	// row from the RC with per-leg bindings and derives the coexistence
-	// Datum FROM it (datumFromPositional) — the RC's baked references can no
-	// longer evaluate over name contexts. Gated per emission on the §5
+	// Datum FROM it (datumFromPositional) â the RC's baked references can no
+	// longer evaluate over name contexts. Gated per emission on the Â§5
 	// DisablePositionalEmission oracle (which falls back to today's Evaluate
 	// path, bridged by values.OracleBakedNameFallback).
 	birth *ordinalJoinBirth
@@ -71,10 +71,21 @@ func newFlatMapCursor(
 	if err != nil {
 		return nil, err
 	}
+	// The all-bare positional-merge RC does NOT birth on the FlatMap path
+	// (S3-W2 review P2): computeResultLegs derives the coexistence Datum
+	// from the positional row, so a merge birth here would put OrdinalRows
+	// under the _i keys while the §5 oracle path evaluates the same bare-QOV
+	// RC against name bindings and puts Datum maps there — breaking the
+	// dualwindow row-for-row invariance. The merge row's Datum story is the
+	// fulcrum commit's to settle (no-shim ruling); until then a merge RC on
+	// a correlated implementation stays name-model on BOTH oracle sides.
+	if birth.enabled() && values.IsPositionalMergeRC(resultValue) {
+		birth = nil
+	}
 	// The FlatMap half of the PR-447 review P1 (@claude final-pass catch): the
 	// correlated implementation pushes the join's baked ON references INTO
 	// the inner plan (SARGs, residual filters), so LegTypes must be widened
-	// from the inner plan's predicate surfaces — a folded result value can
+	// from the inner plan's predicate surfaces â a folded result value can
 	// drop a leg those references still need (see widenLegTypesFromPlan).
 	birth.widenLegTypesFromPlan(innerPlan)
 	return &flatMapCursor{
@@ -117,14 +128,14 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				cont := c.buildContinuation(result.GetContinuation())
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
-			// Inner exhausted for this outer row — close and advance outer.
+			// Inner exhausted for this outer row â close and advance outer.
 			reason := result.GetNoNextReason()
 			innerCont := result.GetContinuation()
 			c.innerCursor.Close()
 			c.innerCursor = nil
 
 			if reason.IsOutOfBand() {
-				// Inner hit a scan/time/byte limit — serialize
+				// Inner hit a scan/time/byte limit â serialize
 				// FlatMapContinuation with current outer + inner
 				// position so the next page resumes correctly.
 				cont := c.buildContinuation(innerCont)
@@ -183,14 +194,14 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 		//
 		// RFC-173 Slice 2 W3b: for an ORDINAL-birth flatMap (a gated join on
 		// the correlated implementation path) the outer binds as its
-		// POSITIONAL leg row — the inner plan's baked SARG operands
+		// POSITIONAL leg row â the inner plan's baked SARG operands
 		// (ofOrdinal over QOV(outer), pushed down as scan-range/index-probe
 		// comparisons) resolve by ordinal through the binder's OrdinalRow
 		// arm, and lazy outer references resolve leg-relative against the
 		// same row. Binding the Datum map here fed baked operands a
-		// name-keyed context — the loud BakedNameContextError the W3b flip
+		// name-keyed context â the loud BakedNameContextError the W3b flip
 		// caught on every correlated-probe join. Name-model cursors (and the
-		// §5 oracle) keep the Datum binding bit-identically.
+		// Â§5 oracle) keep the Datum binding bit-identically.
 		outerDatum, _ := outerRow.Datum.(map[string]any)
 		var outerBinding any = outerDatum
 		if c.birth.enabled() && !DisablePositionalEmission {
@@ -228,11 +239,11 @@ func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResu
 // computeResultLegs is computeResult with the inner leg as a pointer: nil is
 // the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
 // S2, oracle off) it births the positional row from the RC with per-leg
-// bindings — the nil inner pointer becomes the NULL leg (QOV(inner)→nil,
-// contract ruling #3) — and derives the coexistence Datum FROM the positional
+// bindings â the nil inner pointer becomes the NULL leg (QOV(inner)ânil,
+// contract ruling #3) â and derives the coexistence Datum FROM the positional
 // row (datumFromPositional, last-wins on duplicate names): evaluating an
 // ordinal RC over the name-model row context would hit baked references over
-// name reads, a loud BakedNameContextError. Name-model cursors (and the §5
+// name reads, a loud BakedNameContextError. Name-model cursors (and the Â§5
 // oracle, where values.OracleBakedNameFallback bridges the baked reads) keep
 // today's Evaluate path bit-identically, reconstructing the empty-Datum inner
 // row for the null-inner emission.
@@ -243,8 +254,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 			return QueryResult{}, err
 		}
 		// The coexistence Datum: a SEED-shaped RV mirrors the anchored RC's
-		// bare+qualified key set (downstream name-model consumers — sort
-		// Datum fallback, aggregate group keys — resolve dotted references
+		// bare+qualified key set (downstream name-model consumers â sort
+		// Datum fallback, aggregate group keys â resolve dotted references
 		// against it; the W3b flip's bare-only Datum silently NULLed them).
 		// A folded projection RV keeps bare-only (its name-model counterpart,
 		// the projection map, never carried qualified keys).
@@ -264,24 +275,24 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// correlated array UNNEST (RFC-142) flows a BARE SCALAR element (e.g.
 	// int64(101)) as the inner row; binding QOV(inner) to it lets the AS
 	// alias read the whole element. A row-shaped inner (a scan/EXISTS
-	// subquery) binds its map[string]any unchanged — FieldValue.evaluateCorrelated
+	// subquery) binds its map[string]any unchanged â FieldValue.evaluateCorrelated
 	// reads the map by key, QOV(inner) reads the whole map.
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerDatum).
 		WithBinding(c.innerAlias, innerRow.Datum)
 
 	// Evaluate against a RowEvalContext whose Datum is the outer row, so a BARE
-	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier — RFC-141
+	// outer FieldValue (e.g. a projected `ID` with no QOV qualifier â RFC-141
 	// projected EXISTS folds the SELECT list into the result value) resolves
 	// against the outer row, while QOV references to the outer/inner aliases
 	// resolve through the correlation bindings (Correlations).
 	rowCtx := nestedCtx.RowContext(outerDatum)
 	if c.birth.enabled() {
-		// §5 NAME-MODEL ORACLE over an ordinal-birth plan (birth enabled but
-		// DisablePositionalEmission on — the only way to reach here with a
+		// Â§5 NAME-MODEL ORACLE over an ordinal-birth plan (birth enabled but
+		// DisablePositionalEmission on â the only way to reach here with a
 		// birth): the ordinal RC's bare-named fields would evaluate to a
 		// bare-keys-only map, dropping the ALIAS.COL keys the pre-flip
-		// anchored seed RC carried — every dotted downstream read (projection
+		// anchored seed RC carried â every dotted downstream read (projection
 		// over sort, sort comparators) silently NULLed. Reconstruct the
 		// anchored key set with genuine name-model per-field resolution.
 		datum, err := c.birth.oracleNameDatum(rowCtx)
@@ -295,7 +306,7 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 		return QueryResult{}, err
 	}
 	// Identity-over-outer FlatMap (the result value is exactly the outer
-	// quantifier's object — the WHERE-EXISTS pass-through, RFC-141): the output
+	// quantifier's object â the WHERE-EXISTS pass-through, RFC-141): the output
 	// IS the outer record flowed under the outer quantifier, so qualify its keys
 	// under the outer alias. Downstream projections reference the outer columns
 	// as `ALIAS.COL` (a FieldValue over QOV(outer)); a bare-keyed map would not
@@ -311,8 +322,8 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely
 // on the inner cursor's state (matching Java FlatMapPipelinedCursor.toByteString,
-// :413-430): if the inner has a resumable position (not END) — a value emit or an
-// inner out-of-band stop mid-row — encode the prior outer position + inner
+// :413-430): if the inner has a resumable position (not END) â a value emit or an
+// inner out-of-band stop mid-row â encode the prior outer position + inner
 // position so resume continues THIS outer's inner. If the inner is exhausted
 // (END), encode the advanced outer position with no inner (next outer on resume).
 func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
@@ -328,14 +339,14 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 
 	// Java FlatMapPipelinedCursor.Continuation (FlatMapPipelinedCursor.java:373)
 	// ALWAYS pairs priorOuterContinuation (the position AT the current outer row)
-	// with the inner continuation — there is no "value emit vs limit emit"
+	// with the inner continuation â there is no "value emit vs limit emit"
 	// distinction. The decision is purely whether the inner has a resumable
 	// position:
 	//   - inner NOT exhausted (a value emit mid-inner, or an inner out-of-band
 	//     stop): encode (priorOuter, inner) so resume re-opens THIS outer and
 	//     continues its inner after the last row. Encoding the ADVANCED outer
 	//     position here (as a prior Go-only innerTimeLimited flag did for the
-	//     value-emit path) skips the rest of this outer's inner rows on resume —
+	//     value-emit path) skips the rest of this outer's inner rows on resume â
 	//     a silent row-drop on any mid-inner page boundary.
 	//   - inner exhausted (END): advance to the next outer (lastOuter, no inner).
 	//     Equivalent to Java's (priorOuter, inner=END), which re-opens the outer

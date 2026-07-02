@@ -198,6 +198,30 @@ func TestRFC173S3_MergeBirth_MixedUpper(t *testing.T) {
 	}
 }
 
+// TestRFC173S3_MergeBirth_FlatMapDeclines pins the review P2: the all-bare
+// merge RC does NOT birth on the FlatMap (correlated) path — a birth there
+// would derive the coexistence Datum from the positional row (OrdinalRows
+// under _i) while the §5 oracle path evaluates the bare-QOV RC against name
+// bindings (Datum maps under _i), breaking dualwindow row-for-row
+// invariance. The merge row's Datum story is the fulcrum's; until then the
+// shape stays name-model on BOTH oracle sides of the FlatMap.
+func TestRFC173S3_MergeBirth_FlatMapDeclines(t *testing.T) {
+	t.Parallel()
+	_, _, qovA, qovB, _ := ojWiringLegs(t)
+	c, err := newFlatMapCursor(
+		recordlayer.FromList([]QueryResult{}), nil, nil, EmptyEvaluationContext(),
+		qovA.Correlation, qovB.Correlation,
+		s3MergeRC(qovA, qovB), false, recordlayer.ExecuteProperties{},
+	)
+	if err != nil {
+		t.Fatalf("newFlatMapCursor: %v", err)
+	}
+	defer c.Close()
+	if c.birth.enabled() {
+		t.Fatal("the merge RC must NOT birth on the FlatMap path (oracle invariance — fulcrum owns the merge Datum story)")
+	}
+}
+
 // ordinalBindingStub binds one correlation to one positional row.
 type ordinalBindingStub struct {
 	id  values.CorrelationIdentifier

@@ -440,12 +440,18 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// Bare QOV fields carry their leg's type directly (the S3 merge shape's
 	// `_i` columns and the mixed upper's untranslated leg): without this a
 	// bare-QOV leg is typeless and its adapter degrades to the Datum
-	// synthesis path even when the leg flows a typed row.
+	// synthesis path even when the leg flows a typed row. Same
+	// conflict-impossibility invariant as widenLegTypesFromPlan — every
+	// source copies the one planner-constructed typed QOV — asserted the
+	// same way (a silent first-wins here would be an inconsistent assertion
+	// of a load-bearing invariant, review nit).
 	for _, f := range rc.Fields {
 		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
-				if _, seen := legTypes[qov.Correlation]; !seen {
+				if prev, seen := legTypes[qov.Correlation]; !seen {
 					legTypes[qov.Correlation] = rt
+				} else if len(prev.Fields) != len(rt.Fields) {
+					panic(fmt.Sprintf("RFC-173: leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
 				}
 			}
 		}
