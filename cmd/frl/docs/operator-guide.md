@@ -24,8 +24,12 @@ programmatically and don't persist it. Those apps want Path A. If you
 already adopted `FDBMetaDataStore` for schema-evolution reasons, Path B
 has zero extra steps.
 
-Both paths produce the same `RecordMetaData` for `frl`. Commands work
-identically.
+Both paths produce the same `RecordMetaData` for `frl`, and every
+command accepts both — the metadata-only commands (`meta get`, `meta
+types ls/describe`, `index describe`) dial FDB only when the source
+actually lives there, so `meta_file` setups stay fully offline. A third
+source exists for relational clusters: `--database`/`--schema` resolves
+metadata from the catalog's schema-pinned template.
 
 ---
 
@@ -43,7 +47,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer"
 
 	"myapp/internal/schema" // whatever package builds your metadata today
 )
@@ -177,7 +181,11 @@ populated. When you upgrade schema:
 - **Path B**: call `saveRecordMetaData` with the new metadata; the old
   version is auto-archived to a history key. `MetaDataEvolutionValidator`
   runs inside `saveRecordMetaData` — it'll reject invalid transitions
-  (type rename, incompatible field change, removed required field).
+  (type rename, incompatible field change, removed required field) —
+  and the new version must be strictly greater than the stored one.
+  Both checks run in the same transaction as the write (in Go and in
+  Java), so concurrent evolvers serialize through FDB conflict
+  detection.
 
 Both paths produce binary-compatible `MetaData` protos — the same bytes
 work in both.
@@ -237,15 +245,72 @@ metadata you point it at. A new binary only ships for new `frl`
 features or bug fixes.
 
 **Q: Where does `frl` cache anything?**
-Nowhere yet. Every command reads the cluster file + metadata source
-fresh. If/when BSR-style remote schema sources return, they'll cache
-under `~/.frl/cache/`.
+Nowhere. Every command reads the cluster file + metadata source fresh.
 
 **Q: Does `frl` write to FDB?**
-No — every v1 command is read-only (`store info/dump`, `record
-get/scan/count`, `index ls/describe/scan`, `meta get/validate/
-evolve-check/diff`, `meta types ls/describe`, `keyspace resolve`,
-`tx read-version`). Future `store truncate` / `store destroy` /
-`index build` / `meta apply` commands will write, and those are
-designed separately with explicit confirmation flags and dry-run
-defaults.
+Read commands never do — they open stores with rebuild checks disabled,
+so even a newer `--meta-file` cannot make them mutate the store they
+inspect (`store info/dump`, `record get/scan/count`, `index
+ls/describe/scan`, `meta get/validate/evolve-check/diff`, `meta types
+ls/describe`, `meta catalog …`, `keyspace resolve`, `tx read-version`).
+The write surface is explicit: **`frl sql`** executes arbitrary SQL
+(INSERT/DELETE/DDL, no read-only guard); **`frl fdb up`** configures a
+local Docker FDB and writes a context; and the guarded record-layer
+write commands below.
+
+## Write commands
+
+Every mutating command requires `--yes` or an interactive confirmation,
+and none can ever target `__SYS/CATALOG` (the relational layer's own
+bookkeeping — evolve schemas through SQL DDL instead).
+
+- **`record put --type T '<json>'`** / **`record delete <pk>`** — both
+  take `--dry-run` (runs every validation through the store's dry-run
+  primitives, writes nothing) and both are confirm-gated. Deleting an
+  already-absent record exits 0 ("already absent") — after a
+  maybe-committed retry the first attempt may have landed. **Caution:
+  `record put` bypasses SQL-level constraints** not encoded in
+  `RecordMetaData`. Record-layer index maintenance and uniqueness hold
+  transactionally, but relational-only invariants (e.g. anything the
+  SQL layer enforces at statement level) do not — prefer `frl sql
+  INSERT` for relational stores unless you know why you need the
+  record-layer path.
+- **`index build <name>`** — online index build with resumable
+  range-set progress; safe to interrupt, rerun resumes.
+  `--max-retries` defaults to 100 (enables throttling + adaptive
+  batch-halving), `--rps`/`--limit` tune load, `--time-limit` bounds a
+  pass. `index rebuild` clears and starts over; `index set-state`
+  flips READABLE / WRITE_ONLY / DISABLED (READABLE refuses unless the
+  index is fully built). One caveat: the indexer opens the store the
+  way an app would (Java `OnlineIndexer` parity, regular check-version
+  path), so building against a NEWER metadata source migrates the
+  store header first — exactly as deploying that metadata would.
+- **`meta apply --file new.pb`** — validates against the
+  FDBMetaDataStore's current metadata (same gate as `evolve-check`)
+  and persists on pass; the validation re-runs inside the save
+  transaction, so a concurrent evolution landing between the prompt
+  and the write is detected, never overwritten. Re-applying
+  already-current metadata is a no-op success; the version must
+  strictly increase (no `--allow-no-version-change` here — the store
+  save path rejects equal versions unconditionally, like Java's
+  `saveAndSetCurrent`). Requires `meta_store_keyspace` in the context
+  or `--meta-store-keyspace`; `--force-initial` bootstraps an empty
+  store. Path A setups have nothing in FDB to apply to.
+- **`store lock <state> [--reason …]`** / **`store unlock`** — set or
+  clear the header lock (`forbid-record-update` / `full-store`);
+  `store info` shows it. Both commands can manage a store that is
+  already `full-store` locked (they open with the stored reason as the
+  bypass); every other command — truncate included — refuses a fully
+  locked store until you unlock it. **`store truncate`** deletes every
+  record — double-gated: `--yes` is always required, and a terminal
+  additionally asks you to type the store address back.
+
+**Q: What are `frl sql` and `frl meta catalog`?**
+The relational-layer side of the CLI. `frl sql` is a psql-style REPL
+(also scriptable via `-c` / `-f` / stdin) over the `fdbsql`
+`database/sql` driver; `frl meta catalog databases/schemas/templates/get`
+reads the relational catalog at `__SYS/CATALOG` — schema auto-discovery
+with no `meta_file` wiring. Neither needs `keyspace_path` or a metadata
+source in the context; they address stores by `--database`/`--schema`.
+Plain-core clusters (no relational layer) get a clear "no relational
+catalog on this cluster" error pointing back at Path A/B.

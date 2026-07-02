@@ -621,7 +621,7 @@ type StoreBuilder struct {
 	metaData                  *RecordMetaData
 	subspace                  subspace.Subspace
 	indexRebuildPolicy        IndexRebuildPolicy
-	bypassFullStoreLockReason string
+	bypassFullStoreLockReason *string                  // nil = no bypass; Java's @Nullable String
 	storeStateCache           FDBRecordStoreStateCache // per-store override; nil = use db cache
 	database                  *FDBDatabase             // for inheriting cache
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
@@ -663,10 +663,13 @@ func (b *StoreBuilder) SetIndexRebuildPolicy(policy IndexRebuildPolicy) *StoreBu
 
 // SetBypassFullStoreLockReason sets a reason string that, if it matches the
 // stored FULL_STORE lock reason exactly, allows the store to be opened despite
-// the lock. This is intended for recovery operations.
+// the lock. This is intended for recovery operations. Calling it with ""
+// bypasses a lock whose stored reason is empty — Java's bypass is a
+// @Nullable String compared with equals(), so the empty string is a valid
+// bypass value, distinct from "no bypass" (the field's nil default).
 // Matches Java's FDBRecordStore.Builder.setBypassFullStoreLockReason().
 func (b *StoreBuilder) SetBypassFullStoreLockReason(reason string) *StoreBuilder {
-	b.bypassFullStoreLockReason = reason
+	b.bypassFullStoreLockReason = &reason
 	return b
 }
 

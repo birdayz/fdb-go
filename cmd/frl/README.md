@@ -1,8 +1,7 @@
 # frl
 
 Operator and developer CLI for the Go FoundationDB Record Layer. Separate
-Go module so library consumers of `github.com/birdayz/fdb-record-layer-go`
-don't inherit CLI deps.
+Go module so library consumers of `fdb.dev` don't inherit CLI deps.
 
 See **[docs/operator-guide.md](docs/operator-guide.md)** for the full
 wiring guide (Go + Java apps, both metadata paths). This README is a
@@ -15,7 +14,7 @@ Want to try it end-to-end against a live cluster in 5 steps? See
 ## Install
 
 ```sh
-go install github.com/birdayz/fdb-record-layer-go/cmd/frl@latest
+go install fdb.dev/cmd/frl@latest
 ```
 
 Or build inside the repo:
@@ -54,16 +53,21 @@ via `recordlayer.WriteRecordMetaData`; Java: `meta.toProto().writeTo(out)`).
 
 ## Command surface
 
-### Data (read-only)
+### Data
 
 ```
-frl record get <pk>                          # single record by PK
+frl record get <pk> [--type T]               # single record by PK (composite: 1,1)
 frl record scan [--type T] [--reverse] [--limit N]  # newline-delimited JSON envelopes
 frl record count [--type T] [-o json]        # via atomic count index
+frl record put --type T '<json>' [--dry-run] --yes   # write (guarded)
+frl record delete <pk> [--dry-run] --yes             # write (guarded)
 
 frl index ls [--no-fdb] [-o json]            # name, type, state, record types
 frl index describe <name> [-o json]          # full definition from metadata
 frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
+frl index build <name> --yes                 # online build, resumable (write)
+frl index rebuild <name> --yes               # clear + build from scratch (write)
+frl index set-state <name> <state> --yes     # READABLE/WRITE_ONLY/DISABLED (write)
 ```
 
 ### Store
@@ -71,6 +75,9 @@ frl index scan <name> [--reverse] [--limit N] # index entries as JSON envelopes
 ```
 frl store info [-o json]                     # DataStoreInfo header, no metadata needed
 frl store dump [--subspace L] [--limit N]    # tuple-decoded forensic view; filter by subspace label
+frl store lock <state> [--reason R] --yes    # header lock (write)
+frl store unlock --yes                       # clear the lock (write)
+frl store truncate --yes                     # delete EVERY record (double-gated)
 ```
 
 ### Metadata
@@ -83,6 +90,7 @@ frl meta types describe <name>               # PK, type key, proto msg, indexes
 frl meta validate --file <f> [-o json]       # standalone .pb validation
 frl meta evolve-check --old <f> --new <f> [-o json]  # MetaDataEvolutionValidator (CI-friendly)
 frl meta diff <old> <new> [-o json]          # diff (text: +/-/~, json: sections.added/removed/changed)
+frl meta apply --file <f> --yes              # validate + persist into FDBMetaDataStore (write)
 ```
 
 ### Context + navigation + escape
@@ -94,24 +102,32 @@ frl config use-context <name>
 frl config current-context [-o json]
 frl config get-contexts [-o json]
 frl config view [--context <name>]
-frl config schema                            # empty Config as JSON (field discovery)
 
+frl status [-o json]                         # one-shot wiring check: cluster/store/metadata/catalog
 frl keyspace resolve <path> [-o json]        # logical path → FDB byte prefix
 frl tx read-version [-o json]                # current GRV (cluster smoke check)
 
 frl version [--short] [-o json]              # binary + Go toolchain version
 ```
 
-## Flags (current v1 surface)
+## Flags (shared surface)
 
 ```
---context <name>        # on all store-touching commands
---meta-file <path>      # overrides Context.metadata for this call
---no-fdb                # index ls only — metadata-only render
---reverse               # record scan, index scan — walk in reverse PK / key order
---subspace <label>      # store dump only — limit to one subspace
--o|--output text|json   # structured-output commands (see below)
+--context <name>          # on all store-touching commands
+--meta-file <path>        # overrides Context.metadata for this call
+--database + --schema     # relational addressing: keyspace + metadata from
+                          #   the catalog (schema-pinned template version)
+--cluster-file <path>     # overrides Context.cluster_file; chains with
+                          #   `frl sql --cluster-file $(frl fdb up) …`
+--keyspace-tuple <json>   # typed keyspace, e.g. '["myapp", 42, {"uuid": "…"}]'
+--no-fdb                  # index ls only — metadata-only render
+--reverse                 # record scan, index scan — walk in reverse PK / key order
+--subspace <label>        # store dump only — limit to one subspace
+-o|--output text|json     # structured-output commands (see below)
 ```
+
+Contexts support the same addressing modes: set exactly one of
+`keyspace_path`, `keyspace_tuple`, or `database` + `schema`.
 
 ## Structured output (`-o json`)
 
@@ -126,7 +142,7 @@ Fifteen commands emit machine-readable JSON on demand:
 | `meta types describe` | `{name, primary_key, record_type_key, proto_message, proto_field_count, indexes, multi_type_indexes, universal_indexes}` |
 | `meta validate` | `{file, valid}` |
 | `meta evolve-check` | `{old, new, valid}` |
-| `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` |
+| `meta diff` | `{version?, record_types.{added,removed,changed}, indexes.{…}}` — added: `{name, detail}`, removed: names, changed: `{name, changes: [{field, old, new}]}` |
 | `config view` | selected `Context` as protojson (snake_case; `-o yaml` is the default) |
 | `config get-contexts` | array of `{name, active}` |
 | `config current-context` | `{name}` |
@@ -182,15 +198,15 @@ Tab-complete covers:
 
 ## Testing
 
-- `go test ./internal/...` — unit tests (no FDB needed)
-- `go test -tags=integration ./internal/cmd/...` — end-to-end against an
-  FDB testcontainer, covers every read-only command
-- `bazelisk test //cmd/frl/...` — Bazel-driven unit tests
+- `go test ./internal/...` — the full suite: unit tests plus end-to-end
+  tests against an FDB testcontainer (every read command, `sql`, and
+  `meta catalog`). Without Docker the e2e tests skip with the repo's one
+  allowed skip ("FDB not available (no Docker)"); unit tests always run.
+- `bazelisk test //cmd/frl/...` — the same suite under Bazel; this is
+  what CI runs via `bazelisk test //...`, so the e2e net gates merges.
 
 ## What's not yet wired
 
-Writes (`record put`, `record delete`, `meta apply`, `store truncate` /
-`destroy` / `lock`, `index build` / `rebuild` / `set-state`), `config
-add-context`, `keyspace ls`/`tree` (FDB directory layer), `tx run`. See
-the repo-root `TODO.md` section `## frl CLI` for the full design +
-what's deferred and why.
+`config add-context`. Everything else from the v2 design has landed —
+see `rfcs/174-frl-cli-v2.md` at the repo root for the design, slice
+plan, and review record.

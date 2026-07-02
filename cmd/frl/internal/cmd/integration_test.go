@@ -1,13 +1,12 @@
-//go:build integration
-
 // Integration tests for the frl CLI. Spins up an FDB testcontainer once
 // per process, seeds a store via the recordlayer API, then drives cobra
 // commands end-to-end.
 //
-// Skipped by default (opt-in build tag) so `go test ./...` and
-// `bazelisk test //cmd/frl/...` stay fast. Run with:
-//
-//	go test -tags=integration ./cmd/frl/internal/cmd/...
+// No build tag: like every other FDB-backed suite in this repo these run
+// under `go test ./...` and `bazelisk test //...` (and therefore in CI —
+// RFC-174 Slice 1). Without Docker the container start fails, the
+// fixture stays nil, and each integration test skips with the one
+// allowed skip: "FDB not available (no Docker)".
 package cmd
 
 import (
@@ -27,6 +26,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
@@ -52,8 +52,10 @@ func TestMain(m *testing.M) {
 		foundationdbtc.WithStorageEngine("memory"),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "integration setup: start FDB container: %v\n", err)
-		os.Exit(1)
+		// No Docker — run unit tests only; integration tests skip via
+		// bindConfig/requireFixture ("FDB not available (no Docker)").
+		fmt.Fprintf(os.Stderr, "frl integration fixture unavailable (running unit tests only): %v\n", err)
+		os.Exit(m.Run())
 	}
 
 	clusterFilePath, err := container.ClusterFilePath(ctx)
@@ -180,6 +182,7 @@ var (
 // and one seeded Order so record count returns a non-zero number.
 func setupCountFixture(t *testing.T) *integrationFixture {
 	t.Helper()
+	requireFixture(t)
 	countFixtureOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
@@ -269,12 +272,24 @@ func runCmd(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// requireFixture skips the calling test when the FDB testcontainer
+// couldn't be started (no Docker) — the one allowed skip — and returns
+// the fixture otherwise.
+func requireFixture(t *testing.T) *integrationFixture {
+	t.Helper()
+	if fixture == nil {
+		t.Skip("FDB not available (no Docker)")
+	}
+	return fixture
+}
+
 // bindConfig points FRL_CONFIG at the fixture config for the current test.
 // Using t.Setenv keeps tests serial for this bit (t.Setenv forbids Parallel),
 // which is fine — integration tests are serialised anyway via the single
-// seeded store.
+// seeded store. Skips when there is no fixture (no Docker).
 func bindConfig(t *testing.T) {
 	t.Helper()
+	requireFixture(t)
 	t.Setenv("FRL_CONFIG", fixture.configFilePath)
 }
 
@@ -419,8 +434,13 @@ func TestIntegration_IndexLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index ls: %v\nout:\n%s", err, out)
 	}
-	if !strings.Contains(out, "Order$price") || !strings.Contains(out, "readable") {
-		t.Errorf("index ls didn't show Order$price readable:\n%s", out)
+	// States render as the record layer's canonical uppercase names
+	// (READABLE / WRITE_ONLY / …) — the same identifiers Java logs.
+	// This assertion was lowercase "readable" from the day it was
+	// written and the renderer never produced it: red-since-birth,
+	// invisible because the tagged suite ran nowhere (RFC-174 Slice 1).
+	if !strings.Contains(out, "Order$price") || !strings.Contains(out, "READABLE") {
+		t.Errorf("index ls didn't show Order$price READABLE:\n%s", out)
 	}
 }
 
@@ -584,7 +604,85 @@ func TestIntegration_TxReadVersion_JSON(t *testing.T) {
 	}
 }
 
+// snapshotStoreBytes reads every key-value pair under ss in one snapshot
+// read and returns a stable string rendering — the "byte-identical
+// before/after" comparator for mutation regression tests.
+func snapshotStoreBytes(t *testing.T, clusterFile string, ss subspace.Subspace) string {
+	t.Helper()
+	db, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatalf("open FDB: %v", err)
+	}
+	begin, end := ss.FDBRangeKeys()
+	result, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		var b strings.Builder
+		iter := rtx.Snapshot().GetRange(fdb.KeyRange{Begin: begin, End: end},
+			fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+		for iter.Advance() {
+			kv, err := iter.Get()
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&b, "%x=%x\n", kv.Key, kv.Value)
+		}
+		return b.String(), nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot store range: %v", err)
+	}
+	return result.(string)
+}
+
+// Regression (RFC-174 Slice 0 bug 5, Graefe G2): read-only commands must
+// NEVER mutate the store they inspect. withStore used to call Open()
+// without SetSkipPossiblyRebuild inside a read-write transaction, so a
+// `record scan --meta-file <newer>` ran checkPossiblyRebuild and wrote —
+// header version bump + index clears/rebuild marks — from a scan.
+func TestIntegration_RecordScan_NewerMetadataDoesNotMutateStore(t *testing.T) {
+	bindConfig(t)
+
+	// Newer metadata: the fixture's shape plus one more index. AddIndex
+	// bumps the metadata version past the store header's, which is
+	// exactly the state that makes checkPossiblyRebuild want to write.
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$quantity", recordlayer.Field("quantity")))
+	newerMD, err := b.Build()
+	if err != nil {
+		t.Fatalf("build newer metadata: %v", err)
+	}
+	newerFile := filepath.Join(t.TempDir(), "newer-meta.pb")
+	nf, err := os.Create(newerFile)
+	if err != nil {
+		t.Fatalf("create newer meta.pb: %v", err)
+	}
+	if err := recordlayer.WriteRecordMetaData(newerMD, nf); err != nil {
+		t.Fatalf("write newer meta.pb: %v", err)
+	}
+	nf.Close()
+
+	ss := subspace.Sub("frl", "integration")
+	before := snapshotStoreBytes(t, fixture.clusterFilePath, ss)
+
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--meta-file", newerFile)
+	if err != nil {
+		t.Fatalf("record scan with newer metadata: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+
+	after := snapshotStoreBytes(t, fixture.clusterFilePath, ss)
+	if before != after {
+		t.Errorf("read-only `record scan` mutated the store (checkPossiblyRebuild wrote)\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestIntegration_StoreInfo_EmptyKeyspace(t *testing.T) {
+	requireFixture(t)
 	// Point at a keyspace that has no store at it yet. store info should
 	// return a clear "no store header" error rather than panic or hang.
 	// Reuses the primary fixture's cluster + meta.pb but overrides the
@@ -612,6 +710,21 @@ contexts:
 	// know it's a provisioning question, not a permissions / network issue.
 	if !strings.Contains(err.Error(), "store does not exist") {
 		t.Errorf("error = %v; want 'store does not exist'", err)
+	}
+	// Regression: the reported keyspace must be the raw-byte hex of the
+	// store-info key (paste-able into fdbcli), not the hex of fdb.Key's
+	// Printable string form — %x on fdb.Key routes through Stringer and
+	// produced "5c7830…" garbage.
+	ss, perr := parseKeyspacePath("/frl/never-written")
+	if perr != nil {
+		t.Fatalf("parseKeyspacePath: %v", perr)
+	}
+	wantHex := keyHex(ss.Pack(tuple.Tuple{recordlayer.StoreInfoKey}))
+	if !strings.Contains(err.Error(), wantHex) {
+		t.Errorf("error = %v; want raw-byte key hex %q", err, wantHex)
+	}
+	if strings.Contains(err.Error(), "5c78") {
+		t.Errorf("error = %v; contains escaped-string hex (the %%x-on-fdb.Key bug)", err)
 	}
 }
 
@@ -679,5 +792,84 @@ func TestIntegration_RecordCount_JSON(t *testing.T) {
 	}
 	if !strings.Contains(out, `3`) {
 		t.Errorf("JSON output missing expected count value (3):\n%s", out)
+	}
+}
+
+// --keyspace-tuple addresses the fixture store by its typed tuple path —
+// the escape hatch for keyspaces the slash-path syntax can't express
+// (RFC-174 §3.1). Same store, third addressing mode.
+func TestIntegration_KeyspaceTuple_AddressesFixtureStore(t *testing.T) {
+	bindConfig(t)
+	out, err := runCmd(t, "record", "scan", "--limit", "1",
+		"--keyspace-tuple", `["frl", "integration"]`,
+		"--meta-file", fixture.metaFilePath)
+	if err != nil {
+		t.Fatalf("record scan --keyspace-tuple: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+}
+
+// --cluster-file must win over the context's cluster_file on the
+// withStore path (Graefe impl-review: withStore used to open from the
+// context unconditionally — `index rebuild --cluster-file X` would have
+// cleared the index on the DEFAULT cluster, then built on X).
+func TestIntegration_ClusterFileFlag_OverridesContext(t *testing.T) {
+	requireFixture(t)
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: bogus
+contexts:
+  - name: bogus
+    cluster_file: %s
+    keyspace_path: /frl/integration
+    metadata:
+      meta_file: %s
+`, filepath.Join(tmp, "missing.cluster"), fixture.metaFilePath)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	// Sanity: the context's nonexistent cluster file fails on its own…
+	if _, err := runCmd(t, "record", "scan", "--limit", "1"); err == nil {
+		t.Fatal("scan via nonexistent context cluster_file must fail")
+	}
+	// …and the flag must actually be used — pointing it at the live
+	// cluster makes the same command work.
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--cluster-file", fixture.clusterFilePath)
+	if err != nil {
+		t.Fatalf("record scan --cluster-file: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
+	}
+}
+
+// --meta-file overrides only the METADATA source; a context addressed by
+// keyspace_tuple must keep its tuple (codex P2: this combination used to
+// fall through to the empty keyspace_path and fail).
+func TestIntegration_KeyspaceTupleContext_MetaFileOverride(t *testing.T) {
+	requireFixture(t)
+	tmp := t.TempDir()
+	configFile := filepath.Join(tmp, "config.yaml")
+	cfgYAML := fmt.Sprintf(`current_context: tup
+contexts:
+  - name: tup
+    cluster_file: %s
+    keyspace_tuple: ["frl", "integration"]
+`, fixture.clusterFilePath)
+	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", configFile)
+
+	out, err := runCmd(t, "record", "scan", "--limit", "1", "--meta-file", fixture.metaFilePath)
+	if err != nil {
+		t.Fatalf("record scan with keyspace_tuple context + --meta-file: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "primary_key") {
+		t.Errorf("scan produced no records:\n%s", out)
 	}
 }

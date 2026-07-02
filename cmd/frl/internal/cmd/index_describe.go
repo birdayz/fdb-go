@@ -13,7 +13,8 @@ import (
 )
 
 func newIndexDescribeCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	c := &cobra.Command{
 		Use:   "describe <name>",
 		Short: "Show full definition of one index",
@@ -36,15 +37,11 @@ func newIndexDescribeCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			src, err := resolveMetaSourceFile(cfgCtx, override)
-			if err != nil {
-				return err
-			}
-			md, err := src.Load(cmd.Context())
+			md, err := loadTargetMetadata(cmd.Context(), target)
 			if err != nil {
 				return err
 			}
@@ -58,8 +55,7 @@ func newIndexDescribeCmd() *cobra.Command {
 			return writeIndexDescription(cmd.OutOrStdout(), md, idx)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }

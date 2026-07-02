@@ -221,8 +221,11 @@ func (store *FDBRecordStore) validateRecordUpdateAllowedLocked() error {
 // validateStoreLockState checks lock state during store open.
 // FULL_STORE prevents opening unless bypass reason matches exactly.
 // At FormatVersion >= FULL_STORE_LOCK (14), unknown/unspecified states also prevent opening.
-// Matches Java's FDBRecordStore.validateStoreLockState().
-func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockReason string) error {
+// Matches Java's FDBRecordStore.validateStoreLockState(): the bypass is
+// nullable (nil = none), so a lock stored with an empty reason is
+// bypassable by supplying "" — non-nil empty compares equal, exactly as
+// Java's `bypassFullStoreLockReason.equals(storeLockState.getReason())`.
+func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockReason *string) error {
 	lockState := storeHeader.GetStoreLockState()
 	if lockState == nil {
 		return nil
@@ -232,7 +235,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 
 	// FULL_STORE: blocked unless bypass reason matches exactly
 	if state == gen.DataStoreInfo_StoreLockState_FULL_STORE {
-		if bypassFullStoreLockReason != "" && bypassFullStoreLockReason == lockState.GetReason() {
+		if bypassFullStoreLockReason != nil && *bypassFullStoreLockReason == lockState.GetReason() {
 			return nil // bypass successful
 		}
 		return &StoreIsFullyLockedError{
@@ -1635,8 +1638,8 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 // (matching Java's checkVersion which skips cache on lock bypass).
 // Called during store Build() before concurrent access, but uses stateMu
 // for consistency.
-func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason string) error {
-	if bypassReason != "" {
+func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason *string) error {
+	if bypassReason != nil {
 		// Bypass cache when using lock bypass — need fresh state to validate lock.
 		state, err := loadRecordStoreState(store, existenceCheck)
 		if err != nil {

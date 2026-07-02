@@ -13,12 +13,9 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 )
 
 // newMetaCatalogCmd is the `meta catalog` noun — a read-only view of
@@ -58,7 +55,7 @@ func newMetaCatalogCmd() *cobra.Command {
 // relational model; this command is the "what namespaces exist?"
 // entry point.
 func newMetaCatalogDatabasesCmd() *cobra.Command {
-	var contextName, outputFmt string
+	var contextName, outputFmt, clusterFile string
 	c := &cobra.Command{
 		Use:   "databases",
 		Short: "List databases in the relational catalog",
@@ -74,11 +71,11 @@ func newMetaCatalogDatabasesCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, err := resolveCatalogContext(contextName)
+			cf, err := resolveCatalogContext(contextName, clusterFile)
 			if err != nil {
 				return err
 			}
-			ids, err := runCatalogQuery(cmd.Context(), cfgCtx,
+			ids, err := runCatalogQuery(cmd.Context(), cf,
 				func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]string, error) {
 					return collectStrings(cat.ListDatabases(txn, nil))
 				})
@@ -90,6 +87,7 @@ func newMetaCatalogDatabasesCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
@@ -98,7 +96,7 @@ func newMetaCatalogDatabasesCmd() *cobra.Command {
 // database URI; the default enumerates schemas across every database.
 // Each schema is (database_id, schema_name, template_name, template_version).
 func newMetaCatalogSchemasCmd() *cobra.Command {
-	var contextName, outputFmt, databaseID string
+	var contextName, outputFmt, databaseID, clusterFile string
 	c := &cobra.Command{
 		Use:   "schemas",
 		Short: "List schemas in the relational catalog",
@@ -119,11 +117,11 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, err := resolveCatalogContext(contextName)
+			cf, err := resolveCatalogContext(contextName, clusterFile)
 			if err != nil {
 				return err
 			}
-			rows, err := runCatalogQuery(cmd.Context(), cfgCtx,
+			rows, err := runCatalogQuery(cmd.Context(), cf,
 				func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]schemaRow, error) {
 					var (
 						rs      relapi.ResultSet
@@ -152,6 +150,7 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
 	c.Flags().StringVar(&databaseID, "database", "", "narrow to schemas in this database URI")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
@@ -162,7 +161,7 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 // this is the "what schemas have been uploaded?" entry point, while
 // `schemas` is "what schemas are currently bound?".
 func newMetaCatalogTemplatesCmd() *cobra.Command {
-	var contextName, outputFmt string
+	var contextName, outputFmt, clusterFile string
 	c := &cobra.Command{
 		Use:   "templates",
 		Short: "List schema templates in the relational catalog",
@@ -179,11 +178,11 @@ func newMetaCatalogTemplatesCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, err := resolveCatalogContext(contextName)
+			cf, err := resolveCatalogContext(contextName, clusterFile)
 			if err != nil {
 				return err
 			}
-			rows, err := runCatalogQuery(cmd.Context(), cfgCtx,
+			rows, err := runCatalogQuery(cmd.Context(), cf,
 				func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]templateRow, error) {
 					rs, err := cat.SchemaTemplateCatalog().ListTemplates(txn)
 					if err != nil {
@@ -204,6 +203,7 @@ func newMetaCatalogTemplatesCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
@@ -213,7 +213,7 @@ func newMetaCatalogTemplatesCmd() *cobra.Command {
 // --output yaml. Complements `meta get --meta-file` / with-context by
 // pulling the proto straight out of the relational catalog.
 func newMetaCatalogGetCmd() *cobra.Command {
-	var contextName, outputFmt string
+	var contextName, outputFmt, clusterFile string
 	var version int
 	c := &cobra.Command{
 		Use:   "get <template-name>",
@@ -235,11 +235,11 @@ func newMetaCatalogGetCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "json", "yaml"); err != nil {
 				return err
 			}
-			cfgCtx, err := resolveCatalogContext(contextName)
+			cf, err := resolveCatalogContext(contextName, clusterFile)
 			if err != nil {
 				return err
 			}
-			md, err := runCatalogQuery(cmd.Context(), cfgCtx,
+			md, err := runCatalogQuery(cmd.Context(), cf,
 				func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) (*recordlayer.RecordMetaData, error) {
 					tc := cat.SchemaTemplateCatalog()
 					var (
@@ -272,6 +272,7 @@ func newMetaCatalogGetCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file")
 	c.Flags().IntVar(&version, "version", 0, "template version (0 = latest)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "json", "output format: json or yaml")
 	return c
@@ -279,15 +280,16 @@ func newMetaCatalogGetCmd() *cobra.Command {
 
 // --- shared helpers --------------------------------------------------------
 
-// resolveCatalogContext is a thin wrapper over resolveContextAndOverride
-// that requires a context (catalog queries touch FDB) and discards the
-// meta-source override — the catalog is its own metadata source.
-func resolveCatalogContext(contextName string) (*configv1.Context, error) {
-	cfgCtx, _, err := resolveContextAndOverride(contextName, "")
+// resolveCatalogContext resolves the effective cluster file for catalog
+// queries: the --cluster-file flag when given (self-contained, no config
+// needed — chains with `frl fdb up`), else the context's cluster_file.
+func resolveCatalogContext(contextName, clusterFile string) (string, error) {
+	f := storeAddressFlags{contextName: contextName, clusterFile: clusterFile}
+	target, err := f.resolve()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return cfgCtx, nil
+	return target.clusterFile(), nil
 }
 
 // runCatalogQuery encapsulates the "open FDB → open the catalog →
@@ -301,12 +303,12 @@ func resolveCatalogContext(contextName string) (*configv1.Context, error) {
 // but we still dial FDB via the context's cluster_file.
 func runCatalogQuery[T any](
 	ctx context.Context,
-	cfgCtx *configv1.Context,
+	clusterFile string,
 	fn func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) (T, error),
 ) (T, error) {
 	var zero T
 
-	db, err := openDatabase(cfgCtx.GetClusterFile())
+	db, err := openDatabase(clusterFile)
 	if err != nil {
 		return zero, err
 	}
@@ -318,8 +320,7 @@ func runCatalogQuery[T any](
 	// DefaultCatalogSubspace() catalog.OpenRecordLayerStoreCatalog uses.
 	// Read from the same place the driver writes so `meta catalog` sees
 	// what `frl sql` just created.
-	ks := relkeyspace.New(subspace.Sub())
-	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
+	cat, err := catalog.NewRecordLayerStoreCatalog(relationalKeyspace().CatalogSubspace())
 	if err != nil {
 		return zero, fmt.Errorf("open relational catalog: %w", err)
 	}
@@ -329,18 +330,23 @@ func runCatalogQuery[T any](
 		return fn(ctx, cat, txn)
 	})
 	if err != nil {
-		// Turn "no store header at keyspace …" into an operator-friendly
-		// "catalog not found on this cluster" — the plain-core branch
-		// the PR comment flagged. Matches the shape errors.As users
-		// expect from the rest of the CLI.
-		if strings.Contains(err.Error(), "store does not exist") ||
-			strings.Contains(err.Error(), "no store header") {
-			return zero, fmt.Errorf("no relational catalog on this cluster — `__SYS/CATALOG` is empty; this is plain-core, not fdb-relational. Use `frl meta get --meta-file <path>` instead")
-		}
-		return zero, err
+		return zero, wrapMissingCatalogErr(err)
 	}
 	v, _ := result.(T)
 	return v, nil
+}
+
+// wrapMissingCatalogErr turns "no store header at keyspace …" into an
+// operator-friendly "catalog not found on this cluster" — the
+// plain-core branch. Shared by every catalog reader (`meta catalog`,
+// catalogSource for --database/--schema addressing) so the message
+// can't drift.
+func wrapMissingCatalogErr(err error) error {
+	if strings.Contains(err.Error(), "store does not exist") ||
+		strings.Contains(err.Error(), "no store header") {
+		return fmt.Errorf("no relational catalog on this cluster — `__SYS/CATALOG` is empty; this is plain-core, not fdb-relational. Use `frl meta get --meta-file <path>` instead")
+	}
+	return err
 }
 
 // --- rendering -------------------------------------------------------------

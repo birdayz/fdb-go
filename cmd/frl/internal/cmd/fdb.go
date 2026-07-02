@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,7 +40,8 @@ const (
 )
 
 func newFdbUpCmd() *cobra.Command {
-	var name, image, ctxName, keyspace string
+	var name, image, ctxName, keyspace, outputFmt string
+	var port int
 	c := &cobra.Command{
 		Use:   "up",
 		Short: "Start and configure a local FoundationDB, then point frl at it",
@@ -47,13 +49,25 @@ func newFdbUpCmd() *cobra.Command {
 			"single memory`, waits for it to become available, copies its " +
 			"cluster file next to the frl config, and writes (and activates) a " +
 			"frl context pointing at it. After this, `frl sql` and the other " +
-			"commands work with no further setup.",
+			"commands work with no further setup.\n\n" +
+			"UNIX stdout contract: progress goes to stderr; stdout carries " +
+			"exactly the cluster-file path, so the command chains:\n\n" +
+			"  frl sql --cluster-file $(frl fdb up) --database /demo\n\n" +
+			"--output / -o: 'text' (default — bare path) or 'json' " +
+			"({cluster_file, container, context}).\n\n" +
+			"--port sets the fdbserver port inside the container (host " +
+			"network) — pick distinct ports to run several instances.",
 		Example: `  frl fdb up
-  frl fdb up --name myfdb --context myfdb
-  frl fdb up --image foundationdb/foundationdb:7.3.77`,
+  frl fdb up --name myfdb --context myfdb --port 4689
+  frl sql --cluster-file $(frl fdb up) --database /demo`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			out := cmd.OutOrStdout()
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
+			}
+			// Progress is chatter, not output — stderr, so that
+			// $(frl fdb up) captures only the cluster-file path.
+			progress := cmd.ErrOrStderr()
 			if _, err := exec.LookPath("docker"); err != nil {
 				return fmt.Errorf("docker not found on PATH: %w", err)
 			}
@@ -61,37 +75,35 @@ func newFdbUpCmd() *cobra.Command {
 				return fmt.Errorf("container %q already exists; run `frl fdb down --name %s` first (or pick --name)", name, name)
 			}
 
-			fmt.Fprintf(out, "Starting %s (container %q)...\n", image, name)
-			if o, err := runDocker("run", "-d", "--name", name, "--network", "host", image); err != nil {
+			fmt.Fprintf(progress, "Starting %s (container %q)...\n", image, name)
+			if o, err := runDocker("run", "-d", "--name", name, "--network", "host",
+				"--env", fmt.Sprintf("FDB_PORT=%d", port), image); err != nil {
 				return fmt.Errorf("docker run: %w\n%s", err, o)
 			}
 
 			// fdbcli is not reachable the instant the container starts; retry
 			// the one-time `configure new` until it takes.
-			fmt.Fprintln(out, "Configuring (new single memory)...")
+			fmt.Fprintln(progress, "Configuring (new single memory)...")
 			if err := retry(15, 2*time.Second, func() error {
 				o, err := runDocker("exec", name, "fdbcli", "--exec", "configure new single memory")
-				if err != nil {
-					return fmt.Errorf("%w: %s", err, strings.TrimSpace(o))
-				}
-				return nil
+				return configureNewOutcome(o, err)
 			}); err != nil {
 				return fmt.Errorf("configure cluster (is the image healthy? `frl fdb down --name %s` to clean up): %w", name, err)
 			}
 
-			fmt.Fprint(out, "Waiting for the database to become available")
+			fmt.Fprint(progress, "Waiting for the database to become available")
 			if err := retry(30, 2*time.Second, func() error {
-				fmt.Fprint(out, ".")
+				fmt.Fprint(progress, ".")
 				o, _ := runDocker("exec", name, "fdbcli", "--exec", "status minimal")
 				if strings.Contains(o, "is available") {
 					return nil
 				}
 				return fmt.Errorf("not available yet")
 			}); err != nil {
-				fmt.Fprintln(out)
+				fmt.Fprintln(progress)
 				return fmt.Errorf("database did not become available: %w", err)
 			}
-			fmt.Fprintln(out, " ready")
+			fmt.Fprintln(progress, " ready")
 
 			// Copy the cluster file next to the frl config so the written
 			// context's path is stable and operator-discoverable.
@@ -116,16 +128,29 @@ func newFdbUpCmd() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintf(out, "\nFoundationDB is up. Context %q is active (cluster file %s).\n", ctxName, clusterFile)
-			fmt.Fprintf(out, "Try: frl tx read-version   |   frl sql --database /myapp\n")
-			fmt.Fprintf(out, "Tear down with: frl fdb down --name %s\n", name)
-			return nil
+			fmt.Fprintf(progress, "\nFoundationDB is up. Context %q is active (cluster file %s).\n", ctxName, clusterFile)
+			fmt.Fprintf(progress, "Try: frl tx read-version   |   frl sql --database /myapp\n")
+			fmt.Fprintf(progress, "Tear down with: frl fdb down --name %s\n", name)
+
+			if outputFmt == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(map[string]string{
+					"cluster_file": clusterFile,
+					"container":    name,
+					"context":      ctxName,
+				})
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), clusterFile)
+			return err
 		},
 	}
 	c.Flags().StringVar(&name, "name", defaultFdbContainer, "Docker container name")
 	c.Flags().StringVar(&image, "image", defaultFdbImage, "FoundationDB Docker image")
 	c.Flags().StringVar(&ctxName, "context", defaultFdbContainer, "frl context name to write and activate")
 	c.Flags().StringVar(&keyspace, "keyspace", "/dev", "keyspace_path for the written context")
+	c.Flags().IntVar(&port, "port", 4500, "fdbserver port (host network)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "stdout format: text (bare cluster-file path) or json")
 	return c
 }
 
@@ -193,6 +218,23 @@ func setContext(cfg *configv1.Config, name, clusterFile, keyspace string) {
 		KeyspacePath: keyspace,
 	})
 	cfg.CurrentContext = name
+}
+
+// configureNewOutcome interprets one `fdbcli configure new` attempt.
+// `configure new` is NOT idempotent: if an earlier attempt succeeded
+// server-side (including a half-acknowledged one where fdbcli exited
+// nonzero anyway), every subsequent attempt reports "Database already
+// exists" until the retry budget is exhausted — failing a perfectly
+// healthy cluster. That response means the database is configured, so
+// it is success, not an error.
+func configureNewOutcome(output string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(output, "Database already exists") {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
 }
 
 func runDocker(args ...string) (string, error) {

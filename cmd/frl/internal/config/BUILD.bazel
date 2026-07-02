@@ -9,6 +9,7 @@ go_library(
         "//cmd/frl/gen/frl/config/v1:config",
         "@build_buf_go_protoyaml//:protoyaml",
         "@com_github_birdayz_protobuf_ecosystem//protoconfig",
+        "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
 
