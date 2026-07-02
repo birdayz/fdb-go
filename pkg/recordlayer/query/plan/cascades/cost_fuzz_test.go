@@ -28,7 +28,7 @@ import (
 // RESTORE the monotonicity pin when child costing moves to winners
 // (BestMemberCostWith exists; the properties package doc promises it)
 // — it is a free oracle — and retire this fuzzer's weaker half.
-// Registered in RFC-174 §2 A2.
+// Registered in RFC-175 §2 A2.
 func FuzzCostSanity(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add(make([]byte, 8))
