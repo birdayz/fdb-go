@@ -18,16 +18,47 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Check nightly window
+        # A `schedule` trigger fires the WORKFLOW, but GitHub dispatches the
+        # actual JOB whenever hetzner-fdb (our single self-hosted slot) is
+        # free — a backlog (regular PR CI, or another nightly still running)
+        # can delay that by hours, landing this 1h coverage+race+bench run
+        # in the middle of the workday. The check MUST run here, as the
+        # first step on the runner that was actually allocated, not in a
+        # separate gate job before the queue: a pre-queue check passes at
+        # dispatch time and is stale by the time this runner is finally
+        # free hours later (codex, PR #445 round 1 — the first version of
+        # this gate had exactly that bug). `workflow_dispatch` (manual "run
+        # it now") always proceeds.
+        id: window
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HOUR=$(date -u +%-H)
+          # 00:00-07:00 UTC: generous margin past the 02:00 cron plus this
+          # job's 60m timeout.
+          if [ "$HOUR" -ge 0 ] && [ "$HOUR" -lt 7 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::this runner became available at ${HOUR}:00 UTC, outside the 00:00-07:00 nightly window (the self-hosted queue delayed dispatch) — skipping the rest of this job to protect daytime CI capacity; it fires again at tomorrow's scheduled time."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.window.outputs.ok == 'true'
         uses: actions/checkout@v5
 
       - name: Set up Go
+        if: steps.window.outputs.ok == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
 
       - name: Check Docker (else coverage + race silently no-op)
+        if: steps.window.outputs.ok == 'true'
         # The coverage run and the race step below drive real FDB testcontainers;
         # without Docker every FDB test hits the allowed `FDB not available (no Docker)`
         # skip and the job reports SUCCESS with no coverage/race data (RFC-107). Fail
@@ -36,10 +67,12 @@ jobs:
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — coverage/race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
 
       - name: Run tests with coverage
+        if: steps.window.outputs.ok == 'true'
         id: coverage
         run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
+        if: steps.window.outputs.ok == 'true'
         run: |
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
@@ -57,7 +90,7 @@ jobs:
             --test_summary=detailed
 
       - name: Generate coverage report
-        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
@@ -72,7 +105,7 @@ jobs:
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload coverage report to Hetzner Object Storage
-        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
         continue-on-error: true
         env:
           S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
@@ -95,7 +128,7 @@ jobs:
           echo "Coverage report: https://${S3_BUCKET}.${S3_ENDPOINT#https://}/reports/coverage/latest.html"
 
       - name: Upload coverage report as artifact
-        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
@@ -103,10 +136,11 @@ jobs:
           retention-days: 30
 
       - name: Run benchmarks
+        if: steps.window.outputs.ok == 'true'
         run: just bench-ci
 
       - name: Upload benchmark results as artifact
-        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: bench-results
@@ -114,6 +148,7 @@ jobs:
           retention-days: 90
 
       - name: Upload master benchmark baseline
+        if: steps.window.outputs.ok == 'true'
         continue-on-error: true
         env:
           S3_ACCESS_KEY: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
