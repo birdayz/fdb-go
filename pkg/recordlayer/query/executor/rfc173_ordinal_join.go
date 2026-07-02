@@ -232,16 +232,18 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // Slice 2 coexistence scoping).
 func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
-		// Shape tripwire (@claude PR-447): a pre-existing positional leg row
-		// must MATCH the leg type's width — the W2 gate restricts gated-join
-		// legs to shapes whose frontier rows derive from the same columns the
-		// seed typed the leg with, so a mismatch is a gate breach, not a
-		// legitimate row. Self-enforcing, consistent with the zero-match
-		// tripwire below; nil legType (folded RVs) has no width to check.
-		if legType != nil && len(qr.Positional.Slots) != len(legType.Fields) {
-			return nil, fmt.Errorf("RFC-173 leg adapter: positional leg row has %d slots but the leg type has %d fields — gated-join leg shape breach (W2 gate mis-scope or leg-type drift)", len(qr.Positional.Slots), len(legType.Fields))
+		// The passthrough requires ORDERED per-slot name agreement with the
+		// leg type (Torvalds PR-447 catch, superseding the width-only
+		// tripwire): a COVERING-INDEX leg's positional row is INDEX-shaped —
+		// buildCoveringRow types it value-columns-then-PK ([V, ID]), not
+		// table order ([ID, V]) — same width, different layout, and a baked
+		// leg ordinal would silently read the wrong slot. A non-aligned
+		// positional row is a LEGITIMATE plan shape (not a gate breach): fall
+		// through to Datum synthesis (covering Datums carry the correct bare
+		// UPPER keys), with the zero-match tripwire below as the final guard.
+		if legType == nil || positionalMatchesLegType(qr.Positional, legType) {
+			return qr.Positional, nil
 		}
-		return qr.Positional, nil
 	}
 	row := NewPositionalRow(legType)
 	if legType == nil {
@@ -260,6 +262,23 @@ func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.Ordi
 		}
 	}
 	return row, nil
+}
+
+// positionalMatchesLegType reports whether a leg's pre-existing positional
+// row is LAYOUT-IDENTICAL to the seed's leg type: same width AND the same
+// column name at every ordinal (case-insensitive) — the condition under which
+// baked leg ordinals read the right slots. Order-sensitive by design: a
+// covering-index row [V, ID] over a table typed [ID, V] must NOT pass.
+func positionalMatchesLegType(row *PositionalRow, legType *values.RecordType) bool {
+	if row.Type == nil || len(row.Type.Fields) != len(legType.Fields) || len(row.Slots) != len(legType.Fields) {
+		return false
+	}
+	for i := range legType.Fields {
+		if !strings.EqualFold(row.Type.Fields[i].Name, legType.Fields[i].Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // typeFieldNames lists a RecordType's field names for diagnostics.

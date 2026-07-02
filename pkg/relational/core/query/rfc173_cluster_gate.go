@@ -195,8 +195,9 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		return eligible
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
-		// distinct, CTE, values, …): the leg boundary sees the box's own
-		// output row, never a buried join's merged row.
+		// distinct, values, …): the leg boundary sees the box's own output
+		// row, never a buried join's merged row. (LogicalCTE has its OWN arm
+		// above — derived-table sources sit directly in leg position.)
 		return true
 	}
 }

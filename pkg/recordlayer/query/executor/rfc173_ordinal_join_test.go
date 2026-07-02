@@ -783,3 +783,62 @@ func TestRFC173S2_LegWindow_OutOfRangeIsLoud(t *testing.T) {
 		t.Fatalf("OrdinalResolutionError.Available = %v, want LEG B's names [ID W] — the window's TypeNames diagnostics", ore.Available)
 	}
 }
+
+// TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack pins the Torvalds
+// PR-447 catch: a COVERING-INDEX leg's positional row is INDEX-shaped
+// (value-columns-then-PK, e.g. [V, ID]) while the seed typed the leg in table
+// order ([ID, V]) — SAME width, different layout. The passthrough must
+// REJECT it (ordered per-slot name agreement) and fall back to Datum
+// synthesis, or baked leg ordinals silently read the wrong slots. The
+// aligned passthrough and the genuine width mismatch are pinned alongside.
+func TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack(t *testing.T) {
+	t.Parallel()
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	indexShaped := &values.RecordType{Fields: []values.Field{
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	}}
+	// Covering row: V=20 at slot 0, ID=1 at slot 1; Datum has the truth.
+	cov := &PositionalRow{Type: indexShaped, Slots: []any{int64(20), int64(1)}}
+	qr := QueryResult{Datum: map[string]any{"ID": int64(1), "V": int64(20)}, Positional: cov}
+
+	row, err := adaptLegPositional(qr, legType)
+	if err != nil {
+		t.Fatalf("adaptLegPositional: %v", err)
+	}
+	// The adapted row must be LEG-shaped: slot 0 = ID = 1 (a passthrough of
+	// the index-shaped row would put V=20 there — the silent misread).
+	if v, ok := row.Get(0); !ok || v != int64(1) {
+		t.Fatalf("adapted slot 0 = (%v, %v), want (1, true) — index-shaped passthrough would give 20", v, ok)
+	}
+	if v, ok := row.Get(1); !ok || v != int64(20) {
+		t.Fatalf("adapted slot 1 = (%v, %v), want (20, true)", v, ok)
+	}
+
+	// ALIGNED positional: passthrough (same object).
+	aligned := &PositionalRow{Type: legType, Slots: []any{int64(1), int64(20)}}
+	row, err = adaptLegPositional(QueryResult{Positional: aligned, Datum: map[string]any{"ID": int64(999)}}, legType)
+	if err != nil {
+		t.Fatalf("aligned adapt: %v", err)
+	}
+	if row != values.OrdinalRow(aligned) {
+		t.Fatal("an aligned positional row must pass through untouched")
+	}
+
+	// Width mismatch (covering row narrower than the leg type): also falls
+	// back to Datum synthesis, never an error — a legitimate plan shape.
+	narrow := &PositionalRow{
+		Type:  &values.RecordType{Fields: []values.Field{{Name: "V", FieldType: values.NotNullLong, Ordinal: 0}}},
+		Slots: []any{int64(20)},
+	}
+	row, err = adaptLegPositional(QueryResult{Positional: narrow, Datum: map[string]any{"ID": int64(1), "V": int64(20)}}, legType)
+	if err != nil {
+		t.Fatalf("narrow adapt: %v", err)
+	}
+	if v, _ := row.Get(0); v != int64(1) {
+		t.Fatalf("narrow-fallback slot 0 = %v, want 1 (Datum synthesis)", v)
+	}
+}

@@ -467,3 +467,92 @@ func TestFDB_RFC173_DupNameStarOverGatedJoin(t *testing.T) {
 		check(t, "SELECT * FROM pdup JOIN qdup ON pdup.id = qdup.id ORDER BY pdup.id")
 	})
 }
+
+// TestFDB_RFC173_CoveringIndexLegOverGatedJoin pins the Torvalds PR-447
+// catch's dimension E2E: a GATED join whose probe leg is served by a
+// COVERING index scan. Covering rows are INDEX-shaped (value-columns-then-PK
+// — [A_ID, ID]) while the seed types the leg in table order ([ID, A_ID]):
+// same width, different layout. The leg adapter must reject the misaligned
+// passthrough (ordered per-slot name agreement) and synthesize from the
+// Datum, or baked leg ordinals silently read c.id where c.a_id was asked —
+// unmissable here because the two columns live in DISJOINT value ranges.
+// The EXPLAIN assertion proves the plan actually exercises the covering
+// dimension (a fetch-backed probe would vacuously pass the row checks).
+func TestFDB_RFC173_CoveringIndexLegOverGatedJoin(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_rfc173_covleg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc173_covleg")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE rfc173_covleg_tmpl "+
+			"CREATE TABLE a (id BIGINT NOT NULL, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT NOT NULL, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX c_a_id ON c (a_id)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc173_covleg/s WITH TEMPLATE rfc173_covleg_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///testdb_rfc173_covleg?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// DISJOINT ranges: join keys (a.x / c.a_id) in 1..2, c.id in 100.. — a
+	// misread of c.a_id as c.id is unmissable. The join is on a.x (NOT a's
+	// PK, no index) so the planner cannot probe A — it must drive A as the
+	// outer and probe C through c_a_id, which COVERS the query (c.a_id is
+	// the only c-column touched).
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 1), (2, 1), (3, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 1), (102, 2)")
+
+	const q = "SELECT a.id, c.a_id FROM a JOIN c ON c.a_id = a.x ORDER BY a.id, c.a_id"
+
+	plan := rfc173PinExplain(t, db, ctx, q)
+	// CANARY (gate-pin-(b) precedent): the covering-leg-into-gated-join shape
+	// is UNREACHABLE today — fetch elimination lives in
+	// MergeProjectionAndFetchRule, which needs a projection DIRECTLY over the
+	// fetch, and join legs never have one (identical pre-flip; verified: the
+	// probe stays Fetch(IndexScan)). The adapter's alignment guard + unit pin
+	// (TestRFC173S2_AdaptLegPositional_IndexShapedFallsBack) carry the
+	// protection. If this canary goes RED — a COVERING probe appeared in a
+	// gated join's plan — the row assertions below become the live pin for
+	// the index-shaped-row dimension.
+	if !strings.Contains(plan, "Fetch(IndexScan(C_A_ID") {
+		t.Fatalf("expected the fetch-backed index probe (today's reachable shape) — plan: %s", plan)
+	}
+	if strings.Contains(plan, "COVERING") {
+		t.Fatalf("a COVERING probe reached a gated join — the canary fired: promote the row assertions to the live pin (plan: %s)", plan)
+	}
+
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var aid, cAID int64
+		if err := rows.Scan(&aid, &cAID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if cAID >= 100 {
+			t.Fatalf("c.a_id = %d — the c.id range: the covering row's INDEX-shaped layout leaked into a baked leg ordinal (the adapter passthrough misread)", cAID)
+		}
+		got = append(got, fmt.Sprintf("%d|%d", aid, cAID))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	// a1(x=1)×{c100,c101}, a2(x=1)×{c100,c101}, a3(x=2)×{c102}.
+	want := []string{"1|1", "1|1", "2|1", "2|1", "3|2"}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
