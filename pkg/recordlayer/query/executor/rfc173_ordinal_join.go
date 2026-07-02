@@ -462,6 +462,18 @@ func (b *ordinalJoinBirth) enabled() bool { return b != nil && b.Enabled }
 // zero-width binding and dies loudly on a legitimate plan. Called by
 // newFlatMapCursor with the inner plan; the NLJ path gets the same widening
 // directly from its predicate list in newOrdinalJoinBirth.
+//
+// WINDOW SCAFFOLDING like adaptLegPositional itself (Graefe): the walk exists
+// only because folded RVs and Datum-only legs coexist — it dies with the
+// adapter in Slice 4 (all-positional legs leave nothing to synthesize). Its
+// exact-set plan arms fail SAFE: a missed predicate surface leaves the leg
+// typeless → loud zero-width death, never silent.
+//
+// Multiple sources (RV, join preds, pushed SARGs) can each carry a leg's
+// type; this is CONFLICT-IMPOSSIBLE, not precedence — every baked reference
+// is a copy of the ONE seed-constructed typed QOV, and every transformation
+// preserves marker and type. The width-divergence panic below asserts that
+// load-bearing invariant.
 func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 	if !b.enabled() || plan == nil {
 		return
@@ -473,8 +485,10 @@ func (b *ordinalJoinBirth) widenLegTypesFromPlan(plan plans.RecordQueryPlan) {
 		}
 		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
-				if _, seen := b.LegTypes[qov.Correlation]; !seen {
+				if prev, seen := b.LegTypes[qov.Correlation]; !seen {
 					b.LegTypes[qov.Correlation] = rt
+				} else if len(prev.Fields) != len(rt.Fields) {
+					panic(fmt.Sprintf("RFC-173: leg %s carries DIVERGENT baked types (%d vs %d fields) across the RV/predicate/SARG sources — all baked references must copy the one seed-constructed typed QOV (planner bug)", qov.Correlation, len(prev.Fields), len(rt.Fields)))
 				}
 			}
 		}
