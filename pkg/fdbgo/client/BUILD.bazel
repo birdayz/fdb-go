@@ -109,6 +109,7 @@ go_test(
         "readpath_test.go",
         "readpath_timeout_test.go",
         "readpath_unit_test.go",
+        "readversion_race_test.go",
         "reply_ground_truth_test.go",
         "reset_option_lifecycle_test.go",
         "resolve_fallback_test.go",

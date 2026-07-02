@@ -193,7 +193,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
 		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
 		isBackward := keySelectorIsBackward(orEqual, offset)
-		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.spanContext, isBackward)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -269,7 +269,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -420,7 +420,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext, false)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -482,7 +482,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
@@ -565,7 +565,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.spanContext), replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -650,7 +650,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range. C++ getKeyRangeLocations
 		// receives the reverse flag so the proxy returns shards in scan order.
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId, tx.spanContext)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range: %w", err)
 		}
@@ -829,7 +829,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -1214,11 +1214,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	readVersion := tx.readVersion
 	tx.readVersionMu.Unlock()
 	// Capture the trace span here, SYNCHRONOUSLY — same reason as readVersion: the async
-	// WatchPoll must NOT read tx.spanContext later, because a `w := tr.Watch(k)` inside
-	// Database.Transact commits and postCommitReset()s the tx (regenerateSpan rewrites
-	// spanContext) before the future goroutine runs — reading it there is a data race
-	// (RFC-115 §4). Threaded through to sendWatch.
-	span := tx.spanContext
+	// WatchPoll must NOT read the tx span later, because a `w := tr.Watch(k)` inside
+	// Database.Transact commits and postCommitReset()s the tx (regenerateSpan rotates
+	// the span) before the future goroutine runs — a lazy read would stamp the NEXT
+	// incarnation's span on this watch (RFC-115 §4). Threaded through to sendWatch.
+	span := tx.currentSpan()
 
 	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
 	tx.AddReadConflictKey(key)
@@ -1273,8 +1273,8 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 	// Cancel()/reset()'s cancelWatches on watchCtx/watchCancel AND, if cancelWatches won, leak a
 	// never-cancelled poll. Binding at setup makes Reset()/Cancel() cancel the very context this
 	// loop holds — matching C++ resetRyow() → resetPromise.sendError(transaction_cancelled). span
-	// is likewise captured synchronously by WatchSetup (re-reading tx.spanContext here would race a
-	// concurrent commit/reset's regenerateSpan, RFC-115 §4).
+	// is likewise captured synchronously by WatchSetup (a lazy read here would stamp a later
+	// incarnation's regenerated span on this watch, RFC-115 §4).
 
 	// The outstanding-watch slot was reserved SYNCHRONOUSLY in WatchSetup (registration order, C++
 	// increaseWatchCounter at watch() time). Release it on EVERY exit path of this poll — fire /

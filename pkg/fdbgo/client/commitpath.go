@@ -335,6 +335,11 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	tx.conflictMu.Lock()
 	readSnap := tx.readConflicts
 	tx.conflictMu.Unlock()
+	// Capture under readVersionMu (RFC-175 E1): a concurrent Reset writes readVersion
+	// under the mutex. Same capture convention as the read path (readpath.go).
+	tx.readVersionMu.Lock()
+	readSnapshotVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
 	// writeSnap is the caller-supplied write-conflict snapshot — coalesced for a RYW commit (#28), or the
 	// raw op-log ranges for a rywDisabled commit — so the shipped conflict set matches what Commit sized.
 	writeSnap := writeConflicts
@@ -422,7 +427,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 			ReadConflictRanges:  readCRs,
 			WriteConflictRanges: writeCRs,
 			Mutations:           mutations,
-			ReadSnapshot:        tx.readVersion,
+			ReadSnapshot:        readSnapshotVersion,
 			// Lock_aware is intentionally NOT set: libfdb_c sets only the request FLAG
 			// (FLAG_IS_LOCK_AWARE below; NativeAPI.actor.cpp:6878) and the commit proxy re-derives
 			// transaction.lock_aware from the flag server-side (CommitProxyServer.actor.cpp:221).
@@ -433,7 +438,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 		Flags:       flags,
 		Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:  types.TenantInfo{TenantId: tx.tenantId},
-		SpanContext: tx.spanContext, // RFC-115 §4
+		SpanContext: tx.currentSpan(), // RFC-115 §4
 	}
 
 	// Marshal with pooled buffer.

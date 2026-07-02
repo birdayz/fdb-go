@@ -50,7 +50,7 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	const clientInvalidOperation = 2000
 	poisonedAndTimedOut := func() *Transaction {
 		tx := timedOut()
-		tx.rywPoisonErr = &wire.FDBError{Code: clientInvalidOperation}
+		tx.rywPoisonErr.Store(&wire.FDBError{Code: clientInvalidOperation})
 		return tx
 	}
 	_, err = poisonedAndTimedOut().getRangeSplitPointsImpl(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)

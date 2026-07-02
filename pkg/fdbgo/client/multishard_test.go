@@ -94,7 +94,7 @@ func setupMultiShardEnvWithConfig(t *testing.T, ctx context.Context, cfg shardSi
 		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			begin := []byte(prefix)
 			end := append([]byte(prefix), 0xFF)
-			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.spanContext)
+			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId, tx.currentSpan())
 		})
 		if err == nil {
 			locs := result.([]LocationResult)
@@ -1128,7 +1128,7 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 		[]byte(env.prefix), append([]byte(env.prefix), 0xFF), NoTenantID)
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.db.locCache.locateRange(tx.db, ctx,
-			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId, tx.spanContext)
+			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId, tx.currentSpan())
 	})
 	if err == nil {
 		shardsAfter = len(result.([]LocationResult))

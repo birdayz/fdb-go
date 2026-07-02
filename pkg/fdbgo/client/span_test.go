@@ -185,16 +185,16 @@ func TestTransactionSpanLifecycle(t *testing.T) {
 
 	tx1 := db.CreateTransaction()
 	tx2 := db.CreateTransaction()
-	if zeroSpan(tx1.spanContext) {
+	if zeroSpan(tx1.currentSpan()) {
 		t.Fatal("a fresh transaction must carry a non-zero span")
 	}
-	if tx1.spanContext.TraceID == tx2.spanContext.TraceID {
+	if tx1.currentSpan().TraceID == tx2.currentSpan().TraceID {
 		t.Fatal("two transactions must have distinct trace IDs")
 	}
 
-	before := tx1.spanContext
+	before := tx1.currentSpan()
 	tx1.Reset()
-	if tx1.spanContext.TraceID == before.TraceID {
+	if tx1.currentSpan().TraceID == before.TraceID {
 		t.Fatal("Reset() must re-anchor a fresh span")
 	}
 
@@ -207,16 +207,16 @@ func TestTransactionSpanLifecycle(t *testing.T) {
 	if err := tx1.SetSpanParent(pbuf[:]); err != nil {
 		t.Fatalf("SetSpanParent: %v", err)
 	}
-	if tx1.spanContext.TraceID != parentTrace {
-		t.Fatalf("SetSpanParent must adopt the parent traceID: got %x, want %x", tx1.spanContext.TraceID, parentTrace)
+	if tx1.currentSpan().TraceID != parentTrace {
+		t.Fatalf("SetSpanParent must adopt the parent traceID: got %x, want %x", tx1.currentSpan().TraceID, parentTrace)
 	}
 	// The parent linkage survives an attempt reset (regenerateSpan honors spanParent).
-	childSpanBefore := tx1.spanContext.SpanID
+	childSpanBefore := tx1.currentSpan().SpanID
 	tx1.reset(false)
-	if tx1.spanContext.TraceID != parentTrace {
+	if tx1.currentSpan().TraceID != parentTrace {
 		t.Fatal("parent traceID must survive reset() (retry keeps the trace)")
 	}
-	if tx1.spanContext.SpanID == childSpanBefore {
+	if tx1.currentSpan().SpanID == childSpanBefore {
 		t.Error("reset() should still assign a fresh child spanID")
 	}
 }

@@ -224,6 +224,8 @@ type Transaction struct {
 	// both reuse boundaries (postCommitReset and user Reset()) so the next transaction
 	// re-stamps fresh, but — like creationTime — NOT reset on OnError, so total latency
 	// still spans retries (the documented divergence from C++, which resets per attempt).
+	// ALL accesses under readVersionMu (RFC-175 E1): the reuse-boundary clears and the
+	// commit-latency read run concurrently with a first-GRV stamp on another goroutine.
 	metricStart time.Time
 
 	// Distributed-tracing span (RFC-115 §4). spanContext is stamped on every outgoing
@@ -231,10 +233,12 @@ type Transaction struct {
 	// per attempt (≈ C++ generateSpanID at cloneAndReset, NativeAPI.actor.cpp:3458).
 	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
 	// span to a caller-injected parent trace, persisting that linkage across retries.
-	// Written only at construction / reset() / SetSpanParent (never concurrently with a
-	// send), and captured by value at send time — so no mutex (like lockAware/tenantId).
-	spanContext types.SpanContext
-	spanParent  *types.SpanContext
+	// atomic.Pointer with immutable pointees (RFC-175 E1): the commit auto-reset
+	// (postCommitReset → regenerateSpan) rotates the span concurrently with in-flight
+	// sends under the concurrent-use contract, so send paths capture by value via
+	// currentSpan() and writers Store a fresh pointee.
+	spanContext atomic.Pointer[types.SpanContext]
+	spanParent  atomic.Pointer[types.SpanContext]
 
 	// OpenTelemetry export (RFC-115 §4 Layer 2). The long-lived "Transaction" otel span
 	// (C++ NativeAPI.actor.cpp:6186) + the context that carries it for parenting per-op
@@ -312,21 +316,33 @@ type Transaction struct {
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
 
-	// rywPoisonErr: set when SetReadYourWritesDisable is called AFTER a read or write
-	// (the RYW layer is non-empty). libfdb_c's ReadYourWritesTransaction throws
-	// client_invalid_operation on the network thread, captured into deferredError, so the
-	// option call itself succeeds but EVERY subsequent read/commit surfaces the error
-	// (RFC-059). When non-nil, every read entry point (via ensureReadVersion) + the metrics
-	// path returns it. Cleared on reset (the option is reapplied over an empty layer with no
-	// poison; 2000 is non-retryable, so a poisoned commit kills the txn). Read lock-free,
-	// like rywDisabled (FDB transactions are not for concurrent use).
-	rywPoisonErr error
+	// Deferred-error fields — ONE concurrency contract (RFC-175 E2).
+	//
+	// C++ analog: ISingleThreadTransaction::deferredError (ISingleThreadTransaction.h:124),
+	// a plain member — safe there because libfdb_c marshals EVERY fdb_transaction_* call
+	// onto the single network thread (ThreadSafeTransaction.cpp onMainThreadVoid), which
+	// records the FIRST error only (doOnMainThreadVoid, ThreadHelper.actor.h:44-55: an
+	// already-set deferredError is never overwritten) and checks/throws it at each
+	// subsequent op (checkDeferredError, ReadYourWrites.h:177-181). Go has no network
+	// thread — ops run on caller goroutines and the published contract (fdb/transaction.go)
+	// allows concurrent use — so the Go contract is:
+	//   atomic.Pointer[wire.FDBError]; written at most once per incarnation (first error
+	//   wins, matching doOnMainThreadVoid); Load()ed at every gate that C++ guards with
+	//   checkDeferredError; Store(nil)ed only on reset (C++ resetRyow clears deferredError,
+	//   ReadYourWrites.actor.cpp:2719).
+	// (readErr, the third deferred error, follows the same first-error-wins/reset lifecycle
+	// but lives under readErrMu, which also guards readGen + pendingReads — see its comment.)
 
-	// invalidAtomicOpErr: set when Atomic() is called with a non-atomic / out-of-range op-code
-	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad mutation
-	// is NOT buffered; this deferred error fails the next Commit (2018/2004/2000). An atomic.Pointer
-	// (not a plain field) because Atomic() — a data op the published contract allows concurrently
-	// with Commit — writes it while Commit reads it. CAS keeps the FIRST invalid op.
+	// rywPoisonErr: SetReadYourWritesDisable was called AFTER a read or write (RFC-059).
+	// The option call itself succeeds; every subsequent read (via ensureReadVersion), the
+	// metrics path, and Commit surface client_invalid_operation (2000, non-retryable).
+	rywPoisonErr atomic.Pointer[wire.FDBError]
+
+	// invalidAtomicOpErr: Atomic() was called with a non-atomic / out-of-range op-code
+	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad
+	// mutation is NOT buffered; the deferred error fails the next Commit (2018/2004/2000).
+	// First-write-wins is enforced under conflictMu (store-if-unset linearized with the
+	// preceding-mutation scan — see Atomic()).
 	invalidAtomicOpErr atomic.Pointer[wire.FDBError]
 
 	// readErr: the first error returned by a TRACKED read of this transaction —
@@ -352,8 +368,8 @@ type Transaction struct {
 	// commit; reading only barriers on watch-setup completion.
 	//
 	// readErrMu guards readErr, readGen and pendingReads: pipelined read
-	// futures resolve on other goroutines (unlike rywPoisonErr, which only the
-	// option path writes).
+	// futures resolve on other goroutines, and the three fields must move
+	// together (a mutex, not the atomic deferred-error contract above).
 	readErrMu sync.Mutex
 	readErr   error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
@@ -651,8 +667,8 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	// read version through here — libfdb_c poisons all of them identically (verified
 	// differentially, incl. GetReadVersion). The metrics path bypasses this and is gated
 	// separately. (Cleared on reset.)
-	if tx.rywPoisonErr != nil {
-		return tx.rywPoisonErr
+	if e := tx.rywPoisonErr.Load(); e != nil {
+		return e
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
@@ -671,7 +687,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	}
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
-		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.spanContext, tx.useGrvCache, tx.skipGrvCache)
+		rv, locked, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
 			return tx.mapTimeout(parentCtx, err)
@@ -703,7 +719,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
 			// Bootstrap: fetch a version to establish the baseline.
 			flags := tx.grvFlags()
-			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.spanContext, tx.useGrvCache, tx.skipGrvCache)
+			_, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
 			return err
@@ -815,8 +831,15 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	opCtx, opCancel := tx.opContext(ctx)
 	defer opCancel() // dials complete within this function; the reply wait uses the timer
 
+	// Capture under readVersionMu (RFC-175 E1): pipelined reads run concurrently with
+	// Commit/Reset, whose resets write readVersion under the mutex. Same capture
+	// convention as the read path (readpath.go sendGetValue/sendGetKey).
+	tx.readVersionMu.Lock()
+	readVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
+
 	// Locate shard.
-	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId, tx.spanContext, false)
+	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId, tx.currentSpan(), false)
 	if locErr != nil {
 		return nil, nil, tx.mapTimeout(ctx, fmt.Errorf("locate key: %w", locErr))
 	}
@@ -832,7 +855,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
-		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.spanContext), replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
 		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
@@ -1650,8 +1673,8 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// the poison before the timeout, and libfdb_c's checkDeferredError runs before any commit
 	// logic, so the poison must out-rank a stale-timeout 1031 for parity. Returns without
 	// resetting (2000 is non-retryable). RFC-059.
-	if tx.rywPoisonErr != nil {
-		return tx.rywPoisonErr
+	if e := tx.rywPoisonErr.Load(); e != nil {
+		return e
 	}
 	// A non-atomic op-code passed to Atomic() poisons the commit with invalid_mutation_type (2018),
 	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
@@ -1846,8 +1869,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
 		now := time.Now()
 		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
-		if !tx.metricStart.IsZero() {
-			tx.db.metrics.observeTotalLatency(now.Sub(tx.metricStart))
+		// Capture under readVersionMu (RFC-175 E1): a concurrent op's first GRV
+		// stamps metricStart under the mutex.
+		tx.readVersionMu.Lock()
+		metricStart := tx.metricStart
+		tx.readVersionMu.Unlock()
+		if !metricStart.IsZero() {
+			tx.db.metrics.observeTotalLatency(now.Sub(metricStart))
 		}
 	}
 
@@ -1921,7 +1949,9 @@ func (tx *Transaction) Reset() {
 	// work + idle into the next commit's total latency. This clear lives in Reset(),
 	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
 	// spans retries).
+	tx.readVersionMu.Lock()
 	tx.metricStart = time.Time{}
+	tx.readVersionMu.Unlock()
 	tx.reset(true) // user Reset(): persistent options (timeout/retryLimit/maxRetryDelay) revert to DB defaults
 }
 
@@ -1932,8 +1962,9 @@ func (tx *Transaction) Reset() {
 // trace); otherwise a brand-new random span, sampled per the DB's sample rate
 // (default unsampled). RFC-115 §4.
 func (tx *Transaction) regenerateSpan() {
-	if tx.spanParent != nil {
-		tx.spanContext = childSpanContext(*tx.spanParent)
+	if parent := tx.spanParent.Load(); parent != nil {
+		sc := childSpanContext(*parent)
+		tx.spanContext.Store(&sc)
 		return
 	}
 	// tx.db is nil for directly-constructed Transactions in some unit tests (which call
@@ -1942,7 +1973,19 @@ func (tx *Transaction) regenerateSpan() {
 	if tx.db != nil {
 		rate = tx.db.tracingSampleRate
 	}
-	tx.spanContext = newSpanContext(rate)
+	sc := newSpanContext(rate)
+	tx.spanContext.Store(&sc)
+}
+
+// currentSpan returns the transaction's wire span context by value. Lock-free
+// atomic load (RFC-175 E1): the commit auto-reset regenerates the span
+// concurrently with in-flight sends. A directly-constructed Transaction (unit
+// tests) has no span yet — the zero SpanContext (unsampled) is returned.
+func (tx *Transaction) currentSpan() types.SpanContext {
+	if p := tx.spanContext.Load(); p != nil {
+		return *p
+	}
+	return types.SpanContext{}
 }
 
 // ensureTxSpan lazily starts the "Transaction" otel span for a SAMPLED transaction
@@ -1951,7 +1994,7 @@ func (tx *Transaction) regenerateSpan() {
 // unsampled txns allocate nothing) or when the Transaction span already exists. Called
 // at the first GRV under readVersionMu — the single-entry tx-start point.
 func (tx *Transaction) ensureTxSpan() {
-	if !isSampled(tx.spanContext) {
+	if !isSampled(tx.currentSpan()) {
 		return
 	}
 	tx.traceMu.Lock()
@@ -1963,7 +2006,7 @@ func (tx *Transaction) ensureTxSpan() {
 	// Start OUTSIDE traceMu (mirroring startOpSpan) so a re-entrant tracer can't deadlock;
 	// safe against a double-start because ensureTxSpan runs only at the first GRV under
 	// readVersionMu (single-entry), so no concurrent ensureTxSpan can race it.
-	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(tx.spanContext))
+	parent := oteltrace.ContextWithSpanContext(context.Background(), otelSpanContext(tx.currentSpan()))
 	ctx, span := tx.db.tracer.Start(parent, "Transaction", oteltrace.WithSpanKind(oteltrace.SpanKindClient))
 	tx.traceMu.Lock()
 	tx.traceCtx, tx.txSpan = ctx, span
@@ -1979,7 +2022,7 @@ func (tx *Transaction) ensureTxSpan() {
 // The per-op otel span carries an otel-minted spanID under the shared traceID; the wire
 // SpanContext is generated independently by Layer 1 (single ID authority).
 func (tx *Transaction) startOpSpan(name string) oteltrace.Span {
-	if !isSampled(tx.spanContext) {
+	if !isSampled(tx.currentSpan()) {
 		return nil
 	}
 	tx.traceMu.Lock()
@@ -2017,8 +2060,9 @@ func (tx *Transaction) SetSpanParent(b []byte) error {
 	if err != nil {
 		return err
 	}
-	tx.spanParent = &parent
-	tx.spanContext = childSpanContext(parent)
+	tx.spanParent.Store(&parent)
+	sc := childSpanContext(parent)
+	tx.spanContext.Store(&sc)
 	return nil
 }
 
@@ -2371,7 +2415,14 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return 0, err
 	}
-	return tx.readVersion, nil
+	// Capture under readVersionMu (RFC-175 E1): a concurrent Commit's postCommitReset
+	// (or a Reset) writes readVersion under the mutex, and the concurrent-use contract
+	// allows it to overlap this read. Same capture convention as the read path
+	// (readpath.go sendGetValue/sendGetKey).
+	tx.readVersionMu.Lock()
+	rv := tx.readVersion
+	tx.readVersionMu.Unlock()
+	return rv, nil
 }
 
 // SetReadVersion sets the read version manually.
@@ -2504,7 +2555,7 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation, writeConflicts []K
 func (tx *Transaction) GetLocations(parentCtx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
 	ctx, cancel := tx.opContext(parentCtx) // bound by SetTimeout (RFC-112)
 	defer cancel()
-	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId, tx.spanContext)
+	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId, tx.currentSpan())
 	return locs, tx.mapTimeout(parentCtx, err)
 }
 
@@ -2521,7 +2572,7 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 	// ReadYourWrites.actor.cpp:1843-1848) — bound the locate by SetTimeout (RFC-112).
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext, false)
+	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 	if err != nil {
 		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
 		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.
@@ -2905,7 +2956,9 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
 	if tx.hadRead.Load() || !tx.ryw.isEmpty() {
-		tx.rywPoisonErr = &wire.FDBError{Code: 2000} // client_invalid_operation, surfaces on next op
+		// client_invalid_operation, surfaces on next op. CAS: first deferred error wins
+		// (the E2 contract above; C++ doOnMainThreadVoid never overwrites deferredError).
+		tx.rywPoisonErr.CompareAndSwap(nil, &wire.FDBError{Code: 2000})
 	}
 }
 
@@ -3141,7 +3194,7 @@ func (tx *Transaction) postCommitReset() {
 	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil            // RFC-059: a fresh layer reapplies the option with no poison
+	tx.rywPoisonErr.Store(nil)       // RFC-059: a fresh layer reapplies the option with no poison
 	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
@@ -3155,7 +3208,9 @@ func (tx *Transaction) postCommitReset() {
 	// deadline are deliberately left alone — this is the metric boundary, not a timeout
 	// reset.) Without this, a reused handle's next commit would measure from the prior
 	// transaction's start, folding in its work + the idle time between them.
+	tx.readVersionMu.Lock()
 	tx.metricStart = time.Time{}
+	tx.readVersionMu.Unlock()
 	// RFC-115 §4 Layer 2: end this committed transaction's "Transaction" otel span and
 	// re-anchor a fresh wire span — a reused handle begins a NEW logical transaction, so
 	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
@@ -3194,7 +3249,7 @@ func (tx *Transaction) reset(userReset bool) {
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr = nil            // RFC-059: a fresh layer reapplies the option with no poison
+	tx.rywPoisonErr.Store(nil)       // RFC-059: a fresh layer reapplies the option with no poison
 	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
 	tx.readErrMu.Lock()
 	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
