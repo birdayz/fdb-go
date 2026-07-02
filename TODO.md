@@ -71,12 +71,29 @@ validation gate.
     registry); `executeProjection` straddles until S3; `AnchoredJoin` flag is the linchpin (all read
     sites enumerated); `qualifyTypeFallback` exists (executor.go:2140 — the "not found" was a
     directory-scope artifact).
-  - [ ] Then the wedge per RFC §4 Slice 2: 2-way ordinal result value (`ofOrdinalNumber` EAGER baking
-    — lazy is non-join-frontier-only), positional merged row, ordinal predicate resolution,
-    `appendNullLeg`, correlated-scalar-subquery 2-leg seed + single-source `UNNEST`; **NO interning
-    flip** (canonical sequence: Slice 3); **flattening-aware scoping gate** vs `SelectMergeRule`
-    evasion + its before/after pins; extend the `DisablePositionalEmission` oracle to every new birth
-    site; §5 GROUP BY/HAVING-over-2-way-join pin.
+  - [x] **W1 baked-ordinal FieldValue substrate (dark)** — `Resolved *ResolvedAccessor`,
+    `NewFieldValueOfOrdinal`, (name, ordinal) identity for baked / baked≠lazy, marker through every
+    copy site, loud `BakedNameContextError` on every name-keyed + unrecognized eval arm (both tails),
+    `OracleBakedNameFallback` twin oracle behind `executor.SetNameModelOracle`, by-ordinal
+    compose/push-down + lazy dup-name DECLINES, §5 dup-name identity pin. Graefe ACK ×2, Torvalds
+    NAK→ACK ×3 (e74c4d192, ec739f83f, fd9d83636, 6168a56e9, 089979ea8).
+  - [x] **W2 cluster-arity scoping gate + drift asserts (dark)** — `rfc173_cluster_gate.go`
+    (clusterArity walk + per-seed `wedgeGate` decisions), `inInnerCluster` enclosure flag threaded
+    through every leg-translation site, SelectMergeRule + rebaseBuriedLowerReferences panics (both
+    pinned red→green), flattening-evasion + enclosure-matrix + HAVING-EXISTS pins. Two Graefe-confirmed
+    errata vs the contract shorthand (subquery-carrying filter/project = poison; outer boxes gate
+    unconditionally). Graefe ACK, Torvalds NAK→ACK (53ba2a9ac, 089979ea8).
+  - [~] **W3 the coupled 2-way flip** — pre-code ruling BANKED (c255d1829: leg windows for the window
+    with 4 conditions, plan-time rebase at S3/S4, raw RC constructor, per-leg predicate bindings,
+    structural probe detection). Staged: **W3a-1** executor primitives dark (spans/window/binder/
+    adapter/birth-eval + hazard pin — agent in flight); **W3a-2** cursor wiring dark (newNLJCursor
+    resultValue param, flatMap computeResult, 4 downstream dispatch sites + passthrough unwrap,
+    passesJoinPredicates per-leg variant, oracle registry); **W3b** translator seed flip (ordinal RC
+    + baked predicates for gated joins) → LIVE + full pin batch (GROUP-BY-over-2-way E2E, dup-named
+    box-leg, EXPLAIN stability, dualwindow, stress before/after).
+  - [ ] **W4** correlated-scalar-subquery 2-leg seed + single-source `UNNEST` port; **NO interning
+    flip** (canonical sequence: Slice 3).
+  - [ ] **W5** remaining §5 pins (gate pins (a)/(b) runtime halves) → gauntlet → PR → merge.
 - [ ] Slice 3 atomic N-way flip (**+ folded P3 bijection interning + FieldValue node-identity flip +
   collapsed-FieldPath representation ruling**) · [ ] Slice 4 retire `AnchoredJoin` (+ kill list) ·
   [ ] Slice 5 closure invariant · [ ] Slice 6 extensions + ANSI headroom.
