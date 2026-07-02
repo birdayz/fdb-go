@@ -226,7 +226,9 @@ item's acceptance criterion in §5 is "the grep returns zero."
   differential coverage: ensure the libfdb_c differential exercises the
   pipelined-vs-full-RYW boundary cases (pending atomic on read key, range straddling a
   pipelined write) so drift is caught mechanically. Registered here so it stops being tribal
-  knowledge.
+  knowledge. **Executed: PR #451** (`differential_pipelined_ryw_test.go`, 22 named cases across
+  both boundaries + limit/reverse/exact-endpoint straddles + the 1036 atomic+versionstamp
+  stack; result CLEAN — no divergence found; both boundaries teeth-proved by fault injection).
 
 ### Track F — repo hygiene + enforcement
 
