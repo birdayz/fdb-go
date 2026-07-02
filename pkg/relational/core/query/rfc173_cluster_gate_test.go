@@ -370,3 +370,59 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		}
 	})
 }
+
+// TestRFC173S2_WalkArmParity is the dimensional-gap pin from the @claude
+// PR-447 catch (Graefe hardening request): ordinalEligible and clusterArity
+// are the SAME classification asked two questions, and the LogicalCTE arm
+// existed in one but not the other — each walk had been verified against the
+// RULE it shadows, never against its sibling. This table asserts the pair's
+// answers for EVERY logical operator type; adding an operator type or an arm
+// to one walk without updating the table (and deliberately deciding the other
+// walk's treatment) fails here instead of waiting for the next reviewer.
+//
+// The two walks legitimately DIVERGE on two classes (asserted as such):
+//   - joins: ineligible as LEGS categorically (nesting = S3), while
+//     clusterArity still counts inner joins (arity 2) for the SEED walk;
+//   - unknown/DML/values leaves (the defaults): eligible as legs (their rows
+//     are single-namespace) but arity-poison (an unclassifiable CLUSTER
+//     fails toward the name model).
+func TestRFC173S2_WalkArmParity(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	tr.cteScope["BODYJOIN"] = inner(scan("Order", "ox"), scan("Customer", "cx"))
+
+	cases := []struct {
+		name         string
+		op           logical.LogicalOperator
+		wantEligible bool
+		wantArity    int
+	}{
+		{"scan", scan("Order", "o"), true, 1},
+		{"cte_scoped_scan_join_body", scan("bodyjoin", "b"), false, 2},
+		{"filter_plain", logical.NewFilter(scan("Order", "o"), "x > 1"), true, 1},
+		{"filter_exists", &logical.LogicalFilter{Input: scan("Order", "o"), ExistsSubqueries: []logical.ExistsSubquery{{Alias: values.NamedCorrelationIdentifier("e")}}}, false, arityPoison},
+		{"project_plain", logical.NewProject(scan("Order", "o"), []string{"order_id"}, []string{""}), true, 1},
+		{"project_scalar_subq", &logical.LogicalProject{Input: scan("Order", "o"), Projections: []string{"order_id"}, ScalarSubqueries: []logical.ScalarSubquery{{Alias: values.NamedCorrelationIdentifier("s")}}}, false, arityPoison},
+		{"inner_join", inner(scan("Order", "o"), scan("Customer", "c")), false, 2}, // legs: categorically ineligible; seed walk: countable
+		{"left_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, ""), false, arityPoison},
+		{"full_join", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, ""), false, 1}, // leg: join=ineligible; cluster: opaque box of 1
+		{"cte_nonrecursive_derived_join", logical.NewCTE("d", inner(scan("Order", "o"), scan("Customer", "c")), logical.NewScan("d", ""), false), false, 2},
+		{"cte_recursive", logical.NewCTE("r", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Order", "o2")}, false), logical.NewScan("r", ""), true), false, arityPoison},
+		{"aggregate", logical.NewAggregate(scan("Order", "o"), []string{"x"}, nil, nil, ""), true, 1},
+		{"distinct", logical.NewDistinct(scan("Order", "o")), true, 1},
+		{"sort", logical.NewSort(scan("Order", "o"), nil), true, 1},
+		{"limit", logical.NewLimit(scan("Order", "o"), 5, 0), true, 1},
+		{"union", logical.NewUnion([]logical.LogicalOperator{scan("Order", "o"), scan("Customer", "c")}, false), true, 1},
+		{"values_default_arm", logical.NewValues([]string{"(1)"}, []string{"a"}), true, arityPoison}, // the documented default divergence
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tr.ordinalEligible(tc.op); got != tc.wantEligible {
+				t.Errorf("ordinalEligible(%s) = %v, want %v", tc.name, got, tc.wantEligible)
+			}
+			if got := tr.clusterArity(tc.op); got != tc.wantArity {
+				t.Errorf("clusterArity(%s) = %d, want %d", tc.name, got, tc.wantArity)
+			}
+		})
+	}
+}
