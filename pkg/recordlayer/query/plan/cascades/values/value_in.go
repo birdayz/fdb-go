@@ -128,7 +128,6 @@ func (*InOpValue) Type() Type { return NullableBoolean }
 //
 // equalsAny performs numeric coercion for mixed int/float
 // comparisons, matching Java's Comparisons.evalComparison(EQUALS).
-// See D-10 in CASCADES_DIVERGENCE.md.
 func (v *InOpValue) Evaluate(evalCtx any) (any, error) {
 	if v.Probe == nil || v.List == nil {
 		return nil, nil
