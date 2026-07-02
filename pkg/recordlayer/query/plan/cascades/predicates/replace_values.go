@@ -48,20 +48,13 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 	switch pred := p.(type) {
 	case *ComparisonPredicate:
 		newOperand := transform(pred.Operand)
-		newCompOperand := transform(pred.Comparison.Operand)
-		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
+		newCmp, cmpChanged := transformComparison(pred.Comparison, transform)
+		if newOperand == pred.Operand && !cmpChanged {
 			return p
 		}
-		// Copy the whole Comparison and replace ONLY the new RHS operand,
-		// preserving Escape AND every other Comparison subclass field
-		// (ParameterName, the Text* fields, the DistanceRank vector fields).
-		// A partial {Type, Operand, Escape} reconstruction would drop the rest
-		// and change the comparison's semantics.
-		cmp := pred.Comparison
-		cmp.Operand = newCompOperand
 		return &ComparisonPredicate{
 			Operand:    newOperand,
-			Comparison: cmp,
+			Comparison: newCmp,
 		}
 	case *ValuePredicate:
 		newVal := transform(pred.Value)
@@ -111,7 +104,84 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 			Value:          newVal,
 			CompRange:      pred.CompRange,
 		}
+	case *ExistentialValuePredicate:
+		// Java ExistentialValuePredicate.translateLeafPredicate (:94-100)
+		// translates the embedded existential QOV like any leaf. The rebuild
+		// goes through the Must constructor: a transform that turns the QOV
+		// into a non-QOV violates the predicate's structural invariant and
+		// panics loudly there — never a silently mis-shaped predicate.
+		// (Review catch: the arm was missing — the alias-map spine's
+		// RebasePredicate covered this type while this spine fell to the
+		// default silent skip.)
+		newVal := transform(pred.Value)
+		newCmp, cmpChanged := transformComparison(pred.Comparison, transform)
+		if newVal == pred.Value && !cmpChanged {
+			return p
+		}
+		return MustNewExistentialValuePredicate(newVal, newCmp)
+	case *PredicateWithValueAndRanges:
+		// Value-bearing leaf predicate (Java PredicateWithValueAndRanges
+		// .translateLeafPredicate): the anchor value AND every range
+		// comparison's embedded values rebase — a silent default-arm skip
+		// left stale aliases after a cross-boundary rebase (review catch).
+		newVal := transform(pred.GetValue())
+		changed := newVal != pred.GetValue()
+		newRanges := make([]*RangeConstraints, len(pred.GetRanges()))
+		for i, rc := range pred.GetRanges() {
+			newRC, rcChanged := transformRangeConstraints(rc, transform)
+			newRanges[i] = newRC
+			changed = changed || rcChanged
+		}
+		if !changed {
+			return p
+		}
+		return NewPredicateWithValueAndRanges(newVal, newRanges)
 	default:
 		return p
 	}
+}
+
+// transformComparison applies transform to every VALUE-BEARING field of a
+// Comparison — the RHS Operand and the DistanceRank QueryVector (both are
+// correlation surfaces per Comparison.GetCorrelatedTo; transforming only the
+// Operand left stale aliases in vector predicates, review catch). Returns the
+// (possibly copied) comparison and whether anything changed; all other
+// subclass fields are preserved by the whole-struct copy.
+func transformComparison(cmp Comparison, transform func(values.Value) values.Value) (Comparison, bool) {
+	changed := false
+	if cmp.Operand != nil {
+		if newOp := transform(cmp.Operand); newOp != cmp.Operand {
+			cmp.Operand = newOp
+			changed = true
+		}
+	}
+	if cmp.QueryVector != nil {
+		if newQV := transform(cmp.QueryVector); newQV != cmp.QueryVector {
+			cmp.QueryVector = newQV
+			changed = true
+		}
+	}
+	return cmp, changed
+}
+
+// transformRangeConstraints rebuilds a RangeConstraints with every
+// comparison's value fields transformed; pointer-stable when nothing changed.
+func transformRangeConstraints(rc *RangeConstraints, transform func(values.Value) values.Value) (*RangeConstraints, bool) {
+	changed := false
+	newCompilable := make([]Comparison, len(rc.GetCompilableComparisons()))
+	for i, c := range rc.GetCompilableComparisons() {
+		nc, cChanged := transformComparison(c, transform)
+		newCompilable[i] = nc
+		changed = changed || cChanged
+	}
+	newDeferred := make([]Comparison, len(rc.GetDeferredRanges()))
+	for i, c := range rc.GetDeferredRanges() {
+		nc, cChanged := transformComparison(c, transform)
+		newDeferred[i] = nc
+		changed = changed || cChanged
+	}
+	if !changed {
+		return rc, false
+	}
+	return NewRangeConstraints(newCompilable, newDeferred), true
 }

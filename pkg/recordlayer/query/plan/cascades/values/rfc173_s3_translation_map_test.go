@@ -236,6 +236,62 @@ func TestRFC173S3_RebuildFuse_GateDarkness(t *testing.T) {
 	if mixedOut.Resolved != nil {
 		t.Fatal("lazy-over-baked fused on rebuild — gate requires BOTH ends baked")
 	}
+
+	// Mixed the other way: BAKED outer over a LAZY inner — no fuse (inner has
+	// no path to prepend; the outer keeps its own path over the rebuilt lazy
+	// child).
+	lazyInner := NewFieldValue(qov, "NESTED", nil)
+	bakedOuter := &FieldValue{Field: "Y", Typ: NotNullLong, Child: lazyInner, Resolved: NewFieldPathOfSingle("Y", 1, false)}
+	bakedOut := Replace(bakedOuter, swap).(*FieldValue)
+	if bakedOut.Resolved == nil || len(bakedOut.Resolved.Accessors) != 1 {
+		t.Fatalf("baked-over-lazy rebuild path = %+v, want the outer's own single-accessor path unchanged", bakedOut.Resolved)
+	}
+	if inner, ok := bakedOut.Child.(*FieldValue); !ok || inner.Resolved != nil {
+		t.Fatalf("baked-over-lazy rebuild child = %v, want the rebuilt LAZY inner", bakedOut.Child)
+	}
+
+	// Baked outer over a baked CHILDLESS inner (the recursive-CTE wrap shape):
+	// no fuse through the rebuild — mirrors compose's inner.Child != nil gate
+	// (there is no base to re-anchor onto).
+	wrapInner := NewFieldValueWithResolvedOrdinal("NESTED", 0, UnknownType)
+	bakedOverWrap := &FieldValue{Field: "Y", Typ: NotNullLong, Child: wrapInner, Resolved: NewFieldPathOfSingle("Y", 1, false)}
+	// The swap fn can't fire (no QOV under a childless inner) — force the
+	// rebuild by replacing the wrap inner with an equal copy.
+	wrapCopy := NewFieldValueWithResolvedOrdinal("NESTED", 0, UnknownType)
+	wrapOut := Replace(bakedOverWrap, func(v Value) Value {
+		if v == wrapInner {
+			return wrapCopy
+		}
+		return v
+	}).(*FieldValue)
+	if wrapOut.Resolved == nil || len(wrapOut.Resolved.Accessors) != 1 || wrapOut.Child != wrapCopy {
+		t.Fatalf("baked-over-childless-baked must stay chained (rebuild≡compose on the childless axis), got path %+v child %v", wrapOut.Resolved, wrapOut.Child)
+	}
+}
+
+// TestRFC173S3_TranslationMap_BuilderVerify pins the builder's duplicate-alias
+// panic (Java's Verify, RegularTranslationMap.java:204 — a silent overwrite
+// would drop a rebase) and the typed-nil map guard.
+func TestRFC173S3_TranslationMap_BuilderVerify(t *testing.T) {
+	t.Parallel()
+	a := NamedCorrelationIdentifier("a")
+	identity := func(_ CorrelationIdentifier, leaf Value) Value { return leaf }
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("duplicate source alias must panic (a silent overwrite drops a rebase)")
+			}
+		}()
+		NewTranslationMapBuilder().When(a).Then(identity).When(a).Then(identity)
+	}()
+
+	// Typed-nil map: no deref, input returned.
+	var nilMap *RegularTranslationMap
+	ref := NewFlatFieldValue("X", NotNullLong)
+	if out := TranslateCorrelations(ref, nilMap); out != ref {
+		t.Fatalf("typed-nil map must return the input, got %v", out)
+	}
 }
 
 // The TranslateLeafPredicates pins live in the predicates package

@@ -94,8 +94,16 @@ func (w *TranslationMapWhen) Then(fn TranslationFunction) *TranslationMapBuilder
 	return w.b
 }
 
+// Build snapshots the accumulated entries — the returned map is IMMUTABLE
+// (Java's ImmutableMap.copyOf): further builder use cannot mutate a map
+// already handed out (review catch: sharing b.fns let a built empty map stop
+// defining only identities when the builder was reused).
 func (b *TranslationMapBuilder) Build() TranslationMap {
-	return &RegularTranslationMap{fns: b.fns}
+	fns := make(map[CorrelationIdentifier]TranslationFunction, len(b.fns))
+	for k, v := range b.fns {
+		fns[k] = v
+	}
+	return &RegularTranslationMap{fns: fns}
 }
 
 // ownCorrelationOfLeaf reports a LEAF value's own correlation — the alias the
@@ -131,7 +139,15 @@ func ownCorrelationOfLeaf(v Value) (CorrelationIdentifier, bool) {
 // FieldValue replacement (replace.go — Java's withNewChild =
 // ofFieldsAndFuseIfPossible). Pointer-stable when nothing translates.
 func TranslateCorrelations(v Value, m TranslationMap) Value {
-	if v == nil || m == nil || m.DefinesOnlyIdentities() {
+	if v == nil || m == nil {
+		return v
+	}
+	// Typed-nil guard: a nil *RegularTranslationMap inside a non-nil interface
+	// passes the check above but would deref in DefinesOnlyIdentities.
+	if rm, ok := m.(*RegularTranslationMap); ok && rm == nil {
+		return v
+	}
+	if m.DefinesOnlyIdentities() {
 		return v
 	}
 	return ReplaceLeavesOnceMaybe(v, func(leaf Value) Value {

@@ -83,3 +83,128 @@ func TestRFC173S3_TranslateLeafPredicates(t *testing.T) {
 		t.Fatal("identity map must return the input pointer")
 	}
 }
+
+// TestRFC173S3_TranslateLeafPredicates_ValueBearingFields pins the review
+// catches on the spine's coverage: a DistanceRank comparison's QueryVector
+// (a correlation surface per Comparison.GetCorrelatedTo) and a
+// PredicateWithValueAndRanges' anchor value + range comparisons all rebase —
+// each was a silent default-arm/field skip leaving stale aliases after a
+// cross-boundary rebase.
+func TestRFC173S3_TranslateLeafPredicates_ValueBearingFields(t *testing.T) {
+	t.Parallel()
+	oldAlias := values.NamedCorrelationIdentifier("src")
+	newAlias := values.NamedCorrelationIdentifier("dst")
+	oldQOV := values.NewQuantifiedObjectValue(oldAlias)
+	m := values.NewTranslationMapBuilder().
+		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+		return values.NewQuantifiedObjectValue(newAlias)
+	}).Build()
+	refersNew := func(v values.Value) bool {
+		_, has := values.GetCorrelatedToOfValue(v)[newAlias]
+		return has
+	}
+
+	// QueryVector: the vector operand is correlated to the source alias; the
+	// K operand is a constant. Only the vector must change.
+	vecCmp := Comparison{
+		Type:        ComparisonDistanceRankLessThanOrEq,
+		Operand:     &values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
+		QueryVector: values.NewFieldValue(oldQOV, "EMB", nil),
+	}
+	vecPred := &ComparisonPredicate{Operand: values.NewFlatFieldValue("EMB", nil), Comparison: vecCmp}
+	out := TranslateLeafPredicates(vecPred, m).(*ComparisonPredicate)
+	if out == vecPred || !refersNew(out.Comparison.QueryVector) {
+		t.Fatalf("QueryVector not rebased: %v", out.Comparison.QueryVector)
+	}
+	if out.Comparison.Type != vecCmp.Type || out.Comparison.Operand != vecCmp.Operand {
+		t.Fatal("non-vector comparison fields must be preserved")
+	}
+
+	// PredicateWithValueAndRanges: anchor value + a range comparison operand
+	// both reference the source alias.
+	pvr := NewPredicateWithValueAndRanges(
+		values.NewFieldValue(oldQOV, "ID", values.NotNullLong),
+		[]*RangeConstraints{NewRangeConstraints(
+			[]Comparison{{Type: ComparisonEquals, Operand: values.NewFieldValue(oldQOV, "V", values.NotNullLong)}},
+			nil,
+		)},
+	)
+	outPVR := TranslateLeafPredicates(pvr, m).(*PredicateWithValueAndRanges)
+	if outPVR == pvr || !refersNew(outPVR.GetValue()) {
+		t.Fatalf("PVR anchor value not rebased: %v", outPVR.GetValue())
+	}
+	if cmps := outPVR.GetRanges()[0].GetCompilableComparisons(); !refersNew(cmps[0].Operand) {
+		t.Fatalf("PVR range comparison operand not rebased: %v", cmps[0].Operand)
+	}
+
+	// Pointer stability preserved for both when nothing matches.
+	missMap := values.NewTranslationMapBuilder().
+		When(values.NamedCorrelationIdentifier("zz")).
+		Then(func(_ values.CorrelationIdentifier, leaf values.Value) values.Value { return leaf }).
+		Build()
+	if got := TranslateLeafPredicates(vecPred, missMap); got != QueryPredicate(vecPred) {
+		t.Fatal("vector predicate must be pointer-stable on a miss")
+	}
+	if got := TranslateLeafPredicates(pvr, missMap); got != QueryPredicate(pvr) {
+		t.Fatal("PVR must be pointer-stable on a miss")
+	}
+}
+
+// TestRFC173S3_TranslationMapBuilder_Snapshot pins Build()'s immutability
+// (review catch): reusing the builder after Build must not mutate the map
+// already handed out.
+func TestRFC173S3_TranslationMapBuilder_Snapshot(t *testing.T) {
+	t.Parallel()
+	b := values.NewTranslationMapBuilder()
+	empty := b.Build()
+	b.When(values.NamedCorrelationIdentifier("late")).
+		Then(func(_ values.CorrelationIdentifier, leaf values.Value) values.Value { return leaf })
+	if !empty.DefinesOnlyIdentities() {
+		t.Fatal("a built empty map must stay identity-only after further builder use")
+	}
+	if empty.ContainsSourceAlias(values.NamedCorrelationIdentifier("late")) {
+		t.Fatal("a built map must not pick up aliases added to the builder afterwards")
+	}
+}
+
+// TestRFC173S3_TranslateLeafPredicates_Existential pins the review catch: the
+// shared spine translates an ExistentialValuePredicate's embedded QOV (Java
+// ExistentialValuePredicate.translateLeafPredicate :94-100 — the default-arm
+// silent skip was the exact silent-non-translation failure class the W2
+// ruling flagged), and a map whose replacement is NOT a QOV panics loudly
+// through the Must constructor rather than yielding a mis-shaped predicate.
+func TestRFC173S3_TranslateLeafPredicates_Existential(t *testing.T) {
+	t.Parallel()
+	oldAlias := values.NamedCorrelationIdentifier("ex")
+	newAlias := values.NamedCorrelationIdentifier("ex2")
+	pred := NewExistentialAlias(oldAlias)
+
+	renamed := TranslateLeafPredicates(pred, values.NewTranslationMapBuilder().
+		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+		return values.NewQuantifiedObjectValue(newAlias)
+	}).Build())
+	ev, ok := renamed.(*ExistentialValuePredicate)
+	if !ok || renamed == QueryPredicate(pred) {
+		t.Fatalf("existential predicate must be rebuilt, got %T", renamed)
+	}
+	if qov, ok := ev.Value.(*values.QuantifiedObjectValue); !ok || qov.Correlation != newAlias {
+		t.Fatalf("existential QOV = %v, want translated to %v", ev.Value, newAlias)
+	}
+	if ev.Comparison.Type != ComparisonIsNotNull {
+		t.Fatal("comparison must be preserved through the rebuild")
+	}
+
+	// Non-QOV replacement: loud panic (the Must constructor's invariant),
+	// never a silently mis-shaped predicate.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("non-QOV replacement for an existential QOV must panic")
+			}
+		}()
+		TranslateLeafPredicates(pred, values.NewTranslationMapBuilder().
+			When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+			return values.NewFlatFieldValue("X", values.NotNullLong)
+		}).Build())
+	}()
+}

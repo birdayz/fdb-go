@@ -363,6 +363,9 @@ func withChildren(v Value, newChildren []Value) Value {
 		// chains keep their shape through the coexistence window and the gate
 		// self-widens as W2/W3 bake everything. Must produce the IDENTICAL node
 		// to composeFieldOverField (pinned by the rebuild≡compose property test).
+		// inner.Child != nil mirrors compose's gate exactly: a CHILDLESS baked
+		// inner (the recursive-CTE wrap shape) stays chained through BOTH
+		// mechanisms — there is no base to re-anchor the fused path onto.
 		if vt.Resolved != nil {
 			if inner, isFV := newChildren[0].(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
 				fused := inner.Resolved.WithSuffix(vt.Resolved)
