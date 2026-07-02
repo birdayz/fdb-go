@@ -5,21 +5,19 @@ go 1.26.4
 require (
 	buf.build/go/protoyaml v0.6.0
 	charm.land/fang/v2 v2.0.1
-	// The root library is pinned to a real (proxy-resolvable) version — never a
-	// replace directive — so `go install fdb.dev/cmd/frl@latest` works for users.
-	// Local dev still builds against the working tree via the repo-root go.work.
-	// Bump this pin when frl needs newer library APIs; the frl release workflow
-	// builds with GOWORK=off, so a stale pin fails loudly there, not on users.
-	fdb.dev v0.0.0-20260701215709-079fec305088
-	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08 // indirect
+	charm.land/lipgloss/v2 v2.0.3
+	// Pin the root library to a real, proxy-resolvable version instead of a
+	// replace directive, so `go install fdb.dev/cmd/frl@latest` works for users.
+	// Local dev still builds the working tree via the repo-root go.work; the frl
+	// pin-bump bot advances this nightly, and the GOWORK=off release build fails
+	// loudly on a stale pin, so it can never ship broken.
+	fdb.dev v0.0.0-20260702072201-c8be85cd86f3
 	github.com/birdayz/protobuf-ecosystem v0.0.0-20260419220956-37793e545df0
+	github.com/charmbracelet/x/term v0.2.2
+	github.com/chzyer/readline v1.5.1
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/protobuf v1.36.11
-)
-
-require (
-	charm.land/lipgloss/v2 v2.0.3
-	github.com/chzyer/readline v1.5.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -30,13 +28,13 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260205113103-524a6607adb8 // indirect
 	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/charmtone v0.0.0-20250603201427-c31516f43444 // indirect
-	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
@@ -111,5 +109,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

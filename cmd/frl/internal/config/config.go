@@ -12,6 +12,7 @@ import (
 
 	"buf.build/go/protoyaml"
 	"github.com/birdayz/protobuf-ecosystem/protoconfig"
+	yaml "gopkg.in/yaml.v3"
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
@@ -71,6 +72,71 @@ func Save(cfg *configv1.Config) error {
 		return err
 	}
 	return SaveTo(path, cfg)
+}
+
+// SetCurrentContext rewrites ONLY the `current_context` scalar in the
+// on-disk YAML, preserving every comment and all formatting. A
+// Load→mutate→Save round-trip re-marshals through proto and destroys
+// comments — including the guidance block `config init` just wrote —
+// so the single-field update edits the YAML AST instead (RFC-174
+// Slice 5). A missing file degrades to a minimal document.
+func SetCurrentContext(name string) error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			raw = []byte{}
+		} else {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+	var doc yaml.Node
+	if len(raw) > 0 {
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+	}
+	if doc.Kind == 0 || len(doc.Content) == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{
+			{Kind: yaml.MappingNode},
+		}}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: top level is not a mapping", path)
+	}
+	updated := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "current_context" {
+			root.Content[i+1].SetString(name)
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		var k, v yaml.Node
+		k.SetString("current_context")
+		v.SetString(name)
+		root.Content = append([]*yaml.Node{&k, &v}, root.Content...)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", path, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
+	}
+	return nil
 }
 
 // SaveTo writes the Config to path as YAML, creating parent directories

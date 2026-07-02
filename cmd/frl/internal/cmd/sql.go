@@ -16,6 +16,8 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,10 +31,11 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
+	"fdb.dev/pkg/recordlayer"
 	relapi "fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 
@@ -50,6 +53,8 @@ func newSQLCmd() *cobra.Command {
 		initSchema  string
 		cmdline     string
 		filePath    string
+		clusterFile string
+		outputFmt   string
 	)
 	c := &cobra.Command{
 		Use:   "sql",
@@ -62,12 +67,16 @@ func newSQLCmd() *cobra.Command {
 			"(`database/sql`). Multi-line statements end at `;`; single-" +
 			"line `\\`-prefixed meta-commands run immediately.\n\n" +
 			"Meta-commands (subset of psql):\n" +
-			"  \\?         — show this help\n" +
-			"  \\q         — quit (same as Ctrl-D)\n" +
-			"  \\d, \\dt    — list tables in the current schema\n" +
-			"  \\c <name>  — switch to schema <name>\n" +
-			"  \\i <file>  — execute statements from file\n" +
-			"  \\e         — open $EDITOR, run the buffer on exit\n\n" +
+			"  \\?          — show this help\n" +
+			"  \\q          — quit (same as Ctrl-D)\n" +
+			"  \\d [table]  — list tables / describe one (columns, types, PK)\n" +
+			"  \\dt         — list schema templates\n" +
+			"  \\c <name>   — switch to schema <name>\n" +
+			"  \\i <file>   — execute statements from file\n" +
+			"  \\e          — open $EDITOR, run the buffer on exit\n" +
+			"  \\x          — toggle expanded (record-per-block) display\n" +
+			"  \\timing     — toggle the row-count/duration footer\n" +
+			"  \\explain    — re-run the previous query wrapped in EXPLAIN\n\n" +
 			"Non-interactive alternatives:\n" +
 			"  --command / -c  run one statement, print result, exit\n" +
 			"  --file / -f     run every statement in a .sql file, exit\n\n" +
@@ -78,28 +87,49 @@ func newSQLCmd() *cobra.Command {
 			"search scope so queries don't need schema-qualified names.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfgCtx, _, err := resolveContextAndOverride(contextName, "")
+			if err := validateOutputFormat(outputFmt,
+				sqlFormatTable, sqlFormatCSV, sqlFormatJSON, sqlFormatNDJSON); err != nil {
+				return err
+			}
+			// --cluster-file makes the invocation self-contained (chains
+			// with `frl fdb up`); otherwise the context supplies it.
+			f := storeAddressFlags{contextName: contextName, clusterFile: clusterFile}
+			target, err := f.resolve()
 			if err != nil {
 				return err
 			}
+			cf := target.clusterFile()
 			if databaseURI == "" {
-				return fmt.Errorf("--database is required (e.g. --database /myapp)")
+				// Starts with a sentence word: fang capitalizes the first
+				// rune of error banners, which would garble a leading flag
+				// name into "--Database".
+				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
 			}
-			dsn := buildFDBSQLDSN(cfgCtx, databaseURI, initSchema)
+			dsn := buildFDBSQLDSN(cf, databaseURI, initSchema)
 			db, err := sql.Open("fdbsql", dsn)
 			if err != nil {
 				return fmt.Errorf("open fdbsql %q: %w", dsn, err)
 			}
 			defer db.Close()
 
+			// Pick the style profile per-writer: real terminal → colors +
+			// box-drawing; pipe/redirect/test buffer → plain ASCII. Scripts
+			// consuming `frl sql -c … | jq` must never see ANSI escapes.
+			st := plainSQLStyles()
+			if isTerminalWriter(cmd.OutOrStdout()) {
+				st = ttySQLStyles()
+			}
 			runner := &sqlRunner{
-				db:       db,
-				out:      cmd.OutOrStdout(),
-				errOut:   cmd.ErrOrStderr(),
-				ctx:      cmd.Context(),
-				cfgCtx:   cfgCtx,
-				database: databaseURI,
-				schema:   initSchema,
+				db:          db,
+				out:         cmd.OutOrStdout(),
+				errOut:      cmd.ErrOrStderr(),
+				ctx:         cmd.Context(),
+				clusterFile: cf,
+				database:    databaseURI,
+				schema:      initSchema,
+				st:          st,
+				format:      outputFmt,
+				timing:      true,
 			}
 			defer runner.close()
 			switch {
@@ -117,6 +147,9 @@ func newSQLCmd() *cobra.Command {
 	c.Flags().StringVar(&initSchema, "schema", "", "default schema for un-qualified references")
 	c.Flags().StringVarP(&cmdline, "command", "c", "", "run a single SQL statement non-interactively and exit")
 	c.Flags().StringVarP(&filePath, "file", "f", "", "execute SQL statements from a file and exit")
+	c.Flags().StringVar(&clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
+	c.Flags().StringVarP(&outputFmt, "output", "o", sqlFormatTable,
+		"result format: table, csv, json, or ndjson (machine formats send the row-count footer to stderr)")
 	return c
 }
 
@@ -127,13 +160,13 @@ func newSQLCmd() *cobra.Command {
 // Query params go through url.Values so paths with `&`, `=`, `?`, or
 // spaces (e.g. "/home/user/my project/fdb.cluster") round-trip through
 // the driver's URL parser without corrupting the DSN.
-func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
+func buildFDBSQLDSN(clusterFile, dbPath, schema string) string {
 	var b strings.Builder
 	b.WriteString("fdbsql:///")
 	b.WriteString(strings.TrimPrefix(dbPath, "/"))
 	params := url.Values{}
-	if cf := cfgCtx.GetClusterFile(); cf != "" {
-		params.Set("cluster_file", cf)
+	if clusterFile != "" {
+		params.Set("cluster_file", clusterFile)
 	}
 	if schema != "" {
 		params.Set("schema", schema)
@@ -155,16 +188,29 @@ func buildFDBSQLDSN(cfgCtx *configv1.Context, dbPath, schema string) string {
 // queries, and tx commands — must flow through the same handle.
 // `db.Conn(ctx)` is grabbed lazily on first execute().
 type sqlRunner struct {
-	db       *sql.DB
-	conn     *sql.Conn
-	out      io.Writer
-	errOut   io.Writer
-	ctx      context.Context
-	cfgCtx   *configv1.Context // cluster_file for catalog lookups
-	database string            // active database URI (from --database)
-	schema   string            // tracked for the prompt; set by \c
-	inTx     bool              // reflects the driver's tx state for prompt styling
+	db          *sql.DB
+	conn        *sql.Conn
+	out         io.Writer
+	errOut      io.Writer
+	ctx         context.Context
+	clusterFile string    // effective cluster file (flag > context) for DSN + catalog lookups
+	database    string    // active database URI (from --database)
+	schema      string    // tracked for the prompt; set by \c
+	inTx        bool      // reflects the driver's tx state for prompt styling
+	st          sqlStyles // TTY (color+box-drawing) or plain (ASCII) profile
+	format      string    // sqlFormat* — -o flag
+	expanded    bool      // \x — record-per-block table rendering
+	timing      bool      // \timing — row-count/duration footer (default on)
+	lastStmt    string    // last executed query, for \explain
 }
+
+// Output formats for `frl sql -o`.
+const (
+	sqlFormatTable  = "table"
+	sqlFormatCSV    = "csv"
+	sqlFormatJSON   = "json"
+	sqlFormatNDJSON = "ndjson"
+)
 
 // tableInfo is the minimal shape rendered by \d — table name + column
 // count. Sourced from the current schema's template via the relational
@@ -219,8 +265,8 @@ func (r *sqlRunner) repl() error {
 	}
 	defer rl.Close()
 
-	banner := sqlBannerStyle.Render("frl sql") + " — " +
-		sqlMutedStyle.Render("\\? for help, \\q to quit, multi-line ends at ; — BEGIN/COMMIT/ROLLBACK supported")
+	banner := r.st.banner.Render("frl sql") + " — " +
+		r.st.muted.Render("\\? for help, \\q to quit, multi-line ends at ; — BEGIN/COMMIT/ROLLBACK supported")
 	fmt.Fprintln(r.out, banner)
 
 	var buf strings.Builder
@@ -228,7 +274,7 @@ func (r *sqlRunner) repl() error {
 		if buf.Len() == 0 {
 			rl.SetPrompt(r.prompt())
 		} else {
-			rl.SetPrompt(sqlContinuePrompt())
+			rl.SetPrompt(r.continuePrompt())
 		}
 		line, readErr := rl.Readline()
 		if readErr != nil {
@@ -268,7 +314,7 @@ func (r *sqlRunner) repl() error {
 				continue
 			}
 			if err := r.execute(stmt); err != nil {
-				fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+				fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 			}
 		}
 	}
@@ -292,17 +338,23 @@ func (r *sqlRunner) execute(stmt string) error {
 	}
 	start := time.Now()
 	if isQuery(stmt) {
+		// Remember the statement for `\explain` — verbatim EXPLAIN
+		// re-run, no plan interpretation (RFC-174 Graefe G3). EXPLAINs
+		// themselves are not remembered, so repeated \explain stays
+		// idempotent instead of explaining the explain.
+		if fields := strings.Fields(strings.ToUpper(stmt)); len(fields) > 0 && fields[0] != "EXPLAIN" {
+			r.lastStmt = stmt
+		}
 		rows, err := r.conn.QueryContext(r.ctx, stmt)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
-		n, err := renderTable(r.out, rows)
+		n, err := r.renderRows(rows)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
-			fmt.Sprintf("(%d row%s, %s)", n, plural(n), time.Since(start).Round(time.Millisecond))))
+		r.footer(fmt.Sprintf("(%d row%s, %s)", n, plural(n), time.Since(start).Round(time.Millisecond)))
 		return nil
 	}
 	// Pre-detect tx kind so we can (a) rewrite `BEGIN` to the spelling
@@ -334,14 +386,26 @@ func (r *sqlRunner) execute(stmt string) error {
 		}
 	}
 	if affected >= 0 {
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
-			fmt.Sprintf("OK (%d row%s affected, %s)",
-				affected, plural(int(affected)), time.Since(start).Round(time.Millisecond))))
+		r.footer(fmt.Sprintf("OK (%d row%s affected, %s)",
+			affected, plural(int(affected)), time.Since(start).Round(time.Millisecond)))
 	} else {
-		fmt.Fprintln(r.out, sqlMutedStyle.Render(
-			"OK ("+time.Since(start).Round(time.Millisecond).String()+")"))
+		r.footer("OK (" + time.Since(start).Round(time.Millisecond).String() + ")")
 	}
 	return nil
+}
+
+// footer emits the row-count/duration line. Suppressed by `\timing off`;
+// in machine formats (csv/json/ndjson) it goes to stderr so stdout stays
+// parseable.
+func (r *sqlRunner) footer(msg string) {
+	if !r.timing {
+		return
+	}
+	w := r.out
+	if r.format != sqlFormatTable {
+		w = r.errOut
+	}
+	fmt.Fprintln(w, r.st.muted.Render(msg))
 }
 
 // ensureConn lazily pins the runner to a single *sql.Conn so raw-SQL
@@ -482,40 +546,73 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 	case `\?`, `\help`:
 		r.printMetaHelp()
 	case `\d`:
+		// Bare `\d` lists tables; `\d <table>` describes one (columns,
+		// types, nullability, PK).
+		if len(fields) >= 2 {
+			if err := r.describeTable(fields[1]); err != nil {
+				fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
+			}
+			return false
+		}
 		if err := r.listTables(); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
+		}
+	case `\x`:
+		r.expanded = !r.expanded
+		state := "off"
+		if r.expanded {
+			state = "on"
+		}
+		fmt.Fprintln(r.out, r.st.muted.Render("expanded display is "+state))
+	case `\timing`:
+		r.timing = !r.timing
+		state := "off"
+		if r.timing {
+			state = "on"
+		}
+		fmt.Fprintln(r.out, r.st.muted.Render("timing is "+state))
+	case `\explain`:
+		// Verbatim EXPLAIN re-run of the previous query — rendering only,
+		// never interpretation (RFC-174 Graefe G3: plan-shape analysis is
+		// a query-engine feature, not a CLI one).
+		if r.lastStmt == "" {
+			fmt.Fprintln(r.errOut, r.st.muted.Render("no previous query to explain — run one first"))
+			return false
+		}
+		if err := r.execute("EXPLAIN " + r.lastStmt); err != nil {
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\dt`:
 		if err := r.listTemplates(); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\c`:
 		if len(fields) < 2 {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("usage: \\c <schema>"))
+			fmt.Fprintln(r.errOut, r.st.errS.Render("usage: \\c <schema>"))
 			return false
 		}
 		if r.inTx {
 			// Schema changes and open transactions don't mix cleanly —
 			// fdb-relational would either leak the tx or refuse the
 			// schema swap. Tell the operator to pick one.
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render(
+			fmt.Fprintln(r.errOut, r.st.errS.Render(
 				"cannot switch schema inside a transaction — COMMIT or ROLLBACK first"))
 			return false
 		}
 		r.schema = fields[1]
-		fmt.Fprintln(r.out, sqlMutedStyle.Render("schema → "+r.schema))
+		fmt.Fprintln(r.out, r.st.muted.Render("schema → "+r.schema))
 	case `\i`:
 		if len(fields) < 2 {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("usage: \\i <file>"))
+			fmt.Fprintln(r.errOut, r.st.errS.Render("usage: \\i <file>"))
 			return false
 		}
 		if err := r.runFile(fields[1]); err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 		}
 	case `\e`:
 		stmt, err := readFromEditor(r.schema)
 		if err != nil {
-			fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+err.Error())
+			fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+err.Error())
 			return false
 		}
 		if strings.TrimSpace(stmt) == "" {
@@ -523,12 +620,12 @@ func (r *sqlRunner) runMeta(line string) (stop bool) {
 		}
 		for _, s := range splitStatements(stmt) {
 			if execErr := r.execute(s); execErr != nil {
-				fmt.Fprintln(r.errOut, sqlErrorStyle.Render("ERROR: ")+execErr.Error())
+				fmt.Fprintln(r.errOut, r.st.errS.Render("ERROR: ")+execErr.Error())
 				break
 			}
 		}
 	default:
-		fmt.Fprintln(r.errOut, sqlMutedStyle.Render(
+		fmt.Fprintln(r.errOut, r.st.muted.Render(
 			fmt.Sprintf("unknown meta-command %q — try \\?", fields[0])))
 	}
 	return false
@@ -547,7 +644,7 @@ func (r *sqlRunner) listTables() error {
 		return err
 	}
 	if len(tables) == 0 {
-		_, err := fmt.Fprintln(r.out, sqlMutedStyle.Render(
+		_, err := fmt.Fprintln(r.out, r.st.muted.Render(
 			fmt.Sprintf("(no tables in %s/%s)", r.database, r.schema)))
 		return err
 	}
@@ -558,7 +655,7 @@ func (r *sqlRunner) listTables() error {
 	for _, tbl := range tables {
 		rows = append(rows, []string{tbl.name, fmt.Sprintf("%d", tbl.columns)})
 	}
-	return renderStaticTable(r.out, headers, rows)
+	return r.renderStaticTable(r.out, headers, rows)
 }
 
 // listTemplates powers `\dt` — every template visible on the cluster.
@@ -571,7 +668,7 @@ func (r *sqlRunner) listTemplates() error {
 		return fmt.Errorf("%w (also available: `frl meta catalog templates`)", err)
 	}
 	defer rows.Close()
-	_, err = renderTable(r.out, rows)
+	_, err = r.renderTable(r.out, rows)
 	return err
 }
 
@@ -581,17 +678,20 @@ func (r *sqlRunner) printMetaHelp() {
 	}{
 		{`\?`, "show this help"},
 		{`\q`, "quit the REPL (also Ctrl-D)"},
-		{`\d`, "list tables in the current schema"},
+		{`\d [table]`, "list tables / describe one (columns, types, PK)"},
 		{`\dt`, "list schema templates (SHOW SCHEMA TEMPLATES)"},
 		{`\c <name>`, "switch to schema <name>"},
 		{`\i <file>`, "execute statements from file"},
 		{`\e`, "open $EDITOR — run the buffer on save+exit"},
+		{`\x`, "toggle expanded (record-per-block) display"},
+		{`\timing`, "toggle the row-count/duration footer"},
+		{`\explain`, "re-run the previous query wrapped in EXPLAIN"},
 	}
 	var b strings.Builder
-	b.WriteString(sqlBannerStyle.Render("meta-commands") + "\n")
+	b.WriteString(r.st.banner.Render("meta-commands") + "\n")
 	for _, h := range help {
 		b.WriteString("  ")
-		b.WriteString(sqlCmdStyle.Render(h.cmd))
+		b.WriteString(r.st.cmd.Render(h.cmd))
 		b.WriteString("  ")
 		b.WriteString(h.desc)
 		b.WriteString("\n")
@@ -602,7 +702,7 @@ func (r *sqlRunner) printMetaHelp() {
 	// correctly. Worth calling out because the behaviour surprises
 	// operators coming from Postgres's default READ COMMITTED.
 	b.WriteString("\n")
-	b.WriteString(sqlMutedStyle.Render(
+	b.WriteString(r.st.muted.Render(
 		"note: within BEGIN/COMMIT, SELECT returns rows including uncommitted\n" +
 			"      writes (FDB Read-Your-Writes). ROLLBACK discards them correctly.\n"))
 	fmt.Fprint(r.out, b.String())
@@ -652,16 +752,33 @@ func readFromEditor(schema string) (string, error) {
 // row count. Empty result sets are rendered as just the header so the
 // operator can see which columns came back. NULL values render as
 // italic "NULL" so they don't blend with empty strings.
-func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
-	cols, err := rows.Columns()
+func (r *sqlRunner) renderTable(out io.Writer, rows *sql.Rows) (int, error) {
+	cols, data, err := collectRows(rows)
 	if err != nil {
 		return 0, err
 	}
-	// Collect all rows first so we can size columns. For very large
-	// result sets this is memory-heavy; acceptable for a REPL where
-	// operators rarely scroll past a few thousand rows. --limit on
-	// the query side is the right knob for bounding output.
-	var table [][]string
+	if err := r.renderCollected(out, cols, data); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// renderRows is renderTable bound to the runner's writer — the query
+// path in execute().
+func (r *sqlRunner) renderRows(rows *sql.Rows) (int, error) {
+	return r.renderTable(r.out, rows)
+}
+
+// collectRows drains a *sql.Rows into memory. Collecting first is what
+// lets the table renderer size columns; for very large result sets this
+// is memory-heavy but acceptable for a CLI — LIMIT on the query side is
+// the right knob for bounding output.
+func collectRows(rows *sql.Rows) ([]string, [][]any, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+	var data [][]any
 	for rows.Next() {
 		row := make([]any, len(cols))
 		pointers := make([]any, len(cols))
@@ -669,16 +786,44 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 			pointers[i] = &row[i]
 		}
 		if err := rows.Scan(pointers...); err != nil {
-			return 0, err
+			return nil, nil, err
 		}
-		rendered := make([]string, len(row))
-		for i, v := range row {
-			rendered[i] = renderCell(v)
-		}
-		table = append(table, rendered)
+		data = append(data, row)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, nil, err
+	}
+	return cols, data, nil
+}
+
+// renderCollected dispatches on the runner's output format (RFC-174
+// §3.2 sql scriptability). table is the human default; csv/json/ndjson
+// are the machine formats (their footers go to stderr, see footer()).
+func (r *sqlRunner) renderCollected(out io.Writer, cols []string, data [][]any) error {
+	switch r.format {
+	case sqlFormatCSV:
+		return r.renderCSV(out, cols, data)
+	case sqlFormatJSON:
+		return r.renderJSON(out, cols, data, false)
+	case sqlFormatNDJSON:
+		return r.renderJSON(out, cols, data, true)
+	default:
+		if r.expanded {
+			return r.renderExpanded(out, cols, data)
+		}
+		return r.renderAligned(out, cols, data)
+	}
+}
+
+// renderAligned is the classic aligned table (the only pre-v2 format).
+func (r *sqlRunner) renderAligned(out io.Writer, cols []string, data [][]any) error {
+	table := make([][]string, len(data))
+	for i, row := range data {
+		rendered := make([]string, len(row))
+		for j, v := range row {
+			rendered[j] = r.renderCell(v)
+		}
+		table[i] = rendered
 	}
 
 	widths := make([]int, len(cols))
@@ -695,29 +840,129 @@ func renderTable(out io.Writer, rows *sql.Rows) (int, error) {
 
 	header := make([]string, len(cols))
 	for i, c := range cols {
-		header[i] = sqlHeaderStyle.Render(padCell(c, widths[i]))
+		header[i] = r.st.header.Render(padCell(c, widths[i]))
 	}
 	sep := make([]string, len(cols))
 	for i := range cols {
-		sep[i] = sqlMutedStyle.Render(strings.Repeat("─", widths[i]))
+		sep[i] = r.st.muted.Render(strings.Repeat(r.st.hLine, widths[i]))
 	}
-	fmt.Fprintln(out, strings.Join(header, sqlMutedStyle.Render(" │ ")))
-	fmt.Fprintln(out, strings.Join(sep, sqlMutedStyle.Render("─┼─")))
+	fmt.Fprintln(out, strings.Join(header, r.st.muted.Render(r.st.vSep)))
+	fmt.Fprintln(out, strings.Join(sep, r.st.muted.Render(r.st.cross)))
 	for _, row := range table {
 		cells := make([]string, len(row))
 		for i, c := range row {
 			cells[i] = padCell(c, widths[i])
 		}
-		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
+		fmt.Fprintln(out, strings.Join(cells, r.st.muted.Render(r.st.vSep)))
 	}
-	return len(table), nil
+	return nil
+}
+
+// renderExpanded is psql's `\x` record-per-block view — one
+// "-[ RECORD N ]-" header then col/value pairs, one per line. Wide rows
+// stay readable without horizontal scrolling.
+func (r *sqlRunner) renderExpanded(out io.Writer, cols []string, data [][]any) error {
+	nameWidth := 0
+	for _, c := range cols {
+		if w := lipgloss.Width(c); w > nameWidth {
+			nameWidth = w
+		}
+	}
+	for i, row := range data {
+		fmt.Fprintln(out, r.st.muted.Render(fmt.Sprintf("-[ RECORD %d ]-", i+1)))
+		for j, c := range cols {
+			fmt.Fprintf(out, "%s%s%s\n",
+				r.st.header.Render(padCell(c, nameWidth)),
+				r.st.muted.Render(r.st.vSep),
+				r.renderCell(row[j]))
+		}
+	}
+	return nil
+}
+
+// renderCSV emits RFC-4180 CSV with a header row. NULL renders as the
+// empty string (psql's CSV convention); []byte as hex.
+func (r *sqlRunner) renderCSV(out io.Writer, cols []string, data [][]any) error {
+	w := csv.NewWriter(out)
+	if err := w.Write(cols); err != nil {
+		return err
+	}
+	for _, row := range data {
+		rec := make([]string, len(row))
+		for i, v := range row {
+			if v == nil {
+				rec[i] = ""
+				continue
+			}
+			rec[i] = plainCell(v)
+		}
+		if err := w.Write(rec); err != nil {
+			return err
+		}
+	}
+	w.Flush()
+	return w.Error()
+}
+
+// renderJSON emits rows as objects keyed by column name — one indented
+// array (json) or one object per line (ndjson, composing with jq and
+// the rest of frl's NDJSON envelopes).
+func (r *sqlRunner) renderJSON(out io.Writer, cols []string, data [][]any, ndjson bool) error {
+	objs := make([]map[string]any, len(data))
+	for i, row := range data {
+		obj := make(map[string]any, len(cols))
+		for j, c := range cols {
+			obj[c] = jsonCell(row[j])
+		}
+		objs[i] = obj
+	}
+	enc := json.NewEncoder(out)
+	if ndjson {
+		for _, obj := range objs {
+			if err := enc.Encode(obj); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	enc.SetIndent("", "  ")
+	return enc.Encode(objs)
+}
+
+// plainCell renders a value without any styling — CSV cells.
+func plainCell(v any) string {
+	switch t := v.(type) {
+	case []byte:
+		return fmt.Sprintf("%x", t)
+	case time.Time:
+		return t.Format(time.RFC3339Nano)
+	case string:
+		return t
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+// jsonCell maps a driver value to its JSON representation: nil → null,
+// []byte → hex string, time → RFC3339; scalars pass through.
+func jsonCell(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case []byte:
+		return fmt.Sprintf("%x", t)
+	case time.Time:
+		return t.Format(time.RFC3339Nano)
+	default:
+		return v
+	}
 }
 
 // renderStaticTable writes a table given precomputed header + rows.
 // The sibling of renderTable for places where we have the data in a
 // slice already (catalog queries, \d output) rather than behind a
 // *sql.Rows cursor.
-func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
+func (r *sqlRunner) renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
 	widths := make([]int, len(headers))
 	for i, h := range headers {
 		widths[i] = lipgloss.Width(h)
@@ -734,20 +979,20 @@ func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
 	}
 	header := make([]string, len(headers))
 	for i, h := range headers {
-		header[i] = sqlHeaderStyle.Render(padCell(h, widths[i]))
+		header[i] = r.st.header.Render(padCell(h, widths[i]))
 	}
 	sep := make([]string, len(headers))
 	for i := range headers {
-		sep[i] = sqlMutedStyle.Render(strings.Repeat("─", widths[i]))
+		sep[i] = r.st.muted.Render(strings.Repeat(r.st.hLine, widths[i]))
 	}
-	fmt.Fprintln(out, strings.Join(header, sqlMutedStyle.Render(" │ ")))
-	fmt.Fprintln(out, strings.Join(sep, sqlMutedStyle.Render("─┼─")))
+	fmt.Fprintln(out, strings.Join(header, r.st.muted.Render(r.st.vSep)))
+	fmt.Fprintln(out, strings.Join(sep, r.st.muted.Render(r.st.cross)))
 	for _, row := range rows {
 		cells := make([]string, len(row))
 		for i, c := range row {
 			cells[i] = padCell(c, widths[i])
 		}
-		fmt.Fprintln(out, strings.Join(cells, sqlMutedStyle.Render(" │ ")))
+		fmt.Fprintln(out, strings.Join(cells, r.st.muted.Render(r.st.vSep)))
 	}
 	return nil
 }
@@ -757,7 +1002,7 @@ func renderStaticTable(out io.Writer, headers []string, rows [][]string) error {
 // Runs in its own read-only FDB tx — short enough to not contend
 // with a long-running REPL statement.
 func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, error) {
-	tables, err := runCatalogQuery(r.ctx, r.cfgCtx,
+	tables, err := runCatalogQuery(r.ctx, r.clusterFile,
 		func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) ([]tableInfo, error) {
 			sch, err := cat.LoadSchema(txn, dbURI, schemaName)
 			if err != nil {
@@ -780,13 +1025,87 @@ func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, err
 	return tables, err
 }
 
+// columnInfo is one row of `\d <table>` — column name, declared type,
+// and nullability, in declared order.
+type columnInfo struct {
+	name     string
+	dataType string
+	nullable bool
+}
+
+// describeTable powers `\d <table>`: columns (name, type, nullability)
+// in declared order plus the primary-key fields from the template's
+// underlying RecordMetaData (api.Table doesn't model the PK).
+func (r *sqlRunner) describeTable(name string) error {
+	if r.database == "" || r.schema == "" {
+		return fmt.Errorf("no active schema — use --database and --schema (or \\c <schema>)")
+	}
+	type described struct {
+		cols []columnInfo
+		pk   []string
+	}
+	d, err := runCatalogQuery(r.ctx, r.clusterFile,
+		func(ctx context.Context, cat *catalog.RecordLayerStoreCatalog, txn relapi.Transaction) (described, error) {
+			var out described
+			sch, err := cat.LoadSchema(txn, r.database, r.schema)
+			if err != nil {
+				return out, err
+			}
+			tbls, err := sch.Tables()
+			if err != nil {
+				return out, err
+			}
+			var names []string
+			for _, tbl := range tbls {
+				names = append(names, tbl.MetadataName())
+				if !strings.EqualFold(tbl.MetadataName(), name) {
+					continue
+				}
+				for _, col := range tbl.Columns() {
+					out.cols = append(out.cols, columnInfo{
+						name:     col.MetadataName(),
+						dataType: col.DataType().Code().String(),
+						nullable: col.DataType().IsNullable(),
+					})
+				}
+				// The PK lives on the record-layer type behind the table.
+				if up, ok := sch.SchemaTemplate().(interface {
+					Underlying() *recordlayer.RecordMetaData
+				}); ok {
+					if rt := up.Underlying().GetRecordType(tbl.MetadataName()); rt != nil && rt.PrimaryKey != nil {
+						out.pk = rt.PrimaryKey.FieldNames()
+					}
+				}
+				return out, nil
+			}
+			sort.Strings(names)
+			return out, fmt.Errorf("table %q not found in %s/%s — available: %s",
+				name, r.database, r.schema, strings.Join(names, ", "))
+		})
+	if err != nil {
+		return err
+	}
+	headers := []string{"COLUMN", "TYPE", "NULLABLE"}
+	rows := make([][]string, 0, len(d.cols))
+	for _, c := range d.cols {
+		rows = append(rows, []string{c.name, c.dataType, fmt.Sprintf("%t", c.nullable)})
+	}
+	if err := r.renderStaticTable(r.out, headers, rows); err != nil {
+		return err
+	}
+	if len(d.pk) > 0 {
+		_, err = fmt.Fprintln(r.out, r.st.muted.Render("primary key: "+strings.Join(d.pk, ", ")))
+	}
+	return err
+}
+
 // renderCell turns a database/sql value into its display string. NULL
 // (Go nil) gets a muted "NULL" sentinel so it's distinguishable from
 // the empty string. []byte renders as hex — the same convention
 // formatPK already uses for binary PKs.
-func renderCell(v any) string {
+func (r *sqlRunner) renderCell(v any) string {
 	if v == nil {
-		return sqlMutedStyle.Render("NULL")
+		return r.st.muted.Render("NULL")
 	}
 	switch t := v.(type) {
 	case []byte:
@@ -813,46 +1132,94 @@ func padCell(s string, w int) string {
 
 // --- styling -------------------------------------------------------------
 
-var (
-	// Purposefully muted palette — this is a REPL, not a presentation.
-	// Colors only on stderr-safe elements so piping to less / jq
-	// doesn't render ANSI garbage on a terminal-less stream.
-	sqlBannerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	sqlMutedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	sqlErrorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	sqlCmdStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	sqlPromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	sqlPromptMuted = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlContStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	sqlSchemaColor = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
-	// sqlTxMarker is the `*` that appears before `>` while a
-	// transaction is open — yellow so it's noticeable without being
-	// alarming (errors use red).
-	sqlTxMarker = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
-)
+// sqlStyles carries every visual element the sql command emits — lipgloss
+// styles plus the table border glyphs. Two profiles exist: ttySQLStyles
+// (colors + Unicode box-drawing) when stdout is a real terminal, and
+// plainSQLStyles (no ANSI, pure ASCII) when stdout is piped/redirected.
+// Regression context: styles used to be unconditional package vars, so
+// `frl sql -c … | jq` received raw ESC sequences and `─┼─` box-drawing —
+// unusable in scripts. Off-TTY output must contain no byte ≥ 0x80 and no
+// `\x1b` (pinned by TestRenderStaticTable_PlainIsASCII).
+type sqlStyles struct {
+	banner      lipgloss.Style
+	muted       lipgloss.Style
+	header      lipgloss.Style
+	errS        lipgloss.Style
+	cmd         lipgloss.Style
+	prompt      lipgloss.Style
+	promptMuted lipgloss.Style
+	cont        lipgloss.Style
+	schema      lipgloss.Style
+	// txMarker is the `*` that appears before `>` while a transaction is
+	// open — yellow so it's noticeable without being alarming (errors
+	// use red).
+	txMarker lipgloss.Style
+
+	vSep  string // column separator in table rows, e.g. " │ " / " | "
+	hLine string // horizontal rule rune under the header, e.g. "─" / "-"
+	cross string // separator-row junction, e.g. "─┼─" / "-+-"
+}
+
+// ttySQLStyles is the interactive profile. Purposefully muted palette —
+// this is a REPL, not a presentation.
+func ttySQLStyles() sqlStyles {
+	return sqlStyles{
+		banner:      lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		muted:       lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		header:      lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true),
+		errS:        lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+		cmd:         lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true),
+		prompt:      lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		promptMuted: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		cont:        lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+		schema:      lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		txMarker:    lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true),
+		vSep:        " │ ",
+		hLine:       "─",
+		cross:       "─┼─",
+	}
+}
+
+// plainSQLStyles is the piped/scripted profile: zero-value lipgloss
+// styles render text unmodified (no ANSI), and the borders are ASCII so
+// awk/cut/grep pipelines see clean 7-bit output.
+func plainSQLStyles() sqlStyles {
+	return sqlStyles{
+		vSep:  " | ",
+		hLine: "-",
+		cross: "-+-",
+	}
+}
+
+// isTerminalWriter reports whether w is an interactive terminal. A
+// bytes.Buffer (tests), a pipe (`| jq`), or a redirect (`> f`) all
+// return false and get the plain profile.
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(f.Fd())
+}
 
 // prompt builds the primary prompt. If a schema is active it's
 // included in a muted color so operators can see which namespace they
 // are in at a glance. When a transaction is open (r.inTx), a `*`
 // is injected before `>` — psql uses the same signal.
 func (r *sqlRunner) prompt() string {
-	marker := sqlPromptStyle.Render("> ")
+	marker := r.st.prompt.Render("> ")
 	if r.inTx {
-		marker = sqlTxMarker.Render("*") + sqlPromptStyle.Render("> ")
+		marker = r.st.txMarker.Render("*") + r.st.prompt.Render("> ")
 	}
 	if r.schema != "" {
-		return sqlPromptStyle.Render("frl") + sqlPromptMuted.Render("(") +
-			sqlSchemaColor.Render(r.schema) + sqlPromptMuted.Render(")") +
+		return r.st.prompt.Render("frl") + r.st.promptMuted.Render("(") +
+			r.st.schema.Render(r.schema) + r.st.promptMuted.Render(")") +
 			marker
 	}
-	return sqlPromptStyle.Render("frl") + marker
+	return r.st.prompt.Render("frl") + marker
 }
 
 // sqlContinuePrompt is the indented continuation prompt shown while a
 // statement is still accumulating input. Matches psql's `-> ` arrow.
-func sqlContinuePrompt() string {
-	return sqlContStyle.Render("  -> ")
+func (r *sqlRunner) continuePrompt() string {
+	return r.st.cont.Render("  -> ")
 }
 
 // --- helpers -------------------------------------------------------------
@@ -877,20 +1244,3 @@ func plural(n int) string {
 	}
 	return "s"
 }
-
-// --- sanity on startup ---------------------------------------------------
-
-// sortedStringCopy returns a fresh sorted copy of a string slice. Used
-// for deterministic ordering in error suggestion lists. (Declared here
-// rather than next to other helpers so tests can assert stable output.)
-func sortedStringCopy(in []string) []string {
-	out := make([]string, len(in))
-	copy(out, in)
-	sort.Strings(out)
-	return out
-}
-
-// Assigning to _ so unused-linter doesn't complain about sortedStringCopy
-// on builds that don't yet reference it. (Reserved for future use by
-// meta-command handlers that need to list schemas.)
-var _ = sortedStringCopy

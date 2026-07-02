@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/cmd/frl/internal/meta"
 	"fdb.dev/pkg/recordlayer"
@@ -53,12 +55,34 @@ func newMetaDiffCmd() *cobra.Command {
 // diffEntry is the structured unit of change — shared by both text and
 // JSON renderers so categories can't drift between the two outputs.
 // Name is the entity (record type, index); Detail is a human-readable
-// explanation (e.g. "pk: order_id" for additions, "pk changed (old -> new)"
-// for modifications). Text-only renderers can render Name + Detail; JSON
-// keeps a stable name-only contract on each bucket.
+// summary for additions ("pk: order_id"); Changes carries the per-field
+// old→new deltas for modifications. Both renderers consume the same
+// Changes list, so the JSON can never under-report what the text shows
+// (the old name-only JSON contract hid WHAT changed from jq consumers).
 type diffEntry struct {
-	Name   string
-	Detail string // empty for bare removals
+	Name    string
+	Detail  string        // additions only; empty otherwise
+	Changes []fieldChange // modifications only; empty otherwise
+}
+
+// fieldChange is one attribute delta on a changed entity. Field names
+// are stable snake_case identifiers (type, fields, options, predicate,
+// added_version, last_modified_version, primary_key, since_version,
+// record_type_key) so scripts can select on them.
+type fieldChange struct {
+	Field string `json:"field"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
+}
+
+// changesDetail renders a Changes list as the human text detail:
+// "type VALUE -> COUNT; options (none) -> unique=true".
+func changesDetail(changes []fieldChange) string {
+	parts := make([]string, len(changes))
+	for i, c := range changes {
+		parts[i] = fmt.Sprintf("%s %s -> %s", c.Field, c.Old, c.New)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // diffSection buckets changes of a given kind (record_types / indexes).
@@ -139,10 +163,10 @@ func writeSectionText(b *strings.Builder, s diffSection, addedFmt func(diffEntry
 		fmt.Fprintf(b, "  - %s\n", e.Name)
 	}
 	for _, e := range s.Changed {
-		if e.Detail == "" {
-			fmt.Fprintf(b, "  ~ %s\n", e.Name)
+		if detail := changesDetail(e.Changes); detail != "" {
+			fmt.Fprintf(b, "  ~ %s: %s\n", e.Name, detail)
 		} else {
-			fmt.Fprintf(b, "  ~ %s: %s\n", e.Name, e.Detail)
+			fmt.Fprintf(b, "  ~ %s\n", e.Name)
 		}
 	}
 }
@@ -173,17 +197,33 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		if !ok {
 			continue
 		}
-		oldPK := pkFieldsOrUnset(oldT.PrimaryKey)
-		newPK := pkFieldsOrUnset(newT.PrimaryKey)
-		if oldPK != newPK {
-			s.Changed = append(s.Changed, diffEntry{
-				Name:   name,
-				Detail: fmt.Sprintf("pk changed (%s -> %s)", oldPK, newPK),
+		var changes []fieldChange
+		if oldPK, newPK := pkFieldsOrUnset(oldT.PrimaryKey), pkFieldsOrUnset(newT.PrimaryKey); oldPK != newPK {
+			changes = append(changes, fieldChange{Field: "primary_key", Old: oldPK, New: newPK})
+		}
+		if oldT.SinceVersion != newT.SinceVersion {
+			changes = append(changes, fieldChange{
+				Field: "since_version",
+				Old:   fmt.Sprintf("%d", oldT.SinceVersion),
+				New:   fmt.Sprintf("%d", newT.SinceVersion),
 			})
+		}
+		if oldKey, newKey := recordTypeKeyString(oldT), recordTypeKeyString(newT); oldKey != newKey {
+			changes = append(changes, fieldChange{Field: "record_type_key", Old: oldKey, New: newKey})
+		}
+		if len(changes) > 0 {
+			s.Changed = append(s.Changed, diffEntry{Name: name, Changes: changes})
 		}
 	}
 	sortSection(&s)
 	return s
+}
+
+// recordTypeKeyString renders a record type's key for diff purposes.
+// The effective key matters for wire layout, so implicit vs explicit is
+// only visible when the value itself differs.
+func recordTypeKeyString(rt *recordlayer.RecordType) string {
+	return fmt.Sprintf("%v", rt.GetRecordTypeKey())
 }
 
 // diffIndexes buckets index differences. Tracks addition, removal, and
@@ -212,24 +252,83 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		if !ok {
 			continue
 		}
-		var deltas []string
+		var changes []fieldChange
 		if oldI.Type != newI.Type {
-			deltas = append(deltas, fmt.Sprintf("type %s -> %s", oldI.Type, newI.Type))
+			changes = append(changes, fieldChange{Field: "type", Old: oldI.Type, New: newI.Type})
 		}
 		oldFields := strings.Join(oldI.RootExpression.FieldNames(), ",")
 		newFields := strings.Join(newI.RootExpression.FieldNames(), ",")
 		if oldFields != newFields {
-			deltas = append(deltas, fmt.Sprintf("fields %s -> %s", oldFields, newFields))
+			changes = append(changes, fieldChange{Field: "fields", Old: oldFields, New: newFields})
 		}
-		if len(deltas) > 0 {
-			s.Changed = append(s.Changed, diffEntry{
-				Name:   name,
-				Detail: strings.Join(deltas, "; "),
+		// Options carry uniqueness ("unique"), allowed-for-query, and
+		// every other index knob — a flipped unique with same type+fields
+		// used to diff as identical, which is dangerous for a tool whose
+		// job is deploy-time sanity (a unique flip changes write behavior).
+		if oldOpts, newOpts := optionsString(oldI), optionsString(newI); oldOpts != newOpts {
+			changes = append(changes, fieldChange{Field: "options", Old: oldOpts, New: newOpts})
+		}
+		// Predicate (sparse/filtered index): compare the wire proto, not
+		// the Go closure — the proto is what other readers see.
+		if !proto.Equal(oldI.GetPredicateProto(), newI.GetPredicateProto()) {
+			changes = append(changes, fieldChange{
+				Field: "predicate",
+				Old:   predicateString(oldI),
+				New:   predicateString(newI),
 			})
+		}
+		if oldI.AddedVersion != newI.AddedVersion {
+			changes = append(changes, fieldChange{
+				Field: "added_version",
+				Old:   fmt.Sprintf("%d", oldI.AddedVersion),
+				New:   fmt.Sprintf("%d", newI.AddedVersion),
+			})
+		}
+		if oldI.LastModifiedVersion != newI.LastModifiedVersion {
+			changes = append(changes, fieldChange{
+				Field: "last_modified_version",
+				Old:   fmt.Sprintf("%d", oldI.LastModifiedVersion),
+				New:   fmt.Sprintf("%d", newI.LastModifiedVersion),
+			})
+		}
+		if len(changes) > 0 {
+			s.Changed = append(s.Changed, diffEntry{Name: name, Changes: changes})
 		}
 	}
 	sortSection(&s)
 	return s
+}
+
+// optionsString renders an index's options map as sorted k=v pairs —
+// deterministic across runs so diffs are stable. "(none)" when empty.
+func optionsString(idx *recordlayer.Index) string {
+	if len(idx.Options) == 0 {
+		return "(none)"
+	}
+	keys := make([]string, 0, len(idx.Options))
+	for k := range idx.Options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + idx.Options[k]
+	}
+	return strings.Join(parts, ",")
+}
+
+// predicateString renders a filtered index's predicate proto compactly.
+// "(none)" for unfiltered indexes.
+func predicateString(idx *recordlayer.Index) string {
+	p := idx.GetPredicateProto()
+	if p == nil {
+		return "(none)"
+	}
+	b, err := prototext.MarshalOptions{}.Marshal(p)
+	if err != nil {
+		return fmt.Sprintf("(unrenderable: %v)", err)
+	}
+	return string(b)
 }
 
 func sortSection(s *diffSection) {
@@ -254,10 +353,25 @@ type versionChangeJSON struct {
 	New int `json:"new"`
 }
 
+// sectionJSON's element shapes: added carries {name, detail} (detail is
+// the same human summary the text renderer shows), removed is name-only
+// (nothing else to say about an entity that's gone), changed carries the
+// full per-field old→new list — symmetric with the text output so jq
+// consumers can see WHAT changed, not just that something did.
 type sectionJSON struct {
-	Added   []string `json:"added"`
-	Removed []string `json:"removed"`
-	Changed []string `json:"changed"`
+	Added   []addedEntryJSON   `json:"added"`
+	Removed []string           `json:"removed"`
+	Changed []changedEntryJSON `json:"changed"`
+}
+
+type addedEntryJSON struct {
+	Name   string `json:"name"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type changedEntryJSON struct {
+	Name    string        `json:"name"`
+	Changes []fieldChange `json:"changes"`
 }
 
 func writeMetaDiffJSON(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaData) error {
@@ -273,20 +387,22 @@ func writeMetaDiffJSON(out io.Writer, oldMeta, newMeta *recordlayer.RecordMetaDa
 	return enc.Encode(d)
 }
 
-// toSectionJSON extracts just the names out of a diffSection — the JSON
-// contract is name-only per bucket; `jq` consumers read names then
-// correlate back via their own data. Details are text-only (the text
-// renderer shows them inline).
+// toSectionJSON converts a diffSection to its JSON shape. Arrays are
+// always non-nil so `jq '.indexes.added | length'` is null-safe.
 func toSectionJSON(s diffSection) sectionJSON {
-	out := sectionJSON{Added: []string{}, Removed: []string{}, Changed: []string{}}
+	out := sectionJSON{
+		Added:   []addedEntryJSON{},
+		Removed: []string{},
+		Changed: []changedEntryJSON{},
+	}
 	for _, e := range s.Added {
-		out.Added = append(out.Added, e.Name)
+		out.Added = append(out.Added, addedEntryJSON{Name: e.Name, Detail: e.Detail})
 	}
 	for _, e := range s.Removed {
 		out.Removed = append(out.Removed, e.Name)
 	}
 	for _, e := range s.Changed {
-		out.Changed = append(out.Changed, e.Name)
+		out.Changed = append(out.Changed, changedEntryJSON{Name: e.Name, Changes: e.Changes})
 	}
 	return out
 }

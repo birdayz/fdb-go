@@ -23,7 +23,7 @@ import (
 //
 // If dropping leaves the predicate list empty, the rule still fires;
 // NoOpFilterRule will then eliminate the now-trivial Filter on a
-// subsequent fixpoint iteration.
+// subsequent exploration round.
 type FilterDropTruePredicatesRule struct {
 	matcher matching.BindingMatcher
 }

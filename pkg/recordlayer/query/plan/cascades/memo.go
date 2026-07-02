@@ -253,9 +253,9 @@ func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.Relati
 			m.indexReference(child)
 		}
 		// Dedup edges (via addParentEdge) so repeated indexing of the
-		// same (parent, expr) — e.g. SaturationCheckTask after a yield
-		// already integrated by RFC-037's Integrate hook — does not grow
-		// duplicate parent edges.
+		// same (parent, expr) — e.g. a rule yield already integrated by
+		// RFC-037's Integrate hook — does not grow duplicate parent
+		// edges.
 		m.addParentEdge(child, ref, expr)
 	}
 	if len(expr.GetQuantifiers()) == 0 {

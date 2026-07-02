@@ -31,7 +31,6 @@ func newConfigCmd() *cobra.Command {
 		Short: "Manage frl configuration (~/.frl/config.yaml)",
 	}
 	c.AddCommand(
-		newConfigSchemaCmd(),
 		newConfigViewCmd(),
 		newConfigUseContextCmd(),
 		newConfigCurrentContextCmd(),
@@ -242,31 +241,6 @@ func writeContextsJSON(out io.Writer, contexts []*configv1.Context, current stri
 	return enc.Encode(rows)
 }
 
-func newConfigSchemaCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "schema",
-		Short: "Print an empty Config message as JSON (schema probe)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			// UseProtoNames so the JSON key names match the snake_case keys
-			// the operator writes in config.yaml (protoyaml also uses proto
-			// names) — otherwise `schema` shows `currentContext` but the
-			// file wants `current_context`, and that mismatch is a footgun.
-			out, err := protojson.MarshalOptions{
-				Multiline:       true,
-				Indent:          "  ",
-				EmitUnpopulated: true,
-				UseProtoNames:   true,
-			}.Marshal(&configv1.Config{})
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(out))
-			return err
-		},
-	}
-}
-
 func newConfigViewCmd() *cobra.Command {
 	var contextName, outputFmt string
 	c := &cobra.Command{
@@ -382,8 +356,10 @@ func newConfigUseContextCmd() *cobra.Command {
 				return fmt.Errorf("%w\navailable contexts in %s: %s",
 					err, path, strings.Join(names, ", "))
 			}
-			cfg.CurrentContext = name
-			if err := config.Save(cfg); err != nil {
+			// Single-field YAML AST edit — preserves the operator's
+			// comments (a full Save would re-marshal through proto and
+			// destroy them, including config init's guidance block).
+			if err := config.SetCurrentContext(name); err != nil {
 				return err
 			}
 			path, _ := config.Path()

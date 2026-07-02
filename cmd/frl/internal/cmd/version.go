@@ -58,20 +58,36 @@ func newVersionCmd() *cobra.Command {
 	return c
 }
 
-// readVersion pulls build info from runtime/debug. Returns "dev" /
-// "unknown" sentinels when Bazel-built binaries surface no build info
-// (rules_go strips this by default — documented known limitation).
+// stampedVersion is set at link time:
+//
+//	go build -ldflags "-X fdb.dev/cmd/frl/internal/cmd.stampedVersion=v1.2.3" ./cmd/frl
+//
+// (or Bazel x_defs). This is the honest versioning path for shipped
+// artifacts — rules_go strips debug.ReadBuildInfo's module version, so
+// an unstamped Bazel binary reports "dev". `go install` binaries still
+// get their real version from ReadBuildInfo.
+var stampedVersion string
+
+// readVersion prefers the link-time stamp, then runtime/debug build
+// info. Returns "dev" / "unknown" sentinels when neither is available.
 func readVersion() versionInfo {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
+		v := stampedVersion
+		if v == "" {
+			v = "unknown"
+		}
 		return versionInfo{
-			Version:   "unknown",
+			Version:   v,
 			GoVersion: "unknown",
 			GOOS:      "unknown",
 			GOARCH:    "unknown",
 		}
 	}
-	ver := info.Main.Version
+	ver := stampedVersion
+	if ver == "" {
+		ver = info.Main.Version
+	}
 	if ver == "" || ver == "(devel)" {
 		ver = "dev"
 	}

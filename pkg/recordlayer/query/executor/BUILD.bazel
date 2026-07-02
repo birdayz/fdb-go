@@ -39,6 +39,7 @@ go_test(
     srcs = [
         "bench_proto_test.go",
         "charge_coverage_test.go",
+        "continuation_decode_test.go",
         "equijoin_columns_test.go",
         "eval_must_test.go",
         "evaluation_context_test.go",
@@ -90,6 +91,7 @@ go_test(
         "positional_row_test.go",
         "rfc173_slice1_authority_test.go",
         "rfc173_projection_shadow_test.go",
+        "continuation_decode_test.go",
     ],
     deps = [
         "//gen",

@@ -128,7 +128,7 @@ func TestWriteStoreInfoRendersAllFields(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	out := buf.String()
@@ -154,7 +154,7 @@ func TestWriteStoreInfo_RendersRFC3339Timestamp(t *testing.T) {
 	info := &gen.DataStoreInfo{LastUpdateTime: proto_uint64(ts)}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	out := buf.String()
@@ -171,7 +171,7 @@ func TestWriteStoreInfo_RendersFDBPrefix(t *testing.T) {
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
 	prefix := []byte{0x02, 'a', 'b', 0x00}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, prefix); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, prefix); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if !strings.Contains(buf.String(), "FDB prefix (hex):  02616200") {
@@ -184,7 +184,7 @@ func TestWriteStoreInfo_OmitsPrefixWhenNil(t *testing.T) {
 	info := &gen.DataStoreInfo{}
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/myapp"}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if strings.Contains(buf.String(), "FDB prefix") {
@@ -203,7 +203,7 @@ func TestWriteStoreInfo_RendersIncarnation(t *testing.T) {
 	info := &gen.DataStoreInfo{Incarnation: proto_int32(7)}
 
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if !strings.Contains(buf.String(), "Incarnation:       7") {
@@ -219,7 +219,7 @@ func TestWriteStoreInfo_OmitsZeroIncarnation(t *testing.T) {
 	ctx := &configv1.Context{Name: "pristine", KeyspacePath: "/x"}
 	info := &gen.DataStoreInfo{}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if strings.Contains(buf.String(), "Incarnation") {
@@ -237,7 +237,7 @@ func TestWriteStoreInfo_LegacyUnsplitSuffix(t *testing.T) {
 	info := &gen.DataStoreInfo{OmitUnsplitRecordSuffix: proto_bool(true)}
 
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	out := buf.String()
@@ -256,7 +256,7 @@ func TestWriteStoreInfo_ModernNoUnsplitLine(t *testing.T) {
 	ctx := &configv1.Context{Name: "modern", KeyspacePath: "/x"}
 	info := &gen.DataStoreInfo{}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if strings.Contains(buf.String(), "Unsplit suffix") {
@@ -269,7 +269,7 @@ func TestWriteStoreInfo_OmitsZeroTimestamp(t *testing.T) {
 	info := &gen.DataStoreInfo{} // LastUpdateTime unset → 0
 	ctx := &configv1.Context{Name: "test", KeyspacePath: "/x"}
 	var buf bytes.Buffer
-	if err := writeStoreInfo(&buf, ctx, info, nil); err != nil {
+	if err := writeStoreInfo(&buf, &storeTarget{cfgCtx: ctx}, info, nil); err != nil {
 		t.Fatalf("writeStoreInfo: %v", err)
 	}
 	if strings.Contains(buf.String(), "Last updated:") {
@@ -314,7 +314,7 @@ func TestRunStoreInfo_EmptyKeyspaceErrors(t *testing.T) {
 	t.Parallel()
 	ctx := &configv1.Context{Name: "bad"} // keyspace_path left empty
 	var buf bytes.Buffer
-	err := runStoreInfo(context.Background(), &buf, ctx, "text")
+	err := runStoreInfo(context.Background(), &buf, &storeTarget{cfgCtx: ctx}, "text")
 	if err == nil {
 		t.Fatal("runStoreInfo with empty keyspace succeeded, want error")
 	}
@@ -329,3 +329,26 @@ func TestRunStoreInfo_EmptyKeyspaceErrors(t *testing.T) {
 func proto_string(s string) *string { return &s }
 func proto_int32(v int32) *int32    { return &v }
 func proto_bool(v bool) *bool       { return &v }
+
+// Regression: fdb.Key implements Stringer, and fmt routes %x through
+// String() — so `%x` on a key hexed the Printable-escaped text
+// ("\x02dev\x00\x14" → "5c7830326465765c…") instead of the raw bytes.
+// keyHex must produce the raw-byte hex that pastes into fdbcli.
+func TestKeyHex_RawBytesNotEscapedString(t *testing.T) {
+	t.Parallel()
+	ss, err := parseKeyspacePath("/dev")
+	if err != nil {
+		t.Fatalf("parseKeyspacePath: %v", err)
+	}
+	key := ss.Pack(tuple.Tuple{int64(0)}) // StoreInfoKey shape: \x02dev\x00\x14
+	got := keyHex(key)
+	want := "026465760014"
+	if got != want {
+		t.Errorf("keyHex = %q; want %q", got, want)
+	}
+	// The bug signature: hex of the escaped string always starts with
+	// "5c78" ("\x"). Guard against reintroducing %x-on-fdb.Key.
+	if strings.HasPrefix(got, "5c78") {
+		t.Errorf("keyHex = %q; hexed the Stringer output, not the raw bytes", got)
+	}
+}

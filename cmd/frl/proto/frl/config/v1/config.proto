@@ -1,12 +1,15 @@
 // Configuration schema for the `frl` CLI.
 //
 // Loaded via `github.com/birdayz/protobuf-ecosystem/protoconfig.Load` —
-// YAML on disk, env-var overlay on top. A single `Config` message drives
-// kubectl-style context switching; each `Context` bundles cluster
-// connection + metadata source.
+// YAML on disk (path overridable via $FRL_CONFIG; no per-field env
+// overlay is wired). A single `Config` message drives kubectl-style
+// context switching; each `Context` bundles cluster connection +
+// metadata source.
 syntax = "proto3";
 
 package frl.config.v1;
+
+import "google/protobuf/struct.proto";
 
 // Top-level config, typically at ~/.frl/config.yaml.
 message Config {
@@ -39,6 +42,23 @@ message Context {
   // commands). Store-level commands that only touch the DataStoreInfo
   // header (e.g. `store info`) can skip metadata loading.
   MetadataSource metadata = 4;
+
+  // Relational addressing (RFC-174 §3.1) — set BOTH or NEITHER. When
+  // set, the context addresses the relational store for this
+  // (database URI, schema): keyspace comes from the relational layout
+  // and metadata from the catalog's schema-pinned template version.
+  // Mutually exclusive with keyspace_path / keyspace_tuple / metadata.
+  string database = 5;
+  string schema = 6;
+
+  // Typed keyspace tuple — alternative to keyspace_path for stores
+  // whose tuple path contains non-string elements. YAML list of
+  // strings, integers, and tagged objects:
+  //
+  //   keyspace_tuple: ["myapp", 42, {"uuid": "0195c7…"}, {"bytes_hex": "deadbeef"}]
+  //
+  // Mutually exclusive with keyspace_path and database/schema.
+  google.protobuf.ListValue keyspace_tuple = 7;
 }
 
 // MetadataSource is a tagged union over the two supported ways of

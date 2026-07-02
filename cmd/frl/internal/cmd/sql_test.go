@@ -1,24 +1,23 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
-
-	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
 
 func TestBuildFDBSQLDSN(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name   string
-		ctx    *configv1.Context
-		dbPath string
-		schema string
-		want   string
+		name        string
+		clusterFile string
+		dbPath      string
+		schema      string
+		want        string
 	}{
 		{
 			name:   "path only",
-			ctx:    &configv1.Context{},
 			dbPath: "/myapp",
 			want:   "fdbsql:///myapp",
 		},
@@ -26,28 +25,26 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			// url.Values.Encode percent-encodes `/` as `%2F`. The
 			// driver's url.Parse unpacks it, so the on-wire form stays
 			// correct even though it's uglier to read.
-			name:   "with cluster file",
-			ctx:    &configv1.Context{ClusterFile: "/etc/fdb/prod.cluster"},
-			dbPath: "/myapp",
-			want:   "fdbsql:///myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
+			name:        "with cluster file",
+			clusterFile: "/etc/fdb/prod.cluster",
+			dbPath:      "/myapp",
+			want:        "fdbsql:///myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
 		},
 		{
 			name:   "with schema",
-			ctx:    &configv1.Context{},
 			dbPath: "/myapp",
 			schema: "main",
 			want:   "fdbsql:///myapp?schema=main",
 		},
 		{
-			name:   "both options",
-			ctx:    &configv1.Context{ClusterFile: "/c"},
-			dbPath: "/myapp",
-			schema: "main",
-			want:   "fdbsql:///myapp?cluster_file=%2Fc&schema=main",
+			name:        "both options",
+			clusterFile: "/c",
+			dbPath:      "/myapp",
+			schema:      "main",
+			want:        "fdbsql:///myapp?cluster_file=%2Fc&schema=main",
 		},
 		{
 			name:   "strips leading slash on path",
-			ctx:    &configv1.Context{},
 			dbPath: "myapp",
 			want:   "fdbsql:///myapp",
 		},
@@ -56,20 +53,44 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			// the DSN under naive string concatenation. url.Values
 			// percent-encodes them so the driver's URL parser recovers
 			// the original value. Caught by reviewer round 7.
-			name:   "cluster file with space percent-encoded",
-			ctx:    &configv1.Context{ClusterFile: "/home/user/my project/fdb.cluster"},
-			dbPath: "/myapp",
-			want:   "fdbsql:///myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
+			name:        "cluster file with space percent-encoded",
+			clusterFile: "/home/user/my project/fdb.cluster",
+			dbPath:      "/myapp",
+			want:        "fdbsql:///myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := buildFDBSQLDSN(tc.ctx, tc.dbPath, tc.schema)
+			got := buildFDBSQLDSN(tc.clusterFile, tc.dbPath, tc.schema)
 			if got != tc.want {
 				t.Errorf("buildFDBSQLDSN = %q; want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// Regression: the missing---database error used to read "--database is
+// required …", which fang's error banner capitalizes into "--Database is
+// required" — garbling the flag name. The message must start with a
+// sentence word so banner capitalization can't touch the flag.
+func TestSQL_MissingDatabaseFlag_Message(t *testing.T) {
+	// Not parallel: writeTestConfig uses t.Setenv.
+	writeTestConfig(t, "local")
+	c := newSQLCmd()
+	var out bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&out)
+	c.SetArgs([]string{})
+	err := c.Execute()
+	if err == nil {
+		t.Fatal("expected error when --database is missing")
+	}
+	if !strings.Contains(err.Error(), "missing required flag --database") {
+		t.Errorf("error = %q; want it to mention `missing required flag --database`", err)
+	}
+	if strings.HasPrefix(err.Error(), "-") {
+		t.Errorf("error = %q; must not start with a flag name (fang banner capitalization garbles it)", err)
 	}
 }
 
@@ -176,20 +197,75 @@ func TestPlural(t *testing.T) {
 
 func TestRenderCell_TypeDispatch(t *testing.T) {
 	t.Parallel()
-	// NULL is special — renders with ANSI-styled NULL text, so we
-	// match on the literal "NULL" token rather than the whole string.
-	got := renderCell(nil)
-	if !strings.Contains(got, "NULL") {
-		t.Errorf("nil cell = %q; want to contain NULL", got)
+	// Plain profile: NULL renders as the bare token (no ANSI), so exact
+	// matches are safe throughout.
+	r := &sqlRunner{st: plainSQLStyles()}
+	if got := r.renderCell(nil); got != "NULL" {
+		t.Errorf("nil cell = %q; want NULL", got)
 	}
-	if got := renderCell([]byte{0x01, 0x02, 0xff}); got != "0102ff" {
+	if got := r.renderCell([]byte{0x01, 0x02, 0xff}); got != "0102ff" {
 		t.Errorf("[]byte cell = %q; want 0102ff", got)
 	}
-	if got := renderCell("hello"); got != "hello" {
+	if got := r.renderCell("hello"); got != "hello" {
 		t.Errorf("string cell = %q; want hello", got)
 	}
-	if got := renderCell(int64(42)); got != "42" {
+	if got := r.renderCell(int64(42)); got != "42" {
 		t.Errorf("int64 cell = %q; want 42", got)
+	}
+}
+
+// Regression (RFC-174 bug 2 + codex P2-3): piped/scripted output must be
+// pure 7-bit ASCII with zero ANSI escapes. The \x1b check alone would
+// pass with Unicode box-drawing (`─┼─`) still present, so assert every
+// byte < 0x80 too.
+func TestRenderStaticTable_PlainIsASCII(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	r := &sqlRunner{out: &out, st: plainSQLStyles()}
+	err := r.renderStaticTable(&out,
+		[]string{"NAME", "VALUE"},
+		[][]string{{"alpha", "1"}, {"beta", "NULL"}})
+	if err != nil {
+		t.Fatalf("renderStaticTable: %v", err)
+	}
+	got := out.Bytes()
+	if bytes.ContainsRune(got, 0x1b) {
+		t.Errorf("plain table contains ANSI escape:\n%q", got)
+	}
+	for i, b := range got {
+		if b >= 0x80 {
+			t.Errorf("plain table contains non-ASCII byte 0x%02x at offset %d:\n%q", b, i, got)
+			break
+		}
+	}
+	// Sanity: it still looks like a table (ASCII separators present;
+	// exact spacing depends on column widths).
+	if !strings.Contains(out.String(), " | ") || !strings.Contains(out.String(), "-+-") {
+		t.Errorf("plain table missing ASCII separators:\n%s", out.String())
+	}
+}
+
+// The TTY profile must keep the box-drawing look — plain mode is a pipe
+// concession, not a downgrade for interactive users.
+func TestRenderStaticTable_TTYKeepsBoxDrawing(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	r := &sqlRunner{out: &out, st: ttySQLStyles()}
+	if err := r.renderStaticTable(&out,
+		[]string{"NAME"}, [][]string{{"alpha"}}); err != nil {
+		t.Fatalf("renderStaticTable: %v", err)
+	}
+	if !strings.Contains(out.String(), "─") {
+		t.Errorf("tty table lost its box-drawing rule:\n%q", out.String())
+	}
+}
+
+// isTerminalWriter: a bytes.Buffer (and any non-*os.File) is never a
+// terminal — that's what routes tests and pipes to the plain profile.
+func TestIsTerminalWriter_BufferIsNotTerminal(t *testing.T) {
+	t.Parallel()
+	if isTerminalWriter(&bytes.Buffer{}) {
+		t.Error("bytes.Buffer reported as terminal")
 	}
 }
 
@@ -240,5 +316,137 @@ func TestPadCell(t *testing.T) {
 	// Over-sized input is returned verbatim — never truncates.
 	if got := padCell("overlong", 3); got != "overlong" {
 		t.Errorf("padCell truncated: %q", got)
+	}
+}
+
+// The machine formats must be parseable and style-free regardless of
+// profile. renderCollected is exercised directly with in-memory rows.
+func TestRenderCollected_Formats(t *testing.T) {
+	t.Parallel()
+	cols := []string{"ID", "NAME"}
+	data := [][]any{
+		{int64(1), "alpha"},
+		{int64(2), nil},
+	}
+
+	t.Run("csv", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatCSV}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("csv: %v", err)
+		}
+		want := "ID,NAME\n1,alpha\n2,\n"
+		if out.String() != want {
+			t.Errorf("csv = %q; want %q", out.String(), want)
+		}
+	})
+
+	t.Run("ndjson", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatNDJSON}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("ndjson: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("ndjson lines = %d; want 2:\n%s", len(lines), out.String())
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(lines[1]), &obj); err != nil {
+			t.Fatalf("ndjson line 2 not JSON: %v", err)
+		}
+		if obj["NAME"] != nil {
+			t.Errorf("NULL must encode as JSON null, got %v", obj["NAME"])
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatJSON}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("json: %v", err)
+		}
+		var arr []map[string]any
+		if err := json.Unmarshal(out.Bytes(), &arr); err != nil {
+			t.Fatalf("json output not an array: %v\n%s", err, out.String())
+		}
+		if len(arr) != 2 || arr[0]["ID"] != float64(1) {
+			t.Errorf("json = %v", arr)
+		}
+	})
+
+	t.Run("expanded table", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		r := &sqlRunner{st: plainSQLStyles(), format: sqlFormatTable, expanded: true}
+		if err := r.renderCollected(&out, cols, data); err != nil {
+			t.Fatalf("expanded: %v", err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "-[ RECORD 1 ]-") || !strings.Contains(got, "-[ RECORD 2 ]-") {
+			t.Errorf("expanded output missing record headers:\n%s", got)
+		}
+		if !strings.Contains(got, "NAME") || !strings.Contains(got, "alpha") {
+			t.Errorf("expanded output missing column/value:\n%s", got)
+		}
+	})
+}
+
+// The footer routes to stderr for machine formats and is suppressed by
+// \timing off — stdout must stay parseable.
+func TestSQLFooter_Routing(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	r := &sqlRunner{
+		st: plainSQLStyles(), out: &out, errOut: &errOut,
+		format: sqlFormatNDJSON, timing: true,
+	}
+	r.footer("(1 row)")
+	if out.Len() != 0 {
+		t.Errorf("machine-format footer leaked to stdout: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "(1 row)") {
+		t.Errorf("footer missing from stderr: %q", errOut.String())
+	}
+
+	out.Reset()
+	errOut.Reset()
+	r.timing = false
+	r.footer("(1 row)")
+	if out.Len()+errOut.Len() != 0 {
+		t.Errorf("timing off must suppress the footer, got %q / %q", out.String(), errOut.String())
+	}
+}
+
+// \x, \timing, and \explain-without-history are pure runner state — no
+// FDB needed.
+func TestRunMeta_Toggles(t *testing.T) {
+	t.Parallel()
+	var out, errOut bytes.Buffer
+	r := &sqlRunner{st: plainSQLStyles(), out: &out, errOut: &errOut, timing: true}
+
+	if r.runMeta(`\x`) {
+		t.Fatal(`\x must not stop the REPL`)
+	}
+	if !r.expanded || !strings.Contains(out.String(), "expanded display is on") {
+		t.Errorf(`\x did not enable expanded mode: %q`, out.String())
+	}
+	r.runMeta(`\x`)
+	if r.expanded {
+		t.Error(`second \x did not toggle expanded off`)
+	}
+
+	r.runMeta(`\timing`)
+	if r.timing {
+		t.Error(`\timing did not toggle off`)
+	}
+
+	errOut.Reset()
+	r.runMeta(`\explain`)
+	if !strings.Contains(errOut.String(), "no previous query") {
+		t.Errorf(`\explain without history should hint, got %q`, errOut.String())
 	}
 }

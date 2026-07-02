@@ -31,56 +31,77 @@ func newRecordCmd() *cobra.Command {
 		newRecordGetCmd(),
 		newRecordScanCmd(),
 		newRecordCountCmd(),
+		newRecordPutCmd(),
+		newRecordDeleteCmd(),
 	)
 	return c
 }
 
 func newRecordGetCmd() *cobra.Command {
-	var contextName, metaFile string
+	var addr storeAddressFlags
+	var recordType string
 	c := &cobra.Command{
 		Use:   "get <primary-key>",
 		Short: "Load a single record by primary key",
 		Example: `  frl record get 42
   frl record get customer-0001
-  frl record get 42 --meta-file ./meta.pb`,
-		Long: "Primary keys are parsed as int64 if the argument is a valid " +
-			"signed 64-bit integer, otherwise as a string. Values above " +
-			"math.MaxInt64 (9223372036854775807) are treated as strings, " +
-			"which will miss records saved with uint64 PKs in that range. " +
-			"Composite primary keys are not yet supported — open an issue " +
-			"if you need them.",
+  frl record get 1,1 --database /myapp --schema main   # PK as shown by record scan
+  frl record get 1 --type ITEMS --database /myapp --schema main`,
+		Long: "The primary key is comma-separated tuple elements — exactly " +
+			"the form `record scan` prints in its primary_key field, so scan " +
+			"output round-trips into get. Each element parses as int64 if it " +
+			"is a valid signed 64-bit integer, otherwise as a string (values " +
+			"above math.MaxInt64 are treated as strings, which will miss " +
+			"records saved with uint64 PKs in that range).\n\n" +
+			"--type prepends the record type's key when the type's primary " +
+			"key carries a record-type prefix (as relational-layer tables " +
+			"do) — `--type ITEMS 1` addresses the same record as `1,1`.\n\n" +
+			"--database/--schema address a relational store: keyspace and " +
+			"metadata come from the catalog (schema-pinned template version).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
 			pk := parsePrimaryKey(args[0])
-			rec, err := withStore(cmd.Context(), cfgCtx, override,
+			rec, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (*recordlayer.FDBStoredRecord[proto.Message], error) {
+					if recordType != "" {
+						rt, err := lookupRecordType(store.GetRecordMetaData(), recordType)
+						if err != nil {
+							return nil, err
+						}
+						// Same rule Java callers follow: a PK expression
+						// with a record-type prefix means the stored key
+						// starts with the type key — prepend it so the
+						// operator passes only the logical key part.
+						if rt.PrimaryKeyHasRecordTypePrefix() {
+							pk = append(tuple.Tuple{rt.GetRecordTypeKey()}, pk...)
+						}
+					}
 					return store.LoadRecord(pk)
 				})
 			if err != nil {
 				return err
 			}
 			if rec == nil {
-				return fmt.Errorf("record %v not found in %s", pk, cfgCtx.GetKeyspacePath())
+				return fmt.Errorf("record %v not found in %s", pk, target.describe())
 			}
 			return writeRecordAsJSON(cmd.OutOrStdout(), rec)
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
+	c.Flags().StringVar(&recordType, "type", "", "record type; prepends its type key for prefix-keyed types")
 	return c
 }
 
 func newRecordScanCmd() *cobra.Command {
 	var (
-		contextName string
-		metaFile    string
-		recordType  string
-		limit       int
-		reverse     bool
+		addr       storeAddressFlags
+		recordType string
+		limit      int
+		reverse    bool
 	)
 	c := &cobra.Command{
 		Use:   "scan",
@@ -88,42 +109,52 @@ func newRecordScanCmd() *cobra.Command {
 		Example: `  frl record scan --limit 10
   frl record scan --type Order --limit 100 | jq -s .
   frl record scan --reverse --limit 5         # last 5 by PK order
-  frl record scan --type Order | wc -l`,
+  frl record scan --database /myapp --schema main --limit 10`,
 		Long: "Scan over the whole store (or a single --type) in primary-key " +
 			"order. Use --reverse to walk the tail first — useful for tail-style " +
 			"inspection of the most recently-keyed records. Output is one " +
 			"JSON-encoded record per line (newline-delimited JSON) so it can " +
-			"be piped into `jq -s .` or tools like `mlr`.",
+			"be piped into `jq -s .` or tools like `mlr`.\n\n" +
+			"--database/--schema address a relational store: keyspace and " +
+			"metadata come from the catalog (schema-pinned template version), " +
+			"so SQL-created tables are scannable with zero config.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
-			return withStoreE(cmd.Context(), cfgCtx, override,
+			return withStoreE(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) error {
 					return scanAndRender(cmd.Context(), cmd.OutOrStdout(), store, recordType, limit, reverse)
 				})
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().StringVar(&recordType, "type", "", "filter by record type name; empty means all types")
 	c.Flags().IntVar(&limit, "limit", defaultScanLimit, "max records to return; 0 means unlimited")
 	c.Flags().BoolVar(&reverse, "reverse", false, "scan in reverse primary-key order")
 	return c
 }
 
-// parsePrimaryKey produces a single-element tuple. Integers go in as int64
-// (record layer stores them in the tuple layer's int representation, and
-// `42` from an operator should match a record saved with int64(42) PK).
-// Everything else is a string. Composite PKs require explicit tuple syntax
-// — deferred until there's a real demand.
+// parsePrimaryKey parses a comma-separated primary key into a tuple —
+// the same comma-separated form formatPK renders in scan envelopes, so
+// `record get <primary_key-as-shown-by-scan>` round-trips. Each element
+// is int64 if it parses as a signed 64-bit integer (record layer stores
+// them in the tuple layer's int representation), otherwise a string.
+// String elements containing a literal comma aren't addressable with
+// this syntax.
 func parsePrimaryKey(raw string) tuple.Tuple {
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		return tuple.Tuple{n}
+	parts := strings.Split(raw, ",")
+	t := make(tuple.Tuple, len(parts))
+	for i, p := range parts {
+		if n, err := strconv.ParseInt(p, 10, 64); err == nil {
+			t[i] = n
+		} else {
+			t[i] = p
+		}
 	}
-	return tuple.Tuple{raw}
+	return t
 }
 
 // writeRecordAsJSON renders a stored record as a JSON object with three

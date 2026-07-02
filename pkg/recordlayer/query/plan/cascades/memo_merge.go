@@ -49,10 +49,11 @@ func (m *Memo) Integrate(ref *expressions.Reference, expr expressions.Relational
 // A merge is performed only when NEITHER group carries PLANNING-phase
 // bookkeeping (winners / partial matches). Those structures embed raw
 // References the merge does not canonicalize, so merging them would be
-// unsound. The Explore() entry point interleaves optimization with
-// exploration, so a Reference can already hold a winner when a later
-// yield finds an equivalent group; in that case we leave the two groups
-// separate (the pre-RFC behaviour) rather than merge unsoundly.
+// unsound. The planner interleaves optimization with exploration
+// (OptimizeGroup tasks run per group as it saturates), so a Reference
+// can already hold a winner when a later yield finds an equivalent
+// group; in that case we leave the two groups separate (the pre-RFC
+// behaviour) rather than merge unsoundly.
 func (m *Memo) integrateOne(ref *expressions.Reference, expr expressions.RelationalExpression) {
 	ref = ref.Canonical()
 	if other := m.findEquivalentRef(expr, ref); other != nil {

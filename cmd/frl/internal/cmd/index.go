@@ -23,12 +23,16 @@ func newIndexCmd() *cobra.Command {
 		newIndexLsCmd(),
 		newIndexDescribeCmd(),
 		newIndexScanCmd(),
+		newIndexBuildCmd(),
+		newIndexRebuildCmd(),
+		newIndexSetStateCmd(),
 	)
 	return c
 }
 
 func newIndexLsCmd() *cobra.Command {
-	var contextName, metaFile, outputFmt string
+	var addr storeAddressFlags
+	var outputFmt string
 	var noFDB bool
 	c := &cobra.Command{
 		Use:   "ls",
@@ -37,8 +41,9 @@ func newIndexLsCmd() *cobra.Command {
   frl index ls -o json
   frl index ls --meta-file ./meta.pb --no-fdb    # offline render`,
 		Long: "Opens the current context's store and prints one row per " +
-			"index: name, type, current state (readable / write-only / " +
-			"disabled / readable-unique-pending), the record types it " +
+			"index: name, type, current state (READABLE / WRITE_ONLY / " +
+			"DISABLED / READABLE_UNIQUE_PENDING — the record layer's " +
+			"canonical names, matching Java's), the record types it " +
 			"applies to, and the metadata version that last touched it. " +
 			"--no-fdb skips opening the store and shows STATE as '—' " +
 			"so that `--meta-file` can be used as a pure offline lister.\n\n" +
@@ -49,26 +54,31 @@ func newIndexLsCmd() *cobra.Command {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
 				return err
 			}
-			cfgCtx, override, err := resolveContextAndOverride(contextName, metaFile)
+			target, err := addr.resolve()
 			if err != nil {
 				return err
 			}
 			if noFDB {
-				if override == nil {
-					src, err := meta.FromContext(cfgCtx, nil, nil)
+				if target.relational() {
+					return fmt.Errorf("--no-fdb cannot be combined with --database/--schema — the catalog metadata lives in FDB")
+				}
+				var src meta.Source
+				if target.metaFile != "" {
+					src = &meta.FileSource{Path: target.metaFile}
+				} else {
+					src, err = meta.FromContext(target.cfgCtx, nil, nil)
 					if err != nil {
 						return fmt.Errorf("--no-fdb requires a file metadata source: %w "+
 							"(add `meta_file` to the context or pass --meta-file)", err)
 					}
-					override = src
 				}
-				md, err := override.Load(cmd.Context())
+				md, err := src.Load(cmd.Context())
 				if err != nil {
 					return err
 				}
 				return renderIndexList(cmd.OutOrStdout(), md, nil, outputFmt)
 			}
-			return withStoreE(cmd.Context(), cfgCtx, override,
+			return withStoreE(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) error {
 					return renderIndexList(cmd.OutOrStdout(),
 						store.GetRecordMetaData(),
@@ -77,8 +87,7 @@ func newIndexLsCmd() *cobra.Command {
 				})
 		},
 	}
-	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+	addr.register(c, true)
 	c.Flags().BoolVar(&noFDB, "no-fdb", false, "render from metadata only; skip opening the store")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
@@ -101,7 +110,7 @@ func renderIndexList(out io.Writer, md *recordlayer.RecordMetaData, stateFn func
 //	  {
 //	    "name": "Order$price",
 //	    "type": "value",
-//	    "state": "readable",        # or "—" when stateFn is nil
+//	    "state": "READABLE",        # or "—" when stateFn is nil
 //	    "record_types": ["Order"],  # or ["*"] for universal indexes
 //	    "last_modified_version": 1
 //	  },

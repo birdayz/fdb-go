@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -576,7 +577,11 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
-	return m.newVectorSearchCursor(entries, continuation, prefix)
+	cursor, err := m.newVectorSearchCursor(entries, continuation, prefix)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	return cursor
 }
 
 // searchOnePartition runs one HNSW kNN search for the single partition
@@ -661,23 +666,29 @@ type vectorSearchCursor struct {
 // protobuf (Java format). On resume, results are replayed from the continuation
 // rather than re-searching. prefix is threaded through so resumed entries
 // reconstruct the same pinned primary key as fresh ones.
-func (m *vectorIndexMaintainer) newVectorSearchCursor(entries []*IndexEntry, continuation []byte, prefix tuple.Tuple) *vectorSearchCursor {
+//
+// A continuation that fails to parse is an error, never a fresh restart: Java's
+// VectorIndexMaintainer.Continuation.fromBytes throws
+// RecordCoreException("error parsing continuation") and a silent restart would
+// re-emit rows the caller already consumed.
+func (m *vectorIndexMaintainer) newVectorSearchCursor(entries []*IndexEntry, continuation []byte, prefix tuple.Tuple) (*vectorSearchCursor, error) {
 	if len(continuation) > 0 {
 		// Resume from continuation: parse the proto and replay saved entries.
-		resumed, innerPos := m.parseVectorScanContinuation(continuation, prefix)
-		if resumed != nil {
-			return &vectorSearchCursor{
-				entries:    resumed,
-				allEntries: resumed,
-				pos:        innerPos,
-			}
+		resumed, innerPos, err := m.parseVectorScanContinuation(continuation, prefix)
+		if err != nil {
+			return nil, err
 		}
+		return &vectorSearchCursor{
+			entries:    resumed,
+			allEntries: resumed,
+			pos:        innerPos,
+		}, nil
 	}
 	return &vectorSearchCursor{
 		entries:    entries,
 		allEntries: entries,
 		pos:        0,
-	}
+	}, nil
 }
 
 func (c *vectorSearchCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -708,7 +719,7 @@ func (c *vectorSearchCursor) IsClosed() bool { return c.closed }
 
 // encodeVectorScanContinuation creates a VectorIndexScanContinuation protobuf.
 // Matches Java's Continuation.toByteString() which serializes all entries +
-// the inner ListCursor continuation (position as packed int tuple).
+// the inner ListCursor continuation.
 func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 	contProto := &gen.VectorIndexScanContinuation{}
 	for _, e := range entries {
@@ -718,9 +729,13 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 				Value: e.Value.Pack(),
 			})
 	}
-	// Inner continuation: the ListCursor position as a packed int tuple.
-	// Java's ListCursor continuation is just the position encoded as bytes.
-	contProto.InnerContinuation = tuple.Tuple{int64(innerPos)}.Pack()
+	// Inner continuation: Java's ListCursor.Continuation.toBytes() is
+	// ByteBuffer.allocate(Integer.BYTES).putInt(nextPosition) — a 4-byte
+	// big-endian int, NOT a packed tuple. Wire compat with Java requires the
+	// exact same encoding.
+	inner := make([]byte, 4)
+	binary.BigEndian.PutUint32(inner, uint32(innerPos))
+	contProto.InnerContinuation = inner
 
 	data, err := contProto.MarshalVT()
 	if err != nil {
@@ -731,28 +746,34 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 
 // parseVectorScanContinuation parses a VectorIndexScanContinuation protobuf.
 // Returns the saved entries and the inner cursor position.
-// If parsing fails, returns nil (caller falls back to fresh search).
+//
+// A continuation that fails to parse is an error, never a fresh restart:
+// Java's VectorIndexMaintainer.Continuation.fromBytes throws
+// RecordCoreException("error parsing continuation"), and corrupt entry keys /
+// inner positions fail Tuple.fromBytes / ByteBuffer.getInt inside
+// scanSinglePartition — a silent restart would re-emit rows the caller
+// already consumed.
 //
 // Resumed entries are reconstructed to be INDISTINGUISHABLE from fresh ones
 // (codex Finding 3): Index and the pinned full primary key are restored —
 // derived from the persisted key via entryFullPK — so IndexEntry.PrimaryKey()
 // returns the correct key on a resumed page instead of an empty tuple (which
 // would fetch the wrong record / skip the remaining nearest rows).
-func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int) {
+func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int, error) {
 	var contProto gen.VectorIndexScanContinuation
 	if err := contProto.UnmarshalVT(data); err != nil {
-		return nil, 0
+		return nil, 0, &ContinuationParseError{RawBytes: data, Cause: err}
 	}
 
 	entries := make([]*IndexEntry, 0, len(contProto.IndexEntries))
-	for _, ie := range contProto.IndexEntries {
+	for i, ie := range contProto.IndexEntries {
 		key, err := fastUnpack(ie.GetKey())
 		if err != nil {
-			return nil, 0
+			return nil, 0, fmt.Errorf("VECTOR index %q continuation: entry %d key: %w", m.index.Name, i, err)
 		}
 		value, err := fastUnpack(ie.GetValue())
 		if err != nil {
-			return nil, 0
+			return nil, 0, fmt.Errorf("VECTOR index %q continuation: entry %d value: %w", m.index.Name, i, err)
 		}
 		entries = append(entries, &IndexEntry{
 			Index:      m.index,
@@ -762,18 +783,19 @@ func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix 
 		})
 	}
 
-	// Parse inner continuation (position).
-	innerPos := 0
-	if inner := contProto.GetInnerContinuation(); len(inner) > 0 {
-		t, err := fastUnpack(inner)
-		if err == nil && len(t) > 0 {
-			if pos, ok := t[0].(int64); ok {
-				innerPos = int(pos)
-			}
-		}
+	// Inner continuation: Java's ListCursor reads it via
+	// ByteBuffer.wrap(continuation).getInt() — a 4-byte big-endian int; fewer
+	// than 4 bytes throws BufferUnderflowException. Same strictness here.
+	inner := contProto.GetInnerContinuation()
+	if len(inner) < 4 {
+		return nil, 0, fmt.Errorf("VECTOR index %q continuation: inner position has %d bytes, need 4", m.index.Name, len(inner))
+	}
+	innerPos := int(int32(binary.BigEndian.Uint32(inner[:4])))
+	if innerPos < 0 {
+		return nil, 0, fmt.Errorf("VECTOR index %q continuation: negative inner position %d", m.index.Name, innerPos)
 	}
 
-	return entries, innerPos
+	return entries, innerPos, nil
 }
 
 // vectorMultiPartitionCursor fans a BY_DISTANCE scan out over all distinct
@@ -816,8 +838,12 @@ type vectorMultiPartitionCursor struct {
 	globalLimit      int
 	totalDelivered   int
 	lastContinuation []byte
-	exhausted        bool
-	closed           bool
+	// errLatch pins a continuation-parse failure: once set, every OnNext
+	// returns it, so a retried OnNext can never fall through to a fresh
+	// search that would silently re-emit already-delivered rows.
+	errLatch  error
+	exhausted bool
+	closed    bool
 }
 
 // newVectorMultiPartitionCursor builds the fan-out cursor and, when resuming,
@@ -866,19 +892,36 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// partition first (inclusive start), replaying its inner continuation. The
 	// findNextPartition read then returns resumePrefix and advances past it, so
 	// the next partition follows once the resumed one drains.
+	//
+	// A continuation that fails to parse is an error, never a fresh restart:
+	// the Java analog (RecordCursor.flatMapPipelined over the partition
+	// skip-scan) throws RecordCoreException("error parsing continuation"), and
+	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
 		var fm gen.FlatMapContinuation
-		if uerr := fm.UnmarshalVT(continuation); uerr == nil && fm.OuterContinuation != nil {
-			if resumePrefix, perr := fastUnpack(fm.OuterContinuation); perr == nil {
-				c.nextPartitionStart = fdb.Key(m.getSubspaceForPrefix(resumePrefix).Bytes())
-				c.pendingInner = fm.InnerContinuation
+		if uerr := fm.UnmarshalVT(continuation); uerr != nil {
+			return &errorCursor[*IndexEntry]{err: &ContinuationParseError{RawBytes: continuation, Cause: uerr}}
+		}
+		// OuterContinuation absent is a well-formed shape (Java flatMapPipelined:
+		// no outer continuation → outer restarts from the beginning); this
+		// cursor's own emitter always sets it, so only the corrupt-payload
+		// cases below are reachable from Go-produced tokens.
+		if fm.OuterContinuation != nil {
+			resumePrefix, perr := fastUnpack(fm.OuterContinuation)
+			if perr != nil {
+				return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q multi-partition continuation: outer prefix: %w", m.index.Name, perr)}
 			}
+			c.nextPartitionStart = fdb.Key(m.getSubspaceForPrefix(resumePrefix).Bytes())
+			c.pendingInner = fm.InnerContinuation
 		}
 	}
 	return c
 }
 
 func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if c.errLatch != nil {
+		return RecordCursorResult[*IndexEntry]{}, c.errLatch
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return RecordCursorResult[*IndexEntry]{}, err
@@ -944,7 +987,15 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 				return RecordCursorResult[*IndexEntry]{}, err
 			}
 		}
-		c.currentCursor = c.m.newVectorSearchCursor(entries, inner, fullPrefix)
+		cursor, cerr := c.m.newVectorSearchCursor(entries, inner, fullPrefix)
+		if cerr != nil {
+			// Corrupt per-partition inner continuation. Latch the error so every
+			// subsequent OnNext fails the same way instead of falling through to
+			// a fresh search on retry (which would silently re-emit rows).
+			c.errLatch = cerr
+			return RecordCursorResult[*IndexEntry]{}, cerr
+		}
+		c.currentCursor = cursor
 	}
 }
 
