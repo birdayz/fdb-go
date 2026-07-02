@@ -105,13 +105,15 @@ FIXES a live violation, by tightening both sides to the same discriminator set i
   optional-config semantics). Same discriminators join `writeSemanticHash` (explicit arms —
   not `SelfSemanticHash`, these types live in the values package). The Java-consistent arms
   (RankValue, metric variants) stay type-only, with a one-line comment saying why.
-  **Known, accepted memo split (Torvalds review):** nil `EfSearch` means default-200 at eval
-  (executor.go:321, :392-395), so under P1 an implicit-default value and an explicit
-  `EF_SEARCH=200` value split into distinct memo members that execute identically. Verified
-  bounded: no rewrite materializes the default into a Value (only parser-side constructors
-  assign `EfSearch`), so the split needs both spellings present in one query — and a split
-  group still contains only semantically-equal-or-finer members; it can never extract a wrong
-  winner. A comment at the arm states this. (`vector_index_maintainer.go:470` uses a third
+  **The nil-`EfSearch` split, by index type (Torvalds + codex reviews):** for HNSW
+  (`IndexTypeVector`) nil means default-200 at eval (executor.go:321, :392-395), so P1 splits
+  an implicit-default value from an explicit `EF_SEARCH=200` value that execute identically —
+  verified bounded (no rewrite materializes the default; both spellings must co-occur in one
+  query; a refinement split can never extract a wrong winner). **For SPFresh indexes the two
+  are NOT equivalent** (codex catch): the executor initializes `efSearch` to 0 unless
+  `idx.Type == IndexTypeVector`, so nil takes the SPFresh maintainer default while an explicit
+  200 overrides it — nil-vs-&200 is a real semantic discriminator there, and P1 distinguishing
+  them is CORRECT, not merely tolerable. A comment at the arm states both cases. (`vector_index_maintainer.go:470` uses a third
   unset-convention, `0 = auto` — out of scope here, noted for the vector workstream.) Pins:
   per-type equality/hash unit tests (differ-by-one-field ≠, equal ⟹ same hash), and the two
   #446-regressed tests stay green (they must — P1 makes identity FINER, never coarser;
@@ -136,9 +138,14 @@ FIXES a live violation, by tightening both sides to the same discriminator set i
   changes move member counts — a large swing is a red flag, not noise); a plan-level
   equal⟹same-hash PROPERTY test across all ten migrated types; an alias-invariance test for
   `SemanticHashCode` (the hash must stay alias-invariant while equality is map-relative —
-  hash-first lookup breaks otherwise); and a stated verification that
-  `HashCodeWithoutChildren` feeds nothing persisted (memo-internal only — never continuations
-  or any wire artifact).
+  hash-first lookup breaks otherwise); and an explicit audit of the NON-memo hash consumers
+  (codex catch — "memo-internal only" is false): `HashCodeWithoutChildren` feeds
+  `plans.PlanHash` in plan logging (plan_logging.go:153) and the planning cost model's
+  concrete-plan TIE-BREAKER (planning_cost_model.go:1775, :1842). P2's hash change can
+  therefore flip the winner among equal-cost alternatives — the determinism runs and stress /
+  corpus gates must be read with that in mind, and any tie-breaker-driven plan-shape change is
+  called out in the PR (logged plan IDs changing is accepted and noted; nothing persisted —
+  continuations and wire artifacts stay untouched, which remains a verified claim).
 - **P3 — demote the `#`-escape to explain-format-only.** After P2 the rendering no longer
   carries identity. Keep the escape and its injectivity tests (`TestFieldValue_
   ExplainOrdinalEscape_RFC173`, plans-level collision pin) as explain-format pins — debugging
@@ -201,4 +208,11 @@ the corpus + stress diffs are the conflict detector.
   P1 splits implicit vs explicit spellings; verified bounded (no rewrite materializes the
   default), named in §3 with a comment required at the arm. Nit 3: "within noise" replaced by
   the TODO.md baseline Threshold column. No re-review needed.
-- (pending) codex, @claude — PR #448; Graefe again per implementation PR.
+- **codex — two P2 findings (2026-07-02, both folded).** (1) The nil-`EfSearch` "executes
+  identically" claim held only for HNSW — for SPFresh, nil takes the maintainer default while
+  explicit 200 overrides (executor initializes `efSearch` 0 unless `IndexTypeVector`), so the
+  split is a real discriminator there; §3 qualified per index type. (2) "`HashCodeWithoutChildren`
+  is memo-internal only" was false — it feeds plan logging (plan_logging.go:153) and the cost
+  model's concrete-plan tie-breaker (planning_cost_model.go:1775/:1842), so P2 can flip
+  equal-cost winners; the §3 gate now audits those consumers explicitly.
+- (pending) @claude — PR #448; Graefe again per implementation PR.
