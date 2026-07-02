@@ -163,10 +163,7 @@ func TestIsSpecialKey(t *testing.T) {
 
 func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{
-		timeout:  0,
-		deadline: time.Now().Add(-time.Hour), // long past
-	}
+	tx := timedTx(0, time.Now().Add(-time.Hour)) // deadline long past
 	if err := tx.checkTimeout(); err != nil {
 		t.Errorf("timeout=0 must always return nil, got %v", err)
 	}
@@ -174,10 +171,7 @@ func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 
 func TestCheckTimeout_NotExpired(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{
-		timeout:  5 * time.Second,
-		deadline: time.Now().Add(time.Hour),
-	}
+	tx := timedTx(5*time.Second, time.Now().Add(time.Hour))
 	if err := tx.checkTimeout(); err != nil {
 		t.Errorf("future deadline: got %v, want nil", err)
 	}
@@ -185,10 +179,7 @@ func TestCheckTimeout_NotExpired(t *testing.T) {
 
 func TestCheckTimeout_Expired(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{
-		timeout:  5 * time.Second,
-		deadline: time.Now().Add(-time.Second),
-	}
+	tx := timedTx(5*time.Second, time.Now().Add(-time.Second))
 	err := tx.checkTimeout()
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
@@ -568,15 +559,15 @@ func TestReset_ReAppliesTimeoutFromCreationTime(t *testing.T) {
 	t.Parallel()
 	creation := time.Now().Add(-2 * time.Second) // 2s in the past
 	tx := newTestTx()
-	tx.timeout = 5 * time.Second
+	tx.timeoutNs.Store(int64(5 * time.Second))
 	tx.creationTime = creation
-	tx.deadline = time.Time{} // wipe to verify reset re-applies it
+	tx.deadlineNs.Store(0) // wipe to verify reset re-applies it
 
 	tx.reset(false)
 
 	want := creation.Add(5 * time.Second)
-	if !tx.deadline.Equal(want) {
-		t.Errorf("deadline: got %v, want %v (creationTime + timeout)", tx.deadline, want)
+	if !tx.deadlineTime().Equal(want) {
+		t.Errorf("deadline: got %v, want %v (creationTime + timeout)", tx.deadlineTime(), want)
 	}
 	// Critical invariant: internal reset does NOT advance creationTime, so the
 	// timeout budget is shared across retries (C++ semantics).
@@ -592,13 +583,13 @@ func TestReset_NoTimeoutClearsDeadline(t *testing.T) {
 	// deadline, else the reused handle spuriously times out at the stale deadline. (Pre-RFC-171 reset left
 	// the deadline untouched when timeout=0, which could leave a stale future/past deadline.)
 	tx := newTestTx()
-	tx.timeout = 0
-	tx.deadline = time.Now().Add(time.Hour) // a stale deadline with no backing timeout
+	tx.timeoutNs.Store(0)
+	tx.deadlineNs.Store(time.Now().Add(time.Hour).UnixNano()) // a stale deadline with no backing timeout
 
 	tx.reset(false)
 
-	if !tx.deadline.IsZero() {
-		t.Errorf("timeout=0: deadline must be cleared (deadline reflects the timeout), got %v", tx.deadline)
+	if tx.deadlineNs.Load() != 0 {
+		t.Errorf("timeout=0: deadline must be cleared (deadline reflects the timeout), got %v", tx.deadlineTime())
 	}
 }
 
@@ -1025,4 +1016,15 @@ func TestValidateMutation_LegacyVersionstampSizeDiscount(t *testing.T) {
 			t.Errorf("api520 SVV over the limit must be value_too_large, got %v", err)
 		}
 	})
+}
+
+// timedTx builds a bare Transaction with the given SetTimeout budget and deadline —
+// the unit-test shape for checkTimeout/opContext/mapTimeout probes.
+func timedTx(timeout time.Duration, deadline time.Time) *Transaction {
+	tx := &Transaction{}
+	tx.timeoutNs.Store(int64(timeout))
+	if !deadline.IsZero() {
+		tx.deadlineNs.Store(deadline.UnixNano())
+	}
+	return tx
 }

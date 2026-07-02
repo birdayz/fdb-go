@@ -117,12 +117,14 @@ func TestAtomic_InvalidOp_DefersToEarlierIllegalMutation(t *testing.T) {
 	}
 }
 
-// TestCommit_InvalidAtomicMarksErrored pins that the invalid-atomic poison marks the transaction
-// errored on the COMMON path (poison set before Commit entry: Atomic(badOp); Commit()), matching the
-// snapshot re-check that also errors it — so the post-failure txn state does not depend on whether
-// the bad Atomic landed before commit entry or raced into the re-check. Revert-proof: drop
-// the state.Store on the entry check and the txn stays active after the failed commit.
-func TestCommit_InvalidAtomicMarksErrored(t *testing.T) {
+// TestCommit_InvalidAtomicPoisonedButAlive pins the C++ deferred-error lifecycle for the
+// invalid-atomic poison (RFC-175 E2): checkDeferredError throws BEFORE any commit logic
+// (ThreadSafeTransaction.cpp:666-672) and leaves the transaction object untouched — the txn
+// stays ACTIVE-but-poisoned, every subsequent op (including a second Commit) re-throws the
+// SAME 2018 via the per-op gates, and only reset clears it (resetRyow,
+// ReadYourWrites.actor.cpp:2719). The earlier Go behavior (marking the txn errored, so a
+// second Commit said "transaction not active") was a divergence.
+func TestCommit_InvalidAtomicPoisonedButAlive(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -134,7 +136,10 @@ func TestCommit_InvalidAtomicMarksErrored(t *testing.T) {
 	if c := fdbCodeOf(tx.Commit(ctx)); c != ErrInvalidMutationType {
 		t.Fatalf("invalid-atomic commit must be invalid_mutation_type (2018), got %d", c)
 	}
-	if txState(tx.state.Load()) != txStateErrored {
-		t.Fatalf("after a failed invalid-atomic commit the txn must be errored (not active), got state %d", tx.state.Load())
+	if txState(tx.state.Load()) != txStateActive {
+		t.Fatalf("after a failed invalid-atomic commit the txn must stay ACTIVE (poisoned-but-alive, C++), got state %d", tx.state.Load())
+	}
+	if c := fdbCodeOf(tx.Commit(ctx)); c != ErrInvalidMutationType {
+		t.Fatalf("second commit must re-throw the same deferred 2018 (C++ checkDeferredError until reset), got %d", c)
 	}
 }

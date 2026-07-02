@@ -385,7 +385,7 @@ func TestApproximateCommitSize_SizesSnapshotNotLiveBuffer(t *testing.T) {
 	}
 	// GetApproximateSize (live) DOES see the 20 MB mutation: this is precisely the value the
 	// commit check must NOT use, or it would reject a small commit for an unshipped mutation.
-	if live := tx.GetApproximateSize(); live <= 20_000_000 {
+	if live := mustApproxSize(t, tx); live <= 20_000_000 {
 		t.Fatalf("live GetApproximateSize=%d should include the 20 MB appended mutation (sanity)", live)
 	}
 }

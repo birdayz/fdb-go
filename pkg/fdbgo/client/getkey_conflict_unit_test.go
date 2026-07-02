@@ -21,9 +21,9 @@ func TestCommit_RYWPoisonBeatsTimeout(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.state.Store(int32(txStateActive))
-	tx.timeout = time.Millisecond
-	tx.deadline = time.Now().Add(-time.Hour) // already elapsed → checkTimeout would return 1031
-	tx.rywPoisonErr = &wire.FDBError{Code: 2000}
+	tx.timeoutNs.Store(int64(time.Millisecond))
+	tx.deadlineNs.Store(time.Now().Add(-time.Hour).UnixNano()) // already elapsed → checkTimeout would return 1031
+	tx.deferredErr.Store(&wire.FDBError{Code: 2000})
 
 	err := tx.Commit(context.Background())
 	var fe *wire.FDBError

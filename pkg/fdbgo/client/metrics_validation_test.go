@@ -18,8 +18,8 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	t.Parallel()
 	timedOut := func() *Transaction {
 		tx := newTestTx()
-		tx.timeout = 1
-		tx.deadline = time.Now().Add(-time.Second) // already expired → checkTimeout returns 1031
+		tx.timeoutNs.Store(1)
+		tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano()) // already expired → checkTimeout returns 1031
 		return tx
 	}
 
@@ -45,12 +45,12 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	}
 
 	// Poison (client_invalid_operation 2000, RFC-059) out-ranks the timeout — same order as
-	// ensureReadVersion (rywPoisonErr before checkTimeout). A txn that is BOTH poisoned AND timed out
+	// ensureReadVersion (the deferred error before checkTimeout). A txn that is BOTH poisoned AND timed out
 	// returns 2000, not 1031.
 	const clientInvalidOperation = 2000
 	poisonedAndTimedOut := func() *Transaction {
 		tx := timedOut()
-		tx.rywPoisonErr = &wire.FDBError{Code: clientInvalidOperation}
+		tx.deferredErr.Store(&wire.FDBError{Code: clientInvalidOperation})
 		return tx
 	}
 	_, err = poisonedAndTimedOut().getRangeSplitPointsImpl(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)

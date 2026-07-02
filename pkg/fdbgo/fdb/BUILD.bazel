@@ -35,6 +35,7 @@ go_test(
     name = "fdb_test",
     timeout = "long",
     srcs = [
+        "approxsize_deferred_test.go",
         "conflictrange_workload_test.go",
         "database_bootstrap_test.go",
         "directory_test.go",

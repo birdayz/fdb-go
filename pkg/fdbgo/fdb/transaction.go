@@ -159,7 +159,11 @@ func (tr Transaction) GetVersionstamp() FutureKey {
 
 // GetApproximateSize returns the approximate transaction size so far.
 func (tr Transaction) GetApproximateSize() FutureInt64 {
-	return newReadyFutureInt64(tr.t.inner.GetApproximateSize(), nil)
+	// convertError like every other facade method: the deferred-error gate
+	// (client_invalid_operation / invalid_mutation_type) must surface as
+	// fdb.Error, not a raw client error.
+	n, err := tr.t.inner.GetApproximateSize()
+	return newReadyFutureInt64(n, convertError(err))
 }
 
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of the key range.

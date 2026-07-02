@@ -310,7 +310,7 @@ func TestMapTimeout(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tx := &Transaction{timeout: tc.timeout, deadline: tc.deadline}
+			tx := timedTx(tc.timeout, tc.deadline)
 			got := tx.mapTimeout(tc.parent, tc.in)
 			var fdbErr *wire.FDBError
 			isTimed := errors.As(got, &fdbErr) && fdbErr.Code == ErrTransactionTimedOut
@@ -337,7 +337,7 @@ func TestOpContext(t *testing.T) {
 	}
 	// Timeout → ctx carries the transaction deadline.
 	want := time.Now().Add(time.Hour)
-	txYes := &Transaction{timeout: time.Hour, deadline: want}
+	txYes := timedTx(time.Hour, want)
 	ctx2, cancel2 := txYes.opContext(context.Background())
 	defer cancel2()
 	dl, ok := ctx2.Deadline()

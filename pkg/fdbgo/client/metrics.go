@@ -42,9 +42,9 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
 	// path). This entry point does not fetch a read version, so it is gated explicitly rather
 	// than via ensureReadVersion (RFC-059). The poison (2000) out-ranks the timeout below — the
-	// same order as ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
-	if tx.rywPoisonErr != nil {
-		return 0, tx.rywPoisonErr
+	// same order as ensureReadVersion (the deferred error before checkTimeout, transaction.go).
+	if e := tx.deferredErr.Load(); e != nil {
+		return 0, e
 	}
 	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
 	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
@@ -55,7 +55,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	const shardLimit = math.MaxInt32
 
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.spanContext)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return 0, fmt.Errorf("locate range for metrics: %w", err)
 		}
@@ -116,6 +116,11 @@ func isFutureVersion(err error) bool {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, servers []ServerInfo) (int64, error) {
+	// Capture under readVersionMu (RFC-175 E1): a concurrent Commit/Reset writes
+	// readVersion under the mutex. Same capture convention as the read path (readpath.go).
+	tx.readVersionMu.Lock()
+	minVersion := tx.readVersion
+	tx.readVersionMu.Unlock()
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
@@ -129,7 +134,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			Max:        types.StorageMetrics{Bytes: -1},
 			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
-			MinVersion: tx.readVersion,
+			MinVersion: minVersion,
 		}
 		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
 		if err := conn.SendFrame(wmToken, req.MarshalFDB()); err != nil {
@@ -185,9 +190,9 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
 	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
 	// checkValid path) — RFC-059. The poison (2000) out-ranks the timeout below — the same order as
-	// ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
-	if tx.rywPoisonErr != nil {
-		return nil, tx.rywPoisonErr
+	// ensureReadVersion (the deferred error before checkTimeout, transaction.go).
+	if e := tx.deferredErr.Load(); e != nil {
+		return nil, e
 	}
 	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
 	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out
@@ -210,7 +215,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	const shardLimit = math.MaxInt32
 
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.spanContext)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return nil, fmt.Errorf("locate range for split points: %w", err)
 		}

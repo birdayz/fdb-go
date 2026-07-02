@@ -197,12 +197,28 @@ item's acceptance criterion in §5 is "the grep returns zero."
   `return tx.readVersion, nil` where every other site guards with `readVersionMu` (:660-701,
   readpath.go:267-269). Benign on 64-bit today; it is exactly the inconsistency the rest of the
   file goes out of its way to avoid, and the race detector will eventually flag it. Take the
-  mutex.
+  mutex. **Executed: PR #449.** The §5 hammer red-proved three more lock-free reads of the same
+  class on the commit-reset boundary (GetPipelined/commit-request/waitMetrics `readVersion`
+  captures; `metricStart`; `spanContext` rotation vs in-flight sends) — all fixed in the same PR.
 - **E2 — two deferred-error fields, two concurrency contracts.** `rywPoisonErr` is read
   lock-free with the rationale "FDB transactions are not for concurrent use" (:654, :1618)
   while the *neighboring* `invalidAtomicOpErr` is a full `atomic.Pointer` *because* it can race
   `Commit` (:328-330). Pick one story for deferred-error fields and document it once; RFC-105's
   "single predicate so the two can never drift" is the house pattern to imitate.
+  **Executed: PR #449.** Contract chosen from the C++ spec (`ThreadSafeTransaction.cpp`
+  network-thread marshalling + `doOnMainThreadVoid` first-error-wins into
+  `ISingleThreadTransaction::deferredError`): `atomic.Pointer[wire.FDBError]`, write-once per
+  incarnation, `Load` at every `checkDeferredError`-equivalent gate, `Store(nil)` on reset —
+  documented once above the two fields. **Completed to the full C++ model after FDB-C-dev
+  review flagged the cross-field divergence:** C++ has ONE `deferredError` slot shared by all
+  sources and checked at EVERY future-returning op (`checkDeferredError` in
+  `ThreadSafeTransaction.cpp` get/getKey/getRange/getReadVersion/watch/commit/approxSize/
+  versionstamp), so Go's two fields merged into a single `deferredErr`: a bad `Atomic()`
+  op-code now gates reads too (not just Commit), first-error-wins holds ACROSS sources, a
+  poisoned commit leaves the txn alive-but-poisoned (C++ re-throws until reset, never marks
+  it dead), and a poisoning `SetReadYourWritesDisable` no longer applies the option (C++
+  throws BEFORE assigning, `ReadYourWrites.actor.cpp:2534-2542`). `GetApproximateSize` grew
+  the gate C++ has (signature now returns an error); `GetVersionstamp` likewise.
 - **E3 — `GetPipelined`'s bespoke fast path is a second RYW implementation (DEFERRED, pinned).**
   `transaction.go:748` `ErrNeedFullRYW` falls back to full RYW when a key has pending atomics —
   two code paths that must agree on merge semantics, and :373-378 documents a bug this already

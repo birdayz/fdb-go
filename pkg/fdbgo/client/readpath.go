@@ -74,8 +74,8 @@ func (tx *Transaction) readRPCTimeout() time.Duration {
 // readRPCTimeout.
 func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 	d := tx.readRPCTimeout()
-	if tx.timeout > 0 {
-		rem := time.Until(tx.deadline)
+	if tx.timeoutNs.Load() > 0 {
+		rem := time.Until(tx.deadlineTime())
 		if rem < 0 {
 			rem = 0
 		}
@@ -93,10 +93,10 @@ func (tx *Transaction) pipelineReplyTimeout() time.Duration {
 // the way resetPromise does (`resetPromise.getFuture() || op`). With no timeout set
 // it returns ctx unchanged. The caller MUST call the returned cancel. (RFC-112)
 func (tx *Transaction) opContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if tx.timeout <= 0 {
+	if tx.timeoutNs.Load() <= 0 {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, tx.deadline)
+	return context.WithDeadline(ctx, tx.deadlineTime())
 }
 
 // mapTimeout converts a deadline/cancel error caused by THIS transaction's
@@ -105,11 +105,11 @@ func (tx *Transaction) opContext(ctx context.Context) (context.Context, context.
 // is done it is the caller's cancellation, so the original error is preserved; we
 // synthesize 1031 only when parentCtx is still live and our deadline has passed.
 func (tx *Transaction) mapTimeout(parentCtx context.Context, err error) error {
-	if err == nil || tx.timeout <= 0 || parentCtx.Err() != nil {
+	if err == nil || tx.timeoutNs.Load() <= 0 || parentCtx.Err() != nil {
 		return err
 	}
 	if (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) &&
-		!time.Now().Before(tx.deadline) {
+		!time.Now().Before(tx.deadlineTime()) {
 		return &wire.FDBError{Code: ErrTransactionTimedOut}
 	}
 	return err
@@ -193,7 +193,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
 		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
 		isBackward := keySelectorIsBackward(orEqual, offset)
-		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.spanContext, isBackward)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -269,7 +269,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -420,7 +420,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte) ([]byte, er
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.spanContext, false)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -482,7 +482,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
@@ -565,7 +565,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	}
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.spanContext), replyToken, server.Token)
+	body, poolBuf := buildGetValueRequest(key, readVersion, lockAware, tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
 	start := time.Now()
@@ -650,7 +650,7 @@ func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limi
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range. C++ getKeyRangeLocations
 		// receives the reverse flag so the proxy returns shards in scan order.
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId, tx.spanContext)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range: %w", err)
 		}
@@ -829,7 +829,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	tx.readVersionMu.Unlock()
 	lockAware := tx.lockAware || tx.readLockAware
 	tenantId := tx.tenantId
-	span := childSpanContext(tx.spanContext) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
+	span := childSpanContext(tx.currentSpan()) // RFC-115 §4: per-op CHILD span context on the wire (C++ GetValueRequest(span.context):3677 — child of the tx span, not the tx span itself)
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -1154,11 +1154,24 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr // caller ctx already cancelled / past its deadline
 	}
+	// The deferred error gates the watch — C++ checks it at the
+	// ThreadSafeTransaction::watch lambda (:654) BEFORE anything in RYW::watch,
+	// in particular before the options.readYourWritesDisabled throw
+	// (ReadYourWrites.actor.cpp:2448-2449) — so
+	// SetReadYourWritesDisable();Atomic(badOp);Watch() surfaces the stored 2018,
+	// never 1034. Ordered deferred-before-timeout like every other gate
+	// (ensureReadVersion/Commit), after the cancelled checks per the codebase's
+	// uniform entry order (C++ checks deferred even before the cancel —
+	// observable only on a poisoned AND cancelled txn; that cross-op precedence
+	// question is registered in TODO.md).
+	if e := tx.deferredErr.Load(); e != nil {
+		return nil, 0, types.SpanContext{}, nil, nil, e
+	}
 	if terr := tx.checkTimeout(); terr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)
 	}
-	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
-	// Returns watches_disabled (1034) immediately.
+	// C++ RYW::watch: watches are disabled when RYW is disabled
+	// (ReadYourWrites.actor.cpp:2448-2449). Returns watches_disabled (1034).
 	if tx.rywDisabled {
 		return nil, 0, types.SpanContext{}, nil, nil, &wire.FDBError{Code: 1034} // watches_disabled
 	}
@@ -1214,11 +1227,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	readVersion := tx.readVersion
 	tx.readVersionMu.Unlock()
 	// Capture the trace span here, SYNCHRONOUSLY — same reason as readVersion: the async
-	// WatchPoll must NOT read tx.spanContext later, because a `w := tr.Watch(k)` inside
-	// Database.Transact commits and postCommitReset()s the tx (regenerateSpan rewrites
-	// spanContext) before the future goroutine runs — reading it there is a data race
-	// (RFC-115 §4). Threaded through to sendWatch.
-	span := tx.spanContext
+	// WatchPoll must NOT read the tx span later, because a `w := tr.Watch(k)` inside
+	// Database.Transact commits and postCommitReset()s the tx (regenerateSpan rotates
+	// the span) before the future goroutine runs — a lazy read would stamp the NEXT
+	// incarnation's span on this watch (RFC-115 §4). Threaded through to sendWatch.
+	span := tx.currentSpan()
 
 	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
 	tx.AddReadConflictKey(key)
@@ -1273,8 +1286,8 @@ func (tx *Transaction) WatchPoll(watchCtx context.Context, watchCancel context.C
 	// Cancel()/reset()'s cancelWatches on watchCtx/watchCancel AND, if cancelWatches won, leak a
 	// never-cancelled poll. Binding at setup makes Reset()/Cancel() cancel the very context this
 	// loop holds — matching C++ resetRyow() → resetPromise.sendError(transaction_cancelled). span
-	// is likewise captured synchronously by WatchSetup (re-reading tx.spanContext here would race a
-	// concurrent commit/reset's regenerateSpan, RFC-115 §4).
+	// is likewise captured synchronously by WatchSetup (a lazy read here would stamp a later
+	// incarnation's regenerated span on this watch, RFC-115 §4).
 
 	// The outstanding-watch slot was reserved SYNCHRONOUSLY in WatchSetup (registration order, C++
 	// increaseWatchCounter at watch() time). Release it on EVERY exit path of this poll — fire /
