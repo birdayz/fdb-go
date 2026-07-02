@@ -98,6 +98,7 @@ go_test(
         "rfc173_p1_field_ordinal_test.go",
         "rfc173_resolved_ordinal_test.go",
         "rfc173_slice1_ordinal_eval_test.go",
+        "rfc176_p1_vector_config_identity_test.go",
         "scalar_function_value_evaluate_test.go",
         "scalar_functions_errors_test.go",
         "scalar_functions_extra2_test.go",
