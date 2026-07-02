@@ -33,7 +33,7 @@ func TestAtomic_MinAndV2UpgradeGate(t *testing.T) {
 		tc := tc
 		t.Run(fmt.Sprintf("api%d", tc.apiVersion), func(t *testing.T) {
 			t.Parallel()
-			tx := &Transaction{db: &database{apiVersion: tc.apiVersion}, rywDisabled: true}
+			tx := &Transaction{db: &database{apiVersion: tc.apiVersion}, txOptions: txOptions{rywDisabled: true}}
 
 			wantMin, wantAnd := MutMin, MutAnd
 			if tc.wantUpgrade {

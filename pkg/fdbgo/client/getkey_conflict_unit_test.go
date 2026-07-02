@@ -52,7 +52,7 @@ func TestAddGetKeyConflictRange_RYWDisabledFullSpan(t *testing.T) {
 	wantEnd := keyAfterBytes([]byte("z"))
 
 	// RYW DISABLED → full span, "c" NOT subtracted.
-	txDisabled := &Transaction{rywDisabled: true}
+	txDisabled := &Transaction{txOptions: txOptions{rywDisabled: true}}
 	txDisabled.ryw.set([]byte("c"), []byte("v"))
 	txDisabled.addGetKeyConflictRange([]byte("a"), true, 1, []byte("z"))
 	if len(txDisabled.readConflicts) != 1 {

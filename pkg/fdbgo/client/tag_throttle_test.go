@@ -297,9 +297,8 @@ func TestNextBackoffTagThrottled(t *testing.T) {
 	db.tagThrottles.replace(PriorityDefault, info)
 
 	tx := &Transaction{
-		db:       db,
-		priority: PriorityDefault,
-		tags:     []string{"slow"},
+		db:        db,
+		txOptions: txOptions{priority: PriorityDefault, tags: []string{"slow"}},
 	}
 
 	delay := tx.nextBackoff(ErrTagThrottled)
@@ -326,7 +325,7 @@ func TestNextBackoff_TagThrottleCapAtRecheckInterval(t *testing.T) {
 	}
 	db.tagThrottles.replace(PriorityDefault, info)
 
-	tx := &Transaction{db: db, priority: PriorityDefault, tags: []string{"slow"}}
+	tx := &Transaction{db: db, txOptions: txOptions{priority: PriorityDefault, tags: []string{"slow"}}}
 	delay := tx.nextBackoff(ErrTagThrottled)
 	// min(TAG_THROTTLE_RECHECK_INTERVAL=5s, throttleDuration~20s) = 5s exactly.
 	if delay != 5*time.Second {
@@ -338,9 +337,8 @@ func TestNextBackoffNoTagsNormalBackoff(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{
-		db:       &database{},
-		priority: PriorityDefault,
-		// No tags set.
+		db:        &database{},
+		txOptions: txOptions{priority: PriorityDefault}, // no tags set
 	}
 
 	delay := tx.nextBackoff(ErrTagThrottled)
@@ -354,9 +352,8 @@ func TestNextBackoffProxyTagThrottledAccumulates(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{
-		db:       &database{},
-		priority: PriorityDefault,
-		tags:     []string{"fast"},
+		db:        &database{},
+		txOptions: txOptions{priority: PriorityDefault, tags: []string{"fast"}},
 	}
 
 	if tx.proxyTagThrottledDuration != 0 {
@@ -379,8 +376,7 @@ func TestResetClearsProxyThrottleDuration(t *testing.T) {
 
 	tx := &Transaction{
 		db:                        &database{},
-		priority:                  PriorityDefault,
-		tags:                      []string{"mytag"},
+		txOptions:                 txOptions{priority: PriorityDefault, tags: []string{"mytag"}},
 		proxyTagThrottledDuration: 15.0,
 	}
 

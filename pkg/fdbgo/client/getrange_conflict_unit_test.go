@@ -69,7 +69,7 @@ func TestAddReadConflictForKeyRYW(t *testing.T) {
 	// rywDisabled: no write map → full single-key conflict.
 	t.Run("rywDisabled full", func(t *testing.T) {
 		t.Parallel()
-		tx := &Transaction{rywDisabled: true}
+		tx := &Transaction{txOptions: txOptions{rywDisabled: true}}
 		tx.addReadConflictForKeyRYW(key)
 		assertSingleFull(t, tx)
 	})

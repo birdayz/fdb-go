@@ -36,7 +36,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		t.Parallel()
 		g := gomega.NewWithT(t)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("mykey"), Value: []byte("myval")},
 		}
@@ -57,7 +57,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		t.Parallel()
 		g := gomega.NewWithT(t)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutClearRange, Key: []byte("begin"), Value: []byte("end")},
 		}
@@ -86,7 +86,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		copy(vsKey, origKey)
 		binary.LittleEndian.PutUint32(vsKey[len(vsKey)-4:], origOffset)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutSetVersionstampedKey, Key: vsKey, Value: []byte("vsval")},
 		}
@@ -118,7 +118,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		t.Parallel()
 		g := gomega.NewWithT(t)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("\xff/metadataVersion"), Value: []byte("v")},
 		}
@@ -148,7 +148,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		t.Parallel()
 		g := gomega.NewWithT(t)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.readConflicts = []KeyRange{
 			{Begin: []byte("a"), End: []byte("z")},
 		}
@@ -174,7 +174,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		t.Parallel()
 		g := gomega.NewWithT(t)
 
-		tx := &Transaction{tenantId: NoTenantID} // -1 means no tenant
+		tx := &Transaction{txOptions: txOptions{tenantId: NoTenantID}} // -1 means no tenant
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("mykey"), Value: []byte("myval")},
 		}
@@ -204,7 +204,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		copy(vsKey, []byte("abc"))
 		binary.LittleEndian.PutUint32(vsKey[3:], 3)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("key1"), Value: []byte("v1")},
 			{Type: MutClearRange, Key: []byte("from"), Value: []byte("to")},
@@ -248,7 +248,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 
 		// tenantId == 0 is valid (>= 0), should still apply prefix (all zeroes).
 		zeroPrefix := tenantPrefix(0)
-		tx := &Transaction{tenantId: 0}
+		tx := &Transaction{txOptions: txOptions{tenantId: 0}}
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
 		}
@@ -268,7 +268,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		// Max int64 value as tenant ID.
 		const largeTenant int64 = 0x7FFFFFFFFFFFFFFF
 		largePrefix := tenantPrefix(largeTenant)
-		tx := &Transaction{tenantId: largeTenant}
+		tx := &Transaction{txOptions: txOptions{tenantId: largeTenant}}
 		tx.mutations = []Mutation{
 			{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
 		}
@@ -291,7 +291,7 @@ func TestTenantPrefixInCommit(t *testing.T) {
 		vsKey[0] = 'x'
 		binary.LittleEndian.PutUint32(vsKey[1:], 0xFFFFFFF0)
 
-		tx := &Transaction{tenantId: tenantID}
+		tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 		tx.mutations = []Mutation{
 			{Type: MutSetVersionstampedKey, Key: vsKey, Value: []byte{}},
 		}
@@ -332,7 +332,7 @@ func TestTenantCommit_BuildTwiceNoDoublePrefix(t *testing.T) {
 	copy(vsKey, []byte("somekey"))
 	binary.LittleEndian.PutUint32(vsKey[len(vsKey)-4:], 7)
 
-	tx := &Transaction{tenantId: tenantID}
+	tx := &Transaction{txOptions: txOptions{tenantId: tenantID}}
 	tx.mutations = []Mutation{
 		{Type: MutSetValue, Key: []byte("k"), Value: []byte("v")},
 		{Type: MutClearRange, Key: []byte("a"), Value: []byte("z")},
