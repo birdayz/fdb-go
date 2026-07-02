@@ -40,6 +40,18 @@ type SelfSemanticHash interface {
 	SemanticHashDiscriminator() uint64
 }
 
+// ptrHashToken renders an optional-config pointer field for writeSemanticHash:
+// "nil" when unset, the pointee otherwise — keeps nil vs &v distinct in the
+// hash exactly as ptrEqual keeps them distinct in equality (RFC-176 §3). "nil"
+// cannot collide with a rendered pointee: the config fields are *int / *bool,
+// whose renderings are digits / true / false — enforced by the constraint, not this comment.
+func ptrHashToken[T int | bool](p *T) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprint(*p)
+}
+
 func writeSemanticHash(h io.Writer, v Value) {
 	if v == nil {
 		_, _ = io.WriteString(h, "<nil>")
@@ -119,6 +131,27 @@ func writeSemanticHash(h io.Writer, v Value) {
 		if t.HasResolvedOrdinal {
 			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
 		}
+	// Windowed/vector family (RFC-176 P1): fold the same discriminator set the
+	// EqualsWithoutChildren arms compare — Metric + EfSearch +
+	// IsReturningVectors for DistanceRowNumberValue, EfSearch +
+	// IsReturningVectors for RowNumberValue / RowNumberHighOrderValue — so
+	// hash and equality resolve identity at the same granularity.
+	case *DistanceRowNumberValue:
+		// Before this arm existed, the generic "v:"+Name() bucket was FINER
+		// than equality for this type (RFC-176 §2): Name() embeds the Metric
+		// while the equality arm was type-assertion-only, so two
+		// different-metric values compared equal yet hashed apart — a live
+		// equal⟹same-hash violation (a hash-first memo lookup misses the
+		// "equal" member and inserts a duplicate). Fixed by tightening both
+		// sides to the same discriminator set in one commit.
+		_, _ = fmt.Fprintf(h, "distrownum:%d:ef=%s:rv=%s",
+			t.Metric, ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
+	case *RowNumberValue:
+		_, _ = fmt.Fprintf(h, "rownum:ef=%s:rv=%s",
+			ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
+	case *RowNumberHighOrderValue:
+		_, _ = fmt.Fprintf(h, "rownumho:ef=%s:rv=%s",
+			ptrHashToken(t.EfSearch), ptrHashToken(t.IsReturningVectors))
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).
 	case *ConstantValue:

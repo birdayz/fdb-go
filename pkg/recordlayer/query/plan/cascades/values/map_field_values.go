@@ -212,6 +212,17 @@ func constantValuesEqual(a, b any) bool {
 	return a == b
 }
 
+// ptrEqual compares optional-config pointer fields for value identity
+// (RFC-176 §3): nil == nil, nil ≠ &v, otherwise pointee equality — Java's
+// optional-config semantics (Objects.equals over @Nullable boxed fields).
+// Shared by every arm with *T config so the nil pattern lives in one place.
+func ptrEqual[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // typesEqual checks if two Types are structurally equal by code and
 // nullability. Used by ValuesStructurallyEqual for CastValue/PromoteValue.
 func typesEqual(a, b Type) bool {
@@ -277,16 +288,7 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok
 	case *BooleanValue:
 		bv, ok := b.(*BooleanValue)
-		if !ok {
-			return false
-		}
-		if av.Value == nil && bv.Value == nil {
-			return true
-		}
-		if av.Value == nil || bv.Value == nil {
-			return false
-		}
-		return *av.Value == *bv.Value
+		return ok && ptrEqual(av.Value, bv.Value)
 	case *ParameterValue:
 		bv, ok := b.(*ParameterValue)
 		if !ok {
@@ -462,9 +464,26 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *VersionValue:
 		_, ok := b.(*VersionValue)
 		return ok
+	// RFC-176 §3: the Go-only vector config is a non-child attribute and
+	// joins identity — Java's principle (every non-child attribute joins
+	// equalsWithoutChildren) applied to a read-side extension Java has no
+	// arm for. writeSemanticHash folds the same discriminator set.
+	//
+	// nil-EfSearch (RFC-176 §3): for HNSW (IndexTypeVector) nil means
+	// default-200 at eval, so nil-vs-&200 splits two spellings that execute
+	// identically — a benign refinement. For SPFresh indexes nil takes the
+	// maintainer default while an explicit 200 overrides it, so there
+	// nil-vs-&200 is a real semantic discriminator.
 	case *DistanceRowNumberValue:
-		_, ok := b.(*DistanceRowNumberValue)
-		return ok
+		bv, ok := b.(*DistanceRowNumberValue)
+		return ok && av.Metric == bv.Metric &&
+			ptrEqual(av.EfSearch, bv.EfSearch) &&
+			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
+	// The four metric specialisations below stay type-only (RFC-176 §2): no
+	// non-child attributes — partition/argument Values are children on the
+	// embedded WindowedValue, and the class check IS Java's
+	// WindowedValue.equalsWithoutChildren (class + name; the concrete Go type
+	// is the name).
 	case *CosineDistanceRowNumberValue:
 		_, ok := b.(*CosineDistanceRowNumberValue)
 		return ok
@@ -478,12 +497,21 @@ func EqualsWithoutChildren(a, b Value) bool {
 		_, ok := b.(*EuclideanSquareDistanceRowNumberValue)
 		return ok
 	case *RowNumberValue:
-		_, ok := b.(*RowNumberValue)
-		return ok
+		// RFC-176 §3: HNSW config joins identity — see the
+		// DistanceRowNumberValue arm for the nil-EfSearch semantics per index
+		// type.
+		bv, ok := b.(*RowNumberValue)
+		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
+			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
 	case *RowNumberHighOrderValue:
-		_, ok := b.(*RowNumberHighOrderValue)
-		return ok
+		// RFC-176 §3: same discriminators as RowNumberValue — the curried form
+		// must not unify across configs it bakes into the applied RowNumberValue.
+		bv, ok := b.(*RowNumberHighOrderValue)
+		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
+			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
 	case *RankValue:
+		// Type-only (RFC-176 §2): no non-child attributes; WindowedValue
+		// class+name identity.
 		_, ok := b.(*RankValue)
 		return ok
 	case *UnmatchedAggregateValue:
