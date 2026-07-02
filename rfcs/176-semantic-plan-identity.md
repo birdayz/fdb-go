@@ -18,13 +18,20 @@ gates), P3 trivial. Staged PRs, each independently green and gauntleted.
 
 ## 1. Problem
 
-Go keys physical-plan identity on **explain strings**. Ten plan types implement
-`EqualsWithoutChildren`/`HashCodeWithoutChildren` by comparing `values.ExplainValue`
-renderings of their result/projection Values (enumerated by grep over
-`pkg/recordlayer/query/plan/plans/`):
+Go keys physical-plan identity on **explain strings**. Ten plan types use
+`values.ExplainValue` renderings inside `EqualsWithoutChildren`/`HashCodeWithoutChildren`
+(enumerated by grep over `pkg/recordlayer/query/plan/plans/`), in three inconsistent regimes
+(Torvalds review breakdown):
 
-> comparator.go, default_on_empty.go, first_or_default.go, map.go, merge_sort_union.go,
-> multi_intersection.go, projection.go, sort.go, streaming_aggregation.go, values.go
+- **Equality AND hash on renderings (5):** multi_intersection.go, projection.go, sort.go,
+  streaming_aggregation.go, values.go.
+- **Equality via `ValuesStructurallyEqual`, hash on renderings (3):** map.go,
+  default_on_empty.go, first_or_default.go — two identity vocabularies in one method pair.
+- **Equality on key COUNT only, hash on the full rendering (2):** comparator.go,
+  merge_sort_union.go — a **live plan-level equal⟹same-hash violation on master today**
+  (two plans with equal key counts but different keys compare equal yet hash apart), the same
+  defect class as the values-level Metric case in §2, one level up. P2 fixes it; a pin is
+  mandatory (§6).
 
 Java never does this. Java keys plan identity **semantically**:
 `RecordQueryMapPlan.equalsWithoutChildren` is class-equality + `semanticEqualsForResults`
@@ -78,10 +85,16 @@ alternatives memo-merged → wrong winner extracted: `rank<=10` scan where order
 temp-table residency past the budget). Today those alternatives stay distinct **only because
 their explain strings happen to differ** — identity soundness by rendering accident.
 
-The hash side is coarse in lockstep: `writeSemanticHash` (semantic_hash.go) has no arms for
-this family, so all of them fall into the generic `"v:"+v.Name()` bucket (:146). Equality and
-hash are therefore *consistently* coarse — equal⟹same-hash holds today and breaks only if one
-side is tightened without the other. P1 tightens both in one commit.
+The hash side: `writeSemanticHash` (semantic_hash.go) has no arms for this family, so all of
+them fall into the generic `"v:"+v.Name()` bucket (:146). For `RowNumberValue` /
+`RowNumberHighOrderValue` this is coarse in lockstep with equality (equal⟹same-hash holds,
+both ignore EfSearch/IsReturningVectors). **For `DistanceRowNumberValue` it is WORSE — an
+existing invariant violation (Graefe review catch):** `Name()` embeds the Metric
+(value_distance_row_number.go:65-67), so the generic bucket already discriminates Metric while
+the equality arm does not — hash is FINER than equality. Two different-metric values compare
+equal yet hash apart, so a hash-first memo lookup misses an "equal" existing member and
+inserts a duplicate. P1 does not merely preserve the invariant through a tightening — it
+FIXES a live violation, by tightening both sides to the same discriminator set in one commit.
 
 ## 3. Plan (staged PRs, each gauntleted)
 
@@ -91,20 +104,41 @@ side is tightened without the other. P1 tightens both in one commit.
   `IsReturningVectors`. Pointer fields compare by nil-ness + pointee (nil ≠ &v; Java's
   optional-config semantics). Same discriminators join `writeSemanticHash` (explicit arms —
   not `SelfSemanticHash`, these types live in the values package). The Java-consistent arms
-  (RankValue, metric variants) stay type-only, with a one-line comment saying why. Pins:
+  (RankValue, metric variants) stay type-only, with a one-line comment saying why.
+  **Known, accepted memo split (Torvalds review):** nil `EfSearch` means default-200 at eval
+  (executor.go:321, :392-395), so under P1 an implicit-default value and an explicit
+  `EF_SEARCH=200` value split into distinct memo members that execute identically. Verified
+  bounded: no rewrite materializes the default into a Value (only parser-side constructors
+  assign `EfSearch`), so the split needs both spellings present in one query — and a split
+  group still contains only semantically-equal-or-finer members; it can never extract a wrong
+  winner. A comment at the arm states this. (`vector_index_maintainer.go:470` uses a third
+  unset-convention, `0 = auto` — out of scope here, noted for the vector workstream.) Pins:
   per-type equality/hash unit tests (differ-by-one-field ≠, equal ⟹ same hash), and the two
-  #446-regressed tests stay green (they must — P1 makes identity FINER, never coarser).
+  #446-regressed tests stay green (they must — P1 makes identity FINER, never coarser;
+  refinement can split groups, never wrongly unify them).
 - **P2 — migrate the ten plan-identity sites to the semantic helpers.**
   `EqualsWithoutChildren` → `values.SemanticEqualsUnderAliasMap` (semantic_equals.go:17) over
   the plan's result/projection Values (Java's `semanticEqualsForResults`);
   `HashCodeWithoutChildren` → `values.SemanticHashCode`. All ten sites in one PR — a partial
-  migration leaves two identity regimes in one memo. Re-run the #446 identity pins unchanged:
+  migration leaves two identity regimes in one memo.
+  **AliasMap decision (Graefe review):** the ten sites pass the EMPTY alias map. Plan-level
+  `EqualsWithoutChildren(other)` has no map parameter today, the physical wrappers receive one
+  and discard it (physical_map_wrapper.go:50), and the memo passes the empty map at leaves
+  (memo.go:272) — so the empty map is behavior-preserving relative to today's alias-literal
+  string compare. Threading the wrappers' actual alias maps down (Java-faithful alias-AWARE
+  physical dedup, `RecordQueryMapPlan.java:157-166`) changes memo unification (RFC-037/039
+  interaction) and is a NAMED FOLLOW-UP after the migration settles, not part of P2. Re-run the #446 identity pins unchanged:
   `TestProjectionPlan_Identity_ResolvedOrdinal` and `_OrdinalVsLiteralHashField` must hold
   under the semantic model (ordinal is already in `FieldValue`'s equality arm,
   map_field_values.go:261-268). Validation gates, all mandatory: full suite; the 1M stress
   before/after comparison (CLAUDE.md planner-change workflow); the plandiff cross-engine
   corpus; `FuzzPlanner_*` + `FuzzCostSanity` runs; RFC-077 task-count baseline (memo-identity
-  changes move member counts — a large swing is a red flag, not noise).
+  changes move member counts — a large swing is a red flag, not noise); a plan-level
+  equal⟹same-hash PROPERTY test across all ten migrated types; an alias-invariance test for
+  `SemanticHashCode` (the hash must stay alias-invariant while equality is map-relative —
+  hash-first lookup breaks otherwise); and a stated verification that
+  `HashCodeWithoutChildren` feeds nothing persisted (memo-internal only — never continuations
+  or any wire artifact).
 - **P3 — demote the `#`-escape to explain-format-only.** After P2 the rendering no longer
   carries identity. Keep the escape and its injectivity tests (`TestFieldValue_
   ExplainOrdinalEscape_RFC173`, plans-level collision pin) as explain-format pins — debugging
@@ -143,13 +177,28 @@ the corpus + stress diffs are the conflict detector.
   `TestFDB_RFC130_RecursiveCTE_NoDoubleCharge` green.
 - **P2:** zero `ExplainValue` calls inside any `EqualsWithoutChildren`/`HashCodeWithoutChildren`
   in `pkg/recordlayer/query/plan/plans/` (greppable); all ten sites use the semantic helpers;
-  #446 identity pins green unchanged; stress-1M delta within noise (row counts identical,
-  durations comparable per the TODO.md baseline table); plandiff corpus 0 new mismatches;
-  RFC-077 task-count baseline delta explained or zero.
+  #446 identity pins green unchanged; stress-1M: row counts identical AND durations within
+  the **Threshold column** of TODO.md's "Stress test 1M baseline" table (a number, not
+  "noise"); plandiff corpus 0 new mismatches; RFC-077 task-count baseline delta explained or
+  zero; the comparator/merge_sort_union equal⟹same-hash violation pinned red on the pre-P2
+  code and green after.
 - **P3:** projection.go NOTE rewritten (no "blocked by" paragraph); `#`-escape tests retained
   and passing; no identity code path reads a rendering.
 
 ## 7. Review log
 
-- (pending) Graefe — RFC + per-PR implementation ACKs.
-- (pending) Torvalds, codex, @claude — RFC PR and each implementation PR.
+- **Graefe — ACK-with-nits (2026-07-02, folded).** Frame and type-only retention confirmed
+  correct against WindowedValue.java:166-169. Nit 1: the RFC's original "equal⟹same-hash holds
+  today" was FALSE for `DistanceRowNumberValue` (`Name()` embeds Metric → hash finer than
+  equality, live memo-duplication violation) — §2 corrected; strengthens P1. Nit 2: P2 must
+  state the AliasMap — decided: empty map (behavior-preserving; memo.go:272 precedent),
+  alias-aware threading is a named follow-up. Q3 additions folded into P2 gates.
+- **Torvalds — ACK-with-nits (2026-07-02, folded).** All citations survived spot-check; the
+  finer-only staging argument verified sound (refinement splits, never wrongly unifies). Nit
+  1: §1's "ten sites" was three regimes, not one — including a live plan-level
+  equal⟹same-hash violation in comparator/merge_sort_union (equality = key count, hash = full
+  rendering) — §1 rewritten, pin added to §6. Nit 2: nil-`EfSearch` = default-200 at eval →
+  P1 splits implicit vs explicit spellings; verified bounded (no rewrite materializes the
+  default), named in §3 with a comment required at the arm. Nit 3: "within noise" replaced by
+  the TODO.md baseline Threshold column. No re-review needed.
+- (pending) codex, @claude — PR #448; Graefe again per implementation PR.
