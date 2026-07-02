@@ -172,38 +172,22 @@ type KeyRange struct {
 	End   []byte
 }
 
-// Transaction represents an FDB transaction.
-// Mutations are buffered locally and sent on Commit().
-type Transaction struct {
-	db    *database
-	state atomic.Int32 // txState values; atomic because Watch goroutines read concurrently with Commit
-
-	readVersion        int64
-	hasReadVersion     bool
-	readVersionMu      sync.Mutex // protects readVersion + hasReadVersion from concurrent ensureReadVersion
-	userSetReadVersion bool       // true when SetReadVersion was called (needs validateVersion)
-	committedVersion   int64
-	hasCommitted       bool // true after at least one successful commit
-	txnBatchId         uint16
-
-	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
-	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
-	// use goroutines, so concurrent Get/Set calls on the same transaction race.
-	conflictMu     sync.Mutex
-	mutations      []Mutation
-	readConflicts  []KeyRange
-	writeConflicts []KeyRange
-	// singleKeyClearCount counts single-key Clear() calls (NOT ClearRange). C++ charges a
-	// single-key clear's mutation part sizeof(KeyRangeRef), not sizeof(MutationRef) (RYW:2431);
-	// a single-key clear is shape-indistinguishable from ClearRange(k, k+\0) in tx.mutations, so
-	// GetApproximateSize uses this count to apply the cheaper charge. Guarded by conflictMu.
-	singleKeyClearCount int
-	conflictBuf         []byte       // batch-allocated backing store for conflict range keys
-	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
-
-	retryCount int
-	backoff    time.Duration
-
+// txOptions holds every option-backing field of a Transaction — the Go analog of C++
+// TransactionOptions + the RYW-level option state (RFC-175 C2). One field per
+// fdb_transaction_set_option-style accessor (SetTenantId, SetTimeout, SetRetryLimit, …),
+// plus the two test-only knobs that behave like options. Embedded in Transaction, so
+// field promotion keeps every existing access site unchanged.
+//
+// Synchronization contract (unchanged by the move): option setters are NOT
+// concurrent-safe with operations (fdb/transaction.go) — fields here are plain unless
+// a specific overlap forces more: timeoutNs/deadlineNs are atomics (read on every op
+// while Reset's sanctioned watch-teardown overlap rewrites them — RFC-175 E1),
+// spanParent is an atomic.Pointer (read by regenerateSpan on the commit auto-reset),
+// and nextWriteNoConflict is read/cleared under conflictMu on the mutation path.
+// Lifecycle: applyOptionDefaults resets the non-persistent fields on both reset paths
+// and the persistent trio (timeout/retryLimit/maxRetryDelay) on user Reset only
+// (RFC-171).
+type txOptions struct {
 	// tenantId: if not NoTenantID (-1), all operations are scoped to this
 	// tenant's key space. Set via SetTenantId() before any reads/commits.
 	tenantId int64
@@ -213,55 +197,19 @@ type Transaction struct {
 	// C++ semantics: the timeout is an overall budget across all retries,
 	// NOT per-retry. Internal reset (OnError retry) does NOT restart the timer.
 	// Only user-facing Reset() restarts it by updating creationTime.
-	// Atomics (RFC-175 E1): both are read lock-free on every op (checkTimeout,
-	// opContext, mapTimeout) while the reset paths write them — and Reset()'s
-	// cancelWatches runs a cancelled watch's teardown (which calls mapTimeout)
-	// concurrently with reset()'s option re-application, the one sanctioned
-	// op-vs-Reset overlap. timeoutNs is the budget in ns (0 = disabled);
-	// deadlineNs is a unixnano, consulted only while timeoutNs > 0.
-	timeoutNs    atomic.Int64
-	deadlineNs   atomic.Int64
-	creationTime time.Time // set on construction and user Reset(), NOT on OnError retry
-
-	// metricStart anchors the RFC-114 total-transaction-latency sample. Kept SEPARATE
-	// from creationTime (which anchors the timeout deadline) so the metric boundary
-	// moves on commit-reuse without disturbing timeout semantics. Stamped lazily at the
-	// transaction's first GRV (ensureReadVersion, ≈ C++ trState->startTime), CLEARED on
-	// both reuse boundaries (postCommitReset and user Reset()) so the next transaction
-	// re-stamps fresh, but — like creationTime — NOT reset on OnError, so total latency
-	// still spans retries (the documented divergence from C++, which resets per attempt).
-	// ALL accesses under readVersionMu (RFC-175 E1): the reuse-boundary clears and the
-	// commit-latency read run concurrently with a first-GRV stamp on another goroutine.
-	metricStart time.Time
-
-	// Distributed-tracing span (RFC-115 §4). spanContext is stamped on every outgoing
-	// request (GRV, read, commit, watch); a fresh one is generated per transaction and
-	// per attempt (≈ C++ generateSpanID at cloneAndReset, NativeAPI.actor.cpp:3458).
-	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
-	// span to a caller-injected parent trace, persisting that linkage across retries.
-	// atomic.Pointer with immutable pointees (RFC-175 E1): the commit auto-reset
-	// (postCommitReset → regenerateSpan) rotates the span concurrently with in-flight
-	// sends under the concurrent-use contract, so send paths capture by value via
-	// currentSpan() and writers Store a fresh pointee.
-	spanContext atomic.Pointer[types.SpanContext]
-	spanParent  atomic.Pointer[types.SpanContext]
-
-	// OpenTelemetry export (RFC-115 §4 Layer 2). The long-lived "Transaction" otel span
-	// (C++ NativeAPI.actor.cpp:6186) + the context that carries it for parenting per-op
-	// child spans. Lazily started at the first GRV of a SAMPLED transaction, ended on
-	// commit success / reset / Reset / Cancel. Nil for an unsampled tx (the default) — so
-	// unsampled txns never touch traceMu and allocate nothing (the C++ NoopTracer effect).
-	// traceMu guards both fields: ensureTxSpan (under readVersionMu at first GRV) and
-	// startOpSpan (concurrent pipelined reads) and endTxSpan all serialize through it;
-	// lock order is readVersionMu → traceMu, never the reverse.
-	traceMu  sync.Mutex
-	txSpan   oteltrace.Span
-	traceCtx context.Context
+	// timeoutNs is the budget in ns (0 = disabled); deadlineNs is a unixnano,
+	// consulted only while timeoutNs > 0.
+	timeoutNs  atomic.Int64
+	deadlineNs atomic.Int64
 
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
 	// when retryCount >= retryLimit.
 	retryLimit    int
 	hasRetryLimit bool
+
+	// maxRetryDelay: if > 0, caps the exponential backoff. Default: 1s (maxBackoff).
+	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
+	maxRetryDelay time.Duration
 
 	// nextWriteNoConflict: if true, the next mutation will NOT add a write
 	// conflict range. Auto-resets after one mutation. Matches C++
@@ -294,9 +242,41 @@ type Transaction struct {
 	// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 	sizeLimit int64
 
-	// maxRetryDelay: if > 0, caps the exponential backoff. Default: 1s (maxBackoff).
-	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
-	maxRetryDelay time.Duration
+	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
+	// ranges. Used for insert-only batch writes where all keys are unique (no
+	// write-write conflicts possible) and all atomics commute. Reduces commit
+	// request size significantly. (Go-only convenience; no C++ option code.)
+	writeConflictsDisabled bool
+
+	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
+	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+	rywDisabled bool
+
+	// snapshotRYWDisableCount: snapshot reads bypass the RYW cache iff this is > 0.
+	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_{ENABLE,DISABLE}, which libfdb_c models as an
+	// integer counter (ReadYourWrites.actor.cpp): ENABLE does enabledCount++, DISABLE does
+	// enabledCount--, and a snapshot read bypasses RYW iff enabledCount <= 0. We store the
+	// disabled-oriented inverse (disableCount = 1 - enabledCount for the modern-API default
+	// of 1), so DISABLE does count++, ENABLE does count--, and bypass iff count > 0 —
+	// equivalent at every integer while keeping the Go zero value (0) mean "enabled".
+	snapshotRYWDisableCount int
+
+	// System key access control. Matches C++ ReadYourWritesTransaction:
+	// getMaxReadKey() returns \xff without readSystemKeys, \xff\xff with it.
+	// getMaxWriteKey() returns \xff without writeSystemKeys, \xff\xff with it.
+	readSystemKeys  bool // READ_SYSTEM_KEYS: allows reading \xff/* keys
+	writeSystemKeys bool // ACCESS_SYSTEM_KEYS: allows reading AND writing \xff/* keys
+
+	// tags: transaction tags for tag-based throttling.
+	// Set via SetTag(). Used in backoff calculation for tag_throttled errors.
+	// C++ keeps tags across retries (not cleared by internal reset).
+	tags []string
+
+	// spanParent, set by SetSpanParent (FDBTransactionOptions::SPAN_PARENT), links the
+	// transaction's wire span to a caller-injected parent trace, persisting that
+	// linkage across retries (regenerateSpan honors it). atomic.Pointer with immutable
+	// pointees — read by regenerateSpan on the commit auto-reset (RFC-115 §4).
+	spanParent atomic.Pointer[types.SpanContext]
 
 	// rpcTimeoutOverride: if > 0, the per-RPC reply timeout for this
 	// transaction's READS instead of DefaultRPCTimeout. Test-only knob to
@@ -307,20 +287,77 @@ type Transaction struct {
 
 	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
 	// Test-only knob to make the backoff delay deterministic (production leaves it
-	// nil → real rand.Float64()). Used to pin the cancel-during-backoff race in
-	// TestOnError_RespectsContextCancellation without depending on a lucky rand draw
-	// (a rand near 0 made the backoff complete before the cancel — a real flake).
+	// nil → real rand.Float64()).
 	backoffJitter func() float64
+}
 
-	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
-	// ranges. Used for insert-only batch writes where all keys are unique (no
-	// write-write conflicts possible) and all atomics commute. Reduces commit
-	// request size significantly.
-	writeConflictsDisabled bool
+// Transaction represents an FDB transaction.
+// Mutations are buffered locally and sent on Commit().
+type Transaction struct {
+	// Identity & lifecycle — db/isDummy are immutable after construction; state is
+	// atomic because Watch goroutines read it concurrently with Commit/Cancel.
+	db      *database
+	state   atomic.Int32 // txState values
+	isDummy bool         // commitDummyTransaction marker; prevents recursive dummies
 
-	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
-	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
-	rywDisabled bool
+	// Every option-backing field lives on the embedded txOptions (RFC-175 C2);
+	// accessors and all field references work unchanged via promotion.
+	txOptions
+
+	// Read-version state — readVersionMu guards readVersion/hasReadVersion/
+	// userSetReadVersion (concurrent ensureReadVersion vs the reset paths) AND
+	// metricStart, the RFC-114 total-latency anchor: stamped at the first GRV
+	// (≈ C++ trState->startTime), cleared on the reuse boundaries
+	// (postCommitReset / user Reset) but NOT on OnError so total latency spans
+	// retries — the documented RFC-114 divergence from C++'s per-attempt reset.
+	// Lock order: readVersionMu → traceMu, never the reverse.
+	readVersionMu      sync.Mutex
+	readVersion        int64
+	hasReadVersion     bool
+	userSetReadVersion bool // SetReadVersion was called → validateVersion applies
+	metricStart        time.Time
+
+	// Commit results — written by the commit path, consumed by
+	// GetCommittedVersion/GetVersionstamp after a commit; preserved by
+	// postCommitReset so a reused handle can still query them.
+	committedVersion int64
+	hasCommitted     bool
+	txnBatchId       uint16
+
+	// Mutation & conflict buffers — conflictMu guards all six (the published
+	// contract makes data ops concurrent-safe: a pipelined Get future resolving
+	// on another goroutine appends read conflicts while Set/Commit run).
+	// singleKeyClearCount backs GetApproximateSize's cheaper single-key-clear
+	// charge (C++ models it as a range entry, RYW:2431). The slices are
+	// append-only, so Commit's header snapshots stay valid after unlock.
+	conflictMu          sync.Mutex
+	mutations           []Mutation
+	readConflicts       []KeyRange
+	writeConflicts      []KeyRange
+	singleKeyClearCount int
+	conflictBuf         []byte       // batch-allocated backing store for conflict range keys
+	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
+
+	// Retry-loop state — owned by the Run/OnError driver goroutine (never
+	// touched by concurrent data ops). creationTime anchors the SetTimeout
+	// budget: set on construction, by user Reset(), and stamped lazily by
+	// SetTimeout when still zero; NOT reset on OnError retry.
+	retryCount   int
+	backoff      time.Duration
+	creationTime time.Time
+
+	// Wire tracing (RFC-115 §4) — spanContext is stamped on every outgoing
+	// request; a fresh one per transaction and per attempt (≈ C++ generateSpanID
+	// at cloneAndReset, NativeAPI.actor.cpp:3458). atomic.Pointer with immutable
+	// pointees: the commit auto-reset rotates it concurrently with in-flight
+	// sends, which capture by value via currentSpan() (RFC-175 E1). traceMu
+	// guards the lazily-started otel "Transaction" span + its parenting context
+	// (nil while unsampled — the C++ NoopTracer effect); lock order is
+	// readVersionMu → traceMu, never the reverse.
+	spanContext atomic.Pointer[types.SpanContext]
+	traceMu     sync.Mutex
+	txSpan      oteltrace.Span
+	traceCtx    context.Context
 
 	// deferredErr is THE transaction's deferred error — the exact analog of C++
 	// ISingleThreadTransaction::deferredError (ISingleThreadTransaction.h:124): ONE slot
@@ -353,27 +390,14 @@ type Transaction struct {
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]
 
-	// readErr: the first error returned by a TRACKED read of this transaction —
-	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
-	// before any commit work (ReadYourWrites.actor.cpp:1358-1359), and an errored
-	// read future stays in the AndFuture forever (add() keeps errored futures,
-	// isReady() only pops successful ones — flow/genericactors.actor.h:1912-1942),
-	// so a failed read — even one whose error the caller caught and swallowed —
-	// fails a later Commit with that same error until the transaction is reset
-	// (resetRyow() reading = AndFuture(), :2715). Tracked reads mirror C++'s
-	// reading.add sites: get (:1691), getKey (:1707), getRange (:1767),
-	// getAddressesForKey (:1849), watch setup (:1290). NOT tracked, matching C++:
-	// getEstimatedRangeSizeBytes / getRangeSplitPoints (waitOrError, no
-	// reading.add) and eager validation errors (key_outside_legal_range etc.
-	// return before a read future exists). Context cancellation is also excluded:
-	// a per-read ctx has no C++ analogue (C++ cancellation is whole-transaction
-	// via resetPromise), so it must not poison a commit libfdb_c would allow.
-	//
-	// Watch setup failures are NOT tracked: the C++ watch actor sends
-	// done.send(Void()) in every error path before rethrowing
-	// (ReadYourWrites.actor.cpp:1299-1302, :1325-1329), so the done future in
-	// reading completes SUCCESSFULLY — a failed watch read never poisons
-	// commit; reading only barriers on watch-setup completion.
+	// readErr: the FIRST error of a TRACKED read this incarnation — the Go analog
+	// of C++'s ryw->reading AndFuture. Contract: a failed tracked read — even one
+	// whose error the caller swallowed — fails a later Commit with that same error
+	// until reset (commit waits on reading before ANY commit work,
+	// ReadYourWrites.actor.cpp:1358-1359; resetRyow swaps the AndFuture, :2715).
+	// Which reads are tracked vs excluded (metrics ops, eager validation, ctx
+	// cancellation) and why watch-setup failures never poison: RFC-098 ("a failed
+	// read poisons the transaction's commit" + the completion-barrier addendum).
 	//
 	// readErrMu guards readErr, readGen and pendingReads: pipelined read
 	// futures resolve on other goroutines, and the three fields must move
@@ -408,42 +432,15 @@ type Transaction struct {
 	// whole field race-free.
 	hadRead atomic.Bool
 
-	// snapshotRYWDisableCount: snapshot reads bypass the RYW cache iff this is > 0.
-	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_{ENABLE,DISABLE}, which libfdb_c models as an
-	// integer counter (ReadYourWrites.actor.cpp): ENABLE does enabledCount++, DISABLE does
-	// enabledCount--, and a snapshot read bypasses RYW iff enabledCount <= 0. We store the
-	// disabled-oriented inverse (disableCount = 1 - enabledCount for the modern-API default of
-	// 1), so DISABLE does count++, ENABLE does count--, and bypass iff count > 0 — exactly
-	// equivalent at every integer (enabledCount <= 0 ⟺ disableCount > 0) while keeping the Go
-	// zero value (0) mean "enabled", so a bare Transaction never silently bypasses RYW.
-	// SNAPSHOT_RYW_{ENABLE,DISABLE} (600/601) are NOT persistent="true" in fdb.options, so this
-	// counter is cleared to 0 on BOTH reset paths (user Reset and OnError retry) by
-	// applyOptionDefaults, matching C++ TransactionOptions::clear on the fresh state — it is NOT
-	// preserved across a retry. By default (count 0) snapshot reads DO go through the RYW cache.
-	snapshotRYWDisableCount int
-
-	// System key access control. Matches C++ ReadYourWritesTransaction:
-	// getMaxReadKey() returns \xff without readSystemKeys, \xff\xff with it.
-	// getMaxWriteKey() returns \xff without writeSystemKeys, \xff\xff with it.
-	readSystemKeys  bool // READ_SYSTEM_KEYS: allows reading \xff/* keys
-	writeSystemKeys bool // ACCESS_SYSTEM_KEYS: allows reading AND writing \xff/* keys
-
-	// tags: transaction tags for tag-based throttling.
-	// Set via SetTag(). Used in backoff calculation for tag_throttled errors.
-	// C++ keeps tags across retries (not cleared by internal reset).
-	tags []string
-
-	// proxyTagThrottledDuration: accumulated proxy tag throttle delay.
-	// Incremented from GRV reply's ProxyTagThrottledDuration field.
-	// Reply-only (proxy→client). C++ does not serialize this field in the
-	// commit request: "Not serialized, because this field does not need to
-	// be sent to master" (CommitProxyInterface.h:318).
+	// proxyTagThrottledDuration — accumulated tag-throttle delay consumed by
+	// GetTagThrottledDuration and OnError's backoff. Written ONLY by nextBackoff,
+	// which adds the client-side proxyMaxTagThrottleDuration constant per
+	// proxy_tag_throttled (1223) error (≈ NativeAPI.actor.cpp:7761); the C++
+	// reply-side accumulation from the GRV reply's ProxyTagThrottledDuration
+	// (NativeAPI.actor.cpp:7410) is NOT implemented — the GRV parsers discard
+	// that field (registered gap, TODO.md). Reply-only in C++, never serialized
+	// back (CommitProxyInterface.h:318). Single retry-driver goroutine.
 	proxyTagThrottledDuration float64
-
-	// isDummy: true for dummy transactions created by commitDummyTransaction.
-	// Prevents recursive commitDummyTransaction calls when the dummy itself
-	// encounters commit_unknown_result.
-	isDummy bool
 
 	// Per-watch cancellation (watchMu-guarded). Each in-flight Watch() gets its OWN cancellable
 	// context keyed by a monotonic id (newWatchCtx), so an individual watch future's Cancel() scopes

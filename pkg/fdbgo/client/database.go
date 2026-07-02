@@ -926,7 +926,7 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 func (d *Database) CreateTransaction() *Transaction {
 	tx := &Transaction{
 		db:           d.db,
-		tenantId:     NoTenantID,
+		txOptions:    txOptions{tenantId: NoTenantID},
 		creationTime: time.Now(),
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults).

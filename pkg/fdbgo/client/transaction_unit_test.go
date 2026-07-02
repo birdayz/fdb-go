@@ -316,7 +316,7 @@ func TestAddReadConflictForKey_MultipleAppendsShareBackingBuffer(t *testing.T) {
 
 func TestAddWriteConflictForKey_DisabledWhenWriteConflictsDisabled(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{writeConflictsDisabled: true}
+	tx := &Transaction{txOptions: txOptions{writeConflictsDisabled: true}}
 	tx.addWriteConflictForKey([]byte("k"))
 	if len(tx.writeConflicts) != 0 {
 		t.Errorf("writeConflictsDisabled=true must skip append, got len=%d", len(tx.writeConflicts))
@@ -325,7 +325,7 @@ func TestAddWriteConflictForKey_DisabledWhenWriteConflictsDisabled(t *testing.T)
 
 func TestAddWriteConflictForKey_ConsumesNextWriteNoConflict(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{nextWriteNoConflict: true}
+	tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 	tx.addWriteConflictForKey([]byte("k"))
 	if len(tx.writeConflicts) != 0 {
 		t.Errorf("nextWriteNoConflict must skip first append, got len=%d", len(tx.writeConflicts))
@@ -344,7 +344,7 @@ func TestAddWriteConflict_ExplicitRange_DisabledFlags(t *testing.T) {
 	t.Parallel()
 	t.Run("disabled", func(t *testing.T) {
 		t.Parallel()
-		tx := &Transaction{writeConflictsDisabled: true}
+		tx := &Transaction{txOptions: txOptions{writeConflictsDisabled: true}}
 		tx.addWriteConflict([]byte("a"), []byte("z"))
 		if len(tx.writeConflicts) != 0 {
 			t.Errorf("disabled flag must skip explicit range, got len=%d", len(tx.writeConflicts))
@@ -352,7 +352,7 @@ func TestAddWriteConflict_ExplicitRange_DisabledFlags(t *testing.T) {
 	})
 	t.Run("nextWriteNoConflict", func(t *testing.T) {
 		t.Parallel()
-		tx := &Transaction{nextWriteNoConflict: true}
+		tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 		tx.addWriteConflict([]byte("a"), []byte("z"))
 		if len(tx.writeConflicts) != 0 {
 			t.Errorf("nextWriteNoConflict must skip explicit range, got len=%d", len(tx.writeConflicts))
@@ -906,7 +906,7 @@ func newTestTx() *Transaction {
 func TestAtomic_APIVersionSub520VersionstampSuffix(t *testing.T) {
 	t.Parallel()
 	mkTx := func(apiVersion int) *Transaction {
-		tx := &Transaction{db: &database{apiVersion: apiVersion}, rywDisabled: true}
+		tx := &Transaction{db: &database{apiVersion: apiVersion}, txOptions: txOptions{rywDisabled: true}}
 		tx.state.Store(int32(txStateActive))
 		return tx
 	}
