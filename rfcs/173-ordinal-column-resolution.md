@@ -398,6 +398,40 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   join must plan and execute name-model-identically before/after Slice 2, and (b) the flattening
   evasion shape (`FROM (a JOIN b) t1, (c JOIN d) t2`) must stay name-model end-to-end during the
   window.
+  **IMPLEMENTATION CONTRACT (Graefe pre-code ruling, post-inventory — binding):**
+  1. *Scoping gate = form (a), the translation-time cluster-arity walk; form (b) demoted to a
+     LOUD ASSERT, never a decline.* A decline-barrier is disqualified by pin (a) itself: keeping
+     `(a JOIN b)` boxes nested changes shapes/task counts and turns the RFC-077 interning baseline
+     (Slice 3's gate) into noise. Arity algebra on the logical tree at the seed
+     (`cascades_translator.go:3374`): `arity(LogicalJoin{INNER|CROSS}) = arity(L)+arity(R)`;
+     a `LogicalScan` over a cteScope-registered non-recursive name = `arity(body)` after peeling
+     `LogicalFilter`/`LogicalProject` (SelectMergeRule merges through Project via TranslationMap,
+     `rule_select_merge.go:165-179`); outer joins (ChildrenAsSet opacity), aggregate, DISTINCT,
+     sort/limit, union, recursive CTE, existential = opaque leaf of 1. Ordinal seed iff the MAXIMAL
+     enclosing cluster has arity exactly 2; anything unclassifiable counts as >2 (fail toward
+     name-model). Because the walk shadows the rule's mergeability predicate, drift is the risk:
+     the assert lives in `SelectMergeRule`'s target loop (`:104-126`, beside the outer-opacity
+     check) — a name-model parent about to merge an ORDINAL child is a loud planner error.
+  2. *Eager representation = baked ordinal on FieldValue* (`*ResolvedAccessor{Ordinal int}`-shaped
+     marker that Slice 3 widens to a multi-accessor path). Constructor (`ofOrdinalNumber(QOV(leg), i)`)
+     derives the display name from the leg type (diagnostics/coexistence); `resolveOrdinal` returns
+     the baked value when set; **identity for BAKED nodes is (name, ordinal)** — a refinement of
+     name identity, not Slice 3's flip; baked vs lazy nodes compare UNEQUAL (worst case a missed
+     dedup, never a conflation). Rationale: construction-time-resolved *names* (option b) violate
+     the load-bearing lazy invariant after any rebuild AND cannot represent `SELECT * FROM a JOIN b`
+     with same-named leg columns — two identical `FieldValue(QOV(join),"ID")` nodes would intern as
+     ONE memo member → wrong plans; S2 makes that shape constructible for the first time, so
+     **§5's duplicate-name identity pin pulls forward into Slice 2**. Option (c) (collapsed
+     FieldPath now) drags Slice 3's compose-rule blast radius into the wedge — rejected; S2 needs
+     only single-accessor ordinals.
+  3. *`appendNullLeg` = N nil slots under the join's SINGLE merged type* (never ad-hoc per-row
+     types); symmetric for the FULL-outer inner drain (`streaming_cursors.go:877`). Java analog is
+     semantic, not structural: flatMap + `DefaultOnEmpty`, i.e. the null leg is the leg QOV bound
+     to NULL and each `ofOrdinalNumber` evaluates to NULL. In `flat_map_cursor.go:181` evaluate the
+     result value with the inner binding nil (the null extension falls out); `appendNullLeg` is the
+     NLJ-cursor primitive (`executor.go:2167` replacement), PINNED observationally equivalent to
+     evaluating the merged RC with `QOV(right)→nil`. Both are positional re-birth sites → extend
+     the `DisablePositionalEmission` oracle registry (standing obligation).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
   (~3 shifts). Replace the name-based re-stamp machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/
