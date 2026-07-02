@@ -119,17 +119,20 @@ func writeSemanticHash(h io.Writer, v Value) {
 		}
 	case *FieldValue:
 		// '#' in the raw field text is doubled — same escape as ExplainValue's
-		// FieldValue arm — so the '#<ordinal>' discriminator below cannot
+		// FieldValue arm — so the '#<ordinal>' discriminators below cannot
 		// collide with a field literally named "X#0" (quoted identifiers may
 		// contain '#'). A collision here is only a hash-bucket share (equality
 		// stays sound), but keeping the discriminator injective mirrors the
 		// rendering-keyed plan identity.
 		_, _ = io.WriteString(h, "field:"+strings.ReplaceAll(t.Field, "#", "##"))
-		// A plan-time-resolved ordinal accessor is part of the FieldPath
-		// identity (mirrors EqualsWithoutChildren): reads of duplicate-named
-		// output columns differ only by ordinal.
-		if t.HasResolvedOrdinal {
-			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
+		// RFC-173: a BAKED node's identity is (name, ordinal)
+		// (EqualsWithoutChildren), so the hash mixes the ordinal in — equal ⟹
+		// same hash stays tight across the refinement. Lazy nodes keep the
+		// name-only bucket; baked vs lazy are UNEQUAL, so their differing
+		// hashes are fine (they must not share a memo bucket anyway).
+		// FrontierPinned is NOT hashed (excluded from identity).
+		if t.Resolved != nil {
+			_, _ = fmt.Fprintf(h, "#%d", t.Resolved.Ordinal)
 		}
 	// Windowed/vector family (RFC-176 P1): fold the same discriminator set the
 	// EqualsWithoutChildren arms compare — Metric + EfSearch +

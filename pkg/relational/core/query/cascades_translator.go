@@ -90,6 +90,23 @@ type cascadesTranslator struct {
 	// (first writer wins) so the original cause surfaces; the caller reads it
 	// when ref is nil and reports it instead of the generic "could not plan".
 	translateErr error
+
+	// inInnerCluster is the RFC-173 Slice 2 enclosure flag: true while
+	// translating a subtree whose selects merge (post-flattening) into an
+	// enclosing name-model select — inner-join legs and the existential/unnest
+	// flatten legs. A join translated under the flag is a leg of a bigger
+	// cluster and stays name-model (ordinalWedgeGate). The flag is PRESERVED
+	// through transparent translations (filter/project/CTE-body inlining —
+	// SelectMergeRule merges through their selects) and RESET at opaque
+	// boundaries (translateOp entry: aggregate/distinct/sort/limit/union/DML;
+	// translateJoin: outer-join legs). Safety direction: a missed reset leaves
+	// the flag true → the nested join under-gates to the name model — never
+	// the reverse.
+	inInnerCluster bool
+	// wedgeGate records the Slice 2 gate decision per translateJoin seed —
+	// consumed by the W3 ordinal seed, pinned by tests. Lazily initialized so
+	// hand-built test translators need no constructor change.
+	wedgeGate map[*logical.LogicalJoin]wedgeGateDecision
 }
 
 // setTranslateErr records a translation error (first writer wins) so a
@@ -643,6 +660,19 @@ func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressio
 	return expressions.InitialOf(expr)
 }
 
+// translateSubqueryRef translates an EXISTS-subquery plan. RFC-173 Slice 2:
+// an existential quantifier's child select is NEVER merged into its parent
+// (SelectMergeRule only targets ForEach quantifiers), so the subquery roots a
+// FRESH cluster regardless of where the enclosing select sits — a 2-way join
+// inside an EXISTS gates on its own arity, not the outer enclosure.
+func (t *cascadesTranslator) translateSubqueryRef(op logical.LogicalOperator) *expressions.Reference {
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = false
+	ref := t.translateRef(op)
+	t.inInnerCluster = prevEnclosure
+	return ref
+}
+
 // --- Lateral array UNNEST (RFC-142) --------------------------------------
 
 // findOuterScanTable resolves a lateral unnest's outer source alias to its
@@ -903,6 +933,14 @@ func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
 // records ErrCodeWrongObjectType (Java's WRONG_OBJECT_TYPE) and returns nil so
 // the planner surfaces the faithful diagnostic. RFC-142.
 func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
+	// RFC-173 Slice 2: the entire unnest lowering (FlatMap-over-Explode,
+	// dotted-prefix bipartition machinery, multi-source fallback rebuilds via
+	// unnestFallbackOrReject) is name-model until Slice 3 (review W4-deferral ruling) — every join
+	// translated beneath it, including the fallback's rebuilt LogicalJoins,
+	// is marked enclosed so it cannot gate ordinal.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
+	defer func() { t.inInnerCluster = prevEnclosure }()
 	// A lateral unnest is classified by walking the outer source's PROTO
 	// descriptor for the array field (unnestArrayElementType → resolveRecordType
 	// → t.md). The metadata-less translation path (TranslateToCascades /
@@ -1631,6 +1669,21 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 	if op == nil {
 		return nil
 	}
+	// RFC-173 Slice 2: opaque boundaries cut inner-join-cluster enclosure —
+	// they lower to non-SelectExpression boxes SelectMergeRule cannot merge
+	// through, so a join beneath them roots its OWN cluster (fresh gate walk).
+	// Transparent ops (scan/filter/project/CTE) and joins (which manage their
+	// legs' enclosure themselves) preserve the flag. Missing a type here fails
+	// SAFE: the nested join stays "enclosed" → name model.
+	switch op.(type) {
+	case *logical.LogicalAggregate, *logical.LogicalDistinct, *logical.LogicalSort,
+		*logical.LogicalLimit, *logical.LogicalUnion,
+		*logical.LogicalInsert, *logical.LogicalUpdate, *logical.LogicalDelete:
+		if t.inInnerCluster {
+			defer func() { t.inInnerCluster = true }()
+			t.inInnerCluster = false
+		}
+	}
 	switch o := op.(type) {
 	case *logical.LogicalScan:
 		return t.translateScan(o)
@@ -1848,7 +1901,20 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 				pred = rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr)
 			}
-			merged := append(sel.GetPredicates(), pred)
+			toMerge := []predicates.QueryPredicate{pred}
+			// RFC-173 Slice 2 W3b: WHERE conjuncts merged into a GATED join's
+			// select are join predicates too — bake their direct leg
+			// references exactly like the ON predicates at the seed (contract
+			// ruling #2: eager (leg, ordinal), one baking rule for every
+			// predicate the ordinal select carries).
+			if d, gok := t.wedgeGate[join]; gok && d.Gated {
+				legTypes := map[string]*values.RecordType{
+					strings.ToUpper(sourceAlias(join.Left)):  t.ordinalLegType(join.Left),
+					strings.ToUpper(sourceAlias(join.Right)): t.ordinalLegType(join.Right),
+				}
+				toMerge = bakeGatedJoinPredicates(toMerge, legTypes)
+			}
+			merged := append(sel.GetPredicates(), toMerge...)
 			return expressions.NewSelectExpressionWithJoinType(
 				sel.GetResultValue(),
 				sel.GetQuantifiers(),
@@ -1859,7 +1925,17 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		}
 	}
 
+	// RFC-173 Slice 2: when this filter carries EXISTS subqueries, its select
+	// gains existential quantifiers (buildExistentialSelect below) — a
+	// name-model parent the outer ForEach leg merges into (post-flattening
+	// arity ≥ 3 counting the existential). A join inside the leg (derived
+	// table over a join) must therefore gate name-model: mark it enclosed.
+	prevEnclosure := t.inInnerCluster
+	if len(f.ExistsSubqueries) > 0 {
+		t.inInnerCluster = true
+	}
 	innerRef := t.translateRef(f.Input)
+	t.inInnerCluster = prevEnclosure
 	if innerRef == nil {
 		return nil
 	}
@@ -2107,7 +2183,7 @@ func (t *cascadesTranslator) buildExistentialSelect(
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 	var innerCorrNames []string
 	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateRef(esq.Plan)
+		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
@@ -2163,11 +2239,18 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 		// the unfolded projected EXISTS cleanly (never a wrong result).
 		return nil
 	}
+	// RFC-173 Slice 2: same enclosure as translateJoinWithExists — the
+	// existential flatten is a name-model parent; its ForEach legs are
+	// enclosed.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
 	leftRef := t.translateRef(j.Left)
 	if leftRef == nil {
+		t.inInnerCluster = prevEnclosure
 		return nil
 	}
 	rightRef := t.translateRef(j.Right)
+	t.inInnerCluster = prevEnclosure
 	if rightRef == nil {
 		return nil
 	}
@@ -2195,7 +2278,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 
 	sourceAliases := []string{leftAlias, rightAlias}
 	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateRef(esq.Plan)
+		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
@@ -2256,7 +2339,13 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		})
 	}
 
+	// RFC-173 Slice 2: the projected-EXISTS fold attaches existential
+	// quantifiers to the select this leg merges into — same enclosure rule as
+	// translateFilter's WHERE-EXISTS path (a nested join stays name-model).
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
 	innerRef := t.translateRef(f.Input)
+	t.inInnerCluster = prevEnclosure
 	if innerRef == nil {
 		return nil
 	}
@@ -3015,6 +3104,14 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 func (t *cascadesTranslator) translateProjectWithCorrelatedScalar(p *logical.LogicalProject) expressions.RelationalExpression {
 	csq := p.CorrelatedScalarSubqueries[0]
 
+	// RFC-173 Slice 2: this NAME-MODEL 2-leg anchored seed (Slice 3 flips it — it is a pre-rewrite LEFT OUTER select, the ephemeral object the W3b premise correction covers; review W4-deferral ruling — to
+	// ordinal) absorbs mergeable leg selects post-flattening — a join nested
+	// in either leg lands in a ≥3-quantifier name-model select, so both legs
+	// translate enclosed.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
+	defer func() { t.inInnerCluster = prevEnclosure }()
+
 	outerRef := t.translateRef(p.Input)
 	if outerRef == nil {
 		return nil
@@ -3307,11 +3404,37 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		kind = logical.JoinLeft
 	}
 
+	// RFC-173 Slice 2: decide (and record) the ordinal-wedge gate for this
+	// seed BEFORE leg translation mutates the enclosure flag. W3b consumes
+	// it below: a gated join seeds the ORDINAL result value + baked
+	// predicates instead of the name-model anchored RC.
+	gateDecision := t.ordinalWedgeGate(j)
+
+	// Leg enclosure: an INNER (incl. cross) join's legs are part of THIS
+	// cluster — a nested join there merges into a ≥3-way select and must stay
+	// name-model. A LEFT-outer box's PRESERVED (left) leg is ALSO enclosed:
+	// RewriteOuterJoinRule dissolves the box into an INNER + null-on-empty
+	// select during REWRITING, and SelectMergeRule then flattens the
+	// preserved child into it (the RFC-153 joined-preserved machinery — the
+	// W3b flip's drift assert caught a gated preserved-leg join being merged
+	// exactly there). The NULL-SUPPLYING (right) leg becomes the
+	// null-on-empty subselect — never a merge target — and FULL-outer boxes
+	// are never rewritten: those legs root fresh clusters. Restored before
+	// the OnExists subplan loop: existential subplans are never merged into
+	// this select, so they root fresh clusters too.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = kind == logical.JoinInner || kind == logical.JoinLeft
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
+		t.inInnerCluster = prevEnclosure
 		return nil
 	}
+	if kind == logical.JoinLeft {
+		// Null-supplying leg: fresh cluster (see above).
+		t.inInnerCluster = false
+	}
 	rightRef := t.translateRef(right)
+	t.inInnerCluster = prevEnclosure
 	if rightRef == nil {
 		return nil
 	}
@@ -3371,7 +3494,18 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// the RC keys columns by alias, so leg ORDER only affects `SELECT *` layout.
 	rvLeft, rvRight := j.Left, j.Right
 	rvLeftAlias, rvRightAlias := sourceAlias(rvLeft), sourceAlias(rvRight)
-	resultValue := t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+	var resultValue values.Value
+	if gateDecision.Gated {
+		// RFC-173 Slice 2 W3b — the ordinal wedge seed: baked ofOrdinalNumber
+		// concatenation of the two legs + eager (leg, ordinal) predicate
+		// baking (contract ruling #2). Same untranslatable-on-nil rule as the
+		// anchored seed below.
+		var legTypes map[string]*values.RecordType
+		resultValue, legTypes = t.buildOrdinalJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+		preds = bakeGatedJoinPredicates(preds, legTypes)
+	} else {
+		resultValue = t.buildJoinResultValue(rvLeft, rvRight, rvLeftAlias, rvRightAlias)
+	}
 	if resultValue == nil {
 		// A leg's columns are not derivable (only the catalog-free nil-md path;
 		// every md-bearing production query anchors — RFC-077 7.6). Untranslatable.
@@ -3389,7 +3523,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// joinType passed below is JoinInner and the existential semantics match
 	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
 	for _, esq := range j.OnExistsSubqueries {
-		subRef := t.translateRef(esq.Plan)
+		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
@@ -3449,11 +3583,18 @@ func (t *cascadesTranslator) translateJoinWithExists(
 
 	// Flatten join + EXISTS into a single SelectExpression
 	// with ForEach(left), ForEach(right), and Existential quantifiers.
+	// RFC-173 Slice 2: this flat select is a name-model merge-absorbing
+	// parent (existential quantifiers → never in the ordinal wedge), so its
+	// ForEach legs are ENCLOSED — a nested join there must not gate ordinal.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
 	leftRef := t.translateRef(left)
 	if leftRef == nil {
+		t.inInnerCluster = prevEnclosure
 		return nil
 	}
 	rightRef := t.translateRef(right)
+	t.inInnerCluster = prevEnclosure
 	if rightRef == nil {
 		return nil
 	}
@@ -3487,7 +3628,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// Add EXISTS subqueries as existential quantifiers.
 	sourceAliases := []string{leftAlias, rightAlias}
 	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateRef(esq.Plan)
+		subRef := t.translateSubqueryRef(esq.Plan)
 		if subRef == nil {
 			return nil
 		}
@@ -3779,6 +3920,19 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 //     RecursiveUnionExpression.
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	cteName := strings.ToUpper(c.Name)
+
+	// RFC-173 Slice 2: the ENTIRE recursive-CTE lowering — both legs and Main
+	// — is name-model machinery until Slice 4 retires it (leg normalization
+	// via legPhysicalOutputNames, recursiveRemapValues' dot-split re-keying,
+	// name-keyed temp tables). A join translated anywhere beneath it is
+	// marked enclosed so no baked node can reach that machinery. Blanket over
+	// Main too: Main is usually a bare CTE scan; when it does hold a join,
+	// under-gating to the name model is the safe direction. Recursive CTEs
+	// are also poison in clusterArity — this flag closes the translation-side
+	// half.
+	prevEnclosure := t.inInnerCluster
+	t.inInnerCluster = true
+	defer func() { t.inInnerCluster = prevEnclosure }()
 
 	// The body must be a UNION ALL or UNION DISTINCT.
 	union, ok := c.Body.(*logical.LogicalUnion)

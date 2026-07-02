@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -116,6 +118,38 @@ func (r *SelectMergeRule) OnMatch(call *ExpressionRuleCall) {
 				continue
 			}
 			if wp, ok := member.(expressions.RelationalExpressionWithPredicates); ok {
+				// RFC-173 Slice 2 drift assert (contract ruling #1): the
+				// translation-time cluster-arity gate SHADOWS this rule's
+				// mergeability, so an ORDINAL child (baked result value) may
+				// only ever merge into a PURE WRAPPER parent — a select whose
+				// single quantifier is this child (the derived-table /
+				// WHERE-fold flattening that leaves the post-merge select at
+				// exactly the child's 2 ForEach legs). A parent with any
+				// OTHER quantifier would flatten the ordinal child into a
+				// ≥3-quantifier select — the name-model partition machinery
+				// the gate exists to keep baked values out of. That means the
+				// gate mis-scoped: a loud planner error, never a silent
+				// wrong-model merge (a decline is equally forbidden — it
+				// changes plan shapes).
+				//
+				// The assert fires ONLY for SelectExpression children: only a
+				// child SELECT's quantifiers get SPLICED into the parent
+				// (leg flattening — the hazard). A LogicalFilterExpression
+				// child merely dissolves (its predicates pull up and the
+				// parent quantifier re-ranges over the filter's input — the
+				// ordinal box beneath stays a box), so a filter whose flowed
+				// value is baked is a legitimate merge, not a gate breach —
+				// the W3b flip's first live shape (RFC-153 joined-preserved:
+				// a filter-wrapped ordinal outer box beside another leg)
+				// proved the earlier any-WithPredicates boundary wrong.
+				if childSel, isSel := member.(*expressions.SelectExpression); isSel &&
+					len(quantifiers) > 1 && values.ContainsBakedOrdinal(childSel.GetResultValue()) {
+					panic(fmt.Sprintf(
+						"RFC-173: SelectMergeRule is about to merge an ORDINAL child select (baked result value) into a %d-quantifier parent — the cluster-arity gate mis-scoped a 2-way join as maximal (planner bug); parent result %s, child result %s",
+						len(quantifiers),
+						values.ExplainValue(sel.GetResultValue()),
+						values.ExplainValue(childSel.GetResultValue())))
+				}
 				targets = append(targets, mergeTarget{
 					idx:       i,
 					child:     wp,

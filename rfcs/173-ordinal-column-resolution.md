@@ -4,10 +4,13 @@
 this line deliberately does not restate it). Round 5 (adversarial content re-review, 2026-07-01)
 is folded into this revision; **Slice 2 starts only when all four Round-5 boxes in §10 are
 checked.** Progress: P1 merged (#423), P2 merged (#427),
-P3 folded into Slice 3 (#429/#430), Slice 1 in flight (`feat/rfc173-slice1-ordinal-nonjoin` —
-buried-reference precursor LANDED gauntlet-passed, Step 2b producer flip LANDED with the
-authority proof + §5 pins, dual-emission benchmark exit obligation SATISFIED; see the §4
-Slice 1 execution log). Each staged PR re-acked on its own HEAD.
+P3 folded into Slice 3 (#429/#430), **Slice 1 MERGED (#437, `12516e33f`)** — all four gates ACKed
+at the merge HEAD (Graefe impl+delta, Torvalds incl. mutation-testing the authority proof, codex,
+@claude), ordinal resolution authoritative on the non-join frontier, §5 dual-window differential
+standing (1617 entries), stress faster than pre-merge master (the `positionalTypeCache` repays the
+window overhead); see the §4 Slice 1 execution log. **Slice 2 is next: its Round-5 boxes are all
+checked; the name-burial inventory entry gate (§4 Slice 2) runs before any Slice 2 code.**
+Each staged PR re-acked on its own HEAD.
 **Origin:** RFC-164 WS-2 (correlation-completeness). PR #420 proved the WS-2 invariant is
 *blocked* on a root architectural divergence: Go resolves join columns **by name**, Java by
 **(quantifier, field ordinal)**. This RFC is the root fix.
@@ -362,13 +365,29 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   canonical interning sequence there; Slice 2 joins keep name-model dedup. The wedge therefore
   proves the ordinal **result value + positional row + ordinal predicate resolution** on live join
   plans — not interning; that residual risk moves to Slice 3, mitigated by the banked spike
-  harness. Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.
-  **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5):** before any Slice 2 code,
-  enumerate every name-keyed row producer/consumer and alias-swap site and slot each into a slice.
-  The Step 2b blocker proved these must be mapped up front, not discovered mid-slice. Known
-  candidates to sweep: `projNames` source+alias double-writes, `qualifyTypeFallback`,
-  `ambiguousColumnMarker`, the union name-recovery gates, the `RowEvalContext` param/subquery
-  frontier, `ColumnAliasMap` (already being retired by the Slice 1 precursor).
+  harness. ~~Port the correlated-scalar-subquery 2-leg seed and single-source `UNNEST` here.~~
+  **AMENDED (Graefe W4-deferral ruling, post-premise-correction): both move to Slice 3.** The
+  original sentence was written on the same false premise (translation-time LEFT opacity) the
+  W3b-1 re-ruling corrected: the correlated-scalar seed is a pre-rewrite `JoinLeftOuter` select —
+  exactly the ephemeral object the gate must not classify (RewriteOuterJoinRule dissolves it) —
+  and the unnest lowering runs on the `_N` name-emulation + RFC-142 dotted classifiers whose
+  ordinal port needs S3's collapsed FieldPaths (an S2 port would force the chained-node
+  representation the S3 representation ruling already rejected, or piecemeal-rewrite machinery S3
+  deletes). **FINALIZED S2 WEDGE SCOPE (the definitive statement): pure INNER/CROSS 2-way clusters
+  over NON-JOIN legs, plus FULL-outer boxes over non-join legs — with the W3b-2 gate-pin families
+  as the boundary proof (2-way-under-3-way name-model; flattening-evasion clean-decline;
+  GROUP-BY/HAVING-over-gated-join ordinal; dup-name SELECT *).** Everything else stays name-model
+  behind the gate until S3.
+  **Entry gate — name-burial inventory (≤1 shift, mandatory, Round 5): ✅ SATISFIED** — the
+  full two-axis enumeration lives in **`173-name-burial-inventory.md`** (~95 sites: executor
+  producers/consumers/positional-birth registry + planner/translator anchored-join machinery,
+  dotted classifiers, name identity/interning, resolver plumbing — each slotted S2/S3/S4/S6).
+  Key conclusions: the ordinal frontier dies exactly at `mergeRows`/`qualifyOuterRow`/
+  `remapUnionColumnsByPosition`/aggregate-output (S2/S3 re-birth it there and MUST extend the
+  `DisablePositionalEmission` oracle registry); `executeProjection` straddles (its name map can't
+  fully delete until S3); the `AnchoredJoin` flag is the linchpin (S2 consumes, S3 identity/
+  interning, S4 deletes — every read site enumerated). The Step 2b blocker proved these must be
+  mapped up front, not discovered mid-slice.
   **Coexistence scoping (the corrected hard part, Round 5):** the ordinal↔name boundary is NOT
   just a row-format adapter. The name model *classifies leg dependencies by dotted-name prefixes*
   (`MergeSeedLegsOfValue` reads `fv.Field[:dot]`, `value_correlation.go:47`;
@@ -391,8 +410,142 @@ validation strategy the adversarial review corrected). Effort figures are rough.
   join must plan and execute name-model-identically before/after Slice 2, and (b) the flattening
   evasion shape (`FROM (a JOIN b) t1, (c JOIN d) t2`) must stay name-model end-to-end during the
   window.
+  **IMPLEMENTATION CONTRACT (Graefe pre-code ruling, post-inventory — binding):**
+  1. *Scoping gate = form (a), the translation-time cluster-arity walk; form (b) demoted to a
+     LOUD ASSERT, never a decline.* A decline-barrier is disqualified by pin (a) itself: keeping
+     `(a JOIN b)` boxes nested changes shapes/task counts and turns the RFC-077 interning baseline
+     (Slice 3's gate) into noise. Arity algebra on the logical tree at the seed
+     (`cascades_translator.go:3374`): `arity(LogicalJoin{INNER|CROSS}) = arity(L)+arity(R)`;
+     a `LogicalScan` over a cteScope-registered non-recursive name = `arity(body)` after peeling
+     `LogicalFilter`/`LogicalProject` (SelectMergeRule merges through Project via TranslationMap,
+     `rule_select_merge.go:165-179`); outer joins (ChildrenAsSet opacity), aggregate, DISTINCT,
+     sort/limit, union, recursive CTE, existential = opaque leaf of 1. Ordinal seed iff the MAXIMAL
+     enclosing cluster has arity exactly 2; anything unclassifiable counts as >2 (fail toward
+     name-model). Because the walk shadows the rule's mergeability predicate, drift is the risk:
+     the assert lives in `SelectMergeRule`'s target loop (`:104-126`, beside the outer-opacity
+     check) — a name-model parent about to merge an ORDINAL child is a loud planner error.
+  2. *Eager representation = baked ordinal on FieldValue* (`*ResolvedAccessor{Ordinal int}`-shaped
+     marker that Slice 3 widens to a multi-accessor path). Constructor (`ofOrdinalNumber(QOV(leg), i)`)
+     derives the display name from the leg type (diagnostics/coexistence); `resolveOrdinal` returns
+     the baked value when set; **identity for BAKED nodes is (name, ordinal)** — a refinement of
+     name identity, not Slice 3's flip; baked vs lazy nodes compare UNEQUAL (worst case a missed
+     dedup, never a conflation). Rationale: construction-time-resolved *names* (option b) violate
+     the load-bearing lazy invariant after any rebuild AND cannot represent `SELECT * FROM a JOIN b`
+     with same-named leg columns — two identical `FieldValue(QOV(join),"ID")` nodes would intern as
+     ONE memo member → wrong plans; S2 makes that shape constructible for the first time, so
+     **§5's duplicate-name identity pin pulls forward into Slice 2**. Option (c) (collapsed
+     FieldPath now) drags Slice 3's compose-rule blast radius into the wedge — rejected; S2 needs
+     only single-accessor ordinals.
+  3. *`appendNullLeg` = N nil slots under the join's SINGLE merged type* (never ad-hoc per-row
+     types); symmetric for the FULL-outer inner drain (`streaming_cursors.go:877`). Java analog is
+     semantic, not structural: flatMap + `DefaultOnEmpty`, i.e. the null leg is the leg QOV bound
+     to NULL and each `ofOrdinalNumber` evaluates to NULL. In `flat_map_cursor.go:181` evaluate the
+     result value with the inner binding nil (the null extension falls out); `appendNullLeg` is the
+     NLJ-cursor primitive (`executor.go:2167` replacement), PINNED observationally equivalent to
+     evaluating the merged RC with `QOV(right)→nil`. Both are positional re-birth sites → extend
+     the `DisablePositionalEmission` oracle registry (standing obligation).
+  **Slice 2 execution log:**
+  - **W1 (baked substrate, dark) — DONE.** `FieldValue.Resolved *ResolvedAccessor{Ordinal}` +
+    `NewFieldValueOfOrdinal` (loud `OrdinalBakeError`); identity refinement per ruling #2 (baked =
+    (name, ordinal), baked-vs-lazy UNEQUAL, lazy unchanged; hash mixes the ordinal for baked only);
+    marker preserved through every copy site (withChildren / pullup / pushdown passthroughs —
+    accessor pointer SHARED, replace-never-mutate pinned in the struct comment). §5 duplicate-name
+    identity pin landed (raw `[ID,ID]` type, `ofOrdinal(0) ≠ ofOrdinal(1)`). Torvalds NAK round
+    fixed three latent holes: (1) baked node over a NAME-keyed eval context is a loud
+    `BakedNameContextError` at all seven name-read arms — `values.OracleBakedNameFallback` is the
+    single TEST-ONLY bridge (twinned with `DisablePositionalEmission` behind
+    `executor.SetNameModelOracle`, the only sanctioned write site; dies with the name map in S4);
+    (2) `pullUpThroughRecordConstructor` was a THIRD RC name-lookup consumer — now bakes the
+    matched output ordinal when the input is baked or the RC is dup-named; (3)
+    `composeFieldOverConstructor` panics (Java IndexOutOfBounds) on an out-of-range bake over its
+    OWN child RC; `PushDownValue` keeps the nil decline (external result value). Graefe ACK ×2,
+    Torvalds NAK→ACK. W3 owes: real `executor.PositionalRow` eval pin; loud fall-through for a
+    baked node over an *unrecognized* context type in `Evaluate`'s tail.
+  **W3 PRE-CODE RULING (Graefe, binding) — downstream leg references over the positional merged
+  row.** The hazard: window-era uppers reference LEGS directly (`FieldValue(QOV(A), "ID")`); a lazy
+  leg reference over the MERGED positional row derives a LEG-relative ordinal from the leg type and
+  reads the merged row at that slot — silently wrong. Ruling: **(a) LEG WINDOWS for the window,
+  (b) plan-time rebase (Java's way) as the S3/S4 end state.** (a) makes lazy-over-positional
+  CORRECT rather than forbidden — coexistence by construction, not by guard; (b) during the window
+  would partially rewrite the machinery S3 deletes. Four binding conditions:
+  1. Spans (per-leg offset/width) DERIVE from the ordinal RC at cursor construction — never stored
+     as independent authority (dual-bookkeeping disease); assert `sum(widths) == len(rc.Fields)`.
+  2. Leg windows are DECLARED WINDOW SCAFFOLDING: Java has no merged-row-with-leg-views (its
+     uppers reference the join quantifier after plan-time rewriting); the windows exist only
+     because window-era uppers still reference legs, and they DIE when uppers bake (S3 flip + S4
+     deletions). Must not ossify into "the runtime shape of quantifier bindings."
+  3. The window implements OrdinalRow COMPLETELY (Get leg-relative + GetByName leg-local) so it
+     slots into the existing evaluateCorrelated binder arm — no new eval arm, loud-miss preserved.
+  4. Red→green pin on the EXACT hazard: lazy leg ref over the merged row without windows misreads;
+     with windows reads correctly.
+  Also ruled: dedicated raw RC constructor (duplicates allowed — §5's shape is otherwise
+  unconstructible; `NewRecordConstructorValue` mangles dup names); join predicates bake to
+  (leg QOV, field ordinal) at the seed and evaluate against DIRECT per-leg bindings in the join
+  loop (no window needed); cursor detection = structural probe (`ContainsBakedOrdinal` on the
+  plan's result value, once at cursor construction — emergent from representation, nothing for S4
+  to delete; better than a plan flag); single-merged-type property pinned; both row births in the
+  oracle registry. Extra pins: spans-consistency assert; dup-named BOX-LEG shape
+  (`a JOIN (b FULL JOIN c)` — both gate; the box output is dup-named; a name-model upper
+  referencing an ambiguous leg column stays rejected/carved out since lazy GetByName over a
+  dup-named window is first-match). W3 staging: **W3a** executor substrate DARK (leg windows,
+  spans, merged-row birth behind the structural probe, appendNullLeg nil-binding evaluation,
+  oracle registry, real-PositionalRow eval pins — hand-built plans, nothing emits ordinal RCs
+  yet); **W3b** the seed flip (ordinal RC + baked predicates for gated joins) → live end-to-end +
+  the full pin batch.
+  - **W3a (executor substrate + cursor wiring, dark) — DONE** (36297a253+fd07e2f49 primitives with
+    the decline-only spans probe / seed-time assertOrdinalJoinSeed split; 140799069+139c6cb94 cursor
+    wiring with pre-adapted legs; all Graefe+Torvalds ACKed).
+  - **W3b-1 (THE LIVE FLIP) — DONE (1aca8addd), suite 54/54.** Gated 2-way joins seed the ordinal RC
+    (baked ofOrdinalNumber legs, declaration order, AssertOrdinalJoinSeed at the seed); CROSS-LEG
+    predicate conjuncts bake, single-leg conjuncts stay lazy (pushdown fodder into name-model legs —
+    sound by the load-bearing invariant: pushdown moves the predicate, never the leg type). Live
+    fallout (7 classes, 4 caught by the drift asserts) and the resulting GATE CORRECTIONS:
+    **PREMISE CORRECTION (Graefe re-ruling, W2 erratum (b) partially retracted): opacity is a
+    property of the whole rule set ACROSS PHASES, not of translation-time structure —
+    RewriteOuterJoinRule dissolves correlated LEFT boxes into INNER + null-on-empty during
+    REWRITING, after which they merge freely (the RFC-153 joined-preserved machinery IS that).**
+    Final wedge scope: pure inner/cross 2-way clusters over NON-JOIN legs + FULL-outer boxes over
+    non-join legs. LEFT/RIGHT outer = poison (S3 ordinalizes the POST-REWRITE inner+nullOnEmpty
+    shape — "the pre-rewrite LEFT box is an ephemeral object; gate where the shape is stable");
+    LEFT preserved legs ENCLOSED / null-supplying legs fresh; JOIN legs categorically ineligible
+    (nested bare concat erases buried aliases — S3 collapsed-FieldPath territory); dup leg aliases
+    poison (proper fix = Java's unique quantifier aliases, S3/S4). Re-ruling conditions landed:
+    RFC-153 shape pinned name-model e2e; RewriteOuterJoinRule-declines-FULL pinned (the gate
+    premise must fail a test before it breaks); merge assert refined to select-children (filter
+    children dissolve legally). Executor fallout: FlatMap outer binding = positional leg row (baked
+    SARGs); coexistence Datum = bare+ALIAS.COL+TYPE.COL (mergeRows' exact key set); spanAwareRow
+    dotted routing (alias-then-type); §7's dup-name SELECT * fix arrived early via driver-side
+    positional reads (column-parallel guard + Datum fallback, both pinned); dualwindow caught the
+    oracle-side bare-only Datum (oracleNameDatum reconstructs the anchored key set through the
+    sanctioned bridge; CARVE-OUTS STILL EMPTY — executor bug, not model divergence). **Graefe ACK
+    notes (both landed):** the driver-side positional read PARTIALLY DELIVERS §7's dup-name
+    SELECT * fix for 2-way joins — S4's §7 pin planning must not double-count it; the
+    bare-name-over-dup-row first-match(spanAware)-vs-last-wins(Datum) divergence is pinned
+    unconstructible (TestRFC173S2_SpanAware_BareDupName_DivergencePin — reachable only if the
+    resolver ever admits ambiguous bare references).
+  - **W2 (cluster-arity gate + drift asserts, dark) — DONE.** `rfc173_cluster_gate.go`:
+    `clusterArity` walk + `ordinalWedgeGate` recording per-seed decisions (`wedgeGate` map, W3
+    consumes); enclosure flag `inInnerCluster` threaded through translateJoin legs (inner=enclosed,
+    outer=fresh), the existential flattens (`translateJoinWithExists`/`buildExistentialSelect`/
+    `buildExistentialJoinSelect`/projected-EXISTS), the correlated-scalar 2-leg seed (both legs
+    enclosed until W4), `translateUnnestJoin` (whole subtree name-model until W4), recursive CTE
+    (blanket enclosure until S4), with `translateOp`-entry resets at opaque boundaries and
+    `translateSubqueryRef` rooting EXISTS subquery plans as fresh clusters. Drift asserts landed
+    per ruling #1: SelectMergeRule target loop panics on an ORDINAL child merging into a
+    multi-quantifier parent; `rebaseBuriedLowerReferences` panics on re-anchoring a BAKED node
+    (the re-stamp treatment Graefe requested in the W1 review). **Two deliberate errata vs the
+    contract's shorthand (both fail toward the name model; Graefe to confirm in the W2 review):**
+    (a) filter/project with exists/scalar subqueries = POISON, not opaque leaf 1 — their selects
+    DO merge (ChildrenAsSet true) and would drag existential/NullOnEmpty legs into the ≥3 partition
+    machinery; (b) outer-join boxes are gated UNCONDITIONALLY (not only at maximal-cluster arity
+    2) — they never merge either way, ruling #3 flips them in W3, and their legs root fresh
+    clusters. Pins: arity-per-shape table, flattening-evasion (gate pin (b) planner half),
+    enclosure-by-translation matrix (2-way gates; same join under 3-way does not; fresh clusters
+    under outer legs/aggregates/EXISTS subqueries gate; EXISTS outer legs don't).
 - **Slice 3 — THE HARD CORE: N-way re-enumeration + interning, ordinal/group (ATOMIC)**
-  (~3 shifts). Replace the name-based re-stamp machinery
+  (~~3~~ **4–5 shifts — resized honestly per the Graefe W4-deferral ruling: S3 additionally owns
+  the three items below that S2's premise correction displaced**). Replace the name-based re-stamp
+  machinery
   (`NewReEnumerationAnchoredRecord`/`anchoredColumnsByQuantifier`/`leftmostQOV`/`buildUpperResult`/
   `rebaseBuriedLowerReferences`) with positional rebuilds: `pullUpResultColumns` over the merge
   quantifier's flowed `Type` + a `TranslationMap` rebasing a buried leg reference to a `FieldValue`

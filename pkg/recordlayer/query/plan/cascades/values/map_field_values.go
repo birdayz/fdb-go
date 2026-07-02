@@ -270,13 +270,26 @@ func EqualsWithoutChildren(a, b Value) bool {
 	switch av := a.(type) {
 	case *FieldValue:
 		bv, ok := b.(*FieldValue)
-		// A plan-time-resolved ordinal accessor is part of the FieldPath
-		// identity (Java: ofOrdinalNumber ordinals are distinct FieldPaths) —
-		// two reads of duplicate-named output columns differ ONLY by ordinal
-		// and must not compare equal.
-		return ok && av.Field == bv.Field &&
-			av.HasResolvedOrdinal == bv.HasResolvedOrdinal &&
-			av.ResolvedOrdinal == bv.ResolvedOrdinal
+		if !ok {
+			return false
+		}
+		// RFC-173 identity refinement (§4 ruling #2): BAKED nodes
+		// (Resolved != nil) compare by (name, ordinal) — two same-named columns
+		// at different ordinals are genuinely different values and must not
+		// intern as one memo member (§5 duplicate-name pin); Java's
+		// ofOrdinalNumber ordinals are distinct FieldPaths. Baked vs lazy is
+		// UNEQUAL by contract: worst case a missed dedup, never a conflation.
+		// Lazy vs lazy stays name-only (unchanged; Slice 3 owns the full flip).
+		// FrontierPinned is deliberately NOT compared: it is an
+		// evaluation-contract marker, not a value distinction (like Java
+		// excluding name/type from ResolvedAccessor equality).
+		if (av.Resolved != nil) != (bv.Resolved != nil) {
+			return false
+		}
+		if av.Resolved != nil {
+			return av.Field == bv.Field && av.Resolved.Ordinal == bv.Resolved.Ordinal
+		}
+		return av.Field == bv.Field
 	case *ConstantValue:
 		bv, ok := b.(*ConstantValue)
 		if !ok {

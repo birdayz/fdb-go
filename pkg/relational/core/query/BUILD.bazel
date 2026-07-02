@@ -6,6 +6,8 @@ go_library(
         "cascades_translator.go",
         "exists_guard.go",
         "plan.go",
+        "rfc173_cluster_gate.go",
+        "rfc173_ordinal_seed.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/query",
     visibility = ["//visibility:public"],
@@ -26,12 +28,14 @@ go_test(
     srcs = [
         "cascades_translator_test.go",
         "plan_test.go",
+        "rfc173_cluster_gate_test.go",
     ],
     embed = [":query"],
     deps = [
         "//gen",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/query/logical",

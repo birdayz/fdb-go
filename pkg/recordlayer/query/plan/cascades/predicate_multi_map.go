@@ -813,82 +813,11 @@ func replaceUnmatchedAggregateValues(
 	})
 }
 
-// replacePredicateValues applies a Value replacement function to all
-// Value trees embedded in a predicate. Ports Java's
-// QueryPredicate.replaceValuesMaybe.
+// replacePredicateValues delegates to the exported predicates.ReplaceValues —
+// the walk moved there (RFC-173 S2) so the translator can bake gated-join leg
+// references with the identical spine: single source, no rule-vs-seed drift.
 func replacePredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
-	if p == nil {
-		return nil
-	}
-	switch pred := p.(type) {
-	case *predicates.ComparisonPredicate:
-		newOperand := values.Replace(pred.Operand, fn)
-		newCompOperand := values.Replace(pred.Comparison.Operand, fn)
-		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
-			return p
-		}
-		// Copy the whole Comparison and replace ONLY the new RHS operand,
-		// preserving Escape AND every other Comparison subclass field
-		// (ParameterName, the Text* fields, the DistanceRank vector fields).
-		// A partial {Type, Operand, Escape} reconstruction would drop the rest
-		// and change the comparison's semantics.
-		cmp := pred.Comparison
-		cmp.Operand = newCompOperand
-		return &predicates.ComparisonPredicate{
-			Operand:    newOperand,
-			Comparison: cmp,
-		}
-	case *predicates.ValuePredicate:
-		newVal := values.Replace(pred.Value, fn)
-		if newVal == pred.Value {
-			return p
-		}
-		return predicates.NewValuePredicate(newVal)
-	case *predicates.AndPredicate:
-		changed := false
-		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
-		for i, s := range pred.SubPredicates {
-			newSubs[i] = replacePredicateValues(s, fn)
-			if newSubs[i] != s {
-				changed = true
-			}
-		}
-		if !changed {
-			return p
-		}
-		return predicates.NewAnd(newSubs...)
-	case *predicates.OrPredicate:
-		changed := false
-		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
-		for i, s := range pred.SubPredicates {
-			newSubs[i] = replacePredicateValues(s, fn)
-			if newSubs[i] != s {
-				changed = true
-			}
-		}
-		if !changed {
-			return p
-		}
-		return predicates.NewOr(newSubs...)
-	case *predicates.NotPredicate:
-		newChild := replacePredicateValues(pred.Child, fn)
-		if newChild == pred.Child {
-			return p
-		}
-		return predicates.NewNot(newChild)
-	case *predicates.Placeholder:
-		newVal := values.Replace(pred.Value, fn)
-		if newVal == pred.Value {
-			return p
-		}
-		return &predicates.Placeholder{
-			ParameterAlias: pred.ParameterAlias,
-			Value:          newVal,
-			CompRange:      pred.CompRange,
-		}
-	default:
-		return p
-	}
+	return predicates.ReplaceValues(p, fn)
 }
 
 // predicateContainsUncompensatableValues reports whether a predicate

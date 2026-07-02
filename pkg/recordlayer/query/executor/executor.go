@@ -940,11 +940,22 @@ func executeFilter(
 
 	preds := p.GetPredicates()
 	needsRowCtx := hasBindingContext(evalCtx)
+	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// positional row, filter predicates evaluate under the LEG WINDOWS —
+	// computed once, from the input plan's result value.
+	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
 	filtered := &filterResultCursor{
 		inner: innerCursor,
 		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any = qr.Datum
-			if qr.Positional != nil {
+			if qr.Positional != nil && windowsOK {
+				// RFC-173 Slice 2: the merged positional row of a gated 2-way
+				// ordinal join — a window-era leg reference QOV(leg).col needs
+				// its leg window (unconditional: even with no binding context,
+				// the leg bindings are required; the bare merged row misreads
+				// leg-relative ordinals — the W3 wrong-slot hazard).
+				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
+			} else if qr.Positional != nil {
 				// RFC-173 Slice 1: the non-join frontier flows an authoritative
 				// ordinal row — resolve filter predicates by ordinal (loud on a
 				// miss, no name-map fallback).
@@ -1404,6 +1415,10 @@ func executeProjection(
 		posNames[i] = values.OutputColumnName(proj, alias)
 	}
 	projType := positionalTypeFromNames(posNames)
+	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// positional row, projections evaluate under the LEG WINDOWS — computed
+	// once, from the input plan's result value.
+	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
 	var evalErr error
 	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -1412,7 +1427,12 @@ func executeProjection(
 		projected := make(map[string]any, len(projections))
 		slots := make([]any, len(projections))
 		var rowCtx any = qr.Datum
-		if qr.Positional != nil {
+		if qr.Positional != nil && windowsOK {
+			// RFC-173 Slice 2: the merged positional row of a gated 2-way
+			// ordinal join — a window-era leg reference QOV(leg).col needs its
+			// leg window (unconditional; see executeFilter).
+			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
+		} else if qr.Positional != nil {
 			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
 			// row — resolve projections by ordinal (loud on a miss, no name-map
 			// fallback), taking precedence over the name-keyed Datum.
@@ -1975,13 +1995,17 @@ func executeFlatMap(
 		return nil, err
 	}
 
-	cursor := newFlatMapCursor(
+	cursor, err := newFlatMapCursor(
 		outerCursor, p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
 		p.IsLeftOuter(),
 		nestedProps,
 	)
+	if err != nil {
+		outerCursor.Close()
+		return nil, err
+	}
 	cursor.initialInnerCont = innerCont
 	cursor.hasPendingInner = innerCont != nil
 	cursor.pendingCheckValue = checkValue
@@ -2052,11 +2076,15 @@ func executeNestedLoopJoin(
 		return nil, err
 	}
 
-	cursor := newNLJCursor(
+	cursor, err := newNLJCursor(
 		outerCursor, innerRows,
 		p.GetJoinType(), p.GetOuterAlias(), p.GetInnerAlias(),
-		p.GetPredicates(), evalCtx, props.State,
+		p.GetPredicates(), p.GetResultValue(), evalCtx, props.State,
 	)
+	if err != nil {
+		outerCursor.Close()
+		return nil, err
+	}
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -2226,11 +2254,41 @@ func recordTypeName(qr QueryResult) string {
 }
 
 func passesJoinPredicates(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext) (bool, error) {
+	return passesJoinPredicatesLegs(combined, preds, evalCtx, nil)
+}
+
+// passesJoinPredicatesLegs is passesJoinPredicates extended with the RFC-173
+// Slice 2 ordinal-birth leg bindings. legs nil (every name-model NLJ) keeps
+// today's dispatch bit-identically. legs non-nil (an ordinal-birth cursor,
+// oracle off) evaluates the predicates against a RowEvalContext carrying the
+// DIRECT per-leg bindings (the cursor's pre-built twoLegBinder — review:
+// predicates need no windows at birth; review: legs PRE-adapted, one small
+// binder per pair, never a map or a re-adaptation): a lazy leg reference
+// QOV(leg).col resolves leg-relative against the adapted leg row (correct
+// even for the second leg), a BAKED one by its baked ordinal, an outer
+// correlation via the binder's base, and a name-model qualified-key read
+// ("A.ID", a flat FieldValue) still works via Datum.
+// legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
+// the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
+// an interface-typed param would make a typed-nil non-nil and route the name
+// model through a nil binder.
+func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext, legs *twoLegBinder) (bool, error) {
 	if len(preds) == 0 {
 		return true, nil
 	}
 	var rowCtx any = combined.Datum
-	if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
+	if legs != nil {
+		m, _ := combined.Datum.(map[string]any)
+		rc := &values.RowEvalContext{
+			Datum:        m,
+			Correlations: legs,
+		}
+		if evalCtx != nil {
+			rc.Binder = evalCtx
+			rc.ScalarSubqueries = evalCtx.scalarSubqueries
+		}
+		rowCtx = rc
+	} else if len(evalCtx.params) > 0 || len(evalCtx.scalarSubqueries) > 0 || len(evalCtx.bindings) > 0 {
 		if m, ok := combined.Datum.(map[string]any); ok {
 			rowCtx = evalCtx.RowContext(m)
 		}

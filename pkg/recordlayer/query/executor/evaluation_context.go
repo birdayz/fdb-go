@@ -107,12 +107,15 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 	return rc
 }
 
-// DisablePositionalEmission, when true, stops the row-birth sites
-// (FromStoredRecord, the covering-index cursor) from emitting the RFC-173
-// PositionalRow — recreating the pre-Slice-1 NAME model end-to-end: no
-// positional row is born, so the frontier gates (`qr.Positional != nil`) never
-// fire and every producer/consumer runs name resolution + name emission, exactly
-// the pre-flip world. It exists for ONE purpose: the §5 dual-window corpus
+// DisablePositionalEmission, when true, stops the row-birth sites — the
+// oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
+// RFC-173 Slice 2 ordinal-join births (nljCursor pairBinder/evaluateBound emission sites,
+// flatMapCursor.computeResultLegs) — from emitting the RFC-173 PositionalRow,
+// recreating the pre-Slice-1 NAME model end-to-end: no positional row is
+// born, so the frontier gates (`qr.Positional != nil`) never fire and every
+// producer/consumer runs name resolution + name emission, exactly the
+// pre-flip world. Every NEW positional birth site MUST gate on this flag and
+// be added to this list (the §4 standing obligation). It exists for ONE purpose: the §5 dual-window corpus
 // DIFFERENTIAL (ordinal result == name result row-for-row across the corpus,
 // with enumerated carve-outs), which needs the name model as a live oracle
 // during the dual-representation window (retired with the map side in Slice 4).
@@ -121,6 +124,21 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 // production pays one bool read per scanned row. Tests that flip it must own
 // the whole test binary phase (no concurrent queries in the other mode).
 var DisablePositionalEmission bool
+
+// SetNameModelOracle flips BOTH §5 name-model oracle globals together:
+// DisablePositionalEmission (suppresses the positional row at every birth
+// site) and values.OracleBakedNameFallback (lets BAKED FieldValues — RFC-173
+// S2+ eager ordinal nodes, whose name reads are otherwise loud errors —
+// resolve by display name against the name-keyed rows the suppression leaves
+// behind). The two flags share ONE meaning — "the process is running the
+// pre-RFC-173 name model" — so this setter is the only sanctioned write site
+// (review hardening: no harness can flip one without the other). Test-only;
+// callers own the whole test-binary phase. Retires with the name map in
+// Slice 4.
+func SetNameModelOracle(v bool) {
+	DisablePositionalEmission = v
+	values.OracleBakedNameFallback = v
+}
 
 // StrictReferenceCheck, when true, makes filter/projection cursors evaluate
 // QueryResult.Complete rows through a Strict RowEvalContext, so a reference to

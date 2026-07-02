@@ -428,10 +428,14 @@ func TestTranslateProject(t *testing.T) {
 
 func TestTranslateJoin(t *testing.T) {
 	t.Parallel()
-	// md is REQUIRED to translate a join: the seed result value is the
-	// source-anchored RecordConstructorValue, whose leg columns come from
-	// metadata (RFC-077 7.6). The opaque-seed fallback for the catalog-free path
-	// was retired, so a nil-md join is untranslatable (TestTranslateJoinNilMd).
+	// md is REQUIRED to translate a join (leg columns derive from metadata,
+	// RFC-077 7.6; nil-md is untranslatable — TestTranslateJoinNilMd).
+	//
+	// RFC-173 Slice 2 W3b: a MAXIMAL 2-way inner join is in the ordinal wedge
+	// — its seed result value is the ORDINAL RC (every field a BAKED
+	// ofOrdinalNumber leg reference, no AnchoredJoin flag, dup names legal),
+	// not the name-model anchored RC. The anchored seed remains for non-gated
+	// joins (3-way control below).
 	left := logical.NewScan("Order", "")
 	right := logical.NewScan("Customer", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
@@ -444,8 +448,34 @@ func TestTranslateJoin(t *testing.T) {
 		t.Fatalf("expected SelectExpression for join, got %T", ref.Members()[0])
 	}
 	rc, ok := sel.GetResultValue().(*values.RecordConstructorValue)
-	if !ok || !rc.AnchoredJoin {
-		t.Fatalf("expected source-anchored RecordConstructorValue result, got %T (anchored=%v)", sel.GetResultValue(), ok && rc.AnchoredJoin)
+	if !ok {
+		t.Fatalf("expected RecordConstructorValue result, got %T", sel.GetResultValue())
+	}
+	if rc.AnchoredJoin {
+		t.Fatal("a gated 2-way join must seed the ORDINAL RC, not the name-model anchored RC (RFC-173 S2 W3b)")
+	}
+	values.AssertOrdinalJoinSeed(rc) // panics on a malformed seed
+	for i, f := range rc.Fields {
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			t.Fatalf("ordinal seed field %d (%q) is not a baked leg reference: %T", i, f.Name, f.Value)
+		}
+	}
+
+	// Control: a 3-way inner cluster is NOT gated — its seed stays the
+	// name-model anchored RC until Slice 3 flips N-way.
+	three := logical.NewJoin(join, logical.NewScan("TypedRecord", ""), logical.JoinInner, "")
+	ref3, _ := TranslateToCascadesWithSubqueries(three, demoMetaData(t))
+	if ref3 == nil {
+		t.Fatal("expected non-nil reference for the 3-way control")
+	}
+	sel3, ok := ref3.Members()[0].(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expected SelectExpression for the 3-way, got %T", ref3.Members()[0])
+	}
+	rc3, ok := sel3.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || !rc3.AnchoredJoin {
+		t.Fatalf("a 3-way (non-gated) join must keep the anchored seed, got %T (anchored=%v)", sel3.GetResultValue(), ok && rc3.AnchoredJoin)
 	}
 }
 

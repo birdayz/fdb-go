@@ -4302,7 +4302,7 @@ func TestNLJCursor_CloseIdempotent(t *testing.T) {
 	})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
 
 	if c.IsClosed() {
 		t.Fatal("cursor should not be closed before Close()")
@@ -4330,7 +4330,7 @@ func TestNLJCursor_OnNextAfterClose(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{qr("id", int64(1))})
 	inner := []QueryResult{qr("val", int64(10))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
 	c.Close()
 
 	_, err := c.OnNext(context.Background())
@@ -4355,7 +4355,7 @@ func TestNLJCursor_EmptyInner_InnerJoin(t *testing.T) {
 		qr("id", int64(3)),
 	})
 
-	c := newNLJCursor(outer, nil, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, nil, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4373,7 +4373,7 @@ func TestNLJCursor_EmptyInner_LeftJoin(t *testing.T) {
 	}
 	outer := recordlayer.FromList(outerRows)
 
-	c := newNLJCursor(outer, nil, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, nil, plans.JoinLeftOuter, "L", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4400,7 +4400,7 @@ func TestNLJCursor_EmptyOuter_InnerJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4415,7 +4415,7 @@ func TestNLJCursor_EmptyOuter_LeftJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1))}
 
-	c := newNLJCursor(outer, inner, plans.JoinLeftOuter, "L", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinLeftOuter, "L", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4430,7 +4430,7 @@ func TestNLJCursor_EmptyOuter_CrossJoin(t *testing.T) {
 	outer := recordlayer.FromList([]QueryResult{})
 	inner := []QueryResult{qr("val", int64(1)), qr("val", int64(2))}
 
-	c := newNLJCursor(outer, inner, plans.JoinCross, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinCross, "", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4455,7 +4455,7 @@ func TestNLJCursor_InnerJoin_CrossProduct(t *testing.T) {
 		qr("b", int64(20)),
 	}
 
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", nil, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", nil, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)
@@ -4479,7 +4479,7 @@ func TestNLJCursor_InnerJoin_PredicateFilters(t *testing.T) {
 
 	// Predicate that always rejects: INNER join should produce 0 rows.
 	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)}
-	c := newNLJCursor(outer, inner, plans.JoinInner, "", "", preds, EmptyEvaluationContext(), nil)
+	c := mustNLJCursor(t, outer, inner, plans.JoinInner, "", "", preds, nil, EmptyEvaluationContext(), nil)
 	defer c.Close()
 
 	results := collectCursor(t, c)

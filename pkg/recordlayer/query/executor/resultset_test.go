@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -512,4 +513,137 @@ func TestResultSet_CloseIdempotent(t *testing.T) {
 	if rs.Next() {
 		t.Fatal("Next after Close should return false")
 	}
+}
+
+// TestResultSet_PositionalDupNameRead pins the RFC-173 §7 duplicate-name
+// `SELECT *` fix at the driver read boundary: a row carrying an ALIGNED
+// positional row (one slot per column, per-slot names matching the columns'
+// unqualified display names) reads column i from slot i-1 — so two same-named
+// columns from different join legs surface their OWN values even though the
+// name-keyed coexistence Datum is last-wins-conflated on the bare key.
+func TestResultSet_PositionalDupNameRead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// The gated 2-way ordinal join's `SELECT *` shape over a(id,name) × b(id,name):
+	// merged type [ID NAME ID NAME] (duplicates preserved — raw RecordType), the
+	// Datum derived from it is last-wins on the bare keys (datumFromPositional).
+	mergedType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
+		{Name: "ID", FieldType: values.UnknownType, Ordinal: 2},
+		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 3},
+	}}
+	pos := &PositionalRow{Type: mergedType, Slots: []any{int64(1), "alpha", int64(1), "x"}}
+	cursor := recordlayer.FromList([]QueryResult{
+		{Datum: datumFromPositional(pos), Positional: pos},
+	})
+	cols := []ColumnDef{
+		{Name: "ID", TypeName: "BIGINT"},
+		{Name: "NAME", TypeName: "STRING"},
+		{Name: "ID", TypeName: "BIGINT"},
+		{Name: "NAME", TypeName: "STRING"},
+	}
+
+	rs := NewRecordLayerResultSet(ctx, cursor, cols)
+	defer rs.Close()
+
+	if !rs.Next() {
+		t.Fatal("expected a row")
+	}
+	want := []any{int64(1), "alpha", int64(1), "x"}
+	for i, w := range want {
+		v, err := rs.Object(i + 1)
+		if err != nil {
+			t.Fatalf("Object(%d): %v", i+1, err)
+		}
+		if v != w {
+			t.Errorf("column %d = %v, want %v (per-leg positional value, not the last-wins Datum)", i+1, v, w)
+		}
+	}
+}
+
+// TestResultSet_PositionalMisalignedFallsBack pins the alignment guard: a
+// positional row whose shape does NOT match the result-set columns (count or
+// per-slot name mismatch) must be ignored — every read falls back to the
+// name-keyed Datum, today's behavior unchanged.
+func TestResultSet_PositionalMisalignedFallsBack(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	srcType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "NAME", FieldType: values.UnknownType, Ordinal: 1},
+	}}
+
+	t.Run("name_mismatch", func(t *testing.T) {
+		t.Parallel()
+		// Source row (ID, NAME) under a projection whose output column is the
+		// alias THE_ID: slot names don't match → Datum lookup wins.
+		pos := &PositionalRow{Type: srcType, Slots: []any{int64(7), "src"}}
+		cursor := recordlayer.FromList([]QueryResult{
+			{Datum: map[string]any{"THE_ID": int64(42), "LABEL": "datum"}, Positional: pos},
+		})
+		cols := []ColumnDef{
+			{Name: "THE_ID", Label: "THE_ID", TypeName: "BIGINT"},
+			{Name: "LABEL", TypeName: "STRING"},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected a row")
+		}
+		if v, _ := rs.Object(1); v != int64(42) {
+			t.Errorf("column 1 = %v, want 42 (Datum fallback on slot-name mismatch)", v)
+		}
+	})
+
+	t.Run("count_mismatch", func(t *testing.T) {
+		t.Parallel()
+		// Positional carries the full source record; columns are a subset →
+		// count mismatch → Datum lookup wins. Slot 0 (99) deliberately DIFFERS
+		// from the Datum value (7) so the assertion discriminates which read
+		// path answered (review: equal values made this pin vacuous).
+		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "src"}}
+		cursor := recordlayer.FromList([]QueryResult{
+			{Datum: map[string]any{"ID": int64(7)}, Positional: pos},
+		})
+		cols := []ColumnDef{{Name: "ID", TypeName: "BIGINT"}}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected a row")
+		}
+		if v, _ := rs.Object(1); v != int64(7) {
+			t.Errorf("column 1 = %v, want 7 (Datum fallback on slot-count mismatch)", v)
+		}
+	})
+
+	t.Run("qualified_name_leaf_matches", func(t *testing.T) {
+		t.Parallel()
+		// Label-less columns with name-model qualified Names ("A.ID") align by
+		// their bare leaf against the positional slot names. Positional values
+		// deliberately DIFFER from the Datum's (99/"pos" vs 7/"datum") so the
+		// assertions discriminate which read path answered (review
+		// full-branch catch: equal values made this pin vacuous).
+		pos := &PositionalRow{Type: srcType, Slots: []any{int64(99), "pos"}}
+		cursor := recordlayer.FromList([]QueryResult{
+			{Datum: map[string]any{"A.ID": int64(7), "A.NAME": "datum"}, Positional: pos},
+		})
+		cols := []ColumnDef{
+			{Name: "A.ID", TypeName: "BIGINT"},
+			{Name: "A.NAME", TypeName: "STRING"},
+		}
+		rs := NewRecordLayerResultSet(ctx, cursor, cols)
+		defer rs.Close()
+		if !rs.Next() {
+			t.Fatal("expected a row")
+		}
+		if v, _ := rs.Object(1); v != int64(99) {
+			t.Errorf("column 1 = %v, want 99 (the POSITIONAL read — a 7 means the Datum answered)", v)
+		}
+		if v, _ := rs.Object(2); v != "pos" {
+			t.Errorf("column 2 = %v, want pos (the POSITIONAL read — 'datum' means the Datum answered)", v)
+		}
+	})
 }

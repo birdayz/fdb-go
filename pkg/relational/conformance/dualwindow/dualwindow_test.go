@@ -43,9 +43,12 @@ import (
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
-// setDisablePositionalEmission flips the executor's §5 differential oracle
-// switch. Callers must guarantee no query is in flight (phase barrier).
-func setDisablePositionalEmission(v bool) { executor.DisablePositionalEmission = v }
+// setDisablePositionalEmission flips the §5 differential oracle switches at
+// the phase barrier (callers must guarantee no query is in flight), through
+// the ONE sanctioned write site — executor.SetNameModelOracle — which keeps
+// the emission toggle and the values-level baked-name bridge travelling
+// together (they share one meaning: "run the pre-RFC-173 name model").
+func setDisablePositionalEmission(v bool) { executor.SetNameModelOracle(v) }
 
 // clusterFilePath is set by TestMain when an FDB testcontainer is available.
 // Empty means "skip" (no Docker).

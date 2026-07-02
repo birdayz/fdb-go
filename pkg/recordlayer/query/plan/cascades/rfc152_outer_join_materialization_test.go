@@ -96,6 +96,53 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	}
 }
 
+// TestRFC173_RewriteOuterJoinDeclinesFullOuter pins that RewriteOuterJoinRule
+// yields NOTHING for a FULL OUTER SelectExpression (review re-ruling condition
+// 2 on the RFC-173 Slice 2 LEFT-OUTER poison). The fixture is deliberately the
+// EXACT shape the LEFT-OUTER test above fires on — 2 ForEach quantifiers, an
+// ON-predicate correlated to the preserved leg — with ONLY the join type
+// flipped to FULL, so the decline is attributable to the join type alone.
+//
+// This pin is load-bearing for the RFC-173 cluster-arity gate: FULL OUTER
+// boxes gate into the ordinal wedge unconditionally BECAUSE this rule never
+// rewrites them — translation-time opacity holds through all planner phases
+// (the premise the LEFT-OUTER poison re-ruling corrected: LEFT boxes DISSOLVE
+// here post-translation, so their opacity was false). Extending this rule to
+// FULL would dissolve gated FULL boxes into merge-eligible INNER selects and
+// break the gate's premise — this pin must fail BEFORE the gate does.
+func TestRFC173_RewriteOuterJoinDeclinesFullOuter(t *testing.T) {
+	t.Parallel()
+
+	aliasA := values.NamedCorrelationIdentifier("A")
+	aliasB := values.NamedCorrelationIdentifier("B")
+
+	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
+	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
+
+	// Preserved-correlated ON-predicate — the same one the LEFT-OUTER fixture
+	// fires on, so nothing but the join type can explain a decline.
+	flagField := values.NewFieldValue(values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
+	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+
+	sel := expressions.NewSelectExpressionWithJoinType(
+		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		[]expressions.Quantifier{qA, qB},
+		[]predicates.QueryPredicate{pred},
+		[]string{"A", "B"},
+		expressions.JoinFullOuter,
+	)
+	ref := expressions.InitialOf(sel)
+
+	yielded := FireExpressionRule(NewRewriteOuterJoinRule(), ref)
+	if len(yielded) != 0 {
+		t.Fatalf("RewriteOuterJoinRule yielded %d expression(s) for a FULL OUTER select, want 0 — "+
+			"the RFC-173 gate premise (FULL boxes stay opaque through all planner phases because this rule never rewrites them) is broken; "+
+			"fix the rule or re-rule the RFC-173 Slice 2 FULL-outer gating BEFORE extending the rewrite", len(yielded))
+	}
+}
+
 // --- Cost-level: the materialized NLJ vs re-scan FlatMap ordering ---
 
 // rfc152Plans builds the two competing physical plans for the preserved-only and

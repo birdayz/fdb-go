@@ -810,37 +810,27 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 	}
 }
 
-// Self-join without explicit alias — `Order JOIN Order ON ...`
-// produces two sources both named ORDER. AddSource trips
-// DuplicateAlias → addSource returns false → buildWherePredicateForJoins
-// returns false → text fallback. Pins the expected degradation
-// for an uncommon but legal shape.
-func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FallsBackToText(t *testing.T) {
+// Self-join without explicit alias — `Order JOIN Order ON ...` produces two
+// sources both named ORDER. AddSource trips DuplicateAlias → scope building
+// fails. This used to "fall back to text", which silently DROPPED the ON
+// predicate (the translator never reads OnText for predicates) — the join
+// degraded to a cross product, masked in the old pin only because its ON was
+// a tautology. The RFC-173 W3b-2 fail-closed fix (upgradeJoinOnPredicates'
+// !scopeOK path) now rejects the shape LOUDLY whenever any join carries an
+// ON expression: better no rows than wrong rows. (Java parity: duplicate
+// unaliased sources are ambiguous; unique quantifier aliases are the S3/S4
+// end state — RFC-173.)
+func TestBuildLogicalPlanWithCatalog_SelfJoinWithoutAlias_FailsClosed(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t,
 		"SELECT * FROM Order JOIN Order ON Order.order_id = Order.order_id WHERE price > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
-	if op == nil {
-		t.Fatal("buildLogicalPlanForSelectWithCatalog returned nil for self-join without alias")
+	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	if err == nil {
+		t.Fatalf("expected a loud fail-closed error for the unaliased self-join ON (silent drop = cross product), got op:\n%v", op)
 	}
-	var filter *logical.LogicalFilter
-	for cur := op; cur != nil; {
-		if f, ok := cur.(*logical.LogicalFilter); ok {
-			filter = f
-			break
-		}
-		ch := cur.Children()
-		if len(ch) != 1 {
-			break
-		}
-		cur = ch[0]
-	}
-	if filter == nil {
-		t.Fatalf("expected LogicalFilter, got tree:\n%s", op.Explain(""))
-	}
-	if filter.Predicate != nil {
-		t.Fatalf("expected text fallback for self-join without alias; Predicate=%s", filter.Predicate.Explain())
+	if !strings.Contains(err.Error(), "ON clause") {
+		t.Errorf("error should name the ON-clause drop hazard, got: %v", err)
 	}
 }
 
