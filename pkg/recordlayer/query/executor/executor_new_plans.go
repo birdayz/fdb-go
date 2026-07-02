@@ -369,6 +369,10 @@ func executePredicatesFilter(
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
 	// param/subquery/outer-binding is. When none is present, flow the bare row.
 	posNeedsCtx := hasBindingContext(evalCtx)
+	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// positional row, predicates evaluate under the LEG WINDOWS — computed
+	// once, from the input plan's result value.
+	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
@@ -377,6 +381,13 @@ func executePredicatesFilter(
 			// complete row (aggregate output) is a bug, not a NULL.
 			strict := StrictReferenceCheck && qr.Complete
 			switch {
+			case qr.Positional != nil && windowsOK:
+				// RFC-173 Slice 2: the merged positional row of a gated 2-way
+				// ordinal join — a window-era leg reference QOV(leg).col needs
+				// its leg window (unconditional: even with no binding context,
+				// the leg bindings are required; the bare merged row misreads
+				// leg-relative ordinals — the W3 wrong-slot hazard).
+				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 			case qr.Positional != nil:
 				// RFC-173 Slice 1: the non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no
@@ -458,6 +469,10 @@ func executeMap(
 		}
 		mapPosType = positionalTypeFromNames(mapPosNames)
 	}
+	// RFC-173 Slice 2: when the input flows the 2-way ordinal join's merged
+	// positional row, the result value evaluates under the LEG WINDOWS —
+	// computed once, from the input plan's result value.
+	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
 	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -465,6 +480,11 @@ func executeMap(
 		}
 		var rowCtx any = qr.Datum
 		switch {
+		case qr.Positional != nil && windowsOK:
+			// RFC-173 Slice 2: the merged positional row of a gated 2-way
+			// ordinal join — a window-era leg reference QOV(leg).col needs its
+			// leg window (unconditional; see executePredicatesFilter).
+			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
 		case qr.Positional != nil:
 			// RFC-173 Slice 1: the non-join frontier flows an authoritative ordinal
 			// row — resolve the result value by ordinal (loud on a miss, no

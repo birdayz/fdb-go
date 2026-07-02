@@ -659,6 +659,15 @@ type nljCursor struct {
 	// than silently dropping the index.
 	st       *recordlayer.ExecuteState
 	buildErr error
+
+	// birth is the RFC-173 Slice 2 ordinal-BIRTH state, probed ONCE at
+	// construction from the plan's result value (nil = name-model join,
+	// today's path bit-identically). When enabled, every emitted row
+	// additionally carries the positional merged row evaluated from the RC
+	// with per-leg bindings — DUAL emission: the name-model Datum
+	// (mergeRows/qualifyOuterRow) stays byte-identical — gated per emission
+	// on the §5 DisablePositionalEmission oracle.
+	birth *ordinalJoinBirth
 }
 
 func newNLJCursor(
@@ -667,9 +676,14 @@ func newNLJCursor(
 	joinType plans.JoinType,
 	outerAlias, innerAlias string,
 	preds []predicates.QueryPredicate,
+	resultValue values.Value,
 	evalCtx *EvaluationContext,
 	st *recordlayer.ExecuteState,
-) *nljCursor {
+) (*nljCursor, error) {
+	birth, err := newOrdinalJoinBirth(resultValue)
+	if err != nil {
+		return nil, err
+	}
 	c := &nljCursor{
 		outerInner: outer,
 		innerRows:  innerRows,
@@ -679,12 +693,27 @@ func newNLJCursor(
 		preds:      preds,
 		evalCtx:    evalCtx,
 		st:         st,
+		birth:      birth,
 	}
 	if joinType == plans.JoinFullOuter {
 		c.matchedInner = make([]bool, len(innerRows))
 	}
 	c.tryBuildHashIndex(innerAlias)
-	return c
+	return c, nil
+}
+
+// ordinalBirthLegs adapts the current (outer, inner) leg rows for an
+// ordinal-birth emission — nil when this cursor is name-model or the §5
+// oracle suppresses positional emission (then the predicate path and the
+// emitted rows are bit-identical to today). A nil QueryResult pointer is the
+// NULL leg (LEFT/FULL padding). The adapted legs are shared between the
+// predicate context (passesJoinPredicatesLegs) and the birth (evaluateLegs)
+// so each candidate row pair is adapted exactly once.
+func (c *nljCursor) ordinalBirthLegs(outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, error) {
+	if !c.birth.enabled() || DisablePositionalEmission {
+		return nil, nil
+	}
+	return c.birth.legRows(c.outerAlias, c.innerAlias, outer, inner)
 }
 
 // tryBuildHashIndex attempts to build a hash index on the inner rows
@@ -873,10 +902,22 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 						// innerAlias and leaves the outer columns absent, so
 						// downstream qualified refs to the outer side resolve
 						// to NULL.
-						return recordlayer.NewResultWithValue(
-							qualifyOuterRow(c.innerRows[i], c.innerAlias),
-							nonEndContinuation,
-						), nil
+						qr := qualifyOuterRow(c.innerRows[i], c.innerAlias)
+						// RFC-173 S2: ordinal birth of the drain row — the
+						// OUTER leg is the NULL leg (nil pointer), symmetric
+						// to the unmatched-outer emission below.
+						legs, lerr := c.ordinalBirthLegs(nil, &c.innerRows[i])
+						if lerr != nil {
+							return recordlayer.RecordCursorResult[QueryResult]{}, lerr
+						}
+						if legs != nil {
+							pos, berr := c.birth.evaluateLegs(legs, correlationBase(c.evalCtx))
+							if berr != nil {
+								return recordlayer.RecordCursorResult[QueryResult]{}, berr
+							}
+							qr.Positional = pos
+						}
+						return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
 					}
 				}
 				return recordlayer.NewResultNoNext[QueryResult](
@@ -925,7 +966,15 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				innerRow := c.innerRows[idx]
 				c.innerIdx++
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				passes, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				// RFC-173 S2: for an ordinal-birth cursor the predicate row
+				// context carries the per-leg bindings (legs nil = today's
+				// path bit-identically); the same adapted legs then birth the
+				// positional row on a pass.
+				birthLegs, lerr := c.ordinalBirthLegs(c.currentOuter, &innerRow)
+				if lerr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, lerr
+				}
+				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, birthLegs)
 				if perr != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, perr
 				}
@@ -938,6 +987,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.outerMatched = true
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
+					if birthLegs != nil {
+						pos, berr := c.birth.evaluateLegs(birthLegs, correlationBase(c.evalCtx))
+						if berr != nil {
+							return recordlayer.RecordCursorResult[QueryResult]{}, berr
+						}
+						combined.Positional = pos
+					}
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
 				}
 				if c.currentOuter == nil {
@@ -955,7 +1011,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 				c.innerIdx++
 
 				combined := mergeRows(*c.currentOuter, innerRow, c.outerAlias, c.innerAlias)
-				passes, perr := passesJoinPredicates(combined, c.preds, c.evalCtx)
+				// RFC-173 S2: same ordinal-birth dual emission as the hash
+				// path above (legs nil = today's path bit-identically).
+				birthLegs, lerr := c.ordinalBirthLegs(c.currentOuter, &innerRow)
+				if lerr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, lerr
+				}
+				passes, perr := passesJoinPredicatesLegs(combined, c.preds, c.evalCtx, birthLegs)
 				if perr != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, perr
 				}
@@ -969,6 +1031,13 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 
 				switch c.joinType {
 				case plans.JoinInner, plans.JoinLeftOuter, plans.JoinCross, plans.JoinFullOuter:
+					if birthLegs != nil {
+						pos, berr := c.birth.evaluateLegs(birthLegs, correlationBase(c.evalCtx))
+						if berr != nil {
+							return recordlayer.RecordCursorResult[QueryResult]{}, berr
+						}
+						combined.Positional = pos
+					}
 					return recordlayer.NewResultWithValue(combined, nonEndContinuation), nil
 				}
 				if c.currentOuter == nil {
@@ -988,9 +1057,23 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 		if !matched {
 			switch c.joinType {
 			case plans.JoinLeftOuter, plans.JoinFullOuter:
-				return recordlayer.NewResultWithValue(
-					qualifyOuterRow(outerRow, c.outerAlias), nonEndContinuation,
-				), nil
+				qr := qualifyOuterRow(outerRow, c.outerAlias)
+				// RFC-173 S2: ordinal birth of the null-padded row — the
+				// INNER leg is the NULL leg (nil pointer): the RC evaluates
+				// with QOV(inner)→nil and the inner slots fall out NULL
+				// (contract ruling #3's appendNullLeg equivalence).
+				legs, lerr := c.ordinalBirthLegs(&outerRow, nil)
+				if lerr != nil {
+					return recordlayer.RecordCursorResult[QueryResult]{}, lerr
+				}
+				if legs != nil {
+					pos, berr := c.birth.evaluateLegs(legs, correlationBase(c.evalCtx))
+					if berr != nil {
+						return recordlayer.RecordCursorResult[QueryResult]{}, berr
+					}
+					qr.Positional = pos
+				}
+				return recordlayer.NewResultWithValue(qr, nonEndContinuation), nil
 			}
 		}
 	}

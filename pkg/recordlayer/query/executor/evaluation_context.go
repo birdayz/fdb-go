@@ -107,12 +107,15 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 	return rc
 }
 
-// DisablePositionalEmission, when true, stops the row-birth sites
-// (FromStoredRecord, the covering-index cursor) from emitting the RFC-173
-// PositionalRow — recreating the pre-Slice-1 NAME model end-to-end: no
-// positional row is born, so the frontier gates (`qr.Positional != nil`) never
-// fire and every producer/consumer runs name resolution + name emission, exactly
-// the pre-flip world. It exists for ONE purpose: the §5 dual-window corpus
+// DisablePositionalEmission, when true, stops the row-birth sites — the
+// oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
+// RFC-173 Slice 2 ordinal-join births (nljCursor.ordinalBirthLegs,
+// flatMapCursor.computeResultLegs) — from emitting the RFC-173 PositionalRow,
+// recreating the pre-Slice-1 NAME model end-to-end: no positional row is
+// born, so the frontier gates (`qr.Positional != nil`) never fire and every
+// producer/consumer runs name resolution + name emission, exactly the
+// pre-flip world. Every NEW positional birth site MUST gate on this flag and
+// be added to this list (the §4 standing obligation). It exists for ONE purpose: the §5 dual-window corpus
 // DIFFERENTIAL (ordinal result == name result row-for-row across the corpus,
 // with enumerated carve-outs), which needs the name model as a live oracle
 // during the dual-representation window (retired with the map side in Slice 4).

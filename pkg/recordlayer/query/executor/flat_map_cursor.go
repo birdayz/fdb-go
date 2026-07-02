@@ -39,6 +39,16 @@ type flatMapCursor struct {
 	outerExhausted bool
 	closed         bool
 
+	// birth is the RFC-173 Slice 2 ordinal-BIRTH state, probed ONCE at
+	// construction from resultValue (nil = name-model flatMap, today's path
+	// bit-identically). When enabled, computeResult births the positional
+	// row from the RC with per-leg bindings and derives the coexistence
+	// Datum FROM it (datumFromPositional) — the RC's baked references can no
+	// longer evaluate over name contexts. Gated per emission on the §5
+	// DisablePositionalEmission oracle (which falls back to today's Evaluate
+	// path, bridged by values.OracleBakedNameFallback).
+	birth *ordinalJoinBirth
+
 	// Continuation state for cross-transaction resume.
 	priorOuterContinuation recordlayer.RecordCursorContinuation
 	lastOuterContinuation  recordlayer.RecordCursorContinuation
@@ -56,7 +66,11 @@ func newFlatMapCursor(
 	resultValue values.Value,
 	leftOuter bool,
 	props recordlayer.ExecuteProperties,
-) *flatMapCursor {
+) (*flatMapCursor, error) {
+	birth, err := newOrdinalJoinBirth(resultValue)
+	if err != nil {
+		return nil, err
+	}
 	return &flatMapCursor{
 		outerCursor: outerCursor,
 		innerPlan:   innerPlan,
@@ -67,7 +81,8 @@ func newFlatMapCursor(
 		resultValue: resultValue,
 		leftOuter:   leftOuter,
 		props:       props,
-	}
+		birth:       birth,
+	}, nil
 }
 
 func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -111,8 +126,11 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 			}
 
 			// LEFT OUTER: emit outer row with NULLs when inner had no match.
+			// The nil inner pointer is the RFC-173 NULL leg for an
+			// ordinal-birth cursor; the name-model path reconstructs the
+			// empty-Datum inner row (bit-identical to before).
 			if c.leftOuter && !c.innerHadMatch {
-				outputRow, err := c.computeResult(*c.currentOuter, QueryResult{Datum: map[string]any{}})
+				outputRow, err := c.computeResultLegs(*c.currentOuter, nil)
 				if err != nil {
 					return recordlayer.RecordCursorResult[QueryResult]{}, err
 				}
@@ -179,6 +197,32 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 //	computed = resultValue.eval(store, nestedContext)
 //	return inheritOuter ? outerResult.withComputed(computed) : QueryResult.ofComputed(computed)
 func (c *flatMapCursor) computeResult(outerRow, innerRow QueryResult) (QueryResult, error) {
+	return c.computeResultLegs(outerRow, &innerRow)
+}
+
+// computeResultLegs is computeResult with the inner leg as a pointer: nil is
+// the LEFT-OUTER null-inner emission. For an ordinal-birth cursor (RFC-173
+// S2, oracle off) it births the positional row from the RC with per-leg
+// bindings — the nil inner pointer becomes the NULL leg (QOV(inner)→nil,
+// contract ruling #3) — and derives the coexistence Datum FROM the positional
+// row (datumFromPositional, last-wins on duplicate names): evaluating an
+// ordinal RC over the name-model row context would hit baked references over
+// name reads, a loud BakedNameContextError. Name-model cursors (and the §5
+// oracle, where values.OracleBakedNameFallback bridges the baked reads) keep
+// today's Evaluate path bit-identically, reconstructing the empty-Datum inner
+// row for the null-inner emission.
+func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResult) (QueryResult, error) {
+	if c.birth.enabled() && !DisablePositionalEmission {
+		pos, err := c.birth.evaluate(c.outerAlias.Name(), c.innerAlias.Name(), &outerRow, inner, correlationBase(c.evalCtx))
+		if err != nil {
+			return QueryResult{}, err
+		}
+		return QueryResult{Datum: datumFromPositional(pos), Positional: pos}, nil
+	}
+	innerRow := QueryResult{Datum: map[string]any{}}
+	if inner != nil {
+		innerRow = *inner
+	}
 	// Build evaluation context with both correlations bound.
 	outerDatum, _ := outerRow.Datum.(map[string]any)
 	// The inner binding is the RAW inner Datum, not a forced map cast. A

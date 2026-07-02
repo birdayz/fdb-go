@@ -55,6 +55,7 @@ go_test(
         "positional_row_test.go",
         "resultset_test.go",
         "rfc173_ordinal_join_test.go",
+        "rfc173_ordinal_join_wiring_test.go",
         "rfc173_projection_shadow_test.go",
         "rfc173_slice1_authority_test.go",
         "vector_index_scan_integration_test.go",
@@ -94,6 +95,7 @@ go_test(
         "rfc173_projection_shadow_test.go",
         "rfc173_ordinal_join.go",
         "rfc173_ordinal_join_test.go",
+        "rfc173_ordinal_join_wiring_test.go",
     ],
     deps = [
         "//gen",
