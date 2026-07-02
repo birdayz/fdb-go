@@ -12706,6 +12706,65 @@ func SeedRunCorpus() []RunQuery {
 			Query: "WITH RECURSIVE walk AS (SELECT id, next, label FROM T_DSC_14 WHERE id = 1 UNION ALL SELECT t.id, t.next, t.label FROM walk, T_DSC_14 AS t WHERE t.id = walk.next) SELECT count(*) FROM walk",
 		},
 		{
+			// Recursive branch ALIASES its computed column (`SELECT n + 1 AS n`)
+			// — distinct from `recursive_cte_depth_counter`, which is alias-free.
+			// The alias renames the leg's positional-frontier slot (RFC-173:
+			// posNames is alias-preferring), so the leg-normalization wrap must
+			// re-read by the ALIAS, not the computed rendering "(N + 1)" — the
+			// pre-fix read was a loud OrdinalResolutionError in ordinal mode and
+			// works only by Datum-double-keying in name mode (review P2, RFC-173
+			// Slice-1 follow-up).
+			Name:           "recursive_cte_aliased_computed_branch",
+			SchemaTemplate: "CREATE TABLE T_RCA1 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCA1 VALUES (1)"},
+			Query:          "WITH RECURSIVE c AS (SELECT id AS n FROM T_RCA1 UNION ALL SELECT n + 1 AS n FROM c WHERE n < 10) SELECT count(*) FROM c",
+		},
+		{
+			// Explicit CTE column list RENAMES a seed that carries its own
+			// alias (`c(v)` over `SELECT id AS x`): the seed-normalization wrap
+			// fires and must re-read the seed by its emitted alias X (the
+			// positional slot name), not the source column ID (same review-P2
+			// class as above, seed-side). Annotated JavaErrorsGoCorrect: Java's
+			// recursive-CTE inner type carries the SEED names only (the column
+			// list applies to the union's OUTPUT), so Java can't see `v` inside
+			// the recursive branch; Go exposes it Postgres-style.
+			Name:           "recursive_cte_column_list_renames_aliased_seed",
+			SchemaTemplate: "CREATE TABLE T_RCA2 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCA2 VALUES (1)"},
+			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA2 UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT count(*) FROM c",
+		},
+		{
+			// REVERSE direction of the entry above (reviewer's required probe on
+			// PR #446): the recursive body references the seed's INNER alias
+			// `x`, not the column-list name `v`. Confirmed empirically:
+			// Java's recursive-CTE inner type carries the SEED's output names
+			// (X), so Java resolves `x` and runs the recursion; Go's
+			// normalization exposes the column-list names (V) inside the body
+			// per Postgres (the column list renames the CTE's columns for ALL
+			// references — PG rejects `x` here too), so Go rejects with a
+			// plan-time 42703. Annotated JavaSucceedsGoRejects.
+			Name:           "recursive_cte_body_references_seed_alias",
+			SchemaTemplate: "CREATE TABLE T_RCA3 (id BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCA3 VALUES (1)"},
+			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA3 UNION ALL SELECT x + 1 FROM c WHERE x < 5) SELECT count(*) FROM c",
+		},
+		{
+			// DUPLICATE output aliases in the recursive leg (review P2 on PR
+			// #446): `SELECT a + 1 AS x, b + 1 AS x` emits two slots BOTH
+			// named X, and any name-based re-read collapses them (positional
+			// GetByName is first-match, the Datum map is last-wins) — the
+			// second column silently copied the first. The leg-normalization
+			// wrap reads by ORDINAL (values.NewFieldValueWithResolvedOrdinal —
+			// Java's FieldValue.ofOrdinalNumber model), so each read hits its
+			// own slot. sum(b) is value-sensitive: 10+11+12=33 only if b
+			// advances independently of a (a-copies-b bug: 15; early-stall
+			// bug: 21).
+			Name:           "recursive_cte_duplicate_alias_branch",
+			SchemaTemplate: "CREATE TABLE T_RCA4 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+			SetupSqls:      []string{"INSERT INTO T_RCA4 VALUES (1, 10)"},
+			Query:          "WITH RECURSIVE c AS (SELECT id AS a, v AS b FROM T_RCA4 UNION ALL SELECT a + 1 AS x, b + 1 AS x FROM c WHERE a < 3) SELECT sum(b) FROM c",
+		},
+		{
 			// Single CTE with WHERE-narrowed body, then outer
 			// projection re-narrows further before counting. Pins the
 			// `WITH x AS (SELECT ...) SELECT count(*) FROM x WHERE ...`

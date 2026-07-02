@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"io"
 	"strconv"
+	"strings"
 )
 
 // SemanticHashCode returns an ALIAS-INVARIANT structural hash of a Value: the
@@ -105,7 +106,19 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, f.Name+",")
 		}
 	case *FieldValue:
-		_, _ = io.WriteString(h, "field:"+t.Field)
+		// '#' in the raw field text is doubled — same escape as ExplainValue's
+		// FieldValue arm — so the '#<ordinal>' discriminator below cannot
+		// collide with a field literally named "X#0" (quoted identifiers may
+		// contain '#'). A collision here is only a hash-bucket share (equality
+		// stays sound), but keeping the discriminator injective mirrors the
+		// rendering-keyed plan identity.
+		_, _ = io.WriteString(h, "field:"+strings.ReplaceAll(t.Field, "#", "##"))
+		// A plan-time-resolved ordinal accessor is part of the FieldPath
+		// identity (mirrors EqualsWithoutChildren): reads of duplicate-named
+		// output columns differ only by ordinal.
+		if t.HasResolvedOrdinal {
+			_, _ = fmt.Fprintf(h, "#%d", t.ResolvedOrdinal)
+		}
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).
 	case *ConstantValue:

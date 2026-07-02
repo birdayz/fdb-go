@@ -556,6 +556,79 @@ func TestProjectionPlan_Construction(t *testing.T) {
 	}
 }
 
+// TestProjectionPlan_Identity_ResolvedOrdinal pins plan-level identity for
+// plan-time-resolved ordinal accessors (review round-2 on PR #446): two
+// projection plans whose reads differ ONLY by resolved ordinal (the
+// recursive-CTE duplicate-alias wrap — two slots both named X) must NOT be
+// memo-identical. Plan identity is keyed on ExplainValue renderings, so the
+// rendering carries the ordinal ("X#0"/"X#1", Java's FieldPath `#ordinal`
+// syntax) — rendering both as bare "X" unified the alternatives, and
+// extraction could pick the plan reading the WRONG slot.
+func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	// Reads of slot 0 and slot 1 of a duplicate-named [X, X] row.
+	read01 := []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
+		values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType),
+	}
+	read00 := []values.Value{
+		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
+		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
+	}
+	p01 := NewRecordQueryProjectionPlanWithAliases(read01, []string{"A", "B"}, inner)
+	p00 := NewRecordQueryProjectionPlanWithAliases(read00, []string{"A", "B"}, inner)
+
+	// The renderings carry the ordinal — the identity discriminator.
+	if !strings.Contains(p01.Explain(), "X#0") || !strings.Contains(p01.Explain(), "X#1") {
+		t.Fatalf("explain must render resolved ordinals (X#0, X#1), got %q", p01.Explain())
+	}
+	if p01.EqualsWithoutChildren(p00) {
+		t.Fatal("plans reading (slot0,slot1) vs (slot0,slot0) must NOT compare equal — memo unification would let extraction pick the wrong slot")
+	}
+	if p01.HashCodeWithoutChildren() == p00.HashCodeWithoutChildren() {
+		t.Fatal("plans reading (slot0,slot1) vs (slot0,slot0) must not hash equal")
+	}
+
+	// Same reads ⟹ equal and hash-equal.
+	p01b := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{
+			values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
+			values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType),
+		}, []string{"A", "B"}, inner)
+	if !p01.EqualsWithoutChildren(p01b) {
+		t.Fatal("identical ordinal reads must compare equal")
+	}
+	if p01.HashCodeWithoutChildren() != p01b.HashCodeWithoutChildren() {
+		t.Fatal("identical ordinal reads must hash equal")
+	}
+}
+
+// TestProjectionPlan_Identity_OrdinalVsLiteralHashField pins the '#'-escape
+// (review round-3 on PR #446): a quoted identifier may legally contain '#', so
+// a plan projecting a plain NAME-read of a field literally named "X#0" must
+// not be memo-identical to a plan projecting an ORDINAL read of X at slot 0 —
+// pre-escape both rendered "X#0" and the ExplainValue-keyed identity unified
+// them. The raw field text is '#'-doubled ("X##0"), making the identity
+// injective over (field text, ordinal).
+func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
+	t.Parallel()
+	inner := stub("Inner")
+	ordinalPlan := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType)},
+		[]string{"A"}, inner)
+	literalPlan := NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{values.NewFlatFieldValue("X#0", values.UnknownType)},
+		[]string{"A"}, inner)
+
+	if ordinalPlan.EqualsWithoutChildren(literalPlan) {
+		t.Fatal("ordinal read of X@0 and a name-read of a field literally named X#0 must NOT compare equal")
+	}
+	if ordinalPlan.HashCodeWithoutChildren() == literalPlan.HashCodeWithoutChildren() {
+		t.Fatal("ordinal read of X@0 and a name-read of field X#0 must not hash equal")
+	}
+}
+
 func TestProjectionPlan_GetResultType(t *testing.T) {
 	t.Parallel()
 	p := NewRecordQueryProjectionPlan(nil, stub("X"))

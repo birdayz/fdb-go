@@ -59,6 +59,26 @@ func (p *RecordQueryProjectionPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{p.inner}
 }
 
+// EqualsWithoutChildren compares the projection lists by their ExplainValue
+// renderings. For this to be a sound identity, the rendering must carry every
+// semantic discriminator a projected Value has — in particular a plan-time-
+// resolved ordinal accessor (values.NewFieldValueWithResolvedOrdinal, the
+// recursive-CTE duplicate-alias wrap) renders as "X#0"/"X#1" (Java's FieldPath
+// `#ordinal` syntax), because two reads of duplicate-named slots differ ONLY by
+// ordinal: rendering both as "X" memo-unified projection alternatives that
+// read DIFFERENT slots, so extraction could pick the wrong one (review round-2
+// on PR #446).
+//
+// NOTE(Java alignment): Java keys plan identity SEMANTICALLY
+// (RecordQueryMapPlan.equalsWithoutChildren → semanticEqualsForResults;
+// planHash → FieldPath whose ResolvedAccessor identity is the ordinal), never
+// via explain strings. Switching Go to values.SemanticEqualsUnderAliasMap /
+// SemanticHashCode here is blocked by pre-existing TYPE-ONLY equality arms
+// (EqualsWithoutChildren's DistanceRowNumberValue / RowNumberValue / RankValue
+// cases ignore Metric/EfSearch/rank config), which would unify physical
+// alternatives that genuinely differ (TestVectorPlan_TighterOuterLimitDoesNotFold
+// regressed: SinkLimit's fold/decline variants merged, wrong winner). Tighten
+// those arms first, then this can move to the semantic helpers.
 func (p *RecordQueryProjectionPlan) EqualsWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryProjectionPlan)
 	if !ok {

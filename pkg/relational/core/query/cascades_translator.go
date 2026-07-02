@@ -4030,41 +4030,74 @@ func extractOutputProjectionNames(op logical.LogicalOperator) []string {
 // memory budget is calibrated to (an alias override leaks the qualified keys
 // into the temp rows: TestFDB_RFC130_RecursiveCTE_NoDoubleCharge regressed).
 func normalizeLegToOutputColumns(leg expressions.RelationalExpression, legCols, outCols []string) expressions.RelationalExpression {
+	physNames, fromProjection := legPhysicalOutputNames(leg, legCols)
 	return expressions.NewLogicalProjectionExpressionWithAliases(
-		recursiveRemapValues(legPhysicalOutputNames(leg, legCols)),
+		recursiveRemapValues(physNames, fromProjection),
 		append([]string(nil), outCols...),
 		expressions.ForEachQuantifier(expressions.InitialOf(leg)),
 	)
 }
 
 // legPhysicalOutputNames returns a recursive-CTE leg's PHYSICAL output column
-// names — the keys its top projection actually emits, via the shared
-// values.ProjectionColumnName naming contract — falling back to the LOGICAL
-// names when the leg's top expression is not a projection (bare-column shapes,
-// where the two coincide; a computed column under a non-projection top would
-// loud-error under ordinal resolution, which the §5 dual-window differential
-// watches for).
-func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) []string {
+// names — the keys its top projection actually emits — plus whether they came
+// from the leg's own top PROJECTION (read i ↔ emitted slot i by construction,
+// enabling ordinal reads in the wrap). Falls back to the LOGICAL names when
+// the leg's top expression is not a projection (bare-column shapes, where the
+// two coincide; a computed column under a non-projection top would loud-error
+// under ordinal resolution, which the §5 dual-window differential watches for).
+//
+// The names come from the shared values.OutputColumnName authority — the SAME
+// rule executeProjection uses for the emitted positional row's slot names
+// (upper-cased ALIAS when the projected column carries one, else the
+// values.ProjectionColumnName rendering; RFC-173 §4 Slice 1: posNames is
+// alias-preferring) — so an aliased leg on the positional frontier
+// (`SELECT v + 1 AS v`, or a seed `SELECT id AS x` renamed by an explicit CTE
+// column list) is re-read by the alias the executor actually writes. Reading
+// the source/computed rendering there is a GetByName miss and the ordinal
+// model is loud on a miss by design: OrdinalResolutionError on a valid
+// recursive CTE (review P2, Slice-1 follow-up). The name-keyed Datum stores the
+// alias key alongside the source key, so the alias also resolves on the
+// off-frontier (join-body) name path — one read name valid on both models.
+func legPhysicalOutputNames(leg expressions.RelationalExpression, logicalCols []string) ([]string, bool) {
 	lp, ok := leg.(*expressions.LogicalProjectionExpression)
 	if !ok || len(lp.GetProjectedValues()) != len(logicalCols) {
-		return logicalCols
+		return logicalCols, false
 	}
+	aliases := lp.GetAliases()
 	out := make([]string, len(logicalCols))
 	for i, v := range lp.GetProjectedValues() {
-		out[i] = values.ProjectionColumnName(v)
+		alias := ""
+		if i < len(aliases) {
+			alias = aliases[i]
+		}
+		out[i] = values.OutputColumnName(v, alias)
 	}
-	return out
+	return out, true
 }
 
 // recursiveRemapValues builds the read-side Values for a recursive-CTE leg's
-// normalization projection (the non-projection-top fallback of
-// normalizeLegToOutputColumns). Each source column becomes a FieldValue: a dotted
+// normalization projection. Each source column becomes a FieldValue: a dotted
 // reference (a join body's "B.ID") reads the QUALIFIED datum key via a
 // QuantifiedObjectValue child while projectionColumnName returns the BARE field,
 // so a qualified key is never persisted into the temp table (a qualified key
 // would collide with the next recursion level's same-qualified join side and
 // stall the recursion one level early). A bare column reads the bare key.
-func recursiveRemapValues(cols []string) []values.Value {
+//
+// When the names came from the leg's own top projection (ordinalReads), a bare
+// read ALSO carries a plan-time-resolved ordinal accessor (read i ↔ the leg's
+// emitted positional slot i by construction — Java's FieldValue.ofOrdinalNumber
+// model, which RFC-173 §4 Slice 1 makes authoritative on the frontier). The
+// ordinal read is what makes DUPLICATE output aliases sound: `SELECT a+1 AS x,
+// b+1 AS x` emits two slots both named X, and every name-based resolution
+// collapses them (positional GetByName is first-match; the name-keyed Datum is
+// last-wins) — a silent second-column-copies-first wrong result (review P2 on
+// PR #446). By ordinal each read hits its own slot; the field NAME is kept for
+// the off-frontier Datum path, where a merged join row is name-keyed (and a
+// projection over a join is never on the positional frontier, so the dotted
+// QOV reads below never need ordinals). Non-projection legs (ordinalReads
+// false: scan-top star seeds, multi-branch unions) keep pure name reads —
+// their columns are table columns, which cannot be duplicate-named.
+func recursiveRemapValues(cols []string, ordinalReads bool) []values.Value {
 	out := make([]values.Value, len(cols))
 	for i, c := range cols {
 		cu := strings.ToUpper(c)
@@ -4074,6 +4107,8 @@ func recursiveRemapValues(cols []string) []values.Value {
 				Typ:   values.UnknownType,
 				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(cu[:dot])),
 			}
+		} else if ordinalReads {
+			out[i] = values.NewFieldValueWithResolvedOrdinal(cu, i, values.UnknownType)
 		} else {
 			out[i] = &values.FieldValue{Field: cu, Typ: values.UnknownType}
 		}

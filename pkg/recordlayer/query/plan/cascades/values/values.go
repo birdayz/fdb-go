@@ -186,6 +186,22 @@ type FieldValue struct {
 	Field string
 	Typ   Type
 	Child Value // base value (nil = legacy flat field reference)
+	// ResolvedOrdinal (+HasResolvedOrdinal) is an optional PLAN-TIME-resolved
+	// ordinal accessor — Java's FieldValue.ofOrdinalNumber, where the FieldPath
+	// element IS an ordinal and runtime access is positional. When set,
+	// resolveOrdinal returns it directly, so an ordinal-frontier read is
+	// row.Get(ordinal) — position-preserving by construction, and therefore
+	// sound under DUPLICATE output names, which every name-based resolution
+	// collapses (RecordType.FieldIndex is first-match; the name-keyed Datum is
+	// last-wins). Off the frontier (name-keyed rows) Field still names the read
+	// key, so one Value works under both row models during the RFC-173
+	// coexistence window. Set by the recursive-CTE leg-normalization wrap for
+	// reads over a projection-top leg (read i ↔ emitted slot i by construction).
+	// Part of the Value's semantic identity (EqualsWithoutChildren /
+	// SemanticHashCode), matching Java where two different ordinal accessors
+	// are different FieldPaths.
+	ResolvedOrdinal    int
+	HasResolvedOrdinal bool
 }
 
 func (f *FieldValue) Children() []Value {
@@ -434,6 +450,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 // perturb planning. The nil-Child leaf (legacy flat field, no child type to
 // resolve against) is the case that stays on the name path — see RFC-173 §4 P1.
 func (f *FieldValue) resolveOrdinal() (int, bool) {
+	// A plan-time-resolved ordinal accessor (Java FieldValue.ofOrdinalNumber)
+	// is authoritative: positional by construction, duplicate-name-proof.
+	if f.HasResolvedOrdinal {
+		return f.ResolvedOrdinal, true
+	}
 	if f.Child == nil {
 		return 0, false
 	}
@@ -458,6 +479,17 @@ func NewFieldValue(child Value, field string, typ Type) *FieldValue {
 // flat model).
 func NewFlatFieldValue(field string, typ Type) *FieldValue {
 	return &FieldValue{Field: field, Typ: typ}
+}
+
+// NewFieldValueWithResolvedOrdinal constructs a flat FieldValue carrying a
+// plan-time-resolved ordinal accessor — Java's FieldValue.ofOrdinalNumber. On
+// an ordinal-frontier row the read is row.Get(ordinal) (positional by
+// construction, duplicate-name-proof); on a name-keyed row it reads by field
+// name exactly like NewFlatFieldValue. Distinct from NewOrdinalFieldValue,
+// which is a NAME encoding (`_<ordinal>` Datum key) for anonymous
+// WITH-ORDINALITY fields, not positional access.
+func NewFieldValueWithResolvedOrdinal(field string, ordinal int, typ Type) *FieldValue {
+	return &FieldValue{Field: field, Typ: typ, ResolvedOrdinal: ordinal, HasResolvedOrdinal: true}
 }
 
 // NewOrdinalFieldValue accesses a record field by ORDINAL position,
@@ -606,6 +638,23 @@ func ProjectionColumnName(v Value) string {
 	return strings.ToUpper(ExplainValue(v))
 }
 
+// OutputColumnName is the projection OUTPUT-name authority: the name that keys
+// the emitted positional row's slot for a projected column (executeProjection's
+// posNames) and therefore the name any downstream re-reader must use on the
+// ordinal frontier — the upper-cased ALIAS when the column carries one, else
+// the ProjectionColumnName rendering. It lives here so every site derives the
+// name from ONE rule instead of a hand-synchronized copy: the RFC-173 Slice-1
+// alias-frontier bug was exactly two copies of this rule disagreeing (the
+// executor wrote alias-preferring slot names while the recursive-CTE leg wrap
+// re-read by ProjectionColumnName alone — a loud OrdinalResolutionError on
+// valid SQL, no fallback by design). Both sites now delegate here.
+func OutputColumnName(v Value, alias string) string {
+	if alias != "" {
+		return strings.ToUpper(alias)
+	}
+	return ProjectionColumnName(v)
+}
+
 // ExplainValue renders a Value as a readable expression string.
 // Free function rather than a Value-interface method so existing
 // third-party Value impls (once the port grows) don't have to
@@ -634,10 +683,34 @@ func ExplainValue(v Value) string {
 		}
 		return valueLiteralString(cv.Value)
 	case *FieldValue:
+		// The raw field text has '#' DOUBLED so the '#<ordinal>' suffix below is
+		// unambiguous BY CONSTRUCTION: a quoted identifier may legally contain
+		// '#' (the lexer's DOUBLE_QUOTE_ID accepts any non-quote character), so
+		// without the escape a plain name-read of a field literally named "X#0"
+		// rendered identically to an ordinal read of X at slot 0 and the
+		// ExplainValue-keyed plan identity could memo-unify the two (review
+		// round-3 on PR #446). With doubling, a rendering ends in an UNPAIRED
+		// '#' + digits iff it is an ordinal read — identity is injective over
+		// (field text, ordinal). Display/identity only: ProjectionColumnName's
+		// FieldValue arm returns Field verbatim, so plain-field Datum keys and
+		// positional slot names never change (a COMPUTED composite over a
+		// #-named field shifts its derived key spelling consistently on writer
+		// and reader, both sides of the shared contract).
+		name := strings.ReplaceAll(cv.Field, "#", "##")
 		if cv.Child != nil {
-			return ExplainValue(cv.Child) + "." + cv.Field
+			name = ExplainValue(cv.Child) + "." + name
 		}
-		return cv.Field
+		// A plan-time-resolved ordinal accessor renders its ordinal (Java's
+		// FieldPath `#ordinal` syntax) alongside the name. Load-bearing, not
+		// just display: physical-plan identity (RecordQueryProjectionPlan
+		// EqualsWithoutChildren/HashCodeWithoutChildren) is keyed on these
+		// renderings, and two reads of DUPLICATE-named slots differ only by
+		// ordinal — rendering both as the bare name memo-unified projection
+		// alternatives that read different slots (review round-2 on PR #446).
+		if cv.HasResolvedOrdinal {
+			return name + "#" + strconv.Itoa(cv.ResolvedOrdinal)
+		}
+		return name
 	case *ArithmeticValue:
 		return "(" + ExplainValue(cv.Left) + " " + cv.Op.symbol() + " " + ExplainValue(cv.Right) + ")"
 	case *StrictRankLimitValue:
