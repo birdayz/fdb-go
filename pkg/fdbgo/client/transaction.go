@@ -316,34 +316,33 @@ type Transaction struct {
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
 
-	// Deferred-error fields — ONE concurrency contract (RFC-175 E2).
+	// deferredErr is THE transaction's deferred error — the exact analog of C++
+	// ISingleThreadTransaction::deferredError (ISingleThreadTransaction.h:124): ONE slot
+	// shared by every deferred-error source (RFC-175 E2). In libfdb_c, void ops marshal
+	// onto the network thread via onMainThreadVoid(f, tr, &deferredError); a throw inside
+	// the op is RECORDED first-error-wins (doOnMainThreadVoid skips the op entirely when
+	// the slot is already set — ThreadHelper.actor.h:44-55), and every future-returning
+	// op re-throws it at entry via checkDeferredError (ThreadSafeTransaction.cpp: get
+	// :431, getKey :441, getRange, getReadVersion :421, watch :654, commit :669, the
+	// metrics ops, getApproximateSize :715, getVersionstamp). Cleared only on reset
+	// (resetRyow, ReadYourWrites.actor.cpp:2719).
 	//
-	// C++ analog: ISingleThreadTransaction::deferredError (ISingleThreadTransaction.h:124),
-	// a plain member — safe there because libfdb_c marshals EVERY fdb_transaction_* call
-	// onto the single network thread (ThreadSafeTransaction.cpp onMainThreadVoid), which
-	// records the FIRST error only (doOnMainThreadVoid, ThreadHelper.actor.h:44-55: an
-	// already-set deferredError is never overwritten) and checks/throws it at each
-	// subsequent op (checkDeferredError, ReadYourWrites.h:177-181). Go has no network
-	// thread — ops run on caller goroutines and the published contract (fdb/transaction.go)
-	// allows concurrent use — so the Go contract is:
-	//   atomic.Pointer[wire.FDBError]; written at most once per incarnation (first error
-	//   wins, matching doOnMainThreadVoid); Load()ed at every gate that C++ guards with
-	//   checkDeferredError; Store(nil)ed only on reset (C++ resetRyow clears deferredError,
-	//   ReadYourWrites.actor.cpp:2719).
-	// (readErr, the third deferred error, follows the same first-error-wins/reset lifecycle
-	// but lives under readErrMu, which also guards readGen + pendingReads — see its comment.)
-
-	// rywPoisonErr: SetReadYourWritesDisable was called AFTER a read or write (RFC-059).
-	// The option call itself succeeds; every subsequent read (via ensureReadVersion), the
-	// metrics path, and Commit surface client_invalid_operation (2000, non-retryable).
-	rywPoisonErr atomic.Pointer[wire.FDBError]
-
-	// invalidAtomicOpErr: Atomic() was called with a non-atomic / out-of-range op-code
-	// (C++ atomicOp throws invalid_mutation_type, ReadYourWrites.actor.cpp:2234). The bad
-	// mutation is NOT buffered; the deferred error fails the next Commit (2018/2004/2000).
-	// First-write-wins is enforced under conflictMu (store-if-unset linearized with the
-	// preceding-mutation scan — see Atomic()).
-	invalidAtomicOpErr atomic.Pointer[wire.FDBError]
+	// Go has no network thread — ops run on caller goroutines and the published contract
+	// (fdb/transaction.go) allows concurrent use — so the slot is an
+	// atomic.Pointer[wire.FDBError]: written at most once per incarnation (CAS /
+	// store-if-unset = first error wins), Load()ed at every gate C++ guards with
+	// checkDeferredError (ensureReadVersion covers Get/GetKey/GetRange/GetReadVersion/
+	// GetPipelined/Watch; Commit, the metrics paths, GetApproximateSize and
+	// GetVersionstamp gate explicitly), Store(nil)ed only on reset.
+	//
+	// Sources, matching C++: an invalid op-code passed to Atomic() (2018/2004/2000 —
+	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2234; recorded store-if-unset
+	// under conflictMu, linearized with the preceding-mutation scan — see Atomic()) and
+	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
+	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign).
+	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
+	// and lives under readErrMu, which also guards readGen + pendingReads.)
+	deferredErr atomic.Pointer[wire.FDBError]
 
 	// readErr: the first error returned by a TRACKED read of this transaction —
 	// the Go analogue of C++'s ryw->reading AndFuture. commit() waits on reading
@@ -661,13 +660,15 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 	// A deadline-cancelled GRV is surfaced as transaction_timed_out via mapTimeout.
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	// A transaction poisoned by SetReadYourWritesDisable-after-an-op surfaces
-	// client_invalid_operation on every subsequent read AND commit (RFC-059). This is the
-	// single uniform gate: all reads (regular + snapshot), Commit, and GetReadVersion fetch a
-	// read version through here — libfdb_c poisons all of them identically (verified
-	// differentially, incl. GetReadVersion). The metrics path bypasses this and is gated
-	// separately. (Cleared on reset.)
-	if e := tx.rywPoisonErr.Load(); e != nil {
+	// The deferred error (bad Atomic op-code, or SetReadYourWritesDisable-after-an-op)
+	// surfaces on every subsequent op — C++ checkDeferredError at each read entry
+	// (ThreadSafeTransaction.cpp:431 get, :441 getKey, :421 getReadVersion, :654 watch).
+	// This is the single uniform gate: all reads (regular + snapshot), Commit, Watch, and
+	// GetReadVersion fetch a read version through here — libfdb_c gates all of them
+	// identically (poison verified differentially, incl. GetReadVersion). The metrics /
+	// approx-size / versionstamp paths bypass this and are gated separately. (Cleared on
+	// reset.)
+	if e := tx.deferredErr.Load(); e != nil {
 		return e
 	}
 	if err := tx.checkTimeout(); err != nil {
@@ -1406,12 +1407,14 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	}
 	// C++ ReadYourWritesTransaction::atomicOp (ReadYourWrites.actor.cpp:2234) rejects any op that is
 	// not isValidMutationType && isAtomicOp with invalid_mutation_type, BEFORE adding it to the write
-	// map; libfdb_c's CATCH_AND_DIE (fdb_c.cpp:1149) then aborts the client. Go's Atomic() is void, so
-	// we record a deferred error surfaced at Commit and — critically — do NOT buffer the mutation, so
-	// a misused op-code (e.g. Atomic(MutClearRange,...), indistinguishable from a real Clear at commit
-	// time) can never reach the shared cluster. The eager record matches "first invalid op wins" call
-	// ordering. Reads are left intact (the non-aborting analog: the failed atomicOp didn't add a
-	// mutation, but the transaction object is otherwise usable until the commit gate rejects it).
+	// map. In libfdb_c that throw happens on the NETWORK thread inside the onMainThreadVoid functor
+	// (ThreadSafeTransaction.cpp:601-609) and is captured into the transaction's single deferredError
+	// slot (doOnMainThreadVoid, ThreadHelper.actor.h:44-55) — fdb_c.cpp's CATCH_AND_DIE never fires
+	// (enqueueing cannot throw). Every subsequent read AND the commit then re-throw it via
+	// checkDeferredError. Go matches exactly: record into deferredErr (surfaced by the per-op gates)
+	// and — critically — do NOT buffer the mutation, so a misused op-code (e.g.
+	// Atomic(MutClearRange,...), indistinguishable from a real Clear at commit time) can never reach
+	// the shared cluster. The eager record matches "first invalid op wins" call ordering.
 	if !isAtomicOp(op) {
 		// C++ atomicOp checks metadataVersionKey (2000) / legal-range (2004) BEFORE the op-validity
 		// check (2018) — ReadYourWrites.actor.cpp:2226-2234. Surface the same precedence eagerly so
@@ -1432,7 +1435,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
 		// keeps the first bad Atomic's verdict (race-free vs Commit's lock-free Load).
 		tx.conflictMu.Lock()
-		if tx.invalidAtomicOpErr.Load() == nil {
+		if tx.deferredErr.Load() == nil {
 			poison := &wire.FDBError{Code: code}
 			maxWrite := tx.maxWriteKey()
 			for _, m := range tx.mutations {
@@ -1444,7 +1447,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 					break
 				}
 			}
-			tx.invalidAtomicOpErr.Store(poison)
+			tx.deferredErr.Store(poison)
 		}
 		tx.conflictMu.Unlock()
 		return
@@ -1666,24 +1669,18 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	// A poisoned transaction (SetReadYourWritesDisable after an op) fails commit with
-	// client_invalid_operation. Checked HERE — before the read-only fast path below (a
-	// read-only poisoned commit has no mutations, so it would otherwise skip
+	// The deferred error (bad Atomic op-code 2018/2004/2000, or SetReadYourWritesDisable
+	// after an op, 2000) fails commit — the C++ checkDeferredError at commit entry
+	// (ThreadSafeTransaction.cpp:669). Checked HERE — before the read-only fast path below
+	// (a poisoned read-only commit has no mutations, so it would otherwise skip
 	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
-	// the poison before the timeout, and libfdb_c's checkDeferredError runs before any commit
-	// logic, so the poison must out-rank a stale-timeout 1031 for parity. Returns without
-	// resetting (2000 is non-retryable). RFC-059.
-	if e := tx.rywPoisonErr.Load(); e != nil {
-		return e
-	}
-	// A non-atomic op-code passed to Atomic() poisons the commit with invalid_mutation_type (2018),
-	// matching C++ atomicOp's eager throw (ReadYourWrites.actor.cpp:2234). The bad mutation was never
-	// buffered, so nothing reaches the cluster. Non-retryable — mark the txn errored HERE too, so the
-	// post-failure state is identical whether the poison was set before commit entry (this common
-	// Atomic();Commit() path) or raced into the snapshot re-check below, which also errors it.
-	// A manual caller that doesn't route through OnError then can't keep issuing ops on a dead txn.
-	if e := tx.invalidAtomicOpErr.Load(); e != nil {
-		tx.state.Store(int32(txStateErrored))
+	// the deferred error before the timeout, and libfdb_c's checkDeferredError runs before
+	// any commit logic, so it must out-rank a stale-timeout 1031 for parity. Returns
+	// WITHOUT resetting or marking the txn errored — in C++ the transaction stays
+	// poisoned-but-alive and every subsequent op re-throws the same error until reset;
+	// Go's per-op gates reproduce that (the bad mutation itself was never buffered,
+	// so nothing can reach the cluster). RFC-059 / RFC-175 E2.
+	if e := tx.deferredErr.Load(); e != nil {
 		return e
 	}
 	if err := tx.checkTimeout(); err != nil {
@@ -1735,16 +1732,16 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	muts := tx.mutations
 	writeConflictsSnap := tx.writeConflicts
 	nWriteConflicts := len(writeConflictsSnap)
-	// Re-read the invalid-atomic poison UNDER the snapshot lock, linearized with `muts`: the
+	// Re-read the deferred error UNDER the snapshot lock, linearized with `muts`: the
 	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
 	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
 	// critical section as the mutation snapshot, makes the poison-vs-commit order consistent with the
 	// mutation-vs-commit order: a bad Atomic ordered before this snapshot poisons the commit; one
-	// ordered after is not in `muts` either, so the commit linearizes before it.
-	poison := tx.invalidAtomicOpErr.Load()
+	// ordered after is not in `muts` either, so the commit linearizes before it. Like the entry
+	// check, returns without marking the txn errored (C++ leaves it poisoned-but-alive).
+	poison := tx.deferredErr.Load()
 	tx.conflictMu.Unlock()
 	if poison != nil {
-		tx.state.Store(int32(txStateErrored))
 		return poison
 	}
 
@@ -2202,6 +2199,12 @@ func (tx *Transaction) GetVersionstamp() ([]byte, error) {
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err // transaction_cancelled (1025) out-ranks the not-yet-committed 2015 (RFC-068)
 	}
+	// C++ gates getVersionstamp on the deferred error (ThreadSafeTransaction.cpp
+	// checkDeferredError before tr->getVersionstamp()) — before the
+	// no_commit_version check (a poisoned txn cannot have committed anyway).
+	if e := tx.deferredErr.Load(); e != nil {
+		return nil, e
+	}
 	if !tx.hasCommitted {
 		return nil, &wire.FDBError{Code: 2015}
 	}
@@ -2486,7 +2489,14 @@ const (
 // each mutation includes sizeof(MutationRef), each conflict range includes
 // sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
 // key length again for the auto-generated write conflict range.
-func (tx *Transaction) GetApproximateSize() int64 {
+func (tx *Transaction) GetApproximateSize() (int64, error) {
+	// C++ gates getApproximateSize on the deferred error and NOTHING else
+	// (ThreadSafeTransaction.cpp:715-721: checkDeferredError, then the plain
+	// RYW counter getter — no resetPromise race, so a cancelled-but-unpoisoned
+	// txn still returns its size; differential_cancel_test pins that parity).
+	if e := tx.deferredErr.Load(); e != nil {
+		return 0, e
+	}
 	// Iterate the buffers UNDER conflictMu, not a released snapshot. This is a
 	// public method callers may poll concurrently with Commit on another
 	// goroutine, and Commit's auto-reset (postCommitReset) reuses the buffer
@@ -2512,7 +2522,7 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	// indistinguishable from a ClearRange(k, k+\x00), so correct the overcharge here from the Clear()-
 	// call count (the write-conflict half already matched: both charge sizeof(KeyRangeRef)).
 	size -= int64(tx.singleKeyClearCount) * (sizeofMutationRef - sizeofKeyRangeRef)
-	return size
+	return size, nil
 }
 
 // approximateCommitSize sizes the request that WILL be committed: the validated mutation
@@ -2948,18 +2958,20 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // When set, Get/GetRange always read from the server, ignoring uncommitted writes.
 // Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 //
-// libfdb_c forbids setting this option after any read or write: it throws
-// client_invalid_operation, deferred to the next operation (the option call itself succeeds).
-// So if the RYW layer is non-empty (a prior read cached, or a pending write), we POISON the
-// transaction — every subsequent read and commit returns 2000 — rather than silently
-// disabling RYW mid-transaction (RFC-059). A clean (pre-op) disable is unaffected.
+// libfdb_c forbids setting this option after any read or write: RYW setOptionImpl
+// throws client_invalid_operation BEFORE assigning the option
+// (ReadYourWrites.actor.cpp:2534-2542), so the option does NOT take effect; the throw
+// lands in deferredError (the option call itself succeeds) and every subsequent op
+// returns 2000 until reset (RFC-059). Match both halves: record the deferred error
+// AND leave rywDisabled unset. A clean (pre-op) disable applies normally.
 func (tx *Transaction) SetReadYourWritesDisable() {
-	tx.rywDisabled = true
 	if tx.hadRead.Load() || !tx.ryw.isEmpty() {
-		// client_invalid_operation, surfaces on next op. CAS: first deferred error wins
-		// (the E2 contract above; C++ doOnMainThreadVoid never overwrites deferredError).
-		tx.rywPoisonErr.CompareAndSwap(nil, &wire.FDBError{Code: 2000})
+		// CAS: first deferred error wins (the E2 contract above; C++
+		// doOnMainThreadVoid never overwrites deferredError).
+		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: 2000})
+		return
 	}
+	tx.rywDisabled = true
 }
 
 // SetWriteConflictsDisabled disables write conflict ranges for all subsequent
@@ -3194,8 +3206,7 @@ func (tx *Transaction) postCommitReset() {
 	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr.Store(nil)       // RFC-059: a fresh layer reapplies the option with no poison
-	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
+	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.readErrMu.Lock()
 	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
@@ -3249,8 +3260,7 @@ func (tx *Transaction) reset(userReset bool) {
 	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
-	tx.rywPoisonErr.Store(nil)       // RFC-059: a fresh layer reapplies the option with no poison
-	tx.invalidAtomicOpErr.Store(nil) // a fresh transaction can issue valid atomic ops again
+	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.readErrMu.Lock()
 	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
 	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
@@ -3296,7 +3306,7 @@ func (tx *Transaction) reset(userReset bool) {
 // timeout/retry_limit/max_retry_delay/auth_token are persistent="true" in fdb.options; everything else is
 // NON-persistent. Non-persistent options are cleared to DB defaults on BOTH paths; persistent options
 // revert to DB defaults ONLY on a user Reset() (userReset), and are PRESERVED on the OnError retry.
-// bypassUnreadable is cleared by tx.ryw.reset() (a non-persistent RYW option); rywPoisonErr likewise.
+// bypassUnreadable is cleared by tx.ryw.reset() (a non-persistent RYW option); deferredErr likewise.
 func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	if tx.db == nil {
 		return

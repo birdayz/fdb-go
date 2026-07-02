@@ -53,7 +53,7 @@ func TestConcurrent_ConflictReaders_NoRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for !stop.Load() {
-				_ = tx.GetApproximateSize()
+				_, _ = tx.GetApproximateSize()
 				// Mimic Commit: snapshot the validated mutation set under the
 				// lock, then marshal exactly it.
 				tx.conflictMu.Lock()
@@ -130,7 +130,7 @@ func TestConcurrent_ResetWhileSizing_NoRace(t *testing.T) {
 				k := []byte(fmt.Sprintf("w%dk%06d", id, i))
 				tx.addReadConflictForKey(k)
 				tx.Set(k, val)
-				_ = tx.GetApproximateSize()
+				_, _ = tx.GetApproximateSize()
 			}
 		}(w)
 	}

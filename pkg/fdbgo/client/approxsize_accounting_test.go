@@ -23,7 +23,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 		tx.Set(k, v)
 		// mutation: len(k)+len(v)+M ; implicit write conflict [k, k+\x00]: len(k)+(len(k)+1)+R
 		want := int64(len(k)+len(v)+m) + int64(len(k)+(len(k)+1)+r)
-		if got := tx.GetApproximateSize(); got != want {
+		if got := mustApproxSize(t, tx); got != want {
 			t.Fatalf("Set: got %d want %d", got, want)
 		}
 	})
@@ -37,7 +37,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 		// mutation (single-key clear, charged R not M): len(k)+(len(k)+1)+R
 		// implicit write conflict [k, k+\x00]:           len(k)+(len(k)+1)+R
 		want := int64(len(k)+(len(k)+1)+r) * 2
-		if got := tx.GetApproximateSize(); got != want {
+		if got := mustApproxSize(t, tx); got != want {
 			t.Fatalf("Clear(single key): got %d want %d", got, want)
 		}
 	})
@@ -52,7 +52,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 		}
 		// mutation (range clear, charged M): len(b)+len(e)+M ; write conflict [b,e]: len(b)+len(e)+R
 		want := int64(len(b)+len(e)+m) + int64(len(b)+len(e)+r)
-		if got := tx.GetApproximateSize(); got != want {
+		if got := mustApproxSize(t, tx); got != want {
 			t.Fatalf("ClearRange: got %d want %d", got, want)
 		}
 	})
@@ -70,7 +70,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := int64(len(rb)+len(re)+r) + int64(len(wb)+len(we)+r)
-		if got := tx.GetApproximateSize(); got != want {
+		if got := mustApproxSize(t, tx); got != want {
 			t.Fatalf("conflict ranges: got %d want %d", got, want)
 		}
 	})
@@ -81,7 +81,7 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 		tx.rywDisabled = true
 		tx.Clear([]byte("k"))
 		tx.reset(false)
-		if got := tx.GetApproximateSize(); got != 0 {
+		if got := mustApproxSize(t, tx); got != 0 {
 			t.Fatalf("after reset: got %d want 0", got)
 		}
 		// A range clear after reset must NOT be mis-charged as a single-key clear (count was reset),
@@ -91,8 +91,19 @@ func TestGetApproximateSize_CppAccounting(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := int64(len(b)+len(e)+m) + int64(len(b)+len(e)+r)
-		if got := tx.GetApproximateSize(); got != want {
+		if got := mustApproxSize(t, tx); got != want {
 			t.Fatalf("ClearRange after reset: got %d want %d (single-key count leaked?)", got, want)
 		}
 	})
+}
+
+// mustApproxSize returns GetApproximateSize's value, failing the test on the
+// deferred-error gate (none of these accounting tests poison the transaction).
+func mustApproxSize(t *testing.T, tx *Transaction) int64 {
+	t.Helper()
+	n, err := tx.GetApproximateSize()
+	if err != nil {
+		t.Fatalf("GetApproximateSize: %v", err)
+	}
+	return n
 }

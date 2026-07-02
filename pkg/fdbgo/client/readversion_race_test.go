@@ -78,11 +78,11 @@ func TestGetReadVersion_ConcurrentWithCommit_RaceFree(t *testing.T) {
 }
 
 // TestSetRYWDisable_PoisonRaceFree pins the RFC-175 E2 deferred-error contract for
-// rywPoisonErr: SetReadYourWritesDisable (a concurrency-safe option call) CAS-writes the
+// the RYW-disable source: SetReadYourWritesDisable (a concurrency-safe option call) CAS-writes the
 // poison while the ensureReadVersion / Commit / metrics gates Load it. Concurrent
 // write||read must be -race clean. MUST run under -race to catch a regression —
 // reverting the field to a plain `error` makes this a data race (the sibling contract
-// test for invalidAtomicOpErr is TestAtomic_InvalidOpPoison_RaceFree).
+// test for the invalid-atomic source is TestAtomic_InvalidOpPoison_RaceFree).
 func TestSetRYWDisable_PoisonRaceFree(t *testing.T) {
 	t.Parallel()
 	for i := 0; i < 200; i++ {
@@ -91,9 +91,9 @@ func TestSetRYWDisable_PoisonRaceFree(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() { defer wg.Done(); tx.SetReadYourWritesDisable() }() // CAS-writes the poison
-		go func() { defer wg.Done(); _ = tx.rywPoisonErr.Load() }()    // gate-entry read
+		go func() { defer wg.Done(); _ = tx.deferredErr.Load() }()     // gate-entry read
 		wg.Wait()
-		if e := tx.rywPoisonErr.Load(); e == nil || e.Code != 2000 {
+		if e := tx.deferredErr.Load(); e == nil || e.Code != 2000 {
 			t.Fatalf("poison after disable-with-prior-read: got %v, want code 2000", e)
 		}
 	}
@@ -108,12 +108,12 @@ func TestSetRYWDisable_FirstErrorWins(t *testing.T) {
 	tx := newTestTx()
 	tx.hadRead.Store(true)
 	tx.SetReadYourWritesDisable()
-	first := tx.rywPoisonErr.Load()
+	first := tx.deferredErr.Load()
 	if first == nil {
 		t.Fatal("first disable-with-prior-read did not poison")
 	}
 	tx.SetReadYourWritesDisable()
-	if got := tx.rywPoisonErr.Load(); got != first {
+	if got := tx.deferredErr.Load(); got != first {
 		t.Fatalf("second disable replaced the deferred error: got %p, want %p (first wins)", got, first)
 	}
 }

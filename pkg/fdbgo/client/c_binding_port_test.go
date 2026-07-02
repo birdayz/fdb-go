@@ -1632,13 +1632,13 @@ func TestGetApproximateSize_CPort(t *testing.T) {
 	tx := &Transaction{}
 
 	// Empty transaction should have zero size.
-	if size := tx.GetApproximateSize(); size != 0 {
+	if size := mustApproxSize(t, tx); size != 0 {
 		t.Errorf("empty tx size: got %d, want 0", size)
 	}
 
 	// Add a mutation and verify size increases.
 	tx.Set([]byte("key123"), []byte("value456"))
-	size1 := tx.GetApproximateSize()
+	size1 := mustApproxSize(t, tx)
 	if size1 == 0 {
 		t.Error("size should be non-zero after Set")
 	}
@@ -1646,7 +1646,7 @@ func TestGetApproximateSize_CPort(t *testing.T) {
 	// Add more mutations.
 	tx.Set([]byte("another_key"), []byte("another_value"))
 	tx.Clear([]byte("cleared_key"))
-	size2 := tx.GetApproximateSize()
+	size2 := mustApproxSize(t, tx)
 	if size2 <= size1 {
 		t.Errorf("size should increase: %d <= %d", size2, size1)
 	}
@@ -1654,7 +1654,7 @@ func TestGetApproximateSize_CPort(t *testing.T) {
 	// Add conflict ranges.
 	tx.AddReadConflictKey([]byte("conflict_read"))
 	tx.AddWriteConflictKey([]byte("conflict_write"))
-	size3 := tx.GetApproximateSize()
+	size3 := mustApproxSize(t, tx)
 	if size3 <= size2 {
 		t.Errorf("size should increase with conflict ranges: %d <= %d", size3, size2)
 	}

@@ -159,7 +159,7 @@ func (tr Transaction) GetVersionstamp() FutureKey {
 
 // GetApproximateSize returns the approximate transaction size so far.
 func (tr Transaction) GetApproximateSize() FutureInt64 {
-	return newReadyFutureInt64(tr.t.inner.GetApproximateSize(), nil)
+	return newReadyFutureInt64(tr.t.inner.GetApproximateSize())
 }
 
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of the key range.

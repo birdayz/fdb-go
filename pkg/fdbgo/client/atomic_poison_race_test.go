@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestAtomic_InvalidOpPoison_RaceFree pins the atomic.Pointer synchronization of invalidAtomicOpErr:
+// TestAtomic_InvalidOpPoison_RaceFree pins the shared deferredErr slot's synchronization for the invalid-atomic source:
 // Atomic() is a concurrent-safe data op that writes the poison (via CompareAndSwap)
 // while Commit reads it at entry. Concurrent write||read must be `-race` clean. MUST be run under
 // -race to catch a regression — reverting the field to a plain `error` makes this a data race.
@@ -16,7 +16,7 @@ func TestAtomic_InvalidOpPoison_RaceFree(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() { defer wg.Done(); tx.Atomic(MutClearRange, []byte("k"), []byte("v")) }() // CAS-writes the poison
-		go func() { defer wg.Done(); _ = tx.invalidAtomicOpErr.Load() }()                   // Commit-entry read
+		go func() { defer wg.Done(); _ = tx.deferredErr.Load() }()                          // Commit-entry read
 		wg.Wait()
 	}
 }

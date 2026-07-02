@@ -78,6 +78,7 @@ go_test(
         "database_panic_test.go",
         "database_test.go",
         "ddsketch_test.go",
+        "deferred_error_test.go",
         "dial_connmu_test.go",
         "endpoint_test.go",
         "failure_monitor_test.go",

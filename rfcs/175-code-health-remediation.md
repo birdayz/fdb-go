@@ -209,7 +209,16 @@ item's acceptance criterion in §5 is "the grep returns zero."
   network-thread marshalling + `doOnMainThreadVoid` first-error-wins into
   `ISingleThreadTransaction::deferredError`): `atomic.Pointer[wire.FDBError]`, write-once per
   incarnation, `Load` at every `checkDeferredError`-equivalent gate, `Store(nil)` on reset —
-  documented once above the two fields.
+  documented once above the two fields. **Completed to the full C++ model after FDB-C-dev
+  review flagged the cross-field divergence:** C++ has ONE `deferredError` slot shared by all
+  sources and checked at EVERY future-returning op (`checkDeferredError` in
+  `ThreadSafeTransaction.cpp` get/getKey/getRange/getReadVersion/watch/commit/approxSize/
+  versionstamp), so Go's two fields merged into a single `deferredErr`: a bad `Atomic()`
+  op-code now gates reads too (not just Commit), first-error-wins holds ACROSS sources, a
+  poisoned commit leaves the txn alive-but-poisoned (C++ re-throws until reset, never marks
+  it dead), and a poisoning `SetReadYourWritesDisable` no longer applies the option (C++
+  throws BEFORE assigning, `ReadYourWrites.actor.cpp:2534-2542`). `GetApproximateSize` grew
+  the gate C++ has (signature now returns an error); `GetVersionstamp` likewise.
 - **E3 — `GetPipelined`'s bespoke fast path is a second RYW implementation (DEFERRED, pinned).**
   `transaction.go:748` `ErrNeedFullRYW` falls back to full RYW when a key has pending atomics —
   two code paths that must agree on merge semantics, and :373-378 documents a bug this already

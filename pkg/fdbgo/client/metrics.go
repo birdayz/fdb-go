@@ -42,8 +42,8 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
 	// path). This entry point does not fetch a read version, so it is gated explicitly rather
 	// than via ensureReadVersion (RFC-059). The poison (2000) out-ranks the timeout below — the
-	// same order as ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
-	if e := tx.rywPoisonErr.Load(); e != nil {
+	// same order as ensureReadVersion (the deferred error before checkTimeout, transaction.go).
+	if e := tx.deferredErr.Load(); e != nil {
 		return 0, e
 	}
 	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
@@ -190,8 +190,8 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
 	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
 	// checkValid path) — RFC-059. The poison (2000) out-ranks the timeout below — the same order as
-	// ensureReadVersion (rywPoisonErr before checkTimeout, transaction.go).
-	if e := tx.rywPoisonErr.Load(); e != nil {
+	// ensureReadVersion (the deferred error before checkTimeout, transaction.go).
+	if e := tx.deferredErr.Load(); e != nil {
 		return nil, e
 	}
 	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check

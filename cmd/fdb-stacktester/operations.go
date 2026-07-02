@@ -459,7 +459,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		sm.push(idx, f)
 
 	case "GET_APPROXIMATE_SIZE":
-		_ = sm.currentTr().GetApproximateSize()
+		_, _ = sm.currentTr().GetApproximateSize()
 		sm.push(idx, []byte("GOT_APPROXIMATE_SIZE"))
 
 	case "GET_ESTIMATED_RANGE_SIZE":
