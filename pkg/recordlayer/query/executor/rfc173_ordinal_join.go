@@ -232,6 +232,15 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // Slice 2 coexistence scoping).
 func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
+		// Shape tripwire (@claude PR-447): a pre-existing positional leg row
+		// must MATCH the leg type's width — the W2 gate restricts gated-join
+		// legs to shapes whose frontier rows derive from the same columns the
+		// seed typed the leg with, so a mismatch is a gate breach, not a
+		// legitimate row. Self-enforcing, consistent with the zero-match
+		// tripwire below; nil legType (folded RVs) has no width to check.
+		if legType != nil && len(qr.Positional.Slots) != len(legType.Fields) {
+			return nil, fmt.Errorf("RFC-173 leg adapter: positional leg row has %d slots but the leg type has %d fields — gated-join leg shape breach (W2 gate mis-scope or leg-type drift)", len(qr.Positional.Slots), len(legType.Fields))
+		}
 		return qr.Positional, nil
 	}
 	row := NewPositionalRow(legType)

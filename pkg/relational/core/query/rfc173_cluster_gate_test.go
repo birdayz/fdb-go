@@ -274,6 +274,21 @@ func TestRFC173S2_WedgeGate_Translation(t *testing.T) {
 		if d, ok := tr.wedgeGate[root]; !ok || d.Gated {
 			t.Fatalf("FULL box over a name-model 3-way leg: %+v (ok=%v), want NOT gated (leg ineligible)", d, ok)
 		}
+
+		// The DERIVED-TABLE-wrapped join leg (@claude PR-447 catch): a
+		// derived join source is a LogicalCTE node DIRECTLY in the leg
+		// position (logical_builder NewCTE(alias, body, Scan(alias))) —
+		// without ordinalEligible's CTE arm it fell to the default
+		// (eligible) and the FULL box wrongly gated over a buried join.
+		derivedJoin := logical.NewCTE("d",
+			inner(scan("Customer", "c4"), scan("TypedRecord", "t4")),
+			logical.NewScan("d", ""), false)
+		root3 := logical.NewJoin(scan("Order", "o4"), derivedJoin, logical.JoinFull, "")
+		tr3 := newGateTranslator(t)
+		tr3.translateRef(root3)
+		if d, ok := tr3.wedgeGate[root3]; !ok || d.Gated {
+			t.Fatalf("FULL box over a DERIVED-wrapped join leg: %+v (ok=%v), want NOT gated (LogicalCTE transparency)", d, ok)
+		}
 	})
 
 	t.Run("aggregate_boundary_roots_fresh_cluster", func(t *testing.T) {

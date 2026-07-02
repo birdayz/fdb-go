@@ -459,6 +459,11 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 					}
 					return nil, nil
 				}
+				// NOTE (recorded W3 borderline, @claude PR-447 finding 4): a
+				// BAKED field access over a non-OrdinalRow non-map binding gets
+				// the raw bound object without bakedNameReadGuard. Unreachable
+				// under the S2 wedge (gated legs bind OrdinalRows); re-examine
+				// when S3 widens the gate.
 				return bound, nil
 			}
 		}
@@ -512,6 +517,8 @@ func (f *FieldValue) evaluateCorrelated(qov *QuantifiedObjectValue, evalCtx any)
 				}
 				return nil, nil
 			}
+			// Same recorded W3 borderline as the RowEvalContext arm above
+			// (@claude PR-447 finding 4): re-examine when S3 widens the gate.
 			return bound, nil
 		}
 		return nil, nil

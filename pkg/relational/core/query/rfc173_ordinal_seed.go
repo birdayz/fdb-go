@@ -64,6 +64,14 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 			op = o.Input
 		case *logical.LogicalLimit:
 			op = o.Input
+		// LogicalProject is DELIBERATELY not transparent here, unlike in
+		// ordinalEligible/clusterArity (@claude PR-447 flagged the asymmetry;
+		// documented rather than changed): a projected leg's columns are the
+		// PROJECTION's outputs, and in the name model a projected row carries
+		// no stored record — recordTypeName(qr) is empty, so
+		// qualifyTypeFallback never wrote TYPE.COL keys for it. Adding the
+		// base table's name would INVENT a namespace the name model never
+		// had (a dualwindow divergence), not restore one.
 		default:
 			return ""
 		}

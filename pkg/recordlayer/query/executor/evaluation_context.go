@@ -109,7 +109,7 @@ func (ec *EvaluationContext) RowContextStrict(datum map[string]any) *values.RowE
 
 // DisablePositionalEmission, when true, stops the row-birth sites — the
 // oracle REGISTRY: FromStoredRecord, the covering-index cursor, and the
-// RFC-173 Slice 2 ordinal-join births (nljCursor.ordinalBirthLegs,
+// RFC-173 Slice 2 ordinal-join births (nljCursor pairBinder/evaluateBound emission sites,
 // flatMapCursor.computeResultLegs) — from emitting the RFC-173 PositionalRow,
 // recreating the pre-Slice-1 NAME model end-to-end: no positional row is
 // born, so the frontier gates (`qr.Positional != nil`) never fire and every

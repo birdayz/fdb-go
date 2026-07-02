@@ -171,6 +171,28 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 			return eligible
 		}
 		return true
+	case *logical.LogicalCTE:
+		// A derived-table join SOURCE is built as a LogicalCTE node DIRECTLY
+		// in the leg position (logical_builder: NewCTE(alias, body,
+		// Scan(alias))) — without this arm it fell to the default and a
+		// FULL box over `(SELECT ... c JOIN t ...) AS d` wrongly gated with a
+		// buried join at its leg boundary (@claude PR-447 catch: the walk
+		// must mirror clusterArity's CTE transparency exactly, per this
+		// file's own header). Recurse through the registered body into Main,
+		// identically to clusterArity.
+		if o.Recursive {
+			return false
+		}
+		key := strings.ToUpper(o.Name)
+		prev, had := t.cteScope[key]
+		t.cteScope[key] = o.Body
+		eligible := t.ordinalEligible(o.Main)
+		if had {
+			t.cteScope[key] = prev
+		} else {
+			delete(t.cteScope, key)
+		}
+		return eligible
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
 		// distinct, CTE, values, …): the leg boundary sees the box's own
