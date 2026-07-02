@@ -10,7 +10,7 @@ import (
 //
 //	Filter(P, Projection([col1, col2], X))  →  Projection([col1, col2], Filter(P, X))
 //
-// Soundness: LogicalProjection in the seed doesn't reshape rows —
+// Soundness: LogicalProjection doesn't reshape rows —
 // its GetResultValue is the inner's flowed object value (the
 // projection list is a side channel describing what columns the
 // projection EXPOSES; the rows themselves carry all columns of X).
@@ -25,8 +25,8 @@ import (
 //
 // Optimization argument: filtering BEFORE projection saves the
 // projection from materialising rows that would be filtered away.
-// Negligible for the seed (projection is a side channel) but
-// significant once the executor materialises projected columns.
+// Negligible while projection is a side channel; significant if the
+// executor ever materialises projected columns.
 //
 // Termination: yields a Projection wrapping a Quantifier over a
 // fresh Reference holding the new Filter. The fresh Reference is

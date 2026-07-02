@@ -41,7 +41,7 @@ func isNumericType(v any) bool {
 	return false
 }
 
-// Comparisons — seed.
+// Comparisons.
 //
 // Ports Java's
 // `com.apple.foundationdb.record.query.expressions.Comparisons.Type`
@@ -49,11 +49,13 @@ func isNumericType(v any) bool {
 // A ComparisonPredicate carries an operand Value (left-hand side)
 // and a Comparison (operator + literal right-hand side value).
 //
-// Seed operators: =, <>, <, <=, >, >=, IS NULL, IS NOT NULL,
-// STARTS_WITH, IN, IS DISTINCT FROM, IS NOT DISTINCT FROM. Constant
-// RHS only. Follow-up shifts add: parameter-bound Comparison (RHS
-// supplied at plan-cache lookup time), LIKE pattern comparator,
-// TEXT_CONTAINS_*, the `ComparisonRange` aggregator.
+// Operators: =, <>, <, <=, >, >=, IS NULL, IS NOT NULL,
+// STARTS_WITH, IN, IS DISTINCT FROM, IS NOT DISTINCT FROM, LIKE
+// (with ESCAPE), the TEXT_CONTAINS_* full-text family, and the
+// DistanceRank vector comparisons — see the ComparisonType enum
+// below. The RHS is a literal, a parameter (ParameterName, bound at
+// execution), or a correlated Value (Operand). The ComparisonRange
+// aggregator lives in comparison_range.go.
 
 // ComparisonType is the operator carried by a Comparison. Enum
 // values match Java's
@@ -553,7 +555,7 @@ func likeMatch(pattern, s string, escape rune) bool {
 }
 
 // cmpAny is a total-order comparator over the primitive types the
-// seed predicates exercise: signed-int{8,16,32,64}, int, float{32,64},
+// predicates exercise: signed-int{8,16,32,64}, int, float{32,64},
 // string. Returns (cmp, ok); ok=false signals a genuine type
 // mismatch (int vs string, bool, etc.) — the caller degrades to
 // UNKNOWN per SQL 3VL.

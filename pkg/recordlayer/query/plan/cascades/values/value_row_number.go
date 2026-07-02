@@ -11,7 +11,7 @@ package values
 // produced during an HNSW index traversal — typically when the
 // surrounding query is `ORDER BY <distance>` over a vector index.
 // The query planner refuses to compute ROW_NUMBER without a
-// suitable index. The Go seed records this constraint in
+// suitable index. Go records this constraint in
 // IsIndexOnly() (the analyzer / matchers can read it without
 // importing a separate Value.IndexOnlyValue marker interface).
 //
@@ -29,10 +29,12 @@ package values
 // Per the Java doc, ROW_NUMBER over distance(<vector>, queryVec)
 // followed by `<= K` is the K-NN search pattern that gets
 // transformed into a DistanceRankValueComparison + matched against
-// HNSW indexes. The Go seed does NOT yet implement that transform —
-// the supporting Value types (Euclidean / Cosine / Dot-product
-// DistanceRowNumberValue specialisations) aren't ported. The bare
-// RowNumberValue surface is enough for parser / planner reachability.
+// HNSW indexes. Go implements that transform in
+// predicates/distance_rank_transform.go (the port of Java's
+// RowNumberValue.transformComparisonMaybe), with Java's four
+// metric-specific classes unified into DistanceRowNumberValue
+// (value_distance_row_number.go). This bare RowNumberValue is the
+// PRE-transform shape the parser constructs.
 //
 // Result type: NotNullLong (ROW_NUMBER is always populated, 1-based).
 type RowNumberValue struct {

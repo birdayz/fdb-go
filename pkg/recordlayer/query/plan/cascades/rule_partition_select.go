@@ -638,6 +638,11 @@ func computeTransitiveCorrelationOrder(
 	}
 
 	// Direct dependency map: alias → set of owned aliases it depends on.
+	// Quantifier.GetCorrelatedTo() returns the empty set in Go (registered
+	// divergence, DIVERGENCES.md): in the flat canonical select this term
+	// is empty anyway — join predicates live on the Select, not inside the
+	// legs — and buried merge-leg deps are re-exposed separately via
+	// quantifierMergeSeedLegDeps (RFC-142).
 	directDeps := make(map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{}, len(quantifiers))
 	for _, q := range quantifiers {
 		deps := make(map[values.CorrelationIdentifier]struct{})

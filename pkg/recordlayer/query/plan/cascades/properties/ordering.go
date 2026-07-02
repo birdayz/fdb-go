@@ -75,18 +75,18 @@ func (o Ordering) NullsFirstAt(i int) bool {
 // Per-operator semantics:
 //
 //	FullUnorderedScan: IsKnown=false (FDB scan order is by primary
-//	    key, but the Cascades layer treats the unordered-scan
-//	    expression as truly unordered — index-access rules will
-//	    refine this when they land).
+//	    key, but the LOGICAL unordered-scan expression is treated as
+//	    truly unordered; ordered access is modeled by the physical
+//	    ordered-scan wrappers, which advertise their ordering via
+//	    OrderingHinter).
 //	Sort: IsKnown=true, Keys = the sort keys.
 //	Filter / Projection / TypeFilter: inherits child ordering (these
 //	    operators preserve row order).
-//	Distinct: inherits child ordering iff the inner is sorted by
-//	    the distinct's grouping keys (else IsKnown=false). The seed
-//	    conservatively returns IsKnown=false — Java's analysis is
-//	    sharper when it has the grouping key set.
-//	Union / Intersection: IsKnown=false (concat / merge loses order
-//	    in the seed; merge-sort union is a future variant).
+//	Distinct / Unique: inherits child ordering (dedup drops repeats
+//	    without reordering survivors — see the case arms below).
+//	Union / Intersection: IsKnown=false (logical concatenation loses
+//	    order; ordered physical set operations advertise theirs via
+//	    OrderingHinter).
 //	Insert / Update / Delete: inherits inner ordering (DML is
 //	    pass-through).
 //
@@ -122,12 +122,12 @@ func EstimateOrdering(e expressions.RelationalExpression) Ordering {
 	case *expressions.DeleteExpression:
 		return inheritFromInner(v.GetInner())
 	case *expressions.LogicalDistinctExpression:
-		// Distinct preserves the inner's ordering when the inner is
-		// sorted — duplicate elimination doesn't reorder rows; it just
-		// drops repeats. The seed conservatively returns the inner's
-		// ordering directly. Java's analysis is sharper (only preserves
-		// when the inner ordering aligns with the distinct grouping
-		// keys) but for the seed-level use case this is sufficient.
+		// Distinct preserves the inner's ordering — duplicate
+		// elimination doesn't reorder rows; it just drops repeats, so
+		// the inner's ordering is returned directly. Java's
+		// OrderingProperty is more granular (it only preserves
+		// orderings aligned with the dedup keys, which matters for its
+		// equality-bound-key bookkeeping Go does not track here).
 		return inheritFromInner(v.GetInner())
 	case *expressions.LogicalUniqueExpression:
 		// Unique (PK-based dedup) preserves inner ordering — same

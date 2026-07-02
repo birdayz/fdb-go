@@ -12,8 +12,8 @@ import (
 // equality check treats them as equal.
 //
 // Ports Java's `com.apple.foundationdb.record.query.plan.cascades.AliasMap`.
-// The Java class is 750 lines; this seed exposes the surface used by the
-// seed expressions:
+// The Java class is 750 lines; Go exposes the surface this package's
+// expressions actually use:
 //   - construction (Empty, Of, Builder)
 //   - lookup (GetTarget, GetSource)
 //   - composition (Compose) — used when descending into nested expressions

@@ -30,8 +30,8 @@ import (
 //     trees where the RecursiveUnion's quantifiers could form
 //     back-edges through the Memo).
 //   - Switch-on-concrete-type for constructor dispatch — each
-//     concrete RelationalExpression type the seed exposes has an
-//     arm. Adding a new type requires extending this switch.
+//     concrete RelationalExpression type has an arm. Adding a new
+//     type requires extending this switch.
 //
 // Returns an error if any reachable expression is of a type
 // unknown to this extractor — surfacing the missing arm rather
@@ -368,7 +368,7 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 // fresh expression of the same concrete type with the supplied
 // quantifiers.
 //
-// Concrete RelationalExpression types in the seed do NOT implement
+// The concrete RelationalExpression types do NOT implement
 // WithChildren — their constructors take operator-specific args
 // (predicates, sort keys, etc.) that the generic rebuilder doesn't
 // have. Instead, ExtractBestPlan has explicit switch arms for those
@@ -377,7 +377,7 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 // extraction without forcing a switch-arm extension.
 //
 // Mirrors Java's `RelationalExpressionWithChildren.withNewChildren`
-// for the seed-relevant subset.
+// for that wrapper subset.
 type WithChildren interface {
 	// WithChildren returns a fresh expression of the same concrete
 	// type, using the supplied quantifiers in place of the originals.

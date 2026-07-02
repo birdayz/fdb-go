@@ -11,9 +11,9 @@ package values
 //
 // The child Value must evaluate to a record-shaped object that
 // carries a "version" field — typically a QuantifiedObjectValue
-// flowing FDBQueriedRecord. The seed extracts via map["version"]
-// lookup; downstream consumers wire the actual FDBQueriedRecord
-// type when execution lands.
+// flowing the queried record. Go extracts via map["version"]
+// lookup on the standard row shape; a consumer that flows a typed
+// FDBQueriedRecord must populate that entry.
 //
 // Type is nullable VERSION (12-byte composite). NULL when the
 // record's version is unknown / unset.
@@ -40,7 +40,7 @@ func (*VersionValue) Type() Type { return NullableVersion }
 
 // Evaluate extracts the version from the child's evaluated value.
 // The child is expected to produce a map with a "version" key (the
-// seed's row-shape), or a struct with a similar accessor.
+// standard row-shape), or a struct with a similar accessor.
 //
 // Returns nil if:
 //   - Child is nil-shaped or evaluates to nil.
@@ -60,7 +60,7 @@ func (v *VersionValue) Evaluate(evalCtx any) (any, error) {
 	if rec == nil {
 		return nil, nil
 	}
-	// The seed's row-shape is map[string]any with field name keys.
+	// The row-shape is map[string]any with field name keys.
 	// Map lookup for "version" lifts the version bytes / tuple.
 	if m, ok := rec.(map[string]any); ok {
 		if ver, ok := m["version"]; ok {

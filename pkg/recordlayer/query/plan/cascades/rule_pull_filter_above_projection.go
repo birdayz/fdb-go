@@ -11,7 +11,7 @@ import (
 //
 //	Projection([cols], Filter(P, X))  →  Filter(P, Projection([cols], X))
 //
-// Soundness: LogicalProjection in the seed doesn't reshape rows
+// Soundness: LogicalProjection doesn't reshape rows
 // (GetResultValue is the inner's flowed-object pass-through; the
 // projection list is a side channel describing exposed columns).
 // FieldValue references inside P resolve identically either side.

@@ -14,16 +14,15 @@ import (
 //	TypeFilter([A], Scan(A))            → Scan(A)
 //	TypeFilter([B], Scan(A, B))         → no change (B is a strict subset)
 //
-// Why this matters in the seed: convertScan emits a single-record-type
-// Scan, and an upstream `TypeFilter` is sometimes layered on by callers
-// that don't know the scan was already narrowed to that type. Without
-// this rule the planner would carry a redundant operator through to
-// the physical phase, where the cost model would prefer the bare scan
-// — but B4 cost isn't here yet, and even after B4 the rewrite is a
-// pure simplification (no information lost).
+// Why this matters: convertScan emits a single-record-type Scan, and
+// an upstream `TypeFilter` is sometimes layered on by callers that
+// don't know the scan was already narrowed to that type. Without this
+// rule the planner would carry the redundant operator to the physical
+// phase for the cost model to discount; the rewrite is a pure
+// simplification (no information lost).
 //
 // Java equivalent: handled implicitly by the cost preference for fewer
-// operators. Seed implements it directly because the static rewrite is
+// operators. Go implements it directly because the static rewrite is
 // trivially safe and produces a concretely-simpler plan tree.
 type TypeFilterRedundantOverScanRule struct {
 	matcher matching.BindingMatcher

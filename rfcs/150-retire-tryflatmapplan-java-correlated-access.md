@@ -174,3 +174,43 @@ PATH A branch before its PATH B replacement is EXPLAIN+row-count-proven.**
 data-access muzzle; the B1 structural winner-selection invariant; LEFT/FULL OUTER residual-placement
 reconciliation; the no-residual-vs-residual interaction map. **Out:** `matchBoundPrefixIsCorrelated`
 (retained for intersection exclusion); `Compensation` construction; anything RFC-148 (Phase 1) owns.
+
+## 8. Outcome — implemented; rationale relocated from `planner.go` (RFC-175 B3)
+
+Both pieces landed (`tryFlatMapPlan`, `refIsJoinLeg`, and `isSimpleResidualCompensation` no longer exist
+outside history-pointer comments). This section is the permanent home for the rationale that previously lived
+as comment-essays in `planner.go`; the in-source comments now state the invariant and point here.
+
+**B1 / muzzle retirement.** `OptimizeInputsTask` construction is gated to PHYSICAL parent members
+(`unified_tasks.go`, the 1:1 port of Java `CascadesPlanner.java:524`), and the `!refIsJoinLeg` muzzle — which
+force-`InsertFinal`'d a join-leg ref's compensations so a re-optimized standalone leg filter could not win and
+sever the join's correlation feed (0 rows) — is deleted. A join-leg ref takes the same standalone consumption
+path (`pushDataAccessTasks`) and the same growth-keyed re-entry guard (RFC-148 §3c) as any other ref. The
+structural invariant that makes this safe: a correlated leg's group is pruned to a winner only as the inner
+child of the binding physical join, outer alias live — never as a free-standing group — so a correlated SUBSEL
+scan cannot be stamped a standalone winner. `compensationSafeForYield`'s OUTER-correlation guard is RETAINED
+as defense-in-depth for the same property (the Piece-1 review condition: the guard stays even though the
+task-graph invariant alone was proven byte-identical).
+
+**Rot-fix (landed after B1a).** The predicate-SHAPE restriction the old `isSimpleResidualCompensation`
+allowlist carried (simple non-IN `ComparisonPredicate`s only) is retired: a compound/OR or IN residual now
+routes through `yieldUnknown` and re-optimizes to an index plan instead of silently degrading to a full scan.
+The shape gate was unsafe in RFC-148 Phase 1 only because materializing such a residual on a partition-SUBSEL
+join leg produced a nil-inner Fetch shell that the NLJ embedded → `Fetch(<nil>)` / 0 rows (the PR-#201 class,
+§0); B1a's nil-safe join-child selection closed that, so the materialized leg filter is no longer a degenerate
+winner. The surviving halves of the old allowlist are correlation/inner-scan SAFETY, not shape: the vector
+top-K / aggregate inner-scan guard and the OUTER-correlation guard, both in `compensationSafeForYield`.
+
+**Probe-fed-residual exception to the OUTER-correlation guard.** A residual correlated to an OUTER alias is
+rejected as a standalone leg filter — realizing it severs the join's correlation feed (the `Fetch(<nil>)`
+/ 0-row shape: the join key itself lives in the residual, e.g. `t.fk = o.id` over a constant-bound
+`Scan(T,[k=5])` whose probe carries no correlation). EXCEPTION: when the compensation's own bound-prefix SCAN
+is already correlated to that same alias, the probe itself establishes the correlation feed (e.g. the inner
+U-leg `Scan(U,[id=t.fk])` is a T-driven PK probe), so the residual (`u.c = t.a`) is a SECONDARY filter on the
+already-bound probe, not the severed primary join key — it is admitted. Without the exception, the data-access
+path could never produce the cheap correlated index-nested-loop inner whenever a second, non-sargable
+cross-correlation predicate rides along: the leg would fall to the O(N×M) full-scan NLJ instead of the O(N)
+PK probe. Mechanically, the probe correlations are recovered from the scan's `ComparisonRanges`
+(`compensationProbeCorrelations`) because the data-access scan wrappers deliberately hide them at
+`GetCorrelatedToWithoutChildren`; query-parameter `ConstantObjectValue` aliases are execution constants, not
+row correlations, and are subtracted before the guard runs (`deletePredicateConstantObjectAliases`).

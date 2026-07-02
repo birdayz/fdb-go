@@ -1,14 +1,13 @@
 package values
 
-// Phase 4.0 Type hierarchy.
+// The Type hierarchy.
 //
 // Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.typing.Type` —
-// the rich type system used throughout the planner. Since Track G1
-// this is the ONLY type representation in the package —
-// the legacy `ValueType` enum + `FromValueType` / `ToValueType` /
-// `ValueRichType` bridges retired. Each Value impl's `Type()` now
-// returns a rich Type directly.
+// the rich type system used throughout the planner, and the ONLY type
+// representation in the package (the legacy `ValueType` enum +
+// `FromValueType` / `ToValueType` / `ValueRichType` bridges are
+// retired). Each Value impl's `Type()` returns a rich Type directly.
 //
 // File contents: TypeCode enum mirroring Java's well-known codes,
 // the Type interface (Code + IsNullable + a few shape predicates),
@@ -17,7 +16,7 @@ package values
 // IsPromotable / MaximumType / MaximumTypeOfMany promotion lattice,
 // and TypeRepository for named-type lookup.
 //
-// Status (post-Track-G1):
+// Status:
 //   - Structured types: RecordType, ArrayType, EnumType, RelationType ✅
 //   - Primitive singletons: NullableX / NotNullX for every primitive,
 //     plus NullType, UnknownType, NoneType, AnyType ✅
@@ -172,16 +171,16 @@ type PrimitiveType struct {
 }
 
 // NewPrimitiveType constructs a PrimitiveType. Panics if code is a
-// non-primitive code (RECORD / ARRAY / RELATION) — those need their
-// dedicated structured-type constructors which the seed doesn't
-// provide yet. UNKNOWN / ANY / NONE / NULL are accepted because
+// structured code (RECORD / ARRAY / ENUM / RELATION) — those have
+// dedicated constructors (NewRecordType / NewArrayType / NewEnumType /
+// NewRelationType). UNKNOWN / ANY / NONE / NULL are accepted because
 // they're frequently useful as placeholder Types even though they're
 // not "primitive" per IsPrimitive's sense.
 func NewPrimitiveType(code TypeCode, nullable bool) *PrimitiveType {
 	switch code {
 	case TypeCodeRecord, TypeCodeArray, TypeCodeRelation, TypeCodeEnum:
 		panic("NewPrimitiveType: structured TypeCode " + code.String() +
-			" requires its dedicated constructor (not yet ported)")
+			" requires its dedicated constructor (NewRecordType / NewArrayType / NewEnumType / NewRelationType)")
 	}
 	return &PrimitiveType{TypeCode: code, Nullable: nullable}
 }
@@ -364,7 +363,7 @@ type RecordType struct {
 //
 // Panics on duplicate field names within Fields (anonymous fields
 // with Name="" are exempt — they're disambiguated by Ordinal). Java
-// errors at the same point with SemanticException; the Go seed
+// errors at the same point with SemanticException; Go
 // panics so callers get an immediate stack trace.
 func NewRecordType(name string, nullable bool, fields []Field) *RecordType {
 	seenNames := make(map[string]struct{}, len(fields))

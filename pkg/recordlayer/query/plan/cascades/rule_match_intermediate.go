@@ -34,11 +34,11 @@ import (
 //
 // Ports Java's
 // com.apple.foundationdb.record.query.plan.cascades.rules.MatchIntermediateRule.
-// The seed uses ordered quantifier matching (query[i] <-> candidate[i])
+// Go uses ordered quantifier matching (query[i] <-> candidate[i])
 // rather than Java's full graph-matching enumeration via
 // RelationalExpression.match(). This handles the common case (same
-// quantifier count, same order) and will be extended to the full
-// combinatorial matcher as needed.
+// quantifier count, same order); extend to the full combinatorial
+// matcher if a candidate shape ever needs permuted matching.
 type MatchIntermediateRule struct {
 	matcher *ExpressionMatcher[expressions.RelationalExpression]
 }
@@ -169,11 +169,10 @@ func findReferencingExpressionsForCandidate(
 // Checks structural equality of the expressions and verifies that
 // every quantifier pair is backed by a child PartialMatch.
 //
-// Seed implementation: ordered quantifier matching (queryQs[i] <->
-// candidateQs[i]). Java's full implementation uses
-// RelationalExpression.match() which enumerates all valid quantifier
-// permutations; the seed handles the common case of same-order,
-// same-count quantifiers.
+// Ordered quantifier matching (queryQs[i] <-> candidateQs[i]).
+// Java's full implementation uses RelationalExpression.match(), which
+// enumerates all valid quantifier permutations; Go handles the
+// common case of same-order, same-count quantifiers.
 func matchIntermediateWithCandidate(
 	call *ExpressionRuleCall,
 	queryExpr expressions.RelationalExpression,
@@ -402,8 +401,8 @@ func matchSingleSourceAgainstSelect(
 		ph, ok := candPred.(*predicates.Placeholder)
 		if !ok {
 			// Non-Placeholder candidate predicates (e.g. constant
-			// tautologies) are ignored for the seed — they don't
-			// constrain the match.
+			// tautologies) are ignored — they don't constrain the
+			// match.
 			continue
 		}
 
@@ -513,7 +512,7 @@ func matchSingleSourceAgainstSelect(
 	boundAliasMap := aliasBuilder.Build()
 
 	// Build the predicate map. BuildMaybe returns nil on conflicts
-	// (shouldn't happen in the single-source seed). A nil result
+	// (not expected for a single-source expression). A nil result
 	// with bound predicates means we hit a mapping conflict — bail.
 	var predMultiMap *PredicateMultiMap
 	if boundCount > 0 || residualCount > 0 {

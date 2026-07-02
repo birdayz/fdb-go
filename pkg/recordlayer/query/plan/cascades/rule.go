@@ -5,30 +5,23 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
-// CascadesRule — seed.
+// CascadesRule — the lightweight rule shape for QueryPredicate / Value
+// rewrites.
 //
-// Ports Java's
-// `com.apple.foundationdb.record.query.plan.cascades.CascadesRule`
-// and `CascadesRuleCall`. A CascadesRule is a transform the planner
-// applies to a matched subtree: given a PlannerBindings produced by
-// the rule's matcher pattern, the rule's OnMatch produces one or
-// more replacement expressions.
+// Models Java's `CascadesRule` matcher + OnMatch pattern for the
+// predicate-simplification surface: given a PlannerBindings produced
+// by the rule's matcher pattern, the rule's OnMatch yields one or more
+// replacement predicates/values. These rules are driven by the
+// Simplify fixpoint driver (simplifier.go) and by FireRule in tests;
+// they yield plain values, not memo References, and carry no cost
+// hooks — deliberately, since predicate simplification is a
+// strict-reduction rewrite, not a cost-based choice.
 //
-// Seed scope:
-//
-//   - CascadesRule interface: Matcher() + OnMatch(RuleCall).
-//   - RuleCall: carries the bindings, a place to yield replacements,
-//     and a reference to the planner configuration.
-//   - YieldExpression helper: accumulates replacements produced
-//     during OnMatch. The real planner consumes these to rewrite
-//     the memo.
-//
-// Intentionally minimal. Missing from the seed:
-//
-//   - Cost estimation hooks (Phase 4.4).
-//   - Memo / Reference integration (Phase 4.3) — rule yields today
-//     produce plain values, not memo refs.
-//   - PreMatch / PostMatch hooks (Java has them for gating).
+// The planner's RelationalExpression rules are the separate
+// ExpressionRule / ImplementationRule interfaces
+// (expression_matcher.go, implementation_rule.go), driven by the task
+// stack (unified_tasks.go) with Memo/Reference integration and
+// per-phase cost models.
 
 // RuleCall is the context a CascadesRule receives on every match.
 // OnMatch reads bindings and appends replacement expressions via
@@ -74,12 +67,13 @@ type CascadesRule interface {
 	OnMatch(call *RuleCall)
 }
 
-// FireRule is a simple driver for seed-time rule testing: run
-// `rule.Matcher()` against `in`, and for every successful match
-// invoke `rule.OnMatch`. Returns the aggregate list of yielded
-// replacements across all matches. Production rule driving lives
-// in the CascadesPlanner task stack (Phase 4.6); this helper
-// exists so the seed has a testable entry point.
+// FireRule drives a predicate/value rule once against `in`: run
+// `rule.Matcher()`, and for every successful match invoke
+// `rule.OnMatch`. Returns the aggregate list of yielded replacements
+// across all matches. Used by rule unit tests; production predicate
+// simplification runs through Simplify's fixpoint loop
+// (simplifier.go), and planner rules through the task stack
+// (unified_tasks.go).
 func FireRule(rule CascadesRule, in any) []any {
 	matcher := rule.Matcher()
 	matches := matcher.BindMatches(matching.NewBindings(), in)

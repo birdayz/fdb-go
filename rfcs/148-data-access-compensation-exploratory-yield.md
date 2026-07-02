@@ -142,6 +142,18 @@ must **re-run iff the consumed partial-match set GREW** (key on the match-partit
 chain task-count gate that would **trip the 10-round cap** (`unified_tasks.go:62-66`) on a re-entry
 regression — "determinism 5×" is not a convergence proof (the cap *masks* non-convergence).
 
+**3c addendum (implemented form — the requested-ordering exemption).** The growth-keyed guard applies ONLY
+when the ref carries NO requested ordering. A requested ordering can be propagated into a ref AFTER a first
+consumption at unchanged match count, and `DataAccessForMatchPartition` (which takes the requested orderings)
+would then mint a sort-eliminating ordered scan that a count-only guard would wrongly suppress. A missed
+ordered scan degrades the plan to the Go-extension in-memory-sort fallback (`ImplementInMemorySortRule`) — an
+extra-Sort plan-shape regression with unbounded materialization on large inputs, cf. §3d. (§3d's original
+"Go has no physical sort" phrasing predates that fallback; the plan-shape stakes stand, the wrong-results
+framing does not.) With an ordering present the consumption re-runs every round; convergence there is bounded
+by `Reference.Insert` dedup + the 10-round exploration cap. Join legs take the same growth-keyed guard (the
+muzzle is retired — RFC-150 §8); the cross-candidate intersection arm keeps its own `hasIntersectionFinal`
+guard. (Rationale relocated from the `planner.go` comment-essay per RFC-175 B3.)
+
 **3d. Ordering preservation.** A compensation inserted into the exploratory set mid-exploration must still
 receive the requested-ordering push (`PushRequestedOrderingThrough{Filter,Select}Rule`) so the inner scan's
 matched ordering eliminates the in-memory sort (Go has no physical sort — a missed push = wrong/extra-sort

@@ -16,17 +16,14 @@ package values
 // Result type: INT (NOT NULL — every store has an incarnation).
 //
 // Per Java's contract, eval requires a non-null FDBRecordStoreBase;
-// the seed accepts an evalCtx that exposes an "incarnation" key (the
+// Go accepts an evalCtx that exposes an "incarnation" key (the
 // row-shape harness pattern shared with VersionValue), and otherwise
-// returns nil — the actual store-bound eval lands when execution
-// integration wires `*FDBRecordStore.GetIncarnation()` (currently
-// not yet exposed; the field exists in StoreHeader but isn't
-// surfaced through a public method).
-//
-// Until then this Value is parser / planner / fuzz-reachable but
-// does not have a runtime evaluator that touches a real store —
-// matches the existing "non-evaluable yet" pattern of ObjectValue,
-// QueriedValue, CardinalityValue.
+// returns nil. FDBRecordStore.GetIncarnation() exists on the store
+// side, but no execution path threads a store into this Value's
+// Evaluate — it is parser / planner / fuzz-reachable without a
+// store-bound runtime evaluator, matching the non-evaluable
+// placeholder pattern of ObjectValue / QueriedValue /
+// CardinalityValue.
 type IncarnationValue struct{}
 
 // NewIncarnationValue constructs the singleton-shape leaf.

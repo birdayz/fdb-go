@@ -22,9 +22,10 @@ import (
 // is independent of which physical operator emits the rows.
 //
 // Java has multiple Intersection variants (ordered, unordered,
-// primary-key-based, value-based); the seed always emits the
-// generic RecordQueryIntersectionPlan. Specialised flavors land
-// when their consumers do.
+// primary-key-based, value-based); this rule always emits the
+// generic RecordQueryIntersectionPlan (the primary-key-keyed
+// cross-candidate intersection is built separately by the
+// data-access path — WithPrimaryKeyIntersector, planner.go).
 type ImplementIntersectionRule struct {
 	matcher matching.BindingMatcher
 }

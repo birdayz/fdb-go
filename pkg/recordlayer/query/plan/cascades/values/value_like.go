@@ -22,10 +22,10 @@ package values
 // FuzzLikeMatch / FuzzLikeMatchEscape against a regex oracle and
 // matches Java's `Comparisons.likeMatcher` semantics.
 //
-// Note: ESCAPE clauses are accepted via the seed's no-escape
-// default (escape rune = 0). Future LikeOperatorValue extension
-// can carry an Escape field; the underlying LikeMatch already
-// supports it.
+// Note: this Value-level LIKE carries no ESCAPE (escape rune = 0).
+// ESCAPE support lives on the predicate layer (Comparison.Escape,
+// predicates/comparisons.go) and in the shared LikeMatch helper —
+// add the field here only if a Value-level ESCAPE consumer appears.
 //
 // Evaluate semantics — Kleene 3VL:
 //   - non-NULL probe + non-NULL pattern: true if pattern matches,

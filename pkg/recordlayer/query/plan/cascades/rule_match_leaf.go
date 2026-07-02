@@ -97,11 +97,12 @@ type leafMatchResult struct {
 // alias map needs to be tested. Subsumption is checked via structural
 // equality (EqualsWithoutChildren).
 //
-// This is the seed implementation of Java's
-// RelationalExpression.subsumedBy for leaf expressions. The full
-// implementation will be expression-type-specific (e.g.
-// FullUnorderedScanExpression checks access hints); the seed covers
-// the structural-equality path which handles the common case.
+// This is Go's implementation of Java's
+// RelationalExpression.subsumedBy for leaf expressions. Java's is
+// expression-type-specific (e.g. FullUnorderedScanExpression also
+// checks access hints — a surface Go does not carry); Go covers the
+// structural-equality path, which handles the leaf shapes the
+// candidate builders produce.
 func matchLeafWithCandidate(
 	queryExpr expressions.RelationalExpression,
 	candidateExpr expressions.RelationalExpression,

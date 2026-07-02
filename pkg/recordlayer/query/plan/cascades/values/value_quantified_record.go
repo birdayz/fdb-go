@@ -25,16 +25,15 @@ package values
 //   - Per-message proto field access uses QuantifiedObjectValue and
 //     descends via FieldValue chains.
 //
-// In the Go seed both Values evaluate compatibly through the row-
-// shape harness — the runtime distinction surfaces when execution
-// integration wires the actual FDBQueriedRecord-vs-Message
-// dispatch. The TYPE-level distinction matters NOW for planner
-// matchers that test for the QuantifiedRecordValue marker
-// specifically (e.g. MatchCandidate-side rules that need the full
-// queried record).
+// In Go both Values evaluate identically through the row-shape
+// harness — the executor does not dispatch FDBQueriedRecord vs
+// Message, so only the TYPE-level distinction is live: planner
+// matchers test for the QuantifiedRecordValue marker specifically
+// (e.g. MatchCandidate-side rules that need the full queried
+// record).
 //
 // Eval contract: returns the queried-record bound to `alias` in the
-// eval context. The seed accepts a `map[string]any` keyed by alias
+// eval context. Go accepts a `map[string]any` keyed by alias
 // name (sharing VersionValue / IncarnationValue's harness pattern);
 // a nil / non-map / missing-key context returns nil.
 type QuantifiedRecordValue struct {
@@ -47,7 +46,7 @@ type QuantifiedRecordValue struct {
 //
 // resultType is expected to be record-typed (the Java constructor
 // admits any Type but downstream planner matchers select on
-// resultType.isRecord()). The seed doesn't enforce — Type kind
+// resultType.isRecord()). Go doesn't enforce — Type kind
 // inspection is planner-side; constructor is permissive to keep
 // the test surface honest.
 func NewQuantifiedRecordValue(alias CorrelationIdentifier, resultType Type) *QuantifiedRecordValue {

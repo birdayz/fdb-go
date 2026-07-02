@@ -31,10 +31,11 @@ type ExpressionMatchAdjuster interface {
 // query Reference but pointing to the parent candidate Reference.
 //
 // This is the Go equivalent of Java's AdjustMatchRule, which fires on
-// PartialMatches via a TransformPartialMatch task. In the Go seed,
+// PartialMatches via a TransformPartialMatch task. In Go,
 // AdjustMatches is called explicitly after MatchLeafRule and
 // MatchIntermediateRule have run, rather than being scheduled as a
-// rule.
+// rule (see also AdjustPartialMatchesForRef at the data-access
+// consumption boundary).
 //
 // Ports Java's
 // com.apple.foundationdb.record.query.plan.cascades.rules.AdjustMatchRule.
@@ -195,10 +196,9 @@ func matchWithCandidate(pm *PartialMatchImpl, candidateExpr expressions.Relation
 	otherRangesOver := candidateQ.GetRangesOver()
 
 	// Java: if (!candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo()))
-	// In the seed, deep correlation computation is not yet implemented
-	// (both return empty sets), so this check always passes. We include
-	// it for structural fidelity — it will naturally become meaningful
-	// when deep correlation computation lands.
+	// Go checks the candidate expression's NODE-LOCAL correlations only
+	// (see correlatedToEquals) — part of the Quantifier.GetCorrelatedTo
+	// divergence registered in DIVERGENCES.md.
 	if !correlatedToEquals(candidateExpr, otherRangesOver) {
 		return nil
 	}
@@ -234,9 +234,10 @@ func matchWithCandidate(pm *PartialMatchImpl, candidateExpr expressions.Relation
 
 // OrderingPartsComputer is an optional interface that MatchCandidate
 // implementations can satisfy to provide ordering-part computation
-// for MatchableSortExpression adjustment. The MatchCandidate interface
-// itself does not require this method because most seed candidates
-// don't yet need it.
+// for MatchableSortExpression adjustment. It is optional rather than
+// part of the MatchCandidate interface because only order-providing
+// candidates implement it (ValueIndexScanMatchCandidate today; the
+// caller below falls back for the rest).
 //
 // Ports the computeMatchedOrderingParts method from Java's
 // MatchCandidate / ValueIndexLikeMatchCandidate.
@@ -365,29 +366,20 @@ func adjustMatchForSelect(sel *expressions.SelectExpression, pm *PartialMatchImp
 		Build()
 }
 
-// correlatedToEquals checks whether a candidate expression's
-// getCorrelatedTo set equals the child Reference's getCorrelatedTo set.
-// In the seed, deep correlation computation is not yet implemented, so
-// we compare GetCorrelatedToWithoutChildren of the expression against
-// the empty set (which is what Reference.getCorrelatedTo returns in the
-// seed). This matches Java's check:
+// correlatedToEquals is Go's stand-in for Java's check
 //
 //	!candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())
 //
-// When deep correlation computation lands, this function should use the
-// full getCorrelatedTo on both sides.
+// Since AdjustMatch fires on single-quantifier expressions where the
+// quantifier IS the child, the expression's full getCorrelatedTo
+// equals its node-local correlations union the child's — so requiring
+// ZERO node-local correlations verifies the expression introduces no
+// correlations beyond what the child already has. This is a stricter
+// approximation of Java's set equality (part of the
+// Quantifier.GetCorrelatedTo divergence, DIVERGENCES.md): switching to
+// the full Reference.GetCorrelatedTo comparison on both sides changes
+// what adjusts and needs its own review cycle.
 func correlatedToEquals(expr expressions.RelationalExpression, _ *expressions.Reference) bool {
-	// In the seed, both sides return empty correlation sets. The
-	// expression's getCorrelatedToWithoutChildren is the node-local
-	// correlations; the full getCorrelatedTo would add children's
-	// correlations. Since AdjustMatch fires on single-quantifier
-	// expressions where the quantifier IS the child, the full
-	// getCorrelatedTo equals getCorrelatedToWithoutChildren union
-	// child's correlations. The check verifies the expression doesn't
-	// introduce correlations beyond what the child already has.
-	//
-	// For now, we check that the expression has no node-local
-	// correlations, which is the seed-appropriate approximation.
 	nodeCorrs := expr.GetCorrelatedToWithoutChildren()
 	return len(nodeCorrs) == 0
 }

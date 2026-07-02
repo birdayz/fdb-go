@@ -11,11 +11,10 @@ import (
 // RuleCall (which targets QueryPredicate / Value rules) — split per
 // type so each rule shape gets a strongly-typed Yield.
 //
-// Ports the seed surface of Java's
-// `com.apple.foundationdb.record.query.plan.cascades.CascadesRuleCall`.
-// Java's class is 632 lines covering exploratory / final / plan /
-// partial-match yields, planner-phase plumbing, and traversal-state
-// hooks. The seed exposes:
+// Ports the consulted surface of Java's
+// `com.apple.foundationdb.record.query.plan.cascades.CascadesRuleCall`
+// (Java's class also covers partial-match yields, planner-phase
+// plumbing, and traversal-state hooks). Go exposes:
 //
 //   - Bindings: the pattern matcher's results, keyed by matcher
 //     identity (already provided by `matching.PlannerBindings`).
@@ -32,9 +31,13 @@ import (
 //   - Yielded(): the list of expressions yielded so far. Tests + the
 //     planner's traversal driver consume this.
 //
-// The four flavoured yields (exploratory / final / plan / unknown)
-// collapse to one Yield until the planner phases / Memo flavour
-// distinctions actually matter (B5 / B6 follow-on).
+// Java's flavoured yields (exploratory / final / plan / unknown) map
+// onto the single Yield here: the task-stack driver installs a
+// per-phase yield function (yieldFn — nil during exploration, so Yield
+// goes to Reference.Insert; both InsertFinal and Insert during
+// PLANNING; see unified_tasks.go and expression_rule_adapter.go), and
+// the data-access path routes by physicality via the planner's
+// yieldUnknown.
 type ExpressionRuleCall struct {
 	Bindings    *matching.PlannerBindings
 	Reference   *expressions.Reference

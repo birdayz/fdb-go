@@ -17,7 +17,7 @@ package values
 //   - Non-empty array → first element.
 //
 // Type is the array's element type (Java's constructor enforces
-// the array.elementType == default.type invariant; the seed
+// the array.elementType == default.type invariant; Go
 // accepts whatever type the caller provides).
 type FirstOrDefaultValue struct {
 	Array   Value

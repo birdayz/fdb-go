@@ -17,17 +17,16 @@ import (
 // because the dedup commutes with filter and union.
 //
 // Optimization argument: distributing the filter into each operand
-// gives downstream physical-plan rules (B5 Batch A) a chance to push
-// the predicate INTO each operand's scan / index — a much bigger win
-// than filtering the unioned stream once.
+// gives the downstream data-access / implementation rules a chance to
+// push the predicate INTO each operand's scan / index — a much bigger
+// win than filtering the unioned stream once.
 //
 // Note: this rule produces a structurally LARGER tree (N filters
 // instead of 1). The benefit comes from follow-on rules; without
-// downstream pushdown, the rewrite is a wash. Plausible cost-model
-// regression; the seed implements it directly because (a) the
-// SemanticEquals fallback in Reference.Insert means re-firing on
-// the same input is dedup'd, and (b) the larger seed memo is what
-// the cost-driven extraction (B4 follow-on) needs to compare.
+// downstream pushdown, the rewrite is a wash. That is safe because
+// (a) the SemanticEquals fallback in Reference.Insert means re-firing
+// on the same input is dedup'd, and (b) the larger memo is exactly
+// what cost-driven extraction needs to compare alternatives.
 type PushFilterThroughUnionRule struct {
 	matcher matching.BindingMatcher
 }

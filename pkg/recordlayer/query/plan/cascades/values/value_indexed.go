@@ -12,11 +12,6 @@ package values
 // IndexedValue is a "non-evaluable" Value — it represents a
 // position in an index key, not a computed result. Calling
 // Evaluate panics so misuse surfaces loudly.
-//
-// The seed implementation ports the type structure + the panic-on-
-// Evaluate contract. Pattern-matching against IndexedValue is the
-// consumer; that consumer ports alongside MatchCandidate / index-
-// equality rules in B5 Batch A's later phase.
 type IndexedValue struct {
 	ResultType Type
 }

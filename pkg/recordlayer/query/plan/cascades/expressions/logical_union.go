@@ -5,22 +5,20 @@ import (
 )
 
 // LogicalUnionExpression represents the bag-union (UNION ALL) of its N
-// children. Java's class is marked `ChildrenAsSet` — the planner is
-// free to permute children freely and a permutation-aware equality
-// check is required to keep semantic-equality correct under reordering.
-// The seed's positional SemanticEquals does NOT enumerate
-// permutations; equality of two unions over the same children but in
-// different orders returns false. The full alias-permutation matcher
-// lands alongside MatchableSortExpression / B2 follow-on.
+// children. Java's class is marked `ChildrenAsSet` (so is Go's — see
+// ChildrenAsSet below): the planner may permute children, and
+// SemanticEquals matches ChildrenAsSet operators permutation-aware
+// (matchChildrenPermuted, capped at MaxPermutationChildren; beyond the
+// cap it falls back to positional pairing — dedup may then keep
+// permuted duplicates, never merges distinct semantics).
 //
 // Ports the structural surface of Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalUnionExpression`.
 // Java's GetResultValue is a `RecordQuerySetPlan.mergeValues(children)`
-// reduction that picks a unified row-shape Value across children. We
-// approximate by returning the first child's flowed object value —
-// good enough for seed shape inspection. Real merge lands when the
-// physical executor (Track C) needs to materialise the union and
-// row-shape compatibility actually has to be enforced.
+// reduction that picks a unified row-shape Value across children. Go
+// approximates by returning the first child's flowed object value —
+// union legs are column-aligned by construction, so any child's shape
+// stands in (physicalUnionWrapper does the same).
 type LogicalUnionExpression struct {
 	quantifiers []Quantifier
 }

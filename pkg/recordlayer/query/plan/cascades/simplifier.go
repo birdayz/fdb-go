@@ -5,15 +5,16 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
-// Simplifier — seed Phase 4.6 driver.
+// Simplifier — the predicate-rewrite fixpoint driver.
 //
-// Tiny fixed-point driver that applies a list of rules to a
-// QueryPredicate until no rule yields. Not a real planner (no memo,
-// no cost model, no task stack) — the Phase 4.6 CascadesPlanner
-// replaces this with a memo-based driver. Seed exists so the
-// simplification rules in DefaultSimplifyRules have a working
-// end-to-end composition point, proving the full rule-driver loop
-// works.
+// Tiny fixed-point driver that applies a list of CascadesRules to a
+// QueryPredicate until no rule yields. Deliberately not the planner
+// (no memo, no cost model, no task stack): predicate simplification
+// is a strict-reduction rewrite with no cost-based choice, so a
+// fixpoint loop is the right tool — the Java analog is the
+// `values.simplification` rule sets, not `CascadesPlanner`. Used in
+// production by rules that need eager predicate simplification
+// (EliminateNullOnEmptyRule) and by the predicate-rule tests.
 
 // Simplify iterates the rules on `pred` until no rule produces a
 // rewrite, then returns the final form. Each iteration applies every
@@ -34,8 +35,8 @@ import (
 //     NotComparisonRewriteRule and disappear (or stop matching).
 //
 // Not safe against cyclic-rewrite rule sets — real Cascades uses a
-// memo to detect cycles. The seed rule sets are termination-proven
-// per above so no cycle is possible.
+// memo to detect cycles. The rule sets this driver runs are
+// termination-proven per above so no cycle is possible.
 func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) predicates.QueryPredicate {
 	if pred == nil || len(rules) == 0 {
 		return pred
@@ -104,8 +105,8 @@ func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule) predic
 	return pred
 }
 
-// DefaultSimplifyRules returns the canonical simplification rule
-// set this shift ships. Callers pass this to Simplify for a typical
+// DefaultSimplifyRules returns the canonical simplification rule set.
+// Callers pass this to Simplify for a typical
 // "flatten + constant-fold + identity-drop" pass. Order matters:
 // flattens run first so the constant-fold rules see a flat operand
 // list; then Comparison constants fold; then Not resolves; then the

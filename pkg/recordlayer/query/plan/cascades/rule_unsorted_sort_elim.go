@@ -20,7 +20,7 @@ import (
 //
 // Java equivalent: not a dedicated rule, but the planner's cost model
 // would naturally prefer the un-wrapped X over the no-op-Sort wrapper.
-// The seed implements it directly.
+// Go implements it directly.
 type UnsortedSortElimRule struct {
 	matcher matching.BindingMatcher
 }

@@ -170,14 +170,12 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// Correlated INNER/LEFT joins are implemented as a FlatMap (O(N×logM) via
 	// the inner's correlated PK/index probes) by the leftDepsRight/rightDepsLeft
 	// branches below; uncorrelated joins fall through to the materialized NLJ.
-	// This is the single data-access-driven join path — the former Go-only
-	// tryFlatMapPlan (a hand-rolled correlated-PK-probe shortcut, RFC-150
-	// Phase-2b Piece 2) is retired: PartitionBinary/PartitionSelectRule absorb
-	// the join predicates into correlated sub-Selects and the data-access path
+	// This is the SINGLE data-access-driven join path, matching Java (which has
+	// no hand-rolled shortcut): PartitionBinary/PartitionSelectRule absorb the
+	// join predicates into correlated sub-Selects and the data-access path
 	// (MatchIntermediateRule → bindOrientedComparison) SARGs them into bare
-	// correlated probes, so the same correlated index-nested-loop chains now
-	// emerge from the standard Cascades machinery (matching Java, which has no
-	// such shortcut).
+	// correlated probes, so correlated index-nested-loop chains emerge from the
+	// standard Cascades machinery (RFC-150 §8).
 	leftCorr := values.NamedCorrelationIdentifier(leftAlias)
 	rightCorr := values.NamedCorrelationIdentifier(rightAlias)
 
@@ -308,7 +306,7 @@ func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias val
 // legReferencesAny reports whether the leg subtree ref is correlated to ANY alias
 // in targetSet (the OTHER leg's provided aliases) — directly (Reference.GetCorrelatedTo)
 // or through a source-anchored join RC whose leg QOVs GetCorrelatedTo deliberately
-// HIDES (predicates.AddMergeSeedAliases re-exposes them). This is the seed-aware
+// HIDES (predicates.AddMergeSeedAliases re-exposes them). This is the merge-seed-aware
 // hasCorrelation check: a spanning predicate pushed into a merge leg reads the
 // other leg's (possibly buried) column through a merge RC, so the correlation is
 // hidden and must be re-exposed — otherwise ImplementNestedLoopJoinRule emits a

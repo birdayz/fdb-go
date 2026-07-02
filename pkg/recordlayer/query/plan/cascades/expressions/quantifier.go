@@ -5,11 +5,12 @@ import (
 )
 
 // QuantifierKind enumerates the three flavours of Quantifier Java
-// distinguishes: ForEach, Existential, Physical. The seed implements
-// only ForEach (most common, used by every logical operator). The
-// other two land as the planner needs them — Existential when EXISTS-
-// subquery rules port (B5 Batch B), Physical when the executor tree
-// materialises (Track C).
+// distinguishes: ForEach (the default, used by every logical
+// operator), Existential (EXISTS / NOT EXISTS legs — consulted by
+// compensation to keep existential legs out of result compensation),
+// and Physical (unused in Go: the physical tree is the separate
+// plans.RecordQueryPlan hierarchy bridged by the physical wrappers,
+// not a quantifier kind).
 type QuantifierKind int
 
 const (
@@ -20,11 +21,12 @@ const (
 
 	// QuantifierExistential: the inner expression is consulted only
 	// to determine whether at least one row exists. Used by EXISTS /
-	// NOT EXISTS. NOT IMPLEMENTED in the seed.
+	// NOT EXISTS legs (see compensation.go's existential handling).
 	QuantifierExistential
 
 	// QuantifierPhysical: a quantifier in the physical (post-planning)
-	// tree. NOT IMPLEMENTED in the seed.
+	// tree. Unused in Go — the physical tree is the separate
+	// plans.RecordQueryPlan hierarchy, bridged by physical wrappers.
 	QuantifierPhysical
 )
 
@@ -111,10 +113,10 @@ func NamedForEachNullOnEmptyQuantifier(alias values.CorrelationIdentifier, range
 // The flowed-object semantics differ from ForEach: an Existential
 // quantifier doesn't make rows of the inner available to the outer's
 // predicates / projection — only the boolean "any row exists" signal.
-// Most planner rules that operate on Quantifiers care about this
-// distinction; today the seed has no such rule, so the kind is
-// available for the SQL parser to construct EXISTS shapes that future
-// rules will recognise.
+// Consumers that honor the distinction: compensation construction
+// (existential legs stay out of result compensation, compensation.go)
+// and the existential ordering-push rule
+// (PushRequestedOrderingThroughSelectExistentialRule).
 func ExistentialQuantifier(rangesOver *Reference) Quantifier {
 	return Quantifier{
 		kind:       QuantifierExistential,
@@ -201,15 +203,22 @@ func (q Quantifier) GetFlowedObjectValue() values.Value {
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner
 // expression depends on — i.e. the Quantifier's transitive correlation
-// set. Used by the planner to compute correlation order across an
-// expression tree.
+// set.
 //
-// The seed defers correlation-set computation through the inner
-// expression to a follow-on shift (needs every concrete RelationalExpression
-// to expose GetCorrelatedToWithoutChildren — which the seed does — but
-// also requires walking children, which only matters when there are
-// multi-level expression trees in flight). Today returns the empty
-// set; revisit when multi-level rules port.
+// DIVERGENCE (registered in DIVERGENCES.md): Java's Quantifier
+// delegates to rangesOver.getCorrelatedTo(); Go returns the EMPTY set,
+// even though Reference.GetCorrelatedTo (the transitive walk) is
+// implemented. The consumers compensate structurally: the IN-like
+// ordering rule's containsAll guard is disabled with the downstream
+// implementation rules carrying the real check
+// (rule_push_requested_ordering_through_in_like_select.go), AdjustMatch
+// checks node-local correlations only (rule_adjust_match.go
+// correlatedToEquals), PartitionSelectRule re-exposes buried merge-leg
+// deps itself (computeTransitiveCorrelationOrder), and
+// SplitSelectExtractIndependentQuantifiersRule computes its own walk
+// (quantifierCorrelationSet). Delegating to the Reference walk changes
+// what those guards reject and is plan-shape sensitive — it needs its
+// own review cycle, not a drive-by rewire.
 func (q Quantifier) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	return map[values.CorrelationIdentifier]struct{}{}
 }

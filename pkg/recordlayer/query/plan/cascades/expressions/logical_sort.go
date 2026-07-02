@@ -24,10 +24,11 @@ type SortKey struct {
 // Ports Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalSortExpression`.
 // Java models the ordering via a rich `RequestedOrdering` type
-// (sort-keys + distinctness + correlation set). The seed uses the
-// equivalent of Java's now-deprecated 2-arg constructor: a list of
-// (Value, reverse) pairs. Distinctness lands when the planner needs it
-// (the relevant rules port in B5 Batch B+).
+// (sort-keys + distinctness + correlation set). Go's expression
+// carries the SortKey list — value, reverse, and NULLS placement, the
+// equivalent of Java's 2-arg constructor — while the rich
+// RequestedOrdering (with Distinctness) lives on the PLANNING
+// constraint path (requested_ordering.go).
 type LogicalSortExpression struct {
 	sortKeys []SortKey
 	inner    Quantifier

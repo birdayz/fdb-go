@@ -56,7 +56,7 @@ func (s TupleSource) String() string {
 //     can only hold leaf-type Tuple-encodable values; structs are
 //     extracted via separate FieldValue chains, not through ordinal
 //     paths.
-//   - The seed enforces this via planner-checked precondition rather
+//   - Go enforces this via planner-checked precondition rather
 //     than a runtime panic — Java's Verify would crash; we surface as
 //     a no-op-ready Value that evaluates to nil if the type contract
 //     is violated.
@@ -97,7 +97,7 @@ type IndexEntryReader interface {
 // for the resultType-primitive-or-enum-or-UUID precondition; the
 // constructor doesn't enforce because the Type-classification
 // helpers (IsPrimitive / IsEnum / etc.) live alongside the planner
-// pipeline and the seed defers the check to caller (matches Java's
+// pipeline and Go defers the check to caller (matches Java's
 // Verify.verify-vs-runtime split).
 func NewIndexEntryObjectValue(alias CorrelationIdentifier, source TupleSource, ordinalPath []int, resultType Type) *IndexEntryObjectValue {
 	if resultType == nil {

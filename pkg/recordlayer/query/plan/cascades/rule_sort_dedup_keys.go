@@ -15,8 +15,8 @@ import (
 // the second `a` adds no ordering refinement (rows already in
 // a-order remain in a-order regardless of subsequent keys repeating).
 //
-// Sound under the seed model: sort keys are compared by Explain text
-// (the bridge in LogicalSortExpression.EqualsWithoutChildren), so
+// Sort keys are compared by Explain text (the same textual bridge as
+// LogicalSortExpression.EqualsWithoutChildren), so
 // "duplicate key" is decided structurally. Reverse flag matters: a
 // key with the same Value but different Reverse is NOT a duplicate
 // (different ordering direction).

@@ -10,8 +10,8 @@ import (
 // Counterpart to the existing `predicateMatcher[T]` for QueryPredicate
 // rules — same shape, different type bound.
 //
-// Used by RelationalExpression-shaped rules (FilterMergeRule below
-// is the seed consumer).
+// Used by RelationalExpression-shaped rules (FilterMergeRule,
+// PushFilterThroughDistinctRule, and the rest of the rule_*.go files).
 type ExpressionMatcher[T expressions.RelationalExpression] struct {
 	rootType string
 }
@@ -50,15 +50,15 @@ type ExpressionRule interface {
 	OnMatch(call *ExpressionRuleCall)
 }
 
-// FireExpressionRule is the seed-time driver for testing
+// FireExpressionRule is a standalone driver for testing
 // ExpressionRules. Matches the rule's pattern against every member of
 // `ref` and invokes OnMatch for each successful match. Yields are
 // inserted into `ref` via the ExpressionRuleCall's Reference; the
 // returned slice is the rule's intent (Yielded()).
 //
-// Production rule driving lives in the CascadesPlanner task stack
-// (Phase 4.6); this helper exists so the seed has a testable entry
-// point — same pattern as FireRule for predicate/value rules.
+// Production rule driving lives in the planner's task stack
+// (unified_tasks.go); this helper is the testable entry point — same
+// pattern as FireRule for predicate/value rules.
 func FireExpressionRule(rule ExpressionRule, ref *expressions.Reference) []expressions.RelationalExpression {
 	return FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
 }

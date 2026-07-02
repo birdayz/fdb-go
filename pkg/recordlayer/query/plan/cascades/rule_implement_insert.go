@@ -16,8 +16,8 @@ import (
 // Same gating pattern as Implement{Filter,Sort,Distinct,TypeFilter}.
 //
 // Java's ImplementInsertRule consults PlanPartition properties for
-// dispatch; the seed always emits the simple INSERT plan. Per-row
-// transforms (UPSERT, ON CONFLICT, etc.) are not in the seed.
+// dispatch; Go always emits the simple INSERT plan. Per-row
+// transforms (UPSERT, ON CONFLICT, etc.) are not implemented.
 type ImplementInsertRule struct {
 	matcher matching.BindingMatcher
 }

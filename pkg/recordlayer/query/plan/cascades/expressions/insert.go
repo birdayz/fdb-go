@@ -13,7 +13,7 @@ import (
 // Ports the structural surface of Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.InsertExpression`.
 // Java's full implementation tracks a Type.Record `targetType` derived
-// from the SchemaTemplate at construction time; the seed accepts the
+// from the SchemaTemplate at construction time; Go accepts the
 // targetType but doesn't validate it (validation is upstream — the
 // SQL planner is expected to type-check before constructing this
 // node).

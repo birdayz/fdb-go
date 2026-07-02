@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 )
 
-// CorrelationIdentifier + Correlated — seed.
+// CorrelationIdentifier + Correlated.
 //
 // Ports Java's
 // `com.apple.foundationdb.record.query.plan.cascades.CorrelationIdentifier`
@@ -21,10 +21,10 @@ import (
 // Quantifier an expression depends on so rewrites can detect when a
 // rewrite changes correlation shape.
 //
-// Seed is narrow: CorrelationIdentifier as a wrapped string +
-// factory + the Correlated interface signature. Concrete
-// implementations (FieldValue.GetCorrelatedTo etc.) land as Values
-// get ported.
+// The Go surface is narrow: CorrelationIdentifier as a wrapped string +
+// factory + the Correlated interface signature. Concrete Values
+// implement it (FieldValue, QuantifiedObjectValue, …), and the
+// GetCorrelatedToOfValue walk aggregates over arbitrary Value trees.
 
 // CorrelationIdentifier is an opaque alias for a Quantifier — two
 // distinct Quantifiers get distinct IDs. Comparable by value
@@ -78,9 +78,7 @@ var CurrentAlias = CorrelationIdentifier{name: "_current"}
 // Correlated is the interface Java's `Correlated<T>` maps to. A
 // Correlated value knows which CorrelationIdentifiers it depends
 // on, and can rebind them (used by TranslationMap rewrites).
-//
-// Seed signature. As Values and Predicates get ported, they
-// implement this.
+// Correlation-bearing Values and Predicates implement it.
 type Correlated interface {
 	// GetCorrelatedTo returns the set of Quantifier IDs this value
 	// references. A "leaf" value (ConstantValue) returns an empty
@@ -90,7 +88,7 @@ type Correlated interface {
 
 // uitoa formats an unsigned 64-bit integer as a decimal string
 // without depending on fmt/strconv (keeping this package's imports
-// minimal for the seed).
+// minimal).
 func uitoa(n uint64) string {
 	if n == 0 {
 		return "0"

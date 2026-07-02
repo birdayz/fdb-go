@@ -15,7 +15,7 @@ import (
 //
 // Same gating pattern as the other Implement rules. Java's
 // ImplementDeleteRule consults StoredRecordProperty for partition
-// dispatch; the seed always emits.
+// dispatch; Go always emits.
 type ImplementDeleteRule struct {
 	matcher matching.BindingMatcher
 }

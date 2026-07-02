@@ -6,11 +6,11 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Predicate-simplification rules — seed.
+// Predicate-simplification rules.
 //
-// Examples of the rule pattern for Phase 4.5 Batch A. Each rule
-// defines a matcher and OnMatch body; FireRule drives them from
-// tests. These mirror Java's
+// Each rule defines a matcher and OnMatch body; Simplify
+// (simplifier.go) drives them to fixpoint in production, FireRule
+// drives them in tests. These mirror Java's
 // `com.apple.foundationdb.record.query.plan.cascades.values.
 // simplification.*` predicate simplifications:
 //
@@ -340,10 +340,10 @@ func dedupPredicates(in []predicates.QueryPredicate) []predicates.QueryPredicate
 // short-circuits.
 //
 // Example: `5 = 3` → `FALSE`, `7 > 2` → `TRUE`, `NULL = 1` →
-// `UNKNOWN`. Only fires when the operand's Evaluate(nil) returns
-// non-context-dependent data — ConstantValue.Evaluate returns its
-// literal regardless of context, which is the only current seed
-// Value whose result is reproducible without an eval context.
+// `UNKNOWN`. Only fires when both sides are known-constant Values —
+// leaf constants or all-constant composites folded via
+// EvaluateConstant (see constantLiteral / values.IsConstantValue) —
+// i.e. Values whose result is reproducible without an eval context.
 type ComparisonConstantSimplifyRule struct {
 	matcher matching.BindingMatcher
 }

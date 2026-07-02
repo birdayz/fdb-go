@@ -12,7 +12,7 @@ import (
 // FieldPath identifying the target column (dot-separated for nested
 // records — e.g. "header.priority") and a replacement Value to evaluate
 // against the row being updated. Mirrors Java's `Update.TransformSpec`
-// shape but kept simple for the seed.
+// shape, kept to the path + replacement Value the executor consumes.
 type UpdateTransform struct {
 	FieldPath string
 	NewValue  values.Value

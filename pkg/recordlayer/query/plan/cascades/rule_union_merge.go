@@ -16,7 +16,7 @@ import (
 //
 // SQL-equivalent: UNION ALL is associative, so chained nested
 // UNION ALL collapses without semantic change. Java's planner would
-// derive this via cost preference for fewer operator nodes; the seed
+// derive this via cost preference for fewer operator nodes; Go
 // implements it directly.
 //
 // Fires once per OnMatch — the first inner-Union child triggers a

@@ -1,47 +1,49 @@
-// Package properties is the seed of Cascades' per-RelationalExpression
+// Package properties is Cascades' per-RelationalExpression
 // derived-property machinery — the "decision support" the planner uses
 // to pick a single best plan from an equivalence class of equivalent
 // expressions.
 //
-// Track B4 (RFC-022 §4.4) — cost model. Per RFC-024 the Go cost model
-// is Go-native (NOT hash-identical to Java) — the goal is "pick a
-// sensible cheaper plan among the rule-generated alternatives", not
-// "match Java's plan-cache key bit-for-bit". Java's `properties/`
-// package has ~25 classes; the seed here implements one — Cost — that
-// covers cardinality + a per-operator CPU heuristic. Future shifts
-// add IntervalsProperty / OrderingProperty / DistinctRecordsProperty /
-// etc. as Batch A index rules need them.
+// Cost model (this file): per RFC-024 the Go cost model is Go-native
+// (NOT hash-identical to Java) — the goal is "pick a sensible cheaper
+// plan among the rule-generated alternatives", not "match Java's
+// plan-cache key bit-for-bit". Cost covers cardinality + a
+// per-operator CPU heuristic; the package's other files derive the
+// remaining per-expression properties (ordering, cardinalities,
+// comparisons, record types, plan-partition properties, …), each
+// modeled on its counterpart in Java's `properties/` package.
 //
 // Design choices captured:
 //
 //   - Cost is computed on demand by walking the expression tree, NOT
 //     attached to expressions. Java caches cost on the equivalence
-//     class; the seed re-computes per call. Memoisation lands when a
-//     bench shows it as a bottleneck.
+//     class; Go re-computes per call, with per-call memoisation on the
+//     walks that revisit shared sub-References (estimateCostMemoised /
+//     BestRefCostWith / BestMemberCostWith).
 //
-//   - Sub-Reference recursion picks the FIRST member's cost, not the
-//     cheapest. Two reasons: (a) recursion through the cheapest is
-//     well-defined for a DAG but exponential without memoisation, and
-//     the seed prefers correctness-first-perf-later; (b) exploration
-//     rules only ADD members — Reference.Insert appends, the original
-//     input expression stays at index 0 — so this costs the
-//     unoptimised sub-tree consistently across siblings, which is what
-//     "compare members at THIS Reference" wants. Caveat: index 0 is
-//     stable under rule yields but NOT under RFC-037 cross-group memo
-//     merges, which re-point the canonical member list — see
-//     FuzzCostSanity for the consequence (first-member cost of an
-//     unchanged parent can shift after a merge). The planner's winner
-//     stamping + selector-driven extraction
-//     (ExtractBestPlanFromSelector) is the production path that avoids
-//     re-costing.
+//   - Sub-Reference recursion in EstimateCostWith picks the FIRST
+//     member's cost, not the cheapest. Two reasons: (a) recursion
+//     through the cheapest is well-defined for a DAG but exponential
+//     without memoisation; (b) exploration rules only ADD members —
+//     Reference.Insert appends, the original input expression stays at
+//     index 0 — so this costs the unoptimised sub-tree consistently
+//     across siblings, which is what "compare members at THIS
+//     Reference" wants. Caveat: index 0 is stable under rule yields
+//     but NOT under RFC-037 cross-group memo merges, which re-point
+//     the canonical member list — see FuzzCostSanity for the
+//     consequence (first-member cost of an unchanged parent can shift
+//     after a merge). The planner's winner stamping + selector-driven
+//     extraction (ExtractBestPlanFromSelector) is the production path
+//     that avoids re-costing; when child costing moves to winner-based
+//     (BestMemberCostWith), the best-cost monotonicity pin comes back
+//     (RFC-175 §2 A2).
 //
-//   - Tunable constants are package-level. Re-tune as B6 + Batch A land.
-//     Calibration target: a Filter under a Sort should beat a Sort
-//     under a Filter (push-Filter-through-Sort = cheaper); a Distinct
-//     directly over a Sort should beat a Distinct over an unsorted
-//     scan that would need its own sort (DistinctOverSortElim picks
-//     the no-sort path); Union of cheap children should beat
-//     Intersection (the latter scans every child end-to-end).
+//   - Tunable constants are package-level. Calibration target: a
+//     Filter under a Sort should beat a Sort under a Filter
+//     (push-Filter-through-Sort = cheaper); a Distinct directly over a
+//     Sort should beat a Distinct over an unsorted scan that would
+//     need its own sort (DistinctOverSortElim picks the no-sort path);
+//     Union of cheap children should beat Intersection (the latter
+//     scans every child end-to-end).
 package properties
 
 import (
@@ -51,13 +53,14 @@ import (
 )
 
 // Tunable constants. Calibrated to give plausible orderings for the
-// 31-rule seed; not measured against real workloads.
+// default rule sets (DefaultExpressionRules + the PLANNING-phase
+// rules); not measured against real workloads.
 const (
 	// LeafScanCardinality is the cardinality estimate for a
 	// FullUnorderedScan. Without table statistics the planner can't
-	// know the row count; the seed uses a fixed large constant so
-	// per-plan comparison still picks the plan with fewer / cheaper
-	// post-scan operators.
+	// know the row count; a fixed large constant keeps per-plan
+	// comparison picking the plan with fewer / cheaper post-scan
+	// operators.
 	LeafScanCardinality = 1e6
 
 	// FilterSelectivity is the fraction of rows a Filter retains by
@@ -379,11 +382,10 @@ func BestRefCostWith(ref *expressions.Reference, stats StatisticsProvider) Cost 
 // BestMemberCostWith costs expression e with FULLY RECURSIVE best-member
 // sub-products: every child Reference (transitively) is costed at its
 // cheapest member, not its first. This is Cascades' "combined cost with
-// inputs" (§3.1) — a join's cost reflects each sub-product's WINNER, the
-// proper-memoisation replacement the package doc flagged for B6. Used
-// only by the multi-way join-order decision (RFC-041), kept separate
-// from EstimateCostWith so winner extraction / stage advancement retain
-// their established first-member behaviour.
+// inputs" (§3.1) — a join's cost reflects each sub-product's WINNER.
+// Used only by the multi-way join-order decision (RFC-041), kept
+// separate from EstimateCostWith so winner extraction / stage
+// advancement retain their established first-member behaviour.
 //
 // Per-call memoisation keeps a shared (e.g. union-find-merged)
 // sub-product to one walk: O(N+K) not O(N*K). The visited recursion-
@@ -594,8 +596,9 @@ func localCost(e expressions.RelationalExpression, child []Cost, stats Statistic
 			return Cost{}
 		}
 		// Cross-product of children (FROM-list semantic), then filter
-		// selectivity per WHERE predicate. SELECT is the only seed
-		// expression with > 1 child whose cardinality multiplies.
+		// selectivity per WHERE predicate. SELECT is the only operator
+		// in this cost table with > 1 child whose cardinality
+		// multiplies.
 		product := 1.0
 		for _, c := range child {
 			product *= c.Cardinality

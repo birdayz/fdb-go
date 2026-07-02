@@ -53,7 +53,7 @@ type UdfValue struct {
 // The Call function is REQUIRED for runtime evaluation; passing nil
 // is allowed at construction time so the planner can build UDF call
 // shapes before the implementation is wired (e.g. during analyser
-// phase). A nil Call surfaces nil from Evaluate per the seed's
+// phase). A nil Call surfaces nil from Evaluate per the
 // placeholder-Value contract.
 func NewUdfValue(name string, resultType Type, args []Value, call func(args []any) any) *UdfValue {
 	if resultType == nil {
