@@ -297,3 +297,42 @@ func TestRFC173S3_TranslationMap_BuilderVerify(t *testing.T) {
 // The TranslateLeafPredicates pins live in the predicates package
 // (rfc173_s3_translate_leaf_test.go) — the spine belongs there and the
 // import direction forbids testing it here.
+
+// TestRFC173S3_IsPositionalMergeRC pins the structural merge recognizer's
+// edges: the exact PartitionSelectRule shape matches; every deviation —
+// named fields, out-of-order `_i`, duplicate leg correlations, a single
+// field, an AnchoredJoin marker, non-QOV values — declines. The recognizer
+// is the no-marker ruling's load-bearing piece: a false positive would birth
+// positional rows for a projection; a false negative reverts a merge level
+// to the name model.
+func TestRFC173S3_IsPositionalMergeRC(t *testing.T) {
+	t.Parallel()
+	qovA := NewQuantifiedObjectValue(NamedCorrelationIdentifier("a"))
+	qovB := NewQuantifiedObjectValue(NamedCorrelationIdentifier("b"))
+	field := func(name string, v Value) RecordConstructorField {
+		return RecordConstructorField{Name: name, Value: v}
+	}
+
+	good := NewRawRecordConstructorValue(field("_0", qovA), field("_1", qovB))
+	if !IsPositionalMergeRC(good) {
+		t.Fatal("the exact merge shape must match")
+	}
+	cases := map[string]Value{
+		"named field":        NewRawRecordConstructorValue(field("LEFT", qovA), field("_1", qovB)),
+		"out-of-order names": NewRawRecordConstructorValue(field("_1", qovA), field("_0", qovB)),
+		"duplicate leg":      NewRawRecordConstructorValue(field("_0", qovA), field("_1", qovA)),
+		"single field":       NewRawRecordConstructorValue(field("_0", qovA)),
+		"non-QOV value":      NewRawRecordConstructorValue(field("_0", qovA), field("_1", NewFlatFieldValue("X", NotNullLong))),
+		"non-RC":             qovA,
+	}
+	for name, v := range cases {
+		if IsPositionalMergeRC(v) {
+			t.Errorf("%s must NOT match the merge shape", name)
+		}
+	}
+	anchored := NewRawRecordConstructorValue(field("_0", qovA), field("_1", qovB))
+	anchored.AnchoredJoin = true
+	if IsPositionalMergeRC(anchored) {
+		t.Error("an AnchoredJoin RC must NOT match (the dotted model's marker, dies per birth site)")
+	}
+}

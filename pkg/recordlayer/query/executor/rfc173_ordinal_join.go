@@ -414,7 +414,15 @@ type ordinalJoinBirth struct {
 // pin that); anything else is a planner bug and must die at construction,
 // never be silently demoted to the name model.
 func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBirth, error) {
-	if rv == nil || !values.ContainsBakedOrdinal(rv) {
+	// Two birth triggers during the S3 window:
+	//   - a FrontierPinned baked reference anywhere in the RV (the S2 flat
+	//     seed, its folds, and the post-translation MIXED upper shape whose
+	//     fields are ofOrdinal-over-innerMerge alongside bare leg QOVs);
+	//   - the S3-W2 positional-merge RC (ALL fields bare `_i`-named QOVs —
+	//     the lowest merge level carries no baked refs at all, but its rows
+	//     must birth positional: the level above reads them by ordinal).
+	// Nothing produces the merge shape until the W2 fulcrum — dark.
+	if rv == nil || (!values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv)) {
 		return nil, nil
 	}
 	rc, isRC := rv.(*values.RecordConstructorValue)
@@ -429,6 +437,19 @@ func newOrdinalJoinBirth(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// row for it adapted to a ZERO-WIDTH binding that blew up the predicate
 	// (loud OrdinalResolutionError, "row columns []") on a legitimate plan.
 	legTypes := legTypesFromResultValue(rc)
+	// Bare QOV fields carry their leg's type directly (the S3 merge shape's
+	// `_i` columns and the mixed upper's untranslated leg): without this a
+	// bare-QOV leg is typeless and its adapter degrades to the Datum
+	// synthesis path even when the leg flows a typed row.
+	for _, f := range rc.Fields {
+		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
+			if rt, isRT := qov.Type().(*values.RecordType); isRT {
+				if _, seen := legTypes[qov.Correlation]; !seen {
+					legTypes[qov.Correlation] = rt
+				}
+			}
+		}
+	}
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
 			fv, isFV := v.(*values.FieldValue)
