@@ -29,22 +29,26 @@ type legSpan struct {
 	Width   int
 }
 
-// ordinalJoinSpans is the strict detector + deriver for the RFC-173 2-way
-// ordinal join RC (Graefe W3 ruling: structural probe, emergent from the
-// representation — no plan flag for Slice 4 to delete). It returns
-// ok=false when v is not an ordinal join seed at all — not a
-// *RecordConstructorValue, or an RC with ZERO baked fields (every name-model
-// RC, anchored or plain, lands here and stays on the name path).
+// ordinalJoinSpans is the cursor-side WINDOWS-ELIGIBILITY probe: it detects
+// whether v is exactly the 2-way ordinal join SEED RC (the concatenation of
+// two full legs, every field a baked leg reference) and derives the leg spans
+// + merged type from it. DECLINE-ONLY (ok=false) for every other shape — a
+// result value that is not the pristine seed is NOT a planner bug here: the
+// pure-wrapper merge the drift assert deliberately allows rewrites the select's
+// result value into the parent PROJECTION's RC, which legitimately mixes baked
+// leg references (compose-folded through the seed) with computed values, or
+// covers a leg partially (`SELECT b.y FROM a JOIN b`), or collapses to a
+// single run (Graefe W3a-1 NAK: the earlier any-baked⟹well-formed-or-panic
+// boundary false-positived on exactly those plans). Downstream consumers use
+// this probe to decide whether LEG WINDOWS apply to the join's output row —
+// windows are only meaningful when the output IS the leg concatenation; a
+// folded projection's output is a plain frontier row and gets none.
 //
-// But an RC with AT LEAST ONE baked field MUST be a well-formed ordinal join
-// RC; anything else PANICS — a malformed ordinal seed is a planner bug, and a
-// silent demotion to the name model would hide it (the exact failure mode the
-// drift asserts exist to kill). Well-formed means: every field's Value is a
-// BAKED *FieldValue whose Child is a *QuantifiedObjectValue flowing a
-// *RecordType; the fields form EXACTLY TWO consecutive runs grouped by QOV
-// correlation (the 2-way wedge); within each run the baked ordinals are
-// exactly 0..width-1 ascending; and each run covers its leg type in full
-// (width == len(LegType.Fields)).
+// Loud seed validation lives where the shape IS guaranteed by construction:
+// assertOrdinalJoinSeed, called by the W3b translator at the seed (and by its
+// pins). Cursor-side ORDINAL-BIRTH detection (does this join evaluate its
+// result value with leg bindings) is values.ContainsBakedOrdinal — deep,
+// rewrite-invariant — not this probe.
 //
 // The derived spans carry per-leg Offset/Width over the merged row, and
 // mergedType is a RAW *RecordType (NOT NewRecordType — duplicate names across
@@ -55,42 +59,33 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	if !isRC {
 		return nil, nil, false
 	}
-	anyBaked := false
-	for _, f := range rc.Fields {
-		if fv, isFV := f.Value.(*values.FieldValue); isFV && fv.Resolved != nil {
-			anyBaked = true
-			break
-		}
+	if len(rc.Fields) == 0 {
+		return nil, nil, false
 	}
-	if !anyBaked {
-		return nil, nil, false // name-model RC — not an ordinal join seed
-	}
-
 	mergedFields := make([]values.Field, len(rc.Fields))
 	for i, f := range rc.Fields {
 		fv, isFV := f.Value.(*values.FieldValue)
 		if !isFV || fv.Resolved == nil {
-			panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: field %d (%q) is %T (baked=%v) — an ordinal seed bakes EVERY leg column; a mixed baked/lazy RC is a planner bug", i, f.Name, f.Value, isFV && fv.Resolved != nil))
+			return nil, nil, false // not every field a baked leg ref — not the seed
 		}
 		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
 		if !isQOV {
-			panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: field %d (%q) is baked over a %T child, want *QuantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
+			return nil, nil, false
 		}
 		legType, isRT := qov.Type().(*values.RecordType)
 		if !isRT {
-			panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.Correlation, qov.Type()))
+			return nil, nil, false
 		}
 		ord := fv.Resolved.Ordinal
 		if len(spans) == 0 || spans[len(spans)-1].Alias != qov.Correlation {
-			// A new leg run begins — its baked ordinals must start at 0.
 			if ord != 0 {
-				panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.Correlation, i, ord))
+				return nil, nil, false // run must start at leg ordinal 0
 			}
 			spans = append(spans, legSpan{Alias: qov.Correlation, LegType: legType, Offset: i, Width: 1})
 		} else {
 			cur := &spans[len(spans)-1]
 			if ord != cur.Width {
-				panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: leg %s field %d baked at ordinal %d, want %d — run ordinals must be exactly 0..width-1 ascending (no gaps, no reorders)", qov.Correlation, i, ord, cur.Width))
+				return nil, nil, false // gap or reorder — not the concat
 			}
 			cur.Width++
 		}
@@ -98,12 +93,12 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 	}
 
 	if len(spans) != 2 {
-		panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: %d leg runs — the ordinal wedge is 2-way, exactly two consecutive leg runs required (N-way is Slice 3)", len(spans)))
+		return nil, nil, false // the wedge is 2-way; 1 run = folded single leg, 3+ = S3
 	}
 	total := 0
 	for _, s := range spans {
 		if s.Width != len(s.LegType.Fields) {
-			panic(fmt.Sprintf("RFC-173 ordinal join RC malformed: leg %s run covers %d columns but its leg type has %d — the seed concatenates FULL legs", s.Alias, s.Width, len(s.LegType.Fields)))
+			return nil, nil, false // partial leg coverage — a folded projection
 		}
 		total += s.Width
 	}
@@ -114,6 +109,62 @@ func ordinalJoinSpans(v values.Value) (spans []legSpan, mergedType *values.Recor
 		panic(fmt.Sprintf("RFC-173 ordinal join spans inconsistent: sum(widths)=%d, RC has %d fields — spans must derive exactly from the RC", total, len(rc.Fields)))
 	}
 	return spans, &values.RecordType{Fields: mergedFields}, true
+}
+
+// assertOrdinalJoinSeed is the LOUD seed-shape validator: the W3b translator
+// calls it on every ordinal join RC it builds, where the pristine shape IS
+// guaranteed by construction — every field a baked reference over a leg QOV
+// flowing a RecordType, exactly two consecutive full-coverage runs with
+// ordinals 0..width-1. Any violation panics: at the SEED a malformed ordinal
+// RC is unconditionally a planner bug (Graefe W3a-1 NAK fix: strictness lives
+// seed-time, where legitimate result-value rewrites — wrapper merges, folded
+// projections, partial coverage — cannot yet have happened; the cursor-side
+// probe above must decline those, never panic).
+func assertOrdinalJoinSeed(rc *values.RecordConstructorValue) {
+	if rc == nil || len(rc.Fields) == 0 {
+		panic("RFC-173 ordinal join seed malformed: empty RC")
+	}
+	type run struct {
+		alias   values.CorrelationIdentifier
+		legType *values.RecordType
+		width   int
+	}
+	var runs []run
+	for i, f := range rc.Fields {
+		fv, isFV := f.Value.(*values.FieldValue)
+		if !isFV || fv.Resolved == nil {
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column", i, f.Name, f.Value, isFV && fv.Resolved != nil))
+		}
+		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		if !isQOV {
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) is baked over a %T child, want *QuantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
+		}
+		legType, isRT := qov.Type().(*values.RecordType)
+		if !isRT {
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.Correlation, qov.Type()))
+		}
+		ord := fv.Resolved.Ordinal
+		if len(runs) == 0 || runs[len(runs)-1].alias != qov.Correlation {
+			if ord != 0 {
+				panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.Correlation, i, ord))
+			}
+			runs = append(runs, run{alias: qov.Correlation, legType: legType, width: 1})
+		} else {
+			cur := &runs[len(runs)-1]
+			if ord != cur.width {
+				panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s field %d baked at ordinal %d, want %d — run ordinals must be exactly 0..width-1 ascending (no gaps, no reorders)", qov.Correlation, i, ord, cur.width))
+			}
+			cur.width++
+		}
+	}
+	if len(runs) != 2 {
+		panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: %d leg runs — the ordinal wedge seed is 2-way, exactly two consecutive leg runs required (N-way is Slice 3)", len(runs)))
+	}
+	for _, r := range runs {
+		if r.width != len(r.legType.Fields) {
+			panic(fmt.Sprintf("RFC-173 ordinal join seed malformed: leg %s run covers %d columns but its leg type has %d — the seed concatenates FULL legs", r.alias, r.width, len(r.legType.Fields)))
+		}
+	}
 }
 
 // legWindowRow is a leg-relative view over the join's merged positional row:
@@ -214,26 +265,50 @@ func (b *legWindowBinder) GetCorrelationBinding(id values.CorrelationIdentifier)
 // field names (slot i = datum[Fields[i].Name]; a missing key is a nil slot =
 // SQL NULL); a nil or non-map Datum yields an all-nil row of the leg's width.
 //
+// LOUD when the synthesis matches ZERO of the leg's columns against a
+// NON-EMPTY Datum (Torvalds W3a-1 catch): a name-model MERGE-shaped leg
+// carries dotted-qualified keys ("A.ID") the bare leg-type names never match,
+// so the silent path would all-NULL the leg — indistinguishable from a
+// legitimate all-NULL row. The W2 gate makes such legs unreachable for gated
+// joins (name-model join/exists selects are poison or enclosed), so this
+// error is a belt-and-braces tripwire on that argument, not a supported path.
+// A row whose keys are PRESENT with nil values (a genuine all-NULL row)
+// matches normally and stays silent.
+//
 // This is format-only bridging — correlation-SEMANTIC bridging (an ordinal
 // join consumed as a leg of a name-model merge select) is explicitly out of
 // scope and prevented upstream by the W2 cluster-arity gate (RFC-173 §4
 // Slice 2 coexistence scoping).
-func adaptLegPositional(qr QueryResult, legType *values.RecordType) values.OrdinalRow {
+func adaptLegPositional(qr QueryResult, legType *values.RecordType) (values.OrdinalRow, error) {
 	if qr.Positional != nil {
-		return qr.Positional
+		return qr.Positional, nil
 	}
 	row := NewPositionalRow(legType)
 	if legType == nil {
-		return row
+		return row, nil
 	}
 	if m, isMap := qr.Datum.(map[string]any); isMap {
+		matched := 0
 		for i, f := range legType.Fields {
 			if v, present := m[f.Name]; present {
 				row.Slots[i] = v
+				matched++
 			}
 		}
+		if matched == 0 && len(m) > 0 && len(legType.Fields) > 0 {
+			return nil, fmt.Errorf("RFC-173 leg adapter: name-model leg row carries NONE of the leg type's %d columns %v (row keys: %d, dotted/merge-shaped?) — a gated join must not consume a name-model merge leg (W2 gate breach or leg-type mismatch)", len(legType.Fields), typeFieldNames(legType), len(m))
+		}
 	}
-	return row
+	return row, nil
+}
+
+// typeFieldNames lists a RecordType's field names for diagnostics.
+func typeFieldNames(rt *values.RecordType) []string {
+	names := make([]string, len(rt.Fields))
+	for i, f := range rt.Fields {
+		names[i] = f.Name
+	}
+	return names
 }
 
 // evaluateOrdinalJoinRow births the join's merged positional row: each field

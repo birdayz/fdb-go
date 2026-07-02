@@ -208,11 +208,52 @@ func TestRFC173S2_OrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 	}
 }
 
-// TestRFC173S2_OrdinalJoinSpans_MalformedPanics pins every malformation panic:
-// once an RC carries even ONE baked field it must be a well-formed 2-way
-// ordinal seed, and anything else is a loud RFC-173 planner bug — never a
-// silent name-model demotion.
-func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
+// TestRFC173S2_OrdinalJoinSpans_FoldedProjectionsDecline pins the Graefe/
+// Torvalds W3a-1 NAK boundary: the pure-wrapper merge (allowed by the drift
+// assert) rewrites the select's result value into the parent projection's RC —
+// which LEGITIMATELY contains baked leg references without being the seed. The
+// cursor-side probe must DECLINE these (no windows — the output is a plain
+// projection row), never panic; only the translator-side seed assert is loud.
+func TestRFC173S2_OrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
+	t.Parallel()
+	qovA := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("a"), ojLegTypeAV())
+	bakedV, err := values.NewFieldValueOfOrdinal(qovA, 1)
+	if err != nil {
+		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	}
+
+	// `SELECT a.V FROM a JOIN b` post-merge: single run, partial coverage.
+	folded := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "V", Value: bakedV},
+	)
+	if _, _, ok := ordinalJoinSpans(folded); ok {
+		t.Fatal("a folded single-column projection over a gated join must DECLINE — it is not the seed concat")
+	}
+
+	// `SELECT a.V, 1 FROM a JOIN b` post-merge: baked ref mixed with a constant.
+	mixed := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "V", Value: bakedV},
+		values.RecordConstructorField{Name: "_1", Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}},
+	)
+	if _, _, ok := ordinalJoinSpans(mixed); ok {
+		t.Fatal("a mixed baked/constant projection RC must DECLINE — legitimate fold, not a malformed seed")
+	}
+
+	// Both shapes DO read as ordinal-birth plans via the deep probe — that is
+	// the cursor-side detector split: ContainsBakedOrdinal says "evaluate with
+	// leg bindings", ordinalJoinSpans says "leg windows apply downstream".
+	if !values.ContainsBakedOrdinal(folded) || !values.ContainsBakedOrdinal(mixed) {
+		t.Fatal("the deep probe must still detect folded projections as ordinal-birth plans")
+	}
+}
+
+// TestRFC173S2_SeedAssert_MalformedPanics pins every malformation panic in
+// assertOrdinalJoinSeed — the SEED-TIME validator (Graefe W3a-1 NAK fix: the
+// loudness lives at the translator seed, where the pristine shape is
+// guaranteed by construction; the cursor-side ordinalJoinSpans probe DECLINES
+// the same shapes, pinned separately, because post-merge result values
+// legitimately mix/fold baked references).
+func TestRFC173S2_SeedAssert_MalformedPanics(t *testing.T) {
 	t.Parallel()
 	newQOV := func(name string, rt *values.RecordType) *values.QuantifiedObjectValue {
 		return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name), rt)
@@ -230,7 +271,10 @@ func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
 		t.Parallel()
 		qovA := newQOV("a", ojLegTypeAV())
 		rc := values.NewRawRecordConstructorValue(baked(qovA, 0), baked(qovA, 1))
-		mustPanicRFC173(t, func() { ordinalJoinSpans(rc) }, "2-way")
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) }, "2-way")
+		if _, _, ok := ordinalJoinSpans(rc); ok {
+			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		}
 	})
 
 	t.Run("three runs", func(t *testing.T) {
@@ -243,7 +287,10 @@ func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
 			baked(newQOV("b", oneCol("Y")), 0),
 			baked(newQOV("c", oneCol("Z")), 0),
 		)
-		mustPanicRFC173(t, func() { ordinalJoinSpans(rc) }, "2-way")
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) }, "2-way")
+		if _, _, ok := ordinalJoinSpans(rc); ok {
+			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		}
 	})
 
 	t.Run("ordinal gap", func(t *testing.T) {
@@ -259,7 +306,10 @@ func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
 			baked(qovA, 0), baked(qovA, 2), // gap: 0,2
 			baked(qovB, 0), baked(qovB, 1),
 		)
-		mustPanicRFC173(t, func() { ordinalJoinSpans(rc) })
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) })
+		if _, _, ok := ordinalJoinSpans(rc); ok {
+			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		}
 	})
 
 	t.Run("partial leg coverage", func(t *testing.T) {
@@ -275,7 +325,10 @@ func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
 			baked(qovA, 0), baked(qovA, 1), // leg type has 3 fields, run has 2
 			baked(qovB, 0), baked(qovB, 1),
 		)
-		mustPanicRFC173(t, func() { ordinalJoinSpans(rc) })
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) })
+		if _, _, ok := ordinalJoinSpans(rc); ok {
+			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		}
 	})
 
 	t.Run("mixed baked and lazy", func(t *testing.T) {
@@ -285,7 +338,10 @@ func TestRFC173S2_OrdinalJoinSpans_MalformedPanics(t *testing.T) {
 			baked(qovA, 0),
 			values.RecordConstructorField{Name: "V", Value: values.NewFieldValue(qovA, "V", values.NotNullLong)},
 		)
-		mustPanicRFC173(t, func() { ordinalJoinSpans(rc) })
+		mustPanicRFC173(t, func() { assertOrdinalJoinSeed(rc) })
+		if _, _, ok := ordinalJoinSpans(rc); ok {
+			t.Fatal("the cursor-side probe must DECLINE this shape, not accept it")
+		}
 	})
 }
 
@@ -362,29 +418,45 @@ func TestRFC173S2_LegWindow_WrongSlotHazard(t *testing.T) {
 	}
 	merged := ojMergedRow(t, mergedType) // [A.ID=1, A.V=10, B.ID=2, B.W=20]
 
-	lazyBID := values.NewFieldValue(qovB, "ID", values.NotNullLong)
+	// The discriminating probe is B.W (Torvalds W3a-1: probing B.ID yields
+	// A's ID=1 under EITHER misread mechanism — leg-relative resolveOrdinal(0)
+	// at absolute slot 0, or first-match GetByName("ID") on the dup-named
+	// merged type. B.W's leg-relative ordinal is 1 → absolute slot 1 = A.V=10,
+	// while GetByName("W") on the merged type would find slot 3 = 20 — so the
+	// 10 assertion proves the misread is the resolveOrdinal path specifically).
+	lazyBW := values.NewFieldValue(qovB, "W", values.NotNullLong)
 
 	// (i) THE HAZARD, proven real: merged row as bare Positional, no leg
-	// bindings — the lazy leg-relative ordinal 0 reads absolute slot 0 = A's
-	// ID. This assertion is the RED half: if it ever starts returning 2, the
-	// window scaffolding has become dead weight and the ruling needs revisit.
-	got, err := lazyBID.Evaluate(&values.RowEvalContext{Positional: merged})
+	// bindings — lazy B.W's leg-relative ordinal 1 reads absolute slot 1 =
+	// A's V. This assertion is the RED half: if it ever starts returning 20,
+	// the window scaffolding has become dead weight and the ruling needs
+	// revisit.
+	got, err := lazyBW.Evaluate(&values.RowEvalContext{Positional: merged})
 	if err != nil {
 		t.Fatalf("hazard eval errored: %v", err)
 	}
-	if got != int64(1) {
-		t.Fatalf("lazy B.ID over the bare merged row = %v, want the MISREAD 1 (A's ID at absolute slot 0) — the hazard the leg windows exist for", got)
+	if got != int64(10) {
+		t.Fatalf("lazy B.W over the bare merged row = %v, want the MISREAD 10 (A's V at absolute slot 1, via leg-relative resolveOrdinal) — the hazard the leg windows exist for", got)
 	}
 
 	// (ii) GREEN: the same node through the leg window binder reads window B
-	// slot 0 = merged slot 2 = B's ID.
+	// slot 1 = merged slot 3 = B's W.
 	binder := &legWindowBinder{spans: spans, row: merged}
-	got, err = lazyBID.Evaluate(&values.RowEvalContext{Correlations: binder})
+	got, err = lazyBW.Evaluate(&values.RowEvalContext{Correlations: binder})
 	if err != nil {
 		t.Fatalf("windowed eval errored: %v", err)
 	}
-	if got != int64(2) {
-		t.Fatalf("lazy B.ID through the leg window = %v, want 2 (B's ID)", got)
+	if got != int64(20) {
+		t.Fatalf("lazy B.W through the leg window = %v, want 20 (B's W)", got)
+	}
+	// Secondary: lazy B.ID misreads too (leg-relative 0 → absolute 0 = A's ID)
+	// and the window corrects it.
+	lazyBID := values.NewFieldValue(qovB, "ID", values.NotNullLong)
+	if got, _ := lazyBID.Evaluate(&values.RowEvalContext{Positional: merged}); got != int64(1) {
+		t.Fatalf("lazy B.ID over the bare merged row = %v, want the misread 1", got)
+	}
+	if got, _ := lazyBID.Evaluate(&values.RowEvalContext{Correlations: binder}); got != int64(2) {
+		t.Fatalf("lazy B.ID through the leg window = %v, want 2", got)
 	}
 
 	// A BAKED B#0 through the binder reads the same correct slot.
@@ -537,7 +609,9 @@ func TestRFC173S2_EvaluateOrdinalJoinRow(t *testing.T) {
 
 // TestRFC173S2_AdaptLegPositional pins the row-FORMAT adapter at the join-input
 // boundary: positional passthrough, name-model Datum synthesis by leg-type
-// names (missing key → nil slot), and nil / non-map Datum → all-nil row.
+// names (missing key → nil slot), nil / non-map Datum → all-nil row, and the
+// LOUD zero-match tripwire (a dotted-key merge-shaped leg must never silently
+// all-NULL — Torvalds W3a-1 catch).
 func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 	t.Parallel()
 	legA := ojLegTypeAV()
@@ -546,7 +620,10 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		t.Parallel()
 		pos := NewPositionalRow(legA)
 		pos.Set(0, int64(7))
-		got := adaptLegPositional(QueryResult{Positional: pos, Datum: map[string]any{"ID": int64(999)}}, legA)
+		got, err := adaptLegPositional(QueryResult{Positional: pos, Datum: map[string]any{"ID": int64(999)}}, legA)
+		if err != nil {
+			t.Fatalf("passthrough errored: %v", err)
+		}
 		if got != values.OrdinalRow(pos) {
 			t.Fatal("a leg that already carries a positional row must flow it through untouched")
 		}
@@ -554,7 +631,10 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 
 	t.Run("datum synthesis by leg-type names", func(t *testing.T) {
 		t.Parallel()
-		got := adaptLegPositional(QueryResult{Datum: map[string]any{"ID": int64(7)}}, legA) // V missing
+		got, err := adaptLegPositional(QueryResult{Datum: map[string]any{"ID": int64(7)}}, legA) // V missing
+		if err != nil {
+			t.Fatalf("synthesis errored: %v", err)
+		}
 		if v, found := got.Get(0); !found || v != int64(7) {
 			t.Fatalf("synthesized slot 0 = (%v, %v), want (7, true)", v, found)
 		}
@@ -567,9 +647,38 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 		}
 	})
 
+	t.Run("all-null row with present keys stays silent", func(t *testing.T) {
+		t.Parallel()
+		// A genuine all-NULL row (keys present, nil values) is NOT the dotted
+		// zero-match shape — it matches every column and synthesizes quietly.
+		got, err := adaptLegPositional(QueryResult{Datum: map[string]any{"ID": nil, "V": nil}}, legA)
+		if err != nil {
+			t.Fatalf("genuine all-NULL row must synthesize silently, got %v", err)
+		}
+		if v, found := got.Get(0); !found || v != nil {
+			t.Fatalf("all-NULL slot 0 = (%v, %v), want (nil, true)", v, found)
+		}
+	})
+
+	t.Run("zero-match non-empty datum is loud", func(t *testing.T) {
+		t.Parallel()
+		// A merge-shaped leg carries dotted-qualified keys the bare leg-type
+		// names never match — silently all-NULLing it would be
+		// indistinguishable from a legitimate all-NULL row. The W2 gate makes
+		// this unreachable for gated joins; the error is the tripwire on that
+		// argument.
+		_, err := adaptLegPositional(QueryResult{Datum: map[string]any{"A.ID": int64(1), "A.V": int64(10)}}, legA)
+		if err == nil || !strings.Contains(err.Error(), "RFC-173") {
+			t.Fatalf("dotted-key zero-match synthesis must be a loud RFC-173 error, got %v", err)
+		}
+	})
+
 	t.Run("nil datum", func(t *testing.T) {
 		t.Parallel()
-		got := adaptLegPositional(QueryResult{}, legA)
+		got, err := adaptLegPositional(QueryResult{}, legA)
+		if err != nil {
+			t.Fatalf("nil datum errored: %v", err)
+		}
 		for i := range legA.Fields {
 			if v, found := got.Get(i); !found || v != nil {
 				t.Fatalf("nil-datum slot %d = (%v, %v), want (nil, true)", i, v, found)
@@ -579,7 +688,10 @@ func TestRFC173S2_AdaptLegPositional(t *testing.T) {
 
 	t.Run("non-map datum", func(t *testing.T) {
 		t.Parallel()
-		got := adaptLegPositional(QueryResult{Datum: "not a row"}, legA)
+		got, err := adaptLegPositional(QueryResult{Datum: "not a row"}, legA)
+		if err != nil {
+			t.Fatalf("non-map datum errored: %v", err)
+		}
 		for i := range legA.Fields {
 			if v, found := got.Get(i); !found || v != nil {
 				t.Fatalf("non-map-datum slot %d = (%v, %v), want (nil, true)", i, v, found)
