@@ -449,6 +449,37 @@ validation strategy the adversarial review corrected). Effort figures are rough.
     OWN child RC; `PushDownValue` keeps the nil decline (external result value). Graefe ACK ×2,
     Torvalds NAK→ACK. W3 owes: real `executor.PositionalRow` eval pin; loud fall-through for a
     baked node over an *unrecognized* context type in `Evaluate`'s tail.
+  **W3 PRE-CODE RULING (Graefe, binding) — downstream leg references over the positional merged
+  row.** The hazard: window-era uppers reference LEGS directly (`FieldValue(QOV(A), "ID")`); a lazy
+  leg reference over the MERGED positional row derives a LEG-relative ordinal from the leg type and
+  reads the merged row at that slot — silently wrong. Ruling: **(a) LEG WINDOWS for the window,
+  (b) plan-time rebase (Java's way) as the S3/S4 end state.** (a) makes lazy-over-positional
+  CORRECT rather than forbidden — coexistence by construction, not by guard; (b) during the window
+  would partially rewrite the machinery S3 deletes. Four binding conditions:
+  1. Spans (per-leg offset/width) DERIVE from the ordinal RC at cursor construction — never stored
+     as independent authority (dual-bookkeeping disease); assert `sum(widths) == len(rc.Fields)`.
+  2. Leg windows are DECLARED WINDOW SCAFFOLDING: Java has no merged-row-with-leg-views (its
+     uppers reference the join quantifier after plan-time rewriting); the windows exist only
+     because window-era uppers still reference legs, and they DIE when uppers bake (S3 flip + S4
+     deletions). Must not ossify into "the runtime shape of quantifier bindings."
+  3. The window implements OrdinalRow COMPLETELY (Get leg-relative + GetByName leg-local) so it
+     slots into the existing evaluateCorrelated binder arm — no new eval arm, loud-miss preserved.
+  4. Red→green pin on the EXACT hazard: lazy leg ref over the merged row without windows misreads;
+     with windows reads correctly.
+  Also ruled: dedicated raw RC constructor (duplicates allowed — §5's shape is otherwise
+  unconstructible; `NewRecordConstructorValue` mangles dup names); join predicates bake to
+  (leg QOV, field ordinal) at the seed and evaluate against DIRECT per-leg bindings in the join
+  loop (no window needed); cursor detection = structural probe (`ContainsBakedOrdinal` on the
+  plan's result value, once at cursor construction — emergent from representation, nothing for S4
+  to delete; better than a plan flag); single-merged-type property pinned; both row births in the
+  oracle registry. Extra pins: spans-consistency assert; dup-named BOX-LEG shape
+  (`a JOIN (b FULL JOIN c)` — both gate; the box output is dup-named; a name-model upper
+  referencing an ambiguous leg column stays rejected/carved out since lazy GetByName over a
+  dup-named window is first-match). W3 staging: **W3a** executor substrate DARK (leg windows,
+  spans, merged-row birth behind the structural probe, appendNullLeg nil-binding evaluation,
+  oracle registry, real-PositionalRow eval pins — hand-built plans, nothing emits ordinal RCs
+  yet); **W3b** the seed flip (ordinal RC + baked predicates for gated joins) → live end-to-end +
+  the full pin batch.
   - **W2 (cluster-arity gate + drift asserts, dark) — DONE.** `rfc173_cluster_gate.go`:
     `clusterArity` walk + `ordinalWedgeGate` recording per-seed decisions (`wedgeGate` map, W3
     consumes); enclosure flag `inInnerCluster` threaded through translateJoin legs (inner=enclosed,
