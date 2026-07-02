@@ -83,9 +83,16 @@ validation gate.
     pinned red→green), flattening-evasion + enclosure-matrix + HAVING-EXISTS pins. Two Graefe-confirmed
     errata vs the contract shorthand (subquery-carrying filter/project = poison; outer boxes gate
     unconditionally). Graefe ACK, Torvalds NAK→ACK (53ba2a9ac, 089979ea8).
-  - [~] **W3 the coupled 2-way flip** — pre-code ruling BANKED (c255d1829). **W3a-1** primitives +
-    **W3a-2** cursor wiring: DONE, committed, Graefe+Torvalds ACKed (36297a253, fd07e2f49,
-    140799069, d98bbac91, 139c6cb94). **W3b LIVE FLIP: in the fallout grind, UNCOMMITTED tree**
+  - [x] **W3 the coupled 2-way flip — DONE, ALL ACKs.** W3a-1/W3a-2 (36297a253, fd07e2f49,
+    140799069, d98bbac91, 139c6cb94); **W3b-1 LIVE FLIP** (1aca8addd + 47d3b48bb RFC log +
+    00c7a206e Graefe notes + 5ead4e149 Torvalds nits): Graefe ACK (cross-leg baking BLESSED as the
+    correct ruling-#2 scoping; premise correction + re-ruling recorded; spanAwareRow + driver
+    positional read + oracleNameDatum ratified), Torvalds ACK (nits fixed: ordinalEligible stale
+    doc, count_mismatch vacuity, reversed-star differential pin). Suite 54/54; dualwindow
+    carve-outs EMPTY; stress: branch FASTER than master on all heavy scans (table below).
+    **W3b-2 remaining pins:** gate pin (a) runtime half (2-way-under-3-way identical
+    before/after), gate pin (b) runtime half (flattening-evasion stays name-model e2e), dedicated
+    GROUP-BY/HAVING-over-2-way EXPLAIN pin. Historical grind record:
     (~12 files: translator seed rfc173_ordinal_seed.go + gate revisions + executor fixes; commit
     blocked on green — pre-commit runs the suite). Fallout fixed so far (each = a gate/executor
     correction, all reviewed-in-principle): (1) LEFT OUTER = POISON — RewriteOuterJoinRule
@@ -2137,6 +2144,20 @@ The Cascades architecture is solid — task stack, two-phase REWRITING+PLANNING,
 - [x] **P2.2 Operational debuggability.** Fixed in RFC-034 — `PlanGenerationLogger` hook (nil = silent) emits one `PlanGenerationInfo` per Cascades planning call: SQL (truncated, rune-safe), plan hash (`plans.PlanHash`), plan explain, planning duration, cache event (hit/miss/skip/inconclusive), cache size, slow-query flag, error. Go analog of Java's `RelationalLoggingUtil` + `PlanGenerator` finally block; wired into `planSelectCascades` (real query) and `planDML` via a shared `planLogScope` with a named-return defer. EXPLAIN re-entry suppressed via `logMetrics bool`. No scalar "estimated cost" — the Cascades cost model is a comparator, not a number (matches Java; logs plan hash + explain instead). Threshold default sourced from the canonical `api.OptLogSlowQueryThresholdMicros` (single source of truth); `OptLogQuery` left intentionally unwired (no SLF4J level concept in Go — handler owns level + sampling), documented at `options.go:55`. Sampling is the handler's responsibility. 11 unit tests + 2 FDB integration tests (DML Skip event, SELECT miss-then-hit through the public driver). Graefe ACK, Torvalds ACK.
 
 ---
+
+## Stress comparison — RFC-173 Slice 2 W3b live flip (2026-07-02, same machine)
+
+Master (`/tmp/fdb-master` worktree) vs branch `feat/rfc173-slice2-wedge` @ 5ead4e149 — the ordinal
+wedge LIVE on every gated 2-way join. **No regression; branch faster on all heavy scans:**
+
+| Subtest | master | branch (ordinal) |
+|---|---|---|
+| full_scan_count | 4.21s | 3.62s |
+| order_by_pk_full | 4.72s | 4.12s |
+| scan_all_narrow | 5.09s | 4.05s |
+| scan_all_wide | 5.55s | 4.32s |
+| full_scan_sparse_filter | 3.93s | 3.59s |
+| join_10_outer | 0.02s | 0.04s (noise at this magnitude) |
 
 ## Stress test 1M baseline (2026-05-27)
 
