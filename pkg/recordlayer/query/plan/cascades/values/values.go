@@ -297,7 +297,11 @@ func (p *FieldPath) WithSuffix(suffix *FieldPath) *FieldPath {
 		// A nil/empty SUFFIX argument is a degenerate "append nothing" —
 		// tolerated defensively. An empty RECEIVER violates the type's
 		// non-empty invariant and gets no arm (S3-W1 review: don't
-		// half-admit empties).
+		// half-admit empties); empty+empty therefore passes the violating
+		// receiver through — acceptable because an empty path is
+		// hand-buildable only (both constructors uphold non-empty, verified
+		// tree-wide in the W1 review) and the violation surfaces loudly at
+		// the first Root()/Last().
 		return p
 	}
 	merged := make([]ResolvedAccessor, 0, len(p.Accessors)+len(suffix.Accessors))
